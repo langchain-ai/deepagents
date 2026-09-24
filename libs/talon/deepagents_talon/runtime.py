@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
 import yaml
 from deepagents import create_deep_agent
-from deepagents.backends import LocalShellBackend
+from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.summarization import (
@@ -330,7 +330,7 @@ class DeepAgentRuntime:
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
         self.env = dict(os.environ if env is None else env)
-        self.backend = backend if backend is not None else _default_backend(self.env)
+        self.backend = backend if backend is not None else _default_backend(self.env, assistant_dir)
         self.skills = tuple(skills) if skills is not None else None
         self.middleware = tuple(middleware)
         self.approval_store = approval_store or ToolApprovalStore(
@@ -1124,15 +1124,29 @@ def _decision_payload(
     return [{"type": "reject"} for _ in range(count)]
 
 
-def _default_backend(env: Mapping[str, str] | None) -> LocalShellBackend:
+def _default_backend(env: Mapping[str, str] | None, assistant_dir: Path | None) -> CompositeBackend:
     values = os.environ if env is None else env
     root = values.get(_WORKSPACE_ENV) or None
-    return LocalShellBackend(
+    home = assistant_dir or TalonConfig.from_env(values).home
+    artifacts = _prepare_artifacts(home)
+    local = LocalShellBackend(
         root_dir=root,
         virtual_mode=False,
         env=_backend_child_env(values),
         inherit_env=False,
     )
+    return CompositeBackend(default=local, routes={}, artifacts_root=artifacts)
+
+
+def _prepare_artifacts(home: Path) -> str:
+    artifacts = home.expanduser().resolve() / "artifacts"
+    artifacts.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(artifacts, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
+    return str(artifacts)
 
 
 def _backend_child_env(env: Mapping[str, str]) -> dict[str, str]:

@@ -25,6 +25,7 @@ from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelectOverlay,
     DeleteThreadConfirmScreen,
     ThreadSelectorScreen,
+    _format_column_value,
 )
 
 MOCK_THREADS: list[ThreadInfo] = [
@@ -59,6 +60,23 @@ MOCK_THREADS: list[ThreadInfo] = [
         "initial_prompt": None,
     },
 ]
+
+
+@pytest.mark.parametrize("prompt", [None, "", "Hello world"])
+def test_checkpoint_cells_distinguish_loading_from_loaded(prompt: str | None) -> None:
+    thread: ThreadInfo = {
+        "thread_id": "loading-thread",
+        "agent_name": "my-agent",
+        "updated_at": None,
+    }
+
+    assert _format_column_value(thread, "messages") == "Loading"
+    assert _format_column_value(thread, "initial_prompt") == "Loading"
+
+    thread.update(message_count=0, initial_prompt=prompt)
+
+    assert _format_column_value(thread, "messages") == "0"
+    assert _format_column_value(thread, "initial_prompt") == (prompt or "")
 
 
 def _patch_list_threads(threads: list[ThreadInfo] | None = None) -> Any:  # noqa: ANN401
@@ -949,10 +967,6 @@ class TestThreadSelectorPrefetchedRows:
 
 class TestThreadSelectorInitialSortOrder:
     """Tests for initial sort order applied to prefetched rows."""
-
-
-class TestThreadSelectorSearch:
-    """Tests for fuzzy search filtering."""
 
 
 class TestThreadSelectorDelete:

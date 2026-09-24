@@ -453,6 +453,17 @@ def _direct_model_error_retryability(
             _HTTP_SERVER_ERROR_FLOOR <= status < _HTTP_SERVER_ERROR_CEILING
         )
 
+    # A bare OpenAI APIError signals an in-band error after a successful HTTP
+    # response starts streaming, so there is no status code to classify.
+    # Match the exact type: request-level APIStatusError subclasses must keep
+    # their status verdict rather than inherit this streaming-error fallback.
+    error_type = type(exc)
+    if (error_type.__module__.partition(".")[0], error_type.__name__) == (
+        "openai",
+        "APIError",
+    ):
+        return True
+
     if _is_transient_sdk_error(exc):
         return True
 

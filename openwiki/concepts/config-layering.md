@@ -3,9 +3,6 @@ type: configuration-model
 title: Code Configuration Layering
 description: How dcode resolves ranked configuration sources, maintains coherent file-snapshot generations, protects managed policy and project dotenv trust boundaries, and constructs workspace-scoped server runtimes.
 tags: [configuration, config-layering, resolver, precedence, reload, deepagents-code, dcode]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
@@ -35,9 +32,18 @@ sources:
     resource: repo://libs/code/deepagents_code/model_config.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
+  - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
+    resource: repo://libs/code/deepagents_code/workspace.py
   - id: openwiki-source-4df2bda291da47157bed7cbb
     resource: repo://libs/code/tests/unit_tests/test_reload.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+  - id: openwiki-source-784e764f7f5eb5169220c3d2
+    resource: repo://libs/code/tests/unit_tests/test_server_graph.py
+  - id: openwiki-source-877b53371bf970f1b38a1809
+    resource: repo://libs/code/tests/unit_tests/test_workspace.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-22T08:05:41.799Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-22T08:05:41.799Z
 ---
 
 # Code Configuration Layering
@@ -118,20 +124,26 @@ The interactive client launches `langgraph dev` in a separate Python process and
 sequenceDiagram
     participant Client
     participant Server as langgraph dev server
-    participant Binding as Workspace binding
+    participant Binding as SQLite workspace binding
     participant Graph as Server graph
     Client->>Server: ServerConfig via prefixed environment
-    Client->>Binding: Persist workspace claim and fingerprint
+    Client->>Binding: Bind thread with server-resolved policy
     Server->>Graph: Reconstruct ServerConfig
-    Graph->>Binding: Require thread workspace
-    Binding-->>Graph: Bound resource policy
+    Graph->>Binding: Validate thread id and context payload
+    Binding-->>Graph: Canonical workspace and stored policy
+    Graph->>Graph: Resolve policy for this workspace
+    Graph->>Graph: Reject policy drift or rebuild for runtime drift
     Graph->>Graph: Snapshot dotenv and credentials off event loop
     Graph->>Graph: Build or reuse workspace runtime
 ```
 
-The subprocess handoff and execution-time workspace binding are separate controls.
+The subprocess handoff, durable binding, and execution-time policy check are separate controls.
 
-For an execution request, `make_graph()` requires a thread ID and valid workspace context, obtains the persisted binding, and builds or reuses a runtime by its resource key. Before selecting that runtime, the server resolves the current configuration for the binding's workspace and rejects a changed project policy or server-config fingerprint. Workspace runtimes use a bounded LRU cache; because a configured sandbox is process-wide, it can be claimed by only one workspace.
+A binding is server-authoritative SQLite state for one thread. It canonicalizes an existing absolute directory and its project root, stores canonical JSON for the non-secret workspace-policy payload, and keeps policy and runtime SHA-256 fingerprints server-side; the client-visible context carries identity rather than those fingerprints. Binding is atomic and idempotent for the same thread/workspace/policy, while a competing first bind or a substituted context is refused. Schema v4 separates durable access-policy compatibility from full runtime identity; legacy rows migrate only when their recorded information proves compatibility, otherwise they fail closed.
+
+`make_graph()` requires a thread ID and workspace context for an execution request, validates that context against the persisted binding, then resolves the current `ServerConfig` for that binding's directory. Project-scoped grants—MCP configuration, sandbox setup, extension paths, and their trust decisions—are resolved for that project rather than accepted from a client. When the target is not the launch project, `resolve_workspace()` drops the launch project's MCP and sandbox setup grants and re-reads extension trust; an unresolved path comparison also takes that fail-closed branch. A revoked extension-trust grant and any project-policy or durable access-policy drift refuse the request.
+
+Not every change invalidates the thread. The policy fingerprint covers workspace identity and the durable trust/tool/sandbox/approval payload. Model-compatible and runtime-only settings, including model selection, parameters, prompt, and retry-related runtime identity, are excluded from that fingerprint but included in the full runtime fingerprint. Thus a policy change is refused, whereas a runtime-only change logs a rebuild and preserves the thread binding and checkpoints. The bounded 32-entry LRU is keyed by workspace identity plus the current runtime fingerprint, so it rebuilds for a permitted model/runtime change rather than returning an old graph. A configured sandbox remains process-wide and is claimed by the first workspace; a second workspace is refused even if the first build failed.
 
 Before graph assembly, `_make_graphs()` creates the workspace-specific dotenv mapping and `CredentialsSnapshot` in a worker thread, freezes the mapping, and enters `use_environment(workspace_env)` for construction. Resolver reads and credential-dependent assembly consequently use the workspace snapshot rather than mutable server `os.environ`; later parent reloads or environment changes do not update an already-built runtime.
 
@@ -152,5 +164,8 @@ The configuration tests cover the boundaries that protect safe changes:
 - `test_reload.py` checks that previews use a fresh user candidate without advancing managed policy, and that rejected managed or user candidates retain prior values with notices.
 - `test_config.py` exercises dotenv precedence, interpolation against the winning value, workspace-scoped immutable environments, and the project-dotenv denylist, including Windows case normalization.
 - `test_config_manifest.py` exercises the `dcode config` display contract, including CLI attribution and redaction.
+- `test_server_config.py` pins the split between session and project policy, environment round trips, policy/runtime fingerprints, and the rule that model changes rebuild a runtime without changing durable access permission.
+- `test_workspace.py` exercises atomic SQLite binding, canonical directory identity, context substitution rejection, non-secret policy persistence, and fail-closed migration of older schema rows.
+- `test_server_graph.py` exercises per-workspace construction, scoped dotenv/credential snapshots, project-policy and extension-trust drift refusal, permitted runtime rebuilds, LRU behavior, and process-wide sandbox ownership.
 
-When changing a setting, add or update the test at the decision boundary: rank and merge behavior, reload publication, dotenv trust, server serialization, or introspection redaction—not only the parser for the new value.
+When changing a setting, add or update the test at the decision boundary: rank and merge behavior, reload publication, dotenv trust, server serialization, workspace policy/runtime classification, or introspection redaction—not only the parser for the new value.

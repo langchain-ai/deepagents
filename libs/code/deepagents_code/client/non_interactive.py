@@ -531,14 +531,14 @@ class StreamState:
     )
     """Requests already counted in this headless run.
 
-    Keyed by message ID, or by `(attempt_scope, message_id)` while a model
-    attempt lifecycle scope is open (see `UsageLedgerKey`). Monotonic across
+    Keyed by `ModelInvocationKey` when known, with `MessageUsageKey` aliases or
+    fallbacks scoped to the model attempt (see `UsageLedgerKey`). Monotonic across
     HITL resume passes so a replayed message does not add its request, tokens,
     or cost to `stats` again. Each pass closes its entries via
     `finalize_recorded_requests`, which is what extends that guarantee to
     replayed *chunks* -- an open chunked request accepts revisions, so without
     the round boundary a replayed chunk would merge into it a second time -- and
-    which also projects each scoped key down to its bare message ID, since a
+    which also exposes unscoped message aliases, since a
     resume pass replays with no attempt scope open.
     """
 
@@ -2143,6 +2143,9 @@ async def _run_agent_loop(
         show_reasoning=show_reasoning,
         spinner=spinner,
         show_rubric_iterations=show_rubric_iterations,
+    )
+    state.stats.record_invocation(
+        runtime_state.model_name or "", runtime_state.model_provider or ""
     )
     user_msg: dict[str, Any] = {"role": "user", "content": message}
     if message_kwargs:

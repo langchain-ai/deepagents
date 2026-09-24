@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2e129c3a1770f21ce37f1250efee2a0b5412a6109823418d60c8ad927d9fff1e",
+  "pageVersion": "sha256:733b209d7a496a9976abc35aeb2095d486d9c2e213bae0c195ff3263d7885789",
   "claims": [
     {
       "id": "claim_d6b36ea22a874b0da71cc1092bae454e",
@@ -18,17 +18,17 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
         }
       ]
     },
     {
       "id": "claim_40b27e72b5c8466491476f2b545b4c2e",
-      "statement": "Server runtime construction returns the compiled agent, its CompositeBackend, and an offload operation derived from that same backend; process construction is lock-protected and cached, while workspace runtimes are a lock-protected LRU of at most 32 entries that reject configuration-policy drift and prevent a process-wide sandbox from being shared by different workspaces.",
+      "statement": "Server runtime construction returns the compiled agent, its CompositeBackend, and an offload operation derived from that same backend; process construction is lock-protected and cached, while workspace runtimes are a lock-protected LRU of at most 32 entries keyed by workspace and runtime identity, reject configuration-policy drift, and prevent a process-wide sandbox from being shared by different workspaces.",
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
         }
       ]
     },
@@ -38,7 +38,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -48,7 +48,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -58,7 +58,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -68,11 +68,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:4f51a782689dc20ad6c01165f85d3d4776db4b58c9041078f61eef58c6e55341"
+          "version": "repo-file-v1:sha256:382336636929637ef6fdbb837ebcacb9709ef53de4c4c97b225137aafbd5c6a7"
         },
         {
           "resource": "repo://libs/code/deepagents_code/model_retry.py",
-          "version": "repo-file-v1:sha256:18d8817421df5c3f7e215706bc1be7842aa81cfc961d7d5c10fa61713f73b5eb"
+          "version": "repo-file-v1:sha256:e2d9f2296d26fb8e12de41f18f74e41a84cde3b91b4985f750f8522d3af8d68d"
         }
       ]
     },
@@ -82,7 +82,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/model_retry.py",
-          "version": "repo-file-v1:sha256:18d8817421df5c3f7e215706bc1be7842aa81cfc961d7d5c10fa61713f73b5eb"
+          "version": "repo-file-v1:sha256:e2d9f2296d26fb8e12de41f18f74e41a84cde3b91b4985f750f8522d3af8d68d"
         }
       ]
     },
@@ -92,7 +92,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/model_retry.py",
-          "version": "repo-file-v1:sha256:18d8817421df5c3f7e215706bc1be7842aa81cfc961d7d5c10fa61713f73b5eb"
+          "version": "repo-file-v1:sha256:e2d9f2296d26fb8e12de41f18f74e41a84cde3b91b4985f750f8522d3af8d68d"
         }
       ]
     },
@@ -102,7 +102,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -116,7 +116,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
         }
       ]
     },
@@ -130,15 +130,15 @@
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_model_retry.py",
-          "version": "repo-file-v1:sha256:4fd29d5fdf713b4555b6414491c26b11be411e51610d8df29cd8446c41cd2f56"
+          "version": "repo-file-v1:sha256:644ba6bc3a93ebb44bc9cc66403820bea8984bca58db37fae731af4a841726c4"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_remote_client.py",
-          "version": "repo-file-v1:sha256:42b784f6ef15656744dd10f8f057c87b4cf196db1ed723f311f5b9674295c27e"
+          "version": "repo-file-v1:sha256:2798d8213dc0da5808612a7a74592057efc88c7ceb04eb7d0533b02f4a3e11ac"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_server_graph.py",
-          "version": "repo-file-v1:sha256:3e5eca2384a16e9ce3c483f97a42a5b24221b671bc95263e0d378ee69bb01649"
+          "version": "repo-file-v1:sha256:bb7797ad3449b44b8a3353d1f115e8b281416a225a703c53acb2d066a9954464"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_server_manager.py",
@@ -152,7 +152,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/client/remote_client.py",
-          "version": "repo-file-v1:sha256:deddea81d0f8b1ab60c514126f96cfea1d832d815f84fa84364c04be53ad2049"
+          "version": "repo-file-v1:sha256:8eadc1aa48c2cef3b3f04ce76264d42d451b221e745691233c3b519bc441fe83"
         }
       ]
     },
@@ -182,7 +182,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/_server_config.py",
-          "version": "repo-file-v1:sha256:50b93c4306c0a4162ad9112ba68dd87a1da4ddf86b713be8abf33585fcf6be0c"
+          "version": "repo-file-v1:sha256:def2cecf5deef444d845dce9c15be64480c2d305ef7b4e6fd288896f813b8be4"
         },
         {
           "resource": "repo://libs/code/deepagents_code/client/launch/server_manager.py",
@@ -196,7 +196,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:b203832237ff9474747f23804e335535e8fc1a2d3e498ba246f131084cb0cc5d"
+          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
         }
       ]
     },
@@ -278,17 +278,97 @@
       "evidence": [
         {
           "resource": "repo://libs/code/tests/unit_tests/test_non_interactive.py",
-          "version": "repo-file-v1:sha256:51dd86d8e7c882165406a0976504a5a6209ee7acfcd86cee006325d4a1548b80"
+          "version": "repo-file-v1:sha256:592a14a312a1e1e759d689a2cb56d7a1784468313c9837c1a01033ad48f54aeb"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_offload_api.py",
-          "version": "repo-file-v1:sha256:853b9a4fa988c59d13ccb896b845ffb0b12ea7ba156ca04f4974ba3b47499527"
+          "version": "repo-file-v1:sha256:5915a62816377190910aa0f751e2347241cc27172305d69d800adbc1b908db9a"
+        }
+      ]
+    },
+    {
+      "id": "claim_10bd5b72e40f43b0a421f37e833bb635",
+      "statement": "The interactive application resolves resume intent and expensive model setup in a background worker, starts server launch alongside optional MCP metadata preload, retains the returned process before posting readiness, and turns launch failure into an application failure message.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L6273-L6413",
+          "version": "repo-lines-v1:sha256:a6bbd171ac59f213e1f01510420faafb42627164f8b476ead82e37a2cbf9eba2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiMjYxYWUxYTc2ZDE4YmZkNTI4YmQ0NmU5NjU4OWU2NDVkNGQ5MGZmYjNlOTAzZWIyYzY0YmJlODdjOTAyOTNhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3MzNkNzg1NjU5ZDE5NDkzZDdkNzI5YTEwNmZlNWQ5Mjc2MWJiMDk0MTJhNTk0NGZjZWEzMTZmZGFiOWEwMzFiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1Yzk3N2M4YzVjNTJhM2QxNDllYjljNmEzODhkM2UxM2IwNzQ3NTM5NzZmNGM2YzY4YWU4MWM1MTQ4MmU4YzljIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_e4d5e3b2c8dc4a11b97cc4022b85fcca",
+      "statement": "The non-interactive runner consumes messages, updates, and custom stream modes with subgraphs and exit durability; it finalizes recorded usage in a finally block to prevent interruption replay from double-counting usage.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L1882-L1938",
+          "version": "repo-lines-v1:sha256:6584fc412de049f4fb0b61bf9baa2fab20b73b23b443661a2c206f80b6bfe765:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzOGFlYzg0N2VjNzE4NTY1ODM3ODc2ZjhlMGJiNzg4NjM1ZDg1NTJkMGZjYjNiOTNmOWVmNDkwYWQ4OWU4NzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwM2JkMWIwZTg2OWFiZDY0MTZjMjk1YmM0ZGFiYjAyMDM3MmU4YWY2ZTA1ZGI1NjJjYTVmMGU2NTVkOWU4ZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAyZDk1OTUyZjFkNDc3OWE2NDVlNjNhZGQyMzBkOWY3NzU3ZDk4MmZlOTJiZWI2ZDM1ZTZkZjExM2NiZjY1YWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE2MWYyNzgwMTA2NjA0MTUyYTAxZjE2OTIwYWVmY2NhZDk4OGUzNjFjMzMwZTI3MTZlMWU4NzdiMDA1ZGEyM2YifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_eff3b24f6e7f473996780cc5da9df027",
+      "statement": "Non-interactive stream handling validates retry lifecycle events, reconciles a superseded visible model attempt before rendering retry status, and suppresses nested retry visibility because nested output is filtered from rendering.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L1461-L1504",
+          "version": "repo-lines-v1:sha256:8554b56f4f4b7561e2fed9d6a98a61195963cbfac581eb2062649c1dbda1f3ae:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTcxNTI1NzJlZTg0ZjEwOTA2Yzc0YjlmMmE5MjQzNGRkYWIwZTNjNDI4MTNiMDRlNTk3ZWZjZWM5NTFiMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiMmIzMWU2NTg4NWVkNjE5Nzg2MmMwZjllMjM1ZWYzZDNmZTBkZGJmNGRiMDAzMTE0OGIwMjY1YzU3OGUxZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIwZWQ2Y2VlYThkMzBjMDQ3MTE2MmVhZWIzMTQyNWY1ZTM0ZmJhMjZiYThlYTJjNzYwZmYxM2M0YjYxMzI5MDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU0YmI2ODkzYTAzNTZjNTI2OTBiMjQyYzBhNTE5MDM2ZmM0ZDY0NzE4MmQ0MWE0N2Y1OGEzYmE1YjIwN2VhYTkifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/non_interactive.py#L1570-L1669",
+          "version": "repo-lines-v1:sha256:9f3872592bc297c49c24a09427325327440ebabb0f8602765db2d4713035ca7d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzYTQ0MDFjZDNkOTI2NmQ3YmU5MGI4MmZjOGRjNTAwZTU1YTMwYTBiZmJjMTNiNjZiZDEyOWJlYTk1NmQ4MzVlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkZTYyYzRlMWE1ODdkMzNmOWE5MDI3MzMzNTljYzU1YWJmNGM4N2I0Nzc4Y2ExYTcxNjU0NjBmODI0NDczNjQxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyNWRmZmFjYmQzM2QwZWRkYTIyOTI4ZDQyNzQwZDRjMzFiNjVhZDdjNjdhOWY2NDhmY2QwNTM5YmY0NzBjNjU3In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_52417be354004c2fae11b752f278e16c",
+      "statement": "Local session records use the hardened default SQLite state database and UUIDv7 thread IDs; thread listing derives metadata from checkpoints, offers exact cwd filtering, and uses a covering index so metadata listing avoids scanning full checkpoint blobs when possible.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/sessions.py#L342-L375",
+          "version": "repo-lines-v1:sha256:a3c1ca8995e91f56402a7170a757df829082cdb8d50255dde20a44c7342cbd99:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlZWU0NTY2NTdiY2NmMTNlNTA2OWE3NGJmNmM5M2ZkZjU3MTBmMDY5NmJjOWY0MGVlMGJjZjRkNTk4OTJhYTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkOWQzNDBmNGJhZTdhY2U3ODc5ZDM5NDBjMGNmODg1MmU2NWY0NWNlYjgzNzY4ZDliNTczZjZiM2EwYWEwMzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkOGFiOTFlMDMzZDk0Y2YyYTNmNjY3ZWM2YTIwMmI2YWMxMzU4M2ExYjFkNGFmMzk3ZTc5YTZlNDRlODVmY2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE4MDhhNjAzOTRmMmFjMmE4ZDQyYTczZGQ4YzkyMDA1ZmNlZWMzY2MwOWEwZTA0ZjAwNzNmMzEzNzQ0OTQ4YTQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/sessions.py#L389-L548",
+          "version": "repo-lines-v1:sha256:b1223346847750ff01d1174741bfc0d9bb165c9b448b238aad86335448299ef1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzODBiOTA3NzRmMzYwMDQ2MjdjZmYyZGZjOTA5ZDA1NTZmYzhhOWFhY2M1ZmQyNzhiZDQwMWI3NWY3ZGI4OWI2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1ZDBjODQ4M2Y2NmVmOWVkYjFmMjgxMWQ5MWVhN2EyZmM3NDM3MzRlMjQ4MzIzNGQxYjFjZGYxN2EyNzA2NzgwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2ZjYyZWQzNTI2OTkwNjkxODAxYzEzMjgxYWFlODEzMGIzNDBlNGY4YjJmOWUzMTUzODY4ZGQyODE2OWM2M2QwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwZTQxMmJkMWM0N2MyMjg3NWIxYjdiZWNjZmVhNWU5MGVmMGU5ODA5NTQ1NjI3MjE3OTBiYzYzY2I3YjEzMzc1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_b9018a1a411d48d083c9e4049cee9222",
+      "statement": "Session selector enrichment caches checkpoint-derived message counts and initial prompts by latest-checkpoint freshness, batches their loading, and prewarms only fields selected for visible columns so unchanged sessions avoid repeated deserialization.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/sessions.py#L551-L652",
+          "version": "repo-lines-v1:sha256:951b03f32f62035e1e099def710b62df68a1db06b3010a33caf2cce4235724d5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5ZDBmM2RlYzY5MWYyMzA0ZTdlMDBkOGRiMmE0YmNkY2JlYTdiNGFjOTFhZDJiZTI4MDZhZjI3MjUzNjE1MjJmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkNmNjNDcxNWZhN2I3MzkwNTAwYWUzMmM5N2ExMzgyMTM0YzY1NTYzNjhlODgzNjIxZGJlNTVkM2EyN2Y3OGM3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyM2Y3NzlkMTUxMzg5MmQwNDFlNWY1ZGZhMWVlNjA0NjA1Y2RmN2ZhMmQ0OTkzZGM0MTAwMTc1ZmMwMmM5ZWYxIn0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_sessions.py#L525-L775",
+          "version": "repo-lines-v1:sha256:80636042b216ec4067d4a21c047e4aee4062c3a80ef074d53c61f1f09ba8f13e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiMzZjMGUyZjIzMjVmNDBiN2EwODc2ZTRjMTBiNjBjYzYzOWUzMjBjNDMxNGVlY2FjZjM0NTRhOTY5YjM2MDQ2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1YWZiMTI3N2ZjOWFmYTE2NzNlZTNhODQ2MDc2Y2ZhYjRjZTU0MmFhZWNlYjg0MDI0ODJhMmFmZmZlZmRkZjNlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiYmYwZmMwMmRiM2Y2OTY5NjE5NjEwZDMxMWZhYWZlZjA2Mjc5MGZkMWZiYmQ0YWVjOGM3M2RkMmM4ZmYxZDBmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5MTg5ZGY3ODRmYzEyNmNiM2M1ZjkxNWMyNzc1NTcyYTg3NjI0MTYwN2JkOTY3NTkwNTcwMDhhOTNhMmQzN2VhIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_8387c1366c9245a19d6307f323bc6c44",
+      "statement": "Model-retry regression tests cover GraphBubbleUp propagation, retry classification and deadline guards, lifecycle-event validation, call correlation, and both synchronous and asynchronous recovery after a transient failure that follows streamed output.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_model_retry.py#L241-L319",
+          "version": "repo-lines-v1:sha256:19545fabfaeaa891d3ac3f01854e7ac2bb5be4f3e906657d1fd49be55b82aaed:eyJzZWxlY3RlZExpbmVDb3VudCI6NzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlYzNmNGE1MDRkZGU1YTE1OWZlYzUzZDJkZTkzNWIyZTM2M2JmOTg1YTE0M2RlZTI2ZTMwYmFlY2M4MDZhZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmM3NjNjZGM5YjBiMDYwYjMyZjZlMGU3YjY1N2Y5YjdjYmYxMWIzZTRkOWQ0MTRkNzUxM2VjMWE3OGFhNjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg1NDEyNzMwOWZkZTJiZWUxOWQzODY1MWRkOWU5ZmJiZmQzM2E5MGM2Yjc1ODk4NjY4MzM3N2U1YmNjNzUyOWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhNGI3NjQ4ZGIwNjIyMDRhZjM3N2JmMjVhMjY3NTQzODZiNTEzNTViZTJjMmI3MDcwYmY2ODM4ZmFiNmI4YWIifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_model_retry.py#L380-L524",
+          "version": "repo-lines-v1:sha256:80e5bad746958b11e7351e0e3c7a3f313adae4ced8d6a52565aee6bdb8d3f54c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQ1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZjZjMDg1NTYzNzkxOTY5MTE1NzBiODRkZTE5YzcwMDQ3NDE3NWY5MGNkZDZhNWNlZjM1NGYxODEwMjJjODY4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkN2Y1NGFhNDBkZTA0MzQ4YjkzYTdlNmQ4MTZiMjE3MzNhNjllMzNhOGM2NjllMjcwNzI3MjdmMWJlZGYzZmE2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjMGE2MWY3NGJhMmExNGQ0MWJmZDY0M2E4MmZlNjg0NDY3ZmU1YWI2N2Y2NzJlNTlhNTJmNmIyMjZjMTM2YWQzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjZGRjZDM4YzExNDI0NDYyOGUwNTVmNTQ2MDU5ZWNjMDE2OGM5MWI2OGIxOTY2MmQ1MjIwYmEyMjVhOGU2ZmRiIn0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_model_retry.py#L527-L867",
+          "version": "repo-lines-v1:sha256:fe2767db85d328b4778f42151575b55c4b1a127f6463303ac4ab611ee6e664e0:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1NzRlNGQyMTg3YzNmMmJlZGNjNzczY2IzZDE3N2IwMTFjMGI2NGY4ZGNhYjM0YTU3MTViNDM4YjZiZWViYzk2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkYTE2YTYzMDNmMjIxYmFhZTQxNWJhMGY0YmVkZGIxYTRlY2MyNDJmYTRkODgxNTY3YTI2MDU1ZGFmNTEzMzU1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhMWIzNGViYWJhODc0YmY3MWU2NDVjYmNiYTNmMDEyNDU0NWJiMThkZGYwNDgwNDJmZjU0NTg1Y2RmNGY2MjVlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3YmNhZjNjY2U5ZGNjODA0MzQxYzc4OTljOGI5YmYwYWRiYTJiMDU1ZjNlNDQ5YTNlYjRlYzk1ZmE4MjA1MzUxIn0"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-18T16:46:37.183Z"
+    "at": "2026-09-23T08:05:59.666Z"
   }
 }

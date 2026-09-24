@@ -11,9 +11,11 @@ from langchain_core.messages import AIMessage, AIMessageChunk
 from deepagents_code._session_stats import (
     ModelStats,
     RecordedRequest,
+    RecordedUsage,
     SessionStats,
     UsageLedgerKey,
     finalize_recorded_requests,
+    print_usage_table,
     record_message_usage,
     record_model_usage_event,
     usage_table_enabled,
@@ -43,6 +45,72 @@ class TestSessionStats:
 
 class TestRecordMessageUsage:
     """Client-side accounting for usage arriving on the message stream."""
+
+    @pytest.mark.parametrize("run_first", [False, True])
+    @pytest.mark.parametrize("attempt_scope", [None, "attempt-1"])
+    def test_message_id_matching_another_run_id_stays_distinct(
+        self, run_first: bool, attempt_scope: str | None
+    ) -> None:
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        deliveries = (
+            (self._chunk(100, 10, message_id="shared-id"), None),
+            (self._chunk(200, 20, message_id="other-id"), "shared-id"),
+        )
+        for message, invocation_id in reversed(deliveries) if run_first else deliveries:
+            record_message_usage(
+                stats,
+                message,
+                recorded_requests=ledger,
+                attempt_scope=attempt_scope,
+                invocation_id=invocation_id,
+            )
+        finalize_recorded_requests(ledger)
+
+        for message, invocation_id in deliveries:
+            assert (
+                record_message_usage(
+                    stats,
+                    message,
+                    recorded_requests=ledger,
+                    invocation_id=invocation_id,
+                )
+                is None
+            )
+        assert stats.request_count == 2
+        assert stats.input_tokens == 300
+        assert stats.output_tokens == 30
+
+    @pytest.mark.parametrize("generation_index", [0, 12])
+    @pytest.mark.parametrize("completion_first", [False, True])
+    def test_generation_id_replay_keeps_one_request(
+        self, generation_index: int, completion_first: bool
+    ) -> None:
+        invocation_id = "00000000-0000-0000-0000-000000000123"
+        message = AIMessage(
+            content="done",
+            id=f"lc_run--{invocation_id}-{generation_index}",
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 10,
+                "total_tokens": 110,
+            },
+        )
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        identities = (
+            (invocation_id, None) if completion_first else (None, invocation_id)
+        )
+        for identity in identities:
+            record_message_usage(
+                stats, message, invocation_id=identity, recorded_requests=ledger
+            )
+        finalize_recorded_requests(ledger)
+
+        assert record_message_usage(stats, message, recorded_requests=ledger) is None
+        assert stats.request_count == 1
+        assert stats.input_tokens == 100
+        assert stats.output_tokens == 10
 
     @staticmethod
     def _chunk(
@@ -177,7 +245,7 @@ class TestRecordMessageUsage:
         assert stats.cache_read_tokens == 80
         assert stats.per_model["openai", "real-model"].request_count == 1
         assert stats.per_kind["assistant"].request_count == 1
-        assert ledger["child-1"].finalized is True
+        assert record_message_usage(stats, chunk, recorded_requests=ledger) is None
 
     def test_a_completion_stating_no_tokens_reports_the_loss(
         self,
@@ -291,8 +359,6 @@ class TestRecordMessageUsage:
         assert completion_usage is not None
         # A correction downward, never a spike back to the parent's rates.
         assert completion_usage.cost_usd == pytest.approx(0.0)
-        assert ledger["child-1"].model_name == "child-model"
-        assert ledger["child-1"].provider == "openai"
         assert stats.total_cost_usd == pytest.approx(0.05)
         assert stats.per_model["openai", "child-model"].request_count == 1
         assert ("anthropic", "parent-model") not in stats.per_model
@@ -461,12 +527,9 @@ class TestRecordMessageUsage:
         # on the dollars attempt 2 just deposited.
         assert finalized.request_id != retry.request_id
         assert finalized.request_id is not None
-        assert "run-1" in finalized.request_id
         assert stats.request_count == 2
         assert stats.input_tokens == 1_900
         assert stats.output_tokens == 30
-        assert ledger[1, "run-1"].finalized is True
-        assert ledger[2, "run-1"].finalized is False
 
     def test_missing_response_model_uses_request_specific_configured_model(
         self, monkeypatch: pytest.MonkeyPatch
@@ -863,6 +926,80 @@ class TestRecordModelUsageEvent:
         assert stats.cache_read_tokens == 800
         assert ("openai", "gpt-5.5") in stats.per_model
 
+    @pytest.mark.parametrize("completion_first", [False, True])
+    @pytest.mark.parametrize("provider_id", [False, True])
+    @pytest.mark.parametrize("attempt_scope", [None, "attempt-1"])
+    def test_deduplicates_mixed_response_ids_by_invocation(
+        self, completion_first: bool, provider_id: bool, attempt_scope: str | None
+    ) -> None:
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        invocation_id = "00000000-0000-0000-0000-000000000123"
+        chunk = AIMessageChunk(
+            content="",
+            id="resp_child" if provider_id else f"lc_run--{invocation_id}",
+            usage_metadata={
+                "input_tokens": 900,
+                "output_tokens": 90,
+                "total_tokens": 990,
+            },
+        )
+        event = self._event() | {
+            "request_id": "resp_child",
+            "invocation_id": invocation_id,
+            "usage_metadata": {
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+                "input_token_details": {"cache_read": 800},
+            },
+        }
+
+        def completion() -> RecordedUsage | None:
+            return record_model_usage_event(
+                stats, event, recorded_requests=ledger, attempt_scope=attempt_scope
+            )
+
+        def streamed() -> RecordedUsage | None:
+            return record_message_usage(
+                stats,
+                chunk,
+                kind="subagent",
+                recorded_requests=ledger,
+                attempt_scope=attempt_scope,
+            )
+
+        calls = (completion, streamed) if completion_first else (streamed, completion)
+        first, second = (call() for call in calls)
+
+        assert first is not None
+        assert second is None if completion_first else second is not None
+        if second is not None:
+            assert second.request_id == first.request_id
+        assert stats.request_count == 1
+        assert stats.input_tokens == 1_000
+        assert stats.output_tokens == 100
+        assert stats.cache_read_tokens == 800
+        assert stats.per_kind["subagent"].request_count == 1
+
+        finalize_recorded_requests(ledger)
+        assert (
+            record_model_usage_event(
+                stats,
+                event,
+                active_thread_id="thread-1",
+                recorded_requests=ledger,
+            )
+            is None
+        )
+        assert (
+            record_message_usage(
+                stats, chunk, kind="subagent", recorded_requests=ledger
+            )
+            is None
+        )
+        assert stats.request_count == 1
+
     def test_deduplicates_with_ordinary_message(self) -> None:
         stats = SessionStats()
         ledger: dict[UsageLedgerKey, RecordedRequest] = {}
@@ -937,6 +1074,48 @@ class TestClassifyUsageKind:
 
 class TestPrintUsageTable:
     """Tests for `print_usage_table` output."""
+
+    def test_invocations_are_attributed_to_starting_model(self) -> None:
+        from rich.console import Console
+
+        stats = SessionStats()
+        for _ in range(3):
+            turn = SessionStats()
+            turn.record_invocation("model-a")
+            turn.record_request("model-a", 12, 4)
+            turn.record_request("model-b", 8, 2, kind="subagent")
+            stats.merge(turn)
+        turn = SessionStats()
+        turn.record_invocation("model-b")
+        stats.merge(turn)
+        console = Console(force_terminal=False, width=100)
+
+        with console.capture() as capture:
+            print_usage_table(stats, 0, console)
+
+        output = capture.get()
+        assert "Invocations" in output
+        assert "model-a     3            3" in output
+        assert "model-b     3            1" in output
+        assert "Total       6            4" in output
+        assert stats.invocation_count == 4
+
+    def test_invocation_without_model_requests_is_visible(self) -> None:
+        from rich.console import Console
+
+        stats = SessionStats()
+        stats.record_invocation("model-a")
+        console = Console(force_terminal=False)
+        with console.capture() as capture:
+            print_usage_table(stats, 0, console)
+
+        assert "model-a" in capture.get()
+        assert stats.per_model["", "model-a"].invocation_count == 1
+
+    def test_unknown_starting_model_has_an_attributed_row(self) -> None:
+        stats = SessionStats()
+        stats.record_invocation("")
+        assert stats.per_model["", "Unknown"].invocation_count == 1
 
 
 class TestUsageTableEnabled:
@@ -1174,8 +1353,8 @@ class TestAttemptScopedUsage:
         assert stats.input_tokens == 1_000
         assert stats.output_tokens == 100
 
-    def test_resume_replay_credits_the_attempt_that_succeeded(self) -> None:
-        """After a retry, the projected row carries the surviving attempt."""
+    def test_resume_replay_after_retry_keeps_both_attempts_counted(self) -> None:
+        """An unscoped replay preserves the spend from both retry attempts."""
         stats = SessionStats()
         ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
@@ -1201,9 +1380,8 @@ class TestAttemptScopedUsage:
 
         assert replay is None
         assert stats.request_count == 2
-        # The bare-id projection took the last attempt written, which is the one
-        # that actually succeeded.
-        assert ledger["run-1"].input_tokens == 2_000
+        assert stats.input_tokens == 3_000
+        assert stats.output_tokens == 300
 
     def test_same_message_id_counts_once_per_attempt(self) -> None:
         stats = SessionStats()

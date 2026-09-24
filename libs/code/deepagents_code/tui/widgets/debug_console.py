@@ -26,7 +26,7 @@ from textual.screen import ModalScreen
 from textual.scroll_view import ScrollView
 from textual.strip import Strip
 from textual.style import Style as TStyle
-from textual.widgets import Checkbox, Select, Static
+from textual.widgets import Button, Checkbox, Select, Static
 from textual.widgets._select import (  # noqa: PLC2701  # needed to keep Tab navigation inside the open Select overlay
     SelectCurrent,
     SelectOverlay,
@@ -88,11 +88,14 @@ level-partitioned retention instead of re-flattening it into a single window."""
 _FILTER_SELECT_ID = "debug-level-filter"
 _CLICK_TO_COPY_ID = "debug-click-to-copy"
 """Id of the checkbox that opts click-to-copy in for the console."""
+_COST_BREAKDOWN_ID = "debug-cost-breakdown"
 _CLICK_TO_COPY_DEFAULT = False
 """Whether click-to-copy is enabled before the user toggles the checkbox."""
 _MIN_HANGING_VALUE_WIDTH = 10
 """Minimum readable value-column width for hanging snapshot rows."""
-_FOCUS_CYCLE = f"#{_FILTER_SELECT_ID}, #{_CLICK_TO_COPY_ID}, #debug-log"
+_FOCUS_CYCLE = (
+    f"#{_COST_BREAKDOWN_ID}, #{_FILTER_SELECT_ID}, #{_CLICK_TO_COPY_ID}, #debug-log"
+)
 """Tab-cycle selector spanning the toolbar controls and the log view."""
 FilterValue = Literal[
     "all",
@@ -755,6 +758,24 @@ class DebugConsoleScreen(ModalScreen[None]):
         margin-bottom: 1;
     }
 
+    DebugConsoleScreen .debug-console-cost-breakdown {
+        width: auto;
+        min-width: 0;
+        height: 1;
+        border: none;
+        padding: 0 1;
+        margin-bottom: 1;
+        color: $primary;
+        background: transparent;
+    }
+
+    DebugConsoleScreen .debug-console-cost-breakdown:hover,
+    DebugConsoleScreen .debug-console-cost-breakdown:focus {
+        color: $text;
+        background: $surface-lighten-1;
+        text-style: bold;
+    }
+
     DebugConsoleScreen .debug-console-toolbar {
         height: auto;
         margin-bottom: 1;
@@ -804,6 +825,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         snapshot: Sequence[SnapshotField],
         *,
         snapshot_provider: Callable[[], Sequence[SnapshotField]] | None = None,
+        cost_breakdown_provider: Callable[[], str] | None = None,
         cleared_upto: int = 0,
         on_clear: Callable[[int], None] | None = None,
         click_to_copy: bool = _CLICK_TO_COPY_DEFAULT,
@@ -817,6 +839,9 @@ class DebugConsoleScreen(ModalScreen[None]):
                 live host state. When set, the header is refreshed on the same
                 tick as the log tail whenever the provider returns a different
                 row list. Omit for a freeze-frame header (e.g. unit tests).
+            cost_breakdown_provider: Optional callable that builds the detailed
+                token and cost breakdown shown in a dedicated modal. An empty
+                string hides the breakdown button.
             cleared_upto: Absolute emission index a prior `Ctrl+L` cleared up to.
                 The console starts rendering from here so a clear persists across
                 close/reopen; records emitted after it still appear.
@@ -830,6 +855,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         super().__init__()
         self._snapshot = list(snapshot)
         self._snapshot_provider = snapshot_provider
+        self._cost_breakdown_provider = cost_breakdown_provider
         self._records: list[InMemoryLogRecord] = []
         # Absolute index of the next unrendered log record (incremental writes),
         # seeded from any persisted clear so reopening honors the last Ctrl+L.
@@ -886,6 +912,13 @@ class DebugConsoleScreen(ModalScreen[None]):
                 self._render_snapshot(), self._snapshot_value_column()
             )
             yield snapshot_view
+            if self._cost_breakdown_provider is not None:
+                yield Button(
+                    "View token & cost breakdown",
+                    id=_COST_BREAKDOWN_ID,
+                    classes="debug-console-cost-breakdown",
+                    variant="default",
+                )
             with Horizontal(classes="debug-console-toolbar"):
                 yield Static("Level", classes="debug-console-filter-label")
                 yield _LogLevelSelect(
@@ -920,7 +953,19 @@ class DebugConsoleScreen(ModalScreen[None]):
     def _on_refresh_tick(self) -> None:
         """Rebuild the snapshot header (when live) and append new log records."""
         self._poll_snapshot()
+        self._refresh_cost_breakdown_button()
         self._poll_logs()
+
+    def _refresh_cost_breakdown_button(self) -> None:
+        """Show cost detail only when the provider has historical coverage."""
+        if self._cost_breakdown_provider is None:
+            return
+        try:
+            available = bool(self._cost_breakdown_provider())
+        except Exception:
+            logger.debug("Cost breakdown build failed", exc_info=True)
+            available = False
+        self.query_one(f"#{_COST_BREAKDOWN_ID}", Button).display = available
 
     def _poll_snapshot(self) -> None:
         """Rebuild the snapshot header from the host provider, if configured.
@@ -1086,6 +1131,31 @@ class DebugConsoleScreen(ModalScreen[None]):
             return True
         overlay = select.query_one(SelectOverlay)
         return overlay.display and overlay.region.contains(offset.x, offset.y)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        """Open the detailed token and cost breakdown modal."""
+        if event.button.id != _COST_BREAKDOWN_ID:
+            return
+        event.stop()
+        if self._cost_breakdown_provider is None:
+            return
+        from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
+
+        try:
+            breakdown = self._cost_breakdown_provider()
+        except Exception:
+            logger.warning("Cost breakdown build failed", exc_info=True)
+            self.app.notify(
+                "Token and cost breakdown unavailable",
+                severity="warning",
+                timeout=3,
+                markup=False,
+            )
+            return
+        if breakdown:
+            self.app.push_screen(
+                CostBreakdownScreen(breakdown, self._cost_breakdown_provider)
+            )
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Refresh visible records when the log-level filter changes."""

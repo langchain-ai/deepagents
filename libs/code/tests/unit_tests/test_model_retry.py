@@ -92,8 +92,40 @@ class ResourceExhausted(Exception):  # noqa: N818  # mirrors the Google SDK name
     pass
 
 
+class APIError(Exception):
+    __module__ = "openai"
+
+
+class _OpenAIStatusError(APIError):
+    status_code = 400
+
+
+class _OpenAISubclassError(APIError):
+    pass
+
+
+_OVERLOAD_ERROR = APIError(
+    "Our servers are currently overloaded. Please try again later."
+)
+
+
+@pytest.mark.parametrize(
+    ("exc", "retryable"),
+    [
+        (_OVERLOAD_ERROR, True),
+        (_OpenAIStatusError("bad request"), False),
+        (_OpenAISubclassError("unknown failure"), False),
+    ],
+)
+def test_predicate_retries_only_bare_openai_api_error(
+    exc: Exception, *, retryable: bool
+) -> None:
+    assert _is_retryable_model_error(exc) is retryable
+
+
 class _RetryingStreamingModel(BaseChatModel):
     attempts: int = 0
+    error: Exception = _READ_ERROR
 
     @property
     def _llm_type(self) -> str:
@@ -120,7 +152,7 @@ class _RetryingStreamingModel(BaseChatModel):
         self.attempts += 1
         if self.attempts == 1:
             yield ChatGenerationChunk(message=AIMessageChunk(content="orphaned"))
-            raise _READ_ERROR
+            raise self.error
         yield ChatGenerationChunk(
             message=AIMessageChunk(content="final", chunk_position="last")
         )
@@ -519,12 +551,14 @@ def test_build_attempt_event_rejects_unknown_phase() -> None:
         build_attempt_event("call-1", 0, phase="explode")
 
 
+@pytest.mark.parametrize("error", [_READ_ERROR, _OVERLOAD_ERROR])
 async def test_failed_attempt_is_retried_after_streaming(
     monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
 ) -> None:
     """A mid-stream transient drop must recover while retry budget remains."""
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
-    model = _RetryingStreamingModel()
+    model = _RetryingStreamingModel(error=error)
     agent = create_agent(
         model,
         middleware=[CodeModelRetryMiddleware(max_retries=1)],

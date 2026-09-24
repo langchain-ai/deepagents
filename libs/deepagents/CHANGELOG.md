@@ -2,6 +2,29 @@
 
 # Deep Agents Changelog
 
+## [0.7.19](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.18...deepagents==0.7.19) (2026-09-24)
+
+### Bug Fixes
+
+- Recover when `read_file` media is rejected.
+- Filter unsupported multimodal content through separate middleware.
+- Bound tool offload paths and abbreviate long IDs.
+
+## [0.7.18](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.17...deepagents==0.7.18) (2026-09-22)
+
+### Bug Fixes
+
+- Large tool result previews now more clearly explain when output was clipped or truncated, including byte-cap losses, per-line clipping, and showing truncation notices only when truncation occurs. Legacy large-result preview templates are preserved behind a deprecation path. ([#5567](https://github.com/langchain-ai/deepagents/pull/5567), [#5564](https://github.com/langchain-ai/deepagents/pull/5564), [#5563](https://github.com/langchain-ai/deepagents/pull/5563), [#5568](https://github.com/langchain-ai/deepagents/pull/5568))
+- Task tool calls now reject unknown argument keys instead of silently dropping unexpected input. ([#6299](https://github.com/langchain-ai/deepagents/pull/6299))
+- Correct `FileInfo.size` to represent the file size in bytes across backends. ([#6258](https://github.com/langchain-ai/deepagents/pull/6258))
+
+## [0.7.17](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.16...deepagents==0.7.17) (2026-09-22)
+
+### Bug Fixes
+
+- Preserve the backend exit status when capture metadata is missing. ([#6451](https://github.com/langchain-ai/deepagents/pull/6451))
+- Restrict inline file blocks to supported MIME types. ([#6447](https://github.com/langchain-ai/deepagents/pull/6447))
+
 ## [0.7.16](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.15...deepagents==0.7.16) (2026-09-21)
 
 ### Features

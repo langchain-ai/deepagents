@@ -23,6 +23,7 @@ from langchain.agents.middleware.types import (
     ToolCallRequest,
 )
 from langchain.tools import ToolRuntime
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -53,22 +54,23 @@ from deepagents_code.approval_mode import (
     approval_mode_key,
 )
 from deepagents_code.auto_mode import (
+    _MAX_CLASSIFIER_CONVERSATION_TURNS,
     _REASON_LIMIT,
     AUTO_DENIED_METADATA_KEY,
     AUTO_MODE_COUNTERS_NAMESPACE,
     USER_PROMPT_METADATA_KEY,
-    AutoDecision,
-    AutoDecisionBatch,
     AutoDecisionCategory,
     AutoModeHITLMiddleware,
     _active_user_directives,
     _ask_user_question_count,
     _batch_id,
+    _ClassifierBatch,
     _ClassifierConstructionDeadlineExceededError,
     _ClassifierDeadlineExceededError,
     _ClassifierModelUnavailableError,
     _default_counters,
     _fixed_repo_command_allowed,
+    _IndexedClassifierVerdict,
     _merge_temp_artifacts,
     _routine_write_allowed,
     _unresolvable_write_path_reason,
@@ -78,6 +80,8 @@ from deepagents_code.auto_mode import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware, AgentState
     from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -178,7 +182,7 @@ class _StructuredModel:
         self.error = error
         self.calls: list[list[object]] = []
         self.call_kwargs: list[dict[str, object]] = []
-        self.schema: object = None
+        self.schemas: list[dict[str, Any]] = []
         self.structured_output_kwargs: dict[str, object] = {}
         # `_extract_model_name` reads `model_name` first and ignores a non-str,
         # so the default keeps existing tests labelled by class name.
@@ -187,7 +191,9 @@ class _StructuredModel:
     def with_structured_output(
         self, schema: object, **kwargs: object
     ) -> _StructuredModel:
-        self.schema = schema
+        assert isinstance(schema, type)
+        assert issubclass(schema, BaseModel)
+        self.schemas.append(schema.model_json_schema())
         self.structured_output_kwargs = kwargs
         return self
 
@@ -207,12 +213,49 @@ class _ThinkingAnthropicModel(_StructuredModel):
         self.thinking = {"type": "adaptive"}
 
 
+class _ConversationModel(_StructuredModel):
+    def __init__(
+        self, results: Sequence[_ClassifierBatch | dict[str, object] | Exception]
+    ) -> None:
+        super().__init__()
+        self.results = list(results)
+
+    async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+        self.calls.append(messages)
+        self.call_kwargs.append(kwargs)
+        result = self.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
 class _FailIfClassifiedModel(_StructuredModel):
     def with_structured_output(
         self, schema: object, **kwargs: object
     ) -> _StructuredModel:
         msg = f"unexpected classifier call for {schema} with {kwargs}"
         raise AssertionError(msg)
+
+
+class _ProviderError(Exception):
+    def __init__(self, status_code: int, message: str) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _SizeLimitedConversationModel(_ConversationModel):
+    max_chars: int | None = None
+    overflow_error: Exception = ContextOverflowError("maximum context length exceeded")
+
+    async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+        size = sum(
+            len(str(cast("BaseMessage", message).content)) for message in messages
+        )
+        if self.max_chars is not None and size > self.max_chars:
+            self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
+            raise self.overflow_error
+        return await super().ainvoke(messages, **kwargs)
 
 
 class _AskReceiptFlowModel(_ToolBindingFakeModel):
@@ -273,9 +316,10 @@ class _AskReceiptFlowModel(_ToolBindingFakeModel):
         **kwargs: Any,
     ) -> Runnable[LanguageModelInput, dict[str, Any] | BaseModel]:
         del include_raw, kwargs
-        assert schema is AutoDecisionBatch
+        assert isinstance(schema, type)
+        assert issubclass(schema, _ClassifierBatch)
 
-        def classify(model_input: LanguageModelInput) -> AutoDecisionBatch:
+        def classify(model_input: LanguageModelInput) -> _ClassifierBatch:
             assert isinstance(model_input, list)
             classifier_message = model_input[1]
             assert isinstance(classifier_message, HumanMessage)
@@ -284,7 +328,7 @@ class _AskReceiptFlowModel(_ToolBindingFakeModel):
                 json.loads(cast("str", classifier_message.content)),
             )
             self.classifier_payloads.append(payload)
-            return _allow_result(call_id="exec-1")
+            return _allow_result()
 
         return cast(
             "Runnable[LanguageModelInput, dict[str, Any] | BaseModel]",
@@ -347,6 +391,7 @@ def _request(
     raw_user_text: str = "perform the requested task",
     expanded_text: str = "expanded file content must not authorize anything",
     classifier_model: str | None = None,
+    turn_id: str = "turn-1",
 ) -> tuple[ModelRequest[Any], _Store, str]:
     _ = args
     thread_id = "thread-1"
@@ -356,7 +401,7 @@ def _request(
     runtime = SimpleNamespace(
         context={
             "thread_id": thread_id,
-            "turn_id": "turn-1",
+            "turn_id": turn_id,
             "approval_mode_key": key,
             "approval_mode": "auto",
             "classifier_model": classifier_model,
@@ -369,7 +414,7 @@ def _request(
         content=expanded_text,
         additional_kwargs={
             USER_PROMPT_METADATA_KEY: user_prompt_metadata(
-                raw_user_text, [tmp_path / "mentioned.py"], turn_id="turn-1"
+                raw_user_text, [tmp_path / "mentioned.py"], turn_id=turn_id
             )
         },
     )
@@ -397,7 +442,13 @@ async def _plan_calls(
     assert response.command is not None
     update = response.command.update
     assert update is not None
-    return cast("dict[str, Any]", update)["_auto_decision_plan"]
+    updates = cast("dict[str, Any]", update)
+    conversation_key = "_auto_classifier_conversation"
+    if conversation_key in updates:
+        cast("dict[str, Any]", request.state)[conversation_key] = updates[
+            conversation_key
+        ]
+    return updates["_auto_decision_plan"]
 
 
 async def _plan(
@@ -499,16 +550,24 @@ def _capture_review_events(request: ModelRequest[Any]) -> list[dict[str, Any]]:
     return events
 
 
-def _allow_result(call_id: str = "call-1") -> AutoDecisionBatch:
-    return AutoDecisionBatch(
+def _single_result(
+    *,
+    decision: Literal["allow", "deny"],
+    category: AutoDecisionCategory,
+    reason: str,
+) -> _ClassifierBatch:
+    return _ClassifierBatch(
         decisions=[
-            AutoDecision(
-                tool_call_id=call_id,
-                decision="allow",
-                category=AutoDecisionCategory.OTHER_POLICY,
-                reason="",
+            _IndexedClassifierVerdict(
+                action_index=0, decision=decision, category=category, reason=reason
             )
         ]
+    )
+
+
+def _allow_result() -> _ClassifierBatch:
+    return _single_result(
+        decision="allow", category=AutoDecisionCategory.OTHER_POLICY, reason=""
     )
 
 
@@ -517,20 +576,197 @@ _DEFAULT_RECEIPT = object()
 
 def _deny_result(
     *,
-    call_id: str = "call-1",
     category: AutoDecisionCategory = AutoDecisionCategory.OTHER_POLICY,
     reason: str = "The selected answer does not authorize this action.",
-) -> AutoDecisionBatch:
-    return AutoDecisionBatch(
-        decisions=[
-            AutoDecision(
-                tool_call_id=call_id,
-                decision="deny",
-                category=category,
-                reason=reason,
-            )
-        ]
+) -> _ClassifierBatch:
+    return _single_result(decision="deny", category=category, reason=reason)
+
+
+@pytest.mark.parametrize(
+    ("llm_type", "distinct", "model_kwargs", "expected_cache_control"),
+    [
+        ("anthropic-chat", True, {}, {"type": "ephemeral", "ttl": "5m"}),
+        (
+            "anthropic-chat",
+            True,
+            {"cache_control": {"type": "ephemeral", "ttl": "1h"}},
+            {"type": "ephemeral", "ttl": "1h"},
+        ),
+        ("anthropic-chat", False, {}, {"type": "ephemeral", "ttl": "1h"}),
+        ("openai-chat", True, {}, None),
+    ],
+)
+async def test_classifier_replay_uses_provider_local_cache_settings(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    llm_type: str,
+    *,
+    distinct: bool,
+    model_kwargs: dict[str, object],
+    expected_cache_control: dict[str, str] | None,
+) -> None:
+    """Replayed Anthropic reviews enable caching without leaking primary settings."""
+    classifier = _StructuredModel(_allow_result())
+    monkeypatch.setattr(classifier, "_llm_type", llm_type, raising=False)
+    monkeypatch.setattr(classifier, "model_kwargs", model_kwargs, raising=False)
+    _install_model_factory(monkeypatch, _RecordingModelFactory(classifier))
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel() if distinct else classifier,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        classifier_model="provider:classifier" if distinct else None,
     )
+    primary_settings = {
+        "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        "temperature": 0.7,
+    }
+    request = request.override(model_settings=primary_settings)
+    middleware = _middleware(tmp_path)
+
+    for index in range(2):
+        plan = await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": f"old-{index}.py"},
+            call_id=f"call-{index}",
+        )
+        assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+    assert len(classifier.calls[1]) == 4
+    for kwargs in classifier.call_kwargs:
+        effective_settings = {**model_kwargs, **kwargs}
+        assert effective_settings.get("cache_control") == expected_cache_control
+        assert ("temperature" in kwargs) is (not distinct)
+    assert request.model_settings == primary_settings
+
+
+async def test_classifier_history_is_bounded_and_resets_for_a_new_model(
+    tmp_path: Path,
+) -> None:
+    limit = _MAX_CLASSIFIER_CONVERSATION_TURNS
+    model = _ConversationModel([_allow_result() for index in range(limit + 1)])
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    for index in range(limit + 1):
+        await _plan(
+            _middleware(tmp_path),
+            request,
+            tool_name="delete",
+            args={"file_path": f"old-{index}.py"},
+            call_id=f"call-{index}",
+        )
+
+    state = cast("dict[str, Any]", request.state)
+    assert len(state["_auto_classifier_conversation"]["turns"]) == 1
+    assert [type(message) for message in model.calls[-1]] == [
+        SystemMessage,
+        HumanMessage,
+    ]
+    replacement = _ConversationModel([_allow_result()])
+    replacement.model_name = "replacement"
+    request = request.override(model=cast("BaseChatModel", replacement))
+    await _plan(
+        _middleware(tmp_path),
+        request,
+        tool_name="delete",
+        args={"file_path": "new.py"},
+        call_id="call-new",
+    )
+
+    assert [type(message) for message in replacement.calls[0]] == [
+        SystemMessage,
+        HumanMessage,
+    ]
+    assert len(state["_auto_classifier_conversation"]["turns"]) == 1
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ContextOverflowError("input exceeds model capacity"),
+        _ProviderError(400, "context_length_exceeded"),
+        _ProviderError(400, "prompt is too long"),
+        _ProviderError(413, "exceeds the available context size"),
+        _ProviderError(422, "input tokens exceed the configured limit"),
+    ],
+)
+async def test_classifier_context_overflow_retries_with_complete_current_payload(
+    tmp_path: Path,
+    error: Exception,
+) -> None:
+    model = _SizeLimitedConversationModel([_allow_result() for index in range(1, 5)])
+    model.overflow_error = error
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        raw_user_text="Delete old.py. " * 1000,
+    )
+    middleware = _middleware(tmp_path)
+    for index in range(1, 5):
+        if index == 3:
+            # Each current payload fits; replaying multiple copies does not.
+            model.max_chars = sum(
+                len(str(cast("BaseMessage", message).content))
+                for message in model.calls[1]
+            )
+        plan = await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+            call_id=f"call-{index}",
+        )
+        assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+    oversized, retried, subsequent = model.calls[2:]
+    assert retried == [oversized[0], oversized[-1]]
+    assert len(subsequent) == 4
+    state = cast("dict[str, Any]", request.state)
+    conversation = state["_auto_classifier_conversation"]
+    assert conversation["revision"] == 4
+    assert len(conversation["turns"]) == 2
+    assert "call-1" not in json.dumps(conversation)
+    assert "call-2" not in json.dumps(conversation)
+
+
+@pytest.mark.parametrize("with_history", [False, True])
+async def test_classifier_irreducible_context_overflow_fails_closed(
+    tmp_path: Path, *, with_history: bool
+) -> None:
+    model = _SizeLimitedConversationModel([_allow_result()])
+    request, _store, _key = _request(
+        tmp_path, model=model, tool_name="delete", args={"file_path": "old.py"}
+    )
+    middleware = _middleware(tmp_path)
+    if with_history:
+        await _plan(
+            middleware, request, tool_name="delete", args={"file_path": "old.py"}
+        )
+    state = cast("dict[str, Any]", request.state)
+    before = state.get("_auto_classifier_conversation")
+    model.calls.clear()
+    model.max_chars = 0
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        call_id="call-2",
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    assert len(model.calls) == (2 if with_history else 1)
+    assert state.get("_auto_classifier_conversation") == before
 
 
 async def test_classifier_review_lifecycle_reports_only_opaque_ids(
@@ -585,12 +821,12 @@ async def test_classifier_review_lifecycle_reports_only_opaque_ids(
     ("result", "disposition"),
     [
         (_deny_result(), "policy_deny"),
-        (AutoDecisionBatch(decisions=[]), "classifier_unavailable"),
+        ({}, "classifier_unavailable"),
     ],
 )
 async def test_classifier_review_lifecycle_balances_blocked_results(
     tmp_path: Path,
-    result: AutoDecisionBatch,
+    result: _ClassifierBatch | dict[str, object],
     disposition: str,
 ) -> None:
     middleware = _middleware(tmp_path)
@@ -934,45 +1170,6 @@ async def test_classifier_review_event_writer_failure_does_not_block_the_batch(
     assert len(model.calls) == 1
 
 
-async def test_deterministic_siblings_stay_out_of_the_review_lifecycle(
-    tmp_path: Path,
-) -> None:
-    """Pausing an unreviewed row would freeze it: nothing ever resumes it."""
-    middleware = _middleware(tmp_path)
-    request, _store, _key = _request(
-        tmp_path,
-        model=_StructuredModel(_allow_result("call-reviewed")),
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-    events = _capture_review_events(request)
-
-    plan = await _plan_calls(
-        middleware,
-        request,
-        [
-            {
-                "name": "write_file",
-                "args": {
-                    "file_path": str(tmp_path / "src" / "module.py"),
-                    "content": "x = 1",
-                },
-                "id": "call-deterministic",
-                "type": "tool_call",
-            },
-            {
-                "name": "delete",
-                "args": {"file_path": "old.py"},
-                "id": "call-reviewed",
-                "type": "tool_call",
-            },
-        ],
-    )
-
-    assert plan["review_tool_call_ids"] == ["call-reviewed"]
-    assert [event["tool_call_ids"] for event in events] == [["call-reviewed"]]
-
-
 def _append_ask_user_exchange(
     request: ModelRequest[Any],
     *,
@@ -983,6 +1180,7 @@ def _append_ask_user_exchange(
     receipt: object = _DEFAULT_RECEIPT,
     message_name: str = "ask_user",
     message_status: Literal["success", "error"] = "success",
+    receipt_turn_id: str = "turn-1",
 ) -> None:
     question_rows = questions or [
         {
@@ -999,7 +1197,7 @@ def _append_ask_user_exchange(
         receipt = {
             "version": 1,
             "thread_id": "thread-1",
-            "turn_id": "turn-1",
+            "turn_id": receipt_turn_id,
             "tool_call_id": ask_call_id,
             "answers": answer_values,
         }
@@ -1259,7 +1457,7 @@ async def test_mixed_batch_excludes_trusted_compaction_from_classifier(
 ) -> None:
     compact_tool = _tool("compact_conversation")
     execute_tool = _tool("execute")
-    model = _StructuredModel(_deny_result(call_id="execute-call"))
+    model = _StructuredModel(_deny_result())
     middleware = _middleware(tmp_path, trusted_compaction_tool=compact_tool)
     request, _store, _key = _request(
         tmp_path,
@@ -1513,15 +1711,10 @@ async def test_absolute_outside_write_resolves_path_off_event_loop(
             resolution_threads.append(threading.get_ident())
         return real_resolve(path, strict=strict)
 
-    result = AutoDecisionBatch(
-        decisions=[
-            AutoDecision(
-                tool_call_id="call-1",
-                decision="deny",
-                category=AutoDecisionCategory.TRUST_BOUNDARY,
-                reason="The target crosses the repository trust boundary.",
-            )
-        ]
+    result = _single_result(
+        decision="deny",
+        category=AutoDecisionCategory.TRUST_BOUNDARY,
+        reason="The target crosses the repository trust boundary.",
     )
     middleware = _middleware(tmp_path)
     monkeypatch.setattr(Path, "resolve", tracked_resolve)
@@ -1555,15 +1748,10 @@ async def test_symlink_escape_requires_classifier(tmp_path: Path) -> None:
     outside.mkdir()
     link = tmp_path / "linked"
     link.symlink_to(outside, target_is_directory=True)
-    result = AutoDecisionBatch(
-        decisions=[
-            AutoDecision(
-                tool_call_id="call-1",
-                decision="deny",
-                category=AutoDecisionCategory.TRUST_BOUNDARY,
-                reason="The target crosses the repository trust boundary.",
-            )
-        ]
+    result = _single_result(
+        decision="deny",
+        category=AutoDecisionCategory.TRUST_BOUNDARY,
+        reason="The target crosses the repository trust boundary.",
     )
     middleware = _middleware(tmp_path)
     model = _StructuredModel(result)
@@ -1716,15 +1904,10 @@ async def test_predictable_preexisting_temp_path_remains_denied(
     preexisting = tmp_path / "pr-body.md"
     preexisting.write_text("keep me")
     model = _StructuredModel(
-        AutoDecisionBatch(
-            decisions=[
-                AutoDecision(
-                    tool_call_id="call-1",
-                    decision="deny",
-                    category=AutoDecisionCategory.TRUST_BOUNDARY,
-                    reason="The path was not allocated by dcode for this request.",
-                )
-            ]
+        _single_result(
+            decision="deny",
+            category=AutoDecisionCategory.TRUST_BOUNDARY,
+            reason="The path was not allocated by dcode for this request.",
         )
     )
     middleware = _middleware(worktree)
@@ -1864,15 +2047,10 @@ async def test_broad_temp_directory_deletion_remains_denied(
     update = cast("dict[str, Any]", command.update)
     assert cast("ToolMessage", update["messages"][0]).status == "error"
     model = _StructuredModel(
-        AutoDecisionBatch(
-            decisions=[
-                AutoDecision(
-                    tool_call_id="call-1",
-                    decision="deny",
-                    category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
-                    reason="Broad directory deletion is not authorized.",
-                )
-            ]
+        _single_result(
+            decision="deny",
+            category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
+            reason="Broad directory deletion is not authorized.",
         )
     )
     delete_args: dict[str, object] = {"file_path": str(tmp_path)}
@@ -1995,15 +2173,10 @@ async def test_non_temp_outside_worktree_write_remains_denied(
     worktree.mkdir()
     outside_path = tmp_path / "neighbor-project" / "module.py"
     model = _StructuredModel(
-        AutoDecisionBatch(
-            decisions=[
-                AutoDecision(
-                    tool_call_id="call-1",
-                    decision="deny",
-                    category=AutoDecisionCategory.TRUST_BOUNDARY,
-                    reason="The target crosses the repository trust boundary.",
-                )
-            ]
+        _single_result(
+            decision="deny",
+            category=AutoDecisionCategory.TRUST_BOUNDARY,
+            reason="The target crosses the repository trust boundary.",
         )
     )
     middleware = _middleware(worktree)
@@ -2109,15 +2282,10 @@ async def test_failed_proposed_creation_is_not_temp_provenance(
 ) -> None:
     failed_path = tmp_path / "dcode-scratch-failed.md"
     model = _StructuredModel(
-        AutoDecisionBatch(
-            decisions=[
-                AutoDecision(
-                    tool_call_id="delete-call",
-                    decision="deny",
-                    category=AutoDecisionCategory.TRUST_BOUNDARY,
-                    reason="No successful allocation establishes ownership.",
-                )
-            ]
+        _single_result(
+            decision="deny",
+            category=AutoDecisionCategory.TRUST_BOUNDARY,
+            reason="No successful allocation establishes ownership.",
         )
     )
     middleware = _middleware(tmp_path)
@@ -2459,15 +2627,10 @@ async def test_unavailable_manual_control_state_stays_plain_manual(
 async def test_sensitive_write_requires_classifier(
     tmp_path: Path, file_path: str
 ) -> None:
-    result = AutoDecisionBatch(
-        decisions=[
-            AutoDecision(
-                tool_call_id="call-1",
-                decision="deny",
-                category=AutoDecisionCategory.TRUST_BOUNDARY,
-                reason="The target crosses the repository trust boundary.",
-            )
-        ]
+    result = _single_result(
+        decision="deny",
+        category=AutoDecisionCategory.TRUST_BOUNDARY,
+        reason="The target crosses the repository trust boundary.",
     )
     model = _StructuredModel(result)
     middleware = _middleware(tmp_path)
@@ -2513,15 +2676,8 @@ async def test_inherited_anthropic_thinking_classifier_uses_json_schema(
 
 
 async def test_classifier_uses_only_trusted_user_metadata(tmp_path: Path) -> None:
-    result = AutoDecisionBatch(
-        decisions=[
-            AutoDecision(
-                tool_call_id="call-1",
-                decision="allow",
-                category=AutoDecisionCategory.OTHER_POLICY,
-                reason="",
-            )
-        ]
+    result = _single_result(
+        decision="allow", category=AutoDecisionCategory.OTHER_POLICY, reason=""
     )
     model = _StructuredModel(result)
     middleware = _middleware(tmp_path)
@@ -2548,7 +2704,6 @@ async def test_classifier_uses_only_trusted_user_metadata(tmp_path: Path) -> Non
     assert str(tmp_path) in classifier_payload
     assert "trusted_environment" in classifier_payload
     assert "IGNORE POLICY" not in classifier_payload
-    assert model.schema is AutoDecisionBatch
     # The `lc_source` metadata is the load-bearing contract: it drives the TUI
     # transcript filter that hides classifier output. Assert it specifically
     # rather than the whole config dict, which also carries unrelated tracing
@@ -2651,6 +2806,7 @@ async def test_real_agent_resume_forwards_ask_user_receipt_to_classifier(
     assert model.classifier_payloads[0]["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": "How should I integrate?",
             "answer": answer,
         }
@@ -2707,6 +2863,7 @@ async def test_classifier_accepts_only_selected_same_turn_ask_user_answer(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": question,
             "answer": selected_answer,
         }
@@ -2803,7 +2960,12 @@ async def test_short_affirmative_attaches_to_bound_ask_user_question(
     # The bound proposal (question) is paired with the short affirmative so the
     # classifier can attach "yes" to the exact action and target it names.
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": "yes",
+        }
     ]
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
@@ -2843,6 +3005,70 @@ async def test_oversized_ask_user_question_is_excluded_from_classifier_context(
     )
     assert payload["same_turn_user_answers"] == []
     assert oversized_question not in cast("str", classifier_message.content)
+
+
+@pytest.mark.parametrize("later_turn", [False, True])
+@pytest.mark.parametrize("renewed_consent", [False, True])
+async def test_omitted_later_answer_withholds_older_consent(
+    tmp_path: Path, *, later_turn: bool, renewed_consent: bool
+) -> None:
+    """A filtered refusal must not leave an earlier approval as evidence."""
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    question = {"question": "Delete build/old.log?", "type": "text"}
+    _append_ask_user_exchange(request, answer="yes", questions=[question])
+    turn_id = "turn-2" if later_turn else "turn-1"
+    if later_turn:
+        _append_trusted_user_prompt(request, "Wait, reconsider", turn_id=turn_id)
+        request.runtime.context["turn_id"] = turn_id
+    _append_ask_user_exchange(
+        request,
+        answer="no",
+        ask_call_id="ask-2",
+        questions=[{"question": "x" * 4001, "type": "text"}],
+        receipt_turn_id=turn_id,
+    )
+    if renewed_consent:
+        _append_ask_user_exchange(
+            request,
+            answer="yes",
+            ask_call_id="ask-3",
+            questions=[question],
+            receipt_turn_id=turn_id,
+        )
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == (
+        [
+            {
+                "ask_user_tool_call_id": "ask-3",
+                "turn_id": turn_id,
+                "question": question["question"],
+                "answer": "yes",
+            }
+        ]
+        if renewed_consent
+        else []
+    )
 
 
 async def test_affirmative_to_negated_question_grants_nothing(
@@ -2885,7 +3111,12 @@ async def test_affirmative_to_negated_question_grants_nothing(
     # The negated question is surfaced verbatim so the classifier can see that
     # "yes" agrees to avoid the action rather than consent to performing it.
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": "yes",
+        }
     ]
     assert plan["decisions"][0]["disposition"] == "policy_deny"
 
@@ -2935,16 +3166,16 @@ async def test_bound_affirmative_authorizes_only_matching_call_in_batch(
     ask_tool = _tool("ask_user")
     execute_tool = _tool("execute")
     delete_tool = _tool("delete")
-    result = AutoDecisionBatch(
+    result = _ClassifierBatch(
         decisions=[
-            AutoDecision(
-                tool_call_id="bound-call",
+            _IndexedClassifierVerdict(
+                action_index=0,
                 decision="allow",
                 category=AutoDecisionCategory.OTHER_POLICY,
                 reason="",
             ),
-            AutoDecision(
-                tool_call_id="extra-call",
+            _IndexedClassifierVerdict(
+                action_index=1,
                 decision="deny",
                 category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
                 reason="The affirmative did not cover deleting the .env file.",
@@ -2993,10 +3224,20 @@ async def test_bound_affirmative_authorizes_only_matching_call_in_batch(
     # sees one question covering one of the two actions under review. The
     # dispositions below are the stub's canned verdicts, not proof of the policy.
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": "yes",
+        }
     ]
-    reviewed = {action["tool_call_id"] for action in payload["current_actions"]}
-    assert reviewed == {"bound-call", "extra-call"}
+    assert [action["tool_call_id"] for action in payload["current_actions"]] == [
+        "bound-call",
+        "extra-call",
+    ]
+    assert [action["action_index"] for action in payload["current_actions"]] == [0, 1]
+    assert payload["other_actions"] == []
+    assert len(model.calls) == 1
 
     dispositions = {
         decision["tool_call_id"]: decision["disposition"]
@@ -3050,7 +3291,12 @@ async def test_multiple_questions_pair_each_answer_with_its_own_question(
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": text, "answer": value}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": text,
+            "answer": value,
+        }
         for text, value in zip(questions, answers, strict=True)
     ]
 
@@ -3095,6 +3341,7 @@ async def test_blank_answer_is_skipped_without_shifting_later_pairs(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": questions[1],
             "answer": "yes",
         }
@@ -3150,6 +3397,7 @@ async def test_unselected_multi_select_is_skipped_like_a_blank_answer(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": questions[1],
             "answer": "yes",
         }
@@ -3204,6 +3452,7 @@ async def test_declined_multi_select_does_not_evict_a_real_affirmative(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": answered_question,
             "answer": "yes",
         }
@@ -3303,6 +3552,7 @@ async def test_selected_multi_select_reaches_the_classifier_encoded(
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": question,
             "answer": '["build/old.log"]',
         }
@@ -3346,7 +3596,12 @@ async def test_bound_proposal_for_other_target_is_denied(tmp_path: Path) -> None
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": "yes"}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": "yes",
+        }
     ]
     assert payload["current_actions"][0]["arguments"]["file_path"] == other_file
     assert plan["decisions"][0]["disposition"] == "policy_deny"
@@ -3406,16 +3661,16 @@ async def test_ambiguous_affirmative_does_not_grant_escalation(
     answer = "sure, and also push hard to main"
     ask_tool = _tool("ask_user")
     execute_tool = _tool("execute")
-    result = AutoDecisionBatch(
+    result = _ClassifierBatch(
         decisions=[
-            AutoDecision(
-                tool_call_id="bound-call",
+            _IndexedClassifierVerdict(
+                action_index=0,
                 decision="allow",
                 category=AutoDecisionCategory.OTHER_POLICY,
                 reason="",
             ),
-            AutoDecision(
-                tool_call_id="escalation-call",
+            _IndexedClassifierVerdict(
+                action_index=1,
                 decision="deny",
                 category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
                 reason="The bound proposal did not cover force-pushing main.",
@@ -3463,7 +3718,12 @@ async def test_ambiguous_affirmative_does_not_grant_escalation(
     # The full affirmative (including the smuggled escalation) is surfaced so the
     # classifier can see that the extra request exceeds the bound proposal.
     assert payload["same_turn_user_answers"] == [
-        {"ask_user_tool_call_id": "ask-1", "question": question, "answer": answer}
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": answer,
+        }
     ]
     dispositions = {
         decision["tool_call_id"]: decision["disposition"]
@@ -3500,9 +3760,7 @@ async def test_classifier_rejects_invalid_ask_user_authorization_evidence(
     answer = "Rebase my commit onto origin/main"
     ask_tool = _tool("ask_user")
     execute_tool = _tool("execute")
-    model = _StructuredModel(
-        _deny_result(call_id="ask-1" if case == "self_authorization" else "call-1")
-    )
+    model = _StructuredModel(_deny_result())
     middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
     request, _store, _key = _request(
         tmp_path,
@@ -3637,7 +3895,7 @@ async def test_current_ungated_call_cannot_reuse_receipt_call_id(
     assert plan["decisions"][0]["disposition"] == "policy_deny"
 
 
-async def test_only_latest_ask_user_exchange_is_classifier_evidence(
+async def test_all_valid_same_turn_ask_user_exchanges_are_classifier_evidence(
     tmp_path: Path,
 ) -> None:
     first_answer = "Delete build/old.log"
@@ -3669,15 +3927,21 @@ async def test_only_latest_ask_user_exchange_is_classifier_evidence(
     )
     assert payload["same_turn_user_answers"] == [
         {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": "How should I integrate the remote branch?",
+            "answer": first_answer,
+        },
+        {
             "ask_user_tool_call_id": "ask-2",
+            "turn_id": "turn-1",
             "question": "How should I integrate the remote branch?",
             "answer": latest_answer,
-        }
+        },
     ]
-    assert first_answer not in json.dumps(payload["same_turn_user_answers"])
 
 
-async def test_latest_reused_ask_user_call_id_rejects_all_receipt_evidence(
+async def test_reused_ask_user_call_id_drops_only_the_ambiguous_exchanges(
     tmp_path: Path,
 ) -> None:
     ask_tool = _tool("ask_user")
@@ -3718,7 +3982,14 @@ async def test_latest_reused_ask_user_call_id_rejects_all_receipt_evidence(
     payload = cast(
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
-    assert payload["same_turn_user_answers"] == []
+    assert payload["same_turn_user_answers"] == [
+        {
+            "ask_user_tool_call_id": "ask-2",
+            "turn_id": "turn-1",
+            "question": "How should I integrate the remote branch?",
+            "answer": "Push feature to origin",
+        }
+    ]
 
 
 async def test_classifier_rejects_receipt_from_non_builtin_ask_user_tool(
@@ -3810,7 +4081,7 @@ async def test_receipt_reuse_for_unrelated_later_action_is_reclassified(
     answer = "Push feature to origin without rewriting history"
     ask_tool = _tool("ask_user")
     execute_tool = _tool("execute")
-    model = _StructuredModel(_allow_result(call_id="push-call"))
+    model = _StructuredModel(_allow_result())
     middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
     request, _store, _key = _request(
         tmp_path,
@@ -3851,7 +4122,6 @@ async def test_receipt_reuse_for_unrelated_later_action_is_reclassified(
         ]
     )
     model.result = _deny_result(
-        call_id="delete-call",
         category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
         reason="The push answer does not authorize branch deletion.",
     )
@@ -3873,6 +4143,482 @@ async def test_receipt_reuse_for_unrelated_later_action_is_reclassified(
     assert second_plan["decisions"][0]["disposition"] == "policy_deny"
 
 
+def _append_trusted_user_prompt(
+    request: ModelRequest[Any], text: str, *, turn_id: str
+) -> None:
+    _append_history_message(
+        request,
+        HumanMessage(
+            content=text,
+            additional_kwargs={
+                USER_PROMPT_METADATA_KEY: user_prompt_metadata(
+                    text, [], turn_id=turn_id
+                )
+            },
+        ),
+    )
+
+
+async def test_prior_turn_ask_user_receipt_survives_a_new_user_turn(
+    tmp_path: Path,
+) -> None:
+    """A new user turn must not discard consent evidence from the previous one."""
+    question = "Delete the stale build/old.log scratch file?"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="clean up stale scratch files",
+    )
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+        receipt_turn_id="turn-1",
+    )
+    _append_trusted_user_prompt(
+        request, "sounds right — go ahead with that", turn_id="turn-2"
+    )
+    request.runtime.context["turn_id"] = "turn-2"
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == [
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
+            "question": question,
+            "answer": "yes",
+        }
+    ]
+    assert any(
+        row.get("literal_user_text") == "sounds right — go ahead with that"
+        for row in payload["authorization_evidence"]
+    )
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
+@pytest.mark.parametrize("approval_turn", [2, 4])
+async def test_receipt_payload_orders_consent_relative_to_revocation(
+    tmp_path: Path, approval_turn: int
+) -> None:
+    ask_tool = _tool("ask_user")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, _tool("execute")],
+    )
+    _append_ask_user_exchange(request, answer="unrelated answer")
+    for turn, text in enumerate(
+        ["clean up scratch files", "do NOT delete build/old.log", "continue"],
+        start=2,
+    ):
+        _append_trusted_user_prompt(request, text, turn_id=f"turn-{turn}")
+        if turn == approval_turn:
+            _append_ask_user_exchange(
+                request,
+                ask_call_id="ask-delete",
+                answer="yes",
+                questions=[{"question": "Delete build/old.log?", "type": "text"}],
+                receipt_turn_id=f"turn-{turn}",
+            )
+    request.runtime.context["turn_id"] = "turn-4"
+
+    await _plan(
+        middleware, request, tool_name="execute", args={"command": "rm build/old.log"}
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = json.loads(cast("str", classifier_message.content))
+    turns = [row["turn_id"] for row in payload["authorization_evidence"]]
+    answers = payload["same_turn_user_answers"]
+    assert answers[0]["turn_id"] == "turn-1"
+    assert answers[1]["ask_user_tool_call_id"] == "ask-delete"
+    answer_position = turns.index(answers[1]["turn_id"])
+    revocation_position = turns.index("turn-3")
+    assert (answer_position < revocation_position) == (approval_turn == 2)
+
+
+async def test_receipt_preserves_instructions_before_its_turn(tmp_path: Path) -> None:
+    ask_tool = _tool("ask_user")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, _tool("execute")],
+        raw_user_text="never delete production data",
+    )
+    _append_trusted_user_prompt(request, "continue", turn_id="turn-2")
+    request.runtime.context["turn_id"] = "turn-2"
+    _append_ask_user_exchange(
+        request,
+        answer="blue",
+        questions=[{"question": "Which color?", "type": "text"}],
+        receipt_turn_id="turn-2",
+    )
+
+    await _plan(
+        middleware, request, tool_name="execute", args={"command": "rm production.db"}
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = json.loads(cast("str", classifier_message.content))
+    assert [row["literal_user_text"] for row in payload["authorization_evidence"]] == [
+        "never delete production data",
+        "continue",
+    ]
+    assert payload["same_turn_user_answers"][0]["answer"] == "blue"
+
+
+async def test_receipt_evidence_uses_authorization_message_indices(
+    tmp_path: Path,
+) -> None:
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="unrelated turn 1",
+    )
+    for turn in range(2, 11):
+        _append_history_message(request, AIMessage(content="status"))
+        _append_trusted_user_prompt(
+            request, f"unrelated turn {turn}", turn_id=f"turn-{turn}"
+        )
+    question = "Delete the stale build/old.log scratch file?"
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+        receipt_turn_id="turn-10",
+    )
+    _append_trusted_user_prompt(
+        request, "do NOT delete build/old.log after all", turn_id="turn-11"
+    )
+    for turn in range(12, 41):
+        _append_trusted_user_prompt(request, "continue", turn_id=f"turn-{turn}")
+    request.runtime.context["turn_id"] = "turn-40"
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    evidence_texts = [
+        row.get("literal_user_text") for row in payload["authorization_evidence"]
+    ]
+    assert evidence_texts[0] == "unrelated turn 10"
+    assert "do NOT delete build/old.log after all" in evidence_texts
+    assert [row["turn_id"] for row in payload["authorization_evidence"]] == [
+        f"turn-{turn}" for turn in range(10, 41)
+    ]
+    assert payload["same_turn_user_answers"] == [
+        {
+            "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-10",
+            "question": question,
+            "answer": "yes",
+        }
+    ]
+
+
+async def test_prior_turn_receipt_fails_closed_when_instruction_history_truncated(
+    tmp_path: Path,
+) -> None:
+    """Receipts whose intervening instruction history cannot fit are excluded."""
+    question = "Delete the stale build/old.log scratch file?"
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+        raw_user_text="clean up stale scratch files",
+    )
+    _append_ask_user_exchange(
+        request,
+        answer="yes",
+        questions=[{"question": question, "type": "text"}],
+        receipt_turn_id="turn-1",
+    )
+    for turn in range(2, 102):
+        _append_trusted_user_prompt(
+            request, f"unrelated turn {turn} instruction", turn_id=f"turn-{turn}"
+        )
+    _append_trusted_user_prompt(request, "continue", turn_id="turn-102")
+    request.runtime.context["turn_id"] = "turn-102"
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == []
+    assert len(payload["authorization_evidence"]) == 20
+
+
+@pytest.mark.parametrize("prior_turn", [2, 3])
+async def test_stale_receipts_do_not_suppress_recent_consent(
+    tmp_path: Path, prior_turn: int
+) -> None:
+    ask_tool = _tool("ask_user")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, _tool("execute")],
+    )
+    _append_ask_user_exchange(request, ask_call_id="stale")
+    for turn in range(2, 103):
+        _append_trusted_user_prompt(request, "continue", turn_id=f"turn-{turn}")
+        if turn == prior_turn:
+            _append_ask_user_exchange(
+                request, ask_call_id="prior", receipt_turn_id=f"turn-{turn}"
+            )
+    request.runtime.context["turn_id"] = "turn-102"
+    _append_ask_user_exchange(
+        request,
+        ask_call_id="fresh",
+        receipt_turn_id="turn-102",
+        questions=[
+            {"question": "Delete build/old.log?", "type": "text"},
+            {"question": "Delete build/older.log?", "type": "text"},
+        ],
+        answers=["yes", "yes"],
+    )
+
+    await _plan(
+        middleware, request, tool_name="execute", args={"command": "rm build/old.log"}
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = json.loads(cast("str", classifier_message.content))
+    answers = payload["same_turn_user_answers"]
+    # Turn 3 needs exactly 100 prompts of context; turn 2 needs 101.
+    expected_calls = ["prior", "fresh", "fresh"] if prior_turn == 3 else ["fresh"] * 2
+    assert [row["ask_user_tool_call_id"] for row in answers] == expected_calls
+    assert [row["question"] for row in answers[-2:]] == [
+        "Delete build/old.log?",
+        "Delete build/older.log?",
+    ]
+    evidence = payload["authorization_evidence"]
+    expected_start = 3 if prior_turn == 3 else 83
+    assert [row["turn_id"] for row in evidence] == [
+        f"turn-{turn}" for turn in range(expected_start, 103)
+    ]
+
+
+async def test_prior_turn_receipt_wrong_turn_id_is_rejected(
+    tmp_path: Path,
+) -> None:
+    """A prior-turn receipt must validate against its own turn, not the latest."""
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    _append_ask_user_exchange(request, receipt_turn_id="turn-1")
+    _append_trusted_user_prompt(request, "continue", turn_id="turn-2")
+    request.runtime.context["turn_id"] = "turn-2"
+    tool_message = next(
+        message
+        for message in request.messages
+        if isinstance(message, ToolMessage) and message.name == "ask_user"
+    )
+    receipt = cast(
+        "dict[str, Any]",
+        tool_message.additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY],
+    )
+    receipt["turn_id"] = "turn-2"
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git rebase origin/main"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == []
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+
+
+async def test_receipt_cannot_cross_a_turn_boundary_tool_message(
+    tmp_path: Path,
+) -> None:
+    """The ToolMessage answering an ask_user call must sit in the same turn."""
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_deny_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    receipt = {
+        "version": 1,
+        "thread_id": "thread-1",
+        "turn_id": "turn-2",
+        "tool_call_id": "ask-1",
+        "answers": ["yes"],
+    }
+    _append_history_message(
+        request,
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "ask_user",
+                    "args": {
+                        "questions": [
+                            {"question": "Delete build/old.log?", "type": "text"}
+                        ]
+                    },
+                    "id": "ask-1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+    )
+    _append_trusted_user_prompt(request, "continue", turn_id="turn-2")
+    request.runtime.context["turn_id"] = "turn-2"
+    _append_history_message(
+        request,
+        ToolMessage(
+            content="Q: Delete build/old.log?\nA: yes",
+            name="ask_user",
+            tool_call_id="ask-1",
+            status="success",
+            additional_kwargs={ASK_USER_AUTHORIZATION_METADATA_KEY: receipt},
+        ),
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "rm build/old.log"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == []
+    assert plan["decisions"][0]["disposition"] == "policy_deny"
+
+
+async def test_current_turn_receipt_still_answers_when_prior_turn_receipt_invalid(
+    tmp_path: Path,
+) -> None:
+    """An invalid prior-turn exchange must not suppress a valid current one."""
+    ask_tool = _tool("ask_user")
+    execute_tool = _tool("execute")
+    model = _StructuredModel(_allow_result())
+    middleware = _middleware(tmp_path, trusted_ask_user_tool=ask_tool)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="execute",
+        args={},
+        tools=[ask_tool, execute_tool],
+    )
+    _append_ask_user_exchange(
+        request,
+        ask_call_id="ask-1",
+        receipt=None,
+        message_status="error",
+        receipt_turn_id="turn-1",
+    )
+    _append_trusted_user_prompt(request, "try again", turn_id="turn-2")
+    request.runtime.context["turn_id"] = "turn-2"
+    _append_ask_user_exchange(
+        request,
+        ask_call_id="ask-2",
+        answer="Rebase onto origin/main",
+        receipt_turn_id="turn-2",
+    )
+
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="execute",
+        args={"command": "git rebase origin/main"},
+    )
+
+    classifier_message = cast("HumanMessage", model.calls[0][1])
+    payload = cast(
+        "dict[str, Any]", json.loads(cast("str", classifier_message.content))
+    )
+    assert payload["same_turn_user_answers"] == [
+        {
+            "ask_user_tool_call_id": "ask-2",
+            "turn_id": "turn-2",
+            "question": "How should I integrate the remote branch?",
+            "answer": "Rebase onto origin/main",
+        }
+    ]
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+
+
 async def test_compacted_model_view_preserves_ask_user_authorization_evidence(
     tmp_path: Path,
 ) -> None:
@@ -3880,7 +4626,7 @@ async def test_compacted_model_view_preserves_ask_user_authorization_evidence(
     ask_tool = _tool("ask_user")
     compact_tool = _tool("compact_conversation")
     execute_tool = _tool("execute")
-    model = _StructuredModel(_allow_result(call_id="action-call"))
+    model = _StructuredModel(_allow_result())
     middleware = _middleware(
         tmp_path,
         trusted_ask_user_tool=ask_tool,
@@ -3917,11 +4663,18 @@ async def test_compacted_model_view_preserves_ask_user_authorization_evidence(
     payload = cast(
         "dict[str, Any]", json.loads(cast("str", classifier_message.content))
     )
-    assert payload["authorization_evidence"] == []
+    assert payload["authorization_evidence"] == [
+        {
+            "literal_user_text": "perform the requested task",
+            "referenced_paths": [str(tmp_path / "mentioned.py")],
+            "turn_id": "turn-1",
+        }
+    ]
     assert payload["active_user_directives"] == {}
     assert payload["same_turn_user_answers"] == [
         {
             "ask_user_tool_call_id": "ask-1",
+            "turn_id": "turn-1",
             "question": "How should I integrate the remote branch?",
             "answer": answer,
         }
@@ -4125,30 +4878,6 @@ async def test_classifier_includes_actionable_goal_directives(
     assert plan["decisions"][0]["disposition"] == "classifier_allow"
 
 
-async def test_malformed_classifier_batch_blocks_call_and_increments_unavailable(
-    tmp_path: Path,
-) -> None:
-    model = _StructuredModel(AutoDecisionBatch(decisions=[]))
-    middleware = _middleware(tmp_path)
-    request, store, key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-
-    plan = await _plan(
-        middleware,
-        request,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    counters = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
-    assert counters["consecutive_unavailable"] == 1
-    assert counters["total_denials"] == 0
-
-
 def test_classifier_unavailable_reason_specializes_timeouts() -> None:
     assert (
         classifier_unavailable_reason(
@@ -4280,7 +5009,7 @@ async def test_invoke_failure_evicts_cached_classifier(
     until the process restarts.
     """
     failing = _StructuredModel(error=RuntimeError("401 unauthorized"))
-    working = _StructuredModel(_allow_result("call-2"))
+    working = _StructuredModel(_allow_result())
     factory = _RecordingModelFactory(failing, working)
     _install_model_factory(monkeypatch, factory)
     middleware = _middleware(tmp_path, classifier_model="openai:gpt-5.5-mini")
@@ -4311,56 +5040,6 @@ async def test_invoke_failure_evicts_cached_classifier(
     # Rebuilt rather than reusing the poisoned model, so the retry can succeed.
     assert factory.specs == ["openai:gpt-5.5-mini", "openai:gpt-5.5-mini"]
     assert second["decisions"][0]["disposition"] == "classifier_allow"
-
-
-async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> None:
-    class _SlowModel(_StructuredModel):
-        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
-            self.calls.append(messages)
-            self.call_kwargs.append(kwargs)
-            await asyncio.sleep(5)
-            return self.result
-
-    model = _SlowModel(model_name="kimi-k3")
-    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
-    middleware = AutoModeHITLMiddleware(
-        {
-            "delete": config,
-        },
-        worktree_root=tmp_path,
-        classifier_timeout_seconds=0.05,
-    )
-    request, _store, _key = _request(
-        tmp_path,
-        model=model,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-    events = _capture_review_events(request)
-
-    plan = await _plan(
-        middleware,
-        request,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-    await _route_plan(
-        middleware,
-        request,
-        plan,
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-
-    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    assert plan["decisions"][0]["reason"] == (
-        "classifier model kimi-k3 did not respond within 0.05s"
-    )
-    lifecycle = [event for event in events if event["event"].startswith("review_")]
-    assert [event["event"] for event in lifecycle] == [
-        "review_started",
-        "review_completed",
-    ]
 
 
 async def test_classifier_provider_timeout_stays_type_only(tmp_path: Path) -> None:
@@ -4806,15 +5485,10 @@ async def test_unavailable_decision_log_names_classifier_model(
 
 
 async def test_twentieth_total_denial_escalates_immediately(tmp_path: Path) -> None:
-    result = AutoDecisionBatch(
-        decisions=[
-            AutoDecision(
-                tool_call_id="call-1",
-                decision="deny",
-                category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
-                reason="Destructive target was not explicitly authorized.",
-            )
-        ]
+    result = _single_result(
+        decision="deny",
+        category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
+        reason="Destructive target was not explicitly authorized.",
     )
     middleware = _middleware(tmp_path)
     request, store, key = _request(
@@ -5347,7 +6021,7 @@ class TestAskUserQuestionCount:
         """Guards the drift that would silently drop same-turn authorization.
 
         An unrecognized type makes this return `None`, which makes
-        `_same_turn_user_answers` yield no trusted directives — with no error.
+        `_user_answer_evidence` yield no trusted directives — with no error.
         """
         for question_type in sorted(QUESTION_TYPES):
             question: dict[str, Any] = {"question": "Q?", "type": question_type}
@@ -5843,7 +6517,7 @@ async def test_oversized_unresolvable_write_path_keeps_the_plan_valid(
 ) -> None:
     """A long malformed path denies its own call without voiding the batch."""
     prefix = _unresolvable_home_prefix()
-    model = _StructuredModel(_deny_result(call_id="write-call"))
+    model = _StructuredModel(_deny_result())
     middleware = _middleware(tmp_path)
     args: dict[str, object] = {
         "file_path": f"{prefix}{'a' * 600}/f.txt",
@@ -5889,7 +6563,7 @@ async def test_unresolvable_home_write_is_denied_with_a_reason(
 ) -> None:
     """The Auto gate denies the write and hands the model the resolver error."""
     prefix = _unresolvable_home_prefix()
-    model = _StructuredModel(_deny_result(call_id="write-call"))
+    model = _StructuredModel(_deny_result())
     middleware = _middleware(tmp_path)
     args: dict[str, object] = {"file_path": f"{prefix}/f.txt", "content": "x"}
     request, _store, _key = _request(
@@ -6017,3 +6691,254 @@ def _unresolvable_home_prefix() -> str:
     if not os.path.expanduser(prefix).startswith("~"):  # noqa: PTH111
         pytest.skip(f"host unexpectedly resolves {prefix}")
     return prefix
+
+
+def _delete_calls(*ids: str) -> list[ToolCall]:
+    return [
+        {
+            "name": "delete",
+            "args": {"file_path": f"old-{index}.py"},
+            "id": tool_id,
+            "type": "tool_call",
+        }
+        for index, tool_id in enumerate(ids)
+    ]
+
+
+async def test_classifier_schema_and_history_prefix_survive_new_action_ids(
+    tmp_path: Path,
+) -> None:
+    """Batch size and action IDs change without invalidating the cached prefix."""
+    first_id = "call_5ZTCN6nK5FYbeCiGZsrkFGs3"
+    second_id = "call_5ZTC6N6k5FYbeCiGZsrkFGs3"
+    # Deliberately reverse the response order and mix verdicts to prove that
+    # server binding uses indexes, not response order or copied tool-call IDs.
+    model = _StructuredModel(
+        _ClassifierBatch(
+            decisions=[
+                _IndexedClassifierVerdict(
+                    action_index=1,
+                    decision="deny",
+                    category=AutoDecisionCategory.DESTRUCTIVE_ACTION,
+                    reason="Not authorized.",
+                ),
+                _IndexedClassifierVerdict(
+                    action_index=0,
+                    decision="allow",
+                    category=AutoDecisionCategory.OTHER_POLICY,
+                    reason="",
+                ),
+            ]
+        )
+    )
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(tmp_path, model=model, tool_name="delete", args={})
+    first = await _plan_calls(middleware, request, _delete_calls(first_id, second_id))
+    model.result = _allow_result()
+    # Recreating middleware must retain the conversation carried in thread state.
+    request.runtime.context["turn_id"] = "turn-2"
+    second = await _plan_calls(
+        _middleware(tmp_path), request, _delete_calls("new-batch")
+    )
+
+    assert [
+        (decision["tool_call_id"], decision["disposition"])
+        for decision in first["decisions"]
+    ] == [
+        (first_id, "classifier_allow"),
+        (second_id, "policy_deny"),
+    ]
+    assert second["decisions"][0]["tool_call_id"] == "new-batch"
+    assert second["decisions"][0]["disposition"] == "classifier_allow"
+    assert len(model.calls) == 2
+    assert model.schemas[0] == model.schemas[1]
+    assert first_id not in json.dumps(model.schemas)
+    assert second_id not in json.dumps(model.schemas)
+    assert model.calls[1][: len(model.calls[0])] == model.calls[0]
+    for messages, expected_ids in zip(
+        model.calls, [[first_id, second_id], ["new-batch"]], strict=True
+    ):
+        payload = json.loads(cast("str", cast("HumanMessage", messages[-1]).content))
+        assert [
+            action["tool_call_id"] for action in payload["current_actions"]
+        ] == expected_ids
+        assert [
+            action["action_index"] for action in payload["current_actions"]
+        ] == list(range(len(expected_ids)))
+    state = cast("dict[str, Any]", request.state)
+    conversation = state["_auto_classifier_conversation"]
+    assert conversation["revision"] == 2
+    assert len(conversation["turns"]) == 2
+    assert all(
+        "tool_call_id" not in decision
+        for turn in conversation["turns"]
+        for decision in json.loads(turn["response"])["decisions"]
+    )
+
+
+async def test_classifier_sees_deterministic_siblings_without_reviewing_them(
+    tmp_path: Path,
+) -> None:
+    model = _StructuredModel(_allow_result())
+    request, _store, _key = _request(tmp_path, model=model, tool_name="delete", args={})
+    events = _capture_review_events(request)
+    plan = await _plan_calls(
+        _middleware(tmp_path),
+        request,
+        [
+            {
+                "name": "write_file",
+                "args": {"file_path": str(tmp_path / "new.py"), "content": "x = 1"},
+                "id": "deterministic",
+                "type": "tool_call",
+            },
+            *_delete_calls("reviewed"),
+        ],
+    )
+
+    assert plan["review_tool_call_ids"] == ["reviewed"]
+    assert [event["tool_call_ids"] for event in events] == [["reviewed"]]
+    assert len(model.calls) == 1
+    message = cast("HumanMessage", model.calls[0][-1])
+    payload = json.loads(cast("str", message.content))
+    assert [action["tool_call_id"] for action in payload["current_actions"]] == [
+        "reviewed"
+    ]
+    sibling = payload["other_actions"][0]
+    assert sibling["tool_call_id"] == "deterministic"
+    assert sibling["arguments"] == {
+        "file_path": str(tmp_path / "new.py"),
+        "content": {"character_count": 5, "content_omitted": True},
+    }
+    assert sibling["deterministic_disposition"] == "allow"
+    assert [decision["disposition"] for decision in plan["decisions"]] == [
+        "deterministic_allow",
+        "classifier_allow",
+    ]
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        RuntimeError("provider unavailable"),
+        {},
+        _ProviderError(400, "invalid response schema"),
+        _ProviderError(401, "context_length_exceeded"),
+    ],
+)
+async def test_failed_batch_withholds_entire_batch_and_history(
+    tmp_path: Path, failure: dict[str, object] | Exception
+) -> None:
+    model = _ConversationModel([_allow_result(), failure])
+    middleware = _middleware(tmp_path)
+    request, store, key = _request(tmp_path, model=model, tool_name="delete", args={})
+    await _plan_calls(middleware, request, _delete_calls("prior-batch"))
+    state = cast("dict[str, Any]", request.state)
+    before = json.dumps(state["_auto_classifier_conversation"])
+
+    plan = await _plan_calls(middleware, request, _delete_calls("first", "second"))
+
+    assert [decision["disposition"] for decision in plan["decisions"]] == [
+        "classifier_unavailable",
+        "classifier_unavailable",
+    ]
+    assert plan["pending_result_ids"] == []
+    assert json.dumps(state["_auto_classifier_conversation"]) == before
+    assert len(model.calls) == 2
+    counters = cast("dict[str, Any]", store.items[AUTO_MODE_COUNTERS_NAMESPACE, key])
+    assert counters["consecutive_unavailable"] == 1
+    assert counters["total_denials"] == 0
+
+
+@pytest.mark.parametrize(
+    "indexes",
+    [
+        [],
+        [0],
+        [0, 0],
+        [0, 2],
+        [0, 1, 2],
+        [-1, 0],
+        [False, 1],
+        ["0", 1],
+        [0.0, 1],
+    ],
+)
+async def test_invalid_batch_indexes_withhold_verdicts_and_history(
+    tmp_path: Path,
+    indexes: list[object],
+) -> None:
+    invalid: dict[str, object] = {
+        "decisions": [
+            {
+                "action_index": index,
+                "decision": "allow",
+                "category": "other_policy",
+                "reason": "",
+            }
+            for index in indexes
+        ]
+    }
+    model = _ConversationModel([_allow_result(), invalid])
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(tmp_path, model=model, tool_name="delete", args={})
+    await _plan_calls(middleware, request, _delete_calls("previous"))
+    before = json.dumps(request.state.get("_auto_classifier_conversation"))
+
+    plan = await _plan_calls(middleware, request, _delete_calls("first", "second"))
+
+    assert [decision["disposition"] for decision in plan["decisions"]] == [
+        "classifier_unavailable",
+        "classifier_unavailable",
+    ]
+    assert plan["pending_result_ids"] == []
+    assert json.dumps(request.state.get("_auto_classifier_conversation")) == before
+
+
+async def test_batch_timeout_cancels_request_without_partial_approval(
+    tmp_path: Path,
+) -> None:
+    cancelled = asyncio.Event()
+
+    class _BlockingBatchModel(_StructuredModel):
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            await super().ainvoke(messages, **kwargs)
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+
+    model = _BlockingBatchModel(model_name="kimi-k3")
+    middleware = _middleware(tmp_path, classifier_timeout_seconds=0.05)
+    request, _store, _key = _request(tmp_path, model=model, tool_name="delete", args={})
+    events = _capture_review_events(request)
+    calls = _delete_calls("first", "second")
+    plan = await _plan_calls(middleware, request, calls)
+    await middleware.aafter_model(
+        cast(
+            "AgentState[Any]",
+            {
+                "messages": [AIMessage(content="", tool_calls=calls)],
+                "_auto_decision_plan": plan,
+            },
+        ),
+        request.runtime,
+    )
+
+    assert cancelled.is_set()
+    assert len(model.calls) == 1
+    assert [decision["disposition"] for decision in plan["decisions"]] == [
+        "classifier_unavailable",
+        "classifier_unavailable",
+    ]
+    assert all(
+        decision["reason"] == "classifier model kimi-k3 did not respond within 0.05s"
+        for decision in plan["decisions"]
+    )
+    lifecycle = [event for event in events if event["event"].startswith("review_")]
+    assert [event["event"] for event in lifecycle] == [
+        "review_started",
+        "review_completed",
+    ]
+    assert lifecycle[1]["approved_tool_call_ids"] == []
+    assert "_auto_classifier_conversation" not in request.state

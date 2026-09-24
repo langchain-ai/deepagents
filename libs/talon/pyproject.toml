@@ -33,13 +33,13 @@ dependencies = [
     # declared here because we import it directly.
     "httpx2>=2.12.0,<3.0.0",
     "langchain>=1.4.2,<2.0.0",
-    "langchain-core>=1.6.3,<2.0.0",
-    "langgraph>=1.2.11,<2.0.0",
+    "langchain-core>=1.6.4,<2.0.0",
+    "langgraph>=1.2.12,<2.0.0",
     "langgraph-checkpoint>=4.2.0,<5.0.0",
     "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
     "langgraph-prebuilt>=1.1.0,<2.0.0",
-    "langgraph-sdk>=0.4.4,<1.0.0",
-    "langsmith>=0.13.0",
+    "langgraph-sdk>=0.4.5,<1.0.0",
+    "langsmith>=0.14.0",
     "mcp>=2.0.0,<3.0.0",
     "pydantic>=2.13.4,<3.0.0",
     "pyyaml>=6.0.3",
@@ -57,7 +57,7 @@ history-voyage = [
     # `voyageai.Client`/`AsyncClient` directly.
     "voyageai>=0.5.0,<1.0.0",
 ]
-history-openai = ["langchain-openai>=1.6.2,<2.0.0"]
+history-openai = ["langchain-openai>=1.6.5,<2.0.0"]
 mongodb = [
     "langgraph-store-mongodb>=0.4.0,<0.5.0",
 ]

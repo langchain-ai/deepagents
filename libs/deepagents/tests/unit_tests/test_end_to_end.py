@@ -2,31 +2,34 @@
 
 import base64
 import json
+import mimetypes
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from langchain.agents import create_agent
 from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import CallbackManagerForLLMRun
-from langchain_core.exceptions import ContextOverflowError
-from langchain_core.language_models import LanguageModelInput
+from langchain_core.exceptions import ContextOverflowError, ModelInvalidRequestError
+from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langgraph.channels.delta import DeltaChannel
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
@@ -37,8 +40,9 @@ from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
-from deepagents.middleware.subagents import SubAgent  # noqa: TC001
+from deepagents.middleware.subagents import SubAgent, create_sub_agent
 from deepagents.middleware.summarization import create_summarization_tool_middleware
+from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModelWithHistory
 from tests.utils import SampleMiddlewareWithTools, SampleMiddlewareWithToolsAndState, assert_all_deepagent_qualities
 
@@ -117,8 +121,8 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
     captured_messages: list[list[BaseMessage]] = Field(default_factory=list, exclude=True)
     """Every message list passed to `_generate`, in call order.
 
-    Some middleware (e.g. `FilesystemMiddleware.wrap_model_call`'s multimodal
-    scrub) only transforms the outgoing request, it never mutates persisted
+    Some middleware (e.g. `UnsupportedContentMiddleware`) only transforms the
+    outgoing request, it never mutates persisted
     graph state, so `result["messages"]` from `agent.invoke(...)` can't reveal
     what the model actually received. This does.
     """
@@ -168,6 +172,50 @@ class SummaryFilteringModel(FixedGenericFakeChatModel):
         if any(isinstance(m.content, str) and "<messages>" in m.content for m in messages):
             return ChatResult(generations=[ChatGeneration(message=AIMessage(content="summary"))])
         return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+class _RecordingOpenAIModel(BaseModel):
+    """Serves scripted responses and records requests instead of calling OpenAI.
+
+    `_llm_type` is masked, so behavior gated on the provider class can't be
+    passing because of the `_llm_type` string.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    messages: Iterator[AIMessage] = Field(default_factory=lambda: iter([]), exclude=True)
+    captured_messages: list[list[BaseMessage]] = Field(default_factory=list, exclude=True)
+
+    @property
+    def _llm_type(self) -> str:
+        return "langchain-chat"
+
+    def bind_tools(
+        self,
+        tools: Sequence[dict[str, Any] | type | Callable | BaseTool],
+        *,
+        tool_choice: str | None = None,
+        **kwargs: Any,
+    ) -> Runnable[LanguageModelInput, AIMessage]:
+        return cast("Runnable[LanguageModelInput, AIMessage]", self)
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        self.captured_messages.append(messages)
+        return ChatResult(generations=[ChatGeneration(message=next(self.messages))])
+
+
+class RecordingChatOpenAI(_RecordingOpenAIModel, ChatOpenAI):
+    pass
+
+
+class RecordingAzureChatOpenAI(_RecordingOpenAIModel, AzureChatOpenAI):
+    pass
 
 
 class TestDeepAgentEndToEnd:
@@ -4311,7 +4359,7 @@ def test_summarization_clips_ls_batch_on_overflow() -> None:
     `ls` isn't read_file, so the tail-clip path falls through to
     `_offload_tool_message_content`: full content written under
     `/large_tool_results/{tcid}` and the message replaced with a
-    `TOO_LARGE_TOOL_MSG` stub.
+    large-tool-result stub.
     """
     fake_model = _OverflowOnLargeInputModel(messages=iter([AIMessage(content="summary text"), AIMessage(content="final response")]))
     fake_model.call_history = []
@@ -4847,13 +4895,23 @@ class TestFilesystemMiddlewareToolsAllowlist:
         assert "/pwned.txt" not in result.get("files", {})
 
 
+# Fails on Windows / Python 3.13. Python <= 3.13 has no built-in `.docx` MIME type; Linux/macOS read
+# one from `/etc/mime.types`, but Windows relies on the registry, so `read_file` labels `.docx`
+# `application/octet-stream` there.
+_DOCX_MIME_TYPE_UNKNOWN = mimetypes.guess_type("file.docx")[0] is None
+
+
 def _docx_base64() -> str:
     return base64.b64encode(b"PK\x03\x04 fake docx bytes").decode("ascii")
 
 
+def _image_base64() -> str:
+    return base64.b64encode(b"\x89PNG\r\n\x1a\n fake image data").decode("ascii")
+
+
 def _read_file_agent(
     *,
-    model: FixedGenericFakeChatModel,
+    model: FixedGenericFakeChatModel | _RecordingOpenAIModel,
     file_path: str,
     file_content: str,
     encoding: str = "base64",
@@ -4877,7 +4935,7 @@ def _read_file_agent(
     return agent
 
 
-def _second_call_tool_message(model: FixedGenericFakeChatModel) -> ToolMessage:
+def _second_call_tool_message(model: FixedGenericFakeChatModel | _RecordingOpenAIModel) -> ToolMessage:
     """Return the `read_file` `ToolMessage` from the model's second invocation.
 
     The second call is the one `wrap_model_call` scrubs, since it's the request
@@ -4889,6 +4947,209 @@ def _second_call_tool_message(model: FixedGenericFakeChatModel) -> ToolMessage:
 
 def _is_placeholder_block(block: ContentBlock, *, path: str) -> bool:
     return block["type"] == "text" and path in block["text"]
+
+
+class RejectingFileChatModel(FixedGenericFakeChatModel):
+    """Reject tool results to exercise the agent's provider-error fallback."""
+
+    retry_fails: bool = False
+    error_type: type[Exception] = ModelInvalidRequestError
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(isinstance(message, ToolMessage) for message in messages) and (
+            len(self.captured_messages) == 1
+            or self.retry_fails
+            or any(isinstance(message, ToolMessage) and isinstance(message.content, list) for message in messages)
+        ):
+            self.captured_messages.append(messages)
+            msg = "Rejected file content"
+            raise self.error_type(msg)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize(
+    ("file_path", "error_type", "retry_fails", "recovers", "calls"),
+    [
+        ("/photo.png", ModelInvalidRequestError, False, True, 3),
+        ("/report.pdf", ModelInvalidRequestError, False, True, 3),
+        ("/photo.png", ModelInvalidRequestError, True, False, 3),
+        ("/notes.txt", ModelInvalidRequestError, False, False, 2),
+        ("/photo.png", RuntimeError, False, False, 2),
+    ],
+)
+async def test_read_file_invalid_request_fallback(
+    *, async_mode: bool, file_path: str, error_type: type[Exception], retry_fails: bool, recovers: bool, calls: int
+) -> None:
+    model = RejectingFileChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": file_path}, "id": "read-1"}]),
+                AIMessage(content="done"),
+                AIMessage(content="followup"),
+            ]
+        ),
+        error_type=error_type,
+        retry_fails=retry_fails,
+    )
+    agent = create_deep_agent(model=model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "file-fallback"}}
+    inputs = {
+        "messages": [HumanMessage(content="Read the file")],
+        "files": {
+            file_path: create_file_data(
+                "invalid" if file_path.endswith(".txt") else _docx_base64(), encoding="utf-8" if file_path.endswith(".txt") else "base64"
+            )
+        },
+    }
+
+    async def invoke() -> dict[str, Any]:
+        return await agent.ainvoke(inputs, config) if async_mode else agent.invoke(inputs, config)
+
+    if recovers:
+        result = await invoke()
+        assert result["messages"][-1].content == "done"
+        persisted = next(message for message in result["messages"] if isinstance(message, ToolMessage))
+        assert persisted.content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+        checkpoint = await agent.aget_state(config) if async_mode else agent.get_state(config)
+        assert [message for message in checkpoint.values["messages"] if isinstance(message, ToolMessage)] == [persisted]
+    else:
+        with pytest.raises(error_type, match="Rejected file content"):
+            await invoke()
+    assert len(model.captured_messages) == calls
+    if calls == 3:
+        original = _second_call_tool_message(model)
+        retried = next(message for message in model.captured_messages[2] if isinstance(message, ToolMessage))
+        assert retried.content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+        assert retried.tool_call_id == original.tool_call_id
+        assert retried.id == original.id
+        assert isinstance(original.content, list)
+
+    if recovers:
+        followup = {"messages": [HumanMessage(content="What next?")]}
+        result = await agent.ainvoke(followup, config) if async_mode else agent.invoke(followup, config)
+        assert result["messages"][-1].content == "followup"
+        assert len(model.captured_messages) == calls + 1
+        assert [message for message in model.captured_messages[-1] if isinstance(message, ToolMessage)] == [persisted]
+
+
+class SelectivelyRejectingFileChatModel(FixedGenericFakeChatModel):
+    """Reject only the invalid file while accepting other media."""
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(isinstance(message, ToolMessage) and message.tool_call_id == "invalid" and isinstance(message.content, list) for message in messages):
+            self.captured_messages.append(messages)
+            msg = "Invalid image"
+            raise ModelInvalidRequestError(msg)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_read_file_fallback_preserves_previously_accepted_media(*, async_mode: bool) -> None:
+    model = SelectivelyRejectingFileChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": "/valid.png"}, "id": "accepted"}]),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "read_file", "args": {"file_path": "/invalid.png"}, "id": "invalid"},
+                        {"name": "read_file", "args": {"file_path": "/valid.png"}, "id": "sibling"},
+                    ],
+                ),
+                AIMessage(content="done"),
+                AIMessage(content="followup"),
+            ]
+        )
+    )
+    agent = create_deep_agent(model=model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "mixed-files"}}
+    inputs = {
+        "messages": [HumanMessage(content="Read the files")],
+        "files": {path: create_file_data(_docx_base64(), encoding="base64") for path in ["/valid.png", "/invalid.png"]},
+    }
+    result = await agent.ainvoke(inputs, config) if async_mode else agent.invoke(inputs, config)
+    assert result["messages"][-1].content == "done"
+    assert len(model.captured_messages) == 4
+    accepted = _second_call_tool_message(model)
+    checkpoint = await agent.aget_state(config) if async_mode else agent.get_state(config)
+    for messages in [model.captured_messages[-1], checkpoint.values["messages"]]:
+        results = {message.tool_call_id: message for message in messages if isinstance(message, ToolMessage)}
+        assert results["accepted"] == accepted
+        assert isinstance(results["accepted"].content, list)
+        for call_id in ["invalid", "sibling"]:
+            assert results[call_id].content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+    followup = {"messages": [HumanMessage(content="What next?")]}
+    result = await agent.ainvoke(followup, config) if async_mode else agent.invoke(followup, config)
+    assert result["messages"][-1].content == "followup"
+    assert len(model.captured_messages) == 5
+    assert next(message for message in model.captured_messages[-1] if isinstance(message, ToolMessage)) == accepted
+
+
+class ImageRejectingChatModel(FixedGenericFakeChatModel):
+    """Reject any request carrying an image block."""
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(block["type"] == "image" for message in messages for block in message.content_blocks):
+            self.captured_messages.append(messages)
+            msg = "Invalid image"
+            raise ModelInvalidRequestError(msg)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_read_file_fallback_replaces_rejected_video_frames(*, async_mode: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        filesystem_middleware,
+        "extract_video_frames",
+        lambda *_args, **_kwargs: [{"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"}],
+    )
+    model = ImageRejectingChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": "/clip.mp4"}, "id": "video"}]),
+                AIMessage(content="done"),
+                AIMessage(content="followup"),
+            ]
+        )
+    )
+    agent = create_deep_agent(model=model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "video-fallback"}}
+    inputs = {
+        "messages": [HumanMessage(content="Read the video")],
+        "files": {"/clip.mp4": create_file_data(base64.b64encode(b"video bytes").decode("ascii"), encoding="base64")},
+    }
+    result = await agent.ainvoke(inputs, config) if async_mode else agent.invoke(inputs, config)
+    assert result["messages"][-1].content == "done"
+    assert len(model.captured_messages) == 3
+    rejected = next(message for message in model.captured_messages[1] if message.additional_kwargs.get("read_file_media_result"))
+    checkpoint = await agent.aget_state(config) if async_mode else agent.get_state(config)
+    for messages in [model.captured_messages[2], checkpoint.values["messages"]]:
+        media = next(message for message in messages if message.additional_kwargs.get("read_file_media_result"))
+        assert media.id == rejected.id
+        assert media.content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+    followup = {"messages": [HumanMessage(content="What next?")]}
+    result = await agent.ainvoke(followup, config) if async_mode else agent.invoke(followup, config)
+    assert result["messages"][-1].content == "followup"
+    assert len(model.captured_messages) == 4
 
 
 class TestMultimodalProfileScrubNoProfile:
@@ -4920,6 +5181,21 @@ class TestMultimodalProfileScrubProfileGatedBlocks:
         tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/photo.png")
 
+    @pytest.mark.parametrize("profile", [{}, {"image_inputs": True}, {"image_inputs": True, "image_tool_message": True}])
+    def test_image_attached_when_profile_allows(self, profile: dict[str, bool]) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([]), profile=profile)
+        _read_file_agent(model=model, file_path="/photo.png", file_content=_image_base64())
+
+        tool_message = _second_call_tool_message(model)
+        assert tool_message.content_blocks[0]["type"] == "image"
+
+    def test_pdf_stripped_by_tool_message_specific_field(self) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([]), profile={"pdf_inputs": True, "pdf_tool_message": False})
+        _read_file_agent(model=model, file_path="/report.pdf", file_content=_docx_base64())
+
+        tool_message = _second_call_tool_message(model)
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.pdf")
+
     def test_image_stripped_by_tool_message_specific_field(self) -> None:
         """A model may allow images generally but reject them specifically in a `ToolMessage`."""
         model = FixedGenericFakeChatModel(messages=iter([]), profile={"image_inputs": True, "image_tool_message": False})
@@ -4939,6 +5215,44 @@ class TestMultimodalProfileScrubFileProviderGate:
 
         tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
+
+    @pytest.mark.parametrize("model_type", [RecordingChatOpenAI, RecordingAzureChatOpenAI])
+    @pytest.mark.parametrize(
+        ("use_responses_api", "attached"),
+        [
+            pytest.param(True, True, marks=pytest.mark.xfail(_DOCX_MIME_TYPE_UNKNOWN, reason="no `.docx` MIME type on this platform", strict=True)),
+            (False, False),
+            (None, False),
+        ],
+    )
+    def test_openai_docx_gated_on_provider_class_and_responses_api(
+        self,
+        model_type: type[RecordingChatOpenAI | RecordingAzureChatOpenAI],
+        *,
+        use_responses_api: bool | None,
+        attached: bool,
+    ) -> None:
+        model = model_type.model_construct(use_responses_api=use_responses_api)
+        _read_file_agent(model=model, file_path="/report.docx", file_content=_docx_base64())
+
+        block = _second_call_tool_message(model).content_blocks[0]
+        assert block["type"] == ("file" if attached else "text")
+
+    def test_openai_responses_rejects_mime_type_outside_allowlist(self) -> None:
+        model = RecordingChatOpenAI.model_construct(use_responses_api=True)
+        _read_file_agent(model=model, file_path="/archive.zip", file_content=_docx_base64())
+
+        tool_message = _second_call_tool_message(model)
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/archive.zip")
+
+    @pytest.mark.parametrize("file_path", ["/data.csv", "/notes.md"])
+    @pytest.mark.parametrize("use_responses_api", [True, False])
+    def test_openai_responses_accepts_non_utf8_text_files(self, file_path: str, *, use_responses_api: bool) -> None:
+        model = RecordingChatOpenAI.model_construct(use_responses_api=use_responses_api)
+        _read_file_agent(model=model, file_path=file_path, file_content=base64.b64encode(b"value\n\xff\n").decode())
+
+        block = _second_call_tool_message(model).content_blocks[0]
+        assert block["type"] == ("file" if use_responses_api else "text")
 
     @pytest.mark.parametrize("llm_type", ["openai-chat", "azure-openai-chat", "chat-google-generative-ai", "openai-mantle-chat"])
     def test_llm_type_does_not_grant_docx_support(self, llm_type: str) -> None:
@@ -4976,15 +5290,18 @@ class TestMultimodalProfileScrubAsyncPath:
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
 
 
-def test_file_reference_reaches_model_unchanged() -> None:
+@pytest.mark.parametrize(
+    "file_block",
+    [{"type": "file", "file_id": "file_abc123"}, {"type": "file", "url": "https://example.com/archive.zip"}],
+)
+def test_file_reference_reaches_model_unchanged(file_block: dict[str, str]) -> None:
     model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="ok")]), llm_type="anthropic-chat")
     agent = create_deep_agent(model=model)
-    file_id_block = {"type": "file", "file_id": "file_abc123"}
 
-    agent.invoke({"messages": [HumanMessage(content=[file_id_block])]})
+    agent.invoke({"messages": [HumanMessage(content=[file_block])]})
 
     human_message = next(message for message in model.captured_messages[0] if isinstance(message, HumanMessage))
-    assert human_message.content_blocks[0] == file_id_block
+    assert human_message.content_blocks[0] == file_block
 
 
 def test_utf8_text_read_reaches_model_as_text() -> None:
@@ -4994,3 +5311,149 @@ def test_utf8_text_read_reaches_model_as_text() -> None:
     tool_message = _second_call_tool_message(model)
     assert isinstance(tool_message.content, str)
     assert "plain text" in tool_message.content
+
+
+class TestMultimodalProfileScrubRuntimeModelSwitch:
+    """The filter must read the model a custom middleware selects at call time.
+
+    `UnsupportedContentMiddleware` is installed last, so it is the innermost
+    `wrap_model_call` layer and observes `request.model` after every override.
+    """
+
+    @staticmethod
+    def _swap_middleware(runtime_model: BaseChatModel) -> AgentMiddleware:
+        class SwapModel(AgentMiddleware):
+            def wrap_model_call(
+                self,
+                request: ModelRequest,
+                handler: Callable[[ModelRequest], ModelResponse],
+            ) -> ModelResponse:
+                return handler(request.override(model=runtime_model))
+
+            async def awrap_model_call(
+                self,
+                request: ModelRequest,
+                handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+            ) -> ModelResponse:
+                return await handler(request.override(model=runtime_model))
+
+        return SwapModel()
+
+    @staticmethod
+    def _runtime_model(*, image_inputs: bool) -> FixedGenericFakeChatModel:
+        return FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]), profile={"image_inputs": image_inputs})
+
+    def _agent(self, runtime_model: BaseChatModel, *, startup_image_inputs: bool) -> CompiledStateGraph:
+        startup_model = FixedGenericFakeChatModel(messages=iter([]), profile={"image_inputs": startup_image_inputs})
+        return create_deep_agent(model=startup_model, middleware=[self._swap_middleware(runtime_model)])
+
+    def test_switch_to_multimodal_model_preserves_image(self) -> None:
+        runtime_model = self._runtime_model(image_inputs=True)
+        agent = self._agent(runtime_model, startup_image_inputs=False)
+
+        agent.invoke({"messages": [HumanMessage(content=[{"type": "image", "base64": _image_base64(), "mime_type": "image/png"}])]})
+
+        human_message = next(m for m in runtime_model.captured_messages[0] if isinstance(m, HumanMessage))
+        assert human_message.content_blocks[0]["type"] == "image"
+
+    def test_switch_to_text_only_model_scrubs_image(self) -> None:
+        runtime_model = self._runtime_model(image_inputs=False)
+        agent = self._agent(runtime_model, startup_image_inputs=True)
+
+        agent.invoke({"messages": [HumanMessage(content=[{"type": "image", "base64": _image_base64(), "mime_type": "image/png"}])]})
+
+        human_message = next(m for m in runtime_model.captured_messages[0] if isinstance(m, HumanMessage))
+        assert human_message.content_blocks[0]["type"] == "text"
+
+    async def test_switch_to_text_only_model_scrubs_image_async(self) -> None:
+        runtime_model = self._runtime_model(image_inputs=False)
+        agent = self._agent(runtime_model, startup_image_inputs=True)
+
+        await agent.ainvoke({"messages": [HumanMessage(content=[{"type": "image", "base64": _image_base64(), "mime_type": "image/png"}])]})
+
+        human_message = next(m for m in runtime_model.captured_messages[0] if isinstance(m, HumanMessage))
+        assert human_message.content_blocks[0]["type"] == "text"
+
+    def test_switch_to_text_only_model_scrubs_read_file_tool_result(self) -> None:
+        runtime_model = FixedGenericFakeChatModel(
+            messages=iter([AIMessage(content="done")]),
+            profile={"image_inputs": False},
+        )
+        startup_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "call_1", "type": "tool_call"}],
+                    ),
+                ]
+            ),
+            profile={"image_inputs": True},
+        )
+
+        # Only the second model call is swapped, so `read_file` runs against the
+        # startup model and its image result reaches the text-only runtime model.
+        class SwapAfterToolCall(AgentMiddleware):
+            calls = 0
+
+            def wrap_model_call(
+                self,
+                request: ModelRequest,
+                handler: Callable[[ModelRequest], ModelResponse],
+            ) -> ModelResponse:
+                self.calls += 1
+                if self.calls > 1:
+                    request = request.override(model=runtime_model)
+                return handler(request)
+
+        agent = create_deep_agent(model=startup_model, middleware=[SwapAfterToolCall()])
+        agent.invoke(
+            {
+                "messages": [HumanMessage(content="read /photo.png")],
+                "files": {"/photo.png": create_file_data(_image_base64(), encoding="base64")},
+            }
+        )
+
+        tool_message = next(m for m in runtime_model.captured_messages[0] if isinstance(m, ToolMessage))
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/photo.png")
+
+
+class TestMultimodalProfileScrubStandalone:
+    def test_create_agent_with_filesystem_middleware(self) -> None:
+        """Callers composing `FilesystemMiddleware` into `create_agent` add the filter themselves."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "call_1", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            ),
+            profile={"image_inputs": False},
+        )
+        agent = create_agent(model, middleware=[FilesystemMiddleware(), UnsupportedContentMiddleware()])
+
+        agent.invoke(
+            {
+                "messages": [HumanMessage(content="read /photo.png")],
+                "files": {"/photo.png": create_file_data(_image_base64(), encoding="base64")},
+            }
+        )
+
+        tool_message = _second_call_tool_message(model)
+        assert _is_placeholder_block(tool_message.content_blocks[0], path="/photo.png")
+
+
+class TestMultimodalProfileScrubSubagents:
+    def test_subagents_get_the_filter(self) -> None:
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="done")]), profile={"image_inputs": False})
+        spec: SubAgent = {"name": "researcher", "description": "researches", "model": model, "tools": []}
+
+        subagent = create_sub_agent(spec)
+
+        subagent.invoke({"messages": [HumanMessage(content=[{"type": "image", "base64": _image_base64(), "mime_type": "image/png"}])]})
+
+        human_message = next(m for m in model.captured_messages[0] if isinstance(m, HumanMessage))
+        assert human_message.content_blocks[0]["type"] == "text"

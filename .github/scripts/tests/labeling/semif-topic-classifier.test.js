@@ -6,6 +6,11 @@ const { ENDPOINT, MODEL } = require('../../labeling/semif-topic-classifier.js');
 const classifyTopicLabels = (text, labels, options) => classify(text, labels, { ...options, provider: 'semif' });
 
 const allowed = ['topic:mcp', 'topic:models'];
+const descriptions = {
+  'topic:mcp': 'Model Context Protocol support and behavior.',
+  'topic:models': 'Model providers, model selection, and model configuration.',
+  'priority:urgent': 'Not a topic description',
+};
 
 function response(scores, status = 200) {
   return {
@@ -26,7 +31,7 @@ test('loads classifier choices from the cached manifest', () => {
 test('uses the gateway System One contract and ignores unsolicited labels', async () => {
   let request;
   const labels = await classifyTopicLabels('MCP authentication fails', allowed, {
-    apiKey: 'secret',
+    apiKey: 'secret', descriptions,
     fetchImpl: async (url, options) => {
       request = { url, options };
       return response({ 'topic:mcp': 0.95, 'topic:models': 0.3, 'priority:urgent': 1 });
@@ -40,6 +45,34 @@ test('uses the gateway System One contract and ignores unsolicited labels', asyn
   assert.equal(body.state, 'MCP authentication fails');
   assert.deepEqual(Object.keys(body.questions), allowed);
   assert.equal(body.questions['topic:mcp'].type, 'noul');
+  assert.ok(body.questions['topic:mcp'].instructions.includes(descriptions['topic:mcp']));
+  assert.ok(!body.questions['topic:mcp'].instructions.includes(descriptions['topic:models']));
+  assert.ok(body.questions['topic:models'].instructions.includes(descriptions['topic:models']));
+  assert.ok(!body.questions['topic:models'].instructions.includes(descriptions['topic:mcp']));
+  for (const question of Object.values(body.questions)) {
+    assert.ok(question.instructions.includes('directly relevant'));
+    assert.ok(question.instructions.includes('literal reference'));
+    assert.ok(!question.instructions.includes(descriptions['priority:urgent']));
+  }
+});
+
+test('classifies the issue 6485 body without making topics compete', async () => {
+  const text = 'testing issue labeling\n\nopening an issue related to subagents memory :) hoping the right labels are applied\nthis is for deepagents';
+  let state;
+  const labels = await classifyTopicLabels(text, ['topic:memory', 'topic:subagents', 'topic:models'], {
+    apiKey: 'secret',
+    descriptions: {
+      'topic:memory': 'Agent memory and persistent context.',
+      'topic:subagents': 'Subagent creation, routing, and orchestration.',
+      'topic:models': 'Model providers, model selection, and model configuration.',
+    },
+    fetchImpl: async (_url, options) => {
+      state = JSON.parse(options.body).state;
+      return response({ 'topic:memory': 0.92, 'topic:subagents': 0.97, 'topic:models': 0.12 });
+    },
+  });
+  assert.equal(state, text);
+  assert.deepEqual([...labels], ['topic:subagents', 'topic:memory']);
 });
 
 test('logs only validated diagnostics, including abstentions', async () => {

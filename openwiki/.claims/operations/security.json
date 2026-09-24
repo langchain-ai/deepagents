@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:492c8e792ab4fbc40e4e305f96143ad64935d16abb576e65ba54e8483fe05030",
+  "pageVersion": "sha256:3d620eb9d14f65f7b3e822e55c64f7e5701bf2037d8c430ffa9f57e8079600b8",
   "claims": [
     {
       "id": "claim_842d191498324c558672b6f9d9aa40a4",
@@ -22,19 +22,23 @@
     },
     {
       "id": "claim_099db605fb5b49b2ac7ab0a20b5accfa",
-      "statement": "dcode workspace binding canonicalizes an existing absolute directory and persists a thread's workspace and policy fingerprint transactionally; a conflicting workspace or policy is refused, and runtime context must match the stored binding.",
+      "statement": "dcode canonicalizes an existing absolute workspace directory and transactionally persists a thread's workspace identity, durable policy fingerprint, and runtime fingerprint; a different workspace or durable policy is refused, while a compatible runtime-only change can refresh the runtime fingerprint and later context must match the stored binding.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/workspace.py#L328-L382",
-          "version": "repo-lines-v1:sha256:f56a783ffa71538ad5a2352226265049b1124a11ea7a25d02c5532350b49b7d8:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5YmZjZTBhNmM1OTFkNjBlMzQ4OGJjOGE4MTJjYzQxYjQ5MGI0NjcyYzk0NDljZmFiOGY0MGE1YWE5NzU3MzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxNDY1MGJkOGU5MTZkMzY4ZTk1MTFkNDZiOTI5NDg2NzQ2ZWI1M2RiMmQwYWZjNDhmNzY4NTY3Njg5YTMxYzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQwMWQ4YmE2NGE3ZmRiMjBhMjc1MmNkY2IzNDZiNjIyNWUzMDJhMDBkODM2NTk5ZDc5ZDg2NjhkNWMwNDZlYWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk4ZjdiNzUwNDNiMTJjZjE3ODE0OTI1ZmRkNTcyNjEyOTA1M2M5YmJjZDYyYjJkMjk4ZTljNjljYmUwOWQ2MDMifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/workspace.py#L397-L421",
-          "version": "repo-lines-v1:sha256:34f4880c67a001eef57ae9ca8bbc441e229e06989ef1fb2f31d89dc31a116dd3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExMzM1Y2JiYTU3MDhmZDYwNTk2Y2MwMGU5YThiZjNjNTZjNWJmZjQwMDI2NGRkNzgwOWZjOGExNGVhYjdkM2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxMDFmYThhZWM4NzliZTczNjc5MjMzMDcxNGM0ZDJjMzE5ZTQxMDRkMjk2MDYzNzIxYjNhYjY3MmYyMjYxMWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmMjkwOTcyYTUxZjJkYTI4ZmRkY2IyMmEwZDQ3OTRkZGNkMGY1NzYwOGU3ZmQ1YzhjMDY5NDMwZjRmOWI0NTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5ZmZkNjU3ODMzNGI3MGFiM2ZiNmViYTBmMDA3YTg4ZWNkZjI0YmIzODZiZTFlMWE2N2Q2YjVjMmI0YjFmZTcifQ"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/workspace.py#L92-L116",
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L143-L167",
           "version": "repo-lines-v1:sha256:94493a22838f73b8d2eb4ca43e455f724be227d5ea32d0a87f04e61cdfc06ebf:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzOTRiMDU1MjgwZWE0YzhkZGRmNzRjY2Y2MWMwMWVmOWRkN2RiZmQ2ZjVmOTg2YzExMGQ2MmMwMmMwYjFjMjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiNDQ3YTlkMDRlZTAwZWYwNmI3YmNhZGM4MWU1MmExNWMyNjgzNTk4OGE0ZDNjMzViNjBhYzgzMTMyMzMxZWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ2MDcxYzE1YjNhZTUxYmRkZjQ0ZGIzMjhlYWJhN2IwMjFhY2UzZTYyYzc3M2RkYmFmMjUxZjBkNmVhMmZlNzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlODIyMzhiMWYzMjVlN2I5NWNkMjhkOTEwM2EzNzllNDc4ODA5MjY5YTAxYzAwODE5M2I5YjMxNTcwYWZhZDAifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L207-L267",
+          "version": "repo-lines-v1:sha256:99cb1c7b7e2c8b15079d2c55f9c611fd11cc1aff7942878481234c63d6f525e4:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzNTE2NjNiYjA0ZGM3MTQ3ZTQxYzVlZGU5ZGFmOTBjNWYxYzE3YWFiMGRjYzRmZWY5ZmQzNjYwNjdhZWMwZWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2NzBmMjllMDc5YzY3NzQzM2Q4NTg1ZGVmZDhjYjY4YzRjMDZiNjRjN2E5ZGNiYjIyOWE4Mzg0MTBhYzk3MzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4NzQxNGRkOTlmOWE4ZjgzNzUxOGM0ZGJmOThiN2NmMmY3NjFiM2FkNTI2MWZjZjQ2NjgwZGVmYzQwNWU5YTEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L588-L696",
+          "version": "repo-lines-v1:sha256:708b69454c2277c20608baba53c6eb7c50bb8c35de30310e24cd8ba8f5dcc5a9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1ODUyNmM1NTA0NTNjNmE3NmZkNWRiOTBmMTRhYWNhM2Y2YWU2NTc3ZjhlMjgwZDQ1OWI2NWQ4NGRjNDMwZGUxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3MTQ2NTBiZDhlOTE2ZDM2OGU5NTExZDQ2YjkyOTQ4Njc0NmViNTNkYjJkMGFmYzQ4Zjc2ODU2NzY4OWEzMWMyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5OGY3Yjc1MDQzYjEyY2YxNzgxNDkyNWZkZDU3MjYxMjkwNTNjOWJiY2Q2MmIyZDI5OGU5YzY5Y2JlMDlkNjAzIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace.py#L750-L861",
+          "version": "repo-lines-v1:sha256:813230d1bd0624054db870d35a52cfadf2b361b9c4a2a7c23e2ff976ee4543e6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyNTA2ZDk0YjMzZjM0ZGMzMGFkY2RiZGJkNGY0NDliZDc5ODM0ZjdiZjRkODkwZGVjNzU5Yzc0MDAxZjBjOWM1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwNTU1ZGZhZjVhOTAyZTYwNTZmNzg4ZWMwMDk1MjA3MDlhYTJiNDI3NDYwZmMyNWQ0MDQ0NzM3MDNmYzcyODRmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NWI5OWEzNjY0YmM5OWM5MDlkNzY5MDUxYmIwZTY5NGYwYjVhYWU4MDc0YzJkM2QxYjcxY2Y0N2EyZjhjMzE0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
         }
       ]
     },
@@ -198,7 +202,7 @@
         },
         {
           "resource": "repo://.github/workflows/auto-label-by-package.yml#L67-L72",
-          "version": "repo-lines-v1:sha256:13d8020cc3944d55faaa35800359283e549b62287178861121fbf55577fd0253:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2M0MmRkNzVkN2Y1ZDlkMzBhNTFjMTRlNzQzOTA4MGJhOGUwZTM4NjYxZWM1NDBhOWRlOWMxMTNhZjQ5ZThkNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGIzMmI5ODcyNjNkZjIxNjNlNzI2ZDQ4YjkyZjZmOTY1MTQ4Y2I2YjZkMjgzMTc5MTUxNGM5MzlmODM3YTE0MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjRhMjgxZDVhZGFiNDFhMzlhZjZkYjU5OGMxZmQ5ODBkZDdiODE1ZGI1MjM1NzhmNDg0NzkwMGM3ZjI2MzczOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjkwNzg2ZTBhYmQ4Y2MwNTE3NjIzNjg3YjRjODQ3NmRmM2EwM2I4OGIxM2RmNzIyMWI2ZTk0MTYxMjllYmU2NiJ9"
+          "version": "repo-lines-v1:sha256:fe151c9db58fc402ab826bf0c9927075d2469dcd4a3ab3758b38e31640ab1518:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2M0MmRkNzVkN2Y1ZDlkMzBhNTFjMTRlNzQzOTA4MGJhOGUwZTM4NjYxZWM1NDBhOWRlOWMxMTNhZjQ5ZThkNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGIzMmI5ODcyNjNkZjIxNjNlNzI2ZDQ4YjkyZjZmOTY1MTQ4Y2I2YjZkMjgzMTc5MTUxNGM5MzlmODM3YTE0MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjRhMjgxZDVhZGFiNDFhMzlhZjZkYjU5OGMxZmQ5ODBkZDdiODE1ZGI1MjM1NzhmNDg0NzkwMGM3ZjI2MzczOSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjkwNzg2ZTBhYmQ4Y2MwNTE3NjIzNjg3YjRjODQ3NmRmM2EwM2I4OGIxM2RmNzIyMWI2ZTk0MTYxMjllYmU2NiJ9"
         },
         {
           "resource": "repo://.github/workflows/ci.yml#L30-L38",
@@ -251,10 +255,200 @@
           "version": "repo-lines-v1:sha256:419b3331e41633de16d79b04a3b4ba0015f916057b9cdb0313da220e3b100881:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmZDA0MDBkOThjMjAxYjk3ZDU5Mzc1ODk5NmU1ZDU1ZGQ3MzcxYWEyNDdkNTVhZmYwNjVhMmM2NDg3MjdiYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxODdjZTRmMDJhYjRmY2Y3Y2Q4MTc2ODMxNTgzNDVjN2ZjNTI0OTc5MzEwMWMxYWVkNWM4NGMxNGViMjg3ZmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBkYjg3ZmRhZDY1MTFiYzM2MDIyMGE2Mzk5YWUwNWQzMWY4MzVmMTY0Y2VlN2I2NWFmN2IzMGUwZmIxZTUzNzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_0a1050290a3e4381b6a1ce62bcfb5e2b",
+      "statement": "The dcode offload HTTP boundary strips client transport-routing model parameters and replaces client model, parameters, and summarization-model selection with checkpointed or server launch configuration, preventing a loopback caller from redirecting credentialed provider calls or selecting a provider for server-owned compaction.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L491-L567",
+          "version": "repo-lines-v1:sha256:1b3fbdadd420e7928dc6a4d0672db707df75b755765c3ee0ebd0e18378f7a861:eyJzZWxlY3RlZExpbmVDb3VudCI6NzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5Y2E4OTFiZmY3YWMxZjdjZWFhZTQwZWYwNTEwNjZiZTllZmU0N2I0ZTQyODFlODZjMzE5YmUyYzU1ZWJjZTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5OWRjM2I5Yzk5ZTA4OTc3YmI2YjRkOTIwY2ExZGQ3NmI1YTMxNGM4ZTE4MzU3ZDFiMjNkNGY1MmFmMDYxMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlY2RlMDA1Y2JjZDQyZjA5ZjM3ZTIyNThiOGM4ZWU5ZmYzNTRkNmE3ZTg3OThhNjY0MTZjM2U5YTlhNWUzMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3OTQ4MWQ0ZTU0NTZjOGU2NzlhMjY2ZDIyMjI5YThjOTBmYzE2YTAwMWRlZjJiNzU3Zjc2NDgxZTBkZGE5YzEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L699-L738",
+          "version": "repo-lines-v1:sha256:6c474335022ba63de918799d0a62ef7f5871d054d0d13b8f9ab1962894ad638d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmYzg3ZDA4NjFkYzc5OTU3MjkzNGNmM2Q3MGQxNmY0YjkwNjRlY2Q3ZGIyNjZlZDQ1M2FkMWFhZWE3YWM1ZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwZTA2NWYzYmI3MzgzYTE4Mjk3YjlmYzgwZDZiZWQ0YWQ1NzI3MjhlYWQ0NmFmNmI2MDQ0NmIzOTUxZmQ3OTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhMmNhYWEyMmU0ZDFmYmJjMGY1MDYzMDVkZTdlMzhlMzg2NGUwNTkxZGFlN2ViYjNkMzJiZDZjYjVhZjMxZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MDJlYTYxMmIxOWYyMTAyYTNmN2MyOTIyNTYxOTYyYWEyNzQxMDc0OTBkOWE2MjZkN2E0YTk4ZGJkNWE1NzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3b03e8d8198b4648b818c9ed1106b64f",
+      "statement": "The issue topic classifier confines untrusted issue text and both potential provider credentials to the opened-event classification step; it uses only described allowlisted topic labels, warns without mutation on failure, and adds only previously absent classified topics.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py#L172-L185",
+          "version": "repo-lines-v1:sha256:0e7edbc8e47d7652f0cd057ee6513c3a8170a76b7201b18d027dab01dcefd7df:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEwMDlmMTc1MTM1NTk4OTg2YjIyMzBhMDU1MTQ3YTYwYWRiYjI2OGY5N2U0Nzg1YWViMjg1Mzc3ZTVmZmM4ZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyMTI3ODBhMTc2NTNkMGIyZWFkMDkwYmRmYjZjMTlhZDU5NTQxNTUzYjdhZDY4Mzk0Y2Y3YWExNmVlODIxZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1ODAxZWQ3NTQ0Yzg4ZDRlMzRkM2M2ODRhYmE4Zjc5ODkzMmU0MGVkMDhlMzk5OTBmY2UzN2I1N2I4ZTk5MTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/auto-label-by-package.yml#L62-L116",
+          "version": "repo-lines-v1:sha256:d39bc2dc5c2d93617be0c190bc08d2fa49cad0433893eaaa96b3a36f6a92c146:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1Zjk0ZjM2ODUzZTkzODMyNDFkMGMxMzlkNjQzMGZhNzE3N2Y5NzZhNTg3NDc4Njc5OGExMDA4MjAyMDQ5MDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyZmE1MDZhODFjNzU3OTYzNWQzY2VmZjBiNjRjYTM2MTQxNDJjZTI3ZjgxNzA1NzVmMDdkZTc2ZWE1Nzc4YzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc4YTI1OTFiMDgzZTFjYTdhYjk3NGVjNDEzNjNiYTExOTMyMzc2ZTU4YTE3MTM3MjA5Mzg0ZmYxZGMwNGE0YjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiMTc1YjExYmQ5NTZlZDAxZjg5MmRiY2I4ZDU4OWZhOGI0MzNiNTUzODM3ZDZkMGQ2YjcyZGM5YzM0YzY0MWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c52dca4538154623a0f3ceda46eb0b82",
+      "statement": "The Groq and Semif issue topic classifiers truncate inputs, instruct providers to ignore embedded instructions, enforce a 15-second abortable request budget, and constrain returned labels to at most three allowed topics; Semif additionally validates probabilities and selects scores at or above 0.8 across batches of at most 32.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/labeling/semif-topic-classifier.js#L5-L58",
+          "version": "repo-lines-v1:sha256:e6698a3615865f0e0dd01b88009873cde2ca726b2b8069c2e6979ae923bfa4fc:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZTI3MGIwMjgwODBkM2M2M2Q0ZTU0OTlmODIxMjczN2Y0YzQ3YTVhZGM4YWQ4NGIzYWVlNmY3OGZkMGMzYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxNDM0MmQ5ZDczNzgyZTVlNGNhOGI2ZGY1NDY5NzgzNGVmYWM1ZTU3OWI0ZGMxOTNjMjUzZWUyODBiYmI5NDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg2ZjY4N2FiZDBkMThmNzczNWY3NGRlNDg2MDkxNGEyNThhMDgzZDBjYTQ2ZjUyMDQzN2UxYjU3MmMxZmNhY2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1NzA3YTJkMjk0ZTIxYWU5OTdmMTQwMWU2NDI5NTA1YzM5OTA2YzY4ZTgxODE0OWM4M2NlMzZiNzlmMGU5OWIifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/labeling/topic-classifier.js#L12-L70",
+          "version": "repo-lines-v1:sha256:956db579d0234cf328d1087e691ad943b4bf194b1f107704a12464f0216a1aa8:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZTI3MGIwMjgwODBkM2M2M2Q0ZTU0OTlmODIxMjczN2Y0YzQ3YTVhZGM4YWQ4NGIzYWVlNmY3OGZkMGMzYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1MTEyNTBhMTg5OWQ0NDllMzcxMDliMmZmMWE1OGZhMjNjYWM3MWE0ZDY5ODMwMThmYmU1MzZhNmQ1YzM1NzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUxYTUwYjZhYzViNzg5NWIyZDZmNGI3OGM3MDkzNTYwMmRiM2QyYTdjNDUzZTc3ZjA5M2EwNzZkN2JmNmYwZWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVhN2RjOGI1ZmI4N2Y4MzIyOTU5ZDE0NDIyZDE4NmY1Y2Q0MGM4ZjEwMDdjMWYyZDI5ZjkyMzVkMjUxNTFmYWEifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/labeling/semif-topic-classifier.test.js#L104-L173",
+          "version": "repo-lines-v1:sha256:f9253d73587e457719d8c1fb9c482adbd1ad8627e1cff959c2319a7ad4fb76e0:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5ZGZjNDBlNTQzZGVmYTE5OWYwMTg2Yzk0MzZkOWIwNDM0YTZhMDNiYzBlN2JlMmU5ZmQyNGY4OGM1ODk5NjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZTU3ODhkNWQ5ZDczZDI0YTgxZGJjMGE1YTc0YmZhODJjOWMzYjNhZjk5ZTUyYWY3OTZlOTBiNDY4YThhM2QiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViMWVhMTVhMGY3YjFkNzc0MWMwOTJkZTgwMmQzOWZkYTQ0MzRlY2YwNWY5NDM1OGM2ZjM2OWNhOTExNmUyMmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY2ZjViNDBiMTU4NDU3ZDE3ODY0ZjIxNzkwNzg2ZGQ1YTJlY2RiNjRiNjZhNjUxZjc4OGQ0ZTI1Y2QzMzAzZDIifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/tests/labeling/topic-classifier.test.js#L29-L149",
+          "version": "repo-lines-v1:sha256:5075e24cc7256728be0e9897f41d0c71982e7dfc041f3880ba32a47101b02f2f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhYTJmZWI0MTNjYTIzMTM0M2NjYzk3OGE5YmZlZjEzN2Q5MmRlZjcyMTY1NDhjNDI0MmVhMGJhOTY4NDQ2YmUwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyN2U1Nzg4ZDVkOWQ3M2QyNGE4MWRiYzBhNWE3NGJmYTgyYzljM2IzYWY5OWU1MmFmNzk2ZTkwYjQ2OGE4YTNkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5ZjBkODgwZGE0NzcwZGE0MzRlNzk2OTk0YWZhYWJiNTEwMzNhYmM3NGY3ZDI5ZTcxOTFjNGMzNWQxZDJiZDJjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmNmY1YjQwYjE1ODQ1N2QxNzg2NGYyMTc5MDc4NmRkNWEyZWNkYjY0YjY2YTY1MWY3ODhkNGUyNWNkMzMwM2QyIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_57c164bba2e64277801095a287993018",
+      "statement": "Release-note automation checks out trusted helper code from main without persisted credentials and treats release-PR content as untrusted API data at a validated head SHA; drafting has only the configured provider key and no model tools, while repository mutations use a separately minted GitHub App token in designated helper steps.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/release_notes.yml#L1-L13",
+          "version": "repo-lines-v1:sha256:28f2a8a087b37f7011f2c8264a27fec0f2b88ff62ad7d42675936e4d7c4537f4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI4ODJhMjI1YzVhYmYyNTQ4NmQyYTMzNTE1NmZlMzljOTUyMGMxMWE0NWE2MWQzM2RmYTU5NGQyOWUwNGEzZWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlZGI4NDc3NzZlZTA4ZDEzNWJlZTZlYWM3MjllOTc4NTQyNGQ2Yzk0NTQzZGQ4NGZiYTE4MDM1OWRmYTc3MDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlNDdhZTE4OWE3ODk1ODQ2Y2ZlYTBhNzdiNDIxY2ZkNjM1ZmU5YTYxNjI3ZGY4OWJiZDMzNTU2M2U1MTk2YTAifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/release_notes.yml#L108-L134",
+          "version": "repo-lines-v1:sha256:59569d5eb1397658948b2871266e10de49bfa2c4450e5d9e165e4c4081dd5322:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwM2FmN2UwY2Q1N2ZmNzVkOWFlZWFkMTI4ZWY1Njg1MzA1OTk2NjI5NDM5ODE0YWRmMTNjNDhkMTY1ZjljMzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4MmMwOGVjOGZlM2Y4NjFkZTY1MjY0MTMxNmY5MjFmZmE4NzZhNGUzYTQ5MjRlZGI2YzA4Nzg4NjZmYjAxYmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY1YTM1ZjM0NmE1MzUxNjIyMWI1YmFmNjUxMTY4MzUzMTU2OGEwMmUwOTYxNzc3ZTljOTljZWQ2ZjJiMTRjMWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM0ZGZhNzM2M2NkMTA5YmEzNWQ4OTkyYzZmYzE5YThhZmFlZDEyY2Q1YWVmZTg3OGMzZjRkOTg2MzE5ZjNjODQifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/release_notes.yml#L195-L265",
+          "version": "repo-lines-v1:sha256:6b6dfb7e7d42f3e84b77b32af59d4706297fecc8bf6dfe4c8883763e04e96891:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkYTgxMDYxNzYxMzUyMGEyNDFlNGYxNjI4MTc0NTU3MTFiOGJhOTJmZmQxMzExN2Y2ZWIyODZmYzc0OGM0MTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzZDc0MzliOTI0ZGRkYmQ5MmNkZDI3NTM0MjQ1NmRmYWFiNjM5ZTNlMjY3ODM1Y2E1ODRkNjcwYzViNTNiYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc4MGRmNDY1MWZhMWQ4YzlmNjFlOWJhODhmNzU4NDcxMTZlM2M3MTU3MGIxMTNhOWJmYTE5OGY4MDA3NGI1ZWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI4ZGIzZWUyOWQwMjRkYjliMGMwM2U5NDEyYWY2OTliMTI5MGUyMjQzNTlmNmYzYzEwY2IyOWQwMzU3N2IwZDcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_56c989ebce6c4b0a889d3454a5224426",
+      "statement": "A manual release-note command runs only for a validated open same-repository release-please PR targeting main and requires its commenter to have write, maintain, or admin repository permission; insider association gates feedback only.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/release/release-notes.js#L181-L209",
+          "version": "repo-lines-v1:sha256:010274cf96686e0f27fa8170a2e0d177ab3d4f670a45d16ff6405e5bd88d45b9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhNjVkNWZlYjBiOTk2NjFhYzg2Mzg1NWRmZDgzNjhmNDE2NzVjMTZkMzJmMTI4ZGRjYTE5Y2JhYzQ5ZGE0MzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlMzljNjAxNzFiYWFkNDAzMmI0ZjI1OTdhZWRmMDRmYTIyMmQyNGUyZGE4N2JhZjYxNzk5Y2MxMTBjYjY2NWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIxNmM3ODQxYzEwMTk4Y2ExODEwNjFlZThlOTRiOTMyNzRmMmE1YjdiOGE4YzAxMzQ2ZWNhYjVmNTJiMGY1ZTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwNGE5NDM4NmE5ODRhMWJlMmM1MTYwM2JiNDAwOTZkOGFlNGU1NGI0YTU5MzEwYzA1MTViMGI0MWI1MWNkMmYifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/release/release-notes.js#L669-L770",
+          "version": "repo-lines-v1:sha256:2d99e11b4ee38fe634f8da76fcda811b964416966c5a26522ccd271f2994d4f2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3YjNjZWE4ZGExNTA3MDY3NWQwYzQyNjVlZjQ4NmMxNGM4ZDNjNWVhMDRkNmRiYjVlMzJkZmIxZmI1YjcxYWZjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3ZTJlNzgwYmY2ZjA4YmFkMzM4Yzc3MTk2NmFmMmU3NmVkZmE5ZjA4ZDMwMmIyZTVmMjk3ZDE1NDRiMzQ1MTMwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyZjAwNTNiNDVlYzZhZTRlZThiYzEwNWY0MGQyNWQwNmVkZDk2ZjhmZjBhOTc5MmRlNDE1ZjdkZGJhMTg3MzQwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0YTQ2MTY4MTc4YmMxMDcwMTM2ODYxMDkwZTk3NWYwZDM1OWQ3ZmM3YjEzMTc0ODRjZTc1YWMzNWRlNTEwMjI2In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_975c9072e5ca4644957c3dffd34cc808",
+      "statement": "Release-note apply revalidates and prepares release state, creates a non-force Git Data API commit using the App token, publishes applied metadata, and explicitly dispatches the release-notes check for the resulting head because an App-token branch update does not emit a pull_request event.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/release_notes.yml#L416-L523",
+          "version": "repo-lines-v1:sha256:8b4abf7e4cdb157781896431b98071a31e01baac3fe8b72d43b6184487c882e1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4YjlhZWRhOGQyZjBhYjA5ZmMyNWY1MTAwOGU3NmQ2OTc0MDI3Yzg0ZmUxMTY3MzhhYmVhM2I0ZTJhMTJhNzgxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmM2Q3NDM5YjkyNGRkZGJkOTJjZGQyNzUzNDI0NTZkZmFhYjYzOWUzZTI2NzgzNWNhNTg0ZDY3MGM1YjUzYmJiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NzgwNWM0MDIzMjg5OGM0OWM1MWRkZDljMGJmODAzMTQ4OGQ3NWU4Zjg2NDM0M2MxOTdlMjI3NDc0ODY1ZDRmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiOGRiM2VlMjlkMDI0ZGI5YjBjMDNlOTQxMmFmNjk5YjEyOTBlMjI0MzU5ZjZmM2MxMGNiMjlkMDM1NzdiMGQ3In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_2d9a458462254d7a8097a87795a05d85",
+      "statement": "The scheduled topic-manifest sync refuses an empty discovery result and only merges nonempty repository `topic:*` labels into the existing sorted manifest; its manual `classifier_issue` path is read-only, validates the issue number, and uploads only validated classifier diagnostics written to a mode-0600 artifact.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/labeling/sync-topic-labels.js#L3-L27",
+          "version": "repo-lines-v1:sha256:57b3ad20618322f9aaffcc7284627ea895a85f96c16fbf7392fc3706d66bcccd:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4ZWQxMWQxYWQxZDBhZmNmNzU1Y2EzMGZiOGQwNjE5NDY5NGRiZjFlMGJmZGY3YmNlZTI1MDNmZTYzMTRkYmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4ZTk1ZDUzNDFjZTVhOTE4NzgwYjgzYWZlMDFhMGJkYWQxNDUxYWFiNjMwNTljMjMyNjZjNmFlMTZhOWIwZTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI2NjE4Y2QyYWM2MDYxMThmZDEyNzFlZmQ5MTU2YWY3MGRhYWRmYThiNjU3ZGQ2NTRkZTg3YTQxNWZkYmZkNzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNhMTg3OTJkNjEyODgzM2Y1NTQ4MTdhZjdhZjAyZGI1NGVjMGI5NGU0YzJhYmNlOWIwZjEzYTNkYmRlYmIxOWUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/sync_topic_labels.yml#L21-L64",
+          "version": "repo-lines-v1:sha256:75b02c44ee9a5f7d45558798190d917aa0597488b2ce6070203bd445f9ca33fa:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0MTg1NTkwYmE1MjlkZDJlMWJiYWI4NjdmODhkNTU2ZDUwMmEzMjU0OGJjZjZmZDU4ZTMzNGVlNTZmYjM3ZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlZGFmNWYyNTgxMmM3MDViOTA4MzIyNTczOWE1MzFjZmY5NmM4MDE3M2UyMTJmMzAzZWZjYjg5ZWU0MDc3NzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNjYzg0MTU0OTE3Njk0Y2U2YTMxYWRjNDZkMjcwZTNkMzNkOTJhZmE2ZDhiZTI4ZjUyN2Q4MTkyOGMzZGI2YTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE4NjE5ZjcxZjhjOWVkMjI1OWI3NGU3YzAwODc3ZjY5NzgwNGIwYWViMThkZGQ1ODY5Nzg3NzRjN2JiMDAwN2YifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/sync_topic_labels.yml#L66-L140",
+          "version": "repo-lines-v1:sha256:ade1e2e7cdf53f3ab8714775ed89352e4cacfdab4bb5f127dd8c47de44a7e892:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExOGVlYmQyYmI5YTEwOWQ1YTY4MzQ1NzhmNzFmOGM4NWZlMzk2YWE4OTVmZDNiYjk1NDU1ZDIyMWIxNGVjNDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmNTU5NzljZTczMDIwMzNlNmIyZmQ3ZDg4ZjUzN2EzYjhlMDkxZWEzMDVjODExZmZhMTI3NGJmNTc2NGVhNWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ0NTM2ZjhhOGQ3NDBmY2QwZjEyNjQxOGNiOWNiYjg0NDU3MGMyMTNmYTA0MTg3NTEzZWJhOWY3OGM5OWY1NmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d721bab00d0b40ebaf8dd81d03e6c1fd",
+      "statement": "dcode Auto-mode treats classifier review as a bounded approval control: it separately limits model construction and inference, retains a shielded construction task, limits retry sleep to one quarter of the inference budget, and rejects non-finite or non-positive configured budgets.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L142-L152",
+          "version": "repo-lines-v1:sha256:648a9f97a04a49bb3ca3415e97931bf40a2b698d25f13a68362b5fca74cd8676:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjZmI4NDQ5MWU5MWQ0YmM3YmZkMTczZmViM2IyNGQyODBjMDE0ZDc5YjcyZGY4NGFiZWRhYjFlNDZhNTUzYzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0ZmJjN2ZlYmQ4ZGEyMThlNzM5YWVmNmQwMjE2ZWJmZWQ1YjQ3NjM5YWJiOTY1ODBlNjYyMjI3MGIwZjRiMzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhhMjI1ZDNlNDFiMzMzZjY4OWY3NThiMjVkZjA0ODk5NWRjMDZjYzQzN2IxNWQ1YTk5MWI3MGM1MTBhOWFiMzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg4Njk3MzJkZTE1MGYxYmJmYWQyM2EwMzA5NGJkYzA3NDI1OTI5NWVjMzdhMDBiMDQ5N2Y0NzZiZTg0YzYwYWYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L2437-L2452",
+          "version": "repo-lines-v1:sha256:580e36a390dd449408c583920678f7f3ecb2b2c453ffd9207df9fa4578aa2a54:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlM2ZjYmIwZTliM2ExZGFhZjE1ZTFiNzk4ZTI0ZjY2OGZlMWVmMmI1NjRjYjI2YmNkODI5ZjkzYWZmYjg3NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1ZTZiMzJjODVmYjBmN2VhMTA1NTFjYTA2Y2VjOTI4MjlkYjE5N2M2NGZhM2U4ZGYyZjc4MGNmODczMTU4YjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE4MjFlNWE3Mzg2YzllOGM3MDJmNmFiMmYzYzk5ODIwZTViMjIzZjFiNzE5MTBmYzFmMDg2NmRiZDU3MjA1YmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjMGQxZmE1NDA2NjEwZWQ1ZjkxZDhhMmFiNTI4ODZjMjQ2ZjM1OGIxZmEwOWY5ZmI4NzQwMGM1ZjA5NDY3NWIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L3068-L3136",
+          "version": "repo-lines-v1:sha256:c9345db5259fa929ed87cc2cffd7888f0a1fb04c57d0bd0586f87a6a0354625c:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5MmFlM2NlY2VlYjQ5ZWI5Nzk2YjM4YTNlNmI1MmI0ZGIwMWFiOWYxMzRiNDQzNDA5NTZjMzY3NDYwZmJhMzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyOWM1MjQ0MzRjMDA5YWFmMGQ3ZmU5ZTJmZmU3MjJiMTcwY2Y4ZWIxYzhjMTU3NWU0ZTNiZDUxZTkyNmM3MWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhNjFhZTAyNTNlM2UwZTk4MmEzY2RlYzc4ODJiNGNiMTg3ZjNmMTcxNzNmNzBhODIwOTY0OGZhNzNhNzI2ZjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNhYjFkYzM1YTYyODE4MTRkZjMxZTJmYzk1YTU2ZTZlOTkyYjlmMWVmZDQ2ZTRjNDUxNTA1YmExMGQyOTE5M2MifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L3192-L3209",
+          "version": "repo-lines-v1:sha256:c9b3d5336c1a2b4617f699bc8875800f08919878aa50c0bcd0542c8733efdcef:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1MmI3YzViNDkzNmQwMzdhMGIyNDE0MGJjZDFhMGQwNDlkMjU2ZmQ1YzJmMmFkMWU1MmRjYzc2ZGRkYTFlNTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3YmMyODU3MzIxZmVjYzcwNTZiN2NlOTM5NGNlYThjMjg1OWE0NzMwNjRhYTdkOTVlNGVlY2VjNWRiOTVlOGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFiNWJiODJlZTNhMzEyZmFkNDMxZTVhN2QyMzlhZWU2MDA1NWJlODlhODZiNTQ2N2Q4YWFmNzhjM2JiYzNkYjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyMzc1NjhmMzcxYzY2NGZhNzM5ZmU2ZGYzNzAyZTc2MjUzZTA3NDMyOGQwMjU2YTRhYWQzZGVkOTlkN2Y4YTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5871e249d90f43c881fae5a5785a38f6",
+      "statement": "dcode Auto-mode scratch-artifact tools are approval-gated and bind cleanup to an exclusively allocated OS-temp regular file with safe suffix, owner/mode, thread/turn, prefix, device, and inode checks, preventing a model-selected arbitrary path from being created or deleted through this mechanism.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L1206-L1297",
+          "version": "repo-lines-v1:sha256:fcb0f5b638bcd93db06bec51629d5bbbd38ba6483f0180c328cb691bd8cc3e36:eyJzZWxlY3RlZExpbmVDb3VudCI6OTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIxMTBmYzc2NmI0MWJlNTVkNjFhZGUzM2EzZTAyMGJhMDRlZTY1NjUxM2QzMzc1NGUzMjgwNDVhNDdmMGRiYWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkMTI2OWY1ZmU2NTJkOWYyYTU3NTkzMTMzOGYxZDk4YWI1NGRkMDZkOGJlYzkwMGRjZWFiYTAxMDBkMTZiMGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgxZGJhYzlmNjA3YWRlNjJjYWVmMjQyYmZlMDdkNWVkOWVjNWM2ZmIzZTY4Y2RiZDAyNjFiM2RiNjI0MjJhMmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVmZjMwZjM0ZTIxNTg2MGE1NTA1NmEwYjk2N2ZhNzA2ZGVjNThiMjQ5NzcyOTYyYjc2Mzk3ZTMyZjgzMDJlZjgifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L2453-L2462",
+          "version": "repo-lines-v1:sha256:2d90523c9c20d92904c1341b9496e317765a317b8a923ec4b447d81f5fce3025:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzMmZmN2U2NjJiOTAwNzhmODIyYjdkNjJkYjlmZWU4ZGQwNTNiODdkYzJmZGI4OGM5MTYwNmYwYTU5M2NhNTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwNDNhYTk4ZDYwNTQ3OGZjMTg5ZDdjOGU0ZTU3ZjkxZmUxODAyMTBmMmQ5ODBiNmUyODI1ZmE3MzlhZjVlYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0YWY5NzczYjI2ZDU4MGVjYzdiZGI2MmNjNWYwNzQ0OWY0MDc2ODUwNGI0OGU3M2U2NWI1NzgyYzM5ZmIyODUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI5ZTE1YWQ0MGZmNTc4OWMwMTBlMWFhMDhiYTI1ZGZkNmM5MjJlMjlhZjY5ZjM2MTNjY2IwYjdmNjk0OWQ5NzIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/auto_mode.py#L2490-L2580",
+          "version": "repo-lines-v1:sha256:f9f2b00a0f8e212a28a6363aab8cbdf463835c8f0a90d7be597846babb1e92ea:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjY2Q4NDdlM2FkMWI4OTI4NjYwMWZmOTlkZTE2ZmYyMmYyMWI0OWZhZmE5MzdjMWE5ZWIyZjUxYzIxODA1NWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyNzM5ZjQ0Y2M1NGJiYTVkMGQ3YzczMTQ2YmY3NDc1ODk1Zjk5ZTg2YjAwMTUyNTA1NjhkMzI0MTk3MDk2YjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhZWU1OTQwNDQ5NzYyNzU4Y2RmMzNkYmRkMDlhODNlMDFhMzcyNWYxNGRmM2Y0MmZlZTlkYjc1NmE2MmZkOGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE2NDRlNWU4NzNkYjcyNTU1YzgxZDZlYmUxOWY2NTY0M2Y4MzhlMzRjMmYzMzhmMDQ0NGZhOGE4ODEwMmE4NGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8c82fb7ee6bb49d6b47f368e83ea5e45",
+      "statement": "dcode retries only transient model failures and re-raises other or exhausted failures rather than converting them to model output; it uses capped Retry-After or jittered exponential backoff, and its cumulative delay guard refuses waits that would exceed a caller's deadline.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py#L282-L357",
+          "version": "repo-lines-v1:sha256:8a1f7883b6af16b896ab01b23bf823cd8f29e54315233acff8419032f4260fce:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2ZTZjNDhhYTkwNDFmNTU0OTZlZGJhZWNkMWE1NTkzMGQwNWVlZjFiZjUyMTJjNTY4MGFlYTJmNDY3ODMyNTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkwYTE4NzJjYmJjN2U1ZTQzYWEzZmZiZmNiMjc0MWIxMTQwZDI5MmI5NzZiYWE3ZDBkZDAwNjc1NjQyNzBiMjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MDE0OWUwNjlhZDY3ZWNjZjQ3MzY0NmZmMWM3NTAwNTBkMzI5ZDExMDAxOGRjNTc2Njg3OGVhZmExZDYwN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxZDlhNTVjOGI5OWNkNzUxNWVkYWZjOGJmOWNjMDUyMzM5YTUzMWRiMjg2YTU4ZjIxNDNkM2FhYWM3YmI2YzAifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py#L424-L519",
+          "version": "repo-lines-v1:sha256:ac83a03672069e5eee9c9cc67572cd9afeaa579b14b193d42fa9b211e6fa5b18:eyJzZWxlY3RlZExpbmVDb3VudCI6OTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiMmE3NTgxYjFkODY4NDJhYjg2OTM5MDM1N2U0MjMyYzJiOWZkZDE4YjIxODJjMTllMDY5YTJjZjM1YjI0MTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU1YmM0NzExZWNjYTA0NTBhZmM4MzI3NzlhODg2NzZhN2M2OTYwZmEzZGE1YWY0MTBlZTAyZDFlMDE1MTU5MWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRkNzhmMjZkZWExNDhlNDE0ZTVkYTFhNTYyZTAyMzM0MDQwZGI0OGU5ZTkxMjg5MjA4NTkzNjFkMDNjOTI0ZTYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py#L568-L653",
+          "version": "repo-lines-v1:sha256:683ae6376e5113aaabedb1a689420dd8ae783a54e211db3518be7f1c9ed9b916:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMzYjIxOWJmNWIzOTZmYjg3MmFmMWZkYTc2MDY3NDZlMDczMmRhZDlkNTg2ZjkxMGE4MDdjNDU4NTk3ZDNlYTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4YmMxOWQ0YWMzOWYxM2Q3OTZlMWU2ZjYwYTk0Y2M1MmI4ZGU4OTliMDRjZmI2NzU1YWRkMjgzOTIyYzAxOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZGYyYWNmMDZlOGMzZjAzYzcxMzVjNmU4YWM1YTljYTU0MzJhYmUwNmE3NGFjYTBmZGQ5YTUzYTAwOGY5ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM3MThmYzNiNzI3MjQ5NjY0NjlhMmQ2NWUwNGRiNDMwYjhlMThmYTE3YjFhOTY0ZmNlYzYyNmEwNWFmZjYwZjMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_retry.py#L699-L795",
+          "version": "repo-lines-v1:sha256:02322b4d5cb461583e8a1962ff312a27e54e8fd3449feb52cd5db236a4387efa:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjNjU1MTc4OWZkZmU4NWM4OWQwMTBhYjFmMDBiMDk5YjJlYWI1Mzg1NTMxZGYxZjQ2OTkxYTk1MWU3ZDBjMWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwYzg4MzAxODI4ZTZkNDczYjdhODBkNGMyODA2YmZlODFiOWNiZGZkYjEyODM5OTA3MTM4YmY3ZWNhNmYyODEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk0MTAzZmJkOTlhMTFjY2I4ZWI2Y2Y5YmJlYTlmZDE3NDE4YmUwNGJlODFlNzI1NWMxZTU0MmE5MzhkZDI0MTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlMzIwMWI3Y2ZhYzBiY2QyNWY3MmExODNhNGRlN2VhMTQ4NWFkNzNlODlkNTZkOTMyNjcxNTgwNzhmZDJhZjQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1e7eb98c651049c79d6a42fb4e0c3a59",
+      "statement": "Release-note drafting sanitizes echoed maintainer instructions, keeps trusted draft state outside the model helper's work directory, and revalidates both generated output and the release PR identity before publishing, rejecting metadata markers and version headings that could forge trusted release-note state.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/release/release-notes.js#L317-L379",
+          "version": "repo-lines-v1:sha256:fbf8c29c6179cf56bf51dae714ed4c9eff02419cb691677b77b57fbb9b6a5fd7:eyJzZWxlY3RlZExpbmVDb3VudCI6NjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY2MDVkMGMzNTQ1M2QzZWE4MDEyZDc2ZTJhYTAzZGQ5N2U2ZDRiMGI2Nzg1NGYwZGRhNmFhOTc1MzU5Njg1YTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI3NGY3NzJiZmU5YjI0NDAwMjk1NGMwYTU3NGEwOTkwNjM2YzM0Njg4MjRiZGI4YjY5NjY5YzAzYzkxMDBhMDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5ZTljZjQ0NjI1YjQzYzY0OGY5MDgwYmM1MjRmZjk4MDNhZTEyOTYxZTc2ZGI1YTFkZDk3MWI3OWRlMmZjNzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmYTE4Y2MzNTU5MjExYjY4ZTZlNjcxYWY0NTI2NTgyOTk1OTdhMWEwNDJhNmFkYWZhOWY2ZmYwMDZmYWRiNzgifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/release/release-notes.js#L406-L445",
+          "version": "repo-lines-v1:sha256:1d089f2370fd736bde28d790736327f8fedc024a75b4c4f1179ad75bc035a8ad:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhNDU0ZDQ5MjQ1NmM4ZDkwODExOTU2NzAxMWNkNGQ2ODVkMDg1YWYxMDdmOTRmNWRhNjE0OTVmMzdlYTNmZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjZjcyYjk0MzgzMjllNjRiMGQxMmIyZWYxNWEzMzQ5ODY5YTVlNWZiYzg1Yjg2ZWI1OWFjMDJhMjEwZTc2NzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI5MzMwZWJlNGM0NDU4MmJkMmVmOTQ0OTQ4ZDkyZGZmZGI0MTk5NjU3NWM0Mjc3NDAzNjk1Y2FmNzJlNjAyNjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImExZmY3NWFkNjZjNGJjMDQ3YTczZDg4Y2U2NGVhMGRmMmU0ZjllYjJlNDExOWY2NTA5ODllMDE1ZTQ2Y2U0N2MifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/release/release-notes.js#L778-L860",
+          "version": "repo-lines-v1:sha256:106cc1b2095e4def4a9d1110addda41237c10a97c511edd66352439e5214fd93:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlNmI5YjU2OWY0ZDMwNGQ5YWJjMDY0MWE0MGE1ZjNkYjY0NDM1NjUzMzJjNjMzZGZmMTI2NjhkM2E5YzU3MzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlN2Y4MGVjNWExODhjMmI2ZGVjNDY0MTlhNDVkZGE0NTVlZDdmNTZhYzUyZjQzZTg2NGE3MzNiMjFlODU2NmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxYWM3NDA3MTI3NzZhYWE1ODE2MGUwYWU4NzEzYWMxOTA2YzMxZThiZjY3MDNlMzg4MTJhMGVjZTkxYzY3OTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk2OTc5N2NlZGM3MGNiZTY2OGM3YjQ3NzEyMTdhZjExZWI4ODAwMjIyMWRhYmEwZGIxZmY0NzM2Y2Q2NjIwNDUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-18T18:59:02.504Z"
+    "at": "2026-09-23T08:05:59.666Z"
   }
 }

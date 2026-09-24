@@ -8,11 +8,14 @@ from unittest.mock import MagicMock
 
 from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
-from textual.widgets import Checkbox, Select, Static
+from textual.widgets import Button, Checkbox, Select, Static
 
+import deepagents_code.tui.modals.cost_breakdown as cost_breakdown_mod
 import deepagents_code.tui.widgets.debug_console as debug_console_mod
 from deepagents_code._debug_buffer import InMemoryLogRecord, get_log_buffer
 from deepagents_code.app import DeepAgentsApp
+from deepagents_code.cost_tracking import _empty_cost_breakdown
+from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
 from deepagents_code.tui.widgets.debug_console import (
     DebugConsoleScreen,
     SnapshotField,
@@ -352,6 +355,57 @@ class TestDebugConsoleScreen:
         assert len(opened) == 1
         assert copied == []
 
+    async def test_cost_breakdown_button_opens_dedicated_modal(self) -> None:
+        breakdown = "Entire-thread estimated breakdown\nInput  12  0.01"
+        app = _Harness()
+        async with app.run_test() as pilot:
+            console = DebugConsoleScreen(
+                _snapshot(), cost_breakdown_provider=lambda: breakdown
+            )
+            app.push_screen(console)
+            await pilot.pause()
+
+            await pilot.click(console.query_one("#debug-cost-breakdown", Button))
+            await pilot.pause()
+
+            assert isinstance(app.screen, CostBreakdownScreen)
+            assert breakdown in _widget_text(
+                app.screen.query_one(".cost-breakdown-body", Static)
+            )
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is console
+
+    async def test_cost_breakdown_updates_while_open_and_copies_latest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        breakdown = "Input  12  0.01"
+        copied: list[str] = []
+        monkeypatch.setattr(
+            cost_breakdown_mod,
+            "copy_text_to_clipboard",
+            lambda _app, text: (copied.append(text) or True, None),
+        )
+        app = _Harness()
+        async with app.run_test() as pilot:
+            console = DebugConsoleScreen(
+                _snapshot(), cost_breakdown_provider=lambda: breakdown
+            )
+            app.push_screen(console)
+            await pilot.pause()
+            await pilot.click(console.query_one("#debug-cost-breakdown", Button))
+            await pilot.pause()
+            modal = cast("CostBreakdownScreen", app.screen)
+            assert "12" in _widget_text(modal.query_one(".cost-breakdown-body", Static))
+
+            breakdown = "Input  24  0.02"
+            await pilot.pause(delay=0.6)
+            assert breakdown in _widget_text(
+                modal.query_one(".cost-breakdown-body", Static)
+            )
+            await pilot.press("c")
+            assert copied == [breakdown]
+
     async def test_escape_dismisses(self) -> None:
         app = _Harness()
         async with app.run_test() as pilot:
@@ -364,6 +418,35 @@ class TestDebugConsoleScreen:
 
 
 class TestDebugConsoleToggle:
+    async def test_missing_history_hides_breakdown_but_keeps_total(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test(size=(140, 65)) as pilot:
+            await pilot.pause()
+            app._set_session_cost(1.25)
+            await pilot.press("ctrl+backslash")
+            await pilot.pause()
+            screen = cast("DebugConsoleScreen", app.screen)
+            button = screen.query_one("#debug-cost-breakdown", Button)
+
+            for breakdown in (
+                None,
+                {},
+                {"version": 999},
+                _empty_cost_breakdown(historical_complete=False),
+            ):
+                app._session_cost_breakdown = breakdown
+                screen._on_refresh_tick()
+                assert not button.display
+                assert "$1.25" in app._format_cost_summary()
+
+            app._session_cost_breakdown = _empty_cost_breakdown()
+            screen._on_refresh_tick()
+            await pilot.pause()
+            assert button.display
+            await pilot.click(button)
+            await pilot.pause()
+            assert isinstance(app.screen, CostBreakdownScreen)
+
     async def test_shift_tab_reverses_focus_despite_app_toggle_binding(
         self,
     ) -> None:
@@ -378,25 +461,26 @@ class TestDebugConsoleToggle:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._set_session_cost(1.25, breakdown=_empty_cost_breakdown())
             await pilot.press("ctrl+backslash")
             await pilot.pause()
             screen = cast("DebugConsoleScreen", app.screen)
             log = screen.query_one("#debug-log", _DebugLogView)
-            select = screen.query_one("#debug-level-filter", Select)
             assert screen.focused is log
             assert app._auto_approve is False
 
             await pilot.press("tab")
             await pilot.pause()
-            assert screen.focused is select
+            breakdown = screen.query_one("#debug-cost-breakdown", Button)
+            assert screen.focused is breakdown
 
             await pilot.press("shift+tab")
             await pilot.pause()
             # This focus move is the discriminating assertion: without the
             # `check_action` step-aside, shift+tab is swallowed and focus stays
-            # on `select`. The `_auto_approve` check below is defense-in-depth
-            # only -- the toggle already no-ops under any modal, so it reads
-            # `False` in both the fixed and broken cases.
+            # on the breakdown button. The `_auto_approve` check below is
+            # defense-in-depth only -- the toggle already no-ops under any modal,
+            # so it reads `False` in both the fixed and broken cases.
             assert screen.focused is log
             assert app._auto_approve is False
 

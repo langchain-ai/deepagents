@@ -2318,6 +2318,30 @@ def _resolve_update_lock_file() -> Path | None:
     return chosen
 
 
+def _legacy_update_lock_file() -> Path | None:
+    """Find the lock path in a pre-existing legacy installation lock directory.
+
+    Never create the directory: fresh installs must not add an invalid tool
+    entry for uv. Existing roots remain available to older sessions, including
+    those that have not yet attempted their first update.
+
+    Returns:
+        The legacy path, or `None` when its root is absent, unsafe or inaccessible.
+    """
+    root = PATHS.installation.root
+    legacy = root.parent / f".{root.name}.deepagents-code-locks" / "update.lock"
+    try:
+        if legacy.parent.is_symlink() or legacy.is_symlink():
+            return None
+        if not legacy.parent.is_dir():
+            return None
+        if not legacy.exists() or legacy.is_file():
+            return legacy
+    except OSError:
+        logger.warning("Could not prepare legacy update lock %s", legacy, exc_info=True)
+    return None
+
+
 _WARNED_LOCK_UNAVAILABLE = False
 """Whether the "no update lock" warning already reached stderr this process."""
 
@@ -2344,6 +2368,12 @@ def update_install_lock() -> Iterator[bool]:
 
     Non-blocking by design: a loser returns immediately rather than stalling
     startup behind an install it does not need.
+
+    If a legacy directory exists, hold its lock alongside the current lock for
+    the entire install, creating the file if necessary: older sessions may
+    attempt their first update after we acquire the current lock. Keep its inode
+    after release so those sessions always contend on the same file. An older
+    process that creates a legacy directory later cannot share this protection.
 
     The locking itself never raises; exceptions from the caller's own body
     propagate as usual. When the lock is unusable — an unwritable state
@@ -2407,48 +2437,57 @@ def update_install_lock() -> Iterator[bool]:
         # usable for locking (CIFS/exFAT mounts routinely refuse `chmod`), so
         # abandoning the lock would disable this protection for no reason.
         harden_state_dir(lock_file.parent)
-        file_lock = FileLock(str(lock_file), timeout=0, thread_local=False)
+        legacy = _legacy_update_lock_file()
+        lock_files = [lock_file]
+        # Existing legacy roots also cover older sessions' first update attempts.
+        if legacy is not None:
+            lock_files.append(legacy)
+        acquired_locks = []
         try:
-            file_lock.acquire()
-        # `filelock.Timeout` subclasses `TimeoutError`, hence `OSError`, so this
-        # clause MUST stay above the one below. Reorder them and every "another
-        # process is installing" case silently becomes a fail-open `yield True`
-        # — the concurrent double-install this lock exists to prevent.
-        except Timeout:
-            logger.info(
-                "Skipping update install; %s is held by another dcode process",
-                lock_file,
-            )
-            yield False
-            return
-        except OSError:
-            logger.warning(
-                "Proceeding without the update lock; could not acquire %s. "
-                "If this persists, removing that file may clear it.",
-                lock_file,
-                exc_info=True,
-            )
-            yield True
-            return
-        try:
+            for lock_file in lock_files:
+                file_lock = FileLock(str(lock_file), timeout=0, thread_local=False)
+                try:
+                    file_lock.acquire()
+                # `filelock.Timeout` subclasses `TimeoutError`, hence `OSError`, so this
+                # clause MUST stay above the one below. Reorder them and every "another
+                # process is installing" case silently becomes a fail-open `yield True`
+                # — the concurrent double-install this lock exists to prevent.
+                except Timeout:
+                    logger.info(
+                        "Skipping update install; %s is held by another dcode process",
+                        lock_file,
+                    )
+                    yield False
+                    return
+                except OSError:
+                    logger.warning(
+                        "Proceeding without the update lock; could not acquire %s. "
+                        "If this persists, removing that file may clear it.",
+                        lock_file,
+                        exc_info=True,
+                    )
+                    yield True
+                    return
+                acquired_locks.append(file_lock)
             yield True
         finally:
-            # Releasing must not mask the install's own outcome, and the lock is
-            # dropped when the process exits regardless. But it is not harmless:
-            # `UnixFileLock._release` clears its fd handle *before* unlocking, so
-            # a raising `flock` leaks an fd that still holds the lock, and every
-            # later attempt in this session then reports a phantom concurrent
-            # install. Log it, or that failure is undiagnosable.
-            try:
-                file_lock.release()
-            except OSError:
-                logger.warning(
-                    "Failed to release the update lock at %s; further update "
-                    "attempts in this session may report a concurrent install "
-                    "until dcode is restarted",
-                    lock_file,
-                    exc_info=True,
-                )
+            for file_lock in reversed(acquired_locks):
+                # Releasing must not mask the install's own outcome, and the lock is
+                # dropped when the process exits regardless. But it is not harmless:
+                # `UnixFileLock._release` clears its fd handle *before* unlocking, so
+                # a raising `flock` leaks an fd that still holds the lock, and every
+                # later attempt in this session then reports a phantom concurrent
+                # install. Log it, or that failure is undiagnosable.
+                try:
+                    file_lock.release()
+                except OSError:
+                    logger.warning(
+                        "Failed to release the update lock at %s; further update "
+                        "attempts in this session may report a concurrent install "
+                        "until dcode is restarted",
+                        file_lock.lock_file,
+                        exc_info=True,
+                    )
     finally:
         _UPDATE_INSTALL_THREAD_LOCK.release()
 

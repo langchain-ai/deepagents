@@ -4,7 +4,7 @@ import contextlib
 import dataclasses
 import json
 from collections.abc import Awaitable, Callable, Generator, Sequence
-from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -27,7 +27,7 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
@@ -39,6 +39,10 @@ from deepagents.middleware.summarization import (
     SummarizationEvent,
     _DeepAgentsSummarizationMiddleware,
 )
+from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
+
+if TYPE_CHECKING:
+    from pydantic_core import InitErrorDetails
 
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
@@ -414,6 +418,10 @@ When returning updates:
 """
 
 
+_TASK_TOOL_INJECTED_ARGS = frozenset({"runtime"})
+"""Arguments the tool node injects into the `task` call alongside the model's."""
+
+
 class TaskToolSchema(BaseModel):
     """Input schema for the `task` tool."""
 
@@ -425,6 +433,31 @@ class TaskToolSchema(BaseModel):
     )
 
     subagent_type: str = Field(description=("The type of subagent to use. Must be one of the available agent types listed in the tool description."))
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_unknown_keys(cls, data: object) -> object:
+        """Refuse keys the schema does not define.
+
+        Models sometimes put the real instructions under an invented key (e.g.
+        `prompt`) and leave a short label in `description`. Ignoring the extra key
+        dispatched the subagent with the label alone and reported success; a
+        validation error goes back to the model as a tool error naming the key.
+
+        `extra="forbid"` cannot be used: the tool node validates the arguments
+        after injecting the `runtime` parameter, which is not a schema field.
+        """
+        if isinstance(data, dict):
+            arguments = {str(key): value for key, value in data.items()}
+            unknown = sorted(arguments.keys() - set(cls.model_fields) - _TASK_TOOL_INJECTED_ARGS)
+            if unknown:
+                # LangGraph filters out errors without a field location.
+                errors: list[InitErrorDetails] = []
+                for key in unknown:
+                    msg = f"Unexpected argument {key!r}; put all instructions for the subagent in `description`."
+                    errors.append({"type": "value_error", "loc": (key,), "input": arguments[key], "ctx": {"error": ValueError(msg)}})
+                raise ValidationError.from_exception_data(cls.__name__, errors)
+        return data
 
 
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle a complex, multi-step task.
@@ -549,6 +582,9 @@ def create_sub_agent(
     interrupt_on = spec.get("interrupt_on")
     if interrupt_on:
         middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+
+    if not any(m.name == UnsupportedContentMiddleware.__name__ for m in middleware):
+        middleware.append(UnsupportedContentMiddleware())
 
     selected_response_format = response_format if response_format is not None else spec.get("response_format")
     create_agent_kwargs: dict[str, Any] = {

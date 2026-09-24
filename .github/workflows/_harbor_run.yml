@@ -319,8 +319,8 @@ jobs:
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
-          TYPESAFE_API_KEY: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector", "semif-tool-selector", "semif-choice-tool-selector", "semif-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_API_KEY || '' }}
-          TYPESAFE_BASE_URL: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector", "semif-tool-selector", "semif-choice-tool-selector", "semif-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_BASE_URL || '' }}
+          TYPESAFE_API_KEY: ${{ startsWith((matrix.agent_impl || inputs.agent_impl), 'semif-') && secrets.LANGSMITH_API_KEY || contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_API_KEY || '' }}
+          TYPESAFE_BASE_URL: ${{ startsWith((matrix.agent_impl || inputs.agent_impl), 'semif-') && 'https://gateway.smith.langchain.com' || contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_BASE_URL || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # Required regardless of the model under test: the verifiers judge with
           # JUDGE_PROVIDER=openai, and DRBench's factuality metric embeds with an OpenAI
@@ -622,8 +622,8 @@ jobs:
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
-          TYPESAFE_API_KEY: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector", "semif-tool-selector", "semif-choice-tool-selector", "semif-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_API_KEY || '' }}
-          TYPESAFE_BASE_URL: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector", "semif-tool-selector", "semif-choice-tool-selector", "semif-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_BASE_URL || '' }}
+          TYPESAFE_API_KEY: ${{ startsWith((matrix.agent_impl || inputs.agent_impl), 'semif-') && secrets.LANGSMITH_API_KEY || contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_API_KEY || '' }}
+          TYPESAFE_BASE_URL: ${{ startsWith((matrix.agent_impl || inputs.agent_impl), 'semif-') && 'https://gateway.smith.langchain.com' || contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_BASE_URL || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # Required regardless of the model under test: the verifiers judge with
           # JUDGE_PROVIDER=openai, and DRBench's factuality metric embeds with an OpenAI

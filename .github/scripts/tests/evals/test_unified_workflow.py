@@ -954,6 +954,22 @@ def test_harbor_run_accepts_flat_matrix_and_derives_parallel_pool() -> None:
     assert "HARBOR_SHARD_INDEX: ${{ matrix.shard }}" in job_env
 
 
+def test_semif_selectors_use_managed_gateway_without_changing_jev_route() -> None:
+    """Keep SemIf on the managed SystemOne route and Jev on TypeSafe BYOK."""
+    workflow = HARBOR_WORKFLOW.read_text()
+    semif_key = "startsWith((matrix.agent_impl || inputs.agent_impl), 'semif-') && secrets.LANGSMITH_API_KEY"
+    semif_base = "startsWith((matrix.agent_impl || inputs.agent_impl), 'semif-') && 'https://gateway.smith.langchain.com'"
+    jev_key = "secrets.TYPESAFE_API_KEY"
+    jev_base = "secrets.TYPESAFE_BASE_URL"
+
+    assert workflow.count(semif_key) == 2
+    assert workflow.count(semif_base) == 2
+    assert workflow.count(jev_key) == 2
+    assert workflow.count(jev_base) == 2
+    assert "--agent-env 'TYPESAFE_API_KEY=${TYPESAFE_API_KEY}'" in workflow
+    assert "--agent-env 'TYPESAFE_BASE_URL=${TYPESAFE_BASE_URL}'" in workflow
+
+
 def test_evals_ci_filter_includes_unified_workflows() -> None:
     """Run evals CI when either unified workflow changes in isolation."""
     workflow = CI_WORKFLOW.read_text()

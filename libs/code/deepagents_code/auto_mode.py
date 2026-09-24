@@ -1172,16 +1172,15 @@ def _active_temp_artifacts(state: Mapping[str, object]) -> dict[str, AutoTempArt
 
 
 def _current_temp_artifacts(
-    state: Mapping[str, object], runtime: object, messages: Sequence[object]
+    state: Mapping[str, object], runtime: object, _messages: Sequence[object]
 ) -> dict[str, AutoTempArtifact]:
     thread_key = _thread_key(runtime)
-    turn_id = _latest_turn_id(messages)
-    if thread_key is None or turn_id is None:
+    if thread_key is None:
         return {}
     return {
         file_path: artifact
         for file_path, artifact in _active_temp_artifacts(state).items()
-        if artifact["thread_key"] == thread_key and artifact["turn_id"] == turn_id
+        if artifact["thread_key"] == thread_key
     }
 
 
@@ -2576,13 +2575,21 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             artifacts = _current_temp_artifacts(runtime.state, runtime, messages)
             artifact = artifacts.get(file_path)
             if artifact is None:
+                known_artifact = _active_temp_artifacts(runtime.state).get(file_path)
+                if known_artifact is not None:
+                    content = (
+                        "Denied temporary artifact cleanup: the exact path is not "
+                        "owned by this thread."
+                    )
+                else:
+                    content = (
+                        "Denied temporary artifact cleanup: the exact path is not "
+                        "a known temporary artifact."
+                    )
                 return _temp_artifact_command(
                     tool_name="delete_temp_artifact",
                     tool_call_id=tool_call_id,
-                    content=(
-                        "Denied temporary artifact cleanup: the exact path is not "
-                        "owned by this request."
-                    ),
+                    content=content,
                     error=True,
                 )
             try:

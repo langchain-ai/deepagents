@@ -1948,6 +1948,8 @@ def test_temp_artifact_from_another_request_cannot_be_deleted(
     )
     state, artifact = _create_test_temp_artifact(middleware, request)
     artifact_path = Path(cast("str", artifact["file_path"]))
+    request.runtime.context["thread_id"] = "thread-2"
+    request.runtime.context["approval_mode_key"] = approval_mode_key("thread-2")
     state["messages"] = [
         HumanMessage(
             content="another request",
@@ -1975,9 +1977,55 @@ def test_temp_artifact_from_another_request_cannot_be_deleted(
     update = cast("dict[str, Any]", command.update)
     message = cast("ToolMessage", update["messages"][0])
     assert message.status == "error"
-    assert "not owned by this request" in cast("str", message.content)
+    assert "not owned by this thread" in cast("str", message.content)
     assert "_auto_temp_artifacts" not in update
     assert artifact_path.exists()
+
+
+def test_temp_artifact_from_earlier_turn_can_be_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    middleware = _middleware(worktree)
+    request, _store, _key = _request(
+        worktree,
+        model=_FailIfClassifiedModel(),
+        tool_name="create_temp_artifact",
+        args={},
+    )
+    state, artifact = _create_test_temp_artifact(middleware, request)
+    artifact_path = Path(cast("str", artifact["file_path"]))
+    state["messages"] = [
+        *state["messages"],
+        HumanMessage(
+            content="later turn",
+            additional_kwargs={
+                USER_PROMPT_METADATA_KEY: user_prompt_metadata(
+                    "later turn", [], turn_id="turn-2"
+                )
+            },
+        ),
+    ]
+
+    command = _invoke_scratch_tool(
+        middleware,
+        "delete_temp_artifact",
+        _scratch_runtime(
+            request,
+            state,
+            tool_call_id="delete-call",
+            tools=list(middleware.tools),
+        ),
+        file_path=str(artifact_path),
+    )
+    _apply_temp_artifact_update(state, command)
+
+    update = cast("dict[str, Any]", command.update)
+    assert cast("ToolMessage", update["messages"][0]).status == "success"
+    assert not artifact_path.exists()
+    assert state["_auto_temp_artifacts"] == {}
 
 
 def test_untrusted_latest_human_message_clears_temp_authority(

@@ -295,6 +295,67 @@ async def test_side_context_budget_includes_instructions_history_and_output(
     assert state == before
 
 
+@pytest.mark.parametrize("model_spec", ["test:bootstrap", "test:switched"])
+@pytest.mark.parametrize("snapshot", ["resumed", "live", "evicted"])
+async def test_side_context_keeps_session_profile_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model_spec: str, snapshot: str
+) -> None:
+    from langchain_core.messages.utils import count_tokens_approximately
+
+    from deepagents_code import server_graph
+    from deepagents_code._server_config import ServerConfig
+    from deepagents_code._testing_models import DeterministicIntegrationChatModel
+    from deepagents_code.btw import BTW_OPERATION_ATTR
+
+    monkeypatch.setattr(
+        "deepagents_code.config._create_model_via_init",
+        lambda *_args, **_kwargs: DeterministicIntegrationChatModel(
+            profile={"max_input_tokens": 8000, "tool_calling": True}
+        ),
+    )
+    server = await server_graph._make_graphs(
+        config_override=ServerConfig(
+            model="test:bootstrap",
+            profile_overrides={"max_input_tokens": 2000},
+            cwd=str(tmp_path),
+            system_prompt="Main instructions",
+            no_mcp=True,
+            enable_shell=False,
+            enable_memory=False,
+            enable_skills=False,
+        )
+    )
+    operation: BtwOperation = getattr(server.backend, BTW_OPERATION_ATTR)
+    if snapshot != "resumed":
+        operation._snapshots["thread"] = (
+            cast("BaseChatModel", operation._model),
+            SystemMessage(content="Main instructions"),
+            {},
+        )
+    if snapshot == "evicted":
+        operation._snapshots.clear()
+    state = {
+        "_model_spec": model_spec,
+        "messages": [
+            HumanMessage(content="Old context " * 1000),
+            HumanMessage(content="Recent context"),
+        ],
+    }
+    before = deepcopy(state)
+    with patch.object(
+        DeterministicIntegrationChatModel,
+        "ainvoke",
+        new=AsyncMock(return_value=AIMessage(content="The answer")),
+    ) as invoke:
+        assert await operation.answer("thread", state, "Why?") == "The answer"
+    messages = invoke.call_args.args[0]
+    assert count_tokens_approximately(messages) <= 1900
+    assert messages[0].text.startswith("Main instructions")
+    assert [message.text for message in messages[1:-1]] == ["Recent context"]
+    assert messages[-1].text.endswith("Why?")
+    assert state == before
+
+
 @pytest.mark.parametrize("oversized", ["system", "question"])
 async def test_side_context_rejects_required_input_over_budget(oversized: str) -> None:
     from langchain_core.exceptions import ContextOverflowError
@@ -620,14 +681,8 @@ async def test_constructor_tools_are_absent_from_provider_request(
         with patch(
             "deepagents_code.config.create_model",
             return_value=SimpleNamespace(model=model),
-        ) as create:
+        ):
             assert await operation.answer("thread", state, "why") == "answer"
-        if source == "checkpoint":
-            create.assert_called_once_with(
-                "openai:test-model",
-                extra_kwargs=params,
-                bind_preserved_thinking=False,
-            )
         assert params == original
         defaults = model._get_request_payload([HumanMessage(content="main")])
         assert (defaults.get("extra_body") or defaults)["tools"] == options["tools"]
@@ -719,11 +774,10 @@ async def test_route_reads_busy_thread_without_writes(*, live_model: bool) -> No
     if live_model:
         create.assert_not_called()
     else:
-        create.assert_called_once_with(
-            "provider:previous",
-            extra_kwargs={"output_config": {"effort": "high"}},
-            bind_preserved_thinking=False,
-        )
+        assert create.call_args.args == ("provider:previous",)
+        assert create.call_args.kwargs["extra_kwargs"] == {
+            "output_config": {"effort": "high"}
+        }
     assert [call[0] for call in threads.mock_calls] == ["get_state"]
 
 

@@ -261,6 +261,7 @@ class BtwOperation(AgentMiddleware):
         environ: Mapping[str, str] | None,
         *,
         instruction_middleware: Sequence[MemoryMiddleware | SkillsMiddleware] = (),
+        profile_overrides: dict[str, object] | None = None,
     ) -> None:
         """Keep workspace defaults and the read-only instruction loaders.
 
@@ -269,11 +270,13 @@ class BtwOperation(AgentMiddleware):
             system_prompt: Base instructions for a thread without a live snapshot.
             environ: Workspace environment for lazy model resolution.
             instruction_middleware: Main agent memory and skill loaders, in order.
+            profile_overrides: Session profile fields to retain during reconstruction.
         """
         self._model = model
         self._system = SystemMessage(content=system_prompt)
         self._environ = environ
         self._instruction_middleware = tuple(instruction_middleware)
+        self._profile_overrides = deepcopy(profile_overrides)
         self._snapshots: OrderedDict[
             str, tuple[BaseChatModel, SystemMessage, dict[str, Any]]
         ] = OrderedDict()
@@ -383,6 +386,7 @@ class BtwOperation(AgentMiddleware):
                     create_model,
                     spec if isinstance(spec, str) and spec else str(model),
                     extra_kwargs=dict(params) if isinstance(params, Mapping) else None,
+                    profile_overrides=self._profile_overrides,
                     bind_preserved_thinking=False,
                 )
                 model = result.model

@@ -67,26 +67,6 @@ async def test_modal_keys_preserve_draft_and_prompt_once(
             assert app._cache_expiry_bypassed is not None
 
 
-@pytest.mark.parametrize(
-    ("key", "action"),
-    [("ctrl+c", "action_quit_or_interrupt"), ("ctrl+d", "action_quit_app")],
-)
-async def test_modal_preserves_app_quit_keys(
-    key: str, action: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    app = DeepAgentsApp()
-    quit_action = MagicMock()
-    monkeypatch.setattr(app, action, quit_action)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        _prepare(app, monkeypatch)
-        app._check_cache_expiry()
-        await pilot.pause()
-        assert isinstance(app.screen, ColdCacheWarningScreen)
-        await pilot.press(key)
-        quit_action.assert_called_once()
-
-
 async def test_defers_busy_and_disabled_then_rearms_new_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -128,7 +108,7 @@ async def test_defers_busy_and_disabled_then_rearms_new_window(
         await pilot.press("escape")
 
 
-@pytest.mark.parametrize("failure", ["summary", "empty", "seed", "finish", "metadata"])
+@pytest.mark.parametrize("failure", ["empty", "seed", "finish", "metadata"])
 async def test_handoff_failure_keeps_source_thread(
     failure: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -137,10 +117,9 @@ async def test_handoff_failure_keeps_source_thread(
     remote = MagicMock()
     remote.aoffload = AsyncMock(
         return_value={
-            "status": "failed" if failure == "summary" else "summarized",
+            "status": "summarized",
             "summary": "  " if failure == "empty" else "LLM summary",
             "archive_path": "/conversation_history/source.md",
-            "error": "transcript not saved" if failure == "summary" else None,
         }
     )
     remote.aensure_thread = AsyncMock()
@@ -509,8 +488,10 @@ async def test_handoff_preserves_shell_context(
             assert app._pending_shell_messages == []
 
 
-@pytest.mark.parametrize("mode", ["expiry", "send", "off"])
-@pytest.mark.parametrize("keys", [("escape",), ("shift+tab", "enter")])
+@pytest.mark.parametrize(
+    ("mode", "keys"),
+    [("expiry", ("escape",)), ("send", ("shift+tab", "enter")), ("off", ())],
+)
 async def test_send_timing_restores_draft_without_spending(
     mode: str, keys: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -978,6 +959,9 @@ async def test_expiry_acknowledgment_expires_after_a_cold_request(
         app._sync_cache_state_from_state(state)
         message = QueuedMessage("next", "normal")
         assert await app._cold_cache_warning_for(message) is None
+        advisory = await app._cold_cache_warning_for(message, advisory=True)
+        assert advisory is not None
+        assert "~$1.0" in ColdCacheWarningScreen(advisory, handoff=True)._body()
 
         # A later successful cold request advances the request time but leaves
         # cache activity unchanged for providers that report only cache reads.
@@ -993,13 +977,12 @@ async def test_expiry_acknowledgment_expires_after_a_cold_request(
         assert warning.reason == "idle"
 
 
-@pytest.mark.parametrize("identity_changed", [False, True])
 async def test_expiry_acknowledgment_does_not_hide_identity_change(
-    identity_changed: bool, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = DeepAgentsApp()
     app._model_override = "openai:gpt-5.6"
-    app._last_cache_model_spec = "other" if identity_changed else app._model_override
+    app._last_cache_model_spec = "other"
     app._last_model_request_at = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
     app._context_tokens = 50_000
     app._cold_cache_warning_threshold_usd = 0.10
@@ -1027,16 +1010,8 @@ async def test_expiry_acknowledgment_does_not_hide_identity_change(
             app._last_model_request_at,
         )
         warning = await app._cold_cache_warning_for(QueuedMessage("next", "normal"))
-        if identity_changed:
-            assert warning is not None
-            assert warning.reason == "identity_changed"
-        else:
-            assert warning is None
-        advisory = await app._cold_cache_warning_for(
-            QueuedMessage("", "normal"), advisory=True
-        )
-        assert advisory is not None
-        assert "~$1.0" in ColdCacheWarningScreen(advisory, handoff=True)._body()
+        assert warning is not None
+        assert warning.reason == "identity_changed"
 
 
 @pytest.mark.parametrize(

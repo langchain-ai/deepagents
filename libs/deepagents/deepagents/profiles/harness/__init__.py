@@ -11,12 +11,18 @@ from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
     HarnessProfileConfig,
+    HarnessProfileResolution,
+    list_harness_profiles,
     register_harness_profile,
+    resolve_harness_profile,
 )
 
 __all__ = [
     "GeneralPurposeSubagentProfile",
     "HarnessProfile",
     "HarnessProfileConfig",
+    "HarnessProfileResolution",
+    "list_harness_profiles",
     "register_harness_profile",
+    "resolve_harness_profile",
 ]

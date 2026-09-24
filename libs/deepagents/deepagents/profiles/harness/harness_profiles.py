@@ -23,7 +23,7 @@ import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from deepagents.profiles._keys import validate_profile_key
 
@@ -946,11 +946,58 @@ then provider prefix, then no match (returns `None`).
 """
 
 
+@dataclass(frozen=True)
+class HarnessProfileResolution:
+    """Explain how a model spec resolves to an effective harness profile.
+
+    !!! beta
+
+        `deepagents.profiles` exposes beta APIs that may receive minor changes in
+        future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+        for more details.
+
+    `matched_keys` is ordered from the least specific registration to the most
+    specific registration, matching the order in which profiles are merged.
+    An empty tuple with `match_type="default"` means no registration matched
+    and `effective_profile` is the empty default profile.
+    """
+
+    effective_profile: HarnessProfile
+    """The profile produced by applying the matching registrations."""
+
+    matched_keys: tuple[str, ...]
+    """Registry keys that contributed to `effective_profile`."""
+
+    match_type: Literal["exact", "provider", "exact+provider", "default"]
+    """Whether resolution used an exact key, provider fallback, both, or neither."""
+
+
 def _ensure_harness_profiles_loaded() -> None:
     """Ensure the lazy built-in/profile-plugin bootstrap has completed."""
     from deepagents.profiles._builtin_profiles import _ensure_builtin_profiles_loaded  # noqa: PLC0415
 
     _ensure_builtin_profiles_loaded()
+
+
+def list_harness_profiles() -> tuple[str, ...]:
+    """List the harness profile keys registered in the current process.
+
+    !!! beta
+
+        `deepagents.profiles` exposes beta APIs that may receive minor changes in
+        future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+        for more details.
+
+    Triggers the same lazy bootstrap used by profile registration and runtime
+    resolution, so the result includes built-in profiles, entry-point plugin
+    registrations, and profiles registered directly by the user. The returned
+    tuple is sorted for stable display and cannot mutate the internal registry.
+
+    Returns:
+        Registered provider and `provider:model` keys in sorted order.
+    """
+    _ensure_harness_profiles_loaded()
+    return tuple(sorted(_HARNESS_PROFILES))
 
 
 def _coerce_runtime_harness_profile(profile: HarnessProfile | HarnessProfileConfig) -> HarnessProfile:
@@ -1097,20 +1144,109 @@ def _has_any_harness_profile() -> bool:
     return bool(_HARNESS_PROFILES.keys() - _builtin_profiles._BOOTSTRAP_HARNESS_KEYS)
 
 
-def _get_harness_profile(spec: str) -> HarnessProfile | None:
-    """Look up the `HarnessProfile` for a model spec.
+def _resolve_harness_profile(spec: str) -> HarnessProfileResolution:
+    """Resolve a model spec and describe the registrations that matched.
 
     Resolution order:
 
     1. Exact match on `spec`.
     2. Provider prefix (everything before the first `:`), when `spec`
         contains a colon and both halves are non-empty.
-    3. `None` when neither matches.
+    3. An empty default profile when neither matches.
 
     When both an exact-model profile and a provider-level profile exist, they
     are merged field-by-field. Unset model-level fields inherit provider
     defaults, while explicit model-level overrides still replace or augment
     provider settings according to each field's merge semantics.
+
+    Args:
+        spec: Model spec in `provider:model` format, or a bare provider/model
+            identifier. Only the first colon is a separator.
+
+    Returns:
+        The effective profile together with its matching keys and match type.
+    """
+    if not spec:
+        return HarnessProfileResolution(HarnessProfile(), (), "default")
+
+    provider, sep, model = spec.partition(":")
+    if sep and (not provider or not model):
+        return HarnessProfileResolution(HarnessProfile(), (), "default")
+
+    _ensure_harness_profiles_loaded()
+    exact = _HARNESS_PROFILES.get(spec)
+    base = _HARNESS_PROFILES.get(provider) if sep else None
+
+    if exact is not None and base is not None:
+        return HarnessProfileResolution(
+            _merge_profiles(base, exact),
+            (provider, spec),
+            "exact+provider",
+        )
+    if exact is not None:
+        return HarnessProfileResolution(exact, (spec,), "exact")
+    if base is not None:
+        return HarnessProfileResolution(base, (provider,), "provider")
+    return HarnessProfileResolution(HarnessProfile(), (), "default")
+
+
+def resolve_harness_profile(spec: str) -> HarnessProfileResolution:
+    """Explain how a model spec resolves to an effective harness profile.
+
+    !!! beta
+
+        `deepagents.profiles` exposes beta APIs that may receive minor changes in
+        future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
+        for more details.
+
+    Resolution uses the same exact-model and provider-level registrations as
+    `create_deep_agent`. When both keys match, their profiles are merged using
+    the existing harness-profile merge rules. When neither key matches, the
+    result contains an empty `HarnessProfile` with `match_type="default"`.
+
+    Resolution is deliberately limited to registered exact and provider keys;
+    it does not perform wildcard, version-prefix, or model-family matching.
+
+    Example:
+        Inspect the effective profile and how it was selected:
+
+        ```python
+        from deepagents import resolve_harness_profile
+
+        resolution = resolve_harness_profile("anthropic:claude-opus-4-7")
+        print(resolution.match_type)
+        print(resolution.matched_keys)
+        print(resolution.effective_profile)
+        ```
+
+        `match_type` is `"exact"` for an exact `provider:model` registration,
+        `"provider"` for provider fallback, `"exact+provider"` when both
+        registrations are merged, and `"default"` when neither matches.
+
+    Args:
+        spec: Model spec in `provider:model` format. Only the first colon
+            separates the provider from the complete model identifier.
+
+    Returns:
+        An immutable explanation containing the effective profile, matched
+        registry keys, and match type.
+
+    Raises:
+        ValueError: If `spec` is not a valid full `provider:model` spec.
+    """
+    validate_profile_key(spec)
+    if ":" not in spec:
+        msg = f"Harness profile resolution requires a full 'provider:model' spec; got {spec!r}."
+        raise ValueError(msg)
+    return _resolve_harness_profile(spec)
+
+
+def _get_harness_profile(spec: str) -> HarnessProfile | None:
+    """Look up the `HarnessProfile` for a model spec.
+
+    Uses the same resolution implementation as `resolve_harness_profile`, but
+    preserves the internal runtime contract of returning `None` when no
+    registration matches.
 
     When only the provider-level profile matches, a debug breadcrumb is
     emitted so registrations layered on an exact key can be traced when they
@@ -1123,29 +1259,17 @@ def _get_harness_profile(spec: str) -> HarnessProfile | None:
     Returns:
         The matching `HarnessProfile`, or `None` when no registered profile matches.
     """
-    if not spec:
-        return None
-
-    provider, sep, model = spec.partition(":")
-    if sep and (not provider or not model):
-        return None
-
-    _ensure_harness_profiles_loaded()
-    exact = _HARNESS_PROFILES.get(spec)
-    base = _HARNESS_PROFILES.get(provider) if sep else None
-
-    if exact is not None and base is not None:
-        return _merge_profiles(base, exact)
-    if exact is not None:
-        return exact
-    if base is not None:
+    resolution = _resolve_harness_profile(spec)
+    if resolution.match_type == "provider":
+        provider = resolution.matched_keys[0]
         logger.debug(
             "No exact HarnessProfile for %r; using provider %r profile.",
             spec,
             provider,
         )
-        return base
-    return None
+    if resolution.match_type == "default":
+        return None
+    return resolution.effective_profile
 
 
 def _resolve_middleware_seq(
@@ -1297,17 +1421,35 @@ def _merge_profiles(base: HarnessProfile, override: HarnessProfile) -> HarnessPr
     )
 
 
-def _log_harness_profile_miss(subject: str) -> None:
-    """Report an unmatched harness profile at debug level.
+def _log_harness_profile_miss(subject: str, *, provider: str | None = None) -> None:
+    """Report an unmatched harness profile at the appropriate log level.
 
-    Profiles are optional: registering one for a model does not imply that
-    other models need one. Keep misses available for troubleshooting without
-    warning about normal fallback to defaults.
+    When the provider is known, report that the model is using the default
+    harness and show the exact registration keys currently available for that
+    provider. A custom profile is presented as an optional escape hatch, not as
+    a requirement for model support. Keep provider-less misses at debug because
+    there is no reliable registry prefix to present.
 
     Args:
         subject: What was looked up, as a phrase to slot into the message
             (e.g. `"spec 'openai:gpt-5.4'"`).
+        provider: Resolved model provider, when available.
     """
+    if provider is not None:
+        prefix = f"{provider}:"
+        available = tuple(sorted(key for key in _HARNESS_PROFILES if key.startswith(prefix)))
+        if available:
+            registry_details = f"Available Harness Profiles for provider {provider!r}: {', '.join(available)}."
+        else:
+            registry_details = f"No Harness Profiles are currently registered for provider {provider!r}."
+        logger.warning(
+            "No HarnessProfile matched %s; using the default harness. %s "
+            "Register a custom profile with register_harness_profile() if "
+            "model-specific harness behavior is needed.",
+            subject,
+            registry_details,
+        )
+        return
     logger.debug(
         "No harness profile matched %s; using defaults. "
         "If you registered a profile for this model, ensure the key matches the model's "
@@ -1349,7 +1491,9 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
         profile = _get_harness_profile(spec)
         if profile is not None:
             return profile
-        _log_harness_profile_miss(f"spec {spec!r}")
+        spec_provider, separator, _ = spec.partition(":")
+        provider = spec_provider if separator else get_model_provider(model)
+        _log_harness_profile_miss(f"spec {spec!r}", provider=provider)
         return HarnessProfile()
     identifier = get_model_identifier(model)
     provider = get_model_provider(model)
@@ -1383,5 +1527,8 @@ def _harness_profile_for_model(model: BaseChatModel, spec: str | None) -> Harnes
                 provider,
             )
             return profile
-    _log_harness_profile_miss(f"pre-built model {type(model).__name__} (identifier={identifier!r}, provider={provider!r})")
+    _log_harness_profile_miss(
+        f"pre-built model {type(model).__name__} (identifier={identifier!r}, provider={provider!r})",
+        provider=provider,
+    )
     return HarnessProfile()

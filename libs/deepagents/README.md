@@ -53,6 +53,29 @@ The agent can plan, read/write files, and manage its own context. Add your own t
 
 **Acknowledgements: This project was primarily inspired by Claude Code, and initially was largely an attempt to see what made Claude Code general purpose, and make it even more so.**
 
+## Inspecting Harness Profiles
+
+Use the public introspection APIs to discover registered Harness Profiles and
+explain the effective resolution for a specific model:
+
+```python
+from deepagents import list_harness_profiles, resolve_harness_profile
+
+print(list_harness_profiles())
+
+resolution = resolve_harness_profile("anthropic:claude-opus-5")
+print(resolution.match_type)
+print(resolution.matched_keys)
+print(resolution.effective_profile)
+```
+
+`match_type` is `exact` for a model-specific registration, `provider` for a
+provider-level fallback, `exact+provider` when both are merged, and `default`
+when neither registration exists. A `default` result does not mean the model is
+unsupported; it means Deep Agents is using the default harness. If
+model-specific harness behavior is needed, use `register_harness_profile()` to
+register a custom profile.
+
 ## ❓ FAQ
 
 ### How is this different from LangGraph or LangChain?

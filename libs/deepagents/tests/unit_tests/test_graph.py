@@ -2031,30 +2031,96 @@ class TestSubagentLevelProfileResolution:
 
 
 class TestProfileMissLogLevel:
-    """Profile misses remain debug diagnostics even with registered profiles."""
+    """Default resolution warns; every registered match remains quiet."""
 
-    @pytest.mark.parametrize("spec", [None, "someprovv:some-model"])
-    @pytest.mark.parametrize("registered", [False, True])
-    def test_miss_logs_at_debug(self, caplog: pytest.LogCaptureFixture, spec: str | None, *, registered: bool) -> None:
-        with patch.dict(_HARNESS_PROFILES):
-            if registered:
-                register_harness_profile("someprov", HarnessProfile(system_prompt_suffix="x"))
-            model = _make_model({"model_name": "some-model"})
-            model._get_ls_params = MagicMock(return_value={"ls_provider": "someprovv"})
-            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
-                assert _harness_profile_for_model(model, spec) == HarnessProfile()
-            records = [r for r in caplog.records if "No harness profile matched" in r.getMessage()]
-            assert records, "Expected a profile-miss log record"
-            assert all(r.levelno == logging.DEBUG for r in records)
-            assert any("someprovv" in r.getMessage() for r in records)
+    @pytest.mark.parametrize("spec", ["anthropic:claude-unregistered", "claude-unregistered"])
+    def test_anthropic_default_lists_only_anthropic_keys(self, caplog: pytest.LogCaptureFixture, spec: str) -> None:
+        model = _make_model({"model_name": "claude-unregistered"})
+        model._get_ls_params = MagicMock(return_value={"ls_provider": "anthropic"})
+        with caplog.at_level(logging.WARNING, logger="deepagents.profiles.harness.harness_profiles"):
+            assert _harness_profile_for_model(model, spec) == HarnessProfile()
 
-    def test_string_spec_hit_logs_no_miss(self, caplog: pytest.LogCaptureFixture) -> None:
-        with patch.dict(_HARNESS_PROFILES):
-            profile = HarnessProfile(system_prompt_suffix="x")
-            register_harness_profile("someprov", profile)
-            with caplog.at_level(logging.DEBUG, logger="deepagents.profiles.harness.harness_profiles"):
-                assert _harness_profile_for_model(_make_model({}), "someprov") is profile
-            assert not [r for r in caplog.records if "No harness profile matched" in r.getMessage()]
+        records = [record for record in caplog.records if "No HarnessProfile matched" in record.getMessage()]
+        assert len(records) == 1
+        assert records[0].levelno == logging.WARNING
+        message = records[0].getMessage()
+        assert "using the default harness" in message
+        assert "register_harness_profile()" in message
+        assert "anthropic:claude-opus-4-7" in message
+        assert "anthropic:claude-sonnet-4-6" in message
+        assert "anthropic:claude-haiku-4-5" in message
+        assert "openai:" not in message
+        assert "supported" not in message.lower()
+
+    def test_openai_default_lists_only_openai_keys(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="deepagents.profiles.harness.harness_profiles"):
+            assert _harness_profile_for_model(_make_model({}), "openai:gpt-unregistered") == HarnessProfile()
+
+        records = [record for record in caplog.records if "No HarnessProfile matched" in record.getMessage()]
+        assert len(records) == 1
+        message = records[0].getMessage()
+        assert "Available Harness Profiles for provider 'openai'" in message
+        assert "openai:gpt-5.3-codex" in message
+        assert "anthropic:" not in message
+
+    def test_arbitrary_provider_default_reports_empty_provider_list(self, caplog: pytest.LogCaptureFixture) -> None:
+        with caplog.at_level(logging.WARNING, logger="deepagents.profiles.harness.harness_profiles"):
+            assert _harness_profile_for_model(_make_model({}), "unregistered-provider:test-model") == HarnessProfile()
+
+        records = [record for record in caplog.records if "No HarnessProfile matched" in record.getMessage()]
+        assert len(records) == 1
+        message = records[0].getMessage()
+        assert "using the default harness" in message
+        assert "No Harness Profiles are currently registered for provider 'unregistered-provider'" in message
+
+    def test_exact_match_emits_no_default_diagnostic(self, caplog: pytest.LogCaptureFixture) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            profile = HarnessProfile(system_prompt_suffix="exact")
+            register_harness_profile("quiet-exact:model", profile)
+            with caplog.at_level(logging.WARNING, logger="deepagents.profiles.harness.harness_profiles"):
+                assert _harness_profile_for_model(_make_model({}), "quiet-exact:model") is profile
+            assert not [record for record in caplog.records if "No HarnessProfile matched" in record.getMessage()]
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_provider_match_emits_no_default_diagnostic(self, caplog: pytest.LogCaptureFixture) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            profile = HarnessProfile(system_prompt_suffix="provider")
+            register_harness_profile("quiet-provider", profile)
+            with caplog.at_level(logging.WARNING, logger="deepagents.profiles.harness.harness_profiles"):
+                assert _harness_profile_for_model(_make_model({}), "quiet-provider:model") is profile
+            assert not [record for record in caplog.records if "No HarnessProfile matched" in record.getMessage()]
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_exact_and_provider_match_emits_no_default_diagnostic(self, caplog: pytest.LogCaptureFixture) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("quiet-merged", HarnessProfile(system_prompt_suffix="provider"))
+            register_harness_profile("quiet-merged:model", HarnessProfile(base_system_prompt="exact"))
+            with caplog.at_level(logging.WARNING, logger="deepagents.profiles.harness.harness_profiles"):
+                profile = _harness_profile_for_model(_make_model({}), "quiet-merged:model")
+            assert profile == HarnessProfile(base_system_prompt="exact", system_prompt_suffix="provider")
+            assert not [record for record in caplog.records if "No HarnessProfile matched" in record.getMessage()]
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_explicit_empty_exact_profile_emits_no_default_diagnostic(self, caplog: pytest.LogCaptureFixture) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            profile = HarnessProfile()
+            register_harness_profile("quiet-empty:model", profile)
+            with caplog.at_level(logging.WARNING, logger="deepagents.profiles.harness.harness_profiles"):
+                assert _harness_profile_for_model(_make_model({}), "quiet-empty:model") is profile
+            assert not [record for record in caplog.records if "No HarnessProfile matched" in record.getMessage()]
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
 
 
 class TestModelNoneDeprecationWarning:

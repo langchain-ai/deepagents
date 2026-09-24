@@ -18,7 +18,10 @@ from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
     HarnessProfile,
     HarnessProfileConfig,
+    HarnessProfileResolution,
+    list_harness_profiles,
     register_harness_profile,
+    resolve_harness_profile,
 )
 from deepagents.profiles.provider.provider_profiles import (
     ProviderProfile,
@@ -36,6 +39,7 @@ __all__ = [
     "GeneralPurposeSubagentProfile",
     "HarnessProfile",
     "HarnessProfileConfig",
+    "HarnessProfileResolution",
     "MemoryMiddleware",
     "ProviderProfile",
     "RubricMiddleware",
@@ -43,6 +47,8 @@ __all__ = [
     "SubAgentMiddleware",
     "__version__",
     "create_deep_agent",
+    "list_harness_profiles",
     "register_harness_profile",
     "register_provider_profile",
+    "resolve_harness_profile",
 ]

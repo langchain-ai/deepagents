@@ -10,6 +10,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 from langchain_core.language_models import BaseChatModel
 
+from deepagents import (
+    HarnessProfileResolution,
+    list_harness_profiles,
+    resolve_harness_profile,
+)
 from deepagents._models import (
     get_model_identifier,
     get_model_provider,
@@ -991,6 +996,117 @@ class TestHarnessProfileRegistry:
             register_harness_profile(provider, base)
             register_harness_profile(key, exact)
             assert _get_harness_profile(key).system_prompt_suffix == "model"
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+
+class TestHarnessProfileIntrospection:
+    """Tests for public harness-profile discovery and resolution details."""
+
+    def test_list_includes_built_ins(self) -> None:
+        keys = list_harness_profiles()
+        assert isinstance(keys, tuple)
+        assert keys == tuple(sorted(keys))
+        assert "anthropic:claude-opus-4-7" in keys
+        assert "openai:gpt-5.3-codex" in keys
+
+    def test_list_includes_user_registration_without_exposing_registry(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("discovery:model", HarnessProfile())
+            keys = list_harness_profiles()
+            assert "discovery:model" in keys
+            with pytest.raises(AttributeError):
+                keys.append("mutated:model")  # type: ignore[attr-defined]
+            assert "mutated:model" not in _HARNESS_PROFILES
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_exact_match(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            exact = HarnessProfile(system_prompt_suffix="exact")
+            register_harness_profile("inspect_exact:model", exact)
+            resolution = resolve_harness_profile("inspect_exact:model")
+            assert resolution == HarnessProfileResolution(
+                effective_profile=exact,
+                matched_keys=("inspect_exact:model",),
+                match_type="exact",
+            )
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_provider_match(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            provider = HarnessProfile(system_prompt_suffix="provider")
+            register_harness_profile("inspect_provider", provider)
+            resolution = resolve_harness_profile("inspect_provider:model")
+            assert resolution == HarnessProfileResolution(
+                effective_profile=provider,
+                matched_keys=("inspect_provider",),
+                match_type="provider",
+            )
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_exact_and_provider_match_uses_existing_merge_semantics(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "inspect_merged",
+                HarnessProfile(
+                    system_prompt_suffix="provider",
+                    excluded_tools=frozenset({"execute"}),
+                ),
+            )
+            register_harness_profile(
+                "inspect_merged:model",
+                HarnessProfile(
+                    base_system_prompt="exact",
+                    excluded_tools=frozenset({"grep"}),
+                ),
+            )
+            resolution = resolve_harness_profile("inspect_merged:model")
+            assert resolution.match_type == "exact+provider"
+            assert resolution.matched_keys == (
+                "inspect_merged",
+                "inspect_merged:model",
+            )
+            assert resolution.effective_profile == HarnessProfile(
+                base_system_prompt="exact",
+                system_prompt_suffix="provider",
+                excluded_tools=frozenset({"execute", "grep"}),
+            )
+            assert _get_harness_profile("inspect_merged:model") == resolution.effective_profile
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_no_match_returns_empty_default(self) -> None:
+        resolution = resolve_harness_profile("inspect_missing:model")
+        assert resolution == HarnessProfileResolution(
+            effective_profile=HarnessProfile(),
+            matched_keys=(),
+            match_type="default",
+        )
+        assert _get_harness_profile("inspect_missing:model") is None
+
+    def test_public_resolution_rejects_bare_provider(self) -> None:
+        with pytest.raises(ValueError, match="requires a full 'provider:model' spec"):
+            resolve_harness_profile("anthropic")
+
+        # The private runtime lookup keeps accepting provider-only keys for
+        # provider fallback and backwards compatibility.
+        original = dict(_HARNESS_PROFILES)
+        try:
+            profile = HarnessProfile(system_prompt_suffix="provider")
+            register_harness_profile("inspect_bare", profile)
+            assert _get_harness_profile("inspect_bare") is profile
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)

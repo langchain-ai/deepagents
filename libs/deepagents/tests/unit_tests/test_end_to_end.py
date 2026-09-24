@@ -2,6 +2,7 @@
 
 import base64
 import json
+import mimetypes
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -4892,6 +4893,12 @@ class TestFilesystemMiddlewareToolsAllowlist:
         assert "/pwned.txt" not in result.get("files", {})
 
 
+# Fails on Windows / Python 3.13. Python <= 3.13 has no built-in `.docx` MIME type; Linux/macOS read
+# one from `/etc/mime.types`, but Windows relies on the registry, so `read_file` labels `.docx`
+# `application/octet-stream` there.
+_DOCX_MIME_TYPE_UNKNOWN = mimetypes.guess_type("file.docx")[0] is None
+
+
 def _docx_base64() -> str:
     return base64.b64encode(b"PK\x03\x04 fake docx bytes").decode("ascii")
 
@@ -5005,7 +5012,14 @@ class TestMultimodalProfileScrubNonPdfFileProviderGate:
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
 
     @pytest.mark.parametrize("model_type", [RecordingChatOpenAI, RecordingAzureChatOpenAI])
-    @pytest.mark.parametrize(("use_responses_api", "attached"), [(True, True), (False, False), (None, False)])
+    @pytest.mark.parametrize(
+        ("use_responses_api", "attached"),
+        [
+            pytest.param(True, True, marks=pytest.mark.xfail(_DOCX_MIME_TYPE_UNKNOWN, reason="no `.docx` MIME type on this platform", strict=True)),
+            (False, False),
+            (None, False),
+        ],
+    )
     def test_openai_docx_gated_on_provider_class_and_responses_api(
         self,
         model_type: type[RecordingChatOpenAI | RecordingAzureChatOpenAI],

@@ -38,6 +38,8 @@ if TYPE_CHECKING:
 
     from deepagents.backends.protocol import BackendProtocol
 
+    from deepagents_code.offload_middleware import _OffloadState
+
 
 class TestHITLGating:
     """Test that compact_conversation HITL gating respects the constant."""
@@ -245,20 +247,20 @@ class TestCLICompactionMiddleware:
         assert plan.update(None)["_summarization_event"]["cutoff_index"] == 2
         summarization._aoffload_to_backend.assert_not_awaited()
 
-    @pytest.mark.parametrize(
-        "previous_archive", [None, "/conversation_history/source.md"]
-    )
+    @pytest.mark.parametrize("archive_status", ["failed", "missing", "existing"])
     async def test_handoff_archive_recovers_full_compacted_history(
-        self, previous_archive: str | None, tmp_path: Path
+        self, archive_status: str, tmp_path: Path
     ) -> None:
-        """A failed or swept earlier archive must not lose checkpointed details."""
+        """Snapshots stay complete without duplicating the source's archive."""
         from deepagents.backends import FilesystemBackend
         from deepagents.middleware.summarization import SummarizationMiddleware
         from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
         backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
         summarization = SummarizationMiddleware(
-            FakeListChatModel(responses=["New summary"]), backend=backend
+            FakeListChatModel(responses=["New summary"]),
+            backend=backend,
+            keep=("messages", 2),
         )
         middleware = CLICompactionMiddleware(summarization)
         messages: list[AnyMessage] = [
@@ -266,31 +268,60 @@ class TestCLICompactionMiddleware:
             AIMessage("The service name is kestrel."),
             HumanMessage("Now add monitoring."),
             AIMessage("Monitoring configured."),
+            HumanMessage("Next configure alerts."),
+            AIMessage("Alerts configured."),
         ]
-        plan = await middleware._aplan_forced_compaction_update(
-            {
-                "messages": messages,
-                "_summarization_session_id": "source",
-                "_summarization_event": {
-                    "cutoff_index": 2,
-                    "summary_message": HumanMessage(
-                        "Earlier deployment work.",
-                        additional_kwargs={"lc_source": "summarization"},
-                    ),
-                    "file_path": previous_archive,
-                },
+        source_path = summarization._get_history_path("source")
+        if archive_status == "existing":
+            assert (
+                await summarization._aoffload_to_backend(
+                    backend, messages[:2], "source"
+                )
+                == source_path
+            )
+        previous = (await backend.adownload_files([source_path]))[0]
+        state: _OffloadState = {
+            "messages": messages,
+            "_summarization_session_id": "source",
+            "_summarization_event": {
+                "cutoff_index": 2,
+                "summary_message": HumanMessage(
+                    "Earlier deployment work.",
+                    additional_kwargs={"lc_source": "summarization"},
+                ),
+                "file_path": None if archive_status == "failed" else source_path,
             },
-            SimpleNamespace(context=None),
-            handoff=True,
-        )
+        }
+        runtime = SimpleNamespace(context=None)
+        paths: set[str] = set()
+        for _ in range(2):
+            plan = await middleware._aplan_forced_compaction_update(
+                state, runtime, handoff=True
+            )
+            assert plan is not None
+            archive = await plan.archive.write()
+            assert archive is not None
+            transcript = (await backend.adownload_files([archive.path]))[0].content
+            assert transcript is not None
+            for message in messages:
+                assert transcript.decode("utf-8").count(message.text) == 1
+            assert archive.path != source_path
+            assert archive.path not in paths
+            paths.add(archive.path)
+            assert (await backend.adownload_files([source_path]))[0] == previous
 
-        assert plan is not None
-        archive = await plan.archive.write()
-        assert archive is not None
-        transcript = (await backend.adownload_files([archive.path]))[0].content
-        assert transcript is not None
-        for message in messages:
-            assert message.text in transcript.decode("utf-8")
+        if archive_status == "existing":
+            update = await middleware.arun_forced_compaction_update(state, runtime)
+            assert update is not None
+            event = update["_summarization_event"]
+            assert event["file_path"] == source_path
+            assert event["cutoff_index"] == 4
+            transcript = (await backend.adownload_files([source_path]))[0].content
+            assert transcript is not None
+            for message in messages[:4]:
+                assert transcript.decode("utf-8").count(message.text) == 1
+            for message in messages[4:]:
+                assert message.text not in transcript.decode("utf-8")
 
     async def test_operation_path_returns_an_absolute_cutoff(self) -> None:
         """The committed event must carry the absolute cutoff, not the relative one.

@@ -247,6 +247,40 @@ async def test_pending_inspection_allows_navigation_without_stale_updates(
         )
 
 
+async def test_malformed_mcp_type_recovers_and_allows_retry(
+    source: Path,
+    screen: plugin_manager.PluginManagerScreen,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = source / ".mcp.json"
+    config.write_text(json.dumps({"mcpServers": {"search": {"type": []}}}))
+    monkeypatch.setattr(state, "materialize_plugin_source", lambda *_a, **_kw: source)
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+    async with app.run_test(size=(120, 40)) as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        await pilot.press("/", "d", "e", "m", "o", "enter", "enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert "Could not inspect contents" in str(
+            screen.query_one("#plugin-manager-error", Static).content
+        )
+        options = screen.query_one("#plugin-manager-options", OptionList)
+        assert not options.get_option("action:inspect").disabled
+        assert not options.get_option("action:install").disabled
+        assert "Downloading" not in str(options.get_option("action:inspect").prompt)
+        config.write_text(
+            json.dumps({"mcpServers": {"search": {"url": "https://example.com/mcp"}}})
+        )
+        await pilot.press("up", "up", "enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert screen._error is None
+        assert "MCP: search" in str(
+            screen.query_one("#plugin-manager-status", Static).content
+        )
+
+
 async def test_failed_inspection_can_be_retried(
     row: _PluginRow,
     screen: plugin_manager.PluginManagerScreen,

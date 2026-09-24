@@ -1162,8 +1162,9 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             self._previews[row.plugin_id] = await asyncio.to_thread(
                 _inspect_plugin, row
             )
-        except (MarketplaceError, OSError, ValueError, RuntimeError) as exc:
+        except (MarketplaceError, OSError, ValueError, RuntimeError, TypeError) as exc:
             error = f"Could not inspect contents: {redact_urls_in_text(str(exc))}"
+            logger.debug("%s", error)
         finally:
             self._inspecting.discard(row.plugin_id)
         if (

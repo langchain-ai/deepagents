@@ -1100,7 +1100,7 @@ test = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.75"
+version = "0.1.76"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

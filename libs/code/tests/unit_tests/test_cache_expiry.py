@@ -918,6 +918,81 @@ async def test_expiry_never_blocks_non_interactive_dispatch(
         process.assert_awaited_once_with(message.text, message.mode)
 
 
+@pytest.mark.parametrize("dismissal", ["stay", "timeout"])
+async def test_expiry_acknowledgment_expires_after_a_cold_request(
+    dismissal: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request without a cache hit must not inherit an earlier bypass."""
+    from deepagents_code.cold_cache import RewarmEstimate
+
+    app = DeepAgentsApp()
+    app._model_override = "openai:gpt-5.6"
+    app._context_tokens = 50_000
+    app._cold_cache_warning_threshold_usd = 0.10
+    config = MagicMock()
+    config.get_effective_kwargs.return_value = {}
+    config.get_base_url.return_value = None
+    monkeypatch.setattr("deepagents_code.model_config.ModelConfig.load", lambda: config)
+    monkeypatch.setattr(
+        "deepagents_code.model_config.is_warning_suppressed", lambda *_a: False
+    )
+    monkeypatch.setattr(
+        "deepagents_code.cold_cache.estimate_rewarm_cost",
+        lambda *_a: RewarmEstimate(cold_cost_usd=1.0, incremental_cost_usd=0.8),
+    )
+    if dismissal == "timeout":
+        monkeypatch.setattr(
+            app, "_push_screen_wait", AsyncMock(side_effect=TimeoutError)
+        )
+    requested_at = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    cache_use = {
+        "requested_at": requested_at,
+        "model_spec": app._model_override,
+        "endpoint": "default",
+        "params": {},
+    }
+    state = {
+        "_last_model_request_at": requested_at,
+        "_last_cache_model_spec": app._model_override,
+        "_last_cache_model_params": {},
+        "_last_cache_endpoint": "default",
+        "_last_cache_use": cache_use,
+    }
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        app._sync_cache_state_from_state(state)
+        await app._refresh_cache_timing()
+        assert app._status_bar is not None
+        expires_at = app._status_bar.cache_expires_at
+        assert expires_at is not None
+        app._check_cache_expiry()
+        await pilot.pause()
+        if dismissal == "stay":
+            assert isinstance(app.screen, ColdCacheWarningScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+        assert not isinstance(app.screen, ColdCacheWarningScreen)
+
+        # Re-reading the same checkpoint preserves the user's choice.
+        app._sync_cache_state_from_state(state)
+        message = QueuedMessage("next", "normal")
+        assert await app._cold_cache_warning_for(message) is None
+
+        # A later successful cold request advances the request time but leaves
+        # cache activity unchanged for providers that report only cache reads.
+        state["_last_model_request_at"] = (
+            datetime.now(UTC) - timedelta(hours=1)
+        ).isoformat()
+        app._sync_cache_state_from_state(state)
+        await app._refresh_cache_timing()
+        assert app._last_cache_use == cache_use
+        assert app._status_bar.cache_expires_at == expires_at
+        warning = await app._cold_cache_warning_for(message)
+        assert warning is not None
+        assert warning.reason == "idle"
+
+
 @pytest.mark.parametrize("identity_changed", [False, True])
 async def test_expiry_acknowledgment_does_not_hide_identity_change(
     identity_changed: bool, monkeypatch: pytest.MonkeyPatch
@@ -946,7 +1021,11 @@ async def test_expiry_acknowledgment_does_not_hide_identity_change(
         _prepare(app, monkeypatch)
         assert app._status_bar is not None
         assert app._status_bar.cache_expires_at is not None
-        app._cache_expiry_bypassed = ("source", app._status_bar.cache_expires_at)
+        app._cache_expiry_bypassed = (
+            "source",
+            app._status_bar.cache_expires_at,
+            app._last_model_request_at,
+        )
         warning = await app._cold_cache_warning_for(QueuedMessage("next", "normal"))
         if identity_changed:
             assert warning is not None

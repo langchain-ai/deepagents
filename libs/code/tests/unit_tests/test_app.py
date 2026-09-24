@@ -2443,6 +2443,59 @@ class TestModalScreenCtrlDHandling:
 class TestModalScreenShiftTabHandling:
     """Tests for app-level Shift+Tab behavior while modals are open."""
 
+    @pytest.mark.parametrize(
+        "newline_key", ["shift+enter", "alt+enter", "ctrl+enter", "ctrl+j"]
+    )
+    async def test_btw_multiline_editing(
+        self, newline_key: str, btw_app: tuple[DeepAgentsApp, MagicMock]
+    ) -> None:
+        """Side-question shortcuts edit text without changing approval mode."""
+        from textual.widgets import Markdown, TextArea
+
+        from deepagents_code.tui.modals.btw import BtwScreen
+
+        app, remote = btw_app
+        answer = remote.abtw
+        async with app.run_test(size=(110, 36)) as pilot:
+            await pilot.pause()
+            app._connecting = False
+            mode = app._approval_mode
+            composer = app.query_one("#chat-input", TextArea)
+            composer.focus()
+            await pilot.press(*"/btw ")
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, BtwScreen)
+            editor = app.screen.query_one("#btw-input", TextArea)
+            assert editor.has_focus
+            await pilot.press("enter")
+            answer.assert_not_awaited()
+            await pilot.press(*"first", "shift+tab")
+            assert editor.text == "first"
+            assert editor.has_focus
+            assert app._approval_mode is mode
+            await pilot.press(newline_key, *"second")
+            assert editor.text == "first\nsecond"
+            assert editor.has_focus
+            assert app._approval_mode is mode
+            answer.assert_not_awaited()
+            await pilot.press("up", "end", "!")
+            assert editor.text == "first!\nsecond"
+            await pilot.press("enter")
+            await pilot.pause()
+            answer.assert_awaited_once_with(
+                "first!\nsecond",
+                config={"configurable": {"thread_id": app._lc_thread_id}},
+                history=(),
+            )
+            assert app.screen.query_one(Markdown)._markdown == "Side answer"
+            await pilot.press("shift+tab")
+            assert editor.text == ""
+            assert app._approval_mode is mode
+            await pilot.press("escape")
+            await pilot.pause()
+            assert composer.has_focus
+
     async def test_shift_tab_navigates_in_auth_manager(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -13755,6 +13808,51 @@ class TestInterruptApprovalPriority:
 
 class TestApprovalPositionBindings:
     """Tests for app-level approval fallback shortcuts."""
+
+    async def test_tab_navigates_btw_when_background_approval_arrives(
+        self, btw_app: tuple[DeepAgentsApp, MagicMock]
+    ) -> None:
+        """Tab stays in the side dialog until it closes, then reaches approval."""
+        from textual.containers import VerticalScroll
+        from textual.widgets import TextArea
+
+        from deepagents_code.tui.modals.btw import BtwScreen
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
+
+        app, _remote = btw_app
+        async with app.run_test(size=(110, 36)) as pilot:
+            await pilot.pause()
+            app._connecting = False
+            messages = app.query_one("#messages", Container)
+            await pilot.press(*"/btw why", "enter")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, BtwScreen)
+            editor = screen.query_one("#btw-input", TextArea)
+            history = screen.query_one("#btw-scroll", VerticalScroll)
+            assert editor.has_focus
+
+            approval = ApprovalMenu({"name": "execute", "args": {"command": "pwd"}})
+            await messages.mount(approval)
+            app._pending_approval_widget = approval
+            reason = approval.query_one("#approval-reason-input", Input)
+            assert not reason.display
+
+            await pilot.press("tab")
+            assert history.has_focus
+            assert not reason.display
+            await pilot.press("tab")
+            assert editor.has_focus
+            assert not reason.display
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is not screen
+            assert app._pending_approval_widget is approval
+            approval.focus()
+            await pilot.press("tab")
+            assert reason.display
+            assert reason.has_focus
 
     @pytest.mark.parametrize("position", [0, 1, 2])
     def test_numeric_position_delegates_to_visible_option(self, position: int) -> None:

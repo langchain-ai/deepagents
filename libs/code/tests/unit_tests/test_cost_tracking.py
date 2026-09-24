@@ -6,12 +6,14 @@ import asyncio
 import gc
 import json
 import logging
+import sqlite3
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import MagicMock, create_autospec, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -2343,3 +2345,380 @@ class TestGraphCostOwnership:
 
         # One more step with its two side calls, on top of the first turn.
         assert second_total_usd == pytest.approx(10 * self._one_call_usd())
+
+
+@pytest.mark.parametrize("pricing_ok", [False, True])
+@pytest.mark.parametrize(
+    "error", [sqlite3.OperationalError("database is locked"), OSError("unavailable")]
+)
+def test_side_database_failure_preserves_main_cost_event(
+    error: Exception, monkeypatch: pytest.MonkeyPatch, *, pricing_ok: bool
+) -> None:
+    from deepagents_code import btw_cost
+
+    monkeypatch.setattr(btw_cost, "_load_saved_cost", MagicMock(side_effect=error))
+    prior = cost_tracking._empty_cost_breakdown()
+    prior.update(total_cost_usd=1.0, request_count=1)
+    delta = cost_tracking._empty_cost_breakdown()
+    delta.update(total_cost_usd=0.5, request_count=1)
+    events: list[dict[str, Any]] = []
+
+    CostTrackingMiddleware._emit_total(
+        {"messages": [], "_session_cost_usd": 1.0, "_session_cost_breakdown": prior},
+        _runtime(thread_id=THREAD_ID, events=events),
+        0.5,
+        delta,
+        pricing_ok=pricing_ok,
+    )
+
+    assert len(events) == 1
+    event = events[0]
+    assert event["type"] == SESSION_COST_EVENT_TYPE
+    assert event["thread_id"] == THREAD_ID
+    assert event["total"] == event["graph_total"] == pytest.approx(1.5)
+    assert event["breakdown"] == event["graph_breakdown"]
+    assert event["breakdown"]["request_count"] == 2
+    assert event["side_breakdown"] is None
+    assert event["pricing_ok"] is pricing_ok
+
+
+async def test_side_question_cost_is_durable_without_another_turn(
+    recorder: _SessionCostRecorder,
+    side_cost_db: Path,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    from deepagents_code import offload_api
+    from deepagents_code.btw import BtwOperation
+    from deepagents_code.btw_cost import load_cost, session_cost
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    agent = create_agent(
+        model=_fake_model(
+            _message(_usage(), message_id="main-1"),
+            _message(_usage(), message_id="main-2"),
+        ),
+        tools=[],
+        middleware=[CostTrackingMiddleware()],
+        checkpointer=InMemorySaver(),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": THREAD_ID}}
+    await agent.ainvoke({"messages": [HumanMessage("main")]}, config)
+    checkpoint = await agent.aget_state(config)
+    before = cast("CostState", checkpoint.values)
+    one_call = before["_session_cost_usd"]
+    assert one_call > 0
+    operation = BtwOperation(
+        _fake_model(_message(_usage(), message_id="side")), "system", None
+    )
+    server = SimpleNamespace(backend=SimpleNamespace(_dcode_btw=operation))
+    threads = SimpleNamespace(get_state=AsyncMock(return_value={"values": before}))
+    with (
+        patch("deepagents_code.btw_api.require_thread_workspace", new=AsyncMock()),
+        patch.object(offload_api, "get_server_runtime", AsyncMock(return_value=server)),
+        patch.object(
+            offload_api, "_thread_client", return_value=SimpleNamespace(threads=threads)
+        ),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=offload_api.app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/dcode/threads/{THREAD_ID}/btw",
+                json={"question": "side question", "workspace": {}},
+            )
+    assert response.status_code == 200
+    cost = response.json()["cost"]
+    assert (await agent.aget_state(config)).values == before
+    assert recorder.drain(THREAD_ID) == []
+    assert cost is not None
+    assert cost["total_cost_usd"] == pytest.approx(one_call)
+
+    # Recreate the reader with no process-local accounting state. It must show
+    # the persisted side spend even though no subsequent graph turn occurred.
+    assert await asyncio.to_thread(side_cost_db.exists)
+    saved = await asyncio.to_thread(load_cost, THREAD_ID)
+    assert saved == cost
+    remote = RemoteAgent("http://test")
+    graph = MagicMock()
+    graph.aget_state = AsyncMock(return_value=checkpoint)
+
+    async def read_cost(path: str) -> dict[str, object]:
+        async with AsyncClient(
+            transport=ASGITransport(app=offload_api.app), base_url="http://test"
+        ) as client:
+            with patch.object(
+                offload_api,
+                "_thread_client",
+                return_value=SimpleNamespace(threads=threads),
+            ):
+                response = await client.get(path)
+        assert response.status_code == 200
+        return response.json()
+
+    graph.client.http.get = read_cost
+    remote._graph = graph
+    restored = await remote.aget_state(dict(config))
+    assert restored is checkpoint
+    display_cost = await remote.aget_session_cost(dict(config))
+    assert display_cost is not None
+    assert display_cost["total"] == pytest.approx(2 * one_call)
+    assert display_cost["breakdown"] is not None
+    assert display_cost["breakdown"]["request_count"] == 2
+
+    events = [
+        event
+        async for event in agent.astream(
+            {"messages": [HumanMessage("continue")]}, config, stream_mode="custom"
+        )
+    ]
+    totals = [event["total"] for event in events if event.get("type") == "session_cost"]
+    assert totals[-1] == pytest.approx(3 * one_call)
+    after = (await agent.aget_state(config)).values
+    display_cost = session_cost(after, THREAD_ID)
+    assert display_cost["total"] == pytest.approx(3 * one_call)
+    assert display_cost["breakdown"] is not None
+    assert display_cost["breakdown"]["request_count"] == 3
+    assert after["_session_cost_usd"] == pytest.approx(2 * one_call)
+    assert len(after["messages"]) == 4
+    assert recorder.drain(THREAD_ID) == []
+
+
+@pytest.mark.parametrize("history", ["new", "legacy", "accounted"])
+@pytest.mark.usefixtures("side_cost_db")
+async def test_side_question_cost_completeness_from_serialized_history(
+    history: str,
+) -> None:
+    from httpx import ASGITransport, AsyncClient
+
+    from deepagents_code import offload_api
+    from deepagents_code.btw import BtwOperation
+    from deepagents_code.btw_cost import load_cost
+
+    messages = [HumanMessage("Main question").model_dump()]
+    if history != "new":
+        messages.append(AIMessage("Earlier answer").model_dump())
+    values: dict[str, object] = {"messages": messages}
+    if history == "accounted":
+        values["_session_cost_breakdown"] = cost_tracking._empty_cost_breakdown()
+    before = deepcopy(values)
+    operation = BtwOperation(
+        _fake_model(_message(_usage(), message_id="side")), "system", None
+    )
+    server = SimpleNamespace(backend=SimpleNamespace(_dcode_btw=operation))
+    threads = SimpleNamespace(get_state=AsyncMock(return_value={"values": values}))
+    with (
+        patch("deepagents_code.btw_api.require_thread_workspace", new=AsyncMock()),
+        patch.object(offload_api, "get_server_runtime", AsyncMock(return_value=server)),
+        patch.object(
+            offload_api, "_thread_client", return_value=SimpleNamespace(threads=threads)
+        ),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=offload_api.app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/dcode/threads/{THREAD_ID}/btw",
+                json={"question": "side question", "workspace": {}},
+            )
+            display = await client.get(f"/dcode/threads/{THREAD_ID}/cost")
+
+    assert response.status_code == display.status_code == 200
+    cost = response.json()["cost"]
+    assert cost["total_cost_usd"] > 0
+    assert cost["request_count"] == 1
+    assert cost["historical_complete"] is (history != "legacy")
+    assert display.json()["cost"]["breakdown"]["historical_complete"] is (
+        history != "legacy"
+    )
+    assert await asyncio.to_thread(load_cost, THREAD_ID) == cost
+    assert values == before
+
+
+@pytest.fixture
+def side_cost_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Use a real, isolated sessions database for side-question accounting."""
+    from deepagents_code import btw_cost
+
+    path = tmp_path / "sessions.db"
+    monkeypatch.setattr(btw_cost, "_database_path", lambda: path)
+    monkeypatch.setattr(btw_cost, "_PENDING_COSTS", {})
+    return path
+
+
+@pytest.mark.parametrize("saved_before_deletion", [False, True])
+async def test_thread_deletion_erases_cost_and_discards_late_settlements(
+    side_cost_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    saved_before_deletion: bool,
+) -> None:
+    from deepagents_code import btw_cost, sessions
+    from deepagents_code.btw import BtwOperation
+
+    monkeypatch.setattr(sessions, "get_db_path", lambda: side_cost_db)
+    operation = BtwOperation(_repeating_fake_model("answer"), "system", None)
+
+    async def answer(thread_id: str) -> tuple[str, cost_tracking.CostBreakdown | None]:
+        return await btw_cost.answer_with_cost(
+            operation.answer(thread_id, {}, "aside"),
+            thread_id=thread_id,
+            state={"messages": []},
+        )
+
+    if saved_before_deletion:
+        await answer(THREAD_ID)
+    with monkeypatch.context() as failure:
+        failure.setattr(
+            btw_cost,
+            "_read_cost",
+            MagicMock(side_effect=sqlite3.OperationalError("database is locked")),
+        )
+        text, cost = await answer(THREAD_ID)
+        assert text
+        assert cost is None
+    await sessions.delete_thread(THREAD_ID)
+    # Retrying an old charge and completing another answer cannot restore spend.
+    assert await asyncio.to_thread(btw_cost.load_cost, THREAD_ID) is None
+    text, cost = await answer(THREAD_ID)
+    assert text
+    assert cost is None
+    assert await asyncio.to_thread(btw_cost.load_cost, THREAD_ID) is None
+    _, other_cost = await answer("other-thread")
+    assert other_cost is not None
+    assert other_cost["request_count"] == 1
+
+
+@pytest.mark.parametrize("retry_with_answer", [False, True])
+async def test_failed_side_costs_remain_retryable(
+    recorder: _SessionCostRecorder,
+    side_cost_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    retry_with_answer: bool,
+) -> None:
+    from deepagents_code import btw_cost
+    from deepagents_code.btw import BtwOperation
+
+    await _fake_model(_message(_usage(), message_id="main")).ainvoke(
+        [HumanMessage("main")], config={"metadata": {"thread_id": THREAD_ID}}
+    )
+    operation = BtwOperation(
+        _fake_model(_message(_usage()), _message(_usage())), "system", None
+    )
+
+    async def answer() -> tuple[str, cost_tracking.CostBreakdown | None]:
+        return await btw_cost.answer_with_cost(
+            operation.answer(THREAD_ID, {}, "aside"),
+            thread_id=THREAD_ID,
+            state={"messages": []},
+        )
+
+    # Fail inside the transaction, after usage has been drained for pricing.
+    with monkeypatch.context() as failure:
+        failure.setattr(
+            btw_cost,
+            "_read_cost",
+            MagicMock(side_effect=sqlite3.OperationalError("database is locked")),
+        )
+        text, cost = await answer()
+        assert text
+        assert cost is None
+        with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+            await asyncio.to_thread(btw_cost.load_cost, THREAD_ID)
+
+    if retry_with_answer:
+        _, cost = await answer()
+    else:
+        # Concurrent readers must persist the recovered charge exactly once.
+        costs = await asyncio.gather(
+            *(asyncio.to_thread(btw_cost.load_cost, THREAD_ID) for _ in range(2))
+        )
+        cost = costs[0]
+        assert costs[1] == cost
+    assert await asyncio.to_thread(side_cost_db.exists)
+    assert cost is not None
+    count = 2 if retry_with_answer else 1
+    assert cost["request_count"] == count
+    estimate = estimate_cost(_usage(), KNOWN_MODEL, provider=KNOWN_PROVIDER)
+    assert estimate is not None
+    assert cost["total_cost_usd"] == pytest.approx(count * estimate)
+    assert await asyncio.to_thread(btw_cost.load_cost, THREAD_ID) == cost
+    assert await asyncio.to_thread(btw_cost.load_cost, "other-thread") is None
+    assert [record.message_id for record in recorder.drain(THREAD_ID)] == ["main"]
+
+
+async def test_concurrent_side_costs_do_not_claim_main_run_usage(
+    recorder: _SessionCostRecorder, side_cost_db: Path
+) -> None:
+    from deepagents_code.btw import BtwOperation
+    from deepagents_code.btw_cost import answer_with_cost, load_cost
+
+    await _fake_model(_message(_usage(), message_id="main")).ainvoke(
+        [HumanMessage("main")], config={"metadata": {"thread_id": THREAD_ID}}
+    )
+    operation = BtwOperation(
+        _fake_model(_message(_usage()), _message(_usage())), "system", None
+    )
+    await asyncio.gather(
+        *(
+            answer_with_cost(
+                operation.answer(THREAD_ID, {}, "aside"),
+                thread_id=THREAD_ID,
+                state={"messages": []},
+            )
+            for _ in range(2)
+        )
+    )
+    assert await asyncio.to_thread(side_cost_db.exists)
+    saved = await asyncio.to_thread(load_cost, THREAD_ID)
+    assert saved is not None
+    assert saved["request_count"] == 2
+    assert saved["total_cost_usd"] > 0
+    assert await asyncio.to_thread(load_cost, "other-thread") is None
+    assert [record.message_id for record in recorder.drain(THREAD_ID)] == ["main"]
+
+
+async def test_cancelling_side_answer_finishes_started_cost_write(
+    recorder: _SessionCostRecorder, side_cost_db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code import btw_cost
+    from deepagents_code.btw import BtwOperation
+    from deepagents_code.btw_cost import answer_with_cost, load_cost
+
+    started = threading.Event()
+    release = threading.Event()
+    write = btw_cost._persist_cost
+
+    def blocked_write(
+        thread_id: str, state: CostState
+    ) -> cost_tracking.CostBreakdown | None:
+        started.set()
+        assert release.wait(5)
+        return write(thread_id, state)
+
+    monkeypatch.setattr(btw_cost, "_persist_cost", blocked_write)
+    operation = BtwOperation(_fake_model(_message(_usage())), "system", None)
+    task = asyncio.create_task(
+        answer_with_cost(
+            operation.answer(THREAD_ID, {}, "aside"),
+            thread_id=THREAD_ID,
+            state={"messages": []},
+        )
+    )
+    try:
+        assert await asyncio.to_thread(started.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert await asyncio.to_thread(side_cost_db.exists)
+    saved = await asyncio.to_thread(load_cost, THREAD_ID)
+    assert saved is not None
+    assert saved["request_count"] == 1
+    assert recorder.drain(THREAD_ID) == []

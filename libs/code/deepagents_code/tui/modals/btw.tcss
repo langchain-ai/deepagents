@@ -1,0 +1,54 @@
+BtwScreen {
+    align: center middle;
+}
+
+BtwScreen #btw-dialog {
+    width: 90;
+    max-width: 90%;
+    height: auto;
+    max-height: 85%;
+    background: $surface;
+    border: round $primary;
+    padding: 1 2;
+}
+
+BtwScreen #btw-title {
+    text-style: bold;
+    color: $primary;
+}
+
+BtwScreen.has-history #btw-dialog {
+    height: 85%;
+}
+
+BtwScreen .btw-question {
+    height: auto;
+    margin: 1 0;
+}
+
+BtwScreen #btw-input {
+    height: auto;
+    min-height: 3;
+    max-height: 8;
+}
+
+BtwScreen #btw-loading {
+    height: auto;
+    color: $primary;
+}
+
+BtwScreen #btw-scroll {
+    height: 1fr;
+    scrollbar-gutter: stable;
+}
+
+BtwScreen .btw-error {
+    height: auto;
+    color: $error;
+}
+
+BtwScreen #btw-help {
+    color: $text-muted;
+    margin-top: 1;
+    margin-bottom: 0;
+}

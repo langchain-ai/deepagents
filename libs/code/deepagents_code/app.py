@@ -9028,12 +9028,14 @@ class DeepAgentsApp(App):
         thread_id: str = "",
         pricing_ok: bool | None = None,
         breakdown: Mapping[str, Any] | None = None,
+        preserve_provisional: bool = False,
     ) -> None:
         """Set the active thread's cumulative cost from a server-owned value.
 
         Used for both the restored checkpoint total and the totals the graph
         streams during a turn. Either supersedes anything the message stream
-        contributed provisionally, so that add-on is dropped.
+        contributed provisionally, so that add-on is dropped unless this refresh
+        only updates independently settled side-question spend.
 
         Args:
             cost_usd: Non-negative cumulative estimated cost in US dollars.
@@ -9048,6 +9050,8 @@ class DeepAgentsApp(App):
                 alone, so a source that cannot speak to pricing health (a
                 restored checkpoint read) does not erase what a stream said.
             breakdown: Optional authoritative thread-wide structured detail.
+            preserve_provisional: Keep streamed estimates when only side-question
+                spend changed; the main graph has not settled those requests.
         """
         if thread_id and thread_id != self._lc_thread_id:
             logger.debug(
@@ -9061,9 +9065,12 @@ class DeepAgentsApp(App):
         self._session_cost_usd = _coerce_session_cost_usd(cost_usd)
         if breakdown is not None:
             self._session_cost_breakdown = breakdown
-        self._provisional_cost_usd = 0.0
-        self._settled_provisional_request_ids.update(self._provisional_cost_by_request)
-        self._provisional_cost_by_request.clear()
+        if not preserve_provisional:
+            self._provisional_cost_usd = 0.0
+            self._settled_provisional_request_ids.update(
+                self._provisional_cost_by_request
+            )
+            self._provisional_cost_by_request.clear()
         self._refresh_session_cost_display()
         threshold = self._session_cost_warning_threshold_usd
         if (
@@ -9426,8 +9433,8 @@ class DeepAgentsApp(App):
     def _sync_session_cost_from_state(self, state_values: Mapping[str, Any]) -> None:
         """Adopt the checkpoint's cumulative cost as the displayed total.
 
-        The graph is the only writer, so a committed value always supersedes the
-        provisional figure the message stream produced. State that carries no
+        Graph totals supersede the provisional figure the stream produced when
+        the separate server accounting view is unavailable. State with no
         cost channel at all (a read that failed or a graph without the
         middleware) is left alone rather than treated as zero spend.
 
@@ -9647,7 +9654,23 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
             return
-        self._sync_session_cost_from_state(state_values)
+        remote = self._remote_agent()
+        cost = (
+            await remote.aget_session_cost(
+                {"configurable": {"thread_id": self._lc_thread_id}},
+                checkpoint=state_values,
+            )
+            if remote is not None
+            else None
+        )
+        if cost is not None:
+            self._set_session_cost(
+                cost["total"],
+                breakdown=cost["breakdown"],
+                preserve_provisional=cost.get("cached", False),
+            )
+        else:
+            self._sync_session_cost_from_state(state_values)
         self._sync_cache_state_from_state(state_values)
 
     def _notify_hydration_failure(self) -> None:
@@ -16883,6 +16906,43 @@ class DeepAgentsApp(App):
         elif cmd in {"/version", "/about"}:
             await self._mount_message(UserMessage(command))
             await self._handle_version_command()
+        elif cmd.split(maxsplit=1)[0] == "/btw":
+            from deepagents_code.tui.modals.btw import BtwScreen
+
+            remote = self._remote_agent()
+            if remote is None or self._connecting or self._thread_switching:
+                self.notify("Connect to a dcode session before asking /btw.")
+                return
+            if not await self._has_conversation_messages():
+                self.notify("Send a message before asking /btw.")
+                return
+            parts = command.strip().split(maxsplit=1)
+            question = parts[1].strip() if len(parts) > 1 else ""
+            thread_id = self._lc_thread_id
+
+            history: list[tuple[str, str]] = []
+
+            async def answer(question: str) -> str:
+                config = {"configurable": {"thread_id": thread_id}}
+                text = await remote.abtw(
+                    question,
+                    config=config,
+                    history=tuple(history),
+                )
+                cost = remote.get_cached_session_cost(config)
+                if cost is not None and thread_id == self._lc_thread_id:
+                    self._set_session_cost(
+                        cost["total"],
+                        breakdown=cost["breakdown"],
+                        preserve_provisional=True,
+                    )
+                history.append((question, text))
+                return text
+
+            self.push_screen(
+                BtwScreen(answer, question),
+                lambda _result: self._focus_chat_input_after_refresh(),
+            )
         elif cmd == "/agents":
             await self._show_agent_selector()
         elif cmd == "/auto" or cmd.startswith("/auto "):
@@ -19784,6 +19844,18 @@ class DeepAgentsApp(App):
             model_spec=model_spec,
             model_params=model_params,
         )
+        remote = self._remote_agent()
+        if remote is not None:
+            cost = await remote.aget_session_cost(
+                {"configurable": {"thread_id": thread_id}},
+                checkpoint=state_values,
+            )
+            if cost is not None:
+                payload = replace(
+                    payload,
+                    session_cost_usd=cost["total"],
+                    session_cost_breakdown=cost["breakdown"],
+                )
         messages = state_values.get("messages", [])
 
         if not messages:
@@ -25304,8 +25376,8 @@ class DeepAgentsApp(App):
             `tab` app-wide. Stepping aside unless an approval menu is pending
             and the chat input is unfocused keeps focus traversal and
             chat-input completion working everywhere else. The prompt clipboard
-            also keeps ownership when a background approval arrives after the
-            modal opens.
+            and side-question dialog also keep ownership when a background
+            approval arrives after the modal opens.
 
         Branches on action names, not keys, so this stays correct if a binding is
         ever rebound.
@@ -25343,12 +25415,15 @@ class DeepAgentsApp(App):
             if isinstance(self.screen, PromptClipboardScreen):
                 return False
         if action == "approval_reject_with_reason":
+            from deepagents_code.tui.modals.btw import BtwScreen
             from deepagents_code.tui.modals.prompt_clipboard import (
                 PromptClipboardScreen,
             )
 
             screen_stack = self.screen_stack
-            if screen_stack and isinstance(screen_stack[-1], PromptClipboardScreen):
+            if screen_stack and isinstance(
+                screen_stack[-1], (PromptClipboardScreen, BtwScreen)
+            ):
                 return False
             return self._pending_approval_widget is not None and (
                 not self._is_input_focused()

@@ -73,7 +73,10 @@ async def _wait_for_browser_authorization[T](
         )
         if callback in done:
             return await callback
-        await keyboard
+        try:
+            await keyboard
+        except EOFError as exc:
+            raise MCPLoginAbortedError from exc
         raise MCPLoginAbortedError
     finally:
         callback.cancel()

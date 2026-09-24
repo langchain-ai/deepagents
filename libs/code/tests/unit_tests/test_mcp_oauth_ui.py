@@ -367,11 +367,11 @@ def browser_terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[PipeInput]:
 class TestBrowserAuthorizationWait:
     """Browser authorization releases terminal input on every exit path."""
 
-    @pytest.mark.parametrize("key", ["\x1b", "\x03", "\x04"])
-    async def test_abort_keys_cancel_callback(
-        self, browser_terminal: PipeInput, key: str
+    @pytest.mark.parametrize("key", ["\x1b", "\x03", "\x04", None])
+    async def test_terminal_abort_cancels_callback(
+        self, browser_terminal: PipeInput, key: str | None
     ) -> None:
-        """Actual abort keystrokes stop the callback and its terminal listener."""
+        """Abort keystrokes and EOF stop the callback and its terminal listener."""
         tasks = asyncio.all_tasks()
         started = asyncio.Event()
         finished = asyncio.Event()
@@ -385,7 +385,10 @@ class TestBrowserAuthorizationWait:
 
         task = asyncio.create_task(_wait_for_browser_authorization(wait))
         await started.wait()
-        browser_terminal.send_text(key)
+        if key is None:
+            browser_terminal.close()
+        else:
+            browser_terminal.send_text(key)
         with pytest.raises(MCPLoginAbortedError):
             await asyncio.wait_for(task, timeout=3)
         assert finished.is_set()

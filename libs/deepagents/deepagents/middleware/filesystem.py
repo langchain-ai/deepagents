@@ -254,8 +254,7 @@ def _replace_rejected_file_content(messages: list[AnyMessage]) -> list[AnyMessag
     return [
         message.model_copy(update={"content": "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."})
         if index > last_response
-        and isinstance(message, ToolMessage)
-        and message.name == "read_file"
+        and (_is_read_file_media_result(message) or (isinstance(message, ToolMessage) and message.name == "read_file"))
         and any(block["type"] in _MULTIMODAL_BLOCK_TYPES for block in message.content_blocks)
         else message
         for index, message in enumerate(messages)

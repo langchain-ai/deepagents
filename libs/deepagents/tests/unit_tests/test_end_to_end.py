@@ -5098,6 +5098,60 @@ async def test_read_file_fallback_preserves_previously_accepted_media(*, async_m
     assert next(message for message in model.captured_messages[-1] if isinstance(message, ToolMessage)) == accepted
 
 
+class ImageRejectingChatModel(FixedGenericFakeChatModel):
+    """Reject any request carrying an image block."""
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(block["type"] == "image" for message in messages for block in message.content_blocks):
+            self.captured_messages.append(messages)
+            msg = "Invalid image"
+            raise ModelInvalidRequestError(msg)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_read_file_fallback_replaces_rejected_video_frames(*, async_mode: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        filesystem_middleware,
+        "extract_video_frames",
+        lambda *_args, **_kwargs: [{"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"}],
+    )
+    model = ImageRejectingChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": "/clip.mp4"}, "id": "video"}]),
+                AIMessage(content="done"),
+                AIMessage(content="followup"),
+            ]
+        )
+    )
+    agent = create_deep_agent(model=model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "video-fallback"}}
+    inputs = {
+        "messages": [HumanMessage(content="Read the video")],
+        "files": {"/clip.mp4": create_file_data(base64.b64encode(b"video bytes").decode("ascii"), encoding="base64")},
+    }
+    result = await agent.ainvoke(inputs, config) if async_mode else agent.invoke(inputs, config)
+    assert result["messages"][-1].content == "done"
+    assert len(model.captured_messages) == 3
+    rejected = next(message for message in model.captured_messages[1] if message.additional_kwargs.get("read_file_media_result"))
+    checkpoint = await agent.aget_state(config) if async_mode else agent.get_state(config)
+    for messages in [model.captured_messages[2], checkpoint.values["messages"]]:
+        media = next(message for message in messages if message.additional_kwargs.get("read_file_media_result"))
+        assert media.id == rejected.id
+        assert media.content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+    followup = {"messages": [HumanMessage(content="What next?")]}
+    result = await agent.ainvoke(followup, config) if async_mode else agent.invoke(followup, config)
+    assert result["messages"][-1].content == "followup"
+    assert len(model.captured_messages) == 4
+
+
 class TestMultimodalProfileScrubNoProfile:
     """No `model.profile` set defaults every block type to supported."""
 

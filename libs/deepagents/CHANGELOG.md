@@ -2,6 +2,15 @@
 
 # Deep Agents Changelog
 
+## [0.7.19](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.18...deepagents==0.7.19) (2026-09-24)
+
+
+### Bug Fixes
+
+* **sdk:** bound tool offload paths and abbreviate long IDs ([#6519](https://github.com/langchain-ai/deepagents/issues/6519)) ([ca5f0e5](https://github.com/langchain-ai/deepagents/commit/ca5f0e5eae7ee749e81ae8e9e3bbc1762447fcc2))
+* **sdk:** recover from rejected `read_file` media ([#6515](https://github.com/langchain-ai/deepagents/issues/6515)) ([802140c](https://github.com/langchain-ai/deepagents/commit/802140c1a7d1fff35a7edd8d0f1697eb460ce623))
+* **sdk:** use separate middleware for filtering unsupported multimodal content ([#6366](https://github.com/langchain-ai/deepagents/issues/6366)) ([737621b](https://github.com/langchain-ai/deepagents/commit/737621ba73c39ac822c78c144612336bd02de6fb))
+
 ## [0.7.18](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.17...deepagents==0.7.18) (2026-09-22)
 
 ### Bug Fixes

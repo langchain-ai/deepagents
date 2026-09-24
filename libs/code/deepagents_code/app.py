@@ -4658,9 +4658,10 @@ class DeepAgentsApp(App):
         """Per-thread expiry already offered as a handoff, so each window
         prompts at most once."""
 
-        self._cache_expiry_bypassed: tuple[str, datetime] | None = None
-        """Thread and window where the user chose to stay. Suppresses the idle
-        send-time warning for that window only; identity changes still warn."""
+        self._cache_expiry_bypassed: tuple[str, datetime, str | None] | None = None
+        """Thread, window, and last request where the user chose to stay.
+        Suppresses the idle send-time warning until another model request;
+        identity changes still warn."""
 
         self._cold_cache_degraded_notified = False
         """Whether this session already reported that the warning failed open.
@@ -9750,6 +9751,7 @@ class DeepAgentsApp(App):
         if message is None and await self._cold_cache_opted_out():
             return
         draft = message.text if message else None
+        request_at = self._last_model_request_at
         child_id = None
         choice = None
         try:
@@ -9764,7 +9766,7 @@ class DeepAgentsApp(App):
                 await self._process_message(message.text, message.mode)
                 draft = None
             elif choice is ColdCacheChoice.CANCEL and expires_at is not None:
-                self._cache_expiry_bypassed = (thread_id, expires_at)
+                self._cache_expiry_bypassed = (thread_id, expires_at, request_at)
                 self._cache_expiry_seen[thread_id] = expires_at
         except Exception:
             logger.exception("Cache-expiry continuation failed after choice %r", choice)
@@ -12967,10 +12969,14 @@ class DeepAgentsApp(App):
                 and not advisory
                 and self._status_bar is not None
                 and self._cache_expiry_bypassed
-                == (self._lc_thread_id, self._status_bar.cache_expires_at)
+                == (
+                    self._lc_thread_id,
+                    self._status_bar.cache_expires_at,
+                    timestamp_value,
+                )
             ):
-                # The user already chose to stay for this exact window, so the
-                # same idle cause does not warn again at send time.
+                # A cold request may leave cache activity (and its expiry)
+                # unchanged. Only bypass while the last request also matches.
                 logger.debug(
                     "Skipping cold-cache warning: handoff declined for this window"
                 )

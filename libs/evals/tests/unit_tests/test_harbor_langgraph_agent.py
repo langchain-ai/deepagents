@@ -57,6 +57,7 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
         "llm-tool-selector": "./langgraph_agent.py:make_llm_tool_selector_graph",
         "ts-tool-selector": "./langgraph_agent.py:make_ts_tool_selector_graph",
         "ts-choice-tool-selector": "./langgraph_agent.py:make_ts_choice_tool_selector_graph",
+        "ts-hybrid-tool-selector": "./langgraph_agent.py:make_ts_hybrid_tool_selector_graph",
         "tau3": "./langgraph_agent.py:make_tau3_graph",
     }
     assert not (project_path / "langsmith.py").exists()
@@ -777,6 +778,7 @@ def test_make_llm_tool_selector_graph_adds_selector(
     [
         ("make_ts_tool_selector_graph", "TsToolSelectorMiddleware"),
         ("make_ts_choice_tool_selector_graph", "TsChoiceToolSelectorMiddleware"),
+        ("make_ts_hybrid_tool_selector_graph", "TsHybridToolSelectorMiddleware"),
     ],
 )
 def test_make_typesafe_tool_selector_graph_adds_selector(
@@ -788,6 +790,7 @@ def test_make_typesafe_tool_selector_graph_adds_selector(
     module = SimpleNamespace(
         TsToolSelectorMiddleware=lambda: "ts-selector",
         TsChoiceToolSelectorMiddleware=lambda: "ts-choice-selector",
+        TsHybridToolSelectorMiddleware=lambda: "ts-hybrid-selector",
     )
     monkeypatch.setattr(langgraph_agent, "import_module", lambda _: module)
 
@@ -795,7 +798,11 @@ def test_make_typesafe_tool_selector_graph_adds_selector(
 
     middleware = cast("dict[str, object]", graph)["middleware"]
     assert middleware == [
-        "ts-selector" if selector_name == "TsToolSelectorMiddleware" else "ts-choice-selector"
+        {
+            "TsToolSelectorMiddleware": "ts-selector",
+            "TsChoiceToolSelectorMiddleware": "ts-choice-selector",
+            "TsHybridToolSelectorMiddleware": "ts-hybrid-selector",
+        }[selector_name]
     ]
 
 

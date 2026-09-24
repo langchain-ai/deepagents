@@ -466,26 +466,30 @@ def _render_server_header(
         Styled `Content` ready to mount inside a `Static`.
     """
     dim_style = "" if selected else "dim"
+    name = Content.assemble(
+        (server.name, "bold"),
+        (" (plugin)", dim_style) if server.name.startswith("plugin__") else "",
+    )
     tool_count = len(visible_tools)
     t_label = "tool" if tool_count == 1 else "tools"
     if server.status == "ok":
         summary = f" {server.transport} {glyphs.bullet} {tool_count} {t_label}"
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
-            (server.name, "bold"),
+            name,
             (summary, dim_style),
         )
     if server.status == "unauthenticated":
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
-            (server.name, "bold"),
+            name,
             (f" {server.transport}", dim_style),
             (f" {glyphs.bullet} {server.status}", indicator_color),
         )
     if server.status == "awaiting_reconnect":
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
-            (server.name, "bold"),
+            name,
             (f" {server.transport}", dim_style),
             (f" {glyphs.bullet} ready to load", indicator_color),
             (f" — {MCP_RECONNECT_KEY_LABEL} to load tools", dim_style),
@@ -493,7 +497,7 @@ def _render_server_header(
     if server.status == "error":
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
-            (server.name, "bold"),
+            name,
             (f" {server.transport}", dim_style),
             (f" {glyphs.bullet} {server.status}", indicator_color),
         )
@@ -503,7 +507,7 @@ def _render_server_header(
         )
         return Content.assemble(
             (f"{indicator_glyph} ", indicator_color),
-            (server.name, "bold"),
+            name,
             (f" {server.transport}", dim_style),
             (f" {glyphs.bullet} {server.status}", indicator_color),
             (f" — {error_text}", dim_style) if error_text else "",

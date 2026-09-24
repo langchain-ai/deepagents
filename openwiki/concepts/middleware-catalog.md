@@ -3,10 +3,11 @@ type: capability reference
 title: Middleware Capability Catalog
 description: Capability-to-owner reference for Deep Agents middleware. It distinguishes request shaping from ordinary tools and documents filesystem, context, skills, delegation, policy, and assembly behavior.
 tags: [middleware, deepagents, filesystem, context-management, memory, skills, subagents, permissions]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-23T08:05:59.666Z
 sources:
+  - id: openwiki-source-a1549ea98d425efea270be93
+    resource: repo://libs/deepagents/deepagents/backends/composite.py
+  - id: openwiki-source-c972622237a22631e36f3625
+    resource: repo://libs/deepagents/deepagents/backends/utils.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-fc54598423086acf9d53d9fd
@@ -41,7 +42,12 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-23T08:05:59.666Z" }
+  - id: openwiki-source-f445d59792df76394a37a768
+    resource: repo://libs/deepagents/tests/unit_tests/test_artifacts_root.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-24T08:06:01.996Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-24T08:06:01.996Z
 ---
 
 # Middleware Capability Catalog
@@ -97,13 +103,19 @@ At request time the middleware removes unsupported capability-gated tools, appen
 
 ### Large-result previews
 
-The shared eviction helper extracts text blocks, preserves non-text blocks, and writes a full generic tool result to `<artifacts_root>/large_tool_results/{sanitized_tool_call_id}`. On successful write, the replacement tells the model where to retrieve the full result and presents a line-numbered preview: five head lines and five tail lines when necessary, with an explicit middle-omission marker. Each displayed line is independently capped at 1,000 characters. The preview metadata records middle-line omission and within-line clipping separately, so its explanatory note reports only loss that actually occurred. A failed backend write returns no replacement and leaves the original result intact.
+The shared eviction helper extracts and joins text blocks, retains non-text blocks in the replacement, and writes the complete text to `<artifacts_root>/large_tool_results/{sanitized_tool_call_id}`. The prefix comes from `CompositeBackend.artifacts_root` (default `/`); both `FilesystemMiddleware` and `SummarizationMiddleware` strip a trailing slash before adding their artifact directories. Other backend types use `/`.
 
-Filesystem's proactive result eviction does **not** apply to `ls`, `glob`, `grep`, `read_file`, `edit_file`, `write_file`, or `delete`: searches provide their own truncation/refinement behavior, reads already support pagination, and write/edit/delete replies are small. The generic path principally protects execution output.
+The file-name component is deliberately distinct from the model-visible identifier. `sanitize_tool_call_id` replaces `.`, `/`, and `\\` with `_`; when the UTF-8 component would exceed 128 bytes, it uses `call-` plus the SHA-256 hex digest of the original ID. The offload notice keeps the actual tool-call identity but exposes at most its first 32 characters followed by `...`; a missing ID receives an `unknown-` UUID component for storage. These rules avoid traversal-like components, path-length failures, and an unbounded identifier in the model context.
+
+Only a successful `write`/`awrite` produces a replacement. It points the model to `read_file` and includes a line-numbered preview: all short content, or five head and five tail lines separated by an explicit middle-omission marker. Shown lines are each capped at 1,000 characters. `ContentPreview` records omitted middle lines separately from clipped shown lines, so the explanatory note reports only loss that occurred. A `None` or error write result leaves the original `ToolMessage` intact.
+
+Filesystem's **proactive** `wrap_tool_call`/`awrap_tool_call` eviction happens after the underlying tool returns and only when `tool_token_limit_before_evict` is enabled and the text exceeds its character approximation. It deliberately excludes `ls`, `glob`, `grep`, `read_file`, `edit_file`, `write_file`, and `delete`: searches have their own truncation/refinement behavior, reads already paginate, and mutation replies are expected to be small. The generic path therefore principally protects execution output; tool exceptions propagate rather than becoming eviction results.
 
 ### Overflow fallback is not normal eviction
 
-`SummarizationMiddleware` uses the same generic offload helper only when an input budget check or provider `ContextOverflowError` requires a smaller retry. It examines a preserved suffix only if it ends in consecutive `ToolMessage` objects; in this recovery path the retry asks for a one-token clipping threshold, so any nonempty trailing batch can qualify. `read_file` results are special: when the originating tool call identifies a valid `file_path`, the result is head-sliced to about 4,000 characters and points back to that existing file, with no new write. Other results are offloaded and replaced by the shared preview stub. Replacements retain message ids so the state reducer overwrites the originals; a failed write leaves that message unchanged. Recovery permits at most one strictly smaller retry before surfacing an unrecoverable overflow.
+`SummarizationMiddleware` invokes the same helper only as **reactive recovery**: a locally over-budget request or recognized provider `ContextOverflowError` first enters compaction, then `_call_with_budget`/`_acall_with_budget` tries to shrink the preserved suffix. It considers a suffix only when it ends in consecutive `ToolMessage` objects. The recovery call supplies a one-token clipping threshold, so any nonempty qualifying trailing batch reaches the per-message clipping decision.
+
+A `read_file` result is special only when the matching originating tool call has a nonempty string `file_path`: its text is head-sliced to about 4,000 characters and points back to that existing file, so no additional artifact is written. Every other tail result uses the generic offload-and-preview path. Successful replacements retain their message IDs (or receive one if absent) and are returned in a `Command` update so the message reducer overwrites the originals; a failed write is omitted from that update and remains unchanged. The retry must be strictly smaller than the rejected request, and recovery allows at most one such smaller retry before raising `ContextOverflowError` with operational guidance to reduce input, tools, or output tokens.
 
 Filesystem policy has separate owners. `FilesystemMiddleware` directly enforces matching `deny` rules in filesystem tool implementations. Graph assembly translates `interrupt` rules into `HumanInTheLoopMiddleware` configuration with path-aware `when` predicates, including conservative handling of pathless or escaping search patterns. Approval is not authorization. With an execution-capable backend, unscoped filesystem permissions are rejected because execute-level permissions are not implemented.
 

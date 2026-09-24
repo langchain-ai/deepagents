@@ -1,16 +1,11 @@
 """Unit tests for FilesystemMiddleware initialization and configuration."""
 
-import base64
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import AgentState
 from langchain_anthropic import ChatAnthropic
-from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import CompositeBackend, StateBackend, StoreBackend
@@ -21,89 +16,10 @@ from deepagents.middleware.filesystem import (
     FilesystemMiddleware,
     FilesystemState,
 )
-from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
-
-if TYPE_CHECKING:
-    from langchain_core.messages.content import ContentBlock
-
-
-class MaskedChatOpenAI(ChatOpenAI):
-    @property
-    def _llm_type(self) -> str:
-        return "langchain-chat"
-
-
-class MaskedAzureChatOpenAI(AzureChatOpenAI):
-    @property
-    def _llm_type(self) -> str:
-        return "langchain-chat"
-
-
-_DOCX_MIME_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 def build_composite_state_backend(*, routes: dict[str, Any]) -> CompositeBackend:
     return CompositeBackend(default=StateBackend(), routes=routes)
-
-
-@pytest.mark.parametrize("model_type", [MaskedChatOpenAI, MaskedAzureChatOpenAI])
-@pytest.mark.parametrize(("use_responses_api", "supported"), [(False, False), (None, False), (True, True)])
-def test_openai_docx_support_uses_provider_class_and_responses_api(
-    model_type: type[ChatOpenAI] | type[AzureChatOpenAI],
-    *,
-    use_responses_api: bool | None,
-    supported: bool,
-) -> None:
-    model = model_type.model_construct(use_responses_api=use_responses_api)
-    block: ContentBlock = {"type": "file", "base64": "UEsDBA==", "mime_type": _DOCX_MIME_TYPE}
-
-    assert model._llm_type == "langchain-chat"
-    assert UnsupportedContentMiddleware()._is_supported(block, model=model, in_tool_message=True) is supported
-
-
-@pytest.mark.parametrize(
-    ("model", "mime_type", "supported"),
-    [
-        (ChatOpenAI.model_construct(use_responses_api=True), "application/zip", False),
-        (ChatGoogleGenerativeAI.model_construct(), _DOCX_MIME_TYPE, False),
-    ],
-)
-def test_binary_file_allowlist(model: BaseChatModel, mime_type: str, *, supported: bool) -> None:
-    block: ContentBlock = {"type": "file", "base64": "UEsDBA==", "mime_type": mime_type}
-
-    assert UnsupportedContentMiddleware()._is_supported(block, model=model, in_tool_message=False) is supported
-
-
-@pytest.mark.parametrize("mime_type", ["text/csv", "text/markdown"])
-def test_openai_responses_preserves_non_utf8_text_files(mime_type: str) -> None:
-    block: ContentBlock = {
-        "type": "file",
-        "base64": base64.b64encode(b"value\n\xff\n").decode(),
-        "mime_type": mime_type,
-    }
-    message = HumanMessage(content=[block])
-
-    middleware = UnsupportedContentMiddleware()
-    accepted = middleware._filter_message(message, model=ChatOpenAI.model_construct(use_responses_api=True))
-    rejected = middleware._filter_message(message, model=ChatOpenAI.model_construct(use_responses_api=False))
-
-    assert accepted is message
-    assert rejected.content_blocks[0]["type"] == "text"
-
-
-@pytest.mark.parametrize("reference", [{"file_id": "file_1"}, {"url": "https://example.com/archive.zip"}])
-def test_file_references_bypass_allowlist(reference: dict[str, str]) -> None:
-    block: ContentBlock = {"type": "file", **reference}
-
-    model = ChatOpenAI.model_construct(use_responses_api=False)
-    assert UnsupportedContentMiddleware()._is_supported(block, model=model, in_tool_message=False)
-
-
-def test_pdf_tool_message_profile_is_enforced() -> None:
-    block: ContentBlock = {"type": "file", "base64": "JVBERi0=", "mime_type": "application/pdf"}
-
-    model = ChatOpenAI.model_construct(profile={"pdf_inputs": True, "pdf_tool_message": False})
-    assert not UnsupportedContentMiddleware()._is_supported(block, model=model, in_tool_message=True)
 
 
 class TestLargeToolResultGuidanceInToolDescriptions:

@@ -74,9 +74,25 @@ def _plugin_prompt(row: _PluginRow, *, status: str | None) -> Content:
     )
 
 
-def _install_details_options() -> list[Option]:
+def _install_details_options(
+    *, uninspected: bool = False, inspecting: bool = False
+) -> list[Option]:
+    options = (
+        [
+            Option(
+                "Downloading and inspecting contents..."
+                if inspecting
+                else "Inspect contents (downloads source)",
+                id="action:inspect",
+                disabled=inspecting,
+            )
+        ]
+        if uninspected
+        else []
+    )
     return [
-        Option("Install", id="action:install"),
+        *options,
+        Option("Install", id="action:install", disabled=inspecting),
         Option("Back to plugin list", id="details-back"),
     ]
 
@@ -128,12 +144,7 @@ def _will_install_lines(row: _PluginRow) -> list[str]:
             _unsupported_summary(row.unsupported_components),
         ]
     if row.skill_count is None:
-        return [
-            (
-                "Skills, MCP servers, and hooks if present "
-                "(agents/ and commands/ are not loaded)."
-            )
-        ]
+        return ["Contents not inspected. Choose Inspect contents to preview."]
     return [
         "No supported components (skills/MCP/hooks).",
         "agents/ and commands/ are not loaded by deepagents-code.",

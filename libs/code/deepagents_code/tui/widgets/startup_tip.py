@@ -31,6 +31,7 @@ _TIPS: dict[str, int] = {
     "Press Ctrl+R to search and reuse submitted prompts": 2,
     "Use /cost to see a breakdown of estimated spend": 1,
     "Use /tools to list the tools available to the agent": 1,
+    "Use /plugins to inspect a plugin's contents before installing": 1,
     "Open /mcp and press Enter on a remote server to sign in again": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,

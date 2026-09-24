@@ -1620,7 +1620,7 @@ async def test_install_preserves_mcp_login_guidance(
 
 @pytest.mark.parametrize(
     ("key", "expected_option_id"),
-    [("right", "action:install"), ("left", "details-back")],
+    [("right", "action:inspect"), ("left", "details-back")],
 )
 async def test_details_navigation_starts_at_matching_edge(
     key: str, expected_option_id: str

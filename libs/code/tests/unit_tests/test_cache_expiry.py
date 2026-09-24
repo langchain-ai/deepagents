@@ -130,6 +130,9 @@ async def test_handoff_failure_keeps_source_thread(
     if failure == "finish":
         remote.aupdate_state.side_effect = [None, RuntimeError("completion failed")]
     monkeypatch.setattr(
+        "deepagents_code.sessions.thread_exists", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(
         "deepagents_code.sessions.set_thread_metadata",
         AsyncMock(
             side_effect=RuntimeError("metadata failed")
@@ -187,8 +190,6 @@ async def test_handoff_preserves_source_configuration_after_thread_switch(
         side_effect=switch_thread if switch_during == "seed" else None
     )
     remote.aupdate_state = AsyncMock()
-    metadata = AsyncMock()
-    monkeypatch.setattr("deepagents_code.sessions.set_thread_metadata", metadata)
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     monkeypatch.setattr(
         app,
@@ -205,13 +206,13 @@ async def test_handoff_preserves_source_configuration_after_thread_switch(
     assert remote.aupdate_state.await_args is not None
     assert remote.aoffload.await_args is not None
     config, values = remote.aupdate_state.await_args_list[0].args
-    child_id = config["configurable"]["thread_id"]
     remote.abind_workspace.assert_awaited_once_with(config, source_cwd)
     assert values["_model_spec"] == "test:source-model"
     assert values["_model_params"] == {"reasoning": {"effort": "high"}}
-    metadata.assert_awaited_once_with(
-        child_id, agent_name="source-agent", cwd=source_cwd
-    )
+    assert remote.aensure_thread.await_args is not None
+    metadata = remote.aensure_thread.await_args.args[0]["metadata"]
+    assert metadata["agent_name"] == "source-agent"
+    assert metadata["cwd"] == source_cwd
     assert remote.aoffload.await_args.kwargs["context"]["model"] == "test:source-model"
     assert app._lc_thread_id == "other"
     resume.assert_not_awaited()
@@ -358,6 +359,82 @@ async def test_handoff_child_is_discoverable_and_resumable(
         assert app._lc_thread_id == "source"
     else:
         resume.assert_awaited_once_with(child_id)
+
+
+@pytest.mark.parametrize("local_database_initialized", [False, True])
+async def test_handoff_with_separate_server_checkpoints(
+    local_database_initialized: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A remote-only child must be registered, exposed, and opened successfully."""
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from deepagents_code import sessions
+    from deepagents_code.client.remote_client import RemoteAgent
+    from deepagents_code.resume_state import ResumeStateMiddleware
+
+    if local_database_initialized:
+        async with sessions.get_checkpointer() as checkpointer:
+            await checkpointer.setup()
+
+    app = DeepAgentsApp(assistant_id="researcher")
+    app._lc_thread_id = "source"
+    remote = RemoteAgent("http://server:8123")
+    graph = create_agent(
+        FakeListChatModel(responses=["Unused"]),
+        middleware=[ResumeStateMiddleware()],
+        checkpointer=InMemorySaver(),
+    )
+
+    async def update_state(
+        config: "RunnableConfig", values: dict[str, object] | None, *, as_node: str
+    ) -> None:
+        await graph.aupdate_state(
+            {"configurable": config["configurable"]}, values, as_node=as_node
+        )
+
+    transport = MagicMock()
+    transport.aupdate_state = AsyncMock(side_effect=update_state)
+    registered = AsyncMock()
+    transport._validate_client.return_value.threads.create = registered
+    monkeypatch.setattr(remote, "_get_graph", lambda: transport)
+    monkeypatch.setattr(remote, "abind_workspace", AsyncMock())
+    monkeypatch.setattr(
+        remote,
+        "aoffload",
+        AsyncMock(
+            return_value={
+                "status": "summarized",
+                "summary": "Remote conversation summary",
+                "archive_path": "/conversation_history/source.md",
+            }
+        ),
+    )
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    monkeypatch.setattr(app, "_set_spinner", AsyncMock())
+    monkeypatch.setattr(app, "_sync_session_cost_from_checkpoint", AsyncMock())
+    mounted = AsyncMock()
+    monkeypatch.setattr(app, "_mount_message", mounted)
+    resume = AsyncMock()
+    monkeypatch.setattr(app, "_resume_thread", resume)
+
+    child_id = await app._run_cache_handoff("source")
+
+    assert child_id is not None
+    assert not await sessions.thread_exists(child_id)
+    state = await graph.aget_state({"configurable": {"thread_id": child_id}})
+    assert "Remote conversation summary" in state.values["messages"][0].text
+    assert not state.next
+    assert registered.await_args is not None
+    assert registered.await_args.kwargs["thread_id"] == child_id
+    metadata = registered.await_args.kwargs["metadata"]
+    assert metadata["agent_name"] == "researcher"
+    assert metadata["cwd"] == app._cwd
+    assert datetime.fromisoformat(metadata["updated_at"]).tzinfo is not None
+    assert any(child_id in call.args[0]._content for call in mounted.await_args_list)
+    resume.assert_awaited_once_with(child_id)
 
 
 @pytest.mark.parametrize(

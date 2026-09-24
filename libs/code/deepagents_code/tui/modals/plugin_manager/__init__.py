@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     )
 
 from deepagents_code import theme
+from deepagents_code._env_vars import OFFLINE, is_env_truthy
 from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.model_config import _save_toml_field
 from deepagents_code.plugins import (
@@ -44,7 +45,7 @@ from deepagents_code.plugins import (
     uninstall_plugin,
 )
 from deepagents_code.plugins.discovery import plugin_auto_update_setting
-from deepagents_code.plugins.marketplace import MarketplaceError
+from deepagents_code.plugins.marketplace import MarketplaceError, redact_urls_in_text
 from deepagents_code.tui.modals.plugin_manager.content import (
     _confirm_marketplace_removal_options,
     _install_details_options,
@@ -62,7 +63,10 @@ from deepagents_code.tui.modals.plugin_manager.models import (
     PluginTab,
     _ManagerState,
 )
-from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
+from deepagents_code.tui.modals.plugin_manager.state import (
+    _inspect_plugin,
+    _load_manager_state,
+)
 from deepagents_code.tui.modals.plugin_manager.tabs import (
     TAB_LABELS,
     PluginTabLabel,
@@ -166,6 +170,8 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         self._status: str | None = None
         self._error: str | None = None
         self._selected_plugin: _PluginRow | None = None
+        self._previews: dict[str, _PluginRow] = {}
+        self._inspecting: set[str] = set()
         self._selected_marketplace: _MarketplaceRow | None = None
         self._adding_marketplace = False
         self._marketplace_spinner = Spinner()
@@ -454,7 +460,12 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         self._update_tab_labels()
         status_widget = self.query_one("#plugin-manager-status", Static)
         if self._mode == "plugin_details" and self._selected_plugin is not None:
-            status_widget.update(_plugin_details_content(self._selected_plugin))
+            status_widget.update(
+                _plugin_details_content(
+                    self._selected_plugin,
+                    inspecting=self._selected_plugin.plugin_id in self._inspecting,
+                )
+            )
         elif self._mode == "installed_details" and self._selected_plugin is not None:
             status_widget.update(
                 _installed_plugin_details_content(self._selected_plugin)
@@ -583,7 +594,11 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
 
     def _active_details_options(self) -> list[Option]:
         if self._mode == "plugin_details":
-            return _install_details_options()
+            row = self._selected_plugin
+            return _install_details_options(
+                uninspected=row is not None and row.skill_count is None,
+                inspecting=row is not None and row.plugin_id in self._inspecting,
+            )
         if self._mode == "installed_details" and self._selected_plugin is not None:
             return _installed_details_options(
                 self._selected_plugin, divider_width=self._divider_width()
@@ -688,6 +703,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             # must retain the user's active filter.
             if clear_search:
                 self._search_query = ""
+                self._previews.clear()
 
             # Take the snapshot only after acquiring the lock. A settled
             # connection update queued behind the initial load therefore uses
@@ -1050,6 +1066,8 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             self._selected_plugin = row
             self._mode = "plugin_details"
             self._error = None
+            if row.skill_count is None and not is_env_truthy(OFFLINE):
+                self._start_plugin_inspection(row)
             self._refresh_view()
             return
         if option_id.startswith("installed:"):
@@ -1065,6 +1083,11 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
             return
         if option_id == "action:toggle-auto-update":
             await self._toggle_auto_update()
+            return
+        if option_id == "action:inspect":
+            row = self._selected_plugin
+            if row is not None:
+                self._start_plugin_inspection(row)
             return
         if option_id == "action:install":
             await self._install_selected_plugin()
@@ -1097,7 +1120,7 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
     def _find_available_plugin(self, plugin_id: str) -> _PluginRow | None:
         return next(
             (
-                row
+                self._previews.get(plugin_id, row)
                 for row in self._state.available_plugins
                 if row.plugin_id == plugin_id
             ),
@@ -1137,9 +1160,40 @@ class PluginManagerScreen(ModalScreen[PluginManagerResult]):  # noqa: RUF067
         if enabled and self._on_auto_update_enabled is not None:
             self._on_auto_update_enabled()
 
+    def _start_plugin_inspection(self, row: _PluginRow) -> None:
+        if row.plugin_id in self._inspecting:
+            return
+        self._inspecting.add(row.plugin_id)
+        self._error = None
+        self._refresh_view()
+        self.call_after_refresh(self._inspect_selected_plugin, row)
+
+    @work(exit_on_error=False)
+    async def _inspect_selected_plugin(self, row: _PluginRow) -> None:
+        error: str | None = None
+        try:
+            self._previews[row.plugin_id] = await asyncio.to_thread(
+                _inspect_plugin, row
+            )
+        except (MarketplaceError, OSError, ValueError, RuntimeError, TypeError) as exc:
+            error = f"Could not inspect contents: {redact_urls_in_text(str(exc))}"
+            logger.debug("%s", error)
+        finally:
+            self._inspecting.discard(row.plugin_id)
+        if (
+            not self._dismissed
+            and self._close_phase == "browsing"
+            and self._mode == "plugin_details"
+            and self._selected_plugin is not None
+            and self._selected_plugin.plugin_id == row.plugin_id
+        ):
+            self._selected_plugin = self._previews.get(row.plugin_id, row)
+            self._error = error
+            self._refresh_view()
+
     async def _install_selected_plugin(self) -> None:
         row = self._selected_plugin
-        if row is None:
+        if row is None or row.plugin_id in self._inspecting:
             return
         try:
             instance = await asyncio.to_thread(install_plugin, row.plugin_id)

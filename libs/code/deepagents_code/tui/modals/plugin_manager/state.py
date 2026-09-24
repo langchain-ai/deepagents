@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -23,6 +24,7 @@ from deepagents_code.plugins.marketplace import (
     materialize_plugin_source,
     redact_marketplace_source,
     redact_urls_in_text,
+    unresolved_source_message,
 )
 from deepagents_code.plugins.models import LocalPluginSource, split_plugin_id
 from deepagents_code.plugins.store import (
@@ -30,6 +32,7 @@ from deepagents_code.plugins.store import (
     load_enabled_plugin_ids,
     load_installed_plugins,
     load_marketplace_records,
+    plugin_mutation_lock,
 )
 from deepagents_code.tui.modals.plugin_manager.models import (
     _ManagerState,
@@ -206,6 +209,58 @@ def _preview_local_plugin_instance(
     # for un-installed plugins (they reach Errors once the plugin is installed).
     _ = warnings
     return loaded
+
+
+@plugin_mutation_lock()
+def _inspect_plugin(row: _PluginRow) -> _PluginRow:
+    """Download and inventory one plugin without installing or executing it.
+
+    Returns:
+        A row with the inspected component names.
+
+    Raises:
+        MarketplaceError: If the source or its inventory cannot be inspected.
+    """
+    from deepagents_code.plugins.discovery import (
+        _plugin_from_install_path,
+        _resolve_marketplace_and_entry,
+    )
+
+    marketplace, entry = _resolve_marketplace_and_entry(row.plugin_id)
+    rejections: list[str] = []
+    root = materialize_plugin_source(marketplace, entry, rejections=rejections)
+    if root is None:
+        raise MarketplaceError(
+            unresolved_source_message(row.plugin_id, entry, rejections)
+        )
+    instance, warnings = _plugin_from_install_path(
+        plugin_id=row.plugin_id,
+        root=root,
+        marketplace_name=marketplace.name,
+        fallback_name=entry.name,
+    )
+    if instance is None or warnings:
+        msg = "; ".join(warnings) or "Could not inspect plugin contents."
+        raise MarketplaceError(msg)
+    for path in (*instance.inventory.mcp_files, *instance.inventory.hook_files):
+        if path.suffix in {".mcpb", ".dxt"}:
+            msg = f"Cannot inspect unsupported MCP bundle: {path.name}"
+            raise MarketplaceError(msg)
+        document = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(document, dict):
+            msg = f"Cannot inspect {path.name}: expected a JSON object."
+            raise MarketplaceError(msg)
+    return _row_from_instance(
+        plugin_id=row.plugin_id,
+        description=row.description,
+        author=row.author,
+        is_enabled=row.enabled,
+        instance=instance,
+        mcp_server_info=(),
+        mcp_connecting=False,
+        loaded_plugin_ids=frozenset(),
+        display_name=row.display_name,
+    )
 
 
 def _row_from_instance(

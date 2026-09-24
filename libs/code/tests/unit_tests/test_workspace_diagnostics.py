@@ -13,6 +13,7 @@ from deepagents_code.workspace import (
     require_thread_workspace,
 )
 from deepagents_code.workspace_diagnostics import (
+    FieldChange,
     WorkspaceDiagnostics,
     diff_snapshots,
     format_diagnostics_content,
@@ -280,13 +281,107 @@ class TestDiagnosticsWireFormat:
 
 
 class TestDiagnosticsContent:
+    @pytest.mark.parametrize(
+        ("field", "bound", "current", "instruction"),
+        [
+            (
+                "interpreter_ptc",
+                "safe",
+                None,
+                "Set interpreter_ptc to safe (currently unset)",
+            ),
+            ("interpreter_ptc", None, "safe", "Unset interpreter_ptc (currently safe)"),
+            ("auto_approve", False, True, "Set auto_approve to off (currently on)"),
+            ("recursion_limit", 100, 200, "Set recursion_limit to 100 (currently 200)"),
+            (
+                "shell_allow_list",
+                ["ls", "pwd"],
+                ["git status"],
+                "Set shell_allow_list to ls, pwd (currently git status)",
+            ),
+        ],
+    )
+    def test_restore_instructions_use_bound_values(
+        self, field: str, bound: object, current: object, instruction: str
+    ) -> None:
+        diagnostics = WorkspaceDiagnostics(
+            category="config_drift",
+            reason="config changed",
+            changes=diff_snapshots(
+                snapshot_for_payload({field: bound}),
+                snapshot_for_payload({field: current}),
+            ),
+        )
+
+        text = format_diagnostics_content(diagnostics).plain
+
+        assert "To resume this thread, restore these settings and relaunch:" in text
+        assert instruction in text
+
+    @pytest.mark.parametrize(
+        "omitted",
+        ["x" * 257, ["x" * 257], ["x" * 256] * 64],
+        ids=["long-scalar", "long-command", "snapshot-size-limit"],
+    )
+    @pytest.mark.parametrize("omit_bound", [True, False])
+    def test_omitted_values_are_unavailable(
+        self, omitted: object, *, omit_bound: bool
+    ) -> None:
+        bound, current = (omitted, ["ls"]) if omit_bound else (["ls"], omitted)
+        diagnostics = WorkspaceDiagnostics(
+            category="config_drift",
+            reason="config changed",
+            changes=diff_snapshots(
+                snapshot_for_payload({"shell_allow_list": bound}),
+                snapshot_for_payload({"shell_allow_list": current}),
+            ),
+        )
+
+        wire = diagnostics.to_dict()
+        assert wire["changes"] == [
+            {"name": "shell_allow_list", "state": "values_unavailable"}
+        ]
+        parsed = WorkspaceDiagnostics.from_dict(wire)
+        assert parsed is not None
+        text = format_diagnostics_content(parsed).plain
+        assert "Restore shell_allow_list to its original value (unavailable)" in text
+        assert "Unset shell_allow_list" not in text
+        assert "currently unset" not in text
+
+    def test_legacy_omission_is_not_treated_as_unset(self) -> None:
+        diagnostics = WorkspaceDiagnostics(
+            category="config_drift",
+            reason="config changed",
+            changes=diff_snapshots(
+                snapshot_for_payload({}),
+                snapshot_for_payload({"interpreter_ptc": "safe"}),
+            ),
+        )
+
+        text = format_diagnostics_content(diagnostics).plain
+        assert "Restore interpreter_ptc to its original value (unavailable)" in text
+        assert "Unset interpreter_ptc" not in text
+
+    def test_unknown_original_value_is_not_treated_as_unset(self) -> None:
+        diagnostics = WorkspaceDiagnostics(
+            category="config_drift",
+            reason="config changed",
+            changes=(FieldChange(name="interpreter_ptc", state="values_unavailable"),),
+            snapshot_status="unavailable",
+        )
+
+        text = format_diagnostics_content(diagnostics).plain
+
+        assert "Restore interpreter_ptc to its original value (unavailable)" in text
+        assert "Unset interpreter_ptc" not in text
+
     def test_renders_changes_without_markup_injection(self) -> None:
         """Bracket-shaped values cannot break Rich markup parsing."""
         diagnostics = WorkspaceDiagnostics(
             category="policy_drift",
             reason="policy changed",
             changes=diff_snapshots(
-                snapshot_for_payload({"sandbox_type": "da[y]tona[/]"}),
+                snapshot_for_payload({"sandbox_type": "da[y]tona[/]\u202e"}),
                 snapshot_for_payload({"sandbox_type": None}),
             ),
         )
@@ -294,7 +389,8 @@ class TestDiagnosticsContent:
         content = format_diagnostics_content(diagnostics)
 
         text = content.plain
-        assert "da[y]tona[/]" in text
+        assert "Set sandbox_type to da[y]tona[/] (currently unset)" in text
+        assert "\u202e" not in text
         assert "policy changed" in text
 
     def test_unavailable_snapshot_is_explained(self) -> None:

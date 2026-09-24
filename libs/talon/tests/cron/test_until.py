@@ -74,6 +74,12 @@ def test_parse_until_rejects_incomplete_text(text: str) -> None:
         parse_until(text)
 
 
+def test_parse_until_rejects_dates_past_the_supported_range() -> None:
+    # 23:59 EST on the last representable day is already year 10000 in UTC.
+    with pytest.raises(CronJobError, match="supported date range"):
+        parse_until("9999-12-31 23:59 America/New_York")
+
+
 def test_until_is_rejected_on_one_shot_schedules(tmp_path) -> None:
     with pytest.raises(CronJobError, match="only valid for recurring"):
         _store(tmp_path).create_job(
@@ -267,3 +273,48 @@ async def test_finished_job_given_a_new_schedule_is_not_removed(tmp_path) -> Non
     await _tick(store, runner, NOON + timedelta(minutes=2))
 
     assert store.get_job(job.id) is not None
+
+
+async def test_until_at_the_largest_date_does_not_stall_the_scheduler(tmp_path) -> None:
+    store = _store(tmp_path)
+    runner = _Runner()
+    far = _hourly_until(store, parse_until("9999-12-31 23:59 UTC"))
+    plain = store.create_job(
+        prompt="ping", schedule=CronSchedule.parse("in 1h"), origin=ORIGIN, now=NOON
+    )
+
+    await _tick(store, runner, NOON + timedelta(hours=1))
+
+    assert sorted(runner.ran) == sorted([far.id, plain.id])
+
+
+async def test_run_interrupted_after_its_claim_is_kept_until_retention(tmp_path) -> None:
+    store = _store(tmp_path)
+    job = store.create_job(
+        prompt="ping", schedule=CronSchedule.parse("in 1m"), origin=ORIGIN, now=NOON
+    )
+    # The claim is written, then the process stops before recording an outcome.
+    store.advance_next_run(job.id, now=NOON + timedelta(minutes=1))
+
+    await _tick(store, _Runner(), NOON + timedelta(minutes=2))
+    kept = store.get_job(job.id)
+    assert kept is not None
+    assert kept.claimed_at == NOON + timedelta(minutes=1)
+
+    store.prune_completed(retain_for=timedelta(days=1), now=NOON + timedelta(days=2))
+    assert store.get_job(job.id) is None
+
+
+async def test_expired_paused_job_with_an_error_is_pruned_after_retention(tmp_path) -> None:
+    store = _store(tmp_path)
+    job = _hourly_until(store, NOON + timedelta(hours=2))
+    await _tick(store, _Runner(fail=True), NOON + timedelta(hours=1))
+    store.edit_job(job.id, origin=ORIGIN, enabled=False, now=NOON + timedelta(hours=1))
+
+    await _tick(store, _Runner(), NOON + timedelta(hours=3))
+    kept = store.get_job(job.id)
+    assert kept is not None
+    assert kept.last_error == "boom"
+
+    store.prune_completed(retain_for=timedelta(days=1), now=NOON + timedelta(days=2))
+    assert store.get_job(job.id) is None

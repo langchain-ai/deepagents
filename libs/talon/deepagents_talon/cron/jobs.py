@@ -164,6 +164,7 @@ class CronJobDict(TypedDict):
     last_error: str | None
     origin: CronOriginDict
     until: NotRequired[int | None]
+    claimed_at: NotRequired[int | None]
 
 
 class CronJobWireDict(TypedDict):
@@ -183,6 +184,7 @@ class CronJobWireDict(TypedDict):
     last_error: str | None
     origin: CronOriginDict
     until: str | None
+    claimed_at: str | None
 
 
 class CronStoreDict(TypedDict):
@@ -650,6 +652,9 @@ class CronJob:
         origin: Conversation that receives results.
         until: Last instant a recurring job may run, inclusive. The job is
             deleted once it passes.
+        claimed_at: When the scheduler claimed the current run, or `None` once
+            its outcome is recorded. Still set after a restart means the run
+            was interrupted and its outcome is unknown.
     """
 
     id: str
@@ -666,6 +671,7 @@ class CronJob:
     last_error: str | None
     origin: CronOrigin
     until: datetime | None = None
+    claimed_at: datetime | None = None
 
     def upcoming(self, count: int = 3) -> list[datetime]:
         """Return the next few scheduled runs, honoring `until` and the repeat cap.
@@ -714,6 +720,7 @@ class CronJob:
             "last_error": self.last_error,
             "origin": self.origin.to_dict(),
             "until": _to_optional_epoch(self.until),
+            "claimed_at": _to_optional_epoch(self.claimed_at),
         }
 
     def to_wire(self) -> CronJobWireDict:
@@ -741,6 +748,7 @@ class CronJob:
             "last_error": self.last_error,
             "origin": self.origin.to_dict(),
             "until": _format_optional_time(self.until),
+            "claimed_at": _format_optional_time(self.claimed_at),
         }
 
     @classmethod
@@ -775,6 +783,7 @@ class CronJob:
             last_error=_optional_str_field(record, "last_error"),
             origin=CronOrigin.from_dict(record.get("origin")),
             until=_from_optional_epoch(_optional_int_field(record, "until")),
+            claimed_at=_from_optional_epoch(_optional_int_field(record, "claimed_at")),
         )
 
 
@@ -1067,6 +1076,7 @@ class CronJobStore:
                 last_run_at=current,
                 last_status=status,
                 last_error=error,
+                claimed_at=None,
             )
             result.append(updated)
         if updated is not None:
@@ -1076,10 +1086,13 @@ class CronJobStore:
     def discard_finished(self, *, now: datetime | None = None) -> list[CronJob]:
         """Delete jobs that will never run again, or whose `until` has passed.
 
-        A job that finished with an error is kept so `list_jobs` still shows
-        why, and `prune_completed` removes it after the retention window. An
-        expired job is deleted whether or not it ever ran: expiry does not
-        depend on a run happening.
+        Two kinds of job are kept for `list_jobs` to show, and `prune_completed`
+        removes them after the retention window: one whose last run failed, and
+        one whose claimed run never recorded an outcome, because the process
+        stopped mid-run. An expired job kept for either reason is marked
+        finished so the retention prune applies to it. Any other expired job is
+        deleted whether or not it ever ran: expiry does not depend on a run
+        happening.
 
         Args:
             now: Current timestamp override for deterministic tests.
@@ -1088,15 +1101,20 @@ class CronJobStore:
             Removed job records.
         """
         current = _coerce_utc(now)
+        jobs = self.list_jobs()
         kept: list[CronJob] = []
         removed: list[CronJob] = []
-        for job in self.list_jobs():
-            done = _is_finished(job) or _is_expired(job, current)
-            if done and job.last_status != "error":
+        for job in jobs:
+            expired = _is_expired(job, current)
+            if not (expired or _is_finished(job)):
+                kept.append(job)
+            elif job.last_status != "error" and job.claimed_at is None:
                 removed.append(job)
+            elif expired:
+                kept.append(replace(job, enabled=False, next_run_at=None))
             else:
                 kept.append(job)
-        if removed:
+        if removed or kept != jobs:
             self._write_jobs(kept)
         return removed
 
@@ -1232,6 +1250,7 @@ class CronJobStore:
 
 
 def _advance_claimed_job(job: CronJob, now: datetime) -> CronJob:
+    job = replace(job, claimed_at=now)
     if job.schedule.kind == "one_shot":
         return replace(job, enabled=False, next_run_at=None)
 
@@ -1250,7 +1269,9 @@ def _is_finished(job: CronJob) -> bool:
 
 
 def _is_expired(job: CronJob, now: datetime) -> bool:
-    return job.until is not None and now > job.until + _UNTIL_GRACE
+    # Subtract from `now` rather than add to `until`: `until` may sit at the
+    # largest representable datetime, and adding the grace would overflow.
+    return job.until is not None and now - _UNTIL_GRACE > job.until
 
 
 def _edited_until(
@@ -1308,7 +1329,11 @@ def parse_until(value: str) -> datetime:
     hour, minute = _parse_local_time(tokens[1])
     zone = _resolve_zone(tokens[2])
     naive = datetime.combine(local_date, time(hour, minute))
-    return _localize(naive, zone).astimezone(UTC)
+    try:
+        return _localize(naive, zone).astimezone(UTC)
+    except OverflowError as exc:
+        msg = f"until {value!r} falls outside the supported date range"
+        raise CronJobError(msg) from exc
 
 
 def _first_run_at(schedule: CronSchedule, now: datetime) -> datetime:

@@ -307,13 +307,60 @@ class TestDiagnosticsContent:
         diagnostics = WorkspaceDiagnostics(
             category="config_drift",
             reason="config changed",
-            changes=(FieldChange(name=field, bound=bound, current=current),),
+            changes=diff_snapshots(
+                snapshot_for_payload({field: bound}),
+                snapshot_for_payload({field: current}),
+            ),
         )
 
         text = format_diagnostics_content(diagnostics).plain
 
         assert "To resume this thread, restore these settings and relaunch:" in text
         assert instruction in text
+
+    @pytest.mark.parametrize(
+        "omitted",
+        ["x" * 257, ["x" * 257], ["x" * 256] * 64],
+        ids=["long-scalar", "long-command", "snapshot-size-limit"],
+    )
+    @pytest.mark.parametrize("omit_bound", [True, False])
+    def test_omitted_values_are_unavailable(
+        self, omitted: object, *, omit_bound: bool
+    ) -> None:
+        bound, current = (omitted, ["ls"]) if omit_bound else (["ls"], omitted)
+        diagnostics = WorkspaceDiagnostics(
+            category="config_drift",
+            reason="config changed",
+            changes=diff_snapshots(
+                snapshot_for_payload({"shell_allow_list": bound}),
+                snapshot_for_payload({"shell_allow_list": current}),
+            ),
+        )
+
+        wire = diagnostics.to_dict()
+        assert wire["changes"] == [
+            {"name": "shell_allow_list", "state": "values_unavailable"}
+        ]
+        parsed = WorkspaceDiagnostics.from_dict(wire)
+        assert parsed is not None
+        text = format_diagnostics_content(parsed).plain
+        assert "Restore shell_allow_list to its original value (unavailable)" in text
+        assert "Unset shell_allow_list" not in text
+        assert "currently unset" not in text
+
+    def test_legacy_omission_is_not_treated_as_unset(self) -> None:
+        diagnostics = WorkspaceDiagnostics(
+            category="config_drift",
+            reason="config changed",
+            changes=diff_snapshots(
+                snapshot_for_payload({}),
+                snapshot_for_payload({"interpreter_ptc": "safe"}),
+            ),
+        )
+
+        text = format_diagnostics_content(diagnostics).plain
+        assert "Restore interpreter_ptc to its original value (unavailable)" in text
+        assert "Unset interpreter_ptc" not in text
 
     def test_unknown_original_value_is_not_treated_as_unset(self) -> None:
         diagnostics = WorkspaceDiagnostics(

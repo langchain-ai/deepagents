@@ -104,9 +104,9 @@ def build_snapshot(workspace_payload: Mapping[str, Any]) -> dict[str, object]:
 
     """
     snapshot: dict[str, object] = {}
-    for key in sorted(SAFE_SNAPSHOT_FIELDS):
-        value = _safe_value(workspace_payload.get(key))
-        if value is None:
+    for key in sorted(SAFE_SNAPSHOT_FIELDS & workspace_payload.keys()):
+        value = _safe_value(workspace_payload[key])
+        if value is None and workspace_payload[key] is not None:
             continue
         candidate = {**snapshot, key: value}
         serialized = json.dumps(candidate, sort_keys=True, separators=(",", ":"))
@@ -359,6 +359,11 @@ def diff_snapshots(
             name=key,
             bound=bound_fields.get(key),
             current=current_fields.get(key),
+            state=(
+                "changed"
+                if key in bound_fields and key in current_fields
+                else "values_unavailable"
+            ),
         )
         for key in sorted(set(bound_fields) | set(current_fields))
         if bound_fields.get(key) != current_fields.get(key)

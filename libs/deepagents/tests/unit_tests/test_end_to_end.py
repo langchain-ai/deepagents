@@ -5001,8 +5001,8 @@ class TestMultimodalProfileScrubProfileGatedBlocks:
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/photo.png")
 
 
-class TestMultimodalProfileScrubNonPdfFileProviderGate:
-    """Non-PDF `file` blocks (`.docx`, ...) have no `ModelProfile` field yet."""
+class TestMultimodalProfileScrubFileProviderGate:
+    """Binary document `file` blocks have no `ModelProfile` field yet."""
 
     def test_docx_stripped_for_anthropic(self) -> None:
         model = FixedGenericFakeChatModel(messages=iter([]), llm_type="anthropic-chat")
@@ -5058,29 +5058,6 @@ class TestMultimodalProfileScrubNonPdfFileProviderGate:
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
 
 
-class TestMultimodalProfileScrubFileReferencesPassThrough:
-    """`file_id`/`url` references aren't `read_file`'s base64 attachments.
-
-    They should never be scrubbed, even for a provider that doesn't tolerate
-    non-PDF base64 uploads.
-    """
-
-    @pytest.mark.parametrize(
-        "reference",
-        [{"type": "file", "file_id": "file_abc123"}, {"type": "file", "url": "https://example.com/archive.zip"}],
-    )
-    def test_file_reference_untouched(self, reference: dict[str, str]) -> None:
-        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="ok")]), llm_type="anthropic-chat")
-        agent = create_deep_agent(model=model)
-
-        agent.invoke({"messages": [HumanMessage(content=[reference])]})
-
-        assert model.captured_messages
-        first_call = model.captured_messages[0]
-        human_message = next(m for m in first_call if isinstance(m, HumanMessage))
-        assert human_message.content_blocks[0] == reference
-
-
 class TestMultimodalProfileScrubAsyncPath:
     async def test_docx_stripped_for_anthropic_async(self) -> None:
         model = FixedGenericFakeChatModel(
@@ -5106,6 +5083,20 @@ class TestMultimodalProfileScrubAsyncPath:
 
         tool_message = _second_call_tool_message(model)
         assert _is_placeholder_block(tool_message.content_blocks[0], path="/report.docx")
+
+
+@pytest.mark.parametrize(
+    "file_block",
+    [{"type": "file", "file_id": "file_abc123"}, {"type": "file", "url": "https://example.com/archive.zip"}],
+)
+def test_file_reference_reaches_model_unchanged(file_block: dict[str, str]) -> None:
+    model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="ok")]), llm_type="anthropic-chat")
+    agent = create_deep_agent(model=model)
+
+    agent.invoke({"messages": [HumanMessage(content=[file_block])]})
+
+    human_message = next(message for message in model.captured_messages[0] if isinstance(message, HumanMessage))
+    assert human_message.content_blocks[0] == file_block
 
 
 def test_utf8_text_read_reaches_model_as_text() -> None:

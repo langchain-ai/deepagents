@@ -6,7 +6,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, ClassVar, assert_never
 
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Static
@@ -151,12 +151,14 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         width: 72;
         max-width: 90%;
         height: auto;
+        max-height: 100%;
         background: $surface;
         border: solid $warning;
         padding: 1 2;
     }
 
     ColdCacheWarningScreen .cold-cache-title {
+        dock: top;
         text-style: bold;
         color: $warning;
         text-align: center;
@@ -167,6 +169,17 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         height: auto;
         color: $text;
         margin-bottom: 1;
+    }
+
+    ColdCacheWarningScreen #cold-cache-body-scroll {
+        height: auto;
+        max-height: 100%;
+        min-height: 1;
+    }
+
+    ColdCacheWarningScreen #cold-cache-actions {
+        dock: bottom;
+        height: auto;
     }
 
     ColdCacheWarningScreen .cold-cache-choice {
@@ -341,38 +354,46 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
                 classes="cold-cache-title",
                 markup=False,
             )
-            yield Static(self._body(), classes="cold-cache-body", markup=False)
-            if self._handoff:
-                yield Static(
-                    "Start a new thread with an LLM summary, the previous "
-                    "thread ID, and a transcript path for recovering details. "
-                    "The original thread is preserved. Summarization costs money "
-                    "and does not guarantee savings. Your message stays in the "
-                    "composer after summarizing.",
-                    classes="cold-cache-body",
-                    markup=False,
+            with VerticalScroll(id="cold-cache-body-scroll"):
+                yield Static(self._body(), classes="cold-cache-body", markup=False)
+                if self._handoff:
+                    yield Static(
+                        "Start a new thread with an LLM summary, the previous "
+                        "thread ID, and a transcript path for recovering details. "
+                        "The original thread is preserved. Summarization costs money "
+                        "and does not guarantee savings. Your message stays in the "
+                        "composer after summarizing.",
+                        classes="cold-cache-body",
+                        markup=False,
+                    )
+            with Vertical(id="cold-cache-actions"):
+                for choice, label in self._choices():
+                    option = _ChoiceOption(choice, label)
+                    self._options.append(option)
+                    yield option
+                cancel_hint = (
+                    "stay" if self._handoff and not self._allow_send else "cancel"
                 )
-            for choice, label in self._choices():
-                option = _ChoiceOption(choice, label)
-                self._options.append(option)
-                yield option
-            cancel_hint = "stay" if self._handoff and not self._allow_send else "cancel"
-            help_text = (
-                f"{modal_navigation_hint(glyphs)} "
-                f"{glyphs.bullet} Enter select "
-                f"{glyphs.bullet} Esc {cancel_hint}"
-            )
-            yield Static(help_text, classes="cold-cache-help", markup=False)
-            if self._handoff:
-                yield Static(
-                    "Configure warnings.cache_prompt in /config",
-                    classes="cold-cache-help",
-                    markup=False,
+                help_text = (
+                    f"{modal_navigation_hint(glyphs)} "
+                    f"{glyphs.bullet} Enter select "
+                    f"{glyphs.bullet} Esc {cancel_hint}"
                 )
+                yield Static(help_text, classes="cold-cache-help", markup=False)
+                if self._handoff:
+                    yield Static(
+                        "Configure warnings.cache_prompt in /config",
+                        classes="cold-cache-help",
+                        markup=False,
+                    )
 
     def on_mount(self) -> None:
-        """Focus the modal and default the cursor to the first row, if any."""
-        self.focus()
+        """Focus the scrollable copy and select the first action.
+
+        The body receives Page Up/Down while the modal's priority bindings
+        keep Tab and arrow keys navigating the pinned actions.
+        """
+        self.query_one("#cold-cache-body-scroll", VerticalScroll).focus()
         self._set_selected(0)
 
     def _set_selected(self, new_index: int) -> None:

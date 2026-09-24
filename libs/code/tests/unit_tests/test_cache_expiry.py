@@ -11,7 +11,10 @@ import pytest
 from langchain_core.messages import BaseMessage, HumanMessage
 
 from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionState
-from deepagents_code.tui.modals.cold_cache import ColdCacheWarningScreen
+from deepagents_code.tui.modals.cold_cache import (
+    ColdCacheChoice,
+    ColdCacheWarningScreen,
+)
 from deepagents_code.tui.widgets.messages import ErrorMessage
 
 if TYPE_CHECKING:
@@ -65,6 +68,81 @@ async def test_modal_keys_preserve_draft_and_prompt_once(
         assert not isinstance(app.screen, ColdCacheWarningScreen)
         if not summarize:
             assert app._cache_expiry_bypassed is not None
+
+
+@pytest.mark.parametrize("size", [(80, 20), (60, 16), (120, 40)])
+@pytest.mark.parametrize("allow_send", [False, True])
+async def test_short_terminal_keeps_handoff_actions_visible(
+    size: tuple[int, int], allow_send: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Real app bindings must navigate visible choices without spending."""
+    from textual.containers import Vertical, VerticalScroll
+
+    from deepagents_code.cold_cache import (
+        ColdCacheWarning,
+        PromptCachePolicy,
+        RewarmEstimate,
+    )
+
+    warning = ColdCacheWarning(
+        policy=PromptCachePolicy(
+            provider_name="OpenAI",
+            window_seconds=1800,
+            confidence="may_be_cold",
+            minimum_tokens=1024,
+            write_bucket="generic",
+        ),
+        estimate=RewarmEstimate(cold_cost_usd=0.42, incremental_cost_usd=0.35),
+        context_tokens=84_000,
+        age_seconds=11_520,
+        reason="idle",
+    )
+    app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_warning_for", AsyncMock(return_value=warning))
+    process = AsyncMock()
+    handoff = AsyncMock()
+    monkeypatch.setattr(app, "_process_message", process)
+    monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
+    async with app.run_test(size=size) as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        assert app._chat_input is not None
+        app._chat_input.value = "keep this draft"
+        if allow_send:
+            await pilot.press("enter")
+        else:
+            app._check_cache_expiry()
+        await pilot.pause()
+        screen = app.screen
+        assert isinstance(screen, ColdCacheWarningScreen)
+        options = screen.query(".cold-cache-choice")
+        for widget in screen.query(".cold-cache-choice, .cold-cache-help"):
+            assert screen.find_widget(widget).visible_region == widget.region
+        body = screen.query_one(VerticalScroll)
+        if body.max_scroll_y:
+            await pilot.press(*("pagedown",) * 10)
+            await pilot.pause()
+            assert body.scroll_y == body.max_scroll_y
+            await pilot.press("pageup")
+            await pilot.pause()
+            assert body.scroll_y < body.max_scroll_y
+        else:
+            assert screen.query_one(Vertical).region.height < screen.size.height
+        for key in ("tab",) * len(options) + ("shift+tab", "down", "up"):
+            await pilot.press(key)
+            await pilot.pause()
+            selected = screen.query_one(".cold-cache-choice.-selected")
+            assert selected.region.height > 0
+            assert screen.find_widget(selected).visible_region == selected.region
+            for hint in screen.query(".cold-cache-help"):
+                assert screen.find_widget(hint).visible_region == hint.region
+        assert screen._options[screen._selected].choice is ColdCacheChoice.CANCEL
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not isinstance(app.screen, ColdCacheWarningScreen)
+        assert app._chat_input.value == "keep this draft"
+        process.assert_not_awaited()
+        handoff.assert_not_awaited()
 
 
 async def test_defers_busy_and_disabled_then_rearms_new_window(

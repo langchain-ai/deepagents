@@ -3,9 +3,14 @@ type: security operations guide
 title: Security Boundaries and Secrets
 description: Operating guidance for agent authority, workspace and offload trust boundaries, and least-privilege GitHub automation. It distinguishes controls expressed in workflow YAML from externally configured GitHub, App, environment, and host protections.
 tags: [security, operations, trust-boundaries, secrets, approvals, mcp, github-actions]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-23T08:05:59.666Z
 sources:
   - id: openwiki-source-2b395728f3412b772048ad1f
     resource: repo://.github/scripts/labeling/semif-topic-classifier.js
+  - id: openwiki-source-6ac03f1bfd66c4bc4a761a5c
+    resource: repo://.github/scripts/labeling/sync-topic-labels.js
   - id: openwiki-source-9b32b94dc673575be27eaced
     resource: repo://.github/scripts/labeling/topic-classifier.js
   - id: openwiki-source-ea29da8749b893917f11666d
@@ -30,10 +35,16 @@ sources:
     resource: repo://.github/workflows/openwiki-update.yml
   - id: openwiki-source-4541a26c837a99dc39a0ee0c
     resource: repo://.github/workflows/release_notes.yml
+  - id: openwiki-source-88c8fb547983f8768347b62e
+    resource: repo://.github/workflows/sync_topic_labels.yml
+  - id: openwiki-source-18abc7e59899514f067032b2
+    resource: repo://libs/code/deepagents_code/auto_mode.py
   - id: openwiki-source-074ce96a8baea27a6c43328b
     resource: repo://libs/code/deepagents_code/client/launch/server.py
   - id: openwiki-source-216ca680d81dc35eb4d3e76e
     resource: repo://libs/code/deepagents_code/mcp_config.py
+  - id: openwiki-source-c101168dc0286ff6c29ed37f
+    resource: repo://libs/code/deepagents_code/model_retry.py
   - id: openwiki-source-ea1089f0d7536fbc96c64866
     resource: repo://libs/code/deepagents_code/offload_api.py
   - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
@@ -52,10 +63,7 @@ sources:
     resource: repo://libs/talon/deepagents_talon/tool_approvals.py
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-22T08:05:41.799Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-22T08:05:41.799Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-23T08:05:59.666Z" }
 ---
 
 # Security Boundaries and Secrets
@@ -98,6 +106,14 @@ For server-hosted threads, a workspace is a durable, server-authoritative bindin
 `/dcode/threads/{thread_id}/offload` validates a deliberately narrow request shape before running compaction. At the HTTP boundary, it removes client-supplied endpoint, proxy, transport, and injected-client keys from `model_params`; more importantly, it discards request model selection and restores the model and parameters recorded in the thread checkpoint. A local client cannot use offload to redirect the server's credentialed provider traffic or choose another credentialed model. The server still needs the normal loopback/host isolation boundary.
 
 The route also rejects unknown workspace request fields and client claims that contain project workspace policy. Its conflict diagnostics contain allowlisted policy details, not paths, prompts, model parameters, or credentials. See [runtime behavior](../architecture/runtime-behavior.md) for the offload lifecycle and settlement semantics.
+
+### Auto review, scratch artifacts, and retry budgets
+
+Auto mode is **policy and review**, not a sandbox. `AutoModeHITLMiddleware` treats its classifier deadline as a security-control budget: it requires positive finite construction and inference budgets, gives model construction a separate 30-second budget, and uses the configured inference budget (20 seconds by default) for a structured decision batch. Construction is cached and shielded so an expired wait does not spawn duplicate builds; an inference failure is retried only when the shared model retry policy classifies it as transient, and classifier retry sleeps may consume at most one quarter of its deadline. These controls prevent a stalled or rate-limited reviewer from silently turning into an indefinite approval path; they do not make untrusted tool arguments safe.
+
+The middleware's `create_temp_artifact` and `delete_temp_artifact` tools are approval-gated. Creation uses an exclusively allocated file under the OS temp directory, rejects an unsafe suffix, non-regular file, wrong owner, or broad POSIX mode, and records allocation, device, inode, thread, and current-turn identity. Cleanup accepts only an artifact in that current request and rechecks the prefix and device/inode before unlinking. Use these tools for short-lived command inputs such as a PR body; do not replace them with model-selected paths or treat an OS temp file as persistent secret storage.
+
+Model retries wrap the model node rather than the entire agent turn, so a transient provider failure does not replay completed tools. The retry policy accepts designated transient status, transport, SDK, and `ModelError` cases; it honors a valid `Retry-After` only up to 60 seconds, otherwise uses jittered exponential backoff capped at 10 seconds, and re-raises non-transient or exhausted failures rather than fabricating a model reply. For calls under a deadline, a cumulative-delay guard refuses a retry whose sleep would overrun the caller's budget.
 
 ### MCP environment expansion and OAuth storage
 
@@ -143,11 +159,19 @@ flowchart TD
 
 *Issue text reaches a credentialed model endpoint only in the scoped classifier step; output is constrained before labels are mutated.*
 
+#### Manifest synchronization and live dry runs
+
+The classifier's allowlist is the checked-in `.github/topic-labels.json` manifest, rather than arbitrary provider output or a live label-list response. The daily sync discovers valid nonempty `topic:*` repository labels and merges them with the existing sorted manifest; it refuses to overwrite the manifest when discovery returns none, so label disappearance does not silently retire a classification choice. Its App token can write contents and pull requests only for the manifest refresh path.
+
+A maintainer can dispatch `sync_topic_labels.yml` with `classifier_issue` to run a live Semif classification without mutating labels or the manifest. This job has read-only contents and issues permissions, validates a positive safe-integer issue number, writes only the classifier's validated diagnostic JSON to `classifier-scores.json` with mode `0600`, and uploads it as an artifact. Treat the artifact as sensitive issue-derived operational output and limit access/retention through GitHub artifact policy.
+
 ### Curated release notes: trusted automation, untrusted PR data
 
 `release_notes.yml` uses `pull_request_target` for ready release PRs and `issue_comment` for manual commands. It checks out the automation from `main` into `trusted-source` with no persisted credentials; it does not check out or execute release-PR code. Validation accepts only an open, same-repository, `main`-targeting release-please branch whose component is present in the registry and agrees with the release title. A manual `@release-bot draft` or `apply` command additionally requires repository write, maintain, or admin permission; insider association only limits feedback and is not the privileged authorization check.
 
 The draft job prepares PR content through the API at the validated head SHA, then invokes a fixed model endpoint without model tools, shell, or filesystem access to the untrusted text. Only the key selected by `RELEASE_BOT_MODEL` is in that drafting process. Repository mutations use the short-lived App token in specific helper steps. Apply revalidates and prepares state, creates a non-force Git Data API commit on the release branch, publishes the preview/metadata, and dispatches the required check for the resulting head.
+
+The helper is deliberately fail-closed at its content boundary. A release branch and title must agree on a registered component, excluding fork lookalikes before a changelog path is derived. Bot metadata parsing requires an exact marker at byte zero, exactly one of each known field, and both the configured bot login and immutable numeric ID. Draft instructions are length-bounded and stripped of mentions and metadata/heading tokens before being echoed. Trusted state is kept outside the drafting helper's work directory; after generation, output must be nontrivial and contain neither release-bot metadata nor a version heading, and the PR head/component/version are checked again before publication. These validations prevent model or PR text from being promoted into trusted control metadata.
 
 The YAML requests contents, issues, and pull-request write scopes when minting that App token, but the effective token remains subject to the App's external installation configuration. Likewise, `release-bot` is an intended secret boundary, not proof that its environment restrictions or provider secrets exist.
 
@@ -179,6 +203,7 @@ Before staging, the workflow restores its own YAML and stages only `openwiki` an
 3. Keep dcode's loopback server away from untrusted local peers. Do not allow offload callers to supply provider routing or model identity.
 4. For Talon, prefer `self` or a restrictive allowlist; keep tokens outside agent-readable paths.
 5. For CI, scope credentials to the narrowest environment and consuming step, then audit broader repository/organization fallbacks and external App/environment policy.
-6. Preserve label-classifier input/output constraints: untrusted text instruction handling, provider-specific credential scope, allowlists, timeout, and add-only topic behavior.
-7. Preserve release-note trusted-source checkout, validated API reads, manual permission check, selected-key-only drafting step, and non-force apply path.
-8. Preserve OpenWiki delayed token minting, publication allowlist, PR ownership checks, SHA pinning, and bounded retry. Run `.github/scripts/tests/workflows/test_workflow_secret_scoping.py`, the classifier tests, and release-note tests when changing these boundaries.
+6. Preserve label-classifier input/output constraints: untrusted text instruction handling, provider-specific credential scope, allowlists, timeout, scoring validation, and add-only topic behavior. Keep manifest sync additive and treat the live dry-run artifact as issue-derived data.
+7. Preserve Auto classifier construction/inference deadlines, bounded retry sleep, approval-gated artifact provenance, and device/inode checks; these are safeguards around authority, not containment.
+8. Preserve release-note trusted-source checkout, validated API reads, manual permission check, selected-key-only drafting step, strict bot metadata/output validation, and non-force apply path.
+9. Preserve OpenWiki delayed token minting, publication allowlist, PR ownership checks, SHA pinning, and bounded retry. Run `.github/scripts/tests/workflows/test_workflow_secret_scoping.py`, the classifier tests, and release-note tests when changing these boundaries.

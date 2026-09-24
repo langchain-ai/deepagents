@@ -15,7 +15,7 @@ functions that need them.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -148,20 +148,26 @@ class ConfigResolution:
     the reason is already embedded in `message`, so the field lives only here.
     See `format_load_errors_notice`."""
 
+    includes_plugins: bool = field(default=False, kw_only=True)
+    """Whether enabled plugins contributed to the merged configuration."""
+
     def __post_init__(self) -> None:
-        """Enforce the non-empty `used_paths` invariant.
+        """Require at least one file or plugin configuration source.
 
         Raises:
-            ValueError: If `used_paths` is empty.
+            ValueError: If neither files nor plugins contributed configuration.
         """
-        if not self.used_paths:
-            msg = "ConfigResolution must have at least one used path"
+        if not self.used_paths and not self.includes_plugins:
+            msg = "ConfigResolution must have at least one file or plugin source"
             raise ValueError(msg)
 
     @property
     def search_label(self) -> str:
-        """Human-readable join of the paths backing this resolution."""
-        return ", ".join(str(path) for path in self.used_paths)
+        """Human-readable join of the sources backing this resolution."""
+        labels = [str(path) for path in self.used_paths]
+        if self.includes_plugins:
+            labels.append("enabled plugins")
+        return ", ".join(labels)
 
 
 @dataclass(frozen=True)
@@ -209,6 +215,7 @@ def resolve_mcp_config(
         _drop_invalid_mcp_config_servers,
         _load_mcp_config_top_level_with_error,
         _merge_mcp_configs_with_sources,
+        _resolve_project_config_base,
         discover_mcp_config_sources,
         filter_trusted_project_servers,
         load_mcp_config,
@@ -229,8 +236,12 @@ def resolve_mcp_config(
             used_paths=(Path(config_path),),
         )
 
+    from deepagents_code.plugins.adapters.mcp import discover_plugin_mcp_configs
+
     found = discover_mcp_config_sources()
-    if not found:
+    plugin_project_root = _resolve_project_config_base(None)
+    plugin_configs = discover_plugin_mcp_configs(project_dir=plugin_project_root)
+    if not found and not plugin_configs:
         return ConfigResolutionError(
             kind=ConfigErrorKind.NO_CONFIG_FOUND,
             message=(
@@ -264,7 +275,8 @@ def resolve_mcp_config(
         elif error is not None:
             load_errors.append((path, error))
 
-    if project_paths:
+    includes_plugins = False
+    if plugin_configs or project_paths:
         from deepagents_code.model_config import load_mcp_server_trust_lists
 
         trust_lists = load_mcp_server_trust_lists()
@@ -277,6 +289,20 @@ def resolve_mcp_config(
             # trust-list loader has already discarded scoped approvals while
             # retaining names explicitly enabled through the readable env var.
             policy_error = trust_lists.read_error
+        for plugin_config in plugin_configs:
+            plugin_servers = plugin_config.get("mcpServers")
+            if not isinstance(plugin_servers, dict):
+                continue
+            plugin_kept = filter_trusted_project_servers(
+                plugin_servers,
+                trust_lists,
+                project_root=plugin_project_root,
+                config_trusted=not trust_lists.load_failed,
+            )
+            if plugin_kept:
+                configs.append({**plugin_config, "mcpServers": plugin_kept})
+                includes_plugins = True
+
         config_trusted = trust_project_mcp is True and not trust_lists.load_failed
         loaded_projects: list[tuple[Path, dict[str, Any]]] = []
         for path in project_paths:
@@ -334,8 +360,10 @@ def resolve_mcp_config(
             detail = "; ".join(f"{path}: {error}" for path, error in load_errors)
             message = f"No usable MCP config found (load errors: {detail})"
         else:
-            found_paths = ", ".join(str(source.path) for source in found)
-            message = f"No usable MCP config found in: {found_paths}"
+            found_labels = [str(source.path) for source in found]
+            if plugin_configs:
+                found_labels.append("enabled plugins")
+            message = f"No usable MCP config found in: {', '.join(found_labels)}"
         return ConfigResolutionError(
             kind=ConfigErrorKind.NO_USABLE_CONFIG,
             message=message,
@@ -349,6 +377,7 @@ def resolve_mcp_config(
     return ConfigResolution(
         config=merge_mcp_configs(configs),
         used_paths=tuple(used_paths),
+        includes_plugins=includes_plugins,
         untrusted_project_paths=untrusted,
         legacy_ignored=legacy_ignored,
         policy_error=policy_error,

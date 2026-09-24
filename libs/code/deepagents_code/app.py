@@ -121,6 +121,7 @@ from deepagents_code.goal_state_limits import (
     validate_rubric,
 )
 from deepagents_code.goal_state_notice import (
+    GOAL_CONTROL_MESSAGE_SOURCE,
     build_goal_continuation,
     build_goal_state_notice,
     goal_notice_size_error,
@@ -19040,6 +19041,15 @@ class DeepAgentsApp(App):
             # Published on the app so exit() can merge the stats synchronously
             # if the worker is cancelled before this method can return (e.g.
             # Ctrl+D during HITL).
+            if graph_input is None and (
+                (message_kwargs or {}).get("additional_kwargs", {}).get("lc_source")
+                != GOAL_CONTROL_MESSAGE_SOURCE
+            ):
+                from deepagents_code.config import runtime_state
+
+                turn_stats.record_invocation(
+                    runtime_state.model_name or "", runtime_state.model_provider or ""
+                )
             self._inflight_turn_stats = turn_stats
             self._inflight_turn_start = time.monotonic()
             self._inflight_thread_id = self._lc_thread_id

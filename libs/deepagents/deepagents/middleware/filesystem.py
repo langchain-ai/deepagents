@@ -13,7 +13,7 @@ from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, cast
+from typing import Annotated, Any, Final, Literal, NotRequired, cast
 
 import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
@@ -29,6 +29,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
+from langchain_core.exceptions import ModelInvalidRequestError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
@@ -66,7 +67,6 @@ from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
     _GLOB_WILDCARD_CHARS,
-    _OPENAI_FILE_MIME_TYPES,
     _VIDEO_EXTRA_EXTENSIONS,
     MAX_VIDEO_INPUT_BYTES,
     FileType,
@@ -89,6 +89,7 @@ from deepagents.middleware._message_eviction import (
     _extract_text_from_message,
     _offload_tool_message_content,
     _render_preview_stub,
+    _visible_tool_call_id,
 )
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware._video import (
@@ -145,17 +146,6 @@ def __getattr__(name: str) -> str:
     raise AttributeError(msg)
 
 
-# `ChatOpenAI`, `AzureChatOpenAI`, and `ChatGoogleGenerativeAI` accept non-PDF
-try:
-    from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI, ChatOpenAI as _ChatOpenAI
-except ImportError:
-    _OPENAI_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
-else:
-    _OPENAI_FILE_MODEL_TYPES = (_AzureChatOpenAI, _ChatOpenAI)
-
-if TYPE_CHECKING:
-    from langchain.chat_models import BaseChatModel
-
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 """wcmatch flags enabling brace expansion and `**` globstar recursion."""
 
@@ -185,13 +175,7 @@ _VIDEO_SAMPLING_RATE: Final = 0.5
 """Seconds between sampled frames when extracting stills from a video."""
 
 _MULTIMODAL_BLOCK_TYPES: Final = frozenset(_EXTENSION_TO_FILE_TYPE.values())
-"""Content block types `read_file` may emit that require multimodal model support.
-
-Derived from `_EXTENSION_TO_FILE_TYPE`'s values (`"text"` never appears there,
-since it's `_get_file_type`'s default for unmapped extensions).
-"""
-
-_PDF_MIME_TYPE: Final = "application/pdf"
+"""Content block types `read_file` may emit that require multimodal model support."""
 
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
@@ -264,125 +248,17 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
     return reordered
 
 
-_PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs"}
-"""`ModelProfile` field gating each media block type."""
-
-_TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message"}
-"""Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
-
-
-def _file_block_supported(
-    block: ContentBlock,
-    *,
-    model: "BaseChatModel | None",
-    profile: Mapping[str, Any],
-    in_tool_message: bool,
-) -> bool:
-    """Check whether a file block is supported by the model and endpoint."""
-    if "base64" not in block:
-        return True
-    if block.get("mime_type") == _PDF_MIME_TYPE:
-        if in_tool_message and profile.get("pdf_tool_message") is False:
-            return False
-        return profile.get("pdf_inputs") is not False
-    return block.get("mime_type") in _OPENAI_FILE_MIME_TYPES and isinstance(model, _OPENAI_FILE_MODEL_TYPES) and bool(model.use_responses_api)
-
-
-def _multimodal_block_supported(
-    block: ContentBlock,
-    *,
-    model: "BaseChatModel | None",
-    profile: Mapping[str, Any],
-    in_tool_message: bool,
-) -> bool:
-    """Check whether the profile and provider accept the block.
-
-    Missing `ModelProfile` fields default to supported, since profile coverage is
-    incomplete. Only an explicit `False` rejects a block type.
-    """
-    block_type = block["type"]
-    if block_type == "file":
-        return _file_block_supported(
-            block,
-            model=model,
-            profile=profile,
-            in_tool_message=in_tool_message,
-        )
-
-    field = _PROFILE_FIELD_BY_BLOCK_TYPE.get(block_type)
-    if field is None:
-        return True
-    if in_tool_message:
-        tool_field = _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE.get(block_type)
-        if tool_field and profile.get(tool_field) is False:
-            return False
-    return profile.get(field) is not False
-
-
-def _unsupported_multimodal_placeholder(block: ContentBlock, message: AnyMessage) -> ContentBlock:
-    """Build the text block replacing a multimodal block the model can't accept."""
-    mime_type = block.get("mime_type", "unknown")
-    path = message.additional_kwargs.get("read_file_path", "the requested file")
-    return cast(
-        "ContentBlock",
-        {
-            "type": "text",
-            "text": f"[read_file: {path} was not attached because this model does not support {block['type']} content ({mime_type}).]",
-        },
-    )
-
-
-def _scrub_message_multimodal_content(
-    message: AnyMessage,
-    *,
-    model: "BaseChatModel | None",
-    profile: Mapping[str, Any],
-) -> AnyMessage:
-    """Return `message` unchanged, or a copy with unsupported blocks replaced by placeholders."""
-    if not isinstance(message, (ToolMessage, HumanMessage)):
-        return message
-
-    in_tool_message = isinstance(message, ToolMessage)
-    blocks = message.content_blocks
-    new_blocks = [
-        block
-        if block["type"] not in _MULTIMODAL_BLOCK_TYPES
-        or _multimodal_block_supported(
-            block,
-            model=model,
-            profile=profile,
-            in_tool_message=in_tool_message,
-        )
-        else _unsupported_multimodal_placeholder(block, message)
-        for block in blocks
+def _replace_rejected_file_content(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Replace only multimodal reads since the latest model response."""
+    last_response = next((index for index in range(len(messages) - 1, -1, -1) if isinstance(messages[index], AIMessage)), -1)
+    return [
+        message.model_copy(update={"content": "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."})
+        if index > last_response
+        and (_is_read_file_media_result(message) or (isinstance(message, ToolMessage) and message.name == "read_file"))
+        and any(block["type"] in _MULTIMODAL_BLOCK_TYPES for block in message.content_blocks)
+        else message
+        for index, message in enumerate(messages)
     ]
-    if new_blocks == blocks:
-        return message
-    return message.model_copy(update={"content": new_blocks})
-
-
-def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "BaseChatModel | None") -> list[AnyMessage]:
-    """Replace multimodal content blocks `model.profile` marks unsupported.
-
-    Some providers return a non-retryable 400 when sent a content block they
-    don't support (e.g. a `file` block whose `mime_type` isn't
-    `application/pdf`, produced when `read_file` reads a `.docx`), which would
-    otherwise end the thread. Swapping the unsupported block for a text
-    placeholder here before the request reaches the model.
-
-    A `model` with no `profile` (including `None` `model`, e.g. in tests) is
-    treated as an empty profile rather than skipped: `ModelProfile` is often
-    absent for models `langchain_anthropic` doesn't have a static entry for
-    (e.g. `ChatAnthropic(model="claude-3-5-sonnet-latest")`), and the
-    provider-based binary document gate doesn't depend on profile data at all —
-    skipping the whole scrub in that case would silently leave the exact
-    `.docx`-on-Anthropic bug this fixes unfixed for those models. An empty
-    profile still defaults every per-field check to "supported."
-    """
-    profile = model.profile if model is not None else None
-    if not isinstance(profile, dict):
-        profile = {}
-    return [_scrub_message_multimodal_content(message, model=model, profile=profile) for message in messages]
 
 
 def _handle_video_read(
@@ -1788,6 +1664,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     This middleware also automatically evicts large tool results to the file system when
     they exceed a token threshold, preventing context window saturation.
 
+    When using `create_agent` directly, add
+    [`UnsupportedContentMiddleware`][deepagents.middleware.unsupported_content.UnsupportedContentMiddleware]
+    last in the `middleware` list, so `read_file` results the model can't accept are
+    replaced with a text notice. `create_deep_agent` adds it automatically.
+
     Args:
         backend: Backend for file storage and optional execution.
 
@@ -3052,7 +2933,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 # discloses that in-band rather than through this note.
                 lines_clipped=False,
             ),
-            tool_call_id=tool_call_id,
+            tool_call_id=_visible_tool_call_id(tool_call_id),
             file_path=capture_path,
         )
 
@@ -3314,9 +3195,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             eviction threshold, its content is written to the backend and the
             message is tagged in state via `ExtendedModelResponse`.
 
-        It also scrubs unsupported multimodal blocks, replacing them with text
-        placeholders to avoid non-retryable provider errors.
-
         Args:
             request: The model request being processed.
             handler: The handler function to call with the modified request.
@@ -3328,20 +3206,28 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         request_messages = _move_media_results_after_tool_results(list(request.messages))
-        request_messages = _scrub_unsupported_multimodal_content(request_messages, request.model)
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 
+        state_command = None
         eviction_result = self._evict_and_truncate_messages(request)
         if eviction_result is not None:
             messages, state_command = eviction_result
             request = request.override(messages=messages)
+        try:
             response = handler(request)
-            if state_command is not None:
-                return ExtendedModelResponse(model_response=response, command=state_command)
-            return response
-
-        return handler(request)
+        except ModelInvalidRequestError:
+            messages = _replace_rejected_file_content(request.messages)
+            if messages == request.messages:
+                raise
+            response = handler(request.override(messages=messages))
+            replacements = [message for original, message in zip(request.messages, messages, strict=True) if message is not original]
+            update = dict(cast("dict[str, Any]", state_command.update)) if state_command is not None else {}
+            update["messages"] = [*update.get("messages", []), *replacements]
+            state_command = replace(state_command, update=update) if state_command is not None else Command(update=update)
+        if state_command is not None:
+            return ExtendedModelResponse(model_response=response, command=state_command)
+        return response
 
     async def awrap_model_call(
         self,
@@ -3364,20 +3250,28 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         request_messages = _move_media_results_after_tool_results(list(request.messages))
-        request_messages = _scrub_unsupported_multimodal_content(request_messages, request.model)
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 
+        state_command = None
         eviction_result = await self._aevict_and_truncate_messages(request)
         if eviction_result is not None:
             messages, state_command = eviction_result
             request = request.override(messages=messages)
+        try:
             response = await handler(request)
-            if state_command is not None:
-                return ExtendedModelResponse(model_response=response, command=state_command)
-            return response
-
-        return await handler(request)
+        except ModelInvalidRequestError:
+            messages = _replace_rejected_file_content(request.messages)
+            if messages == request.messages:
+                raise
+            response = await handler(request.override(messages=messages))
+            replacements = [message for original, message in zip(request.messages, messages, strict=True) if message is not original]
+            update = dict(cast("dict[str, Any]", state_command.update)) if state_command is not None else {}
+            update["messages"] = [*update.get("messages", []), *replacements]
+            state_command = replace(state_command, update=update) if state_command is not None else Command(update=update)
+        if state_command is not None:
+            return ExtendedModelResponse(model_response=response, command=state_command)
+        return response
 
     def _process_large_message(
         self,

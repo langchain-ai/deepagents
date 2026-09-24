@@ -5,7 +5,7 @@ description: Package ownership and dependency boundaries across the Deep Agents 
 tags: [architecture, monorepo, deepagents, dcode, acp, runtime-boundaries]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-22T08:05:41.799Z
+    at: 2026-09-24T08:06:01.996Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -23,10 +23,14 @@ sources:
     resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
+  - id: openwiki-source-f6d553e7afdf54acac36e7d3
+    resource: repo://libs/code/deepagents_code/mcp_tools.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-fed4b84a38685f37e58018c5
+    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-8565b7f246ed6e34051d8dfe
     resource: repo://libs/evals/README.md
   - id: openwiki-source-7da6afe7fe64c6589cf1fed0
@@ -55,7 +59,7 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-09-22T08:05:41.799Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-24T08:06:01.996Z" }
 ---
 
 # Repository Architecture Overview
@@ -108,6 +112,8 @@ Deep Agents is a three-layer stack: LangGraph is the runtime for state, checkpoi
 
 `DeepAgentState` extends LangChain's `AgentState` with a `DeltaChannel` reducer. That keeps checkpoint growth linear (O(N)) rather than quadratic (O(N²)) on long message threads. Graph checkpoints remain separate from backend persistence: LangGraph retains graph state, whereas the chosen backend determines where files, memory, and shell execution occur.
 
+`FilesystemMiddleware` is SDK infrastructure, not a terminal-product feature. It supplies `ls`, `read_file`, `write_file`, `edit_file`, `glob`, and `grep` through a `BackendProtocol`; `execute` is exposed only when that backend supports the sandbox execution protocol. It defaults to state-backed ephemeral storage, can route durable storage through a `CompositeBackend`, and offloads oversized results through that same backend. An explicit filesystem-tool allowlist must include `read_file`; tools omitted from it are not dispatchable. Therefore, a consumer may choose a backend and product allowlist, but reusable filesystem semantics, recovery paths, and permission enforcement belong in the SDK.
+
 Tool visibility is not authorization. Middleware and profiles decide what the model sees; backend capabilities and filesystem permissions decide whether an operation can proceed; `interrupt_on` sends selected calls through LangGraph interruption. Preserve that separation when adding a consumer-specific policy.
 
 ## dcode: a product server, not the SDK
@@ -116,7 +122,13 @@ Deep Agents Code separates a terminal client from an agent server in separate pr
 
 `create_cli_agent()` is dcode's product assembly point. It creates a composite local-or-sandbox backend, CLI context schema, product middleware, approval policy, checkpoint/store integration, subagents, and a sanitized assistant name before calling `create_deep_agent()`. It also enforces product-specific constraints: an explicit filesystem-tool allowlist is injected into synchronous subagents so delegation cannot bypass it; a JavaScript interpreter is rejected with a remote sandbox; and Auto approval is disabled for sandbox-backed graphs. Registered extensions replace same-named tools and middleware before final construction.
 
-The dcode server supplies runtime-resolved model, MCP, project, and environment inputs to this assembly seam. The package pins `deepagents==0.7.17`, consumes `deepagents-acp`, and exposes optional sandbox extras for AgentCore, Daytona, Modal, Runloop, and Vercel. Provider mechanics remain in the partner package, even when dcode selects the backend.
+The dcode server supplies runtime-resolved model, MCP, project, and environment inputs to this assembly seam. `deepagents-code` is version `0.1.75` (in both package metadata and its runtime version constant), pins `deepagents==0.7.18`, consumes `deepagents-acp>=0.0.10,<1.0.0`, and exposes optional sandbox extras for AgentCore, Daytona, Modal, Runloop, and Vercel. Provider mechanics remain in the partner package, even when dcode selects the backend.
+
+### dcode MCP ownership
+
+MCP configuration, trust, connection lifetime, and TUI status are Code product behavior. Its loader discovers a user config plus project `.deepagents` and root `.mcp.json` sources while retaining each source's provenance. Project servers require the product's trust decision because both local commands and remote endpoints can execute or use configuration-provided values. FastMCP owns each configured server connection and `langchain.mcp` converts discovered tools; dcode owns source merging, `${VAR}` resolution, project admission, and user-facing per-server status.
+
+The loader returns tools, `MCPServerInfo` rows, and a `MCPSessionManager`. The manager owns the router client and all adopted connection stacks until cleanup, so a long-lived dcode runtime can keep stdio subprocesses and authenticated transports alive across calls and close them together. Status rows deliberately cannot claim both a non-`ok` state and tools, preventing the TUI from presenting unavailable server tools as runnable. This is separate from the SDK filesystem context: MCP source discovery and UI feedback should not be added to `FilesystemMiddleware` or generic graph construction.
 
 ### dcode ACP assembly
 
@@ -182,7 +194,7 @@ Talon approval policy is host-owned. Each invocation captures an immutable polic
 
 The evaluation suite runs agents against real LLMs, captures tool calls, file mutations, and final responses, and scores correctness and efficiency. Its Harbor integration runs sandboxed benchmarks such as Terminal Bench 2.0. Use it for changes that alter agent trajectories, alongside focused tests at the changed ownership boundary.
 
-The release manifest records `deepagents` 0.7.17, `deepagents-acp` 0.0.12, `deepagents-code` 0.1.73, `deepagents-talon` 0.0.8, and partner packages Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7. dcode's `pyproject.toml` agrees on 0.1.73 and pins its SDK dependency to 0.7.17. Release Please creates separate draft pull requests and independent Python package releases with package-specific version files and changelogs, component-bearing tags separated by `==`, and test paths excluded from release analysis.
+The release manifest records `deepagents` 0.7.18, `deepagents-acp` 0.0.12, `deepagents-code` 0.1.75, `deepagents-talon` 0.0.8, and partner packages Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7. dcode's `pyproject.toml` and `deepagents_code/_version.py` agree on 0.1.75; its installation compatibility contract remains `deepagents==0.7.18`, rather than the manifest's independent release baseline. Release Please creates separate draft pull requests and independent Python package releases with package-specific version files and changelogs, component-bearing tags separated by `==`, and test paths excluded from release analysis.
 
 1. **SDK change:** trace public `create_deep_agent()` inputs into middleware, profiles, or backends; preserve middleware ordering and the `DeepAgentState` message reducer.
 2. **dcode change:** keep UI, client/server streaming, product approvals, extensions, configuration, and sandbox selection in `libs/code`. Test `create_cli_agent()` behavior and its server caller together where construction inputs cross processes.

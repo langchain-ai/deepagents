@@ -1899,6 +1899,34 @@ class TestPromptSearchPanel:
             # Seeding the filter does not consume or change the draft.
             assert chat._text_area.text == "second"
 
+    @pytest.mark.parametrize("prompts", [[], ["fix tests"]])
+    async def test_footer_tracks_available_actions(
+        self, tmp_path: Path, prompts: list[str]
+    ) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, prompts)
+            chat.open_prompt_search()
+            await pilot.pause()
+
+            for key, has_matches in (
+                ("z", False),
+                ("backspace", bool(prompts)),
+                ("z", False),
+            ):
+                await pilot.press(key)
+                await pilot.pause()
+                hint = str(app.query_one(".prompt-search-hint", Static).content)
+                assert ("navigate" in hint) is has_matches
+                assert ("Tab/Enter insert" in hint) is has_matches
+                assert "Ctrl+R full view" in hint
+                assert "Esc cancel" in hint
+
+            await pilot.press("escape")
+            assert chat.query_one(".input-row").display
+
     async def test_option_backspace_deletes_word_left(self, tmp_path) -> None:
         from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
 

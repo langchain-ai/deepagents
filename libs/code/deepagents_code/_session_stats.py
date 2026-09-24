@@ -90,6 +90,9 @@ class ModelStats:
     request_count: int = 0
     """Number of LLM API requests made to this model."""
 
+    invocation_count: int = 0
+    """Human-submitted turns started with this model."""
+
     input_tokens: int = 0
     """Cumulative input tokens sent to this model."""
 
@@ -218,6 +221,9 @@ class SessionStats:
     recording each chunk separately.
     """
 
+    invocation_count: int = 0
+    """Human-submitted agent turns, attributed to their starting model."""
+
     input_tokens: int = 0
     """Cumulative input tokens across all LLM requests."""
 
@@ -249,6 +255,16 @@ class SessionStats:
 
     per_kind: dict[UsageKind, KindStats] = field(default_factory=dict)
     """Per-type breakdown for assistant, nested, and hidden model spend."""
+
+    def record_invocation(self, model_name: str, provider: str = "") -> None:
+        """Count one human turn against its configured starting model."""
+        self.invocation_count += 1
+        model_name = model_name or "Unknown"
+        entry = self.per_model.setdefault(
+            (provider, model_name),
+            ModelStats(provider=provider, model_name=model_name),
+        )
+        entry.invocation_count += 1
 
     def record_request(
         self,
@@ -366,7 +382,7 @@ class SessionStats:
                 if cost_usd is not None:
                     entry.cost_usd -= cost_usd
                     entry.priced_request_count -= 1
-                if entry.request_count <= 0:
+                if entry.request_count <= 0 and entry.invocation_count == 0:
                     # The chunk-revision path can move a request to a different
                     # model once the final chunk names one; drop the row it
                     # vacated so the breakdown does not show an empty entry.
@@ -381,6 +397,7 @@ class SessionStats:
             other: The stats to fold in.
         """
         self.request_count += other.request_count
+        self.invocation_count += other.invocation_count
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
         self.cache_read_tokens += other.cache_read_tokens
@@ -394,6 +411,7 @@ class SessionStats:
                 ModelStats(provider=ms.provider, model_name=ms.model_name),
             )
             entry.request_count += ms.request_count
+            entry.invocation_count += ms.invocation_count
             entry.input_tokens += ms.input_tokens
             entry.output_tokens += ms.output_tokens
             entry.cost_usd += ms.cost_usd
@@ -1489,7 +1507,9 @@ def print_usage_table(
     from rich.table import Table
 
     has_time = wall_time >= 0.1  # noqa: PLR2004
-    if not (stats.request_count or stats.input_tokens or has_time):
+    if not (
+        stats.request_count or stats.input_tokens or stats.invocation_count or has_time
+    ):
         return
 
     if stats.per_model:
@@ -1505,6 +1525,7 @@ def print_usage_table(
         table.add_column("Provider", style="dim")
         table.add_column("Model", style="dim")
         table.add_column("Reqs", justify="right", style="dim")
+        table.add_column("Invocations", justify="right", style="dim")
         table.add_column("InputTok", justify="right", style="dim")
         table.add_column("OutputTok", justify="right", style="dim")
         table.add_column("Cost", justify="right", style="dim")
@@ -1515,6 +1536,7 @@ def print_usage_table(
                     ms.provider,
                     ms.model_name,
                     str(ms.request_count),
+                    str(ms.invocation_count),
                     format_token_count(ms.input_tokens),
                     format_token_count(ms.output_tokens),
                     _recorded_cost(ms.cost_usd, ms.priced_request_count),
@@ -1523,6 +1545,7 @@ def print_usage_table(
                 "",
                 "Total",
                 str(stats.request_count),
+                str(stats.invocation_count),
                 format_token_count(stats.input_tokens),
                 format_token_count(stats.output_tokens),
                 _recorded_cost(stats.total_cost_usd, stats.priced_request_count),
@@ -1533,6 +1556,7 @@ def print_usage_table(
                 ms.provider,
                 ms.model_name,
                 str(stats.request_count),
+                str(ms.invocation_count),
                 format_token_count(stats.input_tokens),
                 format_token_count(stats.output_tokens),
                 _recorded_cost(stats.total_cost_usd, stats.priced_request_count),

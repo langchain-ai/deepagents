@@ -1153,7 +1153,9 @@ class DebugConsoleScreen(ModalScreen[None]):
             )
             return
         if breakdown:
-            self.app.push_screen(CostBreakdownScreen(breakdown))
+            self.app.push_screen(
+                CostBreakdownScreen(breakdown, self._cost_breakdown_provider)
+            )
 
     def on_select_changed(self, event: Select.Changed) -> None:
         """Refresh visible records when the log-level filter changes."""

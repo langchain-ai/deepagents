@@ -1,172 +1,166 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Select focused, deterministic tests for dcode runtime assembly, durable workspaces, offload, sandboxing, cost accounting, terminal UI, installation, and repository automation. Keep package-runtime and GitHub workflow contracts on separate validation routes.
-tags: [testing, dcode, pytest, workflows, release-notes, security]
+description: Choose deterministic focused tests and package confidence runs for dcode, the Deep Agents SDK, GitHub issue labeling, and release-note automation. Route UI, persistence, retry, backend, middleware, and privileged workflow changes to the boundary that owns their contract.
+tags: [testing, dcode, deepagents, pytest, github-actions, release-notes]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-22T08:05:41.799Z
+    at: 2026-09-23T08:05:59.666Z
 sources:
   - id: openwiki-source-2b395728f3412b772048ad1f
     resource: repo://.github/scripts/labeling/semif-topic-classifier.js
   - id: openwiki-source-9b32b94dc673575be27eaced
     resource: repo://.github/scripts/labeling/topic-classifier.js
+  - id: openwiki-source-7eb504c4813c7bcde7464787
+    resource: repo://.github/scripts/tests/labeling/semif-topic-classifier.test.js
+  - id: openwiki-source-e0d5bd90fac633227fff1f23
+    resource: repo://.github/scripts/tests/release/release-notes.test.js
   - id: openwiki-source-1496fd17117e4ab18f9b8ca7
     resource: repo://.github/scripts/tests/release/test_release_notes.py
   - id: openwiki-source-ce9e844e8d33dbc3e766d8f1
     resource: repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py
   - id: openwiki-source-7330cb37457ccdb62d7c41c7
     resource: repo://.github/workflows/auto-label-by-package.yml
-  - id: openwiki-source-8e644b40cf02f1549e58caa2
-    resource: repo://libs/code/deepagents_code/_dep_floor_check.py
-  - id: openwiki-source-f2ac9d5fb6c7c6a21f241281
-    resource: repo://libs/code/deepagents_code/cost_tracking.py
-  - id: openwiki-source-17253964e859bb0abf2094e8
-    resource: repo://libs/code/deepagents_code/workspace_diagnostics.py
-  - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
-    resource: repo://libs/code/deepagents_code/workspace.py
   - id: openwiki-source-006b62af9993da1b48c11de8
     resource: repo://libs/code/Makefile
-  - id: openwiki-source-7246ad9a05cb1ad11e4569a6
-    resource: repo://libs/code/tests/unit_tests/test_agent.py
-  - id: openwiki-source-a1c23c211325ea69f28f8ca0
-    resource: repo://libs/code/tests/unit_tests/test_cost_tracking.py
-  - id: openwiki-source-a22e72eeda1efb40d5250020
-    resource: repo://libs/code/tests/unit_tests/test_dep_floor_check.py
-  - id: openwiki-source-a3e08d3f0fad73be7c768c48
-    resource: repo://libs/code/tests/unit_tests/test_install_script.py
-  - id: openwiki-source-6a586415ef68cbe7c7967a41
-    resource: repo://libs/code/tests/unit_tests/test_offload_api.py
-  - id: openwiki-source-784e764f7f5eb5169220c3d2
-    resource: repo://libs/code/tests/unit_tests/test_server_graph.py
-  - id: openwiki-source-877b53371bf970f1b38a1809
-    resource: repo://libs/code/tests/unit_tests/test_workspace.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-22T08:05:41.799Z" }
+  - id: openwiki-source-11d6c59d85493653aee76558
+    resource: repo://libs/code/tests/unit_tests/test_app.py
+  - id: openwiki-source-30d7e9e18e8d7c616fbbb0bf
+    resource: repo://libs/code/tests/unit_tests/test_auto_mode.py
+  - id: openwiki-source-c04c6318f6e59e0d1c9d6182
+    resource: repo://libs/code/tests/unit_tests/test_model_retry.py
+  - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
+    resource: repo://libs/code/tests/unit_tests/test_sessions.py
+  - id: openwiki-source-0f308f1610986e2f3ed6d53c
+    resource: repo://libs/deepagents/Makefile
+  - id: openwiki-source-5132c2eb08d294721cb871ff
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py
+  - id: openwiki-source-3dd6a4926b92ae499082a552
+    resource: repo://libs/deepagents/tests/unit_tests/test_middleware.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-23T08:05:59.666Z" }
 ---
 
 # Testing Guide
 
-Start at the boundary that owns the change. dcode runtime behavior belongs to `libs/code`; GitHub labeling, release-note, and workflow behavior belongs to `.github/scripts/tests`. A workflow test can prove YAML permissions and a helper's request contract, but it cannot validate a dcode graph; conversely, a dcode unit test does not prove the credentials available to a GitHub job.
-
-Use `TEST_FILE` for the first run and the package target for the confidence run. `libs/code` defaults `make test` to `tests/unit_tests/`, with xdist, benchmarks disabled, and non-Unix sockets blocked. Its integration target instead selects `tests/integration_tests/` and applies a 30-second timeout. `make check` adds linting, type/import checks, generated-command verification, lock freshness, and the advisory SDK-pin check.
-
-```bash
-cd libs/code
-make test TEST_FILE=tests/unit_tests/test_agent.py
-make test
-make check
-
-# Automation is a separate route from the repository root.
-python -m pytest .github/scripts/tests/workflows/test_workflow_secret_scoping.py -v
-python -m pytest .github/scripts/tests/release/test_release_notes.py -v
-node --test .github/scripts/tests/labeling/topic-classifier.test.js \
-  .github/scripts/tests/labeling/semif-topic-classifier.test.js
-```
+Test at the owning boundary first, then run the corresponding package suite. `libs/code` owns the dcode CLI, session state, retry policy, and Textual UI. `libs/deepagents` owns SDK backends and middleware. `.github/scripts/tests` owns committed automation contracts. These are deliberately separate: a mocked backend test does not prove dcode UI lifecycle, and a workflow/YAML test does not validate package runtime behavior.
 
 ```mermaid
 flowchart TD
-    Change["Changed behavior or automation"] --> Boundary{"Which boundary changed"}
-    Boundary -->|"dcode package runtime"| Focus["Run focused libs/code unit test"]
-    Focus --> Package["Run make test or make check"]
-    Boundary -->|"External executable or service"| Integration["Run dcode integration target"]
-    Boundary -->|"Workflow YAML or helper"| Workflow["Run focused .github scripts test"]
-    Workflow --> Automation["Run relevant workflow or release suite"]
-    Integration --> Contract["Validate changed external contract"]
+    Change["Changed behavior"] --> Area{"Owning boundary"}
+    Area -->|"dcode CLI or TUI"| CodeFocus["Run focused libs/code test"]
+    CodeFocus --> CodeSuite["Run libs/code make test"]
+    Area -->|"SDK backend or middleware"| SDKFocus["Run focused libs/deepagents test"]
+    SDKFocus --> SDKSuite["Run libs/deepagents make test"]
+    Area -->|"GitHub helper or workflow"| Automation["Run focused Node or pytest automation test"]
+    Automation --> Review["Run relevant automation suite"]
+    CodeSuite --> Integration{"External contract changed"}
+    SDKSuite --> Integration
+    Integration -->|"yes"| IntegrationRun["Run make integration_test"]
+    Integration -->|"no"| Done["Review targeted results"]
+    IntegrationRun --> Done
+    Review --> Done
 ```
 
-*Package-runtime validation and repository-automation validation remain separate, and each escalates only to its changed boundary.*
+*Focused tests establish the changed contract; package and integration runs provide progressively broader confidence.*
 
-## Focused dcode runtime routes
+## Commands and escalation
 
-| Change | First focused command | What the route protects |
+From `libs/code`, `make test` runs `tests/unit_tests/` with xdist, benchmarks disabled, and network sockets disabled except Unix sockets. `make integration_test` switches to `tests/integration_tests/`, permits the external interaction implied by that route, and applies a 30-second timeout. `make check` layers lint, type and import checks, command-catalog verification, extras/version/lock checks, and an advisory SDK-pin check over unit tests.
+
+```bash
+cd libs/code
+make test TEST_FILE=tests/unit_tests/test_model_retry.py
+make test
+make check
+make integration_test
+```
+
+The SDK package uses the same focused-test pattern from `libs/deepagents`; its unit target also uses xdist, disables sockets other than Unix sockets, and disables benchmarks. Use the integration target only when the changed promise needs a real provider, executable, or service—not merely because a unit test uses async code.
+
+```bash
+cd libs/deepagents
+make test TEST_FILE=tests/unit_tests/backends/test_sandbox_backend.py
+make test TEST_FILE=tests/unit_tests/test_middleware.py
+make test
+make integration_test
+```
+
+## dcode: choose the behavioral seam
+
+| Changed contract | First command | Deterministic seam to preserve |
 | --- | --- | --- |
-| Agent assembly, approval, local persistence, sandbox prompt/tool policy | `make test TEST_FILE=tests/unit_tests/test_agent.py` | Middleware composition, fail-closed approval decisions, local artifact routing, and sandbox restrictions. |
-| Durable server workspace or conflict diagnostics | `make test TEST_FILE=tests/unit_tests/test_workspace.py` | Canonical thread-to-workspace binding, SQLite migration, policy drift, and secret-safe diagnostics. |
-| Server graph construction or MCP/read-only criteria selection | `make test TEST_FILE=tests/unit_tests/test_server_graph.py` | Shared runtime bootstrap, event-loop safety, startup failures, and least-privilege context tools. |
-| Offload HTTP workspace boundary | `make test TEST_FILE=tests/unit_tests/test_offload_api.py` | Server-owned policy, preflight failure containment, validation-only behavior, and 409 diagnostics. |
-| Cost accounting and streamed totals | `make test TEST_FILE=tests/unit_tests/test_cost_tracking.py` | Durable cumulative cost, nested work, pricing completeness, and no double charging. |
-| TUI lifecycle, resume, queue, or rendered interaction | `make test TEST_FILE=tests/unit_tests/test_app.py` | Textual-driven startup, resume ordering, input routing, and cancellation/recovery behavior. |
-| Installer behavior | `make test TEST_FILE=tests/unit_tests/test_install_script.py` | The shipped Bash installer under isolated tools, environment, terminal, and network seams. |
-| Editable dependency floors | `make test TEST_FILE=tests/unit_tests/test_dep_floor_check.py` | Best-effort stale-editable warning/prompt behavior and safe refresh argv construction. |
+| Approval, graph composition, local artifacts, or shell/tool policy | `make test TEST_FILE=tests/unit_tests/test_agent.py` | Constructed graph and capability behavior with fakes and local seams. |
+| Autonomous classifier decisions and approval routing | `make test TEST_FILE=tests/unit_tests/test_auto_mode.py` | Fake structured models, stores, events, and temporary paths. |
+| Model error classification, backoff, retry events, or streaming | `make test TEST_FILE=tests/unit_tests/test_model_retry.py` | Controlled errors, clocks, and no-op sleeps. |
+| Thread listing, metadata, deletion, or conversation archive cleanup | `make test TEST_FILE=tests/unit_tests/test_sessions.py` | Temporary SQLite checkpoints and filesystem archives. |
+| Textual startup, resume, queue, cancellation, restart, or teardown | `make test TEST_FILE=tests/unit_tests/test_app.py` | Textual async lifecycle and rendered-state behavior. |
 
-### Runtime assembly, persistence, sandbox, and TUI
+### Auto mode and retries
 
-`test_agent.py` is the narrow route for constructing the CLI graph. It uses fake models and patched filesystem/storage seams to assert the runtime contract rather than calling a provider. In particular, it exercises the persistent local conversation-history route, the real filesystem route for offloaded large results, and fallback artifact routing that lets a resumed archive remain addressable after storage changes. It also covers approval interruption: a missing, malformed, or mismatched live approval state fails closed; only an authentic async routing marker bypasses normal approval.
+`test_auto_mode.py` is the security-sensitive route for classifier-backed approval. It checks deterministic allowances separately from classifier decisions, verifies that writes outside the permitted workspace or through symlink escape cannot obtain an accidental bypass, and exercises unavailable, timed-out, malformed, and context-overflow classifier paths. Keep these tests provider-free: inject structured fake models and in-memory or temporary stores, then assert the resulting approval plan, event, and fallback behavior.
 
-Use the same route when changing sandbox-aware prompt construction, mutation tool availability, shell allowlists, interpreter configuration, or subagent middleware. Those are assembly-time capability boundaries, so test the created graph/tool behavior rather than an implementation helper.
+`test_model_retry.py` is the narrow route for model-node retry changes. It distinguishes transient transport/service failures from authentication, permission, invalid-request, and context-overflow failures; graph interrupts must propagate as graph control flow, not be reported as retryable or non-transient model errors. It also protects retry/attempt status events and streaming behavior, including avoiding orphaned output from a failed streaming attempt. Patch sleep and use controlled exception/model doubles so retry timing never makes the unit suite flaky.
 
-For interactive behavior, prefer `test_app.py` when the contract depends on Textual scheduling, widgets, keyboard input, pending work, server startup, or resume. It verifies that restored history and model adoption occur before initial submission, that failures clear the resuming state, and that cancellation, queueing, and restart paths release the UI to accept later work. Do not replace that with a pure unit test if a framework event loop or rendered state is what can regress.
+### Sessions and Textual lifecycle
 
-### Durable workspace and offload boundaries
+`test_sessions.py` tests the durable checkpoint boundary directly with temporary SQLite. It keeps legacy short IDs and newer generated IDs discoverable together, takes current `cwd` and update metadata from the newest checkpoint, and treats checkpoint deletion as authoritative even when offloaded-history cleanup fails. Run it whenever checkpoint queries, metadata ordering, thread deletion, or archive location changes.
 
-A workspace binding is server-authoritative state for one thread. The workspace module canonicalizes an existing absolute directory, derives identity and policy fingerprints, and stores the binding in SQLite. Current bindings reject a different workspace or durable-policy drift, but a model-only runtime change does not rebind the workspace. Versioned legacy rows are migrated only when their safety can be established; ambiguous legacy policy is rejected rather than treated as equivalent.
-
-Workspace diagnostics are intentionally a reporting boundary: persisted snapshots are allowlisted and bounded. They can identify safe policy changes, but never retain or report model parameters, prompts, credentials, environment values, or paths. Test persistence/migration in `test_workspace.py`; test client-visible route behavior in `test_offload_api.py`.
-
-The offload workspace endpoint resolves policy on the server, not from a client claim. It can preflight with `validate_only` without changing durable thread state; conflicts return 409 before thread creation, and a graph-build `SystemExit` is contained as a 503 instead of terminating the server. Its ASGI client tests intentionally patch runtime construction and thread clients, so they cover the HTTP/control-flow boundary without a live server.
+`test_app.py` is not interchangeable with a helper-only test: it drives the application’s async state and widgets. For resume changes, protect the ordering invariant that restored history—and any adopted model—settles before startup submission; failures must clear the resuming state rather than strand the UI. For queue, cancellation, restart, and shutdown changes, test the user-visible release of a turn/queue and the correct teardown ordering under Textual scheduling.
 
 ```mermaid
 sequenceDiagram
-    participant Client
-    participant API as Offload API
-    participant Binding as Workspace binding
-    participant Runtime as Server runtime
-    Client->>API: workspace request
-    API->>API: resolve server policy
-    API->>Binding: validate or bind thread workspace
-    API->>Runtime: preflight workspace runtime
-    alt accepted
-        API-->>Client: workspace payload
-    else policy conflict
-        API-->>Client: 409 with safe diagnostics
-    else runtime build exit
-        API-->>Client: 503 startup failure
+    participant User
+    participant TUI as Textual TUI
+    participant Session as Session state
+    participant Agent as Agent server
+    User->>TUI: resume or submit input
+    TUI->>Session: resolve thread and restore state
+    Session-->>TUI: history and model selection
+    TUI->>Agent: start or reconnect
+    alt restored successfully
+        TUI->>TUI: submit startup or queued input
+    else restore or startup fails
+        TUI->>TUI: clear resuming state and release input
     end
 ```
 
-*The server owns the workspace policy and runtime preflight; the client receives an identity payload or a bounded refusal.*
+*The TUI tests protect lifecycle ordering and recovery, rather than only the data returned by a session helper.*
 
-### Server graph and sandbox capability boundaries
+## Deep Agents SDK: backend and middleware contracts
 
-`test_server_graph.py` tests server-mode assembly above individual tools. Repeated or concurrent factory access must share a constructed runtime; configuration bootstrap must not block the server event loop; and a construction failure emits the startup marker before a nonzero exit. It also tests context-tool selection as a security boundary: built-ins are selected by identity and MCP tools require unambiguous read-only annotations, so name lookalikes, unannotated, mutating, and contradictory tools cannot gain criteria access.
+Use `test_sandbox_backend.py` for `BaseSandbox` file and command behavior. Its `MockSandbox` is a concrete in-process transport seam: reads and small edits execute server-side commands; writes upload files; oversized edits upload temporary old/new payloads and perform a server-side replacement. The suite checks parsing and propagation of backend/child failures, pagination and binary reads, preflight errors, cleanup, traversal-safe command construction, and sync/async parity. Prefer this test to a live sandbox whenever a change is in the shared backend protocol or command template.
 
-Use `test_agent.py` alongside it when a change affects sandbox/interpreter configuration or the CLI-created graph. The package declares sandbox provider integrations as extras, while the normal unit route stays socket-blocked and uses fakes. Move to `make integration_test` only when the changed promise requires an actual executable, sandbox provider, or remote service.
+Use `test_middleware.py` when changing filesystem tools, tool descriptions, result shaping, message eviction, or subagent composition. It builds agents with `StateBackend`, `StoreBackend`, `CompositeBackend`, and a small sandbox-capable backend, then invokes tools against in-memory state. The suite establishes that filesystem middleware installs its file tools and stream channel, subagent middleware installs `task`, and composition preserves both sets. It also exercises read/list/search/edit behavior and result limits without requiring a filesystem service.
 
-### Cost persistence
+## Automation: labeling and release notes
 
-Cost is graph-owned rather than client-owned. The cost middleware checkpoints deltas and emits absolute thread totals, while a process-wide recorder collects completed model calls made outside the ordinary agent hook, including offload, summarization, auto classification, and subagents. The middleware drains and prices those records once; subagents checkpoint private spend and transfer their completed delta to the parent. Pricing failure or an unknown model is non-fatal and records incomplete pricing rather than interrupting a turn.
+Run automation tests from the repository root. They use local Node processes, mocked `fetch`, temporary workspaces, and static workflow inspection; they do not perform GitHub mutations.
 
-Use `test_cost_tracking.py` for callback-to-checkpoint flow, retry/deduplication, nested transfer, usage-category completeness, local/bundled price overrides, and stream events. The suite isolates the context-local recorder per test. Do not make pricing tests depend on an upstream catalog: the package supports offline bundled data and user overrides, and automatic catalog refresh can be disabled or is suppressed by `DEEPAGENTS_CODE_OFFLINE`.
-
-### Installation and editable dependency floors
-
-`test_install_script.py` executes the actual `scripts/install.sh` through fake `uv`, `curl`, `dcode`, `rg`, and terminal arrangements. It covers interactive and non-interactive prompting, version discovery failure, retries, optional extras, managed ripgrep, receipts, logs, locks, and safe cleanup. This is the correct route for shell quoting or installer-control-flow changes; do not merely parse the script.
-
-`test_dep_floor_check.py` covers a distinct startup safeguard for editable dcode installations. Released installs skip it. For an editable checkout, the check reads the checkout's current dependency declarations, compares installed versions to `>=`, `~=`, and concrete `==` floors, and warns without aborting when a runtime dependency is behind. Its refresh argv anchors `uv` to the checkout and includes only workspace siblings actually installed from matching editable paths, avoiding replacement of optional wheel installs. Headless or unpromptable launches warn and continue; a dismissed mismatch is fingerprinted so it reappears if the violation changes.
-
-## Workflow, labeling, and release-note routes
-
-Run these tests from the repository root. They test committed automation contracts and use mocks, static YAML inspection, or local Node processes rather than a live GitHub mutation.
+```bash
+node --test .github/scripts/tests/labeling/semif-topic-classifier.test.js
+node --test .github/scripts/tests/release/release-notes.test.js \
+  .github/scripts/tests/release/draft-release-notes.test.js
+python -m pytest .github/scripts/tests/release/test_release_notes.py -v
+python -m pytest .github/scripts/tests/workflows/test_workflow_secret_scoping.py -v
+```
 
 ### Topic labeling
 
-The issue workflow runs in the `labeling` environment and gives issue-write permission to its single job. It applies `priority:backlog` only to newly opened issues that have no existing priority. Topic classification also runs only on open, uses repository label descriptions, and catches model failures as warnings; it does not remove topic labels on later edits.
+Run `semif-topic-classifier.test.js` for a change to the Semif request, response validation, ranking, labels, threshold, headers, batching, or timeout. It verifies that only allowed labels are submitted and returned, each label receives only its own description, scores must be valid probabilities, the 0.8 threshold is inclusive, and at most three distinct labels are returned in score order. It also protects the 32-question batch cap and the abort signal through response-body parsing. The default classifier follows a separate Groq contract; provider selection and its JSON allowlist belong to `topic-classifier.js`, so run its Node suite alongside Semif when shared routing or taxonomy behavior changes.
 
-The default topic classifier sends a bounded, untrusted issue text and the allowed taxonomy to Groq with a JSON response requirement, rejects invalid/length-limited responses, filters output to the allowlist, and retains at most three labels. `TOPIC_CLASSIFIER_PROVIDER` can instead select `semif`; that route batches at most 32 questions, requires validated probabilities, applies a 0.8 threshold, ranks across batches, and adds the LangSmith tenant header only when configured. Both implementations keep their abort timeout active while reading the response body.
+The issue labeling workflow confines topic-classifier credentials to the opened-issue topic-label step in the dedicated labeling environment; the classifier routes to Groq by default or Semif when configured, bounds untrusted input, filters labels to the allowlist, and fails as a warning at the workflow boundary.
 
-Run both Node test files when changing request payloads, provider selection, labels, thresholds, diagnostics, or timeout semantics. Run `test_workflow_secret_scoping.py` when changing environment or secret placement: it asserts that classifier credentials occur only on the topic-label step and that the workflow uses the dedicated environment.
+### Release notes
 
-### Release-note workflow boundary
+`release-notes.test.js` is the behavioral suite for release PR recognition, exact version-section extraction/replacement, command parsing, instruction sanitization, bot identity checks, fingerprints, override comments, and apply/draft flows. Its mocked GitHub client and temporary changelog distinguish stale or forged state from a valid release branch without writing a repository. Use it for helper changes; use `test_release_notes.py` as the pytest entrypoint and workflow-contract suite when workflow YAML, permissions, required checks, component mapping, or privileged job structure changes.
 
-`test_release_notes.py` is a pytest shim and workflow-contract suite. It runs the curated Node tests, verifies that the required check is attached to the validated release PR head, and checks that all release-please components resolve to their changelog and release branch. It also constrains privileged draft/apply jobs: only validated target events reach mutation behavior, untrusted release content is not checked out into the privileged job, short-lived App tokens are used for mutations, and the drafting helper is constrained to a single model-helper invocation rather than arbitrary shell work.
-
-Run it for changes to `release_notes.yml`, `release_notes_check.yml`, `release-please.yml`, the release-note helpers, target/component mapping, or the draft/apply authority boundary. It is not a substitute for package release behavior or a live GitHub test.
+Release-note tests run the curated Node suites and assert that required checks target the validated PR head, every release-please component has a target, and privileged draft/apply workflow paths remain gated, token-scoped, and free of untrusted checkout or arbitrary shell operations.
 
 ## Completion checklist
 
-1. Run the closest dcode test file first; use `make test` after a runtime change.
-2. Keep unit tests deterministic: fake models, temporary SQLite/filesystems, ASGI transports, patched clients, and controlled events instead of provider or sandbox calls.
-3. Use `test_workspace.py` for durable binding/migration semantics, `test_offload_api.py` for the HTTP boundary, and `test_server_graph.py` for runtime assembly/security selection.
-4. Use `test_app.py` when the failure depends on Textual lifecycle or resume ordering, and `test_install_script.py` when the shipped Bash script is the contract.
-5. Route workflow, labeling, and release-note changes to `.github/scripts/tests` separately; include secret-scoping checks whenever credential placement changes.
-6. Escalate to `make integration_test` only when the external executable, provider, or sandbox integration itself changed.
+1. Run the smallest owned test file first, using fakes, temporary SQLite/filesystems, controlled events, and mock transports rather than live infrastructure.
+2. Run `make test` in the changed package after a focused test passes; run `make check` for a dcode change intended for review.
+3. Test dcode lifecycle through `test_app.py`, persistent thread behavior through `test_sessions.py`, and retry policy through `test_model_retry.py`; do not collapse them into generic graph tests.
+4. Test SDK protocol and command-template changes through `test_sandbox_backend.py`, and tool/middleware composition through `test_middleware.py`.
+5. Run Node automation tests separately from package tests. Include workflow-secret scoping when changing classifier credentials or their environment.
+6. Escalate to `make integration_test` only for a changed external contract, then investigate any failure at the narrowest responsible boundary.

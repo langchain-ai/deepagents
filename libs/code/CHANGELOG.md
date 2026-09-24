@@ -2,6 +2,43 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.76](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.75...deepagents-code==0.1.76) (2026-09-24)
+
+### Features
+
+- Label plugin servers in the MCP viewer ([#6539](https://github.com/langchain-ai/deepagents/pull/6539)).
+
+### Bug Fixes
+
+- Resolve plugin MCP servers during login ([#6524](https://github.com/langchain-ai/deepagents/pull/6524)).
+- Keep empty MCP servers searchable and include descriptions in search results ([#6540](https://github.com/langchain-ai/deepagents/pull/6540)).
+
+## [0.1.75](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.74...deepagents-code==0.1.75) (2026-09-23)
+
+### Bug Fixes
+
+- Lazy MCP caches now warm without blocking the event loop.
+- Token and cost breakdowns now refresh while the view is open.
+
+## [0.1.74](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.73...deepagents-code==0.1.74) (2026-09-23)
+
+### Features
+
+- Added inline thread mentions & picker via `@@` ([#6197](https://github.com/langchain-ai/deepagents/pull/6197)).
+- Usage summaries now show human invocations ([#6500](https://github.com/langchain-ai/deepagents/pull/6500)).
+
+### Bug Fixes
+
+- Retry bare `openai.APIError` exceptions raised mid-stream ([#6499](https://github.com/langchain-ai/deepagents/pull/6499)).
+- Keep prompt recall results out of the file picker ([#6494](https://github.com/langchain-ai/deepagents/pull/6494)).
+- Read `hooks.json` as UTF-8 in the legacy hook loader ([#6501](https://github.com/langchain-ai/deepagents/pull/6501)).
+
+### Performance Improvements
+
+- Reuse Auto classifier history ([#6056](https://github.com/langchain-ai/deepagents/pull/6056)).
+- Rank checkpoint and message row IDs before loading blobs and prompts ([#6488](https://github.com/langchain-ai/deepagents/pull/6488), [#6489](https://github.com/langchain-ai/deepagents/pull/6489)).
+- Log thread-loading phase timings ([#6490](https://github.com/langchain-ai/deepagents/pull/6490)).
+
 ## [0.1.73](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.72...deepagents-code==0.1.73) (2026-09-22)
 
 ### Features

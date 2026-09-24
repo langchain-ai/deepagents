@@ -6264,6 +6264,46 @@ class TestCacheTiming:
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
 
+    async def test_goal_continuation_does_not_count_as_human_invocation(self) -> None:
+        """Only the human-submitted turn increments the session invocation count."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ):
+                await app._run_agent_task("hello")
+                await app._run_agent_task(
+                    "continue",
+                    message_kwargs={
+                        "additional_kwargs": {
+                            "lc_source": GOAL_CONTROL_MESSAGE_SOURCE,
+                        }
+                    },
+                )
+            assert app._session_stats.invocation_count == 1
+
+    async def test_bedrock_invocation_uses_resolved_model_identity(self) -> None:
+        """A Bedrock version suffix does not create a separate invocation row."""
+        model_id = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+        app = DeepAgentsApp(agent=MagicMock())
+        app._model_override = model_id
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(runtime_state, "model_name", model_id),
+                patch.object(runtime_state, "model_provider", "bedrock"),
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
+                    new_callable=AsyncMock,
+                ),
+            ):
+                await app._run_agent_task("hello")
+            assert (
+                app._session_stats.per_model["bedrock", model_id].invocation_count == 1
+            )
+
     async def test_run_agent_task_passes_image_tracker(self) -> None:
         """`_run_agent_task` should forward the shared image tracker."""
         app = DeepAgentsApp(agent=MagicMock())

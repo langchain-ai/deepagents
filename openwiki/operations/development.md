@@ -3,6 +3,9 @@ type: operations guide
 title: Development, CI, and Releases
 description: Package-local development, aggregate lock validation, independently versioned release baselines, and curated release-note automation for the Deep Agents Python monorepo.
 tags: [development, ci, monorepo, uv, make, releases]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-24T08:06:01.996Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -38,6 +41,8 @@ sources:
     resource: repo://libs/code/Makefile
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
+  - id: openwiki-source-1315dc43c5577f5948632387
+    resource: repo://libs/code/uv.lock
   - id: openwiki-source-0f308f1610986e2f3ed6d53c
     resource: repo://libs/deepagents/Makefile
   - id: openwiki-source-fb60ee46c55b974b8341651c
@@ -54,21 +59,18 @@ sources:
     resource: repo://libs/talon/uv.lock
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-22T08:05:41.799Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-22T08:05:41.799Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-24T08:06:01.996Z" }
 ---
 
 # Development, CI, and Releases
 
-The repository is a monorepo of independently versioned Python packages under `libs/`, rather than one root Python project. Work at a package boundary for normal development; use aggregate tooling when validating shared dependency or lockfile changes. See [Source Map](../architecture/source-map.md), [Testing Guide](../testing/testing-guide.md), [Security](security.md), and [Quickstart](../quickstart.md) for complementary context.
+The repository is a monorepo of independently versioned Python packages under `libs/`, not one root Python project. Work at a package boundary for ordinary development; use aggregate tooling for shared dependencies and lockfiles. See [Source Map](../architecture/source-map.md), [Testing Guide](../testing/testing-guide.md), [Sandbox partners](../integrations/sandbox-partners.md), and [Quickstart](../quickstart.md) for complementary context.
 
 ## Package-local development
 
-External contributors must link a maintainer-approved issue or discussion and be assigned to it before opening a PR. Every package owns its `pyproject.toml`, `Makefile`, and README; there is no root `pyproject.toml`. Local sibling dependencies can be editable, so in-tree development can observe changes across package boundaries.
+External contributors must link a maintainer-approved issue or discussion and be assigned to it before opening a PR. Each package owns its `pyproject.toml`, `Makefile`, and README; there is no root `pyproject.toml`. Local sibling dependencies may be editable, so in-tree development can observe changes across package boundaries.
 
-Use `uv` for interpreters, environments, and dependencies, and use each package's Makefile as the command authority. `uv` provisions an interpreter compatible with that package's `requires-python`; there is no repository-wide Python version to install. Install hooks once, then work in the changed package:
+Use `uv` for interpreters, environments, and dependencies, and treat the current package's Makefile as the command authority. `uv` provisions an interpreter compatible with that package's `requires-python`; there is no repository-wide Python version to install. Install hooks once, then work in the changed package:
 
 ```bash
 uv tool install pre-commit
@@ -80,7 +82,7 @@ make test
 make lint
 ```
 
-`make help` lists the targets available in the current package. Install dependencies explicitly with `uv sync`, adding `--group <name>` or `--all-groups` when needed; do not create an environment outside the package or mix environments in one session. Package targets run tools through `uv run`. For example, the `deepagents` Makefile exports `UV_FROZEN = true`, so a stale lockfile fails rather than being silently updated; its unit-test target runs socket-disabled pytest in parallel with coverage.
+`make help` lists the targets available in the current package. Install dependencies explicitly with `uv sync`, adding `--group <name>` or `--all-groups` when needed; do not create an environment outside the package or mix environments in one session. Package targets run tools through `uv run`. For example, `deepagents` exports `UV_FROZEN = true`, so a stale lockfile fails rather than being silently updated; its unit-test target runs socket-disabled pytest in parallel with coverage.
 
 | Command | Typical purpose |
 | --- | --- |
@@ -104,13 +106,13 @@ Caption: the ordinary developer loop is package-local and repeats until package 
 
 Warnings not explicitly accepted by the test configuration are errors. Fix actionable warnings, and narrowly filter an expected warning at test scope instead of broadly ignoring it.
 
-### Code local CI and the SDK pin
+### Code local CI, version, and lock
 
-`libs/code` provides `make check` as the local CI-parity entrypoint. After linting, import checks, and unit tests, it verifies optional-extra synchronization, `pyproject.toml`/`_version.py` equality, and lock freshness. It then checks the Code SDK pin: exit status 1 (a stale pin) is advisory locally, while other checker failures remain fatal.
+`libs/code` provides `make check` as its local CI-parity entrypoint. After linting, import checks, and unit tests, it verifies optional-extra synchronization, `pyproject.toml`/`_version.py` equality, and lock freshness. It then checks the Code SDK pin: exit status 1 (a stale pin) is advisory locally, while other checker failures remain fatal.
 
-`deepagents-code` currently has source version `0.1.73` in both `libs/code/pyproject.toml` and `deepagents_code/_version.py`; its changelog records the `0.1.73` release. Its exact SDK dependency is `deepagents==0.7.17`. When Code needs SDK functionality introduced by a newer SDK, update that exact pin in the same PR, regenerate `libs/code/uv.lock`, and commit the result. The pin represents the minimum SDK Code actually requires, not merely the newest SDK available.
+`deepagents-code` is currently `0.1.75` in `libs/code/pyproject.toml`, `deepagents_code/_version.py`, and the top changelog entry. The source package declares an exact `deepagents==0.7.18` dependency. Its `uv.lock` is a resolved environment record for Python `>=3.12,<4.0`: it records Code as editable and, for in-tree development, records `deepagents` as editable from `../deepagents` at `0.7.18`. Update the exact pin only when Code needs the newer SDK, then regenerate and commit `libs/code/uv.lock`; the pin is the minimum SDK Code requires, not simply the newest SDK available.
 
-On a Code release PR, the SDK-pin workflow warns but does not fail for a stale pin. Publication is stricter: the release workflow rejects a Code package pin that is older than the workspace SDK. An intentionally older pin requires the deliberate `ci:dcode-skip-sdk-pin` release-PR label; only after positively reading that label does the dispatcher pass `dangerous-skip-sdk-pin-check=true`. A label lookup failure leaves the check enforced. A prerelease SDK pin instead requires `ci:ack-release-deps` before the release PR can merge.
+On a Code release PR, the SDK-pin workflow warns but does not fail for a stale pin. Publication is stricter: the release workflow rejects a Code pin older than the workspace SDK. An intentionally older pin requires the deliberate `ci:dcode-skip-sdk-pin` release-PR label; only after positively reading that label does the dispatcher pass `dangerous-skip-sdk-pin-check=true`. A label lookup failure leaves the check enforced. A prerelease SDK pin instead requires `ci:ack-release-deps` before the release PR can merge.
 
 ## Aggregate locks and cross-package validation
 
@@ -128,19 +130,19 @@ The aggregate lock policy resolves ACP with Python 3.14 and all other package or
 
 Editable workspace sources validate in-tree integration but can conceal an unsatisfiable public installation graph. On a `release(...)` PR, **Check Release Dependencies** removes local sources and resolves changed manifests against public indexes with `uv pip compile`. `ci:ack-release-deps` makes this report-only rather than skipping it: resolution and follow-up-release reporting still run. Use the acknowledgement only for an intentional, coordinated release order.
 
-Adding a partner package is consequently a repository-wiring change, not merely a new directory. Register issue and label routing, CI detection and jobs, synchronized scopes, release workflow mappings, release-please configuration and manifest, notes, dependency maintenance, and secrets. Sandbox-backed packages also require Harbor and integration-test credential surfaces.
+Adding a partner package is a repository-wiring change, not merely a new directory. Register issue and label routing, CI detection and jobs, synchronized scopes, release workflow mappings, release-please configuration and manifest, notes, dependency maintenance, and secrets. Sandbox-backed packages also require Harbor and integration-test credential surfaces.
 
 ## Independent release baselines
 
 Release-please manages nine independent Python distributions: `deepagents`, `deepagents-acp`, `deepagents-code`, `deepagents-talon`, `langchain-daytona`, `langchain-modal`, `langchain-runloop`, `langchain-vercel-sandbox`, and `langchain-quickjs`. It creates separate draft PRs and is configured per package with Python release type, distribution and component names, changelog path, version-bearing extra files, and excluded test paths. `skip-github-release` delegates publication to `release.yml`; tags include the component and `==`, without `v`.
 
-The release manifest records the last released baselines, **not** a package's editable source version. Its current baselines are:
+The manifest records the last released baselines, **not** a package's editable source version:
 
 | Manifest path | Baseline |
 | --- | --- |
-| `libs/deepagents` | `0.7.17` |
+| `libs/deepagents` | `0.7.18` |
 | `libs/acp` | `0.0.12` |
-| `libs/code` | `0.1.73` |
+| `libs/code` | `0.1.75` |
 | `libs/talon` | `0.0.8` |
 | `libs/partners/daytona` | `0.0.8` |
 | `libs/partners/modal` | `0.0.6` |
@@ -172,17 +174,15 @@ Release attribution is by changed file paths rather than Conventional Commit sco
 
 Keep bump-worthy work to one managed component. An empty commit has no path assignment and can fan out to every component, so the release workflow blocks it before release-please runs. A bump-worthy change that also includes lockfiles or real files in another component can likewise fan out. The scope gate blocks lockfile-only and multi-component fan-out unless `ci:allow-lockfile-release` acknowledges it; the label permits rather than prevents the resulting releases. Put cross-package dependency and lock churn in a separate `chore(deps):` change.
 
-Before recomputing release PRs, the release workflow waits for every merged PR still carrying `auto:release-pending`. This prevents evaluating a manifest advanced ahead of its tag; unreadable GitHub state fails closed, while a genuinely slow publisher defers the refresh to a later push.
+Before recomputing release PRs, the release-please workflow waits for every merged PR still carrying `auto:release-pending`. This prevents evaluating a manifest advanced ahead of its tag; unreadable GitHub state fails closed, while a genuinely slow publisher defers the refresh to a later push.
 
 ### Curated release notes
 
-Every release-please release PR has a required `curated release notes` merge gate. When a draft release PR is marked ready for review, `release-bot` drafts notes in a PR comment. A maintainer reviews or edits the draft and uses `@release-bot apply`; the bot writes the package `CHANGELOG.md`, updates the PR-body preview, and explicitly dispatches the gate for the new head. `ci:skip-curated-notes` is the explicit bypass.
+Every release-please release PR has a required curated-release-notes merge gate. When a draft release PR is marked ready for review, `release-bot` drafts notes in a PR comment. A maintainer reviews or edits the draft and uses `@release-bot apply`; the bot writes the package `CHANGELOG.md`, updates the PR-body preview, and explicitly dispatches the gate for the new head. `ci:skip-curated-notes` is the explicit bypass.
 
-The automation derives each component's changelog path and expected release branch from `release-please-config.json`; adding a configured managed component therefore opts it into this gate rather than requiring a hard-coded component list. It accepts only an open, same-repository PR to `main` whose release branch and `release(<component>): <version>` title agree. This prevents a fork or mismatched branch/title from gaining the release-PR mutation path.
+The automation derives each component's changelog path and expected release branch from `release-please-config.json`; adding a configured managed component therefore opts it into this gate rather than requiring a hard-coded component list. It accepts only an open, same-repository PR to `main` whose release branch and `release(<component>): <version>` title agree. The privileged draft and apply jobs run automation checked out from trusted `main`, treat release-PR content as untrusted API data rather than checking it out, and use a short-lived GitHub App token only after validation confirms the command and maintainer write permission. Applying notes creates a non-force Git Data API commit.
 
-The privileged draft and apply jobs run automation checked out from trusted `main`, treat release-PR content as untrusted API data rather than checking it out, and use a short-lived GitHub App token only after validation confirms the command and maintainer write permission. The drafting step makes one fixed model-provider request without model tools; failures are reported on the PR. The apply path creates a non-force Git Data API commit, so it does not rewrite release-branch history.
-
-Because pushes made with `GITHUB_TOKEN` or the app token do not reliably produce a normal PR run, both the release-please lock updater and a successful apply explicitly dispatch `release_notes_check.yml`. That check validates the current release head, creates or refreshes the required check for dispatch/comment runs, and finalizes an interrupted refresh as failure rather than leaving it in progress. The Python test shim runs the native Node tests and asserts the workflow wiring, trusted-source helper paths, component coverage, permissions, and mutation safeguards.
+Because pushes made with `GITHUB_TOKEN` or the app token do not reliably produce a normal PR run, both the release-please lock updater and a successful apply explicitly dispatch `release_notes_check.yml`. That check validates the current release head, creates or refreshes the required check for dispatch/comment runs, and finalizes an interrupted refresh as failure rather than leaving it in progress. The Python test shim runs the native Node tests and asserts workflow wiring, trusted-source helper paths, component coverage, permissions, and mutation safeguards.
 
 ### Safe publication and recovery
 

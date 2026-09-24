@@ -477,11 +477,15 @@ async def test_delayed_stream_preserves_refreshed_side_cost(
     assert cached["breakdown"] == event["breakdown"]
 
 
-@pytest.mark.parametrize("source", ["stream", "http", "side_refresh"])
+@pytest.mark.parametrize("source", ["stream", "http", "side_refresh", "btw"])
 @pytest.mark.parametrize("incoming_is_newer", [False, True])
 @pytest.mark.parametrize("priced", [False, True], ids=["unpriced", "free"])
 async def test_equal_dollar_snapshots_keep_latest_side_usage(
-    source: str, *, incoming_is_newer: bool, priced: bool
+    source: str,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    incoming_is_newer: bool,
+    priced: bool,
 ) -> None:
     """Free and unpriced requests advance usage even when spend is unchanged."""
     from deepagents_code.btw_cost import combine_session_cost
@@ -521,6 +525,16 @@ async def test_equal_dollar_snapshots_keep_latest_side_usage(
         result = events[0]
     elif source == "http":
         result = await agent.aget_session_cost(_config())
+    elif source == "btw":
+        monkeypatch.setattr(agent, "aensure_thread", AsyncMock())
+        monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
+        agent._graph.client.http.post = AsyncMock(
+            return_value={"text": "answer", "cost": incoming}
+        )
+        agent._graph.client.http.get.reset_mock()
+        assert await agent.abtw("why?", config=_config()) == "answer"
+        agent._graph.client.http.get.assert_not_awaited()
+        result = agent.get_cached_session_cost(_config())
     else:
         result = await agent.arefresh_side_cost(_config())
 
@@ -541,27 +555,54 @@ async def test_equal_dollar_snapshots_keep_latest_side_usage(
     assert cached["breakdown"] == breakdown
 
 
-async def test_side_cost_survives_before_first_graph_checkpoint() -> None:
+@pytest.mark.parametrize("missing", ["settlement", "graph"])
+@pytest.mark.parametrize("refresh_fails", [False, True])
+async def test_btw_refreshes_missing_accounting_without_losing_answer(
+    missing: str, monkeypatch: pytest.MonkeyPatch, *, refresh_fails: bool
+) -> None:
+    from deepagents_code.btw_cost import combine_session_cost
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
+    agent = _make_agent([])
+    monkeypatch.setattr(agent, "aensure_thread", AsyncMock())
+    monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
+    http = agent._graph.client.http
+    graph_total = 0.0 if missing == "graph" else 2.0
+    http.get.return_value = {"cost": combine_session_cost(graph_total, None, None)}
+    if missing != "graph":
+        await agent.aget_session_cost(_config())
+    else:
+        agent._graph.aget_state = AsyncMock(
+            side_effect=TypeError("'NoneType' object is not subscriptable")
+        )
+        assert await agent.aget_state(_config()) is None
     side = _empty_cost_breakdown()
-    side.update(total_cost_usd=0.5, request_count=1, priced_request_count=1)
-    agent = RemoteAgent("http://test")
-    graph = MagicMock()
-    graph.aget_state = AsyncMock(
-        side_effect=TypeError("'NoneType' object is not subscriptable")
+    side.update(total_cost_usd=0.5, request_count=1)
+    http.post = AsyncMock(
+        return_value={
+            "text": "answer",
+            "cost": side if missing != "settlement" else None,
+        }
     )
-    graph.client.http.get = AsyncMock(
-        return_value={"cost": {"total": 0.5, "breakdown": side}}
-    )
-    agent._graph = graph
-    state = await agent.aget_state(_config())
-    assert state is None
-    cost = await agent.aget_session_cost(_config())
-    assert cost is not None
-    assert cost["total"] == pytest.approx(0.5)
-    assert cost["breakdown"] is not None
-    assert cost["breakdown"]["request_count"] == 1
+    http.get.reset_mock()
+    http.get.return_value = {"cost": combine_session_cost(graph_total, None, side)}
+    if refresh_fails:
+        http.get.side_effect = RuntimeError("accounting unavailable")
+
+    assert await agent.abtw("why?", config=_config()) == "answer"
+    http.get.assert_awaited_once()
+    cost = agent.get_cached_session_cost(_config())
+    if refresh_fails and missing == "graph":
+        assert cost is None
+    else:
+        assert cost is not None
+        assert cost["total"] == pytest.approx(
+            graph_total + (0.0 if refresh_fails else 0.5)
+        )
+        if not refresh_fails:
+            assert cost["side_breakdown"] == side
+            assert cost["breakdown"] is not None
+            assert cost["breakdown"]["request_count"] == 1
 
 
 # ---------------------------------------------------------------------------

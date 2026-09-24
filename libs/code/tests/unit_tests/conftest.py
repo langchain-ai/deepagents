@@ -21,6 +21,7 @@ os.environ["DEEPAGENTS_HOME"] = _TEST_PROFILE_HOME.name
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Generator, Iterator, Mapping
     from pathlib import Path
+    from unittest.mock import MagicMock
 
     from textual.pilot import Pilot
     from textual.screen import Screen
@@ -54,6 +55,28 @@ class WaitForModal(Protocol):
 
 
 _UPDATE_CHECK_SELF_MANAGED_MARK = "self_managed_update_check"
+
+
+@pytest.fixture
+def btw_app(monkeypatch: pytest.MonkeyPatch) -> tuple[DeepAgentsApp, MagicMock]:
+    """Build an app with an existing conversation and an isolated side-answer client."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-test")
+    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    monkeypatch.setattr(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value={"messages": [{"type": "human", "content": "main"}]}),
+    )
+    remote = MagicMock(spec=RemoteAgent)
+    remote.abtw.return_value = "Side answer"
+    remote.get_cached_session_cost.return_value = None
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    return app, remote
 
 
 def _self_manages_update_check(request: pytest.FixtureRequest) -> bool:

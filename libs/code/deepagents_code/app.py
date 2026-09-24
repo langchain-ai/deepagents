@@ -16923,14 +16923,13 @@ class DeepAgentsApp(App):
             history: list[tuple[str, str]] = []
 
             async def answer(question: str) -> str:
+                config = {"configurable": {"thread_id": thread_id}}
                 text = await remote.abtw(
                     question,
-                    config={"configurable": {"thread_id": thread_id}},
+                    config=config,
                     history=tuple(history),
                 )
-                cost = await remote.arefresh_side_cost(
-                    {"configurable": {"thread_id": thread_id}}
-                )
+                cost = remote.get_cached_session_cost(config)
                 if cost is not None and thread_id == self._lc_thread_id:
                     self._set_session_cost(
                         cost["total"],

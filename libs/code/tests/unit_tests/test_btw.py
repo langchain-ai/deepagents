@@ -25,6 +25,7 @@ from deepagents_code.tui.modals.btw import BtwScreen
 from deepagents_code.tui.widgets.messages import UserMessage
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from pathlib import Path
 
     from langchain_core.language_models import BaseChatModel
@@ -32,8 +33,45 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
 
+    from deepagents_code.app import DeepAgentsApp
 
-async def test_tool_free_snapshot_keeps_state_and_uses_compaction() -> None:
+
+@pytest.fixture
+def invoke(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    mock = AsyncMock(return_value=AIMessage(content="The answer"))
+    monkeypatch.setattr(FakeMessagesListChatModel, "ainvoke", mock)
+    return mock
+
+
+type BtwServer = tuple[AsyncClient, BtwOperation, MagicMock]
+
+
+@pytest.fixture
+async def btw_server(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[BtwServer]:
+    from deepagents_code import offload_api
+
+    operation = BtwOperation(FakeMessagesListChatModel(responses=[]), "system", None)
+    threads = MagicMock(get_state=AsyncMock(return_value={"values": {}}))
+    monkeypatch.setattr("deepagents_code.btw_api.require_thread_workspace", AsyncMock())
+    monkeypatch.setattr(
+        offload_api,
+        "get_server_runtime",
+        AsyncMock(
+            return_value=SimpleNamespace(backend=SimpleNamespace(_dcode_btw=operation))
+        ),
+    )
+    monkeypatch.setattr(
+        offload_api, "_thread_client", lambda: SimpleNamespace(threads=threads)
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=offload_api.app), base_url="http://test"
+    ) as client:
+        yield client, operation, threads
+
+
+async def test_tool_free_snapshot_keeps_state_and_uses_compaction(
+    invoke: AsyncMock,
+) -> None:
     model = FakeMessagesListChatModel(responses=[AIMessage(content="The answer")])
     operation = BtwOperation(model, "Main instructions", None)
     state = {
@@ -57,12 +95,7 @@ async def test_tool_free_snapshot_keeps_state_and_uses_compaction() -> None:
         },
     }
     before = deepcopy(state)
-    with patch.object(
-        FakeMessagesListChatModel,
-        "ainvoke",
-        new=AsyncMock(return_value=AIMessage(content="The answer")),
-    ) as invoke:
-        assert await operation.answer("thread", state, "Why?") == "The answer"
+    assert await operation.answer("thread", state, "Why?") == "The answer"
     messages = invoke.call_args.args[0]
     assert [m.text for m in messages[1:-1]] == [
         "Earlier summary",
@@ -90,7 +123,7 @@ async def test_tool_free_snapshot_keeps_state_and_uses_compaction() -> None:
 )
 @pytest.mark.parametrize("include_text", [False, True])
 async def test_side_context_preserves_human_attachments(
-    attachment: dict[str, object], *, include_text: bool
+    attachment: dict[str, object], invoke: AsyncMock, *, include_text: bool
 ) -> None:
     model = FakeMessagesListChatModel(responses=[], profile={"max_input_tokens": 8000})
     operation = BtwOperation(model, "Main instructions", None)
@@ -113,12 +146,7 @@ async def test_side_context_preserves_human_attachments(
         ]
     }
     before = deepcopy(state)
-    with patch.object(
-        FakeMessagesListChatModel,
-        "ainvoke",
-        new=AsyncMock(return_value=AIMessage(content="The answer")),
-    ) as invoke:
-        await operation.answer("thread", state, "What color is the background?")
+    await operation.answer("thread", state, "What color is the background?")
     messages = invoke.call_args.args[0]
     assert messages[1] == human
     assert messages[2] == AIMessage(content="I see the design")
@@ -146,7 +174,11 @@ async def test_side_context_preserves_human_attachments(
 )
 @pytest.mark.parametrize(("include_text", "serialized"), [(False, False), (True, True)])
 async def test_side_context_preserves_tool_attachments(
-    attachment: dict[str, object], *, include_text: bool, serialized: bool
+    attachment: dict[str, object],
+    invoke: AsyncMock,
+    *,
+    include_text: bool,
+    serialized: bool,
 ) -> None:
     model = FakeMessagesListChatModel(
         responses=[],
@@ -165,12 +197,7 @@ async def test_side_context_preserves_tool_attachments(
     )
     state = {"messages": [result.model_dump() if serialized else result]}
     before = deepcopy(state)
-    with patch.object(
-        FakeMessagesListChatModel,
-        "ainvoke",
-        new=AsyncMock(return_value=AIMessage(content="The answer")),
-    ) as invoke:
-        await operation.answer("thread", state, "What does the design show?")
+    await operation.answer("thread", state, "What does the design show?")
     messages = invoke.call_args.args[0]
     assert messages[1] == HumanMessage(
         content=[
@@ -193,7 +220,7 @@ async def test_side_context_preserves_tool_attachments(
     ],
 )
 async def test_side_context_truncates_old_file_arguments(
-    tool: str, context_limit: int | None, *, summarized: bool
+    tool: str, context_limit: int | None, invoke: AsyncMock, *, summarized: bool
 ) -> None:
     model = FakeMessagesListChatModel(
         responses=[],
@@ -239,12 +266,7 @@ async def test_side_context_truncates_old_file_arguments(
             "summary_message": HumanMessage(content="Earlier summary"),
         }
     before = deepcopy(state)
-    with patch.object(
-        FakeMessagesListChatModel,
-        "ainvoke",
-        new=AsyncMock(return_value=AIMessage(content="The answer")),
-    ) as invoke:
-        assert await operation.answer("thread", state, "Why?") == "The answer"
+    assert await operation.answer("thread", state, "Why?") == "The answer"
     messages = invoke.call_args.args[0]
     transcript = "\n".join(message.text for message in messages)
     assert "...(argument truncated)" in transcript
@@ -261,6 +283,7 @@ async def test_side_context_truncates_old_file_arguments(
 @pytest.mark.parametrize("max_tokens", [0, 400])
 async def test_side_context_budget_includes_instructions_history_and_output(
     max_tokens: int,
+    invoke: AsyncMock,
 ) -> None:
     from langchain_core.messages.utils import count_tokens_approximately
 
@@ -277,12 +300,7 @@ async def test_side_context_budget_includes_instructions_history_and_output(
     ]
     before = deepcopy(state)
     history_before = deepcopy(history)
-    with patch.object(
-        FakeMessagesListChatModel,
-        "ainvoke",
-        new=AsyncMock(return_value=AIMessage(content="The answer")),
-    ) as invoke:
-        await operation.answer("thread", state, "Why?", history=history)
+    await operation.answer("thread", state, "Why?", history=history)
     messages = invoke.call_args.args[0]
     assert count_tokens_approximately(messages) <= 1900 - max_tokens
     assert messages[0].text.startswith("Main instructions " * 40)
@@ -357,7 +375,9 @@ async def test_side_context_keeps_session_profile_overrides(
 
 
 @pytest.mark.parametrize("oversized", ["system", "question"])
-async def test_side_context_rejects_required_input_over_budget(oversized: str) -> None:
+async def test_side_context_rejects_required_input_over_budget(
+    oversized: str, invoke: AsyncMock
+) -> None:
     from langchain_core.exceptions import ContextOverflowError
 
     model = FakeMessagesListChatModel(responses=[], profile={"max_input_tokens": 1000})
@@ -365,14 +385,7 @@ async def test_side_context_rejects_required_input_over_budget(oversized: str) -
         model, "Instructions " * (1000 if oversized == "system" else 1), None
     )
     question = "Why? " * (1000 if oversized == "question" else 1)
-    with (
-        patch.object(
-            FakeMessagesListChatModel,
-            "ainvoke",
-            new=AsyncMock(return_value=AIMessage(content="The answer")),
-        ) as invoke,
-        pytest.raises(ContextOverflowError, match="input budget"),
-    ):
+    with pytest.raises(ContextOverflowError, match="input budget"):
         await operation.answer("thread", {}, question)
     invoke.assert_not_awaited()
 
@@ -712,14 +725,12 @@ async def test_route_rejects_invalid_question(payload: object) -> None:
 
 
 @pytest.mark.parametrize("live_model", [False, True])
-async def test_route_reads_busy_thread_without_writes(*, live_model: bool) -> None:
-    from deepagents_code import offload_api
-
-    operation = BtwOperation(
-        FakeMessagesListChatModel(responses=[AIMessage(content="side answer")]),
-        "system",
-        None,
-    )
+async def test_route_reads_busy_thread_without_writes(
+    btw_server: BtwServer,
+    *,
+    live_model: bool,
+) -> None:
+    client, operation, threads = btw_server
     if live_model:
         operation._snapshots["thread"] = (
             FakeMessagesListChatModel(responses=[AIMessage(content="live answer")]),
@@ -727,48 +738,22 @@ async def test_route_reads_busy_thread_without_writes(*, live_model: bool) -> No
             {"temperature": 0.2},
         )
     saved = FakeMessagesListChatModel(responses=[AIMessage(content="saved answer")])
-    threads = MagicMock()
-    threads.get_state = AsyncMock(
-        return_value={
-            "values": {
-                "messages": [HumanMessage(content="Working")],
-                "_model_spec": "provider:previous",
-                "_model_params": {"output_config": {"effort": "high"}},
-            },
-            "next": ["tools"],
-        }
-    )
-    with (
-        patch(
-            "deepagents_code.config.create_model",
-            return_value=SimpleNamespace(model=saved),
-        ) as create,
-        patch("deepagents_code.btw_api.require_thread_workspace", new=AsyncMock()),
-        patch.object(
-            offload_api,
-            "get_server_runtime",
-            new=AsyncMock(
-                return_value=SimpleNamespace(
-                    backend=SimpleNamespace(_dcode_btw=operation)
-                )
-            ),
-        ),
-        patch.object(
-            offload_api,
-            "_thread_client",
-            return_value=SimpleNamespace(threads=threads),
-        ),
-    ):
-        async with AsyncClient(
-            transport=ASGITransport(app=offload_api.app), base_url="http://test"
-        ) as client:
-            result = await client.post(
-                "/dcode/threads/thread/btw",
-                json={
-                    "question": "why",
-                    "workspace": {"workspace_id": "1"},
-                },
-            )
+    threads.get_state.return_value = {
+        "values": {
+            "messages": [HumanMessage(content="Working")],
+            "_model_spec": "provider:previous",
+            "_model_params": {"output_config": {"effort": "high"}},
+        },
+        "next": ["tools"],
+    }
+    with patch(
+        "deepagents_code.config.create_model",
+        return_value=SimpleNamespace(model=saved),
+    ) as create:
+        result = await client.post(
+            "/dcode/threads/thread/btw",
+            json={"question": "why", "workspace": {"workspace_id": "1"}},
+        )
     assert result.status_code == 200
     assert result.json() == {"text": "live answer" if live_model else "saved answer"}
     if live_model:
@@ -803,56 +788,41 @@ async def test_route_rejects_wrong_workspace_before_reading() -> None:
 
 
 async def test_follow_up_reaches_model_with_side_history_and_leaves_state_unchanged(
+    btw_server: BtwServer,
+    invoke: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from deepagents_code import offload_api
-
+    client, _operation, threads = btw_server
     state = {"messages": [HumanMessage(content="Main task")]}
     before = deepcopy(state)
-    invoke = AsyncMock(return_value=AIMessage(content="Because it is faster."))
-    monkeypatch.setattr(FakeMessagesListChatModel, "ainvoke", invoke)
-    operation = BtwOperation(FakeMessagesListChatModel(responses=[]), "system", None)
-    monkeypatch.setattr("deepagents_code.btw_api.require_thread_workspace", AsyncMock())
-    monkeypatch.setattr(
-        offload_api,
-        "get_server_runtime",
-        AsyncMock(
-            return_value=SimpleNamespace(backend=SimpleNamespace(_dcode_btw=operation))
-        ),
-    )
-    threads = MagicMock()
-    threads.get_state = AsyncMock(return_value={"values": state})
-    monkeypatch.setattr(
-        offload_api, "_thread_client", lambda: SimpleNamespace(threads=threads)
-    )
-    async with AsyncClient(
-        transport=ASGITransport(app=offload_api.app), base_url="http://test"
-    ) as client:
-        remote = RemoteAgent("http://test")
+    threads.get_state.return_value = {"values": state}
+    remote = RemoteAgent("http://test")
 
-        async def post(path: str, *, json: dict[str, object]) -> object:
-            response = await client.post(path, json=json)
-            response.raise_for_status()
-            return response.json()
+    async def post(path: str, *, json: dict[str, object]) -> object:
+        response = await client.post(path, json=json)
+        response.raise_for_status()
+        return response.json()
 
-        graph = SimpleNamespace(client=SimpleNamespace(http=SimpleNamespace(post=post)))
-        monkeypatch.setattr(remote, "_get_graph", lambda: graph)
-        monkeypatch.setattr(remote, "_workspace_for_thread", AsyncMock(return_value={}))
-        monkeypatch.setattr(remote, "aensure_thread", AsyncMock())
-        assert (
-            await remote.abtw(
-                "Why that option?",
-                config={
-                    "configurable": {
-                        "thread_id": "thread",
-                        "model": "provider:selected",
-                        "model_params": {"temperature": 0.2},
-                    }
-                },
-                history=[("Which option?", "Use the cache.")],
-            )
-            == "Because it is faster."
+    graph = MagicMock()
+    graph.client.http.post = post
+    graph.client.http.get = AsyncMock(return_value={"cost": None})
+    monkeypatch.setattr(remote, "_get_graph", lambda: graph)
+    monkeypatch.setattr(remote, "_workspace_for_thread", AsyncMock(return_value={}))
+    monkeypatch.setattr(remote, "aensure_thread", AsyncMock())
+    assert (
+        await remote.abtw(
+            "Why that option?",
+            config={
+                "configurable": {
+                    "thread_id": "thread",
+                    "model": "provider:selected",
+                    "model_params": {"temperature": 0.2},
+                }
+            },
+            history=[("Which option?", "Use the cache.")],
         )
+        == "The answer"
+    )
     messages = invoke.call_args.args[0]
     assert [(message.type, message.text) for message in messages[1:-1]] == [
         ("human", "Main task"),
@@ -955,7 +925,8 @@ async def test_side_cost_survives_main_cancellation(
     )
     monkeypatch.setattr(app, "_ui_adapter", MagicMock())
     monkeypatch.setattr(app, "_ensure_goal_state_notice", AsyncMock(return_value=True))
-    monkeypatch.setattr(remote, "abtw", AsyncMock(return_value="Side answer"))
+    monkeypatch.setattr(remote, "_workspace_for_thread", AsyncMock(return_value={}))
+    monkeypatch.setattr(remote, "aensure_thread", AsyncMock())
     started = asyncio.Event()
 
     async def execute(*_args: object, **_kwargs: object) -> None:
@@ -979,6 +950,9 @@ async def test_side_cost_survives_main_cancellation(
         app._add_provisional_cost(provisional, request_id="unfinished")
         side = _empty_cost_breakdown()
         side.update(total_cost_usd=0.5, request_count=1)
+        graph.client.http.post = AsyncMock(
+            return_value={"text": "Side answer", "cost": side}
+        )
         graph.client.http.get.return_value = {
             "cost": combine_session_cost(1.0, None, side)
         }
@@ -1009,15 +983,12 @@ async def test_side_cost_survives_main_cancellation(
 
 @pytest.mark.parametrize("question", ["", "Why this approach?"])
 async def test_app_requires_a_message_before_btw(
-    question: str, monkeypatch: pytest.MonkeyPatch
+    question: str,
+    btw_app: tuple[DeepAgentsApp, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from deepagents_code.app import DeepAgentsApp
-
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-empty")
-    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    app, remote = btw_app
     monkeypatch.setattr(app, "_get_thread_state_values", AsyncMock(return_value={}))
-    remote = MagicMock(spec=RemoteAgent)
-    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     notify = MagicMock()
     monkeypatch.setattr(app, "notify", notify)
     async with app.run_test() as pilot:
@@ -1035,17 +1006,12 @@ async def test_app_requires_a_message_before_btw(
 
 
 async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
+    btw_app: tuple[DeepAgentsApp, MagicMock],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from deepagents_code.app import DeepAgentsApp
-
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-scroll")
-    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    app, remote = btw_app
     monkeypatch.setattr(app, "_get_thread_state_values", AsyncMock(return_value={}))
-    remote = MagicMock(spec=RemoteAgent)
-    remote.arefresh_side_cost = AsyncMock(return_value=None)
-    remote.abtw = AsyncMock(return_value="\n\n".join(f"Line {i}" for i in range(80)))
-    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    remote.abtw.return_value = "\n\n".join(f"Line {i}" for i in range(80))
     main_started = asyncio.Event()
     release = asyncio.Event()
     main_finished = asyncio.Event()
@@ -1122,28 +1088,15 @@ async def test_modal_dismiss_cancels_only_side_question() -> None:
 
 
 async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
-    monkeypatch: pytest.MonkeyPatch,
+    btw_app: tuple[DeepAgentsApp, MagicMock],
 ) -> None:
-    from deepagents_code.app import DeepAgentsApp
-
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-follow-ups")
-    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
-    monkeypatch.setattr(
-        app,
-        "_get_thread_state_values",
-        AsyncMock(return_value={"messages": [HumanMessage(content="Main task")]}),
-    )
-    remote = MagicMock(spec=RemoteAgent)
-    remote.arefresh_side_cost = AsyncMock(return_value=None)
-    remote.abtw = AsyncMock(
-        side_effect=[
-            "Use a cache.",
-            RuntimeError("Try again [/tmp/file]"),
-            "It is faster.",
-            "New conversation.",
-        ]
-    )
-    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    app, remote = btw_app
+    remote.abtw.side_effect = [
+        "Use a cache.",
+        RuntimeError("Try again [/tmp/file]"),
+        "It is faster.",
+        "New conversation.",
+    ]
     async with app.run_test(size=(110, 36)) as pilot:
         await pilot.pause()
         app._connecting = False

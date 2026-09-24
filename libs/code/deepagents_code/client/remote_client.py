@@ -445,7 +445,21 @@ class RemoteAgent:
         if not isinstance(response, dict) or not isinstance(response.get("text"), str):
             msg = "Invalid side-question response from the server."
             raise TypeError(msg)
+        await self._read_session_cost(
+            config, side_only=True, side_breakdown=response.get("cost")
+        )
         return response["text"]
+
+    def get_cached_session_cost(self, config: Mapping[str, Any]) -> SessionCost | None:
+        """Read the latest cost received from a stream or accounting response.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Returns:
+            Last known usage, or `None` when no accounting has been received.
+        """
+        return self._session_costs.get(_require_thread_id(config))
 
     async def arefresh_side_cost(self, config: Mapping[str, Any]) -> SessionCost | None:
         """Refresh side spend without replacing potentially uncommitted graph usage.
@@ -516,6 +530,7 @@ class RemoteAgent:
         *,
         side_only: bool,
         checkpoint: Mapping[str, object] | None = None,
+        side_breakdown: CostBreakdown | None = None,
     ) -> SessionCost | None:
         """Read accounting, optionally retaining the latest streamed graph usage.
 
@@ -529,11 +544,23 @@ class RemoteAgent:
         thread_id = _require_thread_id(config)
         previous = self._session_costs.get(thread_id)
         try:
-            async with asyncio.timeout(2):
-                response = await self._get_graph().client.http.get(
-                    f"/dcode/threads/{thread_id}/cost"
+            if (
+                isinstance(side_breakdown, dict)
+                and previous is not None
+                and "graph_total" in previous
+            ):
+                cost = combine_session_cost(
+                    previous["graph_total"],
+                    previous.get("graph_breakdown"),
+                    side_breakdown,
                 )
-            cost = response["cost"]
+            else:
+                # Missing settlement or graph baseline still needs an accounting read.
+                async with asyncio.timeout(2):
+                    response = await self._get_graph().client.http.get(
+                        f"/dcode/threads/{thread_id}/cost"
+                    )
+                cost = response["cost"]
             if (
                 not isinstance(cost, dict)
                 or not isinstance(cost.get("total"), int | float)
@@ -846,7 +873,7 @@ class RemoteAgent:
         """Get the current state of a thread.
 
         Returns `None` when the thread does not exist on the server (404) or
-        when the thread has no checkpoint yet.
+        when the thread exists but has no checkpoint yet (new/empty thread).
         All other errors (network, auth, 500) are logged at WARNING and
         re-raised so callers can handle them.
 
@@ -870,9 +897,8 @@ class RemoteAgent:
         thread_id = _require_thread_id(config)
 
         graph = self._get_graph()
-        prepared = _prepare_config(config)
         try:
-            snapshot = await graph.aget_state(prepared)
+            return await graph.aget_state(_prepare_config(config))
         except NotFoundError:
             logger.debug("Thread %s not found on server", thread_id)
             return None
@@ -885,18 +911,16 @@ class RemoteAgent:
                 logger.debug(
                     "Thread %s has no checkpoint yet; treating as empty", thread_id
                 )
-                snapshot = None
-            else:
-                logger.warning(
-                    "Failed to get state for thread %s", thread_id, exc_info=True
-                )
-                raise
+                return None
+            logger.warning(
+                "Failed to get state for thread %s", thread_id, exc_info=True
+            )
+            raise
         except Exception:
             logger.warning(
                 "Failed to get state for thread %s", thread_id, exc_info=True
             )
             raise
-        return snapshot
 
     async def acancel_active_runs(self, config: dict[str, Any]) -> None:
         """Cancel pending/running runs on the configured thread.

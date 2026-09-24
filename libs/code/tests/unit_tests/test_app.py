@@ -2447,23 +2447,15 @@ class TestModalScreenShiftTabHandling:
         "newline_key", ["shift+enter", "alt+enter", "ctrl+enter", "ctrl+j"]
     )
     async def test_btw_multiline_editing(
-        self, newline_key: str, monkeypatch: pytest.MonkeyPatch
+        self, newline_key: str, btw_app: tuple[DeepAgentsApp, MagicMock]
     ) -> None:
         """Side-question shortcuts edit text without changing approval mode."""
         from textual.widgets import Markdown, TextArea
 
         from deepagents_code.tui.modals.btw import BtwScreen
 
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-editing")
-        monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
-        monkeypatch.setattr(
-            app,
-            "_get_thread_state_values",
-            AsyncMock(return_value={"messages": [{"type": "human", "content": "hi"}]}),
-        )
-        answer = AsyncMock(return_value="Side answer")
-        remote = MagicMock(abtw=answer, arefresh_side_cost=AsyncMock(return_value=None))
-        monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+        app, remote = btw_app
+        answer = remote.abtw
         async with app.run_test(size=(110, 36)) as pilot:
             await pilot.pause()
             app._connecting = False
@@ -13818,7 +13810,7 @@ class TestApprovalPositionBindings:
     """Tests for app-level approval fallback shortcuts."""
 
     async def test_tab_navigates_btw_when_background_approval_arrives(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, btw_app: tuple[DeepAgentsApp, MagicMock]
     ) -> None:
         """Tab stays in the side dialog until it closes, then reaches approval."""
         from textual.containers import VerticalScroll
@@ -13827,18 +13819,7 @@ class TestApprovalPositionBindings:
         from deepagents_code.tui.modals.btw import BtwScreen
         from deepagents_code.tui.widgets.approval import ApprovalMenu
 
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-approval")
-        monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
-        monkeypatch.setattr(
-            app,
-            "_get_thread_state_values",
-            AsyncMock(return_value={"messages": [{"type": "human", "content": "hi"}]}),
-        )
-        remote = MagicMock(
-            abtw=AsyncMock(return_value="Side answer"),
-            arefresh_side_cost=AsyncMock(return_value=None),
-        )
-        monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+        app, _remote = btw_app
         async with app.run_test(size=(110, 36)) as pilot:
             await pilot.pause()
             app._connecting = False

@@ -122,6 +122,7 @@ on:
           - llm-tool-selector
           - ts-tool-selector
           - ts-choice-tool-selector
+          - ts-hybrid-tool-selector
           - tau3
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."

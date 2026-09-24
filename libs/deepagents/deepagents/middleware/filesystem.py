@@ -84,9 +84,13 @@ from deepagents.backends.utils import (
 from deepagents.middleware._message_eviction import (
     _TOO_LARGE_TOOL_MSG,
     ContentPreview,
+    _aoffload_inline_media_blocks,
     _aoffload_tool_message_content,
     _create_content_preview,
     _extract_text_from_message,
+    _inline_media_payload_chars,
+    _message_char_size,
+    _offload_inline_media_blocks,
     _offload_tool_message_content,
     _render_preview_stub,
     _visible_tool_call_id,
@@ -1721,6 +1725,17 @@ You can read the full content using the read_file tool with pagination (offset a
 """
 
 
+_EVICTED_MEDIA_KEY: Final = "lc_evicted_media"
+"""`additional_kwargs` key recording the media offloaded out of a message.
+
+The value is a list aligned to the message's non-text blocks, in order: pointer
+text for a block that was offloaded, or `None` for a block left inline. Positional
+alignment (rather than a content-hash lookup) keeps the original block order --
+including remote `http(s)` references that were never inline -- so the request
+reads the same way after rewriting.
+"""
+
+
 def _build_evicted_human_content(
     message: HumanMessage,
     replacement_text: str,
@@ -1769,6 +1784,43 @@ def _build_truncated_human_message(message: HumanMessage, file_path: str) -> Hum
     )
     evicted = _build_evicted_human_content(message, replacement_text)
     return message.model_copy(update={"content": evicted})
+
+
+def _apply_evicted_media(message: HumanMessage) -> HumanMessage:
+    """Replace a message's offloaded media blocks with their pointers for the request.
+
+    Reads `_EVICTED_MEDIA_KEY` off `additional_kwargs` and swaps each non-text
+    block for its pointer, leaving blocks recorded as `None` (remote URLs, failed
+    uploads) exactly as they were. Content in state is unchanged.
+
+    The message is returned untouched when the recorded pointer list does not line
+    up with the message's current non-text blocks: that can only happen if the
+    stored message changed shape after it was tagged, and silently mismatching
+    positions would replace the wrong block.
+
+    Args:
+        message: The tagged message to rewrite.
+
+    Returns:
+        A request-only copy with offloaded media replaced by pointer text.
+    """
+    pointers = message.additional_kwargs.get(_EVICTED_MEDIA_KEY)
+    if not isinstance(pointers, list) or not pointers:
+        return message
+
+    media_blocks = [block for block in message.content_blocks if block["type"] != "text"]
+    if len(pointers) != len(media_blocks):
+        return message
+
+    replacements = iter(pointers)
+    new_blocks: list[Any] = []
+    for block in message.content_blocks:
+        if block["type"] == "text":
+            new_blocks.append(block)
+            continue
+        pointer = next(replacements)
+        new_blocks.append(cast("ContentBlock", {"type": "text", "text": pointer}) if isinstance(pointer, str) else block)
+    return message.model_copy(update={"content": new_blocks})
 
 
 class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]):
@@ -1924,6 +1976,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         _root = artifacts_root.rstrip("/")
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
+        # Inline media offloaded from evicted messages lands beside the history
+        # files it is referenced from, matching `SummarizationMiddleware`.
+        self._media_prefix = f"{self._conversation_history_prefix}/media"
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
@@ -3313,7 +3368,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             model request (content in state is unchanged).
         2. If the most recent message is an untagged HumanMessage exceeding the
             eviction threshold, its content is written to the backend and the
-            message is tagged in state via `ExtendedModelResponse`.
+            message is tagged in state via `ExtendedModelResponse`. The threshold
+            counts inline-media payloads, not just text.
+        3. Inline media on *earlier* HumanMessages is uploaded to the backend and
+            replaced by a text pointer for the model request, so an image from a
+            past turn stops being re-sent on every subsequent turn. The current
+            turn keeps its media inline.
 
         It also scrubs unsupported multimodal blocks, replacing them with text
         placeholders to avoid non-retryable provider errors.
@@ -3462,50 +3522,110 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     ) -> tuple[bool, bool]:
         """Check whether any message processing is needed.
 
+        The final message is measured with `_message_char_size` rather than
+        `_extract_text_from_message`, so a short caption bundled with a
+        multi-megabyte inline image still trips the threshold.
+
         Args:
             messages: The message list to inspect.
 
         Returns:
-            Tuple of `(has_tagged, new_eviction_needed)`.
+            Tuple of `(has_tagged, new_eviction_needed)`. `has_tagged` covers both
+                kinds of tagging -- text eviction and media offload -- because
+                either one means the request needs rewriting.
         """
         if not self._human_message_token_limit_before_evict:
             return False, False
 
         threshold = NUM_CHARS_PER_TOKEN * self._human_message_token_limit_before_evict
-        has_tagged = any(isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to") for msg in messages)
+        has_tagged = any(
+            isinstance(msg, HumanMessage) and (msg.additional_kwargs.get("lc_evicted_to") or msg.additional_kwargs.get(_EVICTED_MEDIA_KEY))
+            for msg in messages
+        )
         new_eviction_needed = False
         if messages and isinstance(messages[-1], HumanMessage):
             last = messages[-1]
-            if not last.additional_kwargs.get("lc_evicted_to") and len(_extract_text_from_message(last)) > threshold:
+            if not last.additional_kwargs.get("lc_evicted_to") and _message_char_size(last) > threshold:
                 new_eviction_needed = True
         return has_tagged, new_eviction_needed
+
+    def _find_media_eviction_targets(self, messages: list[AnyMessage]) -> list[int]:
+        """Find historical `HumanMessage`s whose inline media should be offloaded.
+
+        Only messages *before* the final one are considered. The final message is
+        the turn being answered right now: the model needs its image inline to
+        answer it, and a payload that large is the summarization path's problem,
+        not eviction's. Hence the `messages[:-1]` window.
+
+        A message must also be oversized by `_message_char_size` -- the same bar
+        text eviction uses. Gating on size keeps small inline media (an icon, a
+        tiny inline SVG) visible to the model instead of forcing a `read_file`
+        round-trip, while still catching every real photo: a base64 image payload
+        runs far past `NUM_CHARS_PER_TOKEN` characters per token by the time it is
+        a photo rather than a thumbnail.
+
+        Shares `human_message_token_limit_before_evict` with text eviction, so one
+        switch turns off all rewriting of the request.
+
+        Rewriting an already-tagged message is cheap, and every other turn moves
+        another message into this window, so each message is uploaded exactly once.
+
+        Args:
+            messages: The message list to inspect.
+
+        Returns:
+            Indices, in order, of messages that still carry offloadable media.
+        """
+        if not self._human_message_token_limit_before_evict:
+            return []
+
+        threshold = NUM_CHARS_PER_TOKEN * self._human_message_token_limit_before_evict
+        targets: list[int] = []
+        for index, msg in enumerate(messages[:-1]):
+            if not isinstance(msg, HumanMessage):
+                continue
+            if msg.additional_kwargs.get(_EVICTED_MEDIA_KEY):
+                continue
+            if _message_char_size(msg) <= threshold:
+                continue
+            if any(_inline_media_payload_chars(block) > 0 for block in msg.content_blocks):
+                targets.append(index)
+        return targets
 
     @staticmethod
     def _apply_eviction_and_truncate(
         messages: list[AnyMessage],
         write_result: WriteResult | None,
         file_path: str | None,
+        media_offloads: Mapping[int, list[str | None]],
     ) -> tuple[list[AnyMessage], Command | None]:
-        """Tag a newly evicted message and truncate all tagged messages.
+        """Tag newly processed messages and rewrite their request-only views.
 
-        When a new eviction fires, emits a `Command` whose messages update
-        contains only the tagged `HumanMessage`. Because `ensure_message_ids`
-        stamps a stable UUID onto the original write before it is checkpointed,
-        the tagged copy (which reuses that ID) is deduped in-place by the
-        `DeltaChannel` reducer — no `REMOVE_ALL_MESSAGES` sentinel is needed.
-        Using a sentinel would also clobber the `AIMessage` that the model node
-        writes in the same super-step.
+        Two independent kinds of tagging are applied, and both travel back to state
+        in a single `Command`:
+
+        - the newly evicted final message (`lc_evicted_to`), and
+        - historical messages whose inline media was just offloaded
+          (`_EVICTED_MEDIA_KEY`), keyed by their index in `messages`.
+
+        Because `ensure_message_ids` stamps a stable UUID onto the original write
+        before it is checkpointed, each tagged copy -- which reuses that ID -- is
+        deduped in-place by the `DeltaChannel` reducer, no matter where it sits in
+        the list. No `REMOVE_ALL_MESSAGES` sentinel is needed, and using one would
+        clobber the `AIMessage` the model node writes in the same super-step.
 
         Args:
-            messages: The message list (may be modified if write succeeded).
-            write_result: Result of the backend write, or `None` if no new
+            messages: The message list (may be modified if a write succeeded).
+            write_result: Result of the backend write, or `None` if no text
                 eviction was attempted.
-            file_path: Path the content was written to.
+            file_path: Path the evicted text was written to.
+            media_offloads: Message index to positional pointer list, for messages
+                whose inline media was offloaded.
 
         Returns:
             Tuple of `(processed_messages, state_command)`.
         """
-        state_command: Command | None = None
+        tagged_updates: list[AnyMessage] = []
 
         if write_result is not None and file_path is not None and not write_result.error:
             last = messages[-1]
@@ -3518,15 +3638,38 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     },
                 }
             )
-            state_command = Command(update={"messages": [tagged]})
             messages = [*messages[:-1], tagged]
+            tagged_updates.append(tagged)
+
+        # Replacing in place keeps every index in `media_offloads` valid: the list
+        # length and order are unchanged by the text eviction above.
+        for index, pointers in media_offloads.items():
+            msg = messages[index]
+            tagged = msg.model_copy(
+                update={
+                    "id": msg.id if msg.id is not None else str(uuid.uuid4()),
+                    "additional_kwargs": {
+                        **msg.additional_kwargs,
+                        _EVICTED_MEDIA_KEY: pointers,
+                    },
+                }
+            )
+            messages[index] = tagged
+            tagged_updates.append(tagged)
+
+        state_command = Command(update={"messages": tagged_updates}) if tagged_updates else None
 
         processed: list[AnyMessage] = []
         for msg in messages:
-            if isinstance(msg, HumanMessage) and msg.additional_kwargs.get("lc_evicted_to"):
-                processed.append(_build_truncated_human_message(msg, msg.additional_kwargs["lc_evicted_to"]))
-            else:
-                processed.append(msg)
+            current = msg
+            if isinstance(current, HumanMessage) and current.additional_kwargs.get("lc_evicted_to"):
+                current = _build_truncated_human_message(current, current.additional_kwargs["lc_evicted_to"])
+            # Media replacement runs second so it still sees the blocks that
+            # `_build_evicted_human_content` preserves, keeping the two rewrites
+            # additive rather than order-dependent.
+            if isinstance(current, HumanMessage) and current.additional_kwargs.get(_EVICTED_MEDIA_KEY):
+                current = _apply_evicted_media(current)
+            processed.append(current)
 
         return processed, state_command
 
@@ -3549,17 +3692,23 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         messages = list(request.messages)
         has_tagged, new_eviction_needed = self._check_eviction_needed(messages)
-        if not has_tagged and not new_eviction_needed:
-            return None
 
         write_result: WriteResult | None = None
         file_path: str | None = None
         if new_eviction_needed:
-            backend = self.backend
             file_path = f"{self._conversation_history_prefix}/{uuid.uuid4()}.md"
-            write_result = backend.write(file_path, _extract_text_from_message(messages[-1]))
+            write_result = self.backend.write(file_path, _extract_text_from_message(messages[-1]))
 
-        return self._apply_eviction_and_truncate(messages, write_result, file_path)
+        media_offloads: dict[int, list[str | None]] = {}
+        for index in self._find_media_eviction_targets(messages):
+            pointers = _offload_inline_media_blocks(messages[index], self.backend, self._media_prefix)
+            if pointers is not None:
+                media_offloads[index] = pointers
+
+        if not has_tagged and not new_eviction_needed and not media_offloads:
+            return None
+
+        return self._apply_eviction_and_truncate(messages, write_result, file_path, media_offloads)
 
     async def _aevict_and_truncate_messages(
         self,
@@ -3575,17 +3724,23 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         messages = list(request.messages)
         has_tagged, new_eviction_needed = self._check_eviction_needed(messages)
-        if not has_tagged and not new_eviction_needed:
-            return None
 
         write_result: WriteResult | None = None
         file_path: str | None = None
         if new_eviction_needed:
-            backend = self.backend
             file_path = f"{self._conversation_history_prefix}/{uuid.uuid4()}.md"
-            write_result = await backend.awrite(file_path, _extract_text_from_message(messages[-1]))
+            write_result = await self.backend.awrite(file_path, _extract_text_from_message(messages[-1]))
 
-        return self._apply_eviction_and_truncate(messages, write_result, file_path)
+        media_offloads: dict[int, list[str | None]] = {}
+        for index in self._find_media_eviction_targets(messages):
+            pointers = await _aoffload_inline_media_blocks(messages[index], self.backend, self._media_prefix)
+            if pointers is not None:
+                media_offloads[index] = pointers
+
+        if not has_tagged and not new_eviction_needed and not media_offloads:
+            return None
+
+        return self._apply_eviction_and_truncate(messages, write_result, file_path, media_offloads)
 
     @staticmethod
     def _unwrap_command_messages(update: Mapping[str, Any]) -> tuple[Any, bool]:

@@ -1,4 +1,4 @@
-"""Confirmation modal for an expensive cold prompt-cache turn."""
+"""Modal for a cold prompt cache: send-time confirmation or expiry handoff."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, ClassVar, assert_never
 
 from textual.binding import Binding, BindingType
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Static
@@ -25,6 +25,9 @@ if TYPE_CHECKING:
 
 class ColdCacheChoice(Enum):
     """How to resolve a cold prompt-cache warning."""
+
+    HANDOFF = "handoff"
+    """Start a summarized new thread; never sends, so not in `SEND_CHOICES`."""
 
     SEND = "send"
     """Send this turn; keep warning on future cold-cache turns."""
@@ -46,7 +49,7 @@ SEND_CHOICES: frozenset[ColdCacheChoice] = frozenset(
         ColdCacheChoice.SEND_SUPPRESS_ALWAYS,
     }
 )
-"""Choices that authorize spend.
+"""Choices that authorize sending the submitted turn.
 
 Lives with the enum so callers restate the set in one place only. A new variant
 is excluded until added here, which fails closed: an unlisted choice is treated
@@ -108,13 +111,13 @@ class _ChoiceOption(Static):
 
 
 class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
-    """Ask whether to send a turn whose prompt cache may be cold.
+    """Offer actions for a turn whose prompt cache may be cold.
 
     Dismisses with the chosen `ColdCacheChoice`, or `None` on a
     programmatic pop. Esc is mapped to `CANCEL` so the user is never
     forced into a spend they did not explicitly choose. `None` and
-    `CANCEL` are both non-send outcomes, and callers must treat any
-    non-send value as cancel so the dialog fails closed.
+    `CANCEL` are both non-send outcomes. `HANDOFF` authorizes summarization
+    without sending the submitted turn.
     """
 
     can_focus = True
@@ -133,6 +136,10 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         Binding("tab", "move_down", "Next", show=False, priority=True),
         Binding("shift+tab", "move_up", "Previous", show=False, priority=True),
         Binding("enter", "activate", "Select", show=False, priority=True),
+        Binding(
+            "ctrl+c", "quit_or_interrupt", "Quit/Interrupt", show=False, priority=True
+        ),
+        Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
     ]
 
     CSS = """
@@ -144,12 +151,14 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         width: 72;
         max-width: 90%;
         height: auto;
+        max-height: 100%;
         background: $surface;
         border: solid $warning;
         padding: 1 2;
     }
 
     ColdCacheWarningScreen .cold-cache-title {
+        dock: top;
         text-style: bold;
         color: $warning;
         text-align: center;
@@ -160,6 +169,17 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         height: auto;
         color: $text;
         margin-bottom: 1;
+    }
+
+    ColdCacheWarningScreen #cold-cache-body-scroll {
+        height: auto;
+        max-height: 100%;
+        min-height: 1;
+    }
+
+    ColdCacheWarningScreen #cold-cache-actions {
+        dock: bottom;
+        height: auto;
     }
 
     ColdCacheWarningScreen .cold-cache-choice {
@@ -181,7 +201,13 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
     }
     """
 
-    def __init__(self, warning: ColdCacheWarning) -> None:
+    def __init__(
+        self,
+        warning: ColdCacheWarning | None,
+        *,
+        handoff: bool = False,
+        allow_send: bool = False,
+    ) -> None:
         """Initialize the warning from validated policy and pricing data.
 
         Takes the whole `ColdCacheWarning` rather than its fields separately so
@@ -191,9 +217,16 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         idle duration the caller had explicitly determined it did not know.
 
         Args:
-            warning: Validated policy, pricing, and cause for this turn.
+            warning: Validated policy, pricing, and cause for this turn, or
+                `None` when no reliable estimate exists. The body then shows
+                a generic expiry notice.
+            handoff: Offer a summarized thread as the default action.
+            allow_send: Include a send action in the handoff menu when a
+                message has been submitted.
         """
         super().__init__()
+        self._handoff = handoff
+        self._allow_send = allow_send
         self._warning = warning
         self._options: list[_ChoiceOption] = []
         self._selected = 0
@@ -204,6 +237,11 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         Returns:
             Plain-text warning body.
         """
+        if self._warning is None:
+            return (
+                "The cache retention timer has elapsed; the provider may still "
+                "retain the cache. A reliable re-warm cost estimate is unavailable."
+            )
         policy = self._warning.policy
         window = format_cache_window(policy.window_seconds)
         expires = policy.confidence == "expired"
@@ -281,45 +319,81 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         )
         return f"{status}\n\n{cost}"
 
+    def _choices(self) -> tuple[tuple[ColdCacheChoice, str], ...]:
+        """Return the available actions in navigation order."""
+        if self._handoff:
+            choices = ((ColdCacheChoice.HANDOFF, "Start a summarized thread"),)
+            if self._allow_send:
+                choices += ((ColdCacheChoice.SEND, "Send in current thread"),)
+            cancel = (
+                "Cancel (keep draft)" if self._allow_send else "Stay in current thread"
+            )
+            return (*choices, (ColdCacheChoice.CANCEL, cancel))
+        return (
+            (ColdCacheChoice.SEND, "Send anyway"),
+            (
+                ColdCacheChoice.SEND_SUPPRESS_SESSION,
+                "Send and don't warn again this session",
+            ),
+            (ColdCacheChoice.SEND_SUPPRESS_ALWAYS, "Send and never warn again"),
+            (ColdCacheChoice.CANCEL, "Don't send (keep draft)"),
+        )
+
     def compose(self) -> ComposeResult:
         """Compose the warning dialog.
 
         Yields:
-            Title, warning copy, one row per choice, and keyboard help.
+            Title, warning copy, action rows, and keyboard help.
         """
         glyphs = get_glyphs()
         with Vertical():
             yield Static(
-                "Warning: cache may be cold",
+                "Cache timer expired"
+                if self._handoff
+                else "Warning: cache may be cold",
                 classes="cold-cache-title",
                 markup=False,
             )
-            yield Static(self._body(), classes="cold-cache-body", markup=False)
-            for choice, label in (
-                (ColdCacheChoice.SEND, "Send anyway"),
-                (
-                    ColdCacheChoice.SEND_SUPPRESS_SESSION,
-                    "Send and don't warn again this session",
-                ),
-                (
-                    ColdCacheChoice.SEND_SUPPRESS_ALWAYS,
-                    "Send and never warn again",
-                ),
-                (ColdCacheChoice.CANCEL, "Don't send (keep draft)"),
-            ):
-                option = _ChoiceOption(choice, label)
-                self._options.append(option)
-                yield option
-            help_text = (
-                f"{modal_navigation_hint(glyphs)} "
-                f"{glyphs.bullet} Enter select "
-                f"{glyphs.bullet} Esc cancel"
-            )
-            yield Static(help_text, classes="cold-cache-help", markup=False)
+            with VerticalScroll(id="cold-cache-body-scroll"):
+                yield Static(self._body(), classes="cold-cache-body", markup=False)
+                if self._handoff:
+                    yield Static(
+                        "Start a new thread with an LLM summary, the previous "
+                        "thread ID, and a transcript path for recovering details. "
+                        "The original thread is preserved. Summarization costs money "
+                        "and does not guarantee savings. Your message stays in the "
+                        "composer after summarizing.",
+                        classes="cold-cache-body",
+                        markup=False,
+                    )
+            with Vertical(id="cold-cache-actions"):
+                for choice, label in self._choices():
+                    option = _ChoiceOption(choice, label)
+                    self._options.append(option)
+                    yield option
+                cancel_hint = (
+                    "stay" if self._handoff and not self._allow_send else "cancel"
+                )
+                help_text = (
+                    f"{modal_navigation_hint(glyphs)} "
+                    f"{glyphs.bullet} Enter select "
+                    f"{glyphs.bullet} Esc {cancel_hint}"
+                )
+                yield Static(help_text, classes="cold-cache-help", markup=False)
+                if self._handoff:
+                    yield Static(
+                        "Configure warnings.cache_prompt in /config",
+                        classes="cold-cache-help",
+                        markup=False,
+                    )
 
     def on_mount(self) -> None:
-        """Focus the modal and default the cursor to the send row."""
-        self.focus()
+        """Focus the scrollable copy and select the first action.
+
+        The body receives Page Up/Down while the modal's priority bindings
+        keep Tab and arrow keys navigating the pinned actions.
+        """
+        self.query_one("#cold-cache-body-scroll", VerticalScroll).focus()
         self._set_selected(0)
 
     def _set_selected(self, new_index: int) -> None:
@@ -351,7 +425,7 @@ class ColdCacheWarningScreen(ModalScreen[ColdCacheChoice | None]):
         self.dismiss(self._options[self._selected].choice)
 
     def action_cancel(self) -> None:
-        """Cancel the pending send, keeping the draft.
+        """Cancel the pending send or decline the handoff, keeping the draft.
 
         The method name must stay `cancel`: the app owns a priority `escape`
         binding that, for an active `ModalScreen`, dispatches to `action_cancel`

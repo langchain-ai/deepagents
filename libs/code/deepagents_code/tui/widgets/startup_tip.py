@@ -26,6 +26,7 @@ _TIPS: dict[str, int] = {
     "Try /threads to resume a previous conversation or copy its ID": 2,
     "Use /offload to summarize older messages and free up the context window": 2,
     "Use /context to see context window usage and remaining space": 1,
+    "Set warnings.cache_prompt in /config: expiry, send, or off": 1,
     "Use /context-doctor to audit the token cost of injected context": 1,
     "Use /copy to copy the latest message": 3,
     "Press Ctrl+R to search and reuse submitted prompts": 2,

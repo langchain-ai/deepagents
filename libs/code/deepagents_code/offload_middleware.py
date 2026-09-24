@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, NotRequired, Protocol, cast
 from uuid import NAMESPACE_URL, uuid4, uuid5
 from weakref import WeakValueDictionary
 
@@ -486,7 +486,9 @@ class _OffloadState(CostState, SummarizationState, total=False):
     """
 
 
-type OffloadStatus = Literal["compacted", "empty", "noop", "denied", "failed"]
+type OffloadStatus = Literal[
+    "compacted", "summarized", "empty", "noop", "denied", "failed"
+]
 """Outcome of one offload attempt. Aliased so the result type and the private
 `_result` factory cannot drift apart."""
 
@@ -502,6 +504,8 @@ class OffloadResult(TypedDict):
     archive_path: str | None
     archive_ephemeral: bool
     error: str | None
+    summary: NotRequired[str]
+    """Summary text for a handoff; the source thread stays uncompacted."""
 
 
 class OffloadStateUpdate(TypedDict, total=False):
@@ -1431,7 +1435,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         return summarization
 
     async def _aplan_forced_compaction_update(
-        self, state: _OffloadState, runtime: _HasRunContext
+        self,
+        state: _OffloadState,
+        runtime: _HasRunContext,
+        *,
+        handoff: bool = False,
     ) -> _ForcedCompactionPlan | None:
         """Summarize forced-compaction history without writing its archive.
 
@@ -1444,6 +1452,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         Args:
             state: Checkpointed conversation and prior summarization event.
             runtime: Run context carrier used to select the summarizer model.
+            handoff: Summarize every message, including the recent tail that
+                compaction normally keeps verbatim.
 
         Returns:
             The checkpoint/archive plan, or `None` when nothing can be compacted.
@@ -1461,7 +1471,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             msg = "Offload compaction requires checkpointed conversation messages."
             raise ValueError(msg)
         effective = summarization._apply_event_to_messages(messages, event)
-        cutoff = summarization._determine_cutoff_index(effective)
+        cutoff = (
+            len(effective)
+            if handoff
+            else summarization._determine_cutoff_index(effective)
+        )
         if cutoff == 0:
             return None
         # Resolved once and threaded into the update below: the SDK call is the
@@ -1480,11 +1494,20 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             return None
         to_summarize, _ = summarization._partition_messages(effective, cutoff)
         summary = await summarization._acreate_summary(to_summarize)
-        session_id = summarization._get_session_id(state)
+        # Handoffs snapshot every checkpointed message without advancing the
+        # source cutoff. Appending to its compaction archive would repeat history.
+        session_id = (
+            f"handoff_{uuid4().hex}"
+            if handoff
+            else summarization._get_session_id(state)
+        )
         archive = _PendingArchive(
             summarization,
             self._summarization._backend,
-            to_summarize,
+            # A handoff promises a complete recovery transcript even when an
+            # earlier compaction archive failed or was swept. The effective
+            # messages contain only its summary and the recent tail.
+            messages if handoff else to_summarize,
             session_id,
             summary,
             state_cutoff,
@@ -1780,8 +1803,16 @@ class OffloadOperation:
         self,
         state: _OffloadState,
         runtime: Runtime[CLIContextSchema],
+        *,
+        handoff: bool = False,
     ) -> OffloadExecution:
         """Run one offload against server-read checkpoint state.
+
+        Args:
+            state: Checkpointed conversation and prior summarization event.
+            runtime: Runtime context for hooks and the summarizer model.
+            handoff: Summarize every message for a new thread. The caller
+                commits only cost and the transcript, not the summary event.
 
         Returns:
             State update for the server to persist and the typed client result.
@@ -1814,7 +1845,7 @@ class OffloadOperation:
 
         try:
             plan = await self._compaction._aplan_forced_compaction_update(
-                state, runtime
+                state, runtime, handoff=handoff
             )
         except HookTransportInterruptError:
             raise

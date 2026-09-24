@@ -1657,6 +1657,34 @@ async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
         await _drain_aiosqlite_worker(conn)
 
 
+async def set_thread_metadata(thread_id: str, *, agent_name: str, cwd: str) -> None:
+    """Persist discovery and resume metadata on a newly checkpointed thread.
+
+    The remote state-update API does not forward config metadata. Stamp the
+    saved checkpoints before exposing a newly seeded thread to the user.
+
+    Args:
+        thread_id: Newly seeded thread identifier.
+        agent_name: Agent that owns the new thread.
+        cwd: Workspace directory used for thread discovery.
+
+    Raises:
+        RuntimeError: If the thread has no saved checkpoint.
+    """
+    from datetime import UTC
+
+    async with _connect() as conn:
+        async with conn.execute(
+            "UPDATE checkpoints SET metadata = json_set(metadata, "
+            "'$.agent_name', ?, '$.cwd', ?, '$.updated_at', ?) WHERE thread_id = ?",
+            (agent_name, cwd, datetime.now(UTC).isoformat(), thread_id),
+        ) as cursor:
+            if not cursor.rowcount:
+                msg = f"Thread {thread_id} has no saved checkpoint"
+                raise RuntimeError(msg)
+        await conn.commit()
+
+
 _DEFAULT_THREAD_LIMIT = 20
 
 

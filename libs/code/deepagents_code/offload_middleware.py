@@ -1494,7 +1494,13 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             return None
         to_summarize, _ = summarization._partition_messages(effective, cutoff)
         summary = await summarization._acreate_summary(to_summarize)
-        session_id = summarization._get_session_id(state)
+        # Handoffs snapshot every checkpointed message without advancing the
+        # source cutoff. Appending to its compaction archive would repeat history.
+        session_id = (
+            f"handoff_{uuid4().hex}"
+            if handoff
+            else summarization._get_session_id(state)
+        )
         archive = _PendingArchive(
             summarization,
             self._summarization._backend,

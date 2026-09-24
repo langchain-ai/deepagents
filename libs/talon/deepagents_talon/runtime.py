@@ -1130,6 +1130,7 @@ def _default_backend(env: Mapping[str, str] | None, assistant_dir: Path | None) 
     home = assistant_dir or TalonConfig.from_env(values).home
     artifacts = home.expanduser().resolve() / "artifacts"
     artifacts.mkdir(mode=0o700, parents=True, exist_ok=True)
+    artifacts.chmod(0o700)
     local = LocalShellBackend(
         root_dir=root,
         virtual_mode=False,

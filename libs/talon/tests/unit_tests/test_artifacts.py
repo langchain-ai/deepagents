@@ -10,11 +10,17 @@ from deepagents_talon.runtime import DeepAgentRuntime
 
 
 @pytest.mark.parametrize("explicit_directory", [False, True])
+@pytest.mark.parametrize("existing_artifacts", [False, True])
 def test_history_offloads_inside_assistant_home(
-    tmp_path: Path, *, explicit_directory: bool
+    tmp_path: Path, *, explicit_directory: bool, existing_artifacts: bool
 ) -> None:
     home = tmp_path / "configured" / "test"
     assistant = tmp_path / "explicit" if explicit_directory else home
+    if existing_artifacts:
+        artifacts = assistant / "artifacts"
+        artifacts.mkdir(parents=True)
+        assistant.chmod(0o755)
+        artifacts.chmod(0o755)
     runtime = DeepAgentRuntime(
         model="test:model",
         assistant_dir=assistant if explicit_directory else None,

@@ -188,35 +188,21 @@ def _can_start_login(server: MCPServerInfo) -> bool:
 def _visible_tools_for(
     server: MCPServerInfo, tokens: list[str]
 ) -> tuple[MCPToolInfo, ...] | None:
-    """Return the tools to render for `server` under the active filter.
-
-    Filter matches tool and server *names* only — descriptions, parameter
-    names, and the transport are deliberately not in the haystack so long
-    MCP docstrings don't produce spurious matches. A server with zero tools
-    that matches by name returns `None` so the caller can skip rendering a
-    stub header followed by the global "No matching tools" empty-state.
-
-    Args:
-        server: The server whose tools are candidates for display.
-        tokens: Lower-cased filter tokens — empty means "no filter".
+    """Match server names or tool names/descriptions, preserving empty servers.
 
     Returns:
-        - `server.tools` when the filter is empty or matches the server name
-          and the server actually has tools.
-        - A subset tuple when individual tool names match.
-        - `None` when nothing matches, including the server-name-match case
-          on a server with zero tools — caller skips the header entirely.
+        Matching tools (possibly empty), or `None` to hide the server.
     """
     if not tokens:
         return server.tools
 
     if all(token in server.name.lower() for token in tokens):
-        return server.tools or None
+        return server.tools
 
     matching = tuple(
         tool
         for tool in server.tools
-        if all(token in tool.name.lower() for token in tokens)
+        if all(token in f"{tool.name} {tool.description}".lower() for token in tokens)
     )
     return matching or None
 
@@ -1221,7 +1207,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
             container.mount(
                 Input(
                     id="mcp-filter",
-                    placeholder="Filter tools...",
+                    placeholder="Filter servers and tools...",
                     value=self._query,
                 )
             )
@@ -1322,13 +1308,7 @@ class MCPViewerScreen(ModalScreen[str | None]):
             help_static.update(self._build_help_text(get_glyphs()))
 
     def _populate_scroll(self, scroll: VerticalScroll, query: str) -> None:
-        """Mount filtered server headers + tool items into `scroll`.
-
-        Empty `query` shows everything; otherwise multi-token AND matching
-        on server names and tool names only — descriptions, parameter
-        names, and transport are not in the haystack (see
-        `_visible_tools_for`).
-        """
+        """Mount server headers and tools matching names or tool descriptions."""
         glyphs = get_glyphs()
 
         if not self._server_info:

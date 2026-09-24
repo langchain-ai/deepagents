@@ -136,6 +136,7 @@ def test_module_impl_sets_match_registry():
         "tau3",
         "ts-tool-selector",
         "ts-choice-tool-selector",
+        "ts-hybrid-tool-selector",
     }
     assert up.CODE_AGENT_IMPLS == {
         "bare",
@@ -143,6 +144,7 @@ def test_module_impl_sets_match_registry():
         "llm-tool-selector",
         "ts-tool-selector",
         "ts-choice-tool-selector",
+        "ts-hybrid-tool-selector",
     }
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):

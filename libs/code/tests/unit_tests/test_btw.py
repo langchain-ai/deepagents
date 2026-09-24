@@ -127,6 +127,63 @@ async def test_side_context_preserves_human_attachments(
     assert state == before
 
 
+@pytest.mark.parametrize(
+    "attachment",
+    [
+        {"type": "image_url", "image_url": {"url": "https://example.com/design.png"}},
+        {"type": "image", "base64": "aW1hZ2U=", "mime_type": "image/png"},
+        {"type": "file", "base64": "cGRm", "mime_type": "application/pdf"},
+        {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "data": "cGRm",
+                "media_type": "application/pdf",
+            },
+        },
+    ],
+    ids=["image-url", "image", "file", "document"],
+)
+@pytest.mark.parametrize("include_text", [False, True])
+@pytest.mark.parametrize("serialized", [False, True])
+async def test_side_context_preserves_tool_attachments(
+    attachment: dict[str, object], *, include_text: bool, serialized: bool
+) -> None:
+    model = FakeMessagesListChatModel(
+        responses=[],
+        profile={"max_input_tokens": 8000, "image_inputs": True, "pdf_inputs": True},
+    )
+    operation = BtwOperation(model, "Main instructions", None)
+    result = ToolMessage(
+        content=[
+            *([{"type": "text", "text": "The design:"}] if include_text else []),
+            attachment,
+            *(["End of design"] if include_text else []),
+        ],
+        tool_call_id="read-design",
+        name="read_file",
+        artifact={"internal": "Do not send to the model"},
+    )
+    state = {"messages": [result.model_dump() if serialized else result]}
+    before = deepcopy(state)
+    with patch.object(
+        FakeMessagesListChatModel,
+        "ainvoke",
+        new=AsyncMock(return_value=AIMessage(content="The answer")),
+    ) as invoke:
+        await operation.answer("thread", state, "What does the design show?")
+    messages = invoke.call_args.args[0]
+    assert messages[1] == HumanMessage(
+        content=[
+            {"type": "text", "text": "[tool result read-design: read_file]\n"},
+            *result.content,
+        ]
+    )
+    assert all(not isinstance(message, ToolMessage) for message in messages)
+    messages[1].content[2 if include_text else 1]["mime_type"] = "changed"
+    assert state == before
+
+
 @pytest.mark.parametrize("tool", ["write_file", "edit_file"])
 @pytest.mark.parametrize("summarized", [False, True])
 @pytest.mark.parametrize("context_limit", [8000, None])

@@ -158,8 +158,22 @@ def _conversation(state: Mapping[str, object]) -> list[AnyMessage]:
     return cast("list[AnyMessage]", messages)
 
 
+def _tool_result_context(message: ToolMessage) -> HumanMessage:
+    """Preserve tool-result content without provider-only message metadata.
+
+    Returns:
+        A labeled human message with an isolated copy of any content blocks.
+    """
+    label = f"[tool result {message.tool_call_id}: {message.name or 'tool'}]\n"
+    if isinstance(message.content, str):
+        return HumanMessage(content=f"{label}{message.content}")
+    return HumanMessage(
+        content=[{"type": "text", "text": label}, *deepcopy(message.content)]
+    )
+
+
 def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
-    """Render tool exchanges as text after their arguments have been truncated.
+    """Render tool exchanges as context after their arguments have been truncated.
 
     Returns:
         A transcript without executable tool calls or provider-only metadata.
@@ -170,6 +184,9 @@ def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
             if message.content:
                 transcript.append(HumanMessage(content=deepcopy(message.content)))
             continue
+        if isinstance(message, ToolMessage):
+            transcript.append(_tool_result_context(message))
+            continue
         text = message.text
         if isinstance(message, AIMessage):
             calls = [
@@ -178,15 +195,10 @@ def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
                 for call in message.tool_calls
             ]
             text = "\n\n".join(part for part in [text, *calls] if part)
-        elif isinstance(message, ToolMessage):
-            label = f"{message.tool_call_id}: {message.name or 'tool'}"
-            text = f"[tool result {label}]\n{text}"
         if not text:
             continue
         if isinstance(message, AIMessage):
             transcript.append(AIMessage(content=text))
-        elif isinstance(message, ToolMessage):
-            transcript.append(HumanMessage(content=text))
         else:
             transcript.append(HumanMessage(content=f"[{message.type} context]\n{text}"))
     return transcript

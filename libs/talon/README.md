@@ -560,7 +560,7 @@ at 30 minutes, after which its thread is repaired and the job is recorded as fai
 
 ## Cron Schedules
 
-`create_job` and `edit_job` accept four schedule forms:
+`create_job` and `edit_job` accept five schedule forms:
 
 | Form | Kind | Example |
 | --- | --- | --- |
@@ -568,8 +568,48 @@ at 30 minutes, after which its thread is repaired and the job is recorded as fai
 | `every <N>{m,h}` | recurring | `every 6h` |
 | `at <YYYY-MM-DD> <HH:MM> <tz>` | one-shot | `at 2026-09-04 13:30 America/New_York` |
 | `daily at <HH:MM> <tz>` | recurring | `daily at 08:00 America/New_York` |
+| `cron <min> <hour> <dom> <month> <dow> <tz>` | recurring | `cron */15 * * jun mon-fri America/New_York` |
 
-The wall-clock forms require an explicit IANA timezone name; there is no default
+The `cron` form is a standard five-field crontab expression evaluated in the
+given timezone's local time:
+
+| Field | Values | Extensions |
+| --- | --- | --- |
+| minute | `0-59` | |
+| hour | `0-23` | |
+| day of month | `1-31` | `L` last day, `LW` last weekday, `15W` weekday nearest the 15th |
+| month | `1-12`, `jan`-`dec` | |
+| day of week | `0-7` (0 and 7 are Sunday), `sun`-`sat` | `5L` last Friday, `2#1` first Tuesday |
+
+Each field accepts `*`, a value, a range (`1-5`), a step (`*/15`, `9-17/2`, or
+`5/10` meaning 5 through the field maximum), and comma lists of those. `L`, `W`,
+and `#` terms stand alone in their field. `@hourly`, `@daily`/`@midnight`,
+`@weekly`, `@monthly`, and `@yearly`/`@annually` may replace the five fields, as
+in `cron @daily UTC`; `@reboot` is not supported. As in Vixie cron, when both day
+fields are restricted, a day matches if either one does; when either starts with
+`*`, both must match. So `0 0 13 * 5` fires on the 13th and on every Friday,
+while `0 0 */2 * 5` fires only on odd-numbered Fridays. An expression that can
+never fire, such as `0 0 31 2 *`, is rejected at create time.
+
+`create_job` and `edit_job` return an `upcoming` list with the next three run
+times, so the agent can check a schedule against what the user asked for.
+
+Recurring jobs accept an optional `until`, written `YYYY-MM-DD HH:MM <tz>`: the
+last local time the job may run, inclusive. "Weekends at noon for the next three
+months" is `cron 0 12 * * sat,sun <tz>` with `until` set three months out. A
+`until` that falls before the first run is rejected. A run due inside the window
+may start up to five minutes late to absorb scheduler latency; a run missed for
+longer, such as across host downtime that spans `until`, is dropped rather than
+delivered after the window closed. Pass `until=""` to `edit_job` to remove the
+bound.
+
+Jobs clean up after themselves. A job that will never run again (a one-shot that
+ran, a recurring job whose `repeat_times` cap is used up, or one whose `until`
+has passed) is deleted at the start of the next scheduler tick, whether or not
+it ever ran. A job whose last run failed is kept, so `list_jobs` still shows the
+error, until the retention window below removes it.
+
+The wall-clock and cron forms require an explicit IANA timezone name; there is no default
 zone, and legacy POSIX aliases (`EST5EDT`) and bare UTC offsets (`+02:00`) are
 rejected because they cannot express a region's future daylight-saving rules.
 
@@ -593,6 +633,10 @@ resolve deterministically:
 - An ambiguous local time repeated by a fall-back transition resolves to its
   earlier occurrence, so the job fires once.
 
+`cron` schedules follow the same two rules. Every minute of a spring-forward gap
+snaps to the same first valid minute, so `*/15 * * * *` fires once at 03:00
+rather than four times. In a repeated fall-back hour, only the first pass fires.
+
 Interval schedules stay phase-locked to their previous run, so a late scheduler
 tick does not shift an `every 15m` job off its cadence. A one-shot `at` schedule
 that has already passed is rejected at create and edit time with the resolved
@@ -611,6 +655,7 @@ Cron jobs are persisted in `cron/jobs.json` under the assistant state directory.
 - `cron.delivery_suppressed`
 - `cron.delivery_failure`
 - `cron.run_timeout`
+- `cron.job_removed`
 
 These logs complement the persisted `last_status` and `last_error` fields.
 
@@ -633,7 +678,7 @@ Outbound data leaves Talon through these integrations:
 Sensitive local state is stored under `~/.deepagents/<assistant_id>/` by default with `0700` directories and `0600` cron files:
 
 - `AGENTS.md`, `skills/`, and `agents/` store the materialized assistant instructions, skills, and subagent definitions.
-- `cron/jobs.json` stores cron prompts, origin conversation ids, message ids, run status, and errors. Active jobs are retained while enabled. Completed jobs are deleted on startup after `DEEPAGENTS_TALON_CRON_RETENTION_DAYS`, default `30`.
+- `cron/jobs.json` stores cron prompts, origin conversation ids, message ids, run status, and errors. Active jobs are retained while enabled. Jobs that finish successfully or pass their `until` are deleted on the next scheduler tick. Jobs whose final run failed are deleted on startup after `DEEPAGENTS_TALON_CRON_RETENTION_DAYS`, default `30`.
 - `channels/whatsapp/` stores WhatsApp `LocalAuth` credentials and Chromium profile state. These credentials are retained until the operator deletes the directory, because automatic deletion would silently unpair the channel.
 - `media/inbound/` is reserved for downloaded inbound media. Files older than `DEEPAGENTS_TALON_INBOUND_MEDIA_RETENTION_HOURS`, default `24`, are deleted on startup. Inbound and outbound channel media are capped by `DEEPAGENTS_TALON_MAX_MEDIA_BYTES`, default `1073741824` (1 GiB); WhatsApp is further clamped to `67108864` (64 MiB). The WhatsApp bridge stores downloaded inbound media under the assistant's inbound media directory and passes local paths plus MIME metadata to the host.
 

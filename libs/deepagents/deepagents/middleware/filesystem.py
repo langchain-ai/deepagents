@@ -29,6 +29,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
+from langchain_core.exceptions import ModelInvalidRequestError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
@@ -64,6 +65,7 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
+    _EXTENSION_TO_FILE_TYPE,
     _GLOB_WILDCARD_CHARS,
     _VIDEO_EXTRA_EXTENSIONS,
     MAX_VIDEO_INPUT_BYTES,
@@ -172,6 +174,9 @@ _READ_FILE_MEDIA_RESULT: Final = "read_file_media_result"
 _VIDEO_SAMPLING_RATE: Final = 0.5
 """Seconds between sampled frames when extracting stills from a video."""
 
+_MULTIMODAL_BLOCK_TYPES: Final = frozenset(_EXTENSION_TO_FILE_TYPE.values())
+"""Content block types `read_file` may emit that require multimodal model support."""
+
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
     """Build a `ToolMessage` carrying a plain text error."""
@@ -241,6 +246,19 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
             reordered.extend(message for message in batch if isinstance(message, ToolMessage))
             reordered.extend(message for message in batch if _is_read_file_media_result(message))
     return reordered
+
+
+def _replace_rejected_file_content(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Replace only multimodal reads since the latest model response."""
+    last_response = next((index for index in range(len(messages) - 1, -1, -1) if isinstance(messages[index], AIMessage)), -1)
+    return [
+        message.model_copy(update={"content": "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."})
+        if index > last_response
+        and (_is_read_file_media_result(message) or (isinstance(message, ToolMessage) and message.name == "read_file"))
+        and any(block["type"] in _MULTIMODAL_BLOCK_TYPES for block in message.content_blocks)
+        else message
+        for index, message in enumerate(messages)
+    ]
 
 
 def _handle_video_read(
@@ -3191,16 +3209,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 
+        state_command = None
         eviction_result = self._evict_and_truncate_messages(request)
         if eviction_result is not None:
             messages, state_command = eviction_result
             request = request.override(messages=messages)
+        try:
             response = handler(request)
-            if state_command is not None:
-                return ExtendedModelResponse(model_response=response, command=state_command)
-            return response
-
-        return handler(request)
+        except ModelInvalidRequestError:
+            messages = _replace_rejected_file_content(request.messages)
+            if messages == request.messages:
+                raise
+            response = handler(request.override(messages=messages))
+            replacements = [message for original, message in zip(request.messages, messages, strict=True) if message is not original]
+            update = dict(cast("dict[str, Any]", state_command.update)) if state_command is not None else {}
+            update["messages"] = [*update.get("messages", []), *replacements]
+            state_command = replace(state_command, update=update) if state_command is not None else Command(update=update)
+        if state_command is not None:
+            return ExtendedModelResponse(model_response=response, command=state_command)
+        return response
 
     async def awrap_model_call(
         self,
@@ -3226,16 +3253,25 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 
+        state_command = None
         eviction_result = await self._aevict_and_truncate_messages(request)
         if eviction_result is not None:
             messages, state_command = eviction_result
             request = request.override(messages=messages)
+        try:
             response = await handler(request)
-            if state_command is not None:
-                return ExtendedModelResponse(model_response=response, command=state_command)
-            return response
-
-        return await handler(request)
+        except ModelInvalidRequestError:
+            messages = _replace_rejected_file_content(request.messages)
+            if messages == request.messages:
+                raise
+            response = await handler(request.override(messages=messages))
+            replacements = [message for original, message in zip(request.messages, messages, strict=True) if message is not original]
+            update = dict(cast("dict[str, Any]", state_command.update)) if state_command is not None else {}
+            update["messages"] = [*update.get("messages", []), *replacements]
+            state_command = replace(state_command, update=update) if state_command is not None else Command(update=update)
+        if state_command is not None:
+            return ExtendedModelResponse(model_response=response, command=state_command)
+        return response
 
     def _process_large_message(
         self,

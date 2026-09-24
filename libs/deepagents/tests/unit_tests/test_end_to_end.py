@@ -14,7 +14,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import CallbackManagerForLLMRun
-from langchain_core.exceptions import ContextOverflowError
+from langchain_core.exceptions import ContextOverflowError, ModelInvalidRequestError
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -4947,6 +4947,209 @@ def _second_call_tool_message(model: FixedGenericFakeChatModel | _RecordingOpenA
 
 def _is_placeholder_block(block: ContentBlock, *, path: str) -> bool:
     return block["type"] == "text" and path in block["text"]
+
+
+class RejectingFileChatModel(FixedGenericFakeChatModel):
+    """Reject tool results to exercise the agent's provider-error fallback."""
+
+    retry_fails: bool = False
+    error_type: type[Exception] = ModelInvalidRequestError
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(isinstance(message, ToolMessage) for message in messages) and (
+            len(self.captured_messages) == 1
+            or self.retry_fails
+            or any(isinstance(message, ToolMessage) and isinstance(message.content, list) for message in messages)
+        ):
+            self.captured_messages.append(messages)
+            msg = "Rejected file content"
+            raise self.error_type(msg)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize(
+    ("file_path", "error_type", "retry_fails", "recovers", "calls"),
+    [
+        ("/photo.png", ModelInvalidRequestError, False, True, 3),
+        ("/report.pdf", ModelInvalidRequestError, False, True, 3),
+        ("/photo.png", ModelInvalidRequestError, True, False, 3),
+        ("/notes.txt", ModelInvalidRequestError, False, False, 2),
+        ("/photo.png", RuntimeError, False, False, 2),
+    ],
+)
+async def test_read_file_invalid_request_fallback(
+    *, async_mode: bool, file_path: str, error_type: type[Exception], retry_fails: bool, recovers: bool, calls: int
+) -> None:
+    model = RejectingFileChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": file_path}, "id": "read-1"}]),
+                AIMessage(content="done"),
+                AIMessage(content="followup"),
+            ]
+        ),
+        error_type=error_type,
+        retry_fails=retry_fails,
+    )
+    agent = create_deep_agent(model=model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "file-fallback"}}
+    inputs = {
+        "messages": [HumanMessage(content="Read the file")],
+        "files": {
+            file_path: create_file_data(
+                "invalid" if file_path.endswith(".txt") else _docx_base64(), encoding="utf-8" if file_path.endswith(".txt") else "base64"
+            )
+        },
+    }
+
+    async def invoke() -> dict[str, Any]:
+        return await agent.ainvoke(inputs, config) if async_mode else agent.invoke(inputs, config)
+
+    if recovers:
+        result = await invoke()
+        assert result["messages"][-1].content == "done"
+        persisted = next(message for message in result["messages"] if isinstance(message, ToolMessage))
+        assert persisted.content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+        checkpoint = await agent.aget_state(config) if async_mode else agent.get_state(config)
+        assert [message for message in checkpoint.values["messages"] if isinstance(message, ToolMessage)] == [persisted]
+    else:
+        with pytest.raises(error_type, match="Rejected file content"):
+            await invoke()
+    assert len(model.captured_messages) == calls
+    if calls == 3:
+        original = _second_call_tool_message(model)
+        retried = next(message for message in model.captured_messages[2] if isinstance(message, ToolMessage))
+        assert retried.content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+        assert retried.tool_call_id == original.tool_call_id
+        assert retried.id == original.id
+        assert isinstance(original.content, list)
+
+    if recovers:
+        followup = {"messages": [HumanMessage(content="What next?")]}
+        result = await agent.ainvoke(followup, config) if async_mode else agent.invoke(followup, config)
+        assert result["messages"][-1].content == "followup"
+        assert len(model.captured_messages) == calls + 1
+        assert [message for message in model.captured_messages[-1] if isinstance(message, ToolMessage)] == [persisted]
+
+
+class SelectivelyRejectingFileChatModel(FixedGenericFakeChatModel):
+    """Reject only the invalid file while accepting other media."""
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(isinstance(message, ToolMessage) and message.tool_call_id == "invalid" and isinstance(message.content, list) for message in messages):
+            self.captured_messages.append(messages)
+            msg = "Invalid image"
+            raise ModelInvalidRequestError(msg)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_read_file_fallback_preserves_previously_accepted_media(*, async_mode: bool) -> None:
+    model = SelectivelyRejectingFileChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": "/valid.png"}, "id": "accepted"}]),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {"name": "read_file", "args": {"file_path": "/invalid.png"}, "id": "invalid"},
+                        {"name": "read_file", "args": {"file_path": "/valid.png"}, "id": "sibling"},
+                    ],
+                ),
+                AIMessage(content="done"),
+                AIMessage(content="followup"),
+            ]
+        )
+    )
+    agent = create_deep_agent(model=model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "mixed-files"}}
+    inputs = {
+        "messages": [HumanMessage(content="Read the files")],
+        "files": {path: create_file_data(_docx_base64(), encoding="base64") for path in ["/valid.png", "/invalid.png"]},
+    }
+    result = await agent.ainvoke(inputs, config) if async_mode else agent.invoke(inputs, config)
+    assert result["messages"][-1].content == "done"
+    assert len(model.captured_messages) == 4
+    accepted = _second_call_tool_message(model)
+    checkpoint = await agent.aget_state(config) if async_mode else agent.get_state(config)
+    for messages in [model.captured_messages[-1], checkpoint.values["messages"]]:
+        results = {message.tool_call_id: message for message in messages if isinstance(message, ToolMessage)}
+        assert results["accepted"] == accepted
+        assert isinstance(results["accepted"].content, list)
+        for call_id in ["invalid", "sibling"]:
+            assert results[call_id].content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+    followup = {"messages": [HumanMessage(content="What next?")]}
+    result = await agent.ainvoke(followup, config) if async_mode else agent.invoke(followup, config)
+    assert result["messages"][-1].content == "followup"
+    assert len(model.captured_messages) == 5
+    assert next(message for message in model.captured_messages[-1] if isinstance(message, ToolMessage)) == accepted
+
+
+class ImageRejectingChatModel(FixedGenericFakeChatModel):
+    """Reject any request carrying an image block."""
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(block["type"] == "image" for message in messages for block in message.content_blocks):
+            self.captured_messages.append(messages)
+            msg = "Invalid image"
+            raise ModelInvalidRequestError(msg)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+async def test_read_file_fallback_replaces_rejected_video_frames(*, async_mode: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        filesystem_middleware,
+        "extract_video_frames",
+        lambda *_args, **_kwargs: [{"type": "image", "base64": "AAAA", "mime_type": "image/jpeg"}],
+    )
+    model = ImageRejectingChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": "/clip.mp4"}, "id": "video"}]),
+                AIMessage(content="done"),
+                AIMessage(content="followup"),
+            ]
+        )
+    )
+    agent = create_deep_agent(model=model, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "video-fallback"}}
+    inputs = {
+        "messages": [HumanMessage(content="Read the video")],
+        "files": {"/clip.mp4": create_file_data(base64.b64encode(b"video bytes").decode("ascii"), encoding="base64")},
+    }
+    result = await agent.ainvoke(inputs, config) if async_mode else agent.invoke(inputs, config)
+    assert result["messages"][-1].content == "done"
+    assert len(model.captured_messages) == 3
+    rejected = next(message for message in model.captured_messages[1] if message.additional_kwargs.get("read_file_media_result"))
+    checkpoint = await agent.aget_state(config) if async_mode else agent.get_state(config)
+    for messages in [model.captured_messages[2], checkpoint.values["messages"]]:
+        media = next(message for message in messages if message.additional_kwargs.get("read_file_media_result"))
+        assert media.id == rejected.id
+        assert media.content == "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."
+    followup = {"messages": [HumanMessage(content="What next?")]}
+    result = await agent.ainvoke(followup, config) if async_mode else agent.invoke(followup, config)
+    assert result["messages"][-1].content == "followup"
+    assert len(model.captured_messages) == 4
 
 
 class TestMultimodalProfileScrubNoProfile:

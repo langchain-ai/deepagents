@@ -965,6 +965,32 @@ class TestMCPViewerScreen:
             assert "paused" in disabled_text
             assert "disabled" in disabled_text
 
+    @pytest.mark.parametrize("plugin", [False, True])
+    async def test_plugin_badge_across_statuses(self, *, plugin: bool) -> None:
+        """Plugin server badges survive selection across every connection status."""
+        from dataclasses import replace
+
+        from deepagents_code.plugins.adapters.mcp import scoped_mcp_server_name
+
+        servers = [
+            replace(server, name=scoped_mcp_server_name("demo@market", server.name))
+            if plugin
+            else server
+            for server in _mixed_status_info()
+        ]
+        app = MCPViewerTestApp()
+        async with app.run_test(size=(120, 30)) as pilot:
+            screen = MCPViewerScreen(server_info=servers)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            for _ in servers:
+                for header in screen.query(MCPServerHeaderItem):
+                    text = _widget_text(header)
+                    assert (" (plugin)" in text) is plugin
+                    assert header.server.name in text
+                await pilot.press("tab")
+
     async def test_status_indicator_glyphs_use_glyph_set(self) -> None:
         """Status icons reuse existing `Glyphs` (unicode by default)."""
         from deepagents_code.config import get_glyphs

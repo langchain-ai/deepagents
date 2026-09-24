@@ -2993,6 +2993,56 @@ class TestBuildOAuthProvider:
 class TestLoopbackHandlers:
     """Tests for the local OAuth callback server."""
 
+    async def test_escape_aborts_browser_callback(
+        self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
+    ) -> None:
+        """Esc closes the callback server without entering paste-back fallback."""
+        from http.server import ThreadingHTTPServer
+
+        from prompt_toolkit.application import create_app_session
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        from deepagents_code.mcp_auth import (
+            _LoopbackOAuthCallbackServer,
+            _make_loopback_handlers,
+        )
+        from deepagents_code.mcp_oauth_ui import (
+            CliOAuthInteraction,
+            MCPLoginAbortedError,
+        )
+
+        del socket_enabled
+        monkeypatch.setattr("webbrowser.get", lambda *_a, **_kw: object())
+        monkeypatch.setattr("webbrowser.open", lambda _url: True)
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+        monkeypatch.setattr(
+            "builtins.input", lambda _: pytest.fail("Esc must not prompt for a URL")
+        )
+        output = DummyOutput()
+        monkeypatch.setattr(
+            "prompt_toolkit.output.defaults.create_output", lambda **_: output
+        )
+        server = _LoopbackOAuthCallbackServer(port=0)
+        redirect, callback = _make_loopback_handlers(
+            callback_server=server, ui=CliOAuthInteraction()
+        )
+        try:
+            await redirect("https://auth.example/authorize")
+            assert isinstance(server._server, ThreadingHTTPServer)
+            assert server._server.socket.fileno() != -1
+            with (
+                create_pipe_input() as pipe,
+                create_app_session(input=pipe, output=output),
+            ):
+                pipe.send_text("\x1b")
+                with pytest.raises(MCPLoginAbortedError):
+                    await asyncio.wait_for(callback(), timeout=3)
+            assert server._server.socket.fileno() == -1
+        finally:
+            server.close()
+
     async def test_loopback_callback_returns_code_and_state(
         self, monkeypatch: pytest.MonkeyPatch, socket_enabled: object
     ) -> None:

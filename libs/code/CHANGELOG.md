@@ -2,6 +2,19 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.76](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.75...deepagents-code==0.1.76) (2026-09-24)
+
+
+### Features
+
+* **code:** label plugin servers in the MCP viewer ([#6539](https://github.com/langchain-ai/deepagents/issues/6539)) ([d9defc1](https://github.com/langchain-ai/deepagents/commit/d9defc124448fed2261b290e060c0cd532b0143a))
+
+
+### Bug Fixes
+
+* **code:** keep empty MCP servers searchable and match descriptions ([#6540](https://github.com/langchain-ai/deepagents/issues/6540)) ([8d599c9](https://github.com/langchain-ai/deepagents/commit/8d599c983e1b5e596d06b2569450dc2411ea8f3f))
+* **code:** resolve plugin MCP servers for login ([#6524](https://github.com/langchain-ai/deepagents/issues/6524)) ([ae00358](https://github.com/langchain-ai/deepagents/commit/ae00358ed85fb2207cb3ef260d5181a601b5b585))
+
 ## [0.1.75](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.74...deepagents-code==0.1.75) (2026-09-23)
 
 ### Bug Fixes

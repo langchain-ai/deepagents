@@ -1179,6 +1179,14 @@ def _uses_state_backend(backend: BackendProtocol) -> bool:
     return _uses_state_backend(backend.default) or any(_uses_state_backend(route) for route in backend.routes.values())
 
 
+def _routes_to_state_backend(backend: BackendProtocol, path: str) -> bool:
+    """Return whether `path` resolves to a `StateBackend` through composite routing."""
+    if isinstance(backend, CompositeBackend):
+        routed, routed_path, _ = _route_for_path(default=backend.default, sorted_routes=backend.sorted_routes, path=path)
+        return _routes_to_state_backend(routed, routed_path)
+    return isinstance(backend, StateBackend)
+
+
 GREP_GLOB_DESCRIPTION = (
     "Glob pattern (NOT regex) limiting which files are searched (e.g. '*.py', "
     "'*.ts'). A pattern without '/' matches the file name at any depth; a pattern "
@@ -1774,8 +1782,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Payloads are written to `blobs/` under the artifacts root and
                 state keeps a content-addressed reference; model requests are
-                rehydrated from the backend. Useful with sandbox backends. With
-                `StateBackend` the payloads still land in the checkpoint.
+                rehydrated from the backend. Useful with sandbox backends. Has
+                no effect when `blobs/` routes to a `StateBackend`.
             _permissions: Optional filesystem permission rules enforced directly
                 by this middleware's tool implementations.
 
@@ -1819,7 +1827,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
         self._blobs_prefix = f"{_root}/blobs"
-        self._blob_cache = _BlobCache() if offload_binary_reads else None
+        offload = offload_binary_reads and not _routes_to_state_backend(self.backend, f"{self._blobs_prefix}/")
+        self._blob_cache = _BlobCache() if offload else None
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt

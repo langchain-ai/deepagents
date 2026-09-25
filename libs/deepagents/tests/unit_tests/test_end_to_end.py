@@ -1574,6 +1574,37 @@ class TestBinaryReadOffload:
         assert len(downloads) == 1
         assert sorted(downloads[0]) == sorted(f"/blobs/{hashlib.sha256(raw).hexdigest()}" for raw in (_OFFLOAD_PNG, other))
 
+    @pytest.mark.parametrize("backend_kind", ["state", "composite_blobs_to_state"])
+    def test_offload_skipped_when_blobs_route_to_state(self, tmp_path: Path, backend_kind: str) -> None:
+        payload: dict[str, Any] = {"messages": [HumanMessage(content="Read the image")]}
+        if backend_kind == "state":
+            backend: BackendProtocol = StateBackend()
+            payload["files"] = {"/photo.png": create_file_data(_OFFLOAD_PNG_B64, encoding="base64")}
+        else:
+            backend = CompositeBackend(default=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True), routes={"/blobs/": StateBackend()})
+            (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        agent = self._agent(backend, self._read_image_model(), InMemorySaver())
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+
+        agent.invoke(payload, config)
+
+        values = agent.get_state(config).values
+        checkpointed = next(m for m in values["messages"] if m.type == "tool")
+        assert checkpointed.content == [{"type": "image", "mime_type": "image/png", "base64": _OFFLOAD_PNG_B64}]
+        assert not any("blobs" in path for path in values.get("files", {}))
+
+    def test_offload_applies_when_only_other_routes_use_state(self, tmp_path: Path) -> None:
+        backend = CompositeBackend(default=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True), routes={"/memories/": StateBackend()})
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        agent = self._agent(backend, self._read_image_model(), InMemorySaver())
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+
+        agent.invoke({"messages": [HumanMessage(content="Read the image")]}, config)
+
+        checkpointed = next(m for m in agent.get_state(config).values["messages"] if m.type == "tool")
+        assert checkpointed.content == [{"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}]
+        assert (tmp_path / "blobs" / _OFFLOAD_PNG_DIGEST).read_bytes() == _OFFLOAD_PNG
+
     def test_resumed_thread_with_missing_blob_sends_notice(self, tmp_path: Path) -> None:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
         (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)

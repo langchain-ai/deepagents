@@ -1,6 +1,7 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
 import base64
+import hashlib
 import json
 import mimetypes
 from collections.abc import Awaitable, Callable, Iterator, Sequence
@@ -1443,6 +1444,91 @@ class TestDeepAgentEndToEnd:
         assert tm.content[0]["type"] == "image"
         assert tm.content[0]["mime_type"] == "image/png"
         assert "base64" in tm.content[0]
+
+
+_OFFLOAD_PNG = b"\x89PNG\r\n\x1a\n fake image data"
+_OFFLOAD_PNG_B64 = base64.b64encode(_OFFLOAD_PNG).decode("ascii")
+_OFFLOAD_PNG_DIGEST = hashlib.sha256(_OFFLOAD_PNG).hexdigest()
+
+
+class TestBinaryReadOffload:
+    """End-to-end tests for `FilesystemMiddleware(offload_binary_reads=True)`."""
+
+    @staticmethod
+    def _agent(backend: BackendProtocol, model: BaseChatModel, checkpointer: InMemorySaver) -> CompiledStateGraph:
+        return create_deep_agent(
+            model=model,
+            backend=backend,
+            middleware=[FilesystemMiddleware(backend=backend, offload_binary_reads=True)],
+            checkpointer=checkpointer,
+        )
+
+    @staticmethod
+    def _read_image_model() -> FixedGenericFakeChatModel:
+        return FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "call_img", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="Here is the image."),
+                ]
+            )
+        )
+
+    @staticmethod
+    def _sent_tool_message(model: FixedGenericFakeChatModel, call: int) -> BaseMessage:
+        return next(m for m in model.captured_messages[call] if m.type == "tool")
+
+    @pytest.mark.parametrize("use_async", [False, True])
+    async def test_checkpoint_keeps_reference_and_model_receives_bytes(self, tmp_path: Path, *, use_async: bool) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        model = self._read_image_model()
+        agent = self._agent(backend, model, InMemorySaver())
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        payload = {"messages": [HumanMessage(content="Read the image")]}
+
+        if use_async:
+            await agent.ainvoke(payload, config)
+        else:
+            agent.invoke(payload, config)
+
+        checkpointed = next(m for m in agent.get_state(config).values["messages"] if m.type == "tool")
+        assert checkpointed.content == [{"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}]
+        assert (tmp_path / "blobs" / _OFFLOAD_PNG_DIGEST).read_bytes() == _OFFLOAD_PNG
+        assert self._sent_tool_message(model, 1).content == [{"type": "image", "mime_type": "image/png", "base64": _OFFLOAD_PNG_B64}]
+
+    def test_resumed_thread_rehydrates_snapshot_after_source_changes(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        checkpointer = InMemorySaver()
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        self._agent(backend, self._read_image_model(), checkpointer).invoke({"messages": [HumanMessage(content="Read the image")]}, config)
+        (tmp_path / "photo.png").write_bytes(b"changed")
+
+        # A new agent has a cold blob cache, like a fresh worker process.
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Same image.")]))
+        self._agent(backend, model, checkpointer).invoke({"messages": [HumanMessage(content="What was in it?")]}, config)
+
+        assert self._sent_tool_message(model, 0).content[0]["base64"] == _OFFLOAD_PNG_B64
+
+    def test_resumed_thread_with_missing_blob_sends_notice(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        checkpointer = InMemorySaver()
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        self._agent(backend, self._read_image_model(), checkpointer).invoke({"messages": [HumanMessage(content="Read the image")]}, config)
+        (tmp_path / "blobs" / _OFFLOAD_PNG_DIGEST).unlink()
+
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="I'll re-read it.")]))
+        self._agent(backend, model, checkpointer).invoke({"messages": [HumanMessage(content="What was in it?")]}, config)
+
+        content = self._sent_tool_message(model, 0).content
+        assert len(content) == 1
+        assert content[0]["type"] == "text"
+        assert "no longer available" in content[0]["text"]
 
 
 class TestDeleteFileTool:

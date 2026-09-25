@@ -18,6 +18,8 @@ Linting exceptions:
 - ruff: noqa: S108 - /tmp paths are fine for these unit tests. These tests are only meant to run on CI.
 """
 
+import base64
+import hashlib
 import os
 import re
 import stat
@@ -27,7 +29,7 @@ from pathlib import Path
 
 import pytest
 from langchain.tools import ToolRuntime
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
 from deepagents.backends import CompositeBackend
@@ -44,7 +46,9 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.sandbox import _EDIT_INLINE_MAX_BYTES, BaseSandbox
+from deepagents.graph import create_deep_agent
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 # Skip all tests in this module unless RUN_SANDBOX_TESTS=true
 pytestmark = pytest.mark.skipif(
@@ -222,8 +226,9 @@ class LocalSubprocessSandbox(BaseSandbox):
         results: list[FileUploadResponse] = []
         for path, data in files:
             try:
-                Path(path).parent.mkdir(parents=True, exist_ok=True)
-                Path(path).write_bytes(data)
+                real_path = Path(self._to_real_path(path))
+                real_path.parent.mkdir(parents=True, exist_ok=True)
+                real_path.write_bytes(data)
                 results.append(FileUploadResponse(path=path, error=None))
             except Exception as exc:
                 error = _map_exception_to_standard_error(exc)
@@ -235,15 +240,15 @@ class LocalSubprocessSandbox(BaseSandbox):
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Read files from the local filesystem."""
         results: list[FileDownloadResponse] = []
-        for real_path in paths:
+        for path in paths:
             try:
-                content = Path(real_path).read_bytes()
-                results.append(FileDownloadResponse(path=real_path, content=content, error=None))
+                content = Path(self._to_real_path(path)).read_bytes()
+                results.append(FileDownloadResponse(path=path, content=content, error=None))
             except Exception as exc:
                 error = _map_exception_to_standard_error(exc)
                 if error is None:
                     raise
-                results.append(FileDownloadResponse(path=real_path, content=None, error=error))
+                results.append(FileDownloadResponse(path=path, content=None, error=error))
         return results
 
 
@@ -1924,3 +1929,42 @@ class TestExecuteCaptureOffload:
         offload = sandbox.execute_with_offload(_BIG_OUTPUT_CMD, on_path, max_inline_bytes=budget)
         assert offload.offloaded is True
         assert "line 2500:" not in offload.response.output  # middle omitted -> it's a preview
+
+
+class TestBinaryReadOffload:
+    """End-to-end binary read offload through `create_deep_agent` on a real shell."""
+
+    @pytest.fixture(autouse=True)
+    def setup_test_dir(self, tmp_path: Path) -> None:
+        self.sandbox = LocalSubprocessSandbox()
+        self.sandbox.set_real_root(str(tmp_path / "sandbox_ops"))
+        self.sandbox.execute("rm -rf /tmp/test_sandbox_ops && mkdir -p /tmp/test_sandbox_ops")
+
+    def test_read_image_snapshots_blob_in_sandbox(self) -> None:
+        raw = b"\x89PNG\r\n\x1a\n fake image data"
+        digest = hashlib.sha256(raw).hexdigest()
+        Path(self.sandbox._to_real_path(f"{VIRTUAL_SANDBOX_ROOT}/photo.png")).write_bytes(raw)
+        backend = CompositeBackend(default=self.sandbox, routes={}, artifacts_root=VIRTUAL_SANDBOX_ROOT)
+        model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "read_file", "args": {"file_path": f"{VIRTUAL_SANDBOX_ROOT}/photo.png"}, "id": "call_img", "type": "tool_call"}
+                        ],
+                    ),
+                    AIMessage(content="Here is the image."),
+                ]
+            )
+        )
+        agent = create_deep_agent(model=model, backend=backend, middleware=[FilesystemMiddleware(backend=backend, offload_binary_reads=True)])
+
+        result = agent.invoke({"messages": [HumanMessage(content="Read the image")]})
+
+        tool_message = next(m for m in result["messages"] if m.type == "tool")
+        assert tool_message.content == [{"type": "image", "mime_type": "image/png", "deepagents_blob": digest}]
+        listing = self.sandbox.execute(f"sha256sum {VIRTUAL_SANDBOX_ROOT}/blobs/{digest}")
+        assert listing.output.split()[0] == digest
+        sent = next(m for m in model.call_history[1]["messages"] if m.type == "tool")
+        assert sent.content[0]["base64"] == base64.b64encode(raw).decode("ascii")

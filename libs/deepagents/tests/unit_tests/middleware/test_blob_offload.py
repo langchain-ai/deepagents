@@ -114,21 +114,6 @@ def test_upload_failure_keeps_payload_inline(tmp_path: Path, monkeypatch: pytest
     assert result.content[0]["base64"] == PNG_B64
 
 
-def test_cache_serves_without_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    backend = FilesystemBackend(root_dir=tmp_path)
-    middleware = FilesystemMiddleware(backend=backend, offload_binary_reads=True)
-    result = middleware.wrap_tool_call(_request(), lambda _: _media_message())
-
-    def fail(_paths: list[str]) -> list[Any]:
-        msg = "cache miss"
-        raise AssertionError(msg)
-
-    monkeypatch.setattr(backend, "download_files", fail)
-    sent = _capture_model_call(middleware, [result])
-
-    assert sent[0].content[0]["base64"] == PNG_B64
-
-
 def test_blob_cache_evicts_least_recently_used() -> None:
     cache = _BlobCache(max_bytes=10)
     cache.put("a", "12345")

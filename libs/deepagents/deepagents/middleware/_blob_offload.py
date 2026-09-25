@@ -204,7 +204,8 @@ def _restore_payloads(messages: Sequence[AnyMessage], payloads: dict[str, str]) 
     def hydrate(block: Any) -> Any:  # noqa: ANN401
         if not isinstance(block, dict) or _BLOB_REF_KEY not in block:
             return block
-        payload = payloads.get(block[_BLOB_REF_KEY])
+        ref = block[_BLOB_REF_KEY]
+        payload = payloads.get(ref) if isinstance(ref, str) else None
         if payload is None:
             return {"type": "text", "text": _MISSING_BLOB_TEXT}
         return {key: value for key, value in block.items() if key != _BLOB_REF_KEY} | {"base64": payload}

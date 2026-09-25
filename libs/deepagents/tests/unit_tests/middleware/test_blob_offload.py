@@ -85,10 +85,11 @@ def test_tampered_blob_is_rejected(tmp_path: Path) -> None:
     assert sent[0].content == [{"type": "text", "text": _MISSING_BLOB_TEXT}]
 
 
-def test_malformed_ref_never_reaches_backend(tmp_path: Path) -> None:
+@pytest.mark.parametrize("ref", ["../../etc/passwd", [], {}, 123, None])
+def test_malformed_ref_becomes_text_notice(tmp_path: Path, ref: object) -> None:
     middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_reads=True)
     stubbed = ToolMessage(
-        content=[{"type": "image", "mime_type": "image/png", _BLOB_REF_KEY: "../../etc/passwd"}],
+        content=[{"type": "image", "mime_type": "image/png", _BLOB_REF_KEY: ref}],
         name="read_file",
         tool_call_id="call_1",
     )

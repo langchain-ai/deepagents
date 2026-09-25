@@ -1,28 +1,46 @@
 ---
-type: integration runtime host
-title: Talon Long-Running Host
-description: Talon is an experimental local host for a long-running Deep Agents assistant. It coordinates channels, a runtime graph, interactive approval resumption, conversation history, and scheduled work.
-tags: [talon, runtime-host, channels, approvals, history, cron, experimental]
+type: runtime integration
+title: Talon Runtime Integration
+description: Talon is an experimental local host for long-running Deep Agents. It connects channel adapters, graph execution, approvals, MCP, persistent conversation history, scheduled work, and background subagents.
+tags: [talon, runtime, deepagents, channels, approvals, mcp, history, cron, experimental]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-21T08:06:25.442Z
+    at: 2026-09-25T08:06:00.203Z
 sources:
+  - id: openwiki-source-6a038e6e1a11f450bcafce54
+    resource: repo://libs/talon/deepagents_talon/__main__.py
   - id: openwiki-source-ae8b659dd414ac3fe7570666
     resource: repo://libs/talon/deepagents_talon/archive.py
   - id: openwiki-source-cd45145a8c3a51b52eab3c2b
     resource: repo://libs/talon/deepagents_talon/background.py
+  - id: openwiki-source-517d471fea32c6a16331f5e4
+    resource: repo://libs/talon/deepagents_talon/channels/__init__.py
+  - id: openwiki-source-0ad7ce4799b63dc215741642
+    resource: repo://libs/talon/deepagents_talon/channels/base.py
+  - id: openwiki-source-81698d033a5726401d48b135
+    resource: repo://libs/talon/deepagents_talon/config.py
+  - id: openwiki-source-f55101eb12af3c6ae9b9d823
+    resource: repo://libs/talon/deepagents_talon/cron/jobs.py
+  - id: openwiki-source-363e56d368aecc6ab73d3e2f
+    resource: repo://libs/talon/deepagents_talon/cron/scheduler.py
+  - id: openwiki-source-ef047a301ffca1d2f8ab2c87
+    resource: repo://libs/talon/deepagents_talon/cron/tools.py
   - id: openwiki-source-5287972896df162b4a5d58c8
     resource: repo://libs/talon/deepagents_talon/defaults/AGENTS.md
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-cebe4ea270e21dce4de9b074
     resource: repo://libs/talon/deepagents_talon/interfaces.py
+  - id: openwiki-source-82cac27adeecff8a900a40fa
+    resource: repo://libs/talon/deepagents_talon/mcp.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
   - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
     resource: repo://libs/talon/tests/test_host.py
+  - id: openwiki-source-4d6726e17c8a0c78539a7d33
+    resource: repo://libs/talon/tests/test_runtime.py
   - id: openwiki-source-68bbcf211edb7fd6a363bdf7
     resource: repo://libs/talon/tests/unit_tests/test_archive.py
   - id: openwiki-source-82dab853903c3a574614fd1e
@@ -33,27 +51,29 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_batch.py
   - id: openwiki-source-242a21b2da46507f58415265
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-21T08:06:25.442Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 ---
 
-# Talon Long-Running Host
+# Talon Runtime Integration
 
-> **Experimental; not production containment.** Talon is alpha software, may change or be removed, and is not intended for production or enterprise use. Its local host, channel exposure settings, approval prompts, and policy file are **not** sandboxing, multi-tenant isolation, or a production-grade security boundary. Treat channel access as access to the operator's agent, model credentials, MCP tools, and local host resources.
+> **Experimental, not a containment boundary.** Talon is alpha software, may change or be removed, and is not intended for production or enterprise use. Its channel exposure settings, approvals, policy files, and prompts are not sandboxing, multi-tenant isolation, or a production-grade security boundary. Channel access should be treated as access to the operator's agent, credentials, MCP tools, and local host resources.
 
-Talon (`libs/talon`) is the single-event-loop host for one assistant. `TalonHost` owns the lifecycle of an `AgentRuntime`, channel adapters, and an optional scheduler; the runtime owns graph execution and returns `AgentResult` for the host to deliver. The protocol boundary deliberately makes channel callbacks, progress messages, approval/authorization handlers, and persistent-history delivery optional request capabilities rather than graph-global state.
+Talon (`libs/talon`) is a single-event-loop local host for one assistant. `TalonHost` owns the runtime, channel adapters, and an optional scheduler; `DeepAgentRuntime` builds and invokes a Deep Agents graph. The host supplies invocation-scoped callbacks for channel delivery, progress, approval, and authorization rather than making those channel concerns graph-global.
 
-## Start, stop, and integration boundary
+## Entry point, lifecycle, and configuration
 
-Run from `libs/talon` (or prefix commands at repository root with `uv --directory libs/talon`):
+Run from `libs/talon` (or add `--directory libs/talon` at the repository root):
 
 ```bash
 uv sync --group test
 AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-talon --once
 ```
 
-Without `AGENT_MODEL`, Talon uses `EchoAgentRuntime`, which is useful for host and channel wiring. A model-backed runtime builds a Deep Agents graph; its default checkpointer is in-memory when constructed directly, while the packaged host uses persistent local state. The default workspace is the current directory unless `DEEPAGENTS_TALON_WORKSPACE` is set, and `DEEPAGENTS_TALON_RECURSION_LIMIT` defaults to 500.
+If `AGENT_MODEL` is absent, the CLI uses `EchoAgentRuntime`, useful for verifying host and channel wiring without model credentials. With a configured model, the CLI opens SQLite checkpoints and a history archive, wraps them in `ConversationSaver`, loads MCP tools, and constructs `DeepAgentRuntime`; channels cause it to attach a persistent scheduler whose run and delivery callbacks are the host's methods.
 
-`start()` ensures the assistant home, starts the agent, binds each channel's message callback (and reaction callback when supported), starts channels, then starts the scheduler. A failed partial start unwinds already-started components. `stop()` cancels dispatcher and conversation work, cancels pending approvals and authorizations, stops channels in reverse order, then scheduler and runtime; it continues attempting cleanup when one component fails. `run_until_stopped()` installs supported SIGINT/SIGTERM handlers and always removes them during shutdown.
+`TalonConfig` resolves an assistant ID from `DEEPAGENTS_TALON_ASSISTANT_ID` or `AGENT_ASSISTANT_ID` (default `default`) and places its state under `DEEPAGENTS_TALON_HOME/<assistant-id>` or `~/.deepagents/<assistant-id>`. Startup creates the home and state subdirectories with mode `0700`, initializes `tools.json`, and keeps checkpoint and conversation-reset state inside that home. The default workspace is the current directory; use `DEEPAGENTS_TALON_WORKSPACE` to change it. The graph recursion limit defaults to 500 and can be changed with `DEEPAGENTS_TALON_RECURSION_LIMIT`.
+
+`start()` creates the home, starts the runtime, binds each channel's message handler (and reaction handler when supported), starts channels, then starts the scheduler. A partial-start failure unwinds what has already started. `stop()` cancels host work, then stops channels in reverse order, scheduler, and runtime while continuing cleanup after component failures.
 
 ```mermaid
 sequenceDiagram
@@ -62,7 +82,7 @@ sequenceDiagram
     participant Runtime
     participant Graph
     Channel->>Host: inbound message
-    Host->>Host: lock and replace active turn
+    Host->>Host: serialize and replace active turn
     Host->>Runtime: invoke AgentRequest
     Runtime->>Graph: invoke with thread id
     Graph-->>Runtime: result or interrupt
@@ -70,23 +90,25 @@ sequenceDiagram
     Host->>Channel: deliver current reply
 ```
 
-This shows the attended-turn boundary: the host serializes and routes, while the runtime executes and resumes the graph.
+This is the attended-turn boundary: the host owns routing and delivery, while the runtime owns graph execution and interrupt resumption.
 
-## Conversations: replacement, recovery, and delivery
+## Channels, conversations, and cancellation
 
-A conversation root combines a trusted provider key and channel conversation ID. It is both the per-conversation lock key and the graph thread root, avoiding collisions between providers. `/new` increments a persisted reset counter and changes the active thread to a `:talon-reset:<n>` suffix; `/stop` cancels active work. `/reset-all-history`, when history is enabled, cancels work and clears only that trusted channel/chat's archive and checkpoints before starting a fresh thread. It does not erase cron jobs, memory files, media, traces, or backups.
+The built-in adapters are WhatsApp, Telegram, and Discord. Their common exposure policy supports `self`, `allowlist`, and `open`: `self` requires a self/operator identity, `allowlist` permits configured conversation IDs or text patterns, and `open` requires the explicit `allow-arbitrary-senders` acknowledgement. This limits who triggers the host; it does not isolate the agent from the local machine or its credentials.
 
-A later message replaces an active turn. The host increments its generation, cancels the prior task, and asks the runtime to repair the latest checkpoint by adding an interruption marker; the replacement can proceed with `interruption_recovery: "failed"` metadata if repair fails. Stale final/progress output cannot pass the generation check. Cancellation and recovery share a 30-second budget: if it expires, Talon blocks the conversation until restart instead of allowing concurrent work on the same state. Shutdown cancels work but does not perform interruption recovery.
+A conversation root combines the trusted provider key with the channel conversation ID. The host serializes turns using that root and uses it as the graph-thread/reset key, so identical IDs from different providers do not collide. `/new` cancels the active work and persists a reset counter; the new active thread gains the `:talon-reset:<n>` suffix. `/stop` cancels active work. `/reset-all-history`, when an archive is available, cancels work, clears only the trusted channel/chat history and checkpoints, and starts a new thread; it does not remove jobs, memory, media, traces, or backups.
 
-A successful final channel delivery can be recorded through `ConversationDeliveryRuntime`; a failed or superseded delivery is not treated as delivered. For background-result follow-up turns, the host requeues consumed result IDs if their reply is discarded, so an unseen result can be offered again.
+A replacement message cancels the active turn and attempts to repair its most recent checkpoint before starting the new turn. A generation counter prevents stale final or progress output from being delivered. Cancellation plus recovery has a 30-second budget; if it is exceeded, the host blocks that conversation until restart rather than permit concurrent mutation of the same graph state. Shutdown cancels work but does not attempt that recovery.
 
-## Approval interrupts and authority
+Final replies are recorded for archive indexing only after a successful channel delivery. Background-result IDs consumed by a turn whose reply is superseded or cannot be delivered are requeued, so the result can be offered again.
 
-The per-assistant `tools.json` policy maps exact tool names to booleans. `true` requests an interactive approval; `false` means no prompt, **not** that a tool is available or that an untrusted sender has operator authority. The standard defaults gate `update_tool_approvals`, `delete_conversations`, `update_mcp_server`, and `start_async_task`.
+## Tool approvals and invocation authority
 
-Use `get_tool_approvals` before changing policy. It separates persisted `tools`/`persisted_revision` from this invocation's `active_tools`/`active_revision` and reports `saved_changes_inactive`. Call `update_tool_approvals(updates={...}, expected_revision=<persisted_revision>)`; it is an atomic compare-and-swap, rejects an entire stale batch, and preserves unrelated entries. A saved policy is activated by graph replacement on the next invocation; active turns and tasks retain their captured snapshot. An invalid policy or failed replacement blocks the attempted invocation and retains the previous usable graph rather than silently falling back.
+`tools.json` is a flat per-assistant policy mapping exact tool names to booleans. `true` requests an interactive approval; `false` suppresses that prompt but does not make a tool available or grant sender authority. Defaults gate `update_tool_approvals`, `delete_conversations`, `update_mcp_server`, and `start_async_task`.
 
-Talon batches all simultaneous valid action interrupts into **one** `ToolApprovalRequest`. Its `interrupt_id` is the first action interrupt and `action_requests` contains every protected action across the batch. One approve/reject decision is expanded into a decision list for each interrupt, while any MCP elicitation interrupt is resumed with a cancel response. Interrupt IDs must be nonempty and unique and every action request must be a nonempty sequence of mappings; malformed payloads fail before prompting rather than risking partial approval.
+Use `get_tool_approvals` before `update_tool_approvals(updates={...}, expected_revision=<persisted_revision>)`. The update is an atomic compare-and-swap: stale writes reject the whole batch and unrelated entries remain intact. A later invocation rebuilds the graph with a new policy snapshot, while an already-running turn retains the graph and policy captured at its start. Invalid policy or replacement-graph failures do not replace the last usable graph.
+
+The runtime validates and batches protected action interrupts. A channel receives one `ToolApprovalRequest`, containing the first interrupt ID and all actions awaiting its one approve/reject choice; the runtime expands that choice into correctly sized decisions for each interrupt. MCP elicitation interrupts are cancelled in the same resume command. Cron, background-delivery, and handler-less invocations are fail-closed and auto-deny protected actions.
 
 ```mermaid
 flowchart TD
@@ -101,51 +123,36 @@ flowchart TD
     Elicit --> Resume
 ```
 
-This shows one-decision batch resumption, including the fail-closed unattended path.
+This shows batch resumption and the fail-closed unattended path.
 
-For attended channel turns, the host holds a pending prompt per agent conversation and accepts recognized text replies only from the originating sender. A reaction-capable channel may also resolve it, but the reaction must match the pending provider, conversation, prompt message ID, sender, and supported emoji. The host logs stable references by default; `DEEPAGENTS_TALON_APPROVAL_LOG_RAW_IDS=true` opts into raw reaction identifiers.
+The host keeps one pending approval per agent conversation. Text replies must originate from the sender that began the run. Reactions must additionally match the provider, conversation, approval-prompt message, sender, and a recognized decision emoji. Operator authority is distinct from the approval policy: the host sets `tool_approval_operator` only from trusted exposure-mode identities, never from inbound metadata. Policy edits require that authority even if their approval prompt is disabled, and are checked under the pre-edit snapshot.
 
-Operator authority is separate from approval policy. The host sets `tool_approval_operator` only for identified configured operators in supported channel exposure modes, never from untrusted inbound metadata. Updating policy requires operator authority even if its prompt is disabled, and a self-edit is checked under the pre-edit snapshot. Scheduled runs, detached workers, and background-delivery turns cannot receive interactive approval or authorization and protected calls are auto-denied.
+## MCP integration
 
-## Runtime context and default guidance
+The CLI loads MCP configuration from `~/.deepagents/.mcp.json` by default, or the path in `DEEPAGENTS_TALON_MCP_CONFIG`. `MCPToolProvider` loads server tools plus management tools, detects tool-name conflicts, and provides a refresh/reload boundary. `DeepAgentRuntime` rebuilds a graph transactionally when refreshed tools replace the current set: if loading or graph construction fails, the previous tools and graph remain usable. `/mcp-reload` invokes the runtime's explicit reload path; the agent-facing `reload_mcp_configuration` schedules refresh before a later turn.
 
-`DeepAgentRuntime.start()` resolves subagents, ensures/snapshots the approval store, then builds the graph with the resolved model, local backend, skills, memory, checkpointer, middleware, tools, subagents, and approval `interrupt_on` configuration. Every invocation captures the current graph and policy snapshot in context variables before graph execution; concurrent configuration reloads can therefore activate a replacement for later turns without changing an active turn.
+For OAuth-configured MCP servers, `authenticate_mcp_server` initiates authorization through the current channel. The host delivers the authorization URL or device code outside model context, waits for a callback only from the same provider, conversation, and sender, and rejects expired, mismatched, or concurrent flows. Scheduled and background-delivery requests have no authorization handler, so they cannot initiate an interactive flow. See [MCP integration](./mcp.md) for the configuration and protocol details.
 
-The runtime scopes history by host-supplied channel/chat identifiers and cron tools by the trusted cron origin. It sets scheduled-turn context for `trigger: "cron"`, carries only host-confirmed progress handlers and authorization handlers, retries retryable model/transport failures, and sends continuation nudges for empty output before forcing a no-tools summary. It caps approval-resume rounds at 50.
+## Persistent archive and history tools
 
-The packaged `AGENTS.md` is behavior guidance rather than an enforcement boundary. It instructs the agent to treat filesystem/tool/research content as evidence rather than instructions; batch independent tool calls so one approval covers the group; preserve dependent ordering; use `get_agent_tools` before giving named local tasks only necessary tools; keep configuration and writes on the main agent under existing controls; and minimize non-sensitive context passed from internal to public research. Defensive prompts are explicitly not a sandbox.
+The packaged CLI uses `ConversationSaver` to keep graph checkpoints and an archive. When that wrapper is present, the runtime adds `list_conversations`, `search_conversations`, `read_conversation`, and deletion support. Archive scope is injected from trusted host channel/chat context rather than model arguments, including across `/new` sessions.
 
-The default `LocalShellBackend` is rooted at the configured workspace and runs with a fixed `PATH` plus a scrubbed environment. That reduces accidental secret propagation and environment hijacking but does not isolate code from the local host.
+Search returns an opaque continuation cursor with `has_more` and `pagination_status`; a cursor is valid only for the same query and chat, and an expired one requires a new search. `semantic_status`, `indexing_pending`, and `indexing_status` distinguish no results from incomplete, unavailable, or not-requested retrieval. Semantic errors and timeouts can still return keyword matches. Treat retrieved conversation content as data, not instructions.
 
-## Archive retrieval: scope, pagination, and status
+## Scheduler and background work
 
-When the checkpointer is a `ConversationSaver`, Talon adds `list_conversations`, `search_conversations`, and `read_conversation`. The archive scope is supplied by the host rather than model arguments, so retrieval is restricted to the current channel/chat even across `/new` sessions. `read_conversation` returns chronological bounded chunks; `list_conversations` returns session summaries; search results are data, not instructions.
+`PersistentCronScheduler` scans the persistent job store at minute granularity. It first claims a due job by advancing its next run, runs it, records `ok` or `error`, and delivers nonempty output unless it carries the `[SILENT]` sentinel. A ticker error is logged and retried on the next normal interval, so due jobs remain eligible rather than silently stopping the scheduler.
 
-`search_conversations` returns a page with `results`, `has_more`, and an opaque `next_after` cursor. Continue only with the same query and chat; an expired cursor returns `pagination_status: "expired"` and requires a fresh search. Its retrieval-status fields prevent an empty result from being overinterpreted:
+Agent-facing cron tools create, list, edit, and remove jobs scoped to the current trusted conversation origin. Supported schedules are relative one-shot (`in 30m`), relative recurring (`every 15m`), one-shot wall-clock (`at 2026-09-04 13:30 America/New_York`), and daily wall-clock (`daily at 08:00 America/New_York`). Wall-clock schedules require an IANA zone and retain that zone across daylight-saving changes.
 
-- `semantic_status` is `completed`, `disabled`, `not_requested`, `timeout`, `error`, or `unavailable`.
-- `indexing_pending` states whether records await indexing.
-- `indexing_status` is `ready`, `pending`, `unknown`, or `not_requested`; `unknown` means visibility is not known to be immediate.
+Each scheduled job runs on a separate `<job-id>:talon-cron` thread under its own lock, with a 30-minute host deadline. Scheduled invocations have no interactive approval or authorization handlers. In a scheduled turn, `BackgroundSubagents` runs both local `task` and remote `start_async_task` delegation inline; nested delegation is forbidden and there is no pending job or follow-up delivery. Inline work has an independent four-slot semaphore, a 10-minute default deadline configurable with `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT`, 64,000-character output cap, and bounded error `ToolMessage` on failure so graph retries do not replay sibling work.
 
-Semantic errors/timeouts fall back to keyword matches. Pending or unknown indexing coverage means results can be incomplete, including when a page is empty. This is a retrieval-quality signal, not an authorization result.
+In ordinary chat turns, delegation instead detaches in-memory workers. The host dispatcher waits until the owner conversation is idle, then starts an unattended follow-up turn with the completed result. Delivery retries back off; a follow-up cannot inherit the original user's approval or authorization authority. Workers and pending results are discarded on process restart.
 
-## Scheduled and background lifecycle
+## Operational limits and verification
 
-Each scheduled job uses its own `<job-id>:talon-cron` conversation thread and lock. The host bounds a fire to 30 minutes. On timeout it attempts interrupted-checkpoint recovery and re-raises the timeout so the scheduler records failure; later fires can then use a repaired thread. Scheduled work is unattended and has neither approval nor authorization handlers.
+Keep the assistant home and MCP configuration outside the execution workspace. Local state permissions, prompt guidance, channel allowlists, and policy gates reduce accidental exposure but do not sandbox local shell execution or isolate a same-UID process. MCP servers, remote embeddings/history, tracing, and channels are external data surfaces.
 
-For a cron-triggered invocation, `BackgroundSubagents` runs local `task` and remote `start_async_task` delegation inline in the scheduled graph turn, forbids nested delegation, and creates neither a pending background job nor a later delivery route. Inline cron delegation uses a separate shared four-slot semaphore and a 10-minute per-call deadline. It caps output at 64,000 characters; timeout/failure becomes a bounded error `ToolMessage` so a graph retry cannot replay sibling delegation.
+The most focused coverage includes `tests/test_host.py` for lifecycle unwind, replacement/recovery, reset persistence, scheduler timeout behavior, and approval identity checks; `tests/test_runtime.py` for graph and transactional MCP reload wiring; `tests/unit_tests/test_background.py` for chat and scheduled delegation; and archive/approval unit tests for scope, pagination, batching, and unattended denial.
 
-Ordinary chat delegation is different: it may detach work and the host's dispatcher polls for completed results. Once the owner conversation is idle, it starts a route-preserving follow-up turn; failures back off and undelivered consumed results are requeued. That follow-up is deliberately unattended and cannot inherit the earlier user's interactive authority.
-
-## Operations and focused tests
-
-Keep the assistant home outside the workspace and persist its parent directory: policy writes use atomic file replacement. External history backends, MCP services, embedding providers, and tracing are outbound data surfaces. This experimental integration should be operated with the security limitations above in mind, not represented as tenant isolation.
-
-Focused coverage includes:
-
-- `tests/test_host.py` covers lifecycle unwind, same-conversation interruption/recovery, reset thread persistence, timeout blocking, scheduler timeout repair, background follow-up authority removal, and reaction identity matching/log redaction.
-- `tests/unit_tests/test_tool_approval_batch.py` covers merged parallel action requests, elicitation cancellation, per-interrupt resume payloads, auto-denial without an attended handler, malformed batches, and invalid IDs.
-- `tests/unit_tests/test_tool_approval_runtime.py` covers pre-edit policy gating, atomic policy snapshots across concurrent invocations, reload failure preserving the old graph, detached/background authority removal, and real multi-tool approval behavior.
-- Archive tests cover channel/chat isolation, reset persistence, bounded transcript paging, opaque search pagination, and the retrieval-status contract.
-
-See [permissions and HITL](../concepts/permissions-hitl.md), [state persistence](../concepts/state-persistence.md), [subagents and skills](../concepts/subagents-skills.md), [MCP integration](./mcp.md), [security operations](../operations/security.md), and the [testing guide](../testing/testing-guide.md).
+See [runtime behavior](../architecture/runtime-behavior.md), [permissions and HITL](../concepts/permissions-hitl.md), [state persistence](../concepts/state-persistence.md), and [MCP integration](./mcp.md).

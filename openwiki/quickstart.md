@@ -1,11 +1,8 @@
 ---
 type: task routing guide
-title: Deep Agents Repository Quickstart
-description: Route a Deep Agents repository change to its owning package, related architecture or operations guidance, focused validation, and release unit. Includes the current deepagents-code source and release version and its SDK compatibility boundary.
+title: Repository Quickstart
+description: Route a Deep Agents repository change to its owning package, related architecture, integration, operations, and testing guidance. Includes package-local development entry points, compatibility boundaries, and release units.
 tags: [deepagents, monorepo, development, testing, releases]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-24T08:06:01.996Z
 sources:
   - id: openwiki-source-248c9119a9fc632bf11e2c4a
     resource: repo://.github/workflows/check_partner_bounds.yml
@@ -47,14 +44,19 @@ sources:
     resource: repo://libs/partners/vercel/pyproject.toml
   - id: openwiki-source-7da6afe7fe64c6589cf1fed0
     resource: repo://libs/README.md
+  - id: openwiki-source-ba53b2ab73965694b2510a58
+    resource: repo://libs/talon/Makefile
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-09-24T08:06:01.996Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-25T08:06:00.203Z
 ---
 
-# Deep Agents Repository Quickstart
+# Repository Quickstart
 
 Start in the package that owns the behavior rather than at the repository root. Deep Agents is the opinionated harness over LangChain's `create_agent()` and the LangGraph runtime; Code, ACP, Talon, evaluations, and provider adapters are separate consumers or integration boundaries. This is a task-routing map; follow the linked pages for detailed contracts.
 
@@ -63,9 +65,9 @@ Start in the package that owns the behavior rather than at the repository root. 
 | Change type | Owner and read next | First focused validation |
 | --- | --- | --- |
 | Reusable graph assembly, middleware, backends, skills, memory, filesystem, permissions, or SDK subagents | `libs/deepagents/`; [architecture overview](./architecture/overview.md) and [source map](./architecture/source-map.md) | Run the closest test, then `make test TEST_FILE=tests/unit_tests/<file>.py` and `make lint`. |
-| dcode CLI or TUI, headless operation, sessions, workspace policy, approvals, costs, context offload, MCP loading, or product sandbox selection | `libs/code/`; [run and debug a dcode session](./workflows/run-dcode-session.md) and [testing guide](./testing/testing-guide.md) | `make test TEST_FILE=tests/unit_tests/test_<area>.py`; use `make integration_test TEST_FILE=...` only when the changed contract crosses an external boundary. |
-| Editor protocol, stdio, ACP sessions, options, stream conversion, or replay | `libs/acp/`; inspect Code too if `dcode --acp` assembly changes; [source map](./architecture/source-map.md) | `make test TEST_FILE=tests/test_<area>.py` in ACP; test the dcode ACP path separately if its launcher or graph factory changed. |
-| Long-running channels, scheduler, host lifecycle, local approvals, Talon MCP, or background delegation | `libs/talon/`; [architecture overview](./architecture/overview.md) | `make test TEST_FILE=tests/<focused-path>.py`, then `make lint`. |
+| dcode CLI or TUI, headless operation, sessions, workspace policy, approvals, costs, context offload, MCP loading, or product sandbox selection | `libs/code/`; [Code architecture](./architecture/code-agent.md), [run a dcode session](./workflows/run-dcode-session.md), and [testing guide](./testing/testing-guide.md) | `make test TEST_FILE=tests/unit_tests/test_<area>.py`; use `make integration_test TEST_FILE=...` only when the changed contract crosses an external boundary. |
+| Editor protocol, stdio, ACP sessions, options, stream conversion, or replay | `libs/acp/`; inspect Code too if `dcode --acp` assembly changes; [ACP integration](./integrations/acp.md) | `make test TEST_FILE=tests/test_<area>.py` in ACP; test the dcode ACP path separately if its launcher or graph factory changed. |
+| Long-running channels, scheduler, host lifecycle, local approvals, Talon MCP, or background delegation | `libs/talon/`; [Talon runtime integration](./integrations/talon.md) and [long-running runtime behavior](./architecture/runtime-behavior.md) | `make test TEST_FILE=tests/<focused-path>.py`, then `make lint`. |
 | Evaluation scenario, report, model group, or Harbor execution | `libs/evals/`; [testing guide](./testing/testing-guide.md) | Run the owning eval test and the product regression test; reserve real-model evaluation for a changed trajectory or external evaluation contract. |
 | Provider sandbox adapter or QuickJS behavior | `libs/partners/<provider>/`; [sandbox and partner backends](./integrations/sandbox-partners.md) | Run the adapter's package-local tests and the SDK or Code contract test that consumes it. |
 | Dependency metadata, lockfile, version, release PR, or publishing automation | The changed release unit; [development, CI, and releases](./operations/development.md) | Run package checks and `make -C libs lock-check` when a lock can change. |
@@ -76,14 +78,14 @@ Start in the package that owns the behavior rather than at the repository root. 
 
 | Package or group | Current release baseline or source version | Responsibility | Python requirement |
 | --- | ---: | --- | --- |
-| `deepagents` | `0.7.18` | SDK: `create_deep_agent`, middleware, and backends | `>=3.11,<4.0` |
-| `deepagents-code` | release baseline and source: `0.1.75` | Prebuilt terminal coding agent invoked as `dcode` | `>=3.12,<4.0` |
+| `deepagents` | `0.7.19` | SDK: `create_deep_agent`, middleware, and backends | `>=3.11,<4.0` |
+| `deepagents-code` | release baseline and source: `0.1.77` | Prebuilt terminal coding agent invoked as `dcode` | `>=3.12,<4.0` |
 | `deepagents-acp` | `0.0.12` | Agent Client Protocol editor integration | `>=3.11` |
 | `deepagents-evals` | source version `0.0.1` | Evaluation suite and Harbor integration | `>=3.12,<3.14` |
 | `deepagents-talon` | `0.0.8` | Experimental local long-running host | `>=3.12` |
 | Partners | Daytona `0.0.8`; Modal `0.0.6`; Runloop `0.0.7`; Vercel `0.0.2`; QuickJS `0.3.7` | Provider and sandbox integrations | `>=3.11,<4.0` |
 
-`deepagents-code` declares `0.1.75` in both its project metadata and its release-managed `deepagents_code/_version.py`; the Release Please manifest has the same `libs/code` baseline. Keep these source and release values aligned through the package release process rather than editing a consumer's version in isolation.
+`deepagents-code` declares `0.1.77` in both its project metadata and its release-managed `deepagents_code/_version.py`; the Release Please manifest has the same `libs/code` baseline. Keep these source and release values aligned through the package release process rather than editing a consumer's version in isolation.
 
 ```mermaid
 flowchart TD
@@ -98,13 +100,15 @@ flowchart TD
 ```
 *Published dependencies flow from consumers and adapters to the SDK, dcode, or Harbor capability they use.*
 
-The important release-facing dependency is exact: `deepagents-code` pins `deepagents==0.7.18`. ACP has an unpinned SDK dependency; evals depends on the SDK, Code, and Harbor; Talon depends on the SDK and Code. An SDK change that Code consumes therefore requires reviewing the Code pin, its lockfile, and its release unit—not merely testing editable local sources. The five partner packages each depend on the SDK but are package-local integration boundaries, not prerequisites for ordinary SDK or Code development.
+The important release-facing dependency is exact: `deepagents-code` pins `deepagents==0.7.19`. ACP has an unpinned SDK dependency; evals depends on the SDK, Code, and Harbor; Talon depends on the SDK and Code. An SDK change that Code consumes therefore requires reviewing the Code pin, its lockfile, and its release unit—not merely testing editable local sources. The five partner packages each depend on the SDK but are package-local integration boundaries, not prerequisites for ordinary SDK or Code development.
 
 ## Focused edit–test loop
 
-Install dependencies explicitly, work in the changed package, and use its documented targets:
+Install dependencies explicitly, work in the changed package, and use its documented targets. Before preparing a pull request, install the repository's pre-commit hooks once; they run formatting, linting, lockfile, and Conventional Commit checks for changed packages.
 
 ```bash
+uv tool install pre-commit
+pre-commit install --install-hooks
 cd libs/code
 uv sync --all-groups
 make test TEST_FILE=tests/unit_tests/test_server_graph.py
@@ -126,7 +130,7 @@ Code's `make check` runs lint, import checks, unit tests, extras/version consist
 
 ## Release-unit checklist
 
-Release Please manages nine independent units: `deepagents`, `deepagents-acp`, `deepagents-code`, `deepagents-talon`, and the Daytona, Modal, Runloop, Vercel, and QuickJS partner distributions. `libs/evals` is a monorepo package but not a manifest release unit. The manifest baselines are `deepagents` `0.7.18`, `deepagents-acp` `0.0.12`, `deepagents-code` `0.1.75`, `deepagents-talon` `0.0.8`, Daytona `0.0.8`, Modal `0.0.6`, Runloop `0.0.7`, Vercel `0.0.2`, and QuickJS `0.3.7`.
+Release Please manages nine independent units: `deepagents`, `deepagents-acp`, `deepagents-code`, `deepagents-talon`, and the Daytona, Modal, Runloop, Vercel, and QuickJS partner distributions. `libs/evals` is a monorepo package but not a manifest release unit. The manifest baselines are `deepagents` `0.7.19`, `deepagents-acp` `0.0.12`, `deepagents-code` `0.1.77`, `deepagents-talon` `0.0.8`, Daytona `0.0.8`, Modal `0.0.6`, Runloop `0.0.7`, Vercel `0.0.2`, and QuickJS `0.3.7`.
 
 Before changing release-facing metadata:
 
@@ -139,6 +143,8 @@ Before changing release-facing metadata:
 
 - [Repository architecture overview](./architecture/overview.md) — ownership boundaries, SDK construction, and consumer roles.
 - [Repository source map](./architecture/source-map.md) — public surfaces, entrypoints, focused tests, and release units.
-- [Development, CI, and releases](./operations/development.md) — setup, locks, CI gates, and publication lifecycle.
+- [Build and customize a deep agent](./workflows/build-a-deep-agent.md) — model, backend, tools, profiles, middleware, state, and subagent decisions.
+- [MCP servers, trust, and OAuth](./integrations/mcp.md) and [sandbox and partner backends](./integrations/sandbox-partners.md) — external tool and execution boundaries.
+- [Development and release operations](./operations/development.md) and [security boundaries and runbook](./operations/security.md) — setup, locks, CI gates, publishing, and safe operation.
 - [Testing guide](./testing/testing-guide.md) — deterministic seams and confidence runs.
-- [Run and debug a dcode session](./workflows/run-dcode-session.md) — interactive, headless, ACP, and diagnostic operations.
+- [Run a dcode session](./workflows/run-dcode-session.md) — interactive, headless, ACP, and diagnostic operations.

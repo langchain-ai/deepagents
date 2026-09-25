@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Choose deterministic focused tests and package confidence runs for dcode, the Deep Agents SDK, GitHub issue labeling, and release-note automation. Route UI, persistence, retry, backend, middleware, and privileged workflow changes to the boundary that owns their contract.
+- [Testing Guide](testing-guide.md) - Package-local commands and deterministic boundary tests for the Deep Agents SDK, dcode, Talon, and ACP. Use focused fake-model, in-memory, and temporary-storage tests before expanding to package or integration suites.

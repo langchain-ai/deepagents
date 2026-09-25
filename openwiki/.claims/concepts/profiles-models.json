@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a66d2640ffe64359217ff5c078c0e8aed8f78ddbcfa361181b7dce458e943e8f",
+  "pageVersion": "sha256:9e3e16ab355e0c657bccaba43722de0b17d797a6be35aafc8380c0ecbbab6795",
   "claims": [
     {
       "id": "claim_57467a4a05b54e5ea875422c516c790b",
@@ -271,10 +271,42 @@
           "version": "repo-lines-v1:sha256:90ffe0bc3de48ecc2815e5e52650a2b4006435e8e56f95d40fc7f276d1258f6f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3ZTFhMWRlNjcyNDA0YWY0ZTVhZDIyMWMyMDU4MDA0OGE2ZjgyM2RjMDNhYzJlYjJkOTUwOGUwMzVlMDdhNmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0MzNkMGVhOWVjZjJmMzljOWE1MDQwNzM5NWVlNDExNzJmZTY4MmM5Yzg4NWEzNTA4Zjc1YmRlZTE1MWVmZmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhhM2MyMzdjYTk1YzY3Mzg5YTk3ZTc3YWZlY2FmYzA2ZTFjNGFlZDRmZjhlMTE0NmIyYzNmZjAzNzI5OWZiNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFjODFmNDE1MDBkZjRiODk0MGU5YTMzZWI2YmI2Yjk0N2JmZDdhNzA3MTNhNzFkODRiMTFjMzdlY2Q4YWUxMTkifQ"
         }
       ]
+    },
+    {
+      "id": "claim_46da3259e9124f73b03f8da437f14820",
+      "statement": "dcode's validate_model_capabilities is a best-effort profile check: it warns when no profile is available, exits when tool_calling is explicitly false, and warns when max_input_tokens is below 8,000; create_model separately records context-limit and explicitly unsupported input modalities in ModelResult.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L6902-L6928",
+          "version": "repo-lines-v1:sha256:32181827a8f772f619a206bc7d125ded26855c7ff4a0aca78f10f02b05591264:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdiZWRkNTJhZTA1YWQ5MWRhNzc5MzZkYThjOGIwYzliOTBhYzJhNGUzM2NhZDg3YTdkY2E4ZmE3NzkxYTVhOTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdjZDUyYTBlODU5MDY5NmM0ZWZkMzllZWUwNWVmYTdhZTlmZTM2OTVjMTFhODBmYzkzZThkZjU2OGYxZjhiZTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA1YmUyZWMxM2E2M2Q4ZmExZWM0Yjk2ZjI5ODUyNzllZGIxNzhhNDQ3NWJiNGE2ZTgxMDMyZTExZGU3ODE0ZTIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L6931-L6981",
+          "version": "repo-lines-v1:sha256:50be963b8dd98dce1f986c1a93262e62ef0a4537c1736dc4aa27035a492a62ee:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyMDg3NWZhOTk2OWNjMzZiYTUzOGQ5NDA2M2U1YzNjYzA0ZmMyNDViODU5YWVmZGExOWNhZTRmZWI0NDM4OGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIyNTMxZmJlNzZhZTIyMTAzNDg5OWRmYzVhMzU2OTVhMzE5MGRhMDA1NTZlYjFhYjI0NzNjMDZjNGRiNTk2ZWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6af20b87e8214e7c8e991283264842ea",
+      "statement": "UnsupportedContentMiddleware evaluates the model attached to each request and replaces unsupported human or tool-message content blocks only in that outbound request, preserving original thread content for a later capable model; profile fields reject only when explicitly false, with a special OpenAI Responses-only path for inline non-PDF base64 documents.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L918-L941",
+          "version": "repo-lines-v1:sha256:c0d7dcd1c3db040ea905737b93b9b92743cfa3ba5ea41436e6b0f2b0b57a45a8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1MmQyMmZiOWVhYTNmYjQ0MTJmYzBlNTQ3OGI4ZWIxYzUxZjllZDkzZjJlOTI0YzhhOTQ3OTJkZDQ4MmMwMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmOGQyNGRhMjI3NGM2MTFiMDc5ZjFhMWIwYTMyMmRmMjg3MzVmNDIxMDhjZGNhNmJkMzkxM2YzMTlkYmEwZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZiZjBjYWEzNDVjMmUxMjA4ZDA5OTFjZDkwMDRiODUzNzdkOGYzOGRmMjM0MTU1MjM3YTllMTE1Y2I4Y2ExNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1NzAxMmNhNDg0YWE3OTJhMTQ5YWVkYzIzZDRhODYyMTVhZTg0ZjcwY2VkODc4NjNhNWQ1MGUwOTgzMDY0MDYifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/unsupported_content.py#L51-L78",
+          "version": "repo-lines-v1:sha256:e26750dc0b437d5be914209139cfefaac07195a727951f5331201da7c668359e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiZjVmMTQ2YzNlMDkxMjI1ZmFiZmMwYmIxMmNiN2QwMDQwMmI0YWQ3NDMxMTk3ZDcxOTBiYTY3MmViNTgyZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0MTNlMTE1NmFkMWYwN2RiZWRmYzI3ZDAwYmIyYTQ2ZjY3NzM1MmUwNjM2N2NkY2I2ZjMzNjMyM2FlMjVhYjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFjOTEwMTZiMDhjOGUzYmZlMTllNWVmZGUzNmU3OGUyMzExZWQ5ZTRiNmYyYmViMDlkNDc1ZjkyOThlZjA5YjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjViMTI0Y2I4MzhkOTcxOGVkODhjNTM0MGMzMWVlMTc5YmFhZjg2MmUzNWYyOTYyYmFjM2FkZjk3MDA1OWQ4MmUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/unsupported_content.py#L81-L175",
+          "version": "repo-lines-v1:sha256:b0ed9476984341f78edac8d2420a3f611f6c11c02a57027e9b329610c30c1790:eyJzZWxlY3RlZExpbmVDb3VudCI6OTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyZmY1NjRiYWIwYzg4MzhiOTRhOTczNDVjZmRhOWU1MDNkZjI4ZjhlZDIwZDMxNzE3YmI4MDU1NTMzYzhlOWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NmQxMTU1YTFhMTMzMDViODA2MmZlNmIwNGUzMjY5YjhkZGM2NDUwZDM5YmNhMDdmNjA5YTRhMGRhNzI0MTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEwOTg5ZjVhMWNlYTU1Y2UzNDkzZWI1OWRiY2YxZDBjMWIyNzBkMmE2M2NmOWJiMjRlYTg3Yzc3NjdhZDM1NTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyYTk2NjFkOGY1ZjViODU4OTFjNGNkNDg3ZmEyMzhkMGY0YzdmMDk2ZDc2OTAwZTJkZGIzOTY3N2MzNDE3NjgifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-22T08:05:41.799Z"
+    "at": "2026-09-25T08:06:00.203Z"
   }
 }

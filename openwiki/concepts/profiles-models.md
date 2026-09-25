@@ -18,6 +18,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-8b1aaf77fc0430fd00711a73
     resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
+  - id: openwiki-source-837c84a3f3120bc778033547
+    resource: repo://libs/deepagents/deepagents/middleware/unsupported_content.py
   - id: openwiki-source-f94d6bc3bb6ebd1565c1732f
     resource: repo://libs/deepagents/deepagents/profiles/_builtin_profiles.py
   - id: openwiki-source-06a34ab34d0b184595638620
@@ -40,8 +42,8 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_nemotron_ultra_profile.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-22T08:05:41.799Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-22T08:05:41.799Z" }
+    at: 2026-09-25T08:06:00.203Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 ---
 
 # Models and Harness Profiles
@@ -130,6 +132,12 @@ The prompt order for the main agent is caller `USER`, profile `BASE`, then profi
 
 `excluded_tools` is **request-time tool filtering**, not construction-time tool removal or authorization. `_ToolExclusionMiddleware` is appended after custom and tool-injecting middleware, removes excluded names from each model request, and rejects a subsequent call to such a name with an unavailable-tool error. It therefore keeps the advertised and executable surface aligned for the model, including middleware-added tools, but is not a security boundary.
 
+### Model-profile capability checks
+
+There are two distinct uses of a model's LangChain `profile`; neither is a `HarnessProfile`. dcode's `create_model` reads `max_input_tokens` and explicitly-false modality fields into `ModelResult`, and `validate_model_capabilities(model, model_name)` is an opt-in, best-effort CLI check: no profile prints a warning, `tool_calling=False` prints an error and exits, and a context window below 8,000 tokens warns. A non-dict profile is not rejected.
+
+At request time, `create_deep_agent` installs `UnsupportedContentMiddleware` in its default main stack (unless a harness middleware exclusion removes it). It evaluates the **actual `ModelRequest.model`**, which is why the middleware is intended to run after model-switching middleware. For human and tool messages, content types are accepted unless the relevant profile field is explicitly `False`; missing fields are treated as supported because profile coverage is incomplete. Unsupported blocks are replaced only in the outbound request with a text notice, leaving the thread's original block intact for a later switch to a capable model. Non-PDF inline base64 documents are a special case: they are sent only to `ChatOpenAI` or `AzureChatOpenAI` models with `use_responses_api=True` and an OpenAI Responses-supported MIME type. This is compatibility degradation, not a capability authorization system.
+
 The built-in catalog illustrates why harness profiles can be more than prompts. Anthropic Sonnet 4.6 receives a prompt suffix; selected OpenAI Codex specs receive a suffix and a fresh `TodoListMiddleware`; NVIDIA Nemotron 3 Ultra registrations provide compatibility, tool-call repair, policy, progress, and response-guard middleware for several provider-specific model specs.
 
 ## dcode model configuration and switching
@@ -169,4 +177,5 @@ When extending the system, put reusable client-construction behavior in a `Provi
 - [Cost and sessions](/openwiki/operations/cost-and-sessions.md)
 - [Run a dcode session](/openwiki/workflows/run-dcode-session.md)
 - [Middleware stack](/openwiki/architecture/middleware-stack.md)
+- [Tools and filesystem](/openwiki/concepts/tools-filesystem.md)
 - [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md)

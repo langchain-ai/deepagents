@@ -137,6 +137,9 @@ def test_module_impl_sets_match_registry():
         "ts-tool-selector",
         "ts-choice-tool-selector",
         "ts-hybrid-tool-selector",
+        "semif-tool-selector",
+        "semif-choice-tool-selector",
+        "semif-hybrid-tool-selector",
     }
     assert up.CODE_AGENT_IMPLS == {
         "bare",
@@ -145,6 +148,9 @@ def test_module_impl_sets_match_registry():
         "ts-tool-selector",
         "ts-choice-tool-selector",
         "ts-hybrid-tool-selector",
+        "semif-tool-selector",
+        "semif-choice-tool-selector",
+        "semif-hybrid-tool-selector",
     }
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):

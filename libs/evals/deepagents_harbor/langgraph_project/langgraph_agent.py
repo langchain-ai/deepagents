@@ -427,14 +427,31 @@ def _make_bare_graph(
     search_tool = _web_search_tool()
     if selector == "llm":
         middleware = [LLMToolSelectorMiddleware(model=model)]
-    elif selector in {"typesafe", "typesafe-choice", "typesafe-hybrid"}:
+    elif selector in {
+        "typesafe",
+        "typesafe-choice",
+        "typesafe-hybrid",
+        "semif",
+        "semif-choice",
+        "semif-hybrid",
+    }:
         typesafe_middleware = import_module("langchain_typesafe.experimental.middleware")
         selector_class = {
             "typesafe": typesafe_middleware.TsToolSelectorMiddleware,
             "typesafe-choice": typesafe_middleware.TsChoiceToolSelectorMiddleware,
             "typesafe-hybrid": typesafe_middleware.TsHybridToolSelectorMiddleware,
+            "semif": typesafe_middleware.TsToolSelectorMiddleware,
+            "semif-choice": typesafe_middleware.TsChoiceToolSelectorMiddleware,
+            "semif-hybrid": typesafe_middleware.TsHybridToolSelectorMiddleware,
         }[selector]
-        middleware = [selector_class()]
+        selector_kwargs: dict[str, object] = {}
+        if selector.startswith("semif"):
+            selector_kwargs["classifier_model"] = "semif-qwen3.5-4b"
+        if selector in {"typesafe", "semif"}:
+            selector_kwargs["relevance_threshold"] = float(
+                os.environ.get("HARBOR_RELEVANCE_THRESHOLD", "0.5")
+            )
+        middleware = [selector_class(**selector_kwargs)]
     else:
         middleware = []
     return create_deep_agent(
@@ -468,6 +485,21 @@ def make_ts_choice_tool_selector_graph(config: dict[str, object] | None = None) 
 def make_ts_hybrid_tool_selector_graph(config: dict[str, object] | None = None) -> object:
     """Create a bare Harbor graph using `TsHybridToolSelectorMiddleware`."""
     return _make_bare_graph(config, selector="typesafe-hybrid")
+
+
+def make_semif_tool_selector_graph(config: dict[str, object] | None = None) -> object:
+    """Create a bare Harbor graph using the SemIf `Noul` selector."""
+    return _make_bare_graph(config, selector="semif")
+
+
+def make_semif_choice_tool_selector_graph(config: dict[str, object] | None = None) -> object:
+    """Create a bare Harbor graph using the SemIf `Choice` selector."""
+    return _make_bare_graph(config, selector="semif-choice")
+
+
+def make_semif_hybrid_tool_selector_graph(config: dict[str, object] | None = None) -> object:
+    """Create a bare Harbor graph using the SemIf hybrid selector."""
+    return _make_bare_graph(config, selector="semif-hybrid")
 
 
 def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:

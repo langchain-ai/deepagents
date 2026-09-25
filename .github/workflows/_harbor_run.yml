@@ -18,6 +18,9 @@ on:
       agent_impl:
         type: string
         default: "dcode"
+      relevance_threshold:
+        type: string
+        default: "0.5"
       branch:
         type: string
         default: "current"
@@ -295,6 +298,7 @@ jobs:
       HARBOR_N_SHARDS: ${{ matrix.n_shards || needs.prep.outputs.n_shards || '1' }}
       HARBOR_SANDBOX_ENV: ${{ matrix.sandbox_env || inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}
+      HARBOR_RELEVANCE_THRESHOLD: ${{ inputs.relevance_threshold }}
       HARBOR_BRANCH: ${{ inputs.branch }}
       HARBOR_MODEL: ${{ matrix.model }}
       # Per-leaf category, so a multi-category flat_matrix run can be
@@ -319,8 +323,8 @@ jobs:
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
-          TYPESAFE_API_KEY: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_API_KEY || '' }}
-          TYPESAFE_BASE_URL: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_BASE_URL || '' }}
+          TYPESAFE_API_KEY: ${{ startsWith((matrix.agent_impl || inputs.agent_impl), 'semif-') && secrets.LANGSMITH_API_KEY || contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_API_KEY || '' }}
+          TYPESAFE_BASE_URL: ${{ startsWith((matrix.agent_impl || inputs.agent_impl), 'semif-') && 'https://gateway.smith.langchain.com' || contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_BASE_URL || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # Required regardless of the model under test: the verifiers judge with
           # JUDGE_PROVIDER=openai, and DRBench's factuality metric embeds with an OpenAI
@@ -382,7 +386,7 @@ jobs:
             missing+=("TAVILY_API_KEY")
           fi
 
-          if [[ "$HARBOR_AGENT_IMPL" == "ts-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-hybrid-tool-selector" ]]; then
+          if [[ "$HARBOR_AGENT_IMPL" == "ts-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-hybrid-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-hybrid-tool-selector" ]]; then
             [ -z "$TYPESAFE_API_KEY" ] && missing+=("TYPESAFE_API_KEY")
             [ -z "$TYPESAFE_BASE_URL" ] && missing+=("TYPESAFE_BASE_URL")
           fi
@@ -622,8 +626,8 @@ jobs:
           GROQ_API_KEY: ${{ startsWith(matrix.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           NVIDIA_API_KEY: ${{ startsWith(matrix.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
-          TYPESAFE_API_KEY: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_API_KEY || '' }}
-          TYPESAFE_BASE_URL: ${{ contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_BASE_URL || '' }}
+          TYPESAFE_API_KEY: ${{ startsWith((matrix.agent_impl || inputs.agent_impl), 'semif-') && secrets.LANGSMITH_API_KEY || contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_API_KEY || '' }}
+          TYPESAFE_BASE_URL: ${{ startsWith((matrix.agent_impl || inputs.agent_impl), 'semif-') && 'https://gateway.smith.langchain.com' || contains(fromJSON('["ts-tool-selector", "ts-choice-tool-selector", "ts-hybrid-tool-selector"]'), (matrix.agent_impl || inputs.agent_impl)) && secrets.TYPESAFE_BASE_URL || '' }}
           OLLAMA_API_KEY: ${{ startsWith(matrix.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
           # Required regardless of the model under test: the verifiers judge with
           # JUDGE_PROVIDER=openai, and DRBench's factuality metric embeds with an OpenAI
@@ -679,7 +683,7 @@ jobs:
           git clone --filter=blob:none --no-checkout \
             https://github.com/langchain-ai/langchain.git "$RUNNER_TEMP/langchain-tool-selector"
           git -C "$RUNNER_TEMP/langchain-tool-selector" fetch --depth=1 origin \
-            82aef99fa579b5db865b7e8d66881e43983f9f46
+            b5ddb60bd2efb5bfcd72ab8333a7d91dc09f5905
           git -C "$RUNNER_TEMP/langchain-tool-selector" checkout FETCH_HEAD -- \
             libs/core libs/langchain_v1 libs/partners/typesafe
           rsync -a "$RUNNER_TEMP/langchain-tool-selector/libs/core/" \
@@ -930,7 +934,23 @@ jobs:
             --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
           )
           agent_host_args=()
-          if [[ "$HARBOR_AGENT_IMPL" == "ts-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-hybrid-tool-selector" ]]; then
+          if [[ "$HARBOR_AGENT_IMPL" == "ts-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-tool-selector" ]]; then
+            python3 - <<'PY'
+          import math
+          import os
+          import sys
+
+          raw = os.environ["HARBOR_RELEVANCE_THRESHOLD"]
+          try:
+              threshold = float(raw)
+          except ValueError:
+              sys.exit("::error::relevance_threshold must be a number between 0 and 1")
+          if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+              sys.exit("::error::relevance_threshold must be a number between 0 and 1")
+          PY
+            agent_env_args+=(--agent-env "HARBOR_RELEVANCE_THRESHOLD=$HARBOR_RELEVANCE_THRESHOLD")
+          fi
+          if [[ "$HARBOR_AGENT_IMPL" == "ts-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-hybrid-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-hybrid-tool-selector" ]]; then
             agent_env_args+=(
               --agent-env 'TYPESAFE_API_KEY=${TYPESAFE_API_KEY}'
               --agent-env 'TYPESAFE_BASE_URL=${TYPESAFE_BASE_URL}'
@@ -1089,6 +1109,9 @@ jobs:
               echo "- Actual retries: ${ACTUAL_RETRIES:-unknown}"
             fi
             echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_GRAPH}"
+            if [[ "$HARBOR_AGENT_GRAPH" == "ts-tool-selector" || "$HARBOR_AGENT_GRAPH" == "semif-tool-selector" ]]; then
+              echo "- Tool relevance threshold: ${HARBOR_RELEVANCE_THRESHOLD}"
+            fi
             echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
             echo "- LangSmith experiment: ${HARBOR_LANGSMITH_EXPERIMENT}"
             if [ "$LATEST_JOB_OUTCOME" = "success" ]; then

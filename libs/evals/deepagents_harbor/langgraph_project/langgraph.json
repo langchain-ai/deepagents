@@ -26,6 +26,9 @@
     "ts-tool-selector": "./langgraph_agent.py:make_ts_tool_selector_graph",
     "ts-choice-tool-selector": "./langgraph_agent.py:make_ts_choice_tool_selector_graph",
     "ts-hybrid-tool-selector": "./langgraph_agent.py:make_ts_hybrid_tool_selector_graph",
+    "semif-tool-selector": "./langgraph_agent.py:make_semif_tool_selector_graph",
+    "semif-choice-tool-selector": "./langgraph_agent.py:make_semif_choice_tool_selector_graph",
+    "semif-hybrid-tool-selector": "./langgraph_agent.py:make_semif_hybrid_tool_selector_graph",
     "tau3": "./langgraph_agent.py:make_tau3_graph"
   }
 }

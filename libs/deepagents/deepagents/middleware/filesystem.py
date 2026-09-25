@@ -82,11 +82,11 @@ from deepagents.backends.utils import (
     validate_path,
 )
 from deepagents.middleware._blob_offload import (
-    BlobCache,
-    ahydrate_messages,
-    aoffload_tool_result,
-    hydrate_messages,
-    offload_tool_result,
+    _ahydrate_messages,
+    _aoffload_tool_result,
+    _BlobCache,
+    _hydrate_messages,
+    _offload_tool_result,
 )
 from deepagents.middleware._message_eviction import (
     _TOO_LARGE_TOOL_MSG,
@@ -1819,7 +1819,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
         self._blobs_prefix = f"{_root}/blobs"
-        self._blob_cache = BlobCache() if offload_binary_reads else None
+        self._blob_cache = _BlobCache() if offload_binary_reads else None
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
@@ -3231,7 +3231,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             messages, state_command = eviction_result
             request = request.override(messages=messages)
         if self._blob_cache is not None:
-            request = request.override(messages=hydrate_messages(request.messages, self.backend, self._blobs_prefix, self._blob_cache))
+            request = request.override(messages=_hydrate_messages(request.messages, self.backend, self._blobs_prefix, self._blob_cache))
         try:
             response = handler(request)
         except ModelInvalidRequestError:
@@ -3277,7 +3277,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             messages, state_command = eviction_result
             request = request.override(messages=messages)
         if self._blob_cache is not None:
-            request = request.override(messages=await ahydrate_messages(request.messages, self.backend, self._blobs_prefix, self._blob_cache))
+            request = request.override(messages=await _ahydrate_messages(request.messages, self.backend, self._blobs_prefix, self._blob_cache))
         try:
             response = await handler(request)
         except ModelInvalidRequestError:
@@ -3639,7 +3639,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return error
         tool_result = handler(request)
         if self._blob_cache is not None and request.tool_call["name"] == "read_file":
-            tool_result = offload_tool_result(tool_result, self.backend, self._blobs_prefix, self._blob_cache)
+            tool_result = _offload_tool_result(tool_result, self.backend, self._blobs_prefix, self._blob_cache)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return tool_result
@@ -3668,7 +3668,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return error
         tool_result = await handler(request)
         if self._blob_cache is not None and request.tool_call["name"] == "read_file":
-            tool_result = await aoffload_tool_result(tool_result, self.backend, self._blobs_prefix, self._blob_cache)
+            tool_result = await _aoffload_tool_result(tool_result, self.backend, self._blobs_prefix, self._blob_cache)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return tool_result

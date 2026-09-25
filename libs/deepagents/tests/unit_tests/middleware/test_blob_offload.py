@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from deepagents.backends import FilesystemBackend
-from deepagents.middleware._blob_offload import BLOB_REF_KEY, MISSING_BLOB_TEXT, BlobCache
+from deepagents.middleware._blob_offload import _BLOB_REF_KEY, _MISSING_BLOB_TEXT, _BlobCache
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 PNG = b"\x89PNG\r\n\x1a\n fake image bytes"
@@ -48,7 +48,7 @@ def test_read_file_offloads_binary_and_rehydrates(tmp_path: Path) -> None:
     result = middleware.wrap_tool_call(_request(), lambda _: _media_message())
 
     assert isinstance(result, ToolMessage)
-    assert result.content == [{"type": "image", "mime_type": "image/png", BLOB_REF_KEY: PNG_DIGEST}]
+    assert result.content == [{"type": "image", "mime_type": "image/png", _BLOB_REF_KEY: PNG_DIGEST}]
     assert (tmp_path / "blobs" / PNG_DIGEST).read_bytes() == PNG
 
     # A fresh middleware has a cold cache, so this exercises the backend download.
@@ -92,7 +92,7 @@ def test_command_results_offload_every_message(tmp_path: Path) -> None:
 
     assert isinstance(result, Command)
     stubbed = result.update["messages"][1]
-    assert stubbed.content[1] == {"type": "image", "mime_type": "image/jpeg", BLOB_REF_KEY: PNG_DIGEST}
+    assert stubbed.content[1] == {"type": "image", "mime_type": "image/jpeg", _BLOB_REF_KEY: PNG_DIGEST}
     assert stubbed.additional_kwargs["read_file_media_result"] is True
 
 
@@ -115,14 +115,14 @@ def test_rehydration_is_stable_when_source_changes(tmp_path: Path) -> None:
 def test_missing_blob_becomes_text_notice(tmp_path: Path) -> None:
     middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_reads=True)
     stubbed = ToolMessage(
-        content=[{"type": "image", "mime_type": "image/png", BLOB_REF_KEY: PNG_DIGEST}],
+        content=[{"type": "image", "mime_type": "image/png", _BLOB_REF_KEY: PNG_DIGEST}],
         name="read_file",
         tool_call_id="call_1",
     )
 
     sent = _capture_model_call(middleware, [stubbed])
 
-    assert sent[0].content == [{"type": "text", "text": MISSING_BLOB_TEXT}]
+    assert sent[0].content == [{"type": "text", "text": _MISSING_BLOB_TEXT}]
 
 
 def test_tampered_blob_is_rejected(tmp_path: Path) -> None:
@@ -130,27 +130,27 @@ def test_tampered_blob_is_rejected(tmp_path: Path) -> None:
     (tmp_path / "blobs" / PNG_DIGEST).write_bytes(b"not the original bytes")
     middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_reads=True)
     stubbed = ToolMessage(
-        content=[{"type": "image", "mime_type": "image/png", BLOB_REF_KEY: PNG_DIGEST}],
+        content=[{"type": "image", "mime_type": "image/png", _BLOB_REF_KEY: PNG_DIGEST}],
         name="read_file",
         tool_call_id="call_1",
     )
 
     sent = _capture_model_call(middleware, [stubbed])
 
-    assert sent[0].content == [{"type": "text", "text": MISSING_BLOB_TEXT}]
+    assert sent[0].content == [{"type": "text", "text": _MISSING_BLOB_TEXT}]
 
 
 def test_malformed_ref_never_reaches_backend(tmp_path: Path) -> None:
     middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_reads=True)
     stubbed = ToolMessage(
-        content=[{"type": "image", "mime_type": "image/png", BLOB_REF_KEY: "../../etc/passwd"}],
+        content=[{"type": "image", "mime_type": "image/png", _BLOB_REF_KEY: "../../etc/passwd"}],
         name="read_file",
         tool_call_id="call_1",
     )
 
     sent = _capture_model_call(middleware, [stubbed])
 
-    assert sent[0].content == [{"type": "text", "text": MISSING_BLOB_TEXT}]
+    assert sent[0].content == [{"type": "text", "text": _MISSING_BLOB_TEXT}]
 
 
 def test_upload_failure_keeps_payload_inline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -192,7 +192,7 @@ async def test_async_offload_and_rehydrate(tmp_path: Path) -> None:
 
     result = await middleware.awrap_tool_call(_request(), tool_handler)
     assert isinstance(result, ToolMessage)
-    assert result.content[0][BLOB_REF_KEY] == PNG_DIGEST
+    assert result.content[0][_BLOB_REF_KEY] == PNG_DIGEST
 
     captured: list[ModelRequest] = []
 
@@ -207,7 +207,7 @@ async def test_async_offload_and_rehydrate(tmp_path: Path) -> None:
 
 
 def test_blob_cache_evicts_least_recently_used() -> None:
-    cache = BlobCache(max_bytes=10)
+    cache = _BlobCache(max_bytes=10)
     cache.put("a", "12345")
     cache.put("b", "12345")
     assert cache.get("a") == "12345"

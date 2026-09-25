@@ -2,9 +2,7 @@
 
 Binary blocks are written to `{artifacts_root}/blobs/<sha256>` and replaced in
 state with a `deepagents_blob` reference. Model requests are rehydrated from the
-backend, so checkpoints never carry the base64 payload. Blobs are immutable
-snapshots, so rehydrated history stays byte-identical for prompt caching even
-when the source file changes.
+backend, so checkpoints never carry the base64 payload.
 """
 
 from __future__ import annotations
@@ -30,20 +28,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-BLOB_REF_KEY: Final = "deepagents_blob"
+_BLOB_REF_KEY: Final = "deepagents_blob"
 """Content block key holding the SHA-256 digest of an offloaded payload."""
 
-MISSING_BLOB_TEXT: Final = "[Binary content from an earlier read_file call is no longer available. Re-read the file if you still need it.]"
+_MISSING_BLOB_TEXT: Final = "[Binary content from an earlier read_file call is no longer available. Re-read the file if you still need it.]"
 
-DEFAULT_BLOB_CACHE_BYTES: Final = 256 * 1024 * 1024
+_DEFAULT_BLOB_CACHE_BYTES: Final = 256 * 1024 * 1024
 
 _DIGEST_RE: Final = re.compile(r"[0-9a-f]{64}")
 
 
-class BlobCache:
+class _BlobCache:
     """Thread-safe LRU of base64 payloads keyed by digest, bounded by total payload size."""
 
-    def __init__(self, max_bytes: int = DEFAULT_BLOB_CACHE_BYTES) -> None:
+    def __init__(self, max_bytes: int = _DEFAULT_BLOB_CACHE_BYTES) -> None:
         """Initialize an empty cache holding at most `max_bytes` of base64 text."""
         self._max_bytes = max_bytes
         self._size = 0
@@ -73,7 +71,7 @@ class BlobCache:
                 self._size -= len(evicted)
 
 
-def blob_path(prefix: str, digest: str) -> str:
+def _blob_path(prefix: str, digest: str) -> str:
     """Return the backend path for `digest` under `prefix`."""
     return f"{prefix}/{digest}"
 
@@ -102,7 +100,7 @@ def _stub_messages(messages: Sequence[Any], digests: dict[str, str]) -> list[Any
     def stub(block: Any) -> Any:  # noqa: ANN401
         if not isinstance(block, dict) or block.get("base64") not in digests:
             return block
-        return {key: value for key, value in block.items() if key != "base64"} | {BLOB_REF_KEY: digests[block["base64"]]}
+        return {key: value for key, value in block.items() if key != "base64"} | {_BLOB_REF_KEY: digests[block["base64"]]}
 
     result = []
     for message in messages:
@@ -114,7 +112,7 @@ def _stub_messages(messages: Sequence[Any], digests: dict[str, str]) -> list[Any
     return result
 
 
-def _stored_digests(pending: dict[str, tuple[str, bytes]], errors: Sequence[str | None], cache: BlobCache) -> dict[str, str]:
+def _stored_digests(pending: dict[str, tuple[str, bytes]], errors: Sequence[str | None], cache: _BlobCache) -> dict[str, str]:
     stored: dict[str, str] = {}
     for (payload, (digest, _)), error in zip(pending.items(), errors, strict=True):
         if error is None:
@@ -123,7 +121,7 @@ def _stored_digests(pending: dict[str, tuple[str, bytes]], errors: Sequence[str 
     return stored
 
 
-def offload_messages(messages: Sequence[Any], backend: BackendProtocol, prefix: str, cache: BlobCache) -> list[Any]:
+def _offload_messages(messages: Sequence[Any], backend: BackendProtocol, prefix: str, cache: _BlobCache) -> list[Any]:
     """Upload inline binary payloads and return messages carrying blob references.
 
     Payloads that fail to upload stay inline.
@@ -132,41 +130,41 @@ def offload_messages(messages: Sequence[Any], backend: BackendProtocol, prefix: 
     if not pending:
         return list(messages)
     try:
-        responses = backend.upload_files([(blob_path(prefix, digest), raw) for digest, raw in pending.values()])
+        responses = backend.upload_files([(_blob_path(prefix, digest), raw) for digest, raw in pending.values()])
     except Exception:  # noqa: BLE001 -- offload is best-effort; the payload stays inline
         logger.warning("Failed to offload binary read_file content; keeping it inline", exc_info=True)
         return list(messages)
     return _stub_messages(messages, _stored_digests(pending, [r.error for r in responses], cache))
 
 
-async def aoffload_messages(messages: Sequence[Any], backend: BackendProtocol, prefix: str, cache: BlobCache) -> list[Any]:
-    """Async version of `offload_messages`."""
+async def _aoffload_messages(messages: Sequence[Any], backend: BackendProtocol, prefix: str, cache: _BlobCache) -> list[Any]:
+    """Async version of `_offload_messages`."""
     pending = _pending_blobs(messages)
     if not pending:
         return list(messages)
     try:
-        responses = await backend.aupload_files([(blob_path(prefix, digest), raw) for digest, raw in pending.values()])
+        responses = await backend.aupload_files([(_blob_path(prefix, digest), raw) for digest, raw in pending.values()])
     except Exception:  # noqa: BLE001 -- offload is best-effort; the payload stays inline
         logger.warning("Failed to offload binary read_file content; keeping it inline", exc_info=True)
         return list(messages)
     return _stub_messages(messages, _stored_digests(pending, [r.error for r in responses], cache))
 
 
-def offload_tool_result(result: ToolMessage | Command, backend: BackendProtocol, prefix: str, cache: BlobCache) -> ToolMessage | Command:
-    """Apply `offload_messages` to a `read_file` tool result."""
+def _offload_tool_result(result: ToolMessage | Command, backend: BackendProtocol, prefix: str, cache: _BlobCache) -> ToolMessage | Command:
+    """Apply `_offload_messages` to a `read_file` tool result."""
     if isinstance(result, ToolMessage):
-        return offload_messages([result], backend, prefix, cache)[0]
+        return _offload_messages([result], backend, prefix, cache)[0]
     if isinstance(result.update, dict) and isinstance(result.update.get("messages"), list):
-        return replace(result, update={**result.update, "messages": offload_messages(result.update["messages"], backend, prefix, cache)})
+        return replace(result, update={**result.update, "messages": _offload_messages(result.update["messages"], backend, prefix, cache)})
     return result
 
 
-async def aoffload_tool_result(result: ToolMessage | Command, backend: BackendProtocol, prefix: str, cache: BlobCache) -> ToolMessage | Command:
-    """Async version of `offload_tool_result`."""
+async def _aoffload_tool_result(result: ToolMessage | Command, backend: BackendProtocol, prefix: str, cache: _BlobCache) -> ToolMessage | Command:
+    """Async version of `_offload_tool_result`."""
     if isinstance(result, ToolMessage):
-        return (await aoffload_messages([result], backend, prefix, cache))[0]
+        return (await _aoffload_messages([result], backend, prefix, cache))[0]
     if isinstance(result.update, dict) and isinstance(result.update.get("messages"), list):
-        messages = await aoffload_messages(result.update["messages"], backend, prefix, cache)
+        messages = await _aoffload_messages(result.update["messages"], backend, prefix, cache)
         return replace(result, update={**result.update, "messages": messages})
     return result
 
@@ -177,18 +175,18 @@ def _referenced_digests(messages: Sequence[BaseMessage]) -> list[str]:
         if not isinstance(message.content, list):
             continue
         for block in message.content:
-            ref = block.get(BLOB_REF_KEY) if isinstance(block, dict) else None
+            ref = block.get(_BLOB_REF_KEY) if isinstance(block, dict) else None
             if isinstance(ref, str) and _DIGEST_RE.fullmatch(ref):
                 digests[ref] = None
     return list(digests)
 
 
-def _cached_payloads(digests: list[str], cache: BlobCache) -> tuple[dict[str, str], list[str]]:
+def _cached_payloads(digests: list[str], cache: _BlobCache) -> tuple[dict[str, str], list[str]]:
     payloads = {digest: payload for digest in digests if (payload := cache.get(digest)) is not None}
     return payloads, [digest for digest in digests if digest not in payloads]
 
 
-def _accept_downloads(missing: list[str], responses: Sequence[FileDownloadResponse], payloads: dict[str, str], cache: BlobCache) -> None:
+def _accept_downloads(missing: list[str], responses: Sequence[FileDownloadResponse], payloads: dict[str, str], cache: _BlobCache) -> None:
     for digest, response in zip(missing, responses, strict=False):
         # Blobs live on an agent-writable filesystem, so verify before trusting them.
         if response.error is not None or response.content is None or hashlib.sha256(response.content).hexdigest() != digest:
@@ -199,17 +197,17 @@ def _accept_downloads(missing: list[str], responses: Sequence[FileDownloadRespon
 
 
 def _message_has_refs(message: BaseMessage) -> bool:
-    return isinstance(message.content, list) and any(isinstance(block, dict) and BLOB_REF_KEY in block for block in message.content)
+    return isinstance(message.content, list) and any(isinstance(block, dict) and _BLOB_REF_KEY in block for block in message.content)
 
 
-def _hydrate_messages(messages: Sequence[AnyMessage], payloads: dict[str, str]) -> list[AnyMessage]:
+def _restore_payloads(messages: Sequence[AnyMessage], payloads: dict[str, str]) -> list[AnyMessage]:
     def hydrate(block: Any) -> Any:  # noqa: ANN401
-        if not isinstance(block, dict) or BLOB_REF_KEY not in block:
+        if not isinstance(block, dict) or _BLOB_REF_KEY not in block:
             return block
-        payload = payloads.get(block[BLOB_REF_KEY])
+        payload = payloads.get(block[_BLOB_REF_KEY])
         if payload is None:
-            return {"type": "text", "text": MISSING_BLOB_TEXT}
-        return {key: value for key, value in block.items() if key != BLOB_REF_KEY} | {"base64": payload}
+            return {"type": "text", "text": _MISSING_BLOB_TEXT}
+        return {key: value for key, value in block.items() if key != _BLOB_REF_KEY} | {"base64": payload}
 
     result = []
     for message in messages:
@@ -219,31 +217,31 @@ def _hydrate_messages(messages: Sequence[AnyMessage], payloads: dict[str, str]) 
     return result
 
 
-def hydrate_messages(messages: Sequence[AnyMessage], backend: BackendProtocol, prefix: str, cache: BlobCache) -> list[AnyMessage]:
+def _hydrate_messages(messages: Sequence[AnyMessage], backend: BackendProtocol, prefix: str, cache: _BlobCache) -> list[AnyMessage]:
     """Restore base64 payloads for blob references; unavailable blobs become a text notice."""
     if not any(_message_has_refs(message) for message in messages):
         return list(messages)
     payloads, missing = _cached_payloads(_referenced_digests(messages), cache)
     if missing:
         try:
-            responses = backend.download_files([blob_path(prefix, digest) for digest in missing])
+            responses = backend.download_files([_blob_path(prefix, digest) for digest in missing])
         except Exception:  # noqa: BLE001 -- unavailable blobs degrade to a text notice
             logger.warning("Failed to load offloaded read_file content", exc_info=True)
             responses = []
         _accept_downloads(missing, responses, payloads, cache)
-    return _hydrate_messages(messages, payloads)
+    return _restore_payloads(messages, payloads)
 
 
-async def ahydrate_messages(messages: Sequence[AnyMessage], backend: BackendProtocol, prefix: str, cache: BlobCache) -> list[AnyMessage]:
-    """Async version of `hydrate_messages`."""
+async def _ahydrate_messages(messages: Sequence[AnyMessage], backend: BackendProtocol, prefix: str, cache: _BlobCache) -> list[AnyMessage]:
+    """Async version of `_hydrate_messages`."""
     if not any(_message_has_refs(message) for message in messages):
         return list(messages)
     payloads, missing = _cached_payloads(_referenced_digests(messages), cache)
     if missing:
         try:
-            responses = await backend.adownload_files([blob_path(prefix, digest) for digest in missing])
+            responses = await backend.adownload_files([_blob_path(prefix, digest) for digest in missing])
         except Exception:  # noqa: BLE001 -- unavailable blobs degrade to a text notice
             logger.warning("Failed to load offloaded read_file content", exc_info=True)
             responses = []
         _accept_downloads(missing, responses, payloads, cache)
-    return _hydrate_messages(messages, payloads)
+    return _restore_payloads(messages, payloads)

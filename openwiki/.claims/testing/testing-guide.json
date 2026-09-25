@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:256da09c0db15cb3a4507f027aa8f604c8308095ad8582c68adcedbaf73ee8e1",
+  "pageVersion": "sha256:c3c92993e216e4903597eced819bd4d97f805baec6fb48597113b5a141cf84be",
   "claims": [
     {
       "id": "claim_1f1b8912477049aa8dbd1925186ffbfd",
@@ -13,54 +13,6 @@
         {
           "resource": "repo://libs/code/Makefile#L14-L39",
           "version": "repo-lines-v1:sha256:5e9c8a781a2587711313141f3ca35ed5da71a807c6f74f9b59ad6d8b80a43bd9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ZjNhNzI0MWE2NmI3NjAwYjM2MzViZmQ3NzE4MGU4NDY2YTZkMzYxZDRjOGY1ZTg4ZmEzMWFlNTgyMTZkN2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiMGRhNmZkYTVmZGRkMTM4ZjVmMjNhMGQ2ZDk3ODBhN2Y1OTJjMTQwYjdjODI5NjVmODJlODdlZTYxNWE0NDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0ZWJhYzU1OWIxOGIxZWE4ZTkxZWUzMGM3YmE0ZWMxMGY4YTU5OGQ5NDNkYThmZDI1NDRkMzJlNGZlZWYwMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4YmM5MDIwNDM1ODU2Njg4YzU4MjkyNDAwODViMDI1Y2QyMWZjNmFiZDI0NThjNDM3ZTQ4Yjc3YzZiOTJhODIifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_2b43518648b6479fa1742ab793ef7e5e",
-      "statement": "The issue labeling workflow confines topic-classifier credentials to the opened-issue topic-label step in the dedicated labeling environment; the classifier routes to Groq by default or Semif when configured, bounds untrusted input, filters labels to the allowlist, and fails as a warning at the workflow boundary.",
-      "evidence": [
-        {
-          "resource": "repo://.github/scripts/labeling/semif-topic-classifier.js#L5-L58",
-          "version": "repo-lines-v1:sha256:e6698a3615865f0e0dd01b88009873cde2ca726b2b8069c2e6979ae923bfa4fc:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZTI3MGIwMjgwODBkM2M2M2Q0ZTU0OTlmODIxMjczN2Y0YzQ3YTVhZGM4YWQ4NGIzYWVlNmY3OGZkMGMzYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxNDM0MmQ5ZDczNzgyZTVlNGNhOGI2ZGY1NDY5NzgzNGVmYWM1ZTU3OWI0ZGMxOTNjMjUzZWUyODBiYmI5NDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg2ZjY4N2FiZDBkMThmNzczNWY3NGRlNDg2MDkxNGEyNThhMDgzZDBjYTQ2ZjUyMDQzN2UxYjU3MmMxZmNhY2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1NzA3YTJkMjk0ZTIxYWU5OTdmMTQwMWU2NDI5NTA1YzM5OTA2YzY4ZTgxODE0OWM4M2NlMzZiNzlmMGU5OWIifQ"
-        },
-        {
-          "resource": "repo://.github/scripts/labeling/topic-classifier.js#L12-L70",
-          "version": "repo-lines-v1:sha256:956db579d0234cf328d1087e691ad943b4bf194b1f107704a12464f0216a1aa8:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZTI3MGIwMjgwODBkM2M2M2Q0ZTU0OTlmODIxMjczN2Y0YzQ3YTVhZGM4YWQ4NGIzYWVlNmY3OGZkMGMzYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1MTEyNTBhMTg5OWQ0NDllMzcxMDliMmZmMWE1OGZhMjNjYWM3MWE0ZDY5ODMwMThmYmU1MzZhNmQ1YzM1NzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUxYTUwYjZhYzViNzg5NWIyZDZmNGI3OGM3MDkzNTYwMmRiM2QyYTdjNDUzZTc3ZjA5M2EwNzZkN2JmNmYwZWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVhN2RjOGI1ZmI4N2Y4MzIyOTU5ZDE0NDIyZDE4NmY1Y2Q0MGM4ZjEwMDdjMWYyZDI5ZjkyMzVkMjUxNTFmYWEifQ"
-        },
-        {
-          "resource": "repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py#L172-L184",
-          "version": "repo-lines-v1:sha256:3ce571bcc7cb8453b6bc9beedffb2d2b3d2ed34574b7e8e2e1814068bd21e5f0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEwMDlmMTc1MTM1NTk4OTg2YjIyMzBhMDU1MTQ3YTYwYWRiYjI2OGY5N2U0Nzg1YWViMjg1Mzc3ZTVmZmM4ZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1N2QyYmZkYWI1ZjI1ZTc5ZTIzZWI0MjlhMjg1N2EwYTcxOTc3NTM3NDA0N2ZiNjViZGM1MDU0ODkzMzQyMDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI1ODAxZWQ3NTQ0Yzg4ZDRlMzRkM2M2ODRhYmE4Zjc5ODkzMmU0MGVkMDhlMzk5OTBmY2UzN2I1N2I4ZTk5MTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyMTI3ODBhMTc2NTNkMGIyZWFkMDkwYmRmYjZjMTlhZDU5NTQxNTUzYjdhZDY4Mzk0Y2Y3YWExNmVlODIxZmQifQ"
-        },
-        {
-          "resource": "repo://.github/workflows/auto-label-by-package.yml#L15-L21",
-          "version": "repo-lines-v1:sha256:aa0b8d23612af78bcd7bf87ba2f5a5075c40a03283d2e0b6b02f5aff8dd23abe:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZTlkODAxNTRlZDQyZmM1Yzc3OWIxMzMxNTc4YjU4Yjg5YzgwMWVhY2U3NGYyNGNkNDhlYjRhMjM1Nzk0MGE5NSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzMzNzMzNGFlYzBkY2IyNGU0MGUzYzIwZGMwOWQ1OWFmNjc0M2QwMjdkYmZmNTBjMWFjYTA4OTc0NzExNzY3MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmYxZDcwZDcyYmFkMjMxZDQzYzU3NWFjZWY2OTQ2NTgwZTQzOWM4Nzk3OTRlZDJlYTFmNGE0MDM0MDI0NTE3MiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWFiMjE2NmIzYmFkOWU1MDUzZjA0NTJjZWY5YjZhNTJkNDM0ZDZhMjg4YzEyYTRlNzViNDFhOWQxZjIxNmZlMiJ9"
-        },
-        {
-          "resource": "repo://.github/workflows/auto-label-by-package.yml#L62-L116",
-          "version": "repo-lines-v1:sha256:d39bc2dc5c2d93617be0c190bc08d2fa49cad0433893eaaa96b3a36f6a92c146:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1Zjk0ZjM2ODUzZTkzODMyNDFkMGMxMzlkNjQzMGZhNzE3N2Y5NzZhNTg3NDc4Njc5OGExMDA4MjAyMDQ5MDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyZmE1MDZhODFjNzU3OTYzNWQzY2VmZjBiNjRjYTM2MTQxNDJjZTI3ZjgxNzA1NzVmMDdkZTc2ZWE1Nzc4YzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc4YTI1OTFiMDgzZTFjYTdhYjk3NGVjNDEzNjNiYTExOTMyMzc2ZTU4YTE3MTM3MjA5Mzg0ZmYxZGMwNGE0YjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiMTc1YjExYmQ5NTZlZDAxZjg5MmRiY2I4ZDU4OWZhOGI0MzNiNTUzODM3ZDZkMGQ2YjcyZGM5YzM0YzY0MWIifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_52eb4a80175149829729651c33449591",
-      "statement": "Release-note tests run the curated Node suites and assert that required checks target the validated PR head, every release-please component has a target, and privileged draft/apply workflow paths remain gated, token-scoped, and free of untrusted checkout or arbitrary shell operations.",
-      "evidence": [
-        {
-          "resource": "repo://.github/scripts/tests/release/test_release_notes.py#L121-L171",
-          "version": "repo-lines-v1:sha256:3f4bebfc51cf17b15291cec732a8bf3e0589b962e7cf359c0ad316e51ec6ba0f:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMjA5NjA4MzY5NDhkY2U4OGE4ZjkxZmE0YzVkMjU4MzQ2Y2NjMWU3ZDQzZjE2ZjBjZDYxOTE3YWIwNzc3YjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViMTVjNTVhYjUzZjY5NjkyYzI5ZTZhMDllMTg3MzY2M2Y3NmIxZWYxODgxZTJiMWYyNjZkMzljMmQyMzM1NDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBlNDdjMDU5ODU4NmYyMzVjMGNmOGRkMjgwMWRlNzRiZjNiYTcxZDgzNmE1NzdiZTc2YWRlZTRlZDAyNDEzODYifQ"
-        },
-        {
-          "resource": "repo://.github/scripts/tests/release/test_release_notes.py#L17-L37",
-          "version": "repo-lines-v1:sha256:c2e3d9869d85d879e333d74a92d22d7796a530f32679bb46b69e6f8e3b51f233:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4YzU3Y2RkNmU1MGRjMDgwNjM5NWE1MmQ2NGRjNjY5N2ViYmFjYjNjYTE2YzBhNzE0MmE3MDI0MjA4YzQ5YTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBhOTYyZjAzOThmODZmYTQyZjgyY2U2ODgxMjhjMDU0NjU2N2Y3NWFkM2FjZTg2ZTE5MTM1ZWUyZjRjNTQwNDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY0MmY3NTBhMGQwMjY0YjkyMGQxYjJkNDljZTQzMzc5OGUxMTQ3M2NjMGZmMzhhOWY4ZjdmNGM5NjhlMDA3MTQifQ"
-        },
-        {
-          "resource": "repo://.github/scripts/tests/release/test_release_notes.py#L174-L346",
-          "version": "repo-lines-v1:sha256:07f3a420568fdb73fa31feb68edee6f049a65547c03a757c00f74121844b31d1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTczLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1MzY4NjgxMmM2MjZkOWFiOTU5MmNhZjQ3NjMxNGNjYTFiYmZjYTUwZjY3YzRlNWNmM2RlNWQzM2M5ZmYyYTIxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3ZjBhODUxYTYzZDVlYTFjYWEyZDM2ZGY3ODJiNDYzZDdkOTMxZjg0Zjk2NGE1ZWU0YjU5NzFhNTMyM2NkZjk2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiM2RmMmFjZjA2ZThjM2YwM2M3MTM1YzZlOGFjNWE5Y2E1NDMyYWJlMDZhNzRhY2EwZmRkOWE1M2EwMDhmOTg3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
-        },
-        {
-          "resource": "repo://.github/scripts/tests/release/test_release_notes.py#L46-L100",
-          "version": "repo-lines-v1:sha256:bc2734b414b32b9b4d7fbbf190f8aecf35387a475f54781aba068a8d899c7387:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlNGVhYzJjOWQ2YzQ0MzIyYjU4MWU2NjIyMDBlY2VjOWFiZWMzYzJkNzEwZmI0ZmExYmIwNTU4YTY2OTg3NGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlNGY5ODgxNDEzMTI1MDYxYTg1ZTZiZGJiZTgxNWI4NDUzY2FkMWU3NWU3ZDJiYmMwYTBlZjU0MWYxNGFjNTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmNGU0Y2E1MDdmZjJiMWFhYTg2ZDJmOTlmN2FhMDM2NGEyNThiNjE3ZWQzODgwODAxNTdhM2FiNjZkYzZiYTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlNjQxZWZjYThlMWFkZjIzNDk3YzM0YWVmYWMyNTE2MjUxYWU4MzZmMTNhNjJjZmY5YzA2ZjhiMDBmNDk1Y2MifQ"
         }
       ]
     },
@@ -191,44 +143,138 @@
       ]
     },
     {
-      "id": "claim_dfb228d291d3437199856967473874ce",
-      "statement": "The Semif topic-classifier Node tests validate allowlisted per-label requests and responses, score threshold and top-three ranking, 32-question batching, optional tenant headers, response-body timeout behavior, and rejection of malformed probabilities.",
+      "id": "claim_eb4323e314e74b129e0d695607c9977c",
+      "statement": "The repository develops independently versioned packages from their own directories and Makefiles; tests mirror source layout, and each package treats unaccepted warnings as errors.",
       "evidence": [
         {
-          "resource": "repo://.github/scripts/labeling/semif-topic-classifier.js#L5-L56",
-          "version": "repo-lines-v1:sha256:e6698a3615865f0e0dd01b88009873cde2ca726b2b8069c2e6979ae923bfa4fc:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZTI3MGIwMjgwODBkM2M2M2Q0ZTU0OTlmODIxMjczN2Y0YzQ3YTVhZGM4YWQ4NGIzYWVlNmY3OGZkMGMzYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxNDM0MmQ5ZDczNzgyZTVlNGNhOGI2ZGY1NDY5NzgzNGVmYWM1ZTU3OWI0ZGMxOTNjMjUzZWUyODBiYmI5NDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg2ZjY4N2FiZDBkMThmNzczNWY3NGRlNDg2MDkxNGEyNThhMDgzZDBjYTQ2ZjUyMDQzN2UxYjU3MmMxZmNhY2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1NzA3YTJkMjk0ZTIxYWU5OTdmMTQwMWU2NDI5NTA1YzM5OTA2YzY4ZTgxODE0OWM4M2NlMzZiNzlmMGU5OWIifQ"
+          "resource": "repo://libs/DEVELOPMENT.md#L177-L189",
+          "version": "repo-lines-v1:sha256:c71497c26bf7b6b3da453dcf8727b4cd2146113010356ff86f71c64920fc9278:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1ZTg2ZjY4N2VhMWVhMDRiYTk2Y2M4NzlmMmZmOTI5MjgwNDU4NWVmYTU4NmU3NjA3ODYwNzg4NWVjOTMwMjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzYjg3OTBiZTY0Y2JhZDI5YWI4NWQyYjY5ZjgzZGJlZGYzZWRhNzA4NzVmN2NhZGRlYmI4NTY3YmMyOGY3ZGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwYWFhMzkzYjJiODYyMDBjYmFlOTU1NDc4ZDk4MTMyZTNhYWFmZWJiODI0NzA0OWM4ZDJmZmVhYmRjNWQ5OGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhMjk4MDY3MDA3ZmZkODIzYTFmMDFiZTlmYTdlYmYxMzU1NTIxODBmYzg5MTk1ZDljNmY5YTIxYjM3M2U2MjAifQ"
         },
         {
-          "resource": "repo://.github/scripts/tests/labeling/semif-topic-classifier.test.js#L108-L172",
-          "version": "repo-lines-v1:sha256:b80cb3482044feed68300dfddbb0e5a4ccb895df7baba864e0c6793cfda2b143:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxNTZmNDlkZDY5NjUyNTFlMmJlYzlhYTQyZmU1MThjNDkxYzVmMWE1MjFiMDM3NjFmOGJlZmQzYmViM2QyZTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1ZWYwMWJjMDhkYmMzYjYzZTRlNzVlYTNkMjZhNWI5NDE4OTE4NzdlMjdhZDg5MTMyOWM4NDExZDdkOGRjNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViMWVhMTVhMGY3YjFkNzc0MWMwOTJkZTgwMmQzOWZkYTQ0MzRlY2YwNWY5NDM1OGM2ZjM2OWNhOTExNmUyMmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4YWFmMmJmMTU3YTg2ZDUxMTU1ZDdhODc3OGRkNGExMTVhY2MyZjViZDVkZGVmMjg1ZDIzZjc5Y2RkZTBhMWUifQ"
-        },
-        {
-          "resource": "repo://.github/scripts/tests/labeling/semif-topic-classifier.test.js#L184-L198",
-          "version": "repo-lines-v1:sha256:ea1de1738945c08b534bb9abd133f0c6b6786b607af3f93f3a78c2123fcb3baf:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYwNjM3OGU0ZDQ0YzA1NzM5MDk5M2FiZmMxNmMzNmM2OTc0NDY4Yjk3MmI0OWQyNGIyYjc0NTA0ZWM0NTQ2MjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZjViNDBiMTU4NDU3ZDE3ODY0ZjIxNzkwNzg2ZGQ1YTJlY2RiNjRiNjZhNjUxZjc4OGQ0ZTI1Y2QzMzAzZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImViMWVhMTVhMGY3YjFkNzc0MWMwOTJkZTgwMmQzOWZkYTQ0MzRlY2YwNWY5NDM1OGM2ZjM2OWNhOTExNmUyMmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        },
-        {
-          "resource": "repo://.github/scripts/tests/labeling/semif-topic-classifier.test.js#L31-L57",
-          "version": "repo-lines-v1:sha256:3b884999bb9488669b5d968ec6663016238733c69cb0f5a26b6a9dc87b548f53:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjExOTMyYjk4ZmEyMmJjZTkwZjU1MGFkODg5ZTU5NDRmZWNmOWQ2ZjJmMzg5ZGM2NTIxNTMwZjdhZDczYTM1ZDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZjViNDBiMTU4NDU3ZDE3ODY0ZjIxNzkwNzg2ZGQ1YTJlY2RiNjRiNjZhNjUxZjc4OGQ0ZTI1Y2QzMzAzZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmMGQ4ODBkYTQ3NzBkYTQzNGU3OTY5OTRhZmFhYmI1MTAzM2FiYzc0ZjdkMjllNzE5MWM0YzM1ZDFkMmJkMmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2OGU2MTc4YzA0ZWNmOGExYjY3ZDE5OTQ5MTU1NjlmZGFjZjRmMGMyN2I5YTVkMjFlNzI0NmY0Mjc3OTQ5OWYifQ"
+          "resource": "repo://libs/DEVELOPMENT.md#L30-L49",
+          "version": "repo-lines-v1:sha256:7fadcab0884d15474b9ffc94632e833e341967e49cdc798b113d09d8d854a6f2:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1YTU3M2ViOTJkN2U2ZDc2NmIwOGNmNTU4ZjUzZjhjM2M5MDNiMTdhMzM0ZmRiMDBhNThjYjVlNmEzY2NhYWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2OTU5OTNiM2Q5NDNkMDZiMmRlN2I4OTViMDE1MmY3YzNmZmQ2YmI2YjcxZGI4ZDgyNGI0NjNmZjA4OTA1ZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZiNzM1YTE1OWU0MTI5M2Q4NWMwMWQ0MWE3NzAzOTk3ZGI0YjE3MGM0MTM3YzU2NGQzNDBmMGFlNWEzYzY0OTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODE3MzI2NGExYjg2YzJlMWVmY2ZiMTZhNTk2OTRiNGI4OWUxNWJhOGJkODhmOTI0NmMzZTU1ZTdmNTM5ZGYifQ"
         }
       ]
     },
     {
-      "id": "claim_43d317735a7e4cfd90b0e35452b17ca9",
-      "statement": "Release-note Node tests use a mocked GitHub client and temporary changelog to verify strict release PR identity, exact version-section handling, command and instruction parsing, trusted bot override identity, and stale-state detection.",
+      "id": "claim_4495778345af4548b37697089c85c374",
+      "statement": "Deep Agents end-to-end unit tests drive real agents with scripted fake chat models and parameterized virtual-filesystem, state, and store backends, covering tool calls, streaming metadata, and multi-turn state behavior without a provider.",
       "evidence": [
         {
-          "resource": "repo://.github/scripts/tests/release/release-notes.test.js#L124-L272",
-          "version": "repo-lines-v1:sha256:6e7c0a33e27b03a4606964ad795c0110a850c51e140e3d6ef4b7e7db38957f42:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQ5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNzdlNTE0YmU4OTVlNzJiZWVlZjM3YjZkNDZiMDg5OTExMTNjZDA1OTQ2Y2ZjOGU1MTk0NGJmZmZiZTMzYmMzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmOWJiMTdkYWFkMzdmMDUyNDE0MTlhMGU1YzlhMzVkMzI4NDI0MDgwMTRlMmEzZjYwZDg3YjVjMGUyMGViNWQ1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5MjA0MGUwOTVhOTRlMmFkYTc0ZTQyMWYzNzE4NzUxYTkxYTgxMGJmZDY2ZjQ4ZjRlOTM5YzdiNzQ4MGViNjcwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1M2I1MjBjN2JkYmVmZWY5OTQ4YzNhZWJlMzdiZmJjYWYyMjE3ZDQyYzJlYmNjNzA5OWQxODIyOWJmNjE0ZDhhIn0"
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_end_to_end.py#L221-L305",
+          "version": "repo-lines-v1:sha256:2e677142e22f41fa2f55a34eda47d8a67cdad837066748ae80028a20f9297388:eyJzZWxlY3RlZExpbmVDb3VudCI6ODUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyMjIzYTMwYjRlMmYyNGE5MzY2M2IyMjMyMWJmNjcyNWJiNTY2YTIyNDQ5ZjZmMTdhNmE2YTEzMjY4ZWNjNzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2NThkNjA3YzM3ODNkNGE3NDA0NmJkYWRhODYzNzZkOWY3MTRhYzE4MTcxMTUyMDAzMzk3OThlOGIyZTFjMTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg1NDEyNzMwOWZkZTJiZWUxOWQzODY1MWRkOWU5ZmJiZmQzM2E5MGM2Yjc1ODk4NjY4MzM3N2U1YmNjNzUyOWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlMjdlMmU4OWVmZmQzMzQ3ZmE4ODNiYmMwZmMwZGI0NmQ3ZDM4MTg1YjRkN2IyZjgxZjQ5YjU0ZmY1ZmI4MDgifQ"
         },
         {
-          "resource": "repo://.github/scripts/tests/release/release-notes.test.js#L275-L394",
-          "version": "repo-lines-v1:sha256:f1443100402dfb390970b8ce81ac32e83ad4f4f1bdd4a93d88998e4b12cd93ca:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNWVlZDQ5Y2Y4MTRjNmE4Nzk1ZTdlZjRiYjBjOGYxZWI1ZDQ4ODMyYzUzOGFmOTc2Y2UwODEwOGY3YTcxNWYwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmNmY1YjQwYjE1ODQ1N2QxNzg2NGYyMTc5MDc4NmRkNWEyZWNkYjY0YjY2YTY1MWY3ODhkNGUyNWNkMzMwM2QyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIzMjg2MzdhYjg3YzA3ZTZjNDI4ZjAyYzhkOTRlYjdlYmM3NDNiOGViOTg3ZGViYWQ2YjdhNTc0MzUzMmMyZDUxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1MWI2MjdkMDRmOWE5MjU3MTI1NTE2N2IwNDcxOGY4ODVhZWQyODY1Y2UxYmVjOTAzNjM4YTQ2YzI3NDY3YjE1In0"
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_end_to_end.py#L356-L496",
+          "version": "repo-lines-v1:sha256:623a4681139a8897097cfd804e500805e6ad512c05eb57522d22c2a312abeeba:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNzM5YzhhNjhmOTViOTdjZjVjY2I1YmQxODIzYmNkY2ZjNmNmZTQzM2QxODZkODg1MWQxOWQyMTY3ZmIxZDk2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyOTcyYmMzNmMyMGNmMzJlZjMyOWM1MjE1YWM4NWQ2YTAzYTFjMTE2ZGZjNmMzN2Q4YWM0NzJhN2UyZGZkYzdjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2NDZjM2QyYzNhYjQ5NmU2YjhlZjEwNjEzMzcxOWRlMGYzMzE1ZmM4NjQwYTFmYTc4Zjk3OWU3YzJiNTEzMThmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1Njg1ZDE1YjM1NzI0YjhlMTI4MTMxMTU5ZDk2NTBhYjc1NTc3ZjJhYmEwMWIzNmJhMDVmYzNjMzRlNzFmMGJjIn0"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_end_to_end.py#L682-L829",
+          "version": "repo-lines-v1:sha256:9b3abed06360d07d8addb3de56b790562c3fa31c75f8c3d0219b81323d585bf6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQ4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNjZmODMzZjYzZjEwOWQ5NjZiZjU1MjI5NmQ5OWM0ZDRiMjczNThhZDdmNWQ1MTdjY2M0OTU4YzNhZWVjMzA2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4OTk3Y2RjYzJmZDgzMGFiMGQ5YzVlYTI4ZjdlN2M5MTFjMmU2YmE5M2U4NmRkYmI0MDUzNjAzNjVmYzc5NWY3IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxYWFkN2ViNTllY2I1YTM5ZjE5NmI2OWI5ZmE4NmRlY2U2NDdmODQxM2VlMzk0YmZlZThlYjYxNDM0M2M3ODhiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyOTkzN2JkMDI4NDc0ODAxOGZlODg2NGJiZDYwMGQ3OWM2YTc0Y2NjMzkxN2E3MjkwZjRhOTQ2NmZlZTA3NDUwIn0"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_end_to_end.py#L81-L152",
+          "version": "repo-lines-v1:sha256:c7948b8e200da86d09a5d6b086bfb9c6d5a47f0d11dfd81dd74ffd1c106e7ac0:eyJzZWxlY3RlZExpbmVDb3VudCI6NzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5YWQ1OGIyNzdmYTQ0NTJiMjI1YmQ1YjE4NDg5OTE1ZDZkMDZlNTE5OTk5M2U3YWFmN2RlMDM2NGI0NWU4OWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjYTQ4ZGI1ZmU2YTdlM2ZlMWVmNjYwZDdiMTllODEwNzg1M2M1ZDIzNDViZTM0MTNlZTA2MmRjMzhmYTdmMjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdiZDJiNjk0MjFiZmQ1NTJjMjk3YzA2Y2RjZDc0MWM3NzI2OGEzOGExNjY3MjY2YjJlZWRkMGM2N2FjYjNmNzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzMzM0ZTA1M2Y0YTIyODAxNGVlOTA2ZmIyYjUzNTE0ODc3MDQ5MTFlYTlmMWM3NzI1OGZmODg1Y2U4OGNhZTkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4751d4a43ca64cafacfc2195fe104bf6",
+      "statement": "dcode MCP OAuth tests isolate home/state storage and verify token-file permissions, server and endpoint isolation, unsafe-name rejection, expiry persistence, nonblocking file access, cancellation-safe writes, and OAuth challenge or callback behavior with canned transport exchanges.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_mcp_auth.py#L173-L370",
+          "version": "repo-lines-v1:sha256:94817f3446d64d24b58e65233267997a45704f17888fd347e3fef7995f19cd05:eyJzZWxlY3RlZExpbmVDb3VudCI6MTk4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmZGJlMWUyZDc5ZGFkODBmMzRhMjdiYzQ5ZWVhMWU3ZWEyNTQwYzE4ZGU2MmFiMTc2MjkwNzg0YTk5NDg0NmM0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyYjg5ODQ2ZGExOTQwNThjMDFmYzNmY2QzNGMxZWU5MzBmZGJjMmExOTAyMTRjNWUyYzNhYTcyNjNjNDNiYjRhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3NmQxMWZiYzk0NzZhMmQxMzFjZDQyZWQyMDM4MTIwODFhNDYzZDY5YWEyODM1NTQ1MWUwYTU0ZWIzYWJlN2EzIn0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_mcp_auth.py#L2225-L2617",
+          "version": "repo-lines-v1:sha256:41ed34928d5f69de94765daf6b588caccd013afca0c2820c67f9554600141f41:eyJzZWxlY3RlZExpbmVDb3VudCI6MzkzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmZDcwODA2ZjM1ZGNlNTY3YzI5NDFhYTg2OTk2Mzk3NTE2MDQzNWM2ODM3MDY0YzkyNzUwNmFhNjA1ZDEzYzk4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4ZDBjZGNjMGQ1ZmQ3ZDk1Zjc3YmJlYjFhOWVlNmViODg2YzgxMWZmZGQ0OGQ4OWMwNjEyZDIxYmIzZjVmYzkyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0YjExMWE0YTAxMmZjZjAxYmI2ZTc2ODIzYjU5YmE5MWNjZWQ4OWVjOWQ5ODI3NDNmOWE5NWQ2ZDA4ZGFhZDViIn0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_mcp_auth.py#L472-L750",
+          "version": "repo-lines-v1:sha256:5dfb5331b3bed854c2c8b8456ba05c9f50db5aa2a6348a8da64937100c81b888:eyJzZWxlY3RlZExpbmVDb3VudCI6Mjc5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3YmQxYzQ0OTA3ZGU2YzI2M2E5ODBkY2IwMDM1MWQ5YzRjZTZkMzFiN2RlM2ZhYTM3Mzk1Zjc1ZmQ0NjkwZDYxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5MWQwY2NmMmFmYzIxMWRjNzhlZTJlNDdhZmQ3ZWI1ZGUxMzMwY2ZjYTlhMWVmMzc0YjJmMWYwZGFkYWUwOTU4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyZDc1MGE2NTA4Y2YyMWJmMWFiNWM2M2U4NWQ1Mzk4NTUxZTg5N2UwMTk3M2E5MWM4YzYyZWIzN2M3Mzk1ZTMzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJhNjMyZjI4ZDVlYzdmYmE1OTI2MTgzNTcyMGVmMmVhZmI3MWU5Y2QzYTgwYjJiM2U3YjNlYjJmNmE4YTIxYWRjIn0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_mcp_auth.py#L95-L110",
+          "version": "repo-lines-v1:sha256:6cf82020695925734b830ce5ba920108316a8444f3477cb0cdae8f562493b042:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIzZjM2NmI5YmQ5YThkMGYzNDBhMmJjMGJlMWUyMmVlYTIwNTY4ZGQ3OGE0NTI4MWI3MjFiMzBmMjJkMDg3ZjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlMTVjYWZlOTQyYjhjZTkzYWM1YzNmMWJkM2QxNzQ5OGVjMGJmNDk2MzcyOGYxOThjMTFiYWU1MTlmYWQyNzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI1Mjg5N2ZmOGEzMDMyZTAzZDMyODI5M2Q5ODY1Yzc1Yjc4NzUwODc3NzA4ZDcxMTlmNjRmNzUwN2FjZmIxNmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVmOTA5MjI3ZDg3N2Y0MTc2ODM1MmRmYjBmYjQ0NTQ5NTU1YzYyYzY2MzRmZDhiYzdhYTI5ZTE1OGJmNWE3OWMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_589a3e751d324f8895e9738a7d29d0e1",
+      "statement": "Workspace-diagnostics tests use an isolated SQLite session database to ensure thread bindings persist only allowlisted configuration snapshots, refuse drift without overwriting the prior snapshot, omit path/private values, and render unavailable historical values without treating them as unset.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_workspace_diagnostics.py#L130-L227",
+          "version": "repo-lines-v1:sha256:e41cf24cdb36c6e6153650b87db185f611455d590db696bc1b79c1e65526e50b:eyJzZWxlY3RlZExpbmVDb3VudCI6OTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkYTUwYmI1NTZkZjEwOTJkZjFhNzExNWY2ZjExNTkyN2VkYjFjZDMyYjYxNDgxYmMyMjQ5ZTQ3MGNmYjcxOGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU5OWQ4NWI1ODk0OWVmNDFlMDUzMzBjN2Y2YzY0ZTAzN2RkNmRiYmM5NDYwMzE1YzhmM2ZmNTE2YWE3YTIxMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE4YmVjNWNkNGJiNTc0Y2FiNjI4YWMwYzBkM2FlZTQxNzcwMjI0YmNhZTViNjQ3MWY0YTEzZDE3OGNkNGFiOTEifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_workspace_diagnostics.py#L24-L127",
+          "version": "repo-lines-v1:sha256:85c176011f9eed7d54bb3e5a99943c3806e30eb1e88164008ca5926846da6336:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2ZjA4NjZmNDAxMWU1ODVmZmMwOTA5MmVkZjA4MzJlMTdiNTJmNGM5MGM0Y2EwYjQyZGNmYTA1MGZhMzc1YjVhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmMGYwMTViMjdkNThiMDEyMDUzODNjNDE1NTZjNDdmYTQ2Njc5YWVkYjU3MGVhNWViNDNjNTAzNGMxZjVmZjMzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhOThiMDYzZDliNDdlNjUzNzk2MjU1NzJjY2UxOTc2NjlkNTc2N2UxMmMxOGJlMDc1NjUyYjhjZDk4MWNlOGQ1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxYTc2YzVlYWQ0ZDEwMDY5MjI4NmVmYjhkOGNhOGU4MDExOTA5NjQ5YjA3Mjk4NmIwMzAwMDlkZTJhNTA2NmI3In0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_workspace_diagnostics.py#L267-L405",
+          "version": "repo-lines-v1:sha256:391b980fd0c224fd4807e4686686a0fc55c5859de97fd63f4633bd4059969130:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0YjVjNzVjZmI4NjAyZDM3NjAxYWVjNTlhYTExZTY3OGZlMDZjODc1NDJhNGIyNGFjNDVlOWZjNjkxMzM2MzI5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2ZDE4ZGQwYWZlODlmMzVhZmNjZGUyNmY5YWUzMDhjMTk1NWExYjM1ZjI5MmE2OTYwNWNhNTNiYjNlOTMwNzdhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyYWM4ZDY5ODllOGE0NTY4ZTQ5OWVmYjNhOWZkYjQyODQ2Y2JlNjdlMzdmZTA5Mzg3NmQ3ZGY4YjlmM2Q3YWIzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_68a8d212635f44a6a6071ee3aeb69bcd",
+      "statement": "Talon runtime tests use recording graphs and fake tools to verify transactional MCP tool reload, approval resumption against a stable graph, checkpoint recovery, and redacted approval logging; scheduled runs reject gated tool calls when interactive approval is unavailable.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/test_runtime.py#L1077-L1265",
+          "version": "repo-lines-v1:sha256:27627160eec11b94601cce4765599c4a1b8a8ef7701f56ad850619fbf9e69dc0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTg5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzYTIxNGMwM2QwYzI0M2I2MzZjNGEwOWRhNjJjMzc2YzU5MDFlYzg2OTQ2YzZjZTVjNDAzNjIyYjM3NzU2MmNiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhZGQyNDQ1ODJiNmZiMDNkMjNiODQxNWFiZWNkMzQ2YjBjOWY0NjZiNmY3NTJiMDY4MTg5Y2U3ZTlhMmRjMzUwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwODI5YTFmMzViODFkMzUwMWNjZTBjNmMyMjMxMTY5MWI4ZGQxN2E4NTJlNmVlMTUyNTBlYzYzOGY0NTY5Mjc2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlNjVjNDkxNjcyNWFjYmIxMWI1YWUyNGMzOThkNTUwN2E5NTQwZmQ1NTc0OThjZjQ0Y2VjZmQ1NTkxMDNhNGJiIn0"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_runtime.py#L149-L238",
+          "version": "repo-lines-v1:sha256:147d567e8f86a915997c9c52a1e3596ecc5008d9a6f4b4cd1fedef31fcb31e64:eyJzZWxlY3RlZExpbmVDb3VudCI6OTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliZmRkNjgyMTU0NjEzZGMzNzNhMjY2MjkyNWEzNzU4NzFlMWFkODNjZGY0YzRhM2E2ZjdiMzk3ZGMxOGVlMTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyNzk2NjExMDM4NTMxMTdhZDRkMTk2NzNhOGIxYjI3Zjc2MThjNzNiMGEzZTkzMDlmMDg2YzBmZWYzYjA0ZGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmZTRiOTBjZjM4MGNiN2MwMjgyMDkyZmY5ZGIyNTI1Mjk1YWYzYjdjNzE0NzI1YTVlZTdhYTUyZTg3OGRmNzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ3MGJjM2VkZTdlOTZjMDhiNGQzMWFlMDBmNmVhNDZmZWZjOGI2MDc5ODIzOWM3ZTBiYTkyYzVkODdiNTJkZDIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_runtime.py#L967-L1011",
+          "version": "repo-lines-v1:sha256:72126d73394fa7104d76cb7b625aa24994a9e37cc17f0f8743f9290afdef5202:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiM2I0ZDk2ZDM0ZjBiMTNmOTAzMTNlOWY1YTNmNzgxMjZmNzU0ZThkYTAzZWEzMzJmOTVlNDE1YTAzNGM4N2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzZGYyYWNmMDZlOGMzZjAzYzcxMzVjNmU4YWM1YTljYTU0MzJhYmUwNmE3NGFjYTBmZGQ5YTUzYTAwOGY5ODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQwMjYxMjkxYmM3MmRjZWZlM2E3ZmViYmJiYWVkZWEzYjViNjNkOWQ4ZGRmYzU3M2Q2Y2Y2MjMzOTQ4YzQ3MDQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_441c63e31bc04098ac93566576ab9545",
+      "statement": "ACP tests use real checkpointer-backed graphs, fake chat models, and a fake ACP client to validate streamed content/tool ordering, session-scoped cancellation, human approval, persisted-session replay and isolation by session ownership and working directory.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/tests/test_agent.py#L119-L388",
+          "version": "repo-lines-v1:sha256:992ba0264a4cdd866683d5258b14e41ee258521fd011b3d371e12fc4505aab4b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyMWE0ZDcxM2MwZTlmMzZhZDM2YTk0YzQxMTJiZDUzZjIyNDMxYjBlYjMzNzdmZmZhYjA3OTkyZDNlZWY4YTkyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4ZWY1MmMwOWMxYTI1OTU3ZGJjNTZjNTI3ZGI4MDEyZWY4OWU2OTc5MTgzMjFlZGI5MTU2OWFjNWRlZjU5ZjRmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkOTI5YTllNzNlZjc1NzViYjFjMTExNjI2M2U4NGEwMmJhOTMyYzQ3MjhmMzc5YjQwYzk5NjIzNjY0ODk0ZjFlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjOGFkYTNmZWMyYmRhNTE1MjgyN2EyNjY3YjFkYzIwNTYzMzkzYjdkZGFmNWY3MzY3ZjhiYzU0NGNkMmRlMWE0In0"
+        },
+        {
+          "resource": "repo://libs/acp/tests/test_agent.py#L1446-L1539",
+          "version": "repo-lines-v1:sha256:bd03b955a5636e7b3bc7a7f29ab3a549599a8d62a4dcdc390133c07f05f4ab45:eyJzZWxlY3RlZExpbmVDb3VudCI6OTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3MTQ1MjQ5ZThlOGRlYzU1N2UyZjY4MmQwNGU0MThmMjI5ZDYyNDc4ZGE1ODVmYjNkNzFjNjBjNTdjZjgzZmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmZjdjZWQ4Zjc4ZjRhYzY4MDVjNDBkNDc4M2U1MWZmMzUwYzBkMzE2OWRmYmFjMGRiMjkzOTI1NDAzNjhiNGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhmNTQ1Y2ZjOWE1Mzg4YjdhOWY4ZTk0NjcwMTU0ZmQyYzUwMzE5NmY5YWRmNjhhNTJmY2I3NzlkMzY0ZDA4MTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBlYWM5NjM0Njc5M2NjMzA5OGMyYmJiNTY3YTY4Y2UwMzAyNjg5OWFlZDNhNDNkZjE4OTdiYzFiYjFjZDEwNWMifQ"
+        },
+        {
+          "resource": "repo://libs/acp/tests/test_agent.py#L471-L725",
+          "version": "repo-lines-v1:sha256:03fa00446045608d431f956d92920443a95dd819c82e9db18efb2354c8707336:eyJzZWxlY3RlZExpbmVDb3VudCI6MjU1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ZGUzM2Q5MTM1Y2YzOGVjMTI0OTUxNTkzN2IxMTdjZWUzODE3NDMwZDdjNjkzNTk2MGQzMDMxNDg0ZTA4NWE5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzZjE1MDBjMzQ4NDk2MTI1MjY5MGI4NWI4ZjkyYjQ4ZTQ3ZDg1NDExZDJjY2I2OWNlZWNmZTQ0OWMzYTBmZTk1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3MGEwZDc3YWEyZDhhZGQ1Y2Y3NDk3NGFkYWE0MGY1ZjFmNjg5MmZhYjQ4YTc2OTI0ZDQ3ZTc1MWFkYWRhYjczIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwZDQ5NjFkMWJhOGE1MmRkZGM5YWY1YWJjNDZiODQyOWYyN2FmZjBhNDFlYjQyOGFlODAzZjRjZGVhNGQxYmYwIn0"
+        },
+        {
+          "resource": "repo://libs/acp/tests/test_agent.py#L748-L834",
+          "version": "repo-lines-v1:sha256:ba15811ac2de6d437732cb870c956b7a88be099c2442d810a08aca4c3ff7029c:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MmVkMTc3ODY2ZDJjNzBjYmY0OGM4NzI5Nzc2YzVlYzQ1YzJmMzUxNjFiNWExNWRjYjQwMTNhODg3YmNhZjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJhZjRhN2M3MWUzY2JhYjM4ODBiZmI5N2UyNmRhYjdlNWE5NzE4NThiOGIzMjdjODY1MTlkZjE2NjI0YzUxYjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU4ZTk3NzU3ZmUzOTkxMDNiNjFmNmVkNGY5NmFlMTc0NmY0YmJhYWFlNWM2ZTZkNTFkMDRiYzg1YjM1YmVjYWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiYzAwMzY5YjVhN2QwMjU1MzNlNDJiNDQ3OGYyMmQ5YTExZDZkNzVjZTc3NzlmYmY5N2ZiYzljYWI0MmNiYzAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c6dd292c93124550b0a4d429ec4072f8",
+      "statement": "Talon and ACP package test targets accept `TEST_FILE`, block non-Unix sockets, enforce a 10-second pytest timeout, and their lint targets run Ruff plus `ty`; Talon also runs its WhatsApp bridge Node tests before pytest.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/Makefile#L9-L45",
+          "version": "repo-lines-v1:sha256:ebe2b7ffe0b4cc02eafab8ead7b27827352d9b469719d8aa2400ad39f9c4dd81:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ZjNhNzI0MWE2NmI3NjAwYjM2MzViZmQ3NzE4MGU4NDY2YTZkMzYxZDRjOGY1ZTg4ZmEzMWFlNTgyMTZkN2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyZmI1NTcxNWEzYjdmN2QyNWFjNTZjNjcyNGU5YjUxNGFjYjEzMWFjMzE5NGY4MTViNDNlNTBiMTljOWQ3MjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0ZWJhYzU1OWIxOGIxZWE4ZTkxZWUzMGM3YmE0ZWMxMGY4YTU5OGQ5NDNkYThmZDI1NDRkMzJlNGZlZWYwMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhYWI5YzQ3MzQ2NGI2ZGQ3YThmMzBlMTNlYzYzMzlkNzk5MWFmNDNkNjc5NTZlM2NiYmQ4NTE4NjA5ZjJhZWEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/Makefile#L8-L39",
+          "version": "repo-lines-v1:sha256:6822cd78cf3d64faf640ca3c0537d09cb4fb340f60057e9dcedbb1b1f3ae8657:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTA4NmJjNzE2ZTQ1ZjVjN2NkMjMwMTFkZTgyNjgyNWU2ZjM5NmI5NDBlOTMyNDdjMzYxZjJmOWQ5YWNjOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyZmI1NTcxNWEzYjdmN2QyNWFjNTZjNjcyNGU5YjUxNGFjYjEzMWFjMzE5NGY4MTViNDNlNTBiMTljOWQ3MjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI0NjNkZTM4NmUwNzkxYWRkNTJlM2Y2ZTNhMDlmMmJmNjQ4ZmU0MzEzMThlMTkxNWI3ZTVkZTk5ZjdhNTg0NTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY2YWQ2MzEzYTRjZGIyNzgyM2VmNDJkN2UzYTgxOGJiMDRmYWY2ODJhM2EyMTY4M2VlZmE5ZTEzZTFmM2Q2YWQifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-23T08:05:59.666Z"
+    "at": "2026-09-25T08:06:00.203Z"
   }
 }

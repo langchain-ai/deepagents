@@ -1,11 +1,11 @@
 ---
-type: concept
+type: security-control concept
 title: Permissions and Human Approval
-description: Distinguishes tool permissions, graph interruption, channel-mediated approval, MCP elicitation, OAuth authorization, and execution isolation. Documents Talon's batched interrupt and explicit-resume contract, including fail-closed unattended work.
+description: Explains the distinct enforcement, interruption, and approval layers for Deep Agents filesystem access, dcode interaction, and Talon tool and MCP workflows. Covers fail-closed unattended execution and the limits of human approval as a security boundary.
 tags: [permissions, human-in-the-loop, talon, security, mcp]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-21T08:06:25.442Z
+    at: 2026-09-25T08:06:00.203Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -59,12 +59,12 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
   - id: openwiki-source-d4964daa078854bf4438d764
     resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-21T08:06:25.442Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 ---
 
 # Permissions and Human Approval
 
-Permissions, approval prompts, and tool availability are separate controls. A model may see a tool but have a particular invocation rejected at execution; a graph interrupt may pause an otherwise permitted invocation; and an approval is not a sandbox boundary. See [filesystem tools](/openwiki/concepts/tools-filesystem.md), [MCP integration](/openwiki/integrations/mcp.md), [Talon](/openwiki/integrations/talon.md), [security](/openwiki/operations/security.md), and the [testing guide](/openwiki/testing/testing-guide.md).
+Permissions, approval prompts, and tool availability are separate controls. A model may see a tool but have a particular invocation rejected at execution; a graph interrupt may pause an otherwise permitted invocation; and an approval is not a sandbox boundary. See [filesystem tools](/openwiki/concepts/tools-filesystem.md), [security](/openwiki/operations/security.md), [runtime behavior](/openwiki/architecture/runtime-behavior.md), and [running a dcode session](/openwiki/workflows/run-dcode-session.md).
 
 ## Security boundaries
 
@@ -83,7 +83,7 @@ An approval is not a general permission grant. An approved or edited filesystem 
 
 ## Filesystem policy and derived HITL
 
-A `FilesystemPermission` has read and/or write `operations`, absolute glob `paths`, and a `mode`. Patterns must be absolute. Resolution is ordered and first-match-wins, with `allow` as the default; `deny` is enforced before backend execution. Bulk reads filter denied entries. Recursive or potentially recursive deletion uses conservative subtree-overlap handling, so a protected descendant cannot be bypassed by an earlier broad allow.
+A `FilesystemPermission` has read and/or write `operations`, absolute glob `paths`, and a `mode`. Patterns must be absolute, may not contain `..`, and do not support `~`. Resolution is ordered and first-match-wins, with `allow` as the default; `deny` is enforced before backend execution. Bulk reads filter denied entries. Recursive or potentially recursive deletion uses conservative subtree-overlap handling, so a protected descendant cannot be bypassed by an earlier broad allow.
 
 `interrupt` is intentionally distinct from `deny`. During graph construction, filesystem interrupt rules become `HumanInTheLoopMiddleware` routing. Exact-path tools use normal first-match interrupt resolution. Bulk tools interrupt conservatively when their search subtree intersects an interrupt rule and when scope cannot safely be localized—for example omitted paths, current-directory forms, absolute glob patterns, or parent traversal. The approved or edited call still runs through the filesystem tool and its deny enforcement.
 

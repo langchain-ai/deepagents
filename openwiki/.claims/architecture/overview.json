@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:acbb063375db74b977fab83a6bda6af3aa07b2a58cf43a68134b6c8453413548",
+  "pageVersion": "sha256:f96418f8f5a4e3eaeb78c26670a927402e26911e9de054c664701d0c0bc9331e",
   "claims": [
     {
       "id": "claim_02a3292b94514936b7fbbbe869876251",
@@ -26,7 +26,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:e6c57390b37a9fb54e9388e5b9d439d335eebd5fb69e271e10eef1b96defe57d"
+          "version": "repo-file-v1:sha256:c8f6784ca9bc12d339526667c6898608c326b8121ccd39036fab125491840715"
         }
       ]
     },
@@ -40,7 +40,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:e6c57390b37a9fb54e9388e5b9d439d335eebd5fb69e271e10eef1b96defe57d"
+          "version": "repo-file-v1:sha256:c8f6784ca9bc12d339526667c6898608c326b8121ccd39036fab125491840715"
         }
       ]
     },
@@ -70,7 +70,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:3888d82fb92e6c8572289483b2e7762887486b640ef271460daa87bbdd1a1efd"
+          "version": "repo-file-v1:sha256:b2906b76a6cb84fe6cfe53349c86fb2afe23f71931e15d872fbf775f6ab10baa"
         }
       ]
     },
@@ -94,21 +94,21 @@
         },
         {
           "resource": "repo://libs/acp/pyproject.toml",
-          "version": "repo-file-v1:sha256:54c5f74e002a4b70d6c630ab9aa1c3b70794ffcd2eaa5fb2d3ca520b2ec1d57d"
+          "version": "repo-file-v1:sha256:87155eb8f601e7b8ed551f869ffb1e60c8759fa848df056da6e66ab6d33f7843"
         }
       ]
     },
     {
       "id": "claim_837e7b13e9f94a098eb350808a7d0a3c",
-      "statement": "The release manifest records independent versions for deepagents 0.7.18, ACP 0.0.12, Code 0.1.75, Talon 0.0.8, and the Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7 partner packages; Code's pyproject identifies it as 0.1.75 and pins deepagents to 0.7.18.",
+      "statement": "The release manifest records independent versions for deepagents 0.7.19, ACP 0.0.12, Code 0.1.77, Talon 0.0.8, and the Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7 partner packages; Code's pyproject identifies it as 0.1.77 and pins deepagents to 0.7.19.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:98947404a8fc954285982a611564c957ac77cd393f995aaf3aee7b19387ad672"
+          "version": "repo-file-v1:sha256:e5f4e2a7253cad1ac8f72dfcce99ba82661d21122a62ae13bfefb0f41e55cf88"
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:a7d73920dae227cca0fdcd37cfa400febaac0d8cd35c25217c6e6401110816fc"
+          "version": "repo-file-v1:sha256:2d14af7a5648af6d20d344480917fd11836c1745b05af3b76d33f2dfc796282c"
         }
       ]
     },
@@ -138,7 +138,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:3888d82fb92e6c8572289483b2e7762887486b640ef271460daa87bbdd1a1efd"
+          "version": "repo-file-v1:sha256:b2906b76a6cb84fe6cfe53349c86fb2afe23f71931e15d872fbf775f6ab10baa"
         }
       ]
     },
@@ -370,11 +370,11 @@
     },
     {
       "id": "claim_cdeee79c02c74338a467b47d6b996f57",
-      "statement": "dcode declares an exact dependency on deepagents 0.7.18, consumes deepagents-acp, and offers optional sandbox extras for AgentCore, Daytona, Modal, Runloop, and Vercel; its local development sources point those partner integrations at sibling packages.",
+      "statement": "dcode declares an exact dependency on deepagents 0.7.19, consumes deepagents-acp, and offers optional sandbox extras for AgentCore, Daytona, Modal, Runloop, and Vercel; its local development sources point those partner integrations at sibling packages.",
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:a7d73920dae227cca0fdcd37cfa400febaac0d8cd35c25217c6e6401110816fc"
+          "version": "repo-file-v1:sha256:2d14af7a5648af6d20d344480917fd11836c1745b05af3b76d33f2dfc796282c"
         }
       ]
     },
@@ -384,7 +384,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1774-L1804",
-          "version": "repo-lines-v1:sha256:08b7dee4c4cef1ba4e663f34db7881407510b80d44e1c4cfdd8e86b9ae56b2e1:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyNDg2MGU4ZjEyMTM1NzQ1YmY4Y2JmNjUwZmZmYjhjYzFlNGE1MDhmNjJmMDYxYThmZWYwMDg4MjIxNjkwYzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmOTdiZjBlMzkyYWNmNWFjNDkwNDk4OGIwZTI0ZWY5MzU5YTg2NzQ0ODEwMmEyZmJhNzJlMzk3MTM4NGU0NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczN2M5YmViOTZlY2Y4YTcxNTc1Y2Q1NjAzNjAzNzYxZDJlYjZmYmI1NWNmZGE0MzA1NWE2Zjk4MTg0MmZiOGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE2YzI5NTIyN2FkN2I3OWIzMjQwNjY3MGEwMzM4OTg3ZWUyMzE4M2I5MTg0ZTAxYjk5OTMzYzI2NTJkYzM2NzQifQ"
+          "version": "repo-lines-v1:sha256:8bbff2a1c08c9c159e8d1a2fc98c0bc8c195b679593966355389c2c3dbdb26e5:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyNDg2MGU4ZjEyMTM1NzQ1YmY4Y2JmNjUwZmZmYjhjYzFlNGE1MDhmNjJmMDYxYThmZWYwMDg4MjIxNjkwYzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmOTdiZjBlMzkyYWNmNWFjNDkwNDk4OGIwZTI0ZWY5MzU5YTg2NzQ0ODEwMmEyZmJhNzJlMzk3MTM4NGU0NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczN2M5YmViOTZlY2Y4YTcxNTc1Y2Q1NjAzNjAzNzYxZDJlYjZmYmI1NWNmZGE0MzA1NWE2Zjk4MTg0MmZiOGQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE2YzI5NTIyN2FkN2I3OWIzMjQwNjY3MGEwMzM4OTg3ZWUyMzE4M2I5MTg0ZTAxYjk5OTMzYzI2NTJkYzM2NzQifQ"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1841-L1926",
@@ -413,6 +413,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-24T08:06:01.996Z"
+    "at": "2026-09-25T08:06:00.203Z"
   }
 }

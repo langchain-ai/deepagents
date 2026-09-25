@@ -1,166 +1,199 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Choose deterministic focused tests and package confidence runs for dcode, the Deep Agents SDK, GitHub issue labeling, and release-note automation. Route UI, persistence, retry, backend, middleware, and privileged workflow changes to the boundary that owns their contract.
-tags: [testing, dcode, deepagents, pytest, github-actions, release-notes]
+description: Package-local commands and deterministic boundary tests for the Deep Agents SDK, dcode, Talon, and ACP. Use focused fake-model, in-memory, and temporary-storage tests before expanding to package or integration suites.
+tags: [testing, deepagents, dcode, pytest, talon, acp, mcp]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-23T08:05:59.666Z
+    at: 2026-09-25T08:06:00.203Z
 sources:
-  - id: openwiki-source-2b395728f3412b772048ad1f
-    resource: repo://.github/scripts/labeling/semif-topic-classifier.js
-  - id: openwiki-source-9b32b94dc673575be27eaced
-    resource: repo://.github/scripts/labeling/topic-classifier.js
-  - id: openwiki-source-7eb504c4813c7bcde7464787
-    resource: repo://.github/scripts/tests/labeling/semif-topic-classifier.test.js
-  - id: openwiki-source-e0d5bd90fac633227fff1f23
-    resource: repo://.github/scripts/tests/release/release-notes.test.js
-  - id: openwiki-source-1496fd17117e4ab18f9b8ca7
-    resource: repo://.github/scripts/tests/release/test_release_notes.py
-  - id: openwiki-source-ce9e844e8d33dbc3e766d8f1
-    resource: repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py
-  - id: openwiki-source-7330cb37457ccdb62d7c41c7
-    resource: repo://.github/workflows/auto-label-by-package.yml
+  - id: openwiki-source-18f01ea5159b63661c1c8b1c
+    resource: repo://libs/acp/Makefile
+  - id: openwiki-source-8288b43b279d5cf7aaf1505d
+    resource: repo://libs/acp/tests/test_agent.py
   - id: openwiki-source-006b62af9993da1b48c11de8
     resource: repo://libs/code/Makefile
   - id: openwiki-source-11d6c59d85493653aee76558
     resource: repo://libs/code/tests/unit_tests/test_app.py
   - id: openwiki-source-30d7e9e18e8d7c616fbbb0bf
     resource: repo://libs/code/tests/unit_tests/test_auto_mode.py
+  - id: openwiki-source-26017a12b2a7ce9851b888a4
+    resource: repo://libs/code/tests/unit_tests/test_mcp_auth.py
   - id: openwiki-source-c04c6318f6e59e0d1c9d6182
     resource: repo://libs/code/tests/unit_tests/test_model_retry.py
   - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
     resource: repo://libs/code/tests/unit_tests/test_sessions.py
+  - id: openwiki-source-5a5147d4654f226b03e92ab9
+    resource: repo://libs/code/tests/unit_tests/test_workspace_diagnostics.py
   - id: openwiki-source-0f308f1610986e2f3ed6d53c
     resource: repo://libs/deepagents/Makefile
   - id: openwiki-source-5132c2eb08d294721cb871ff
     resource: repo://libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py
+  - id: openwiki-source-10e4084b6aa57e5cc82620b3
+    resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
   - id: openwiki-source-3dd6a4926b92ae499082a552
     resource: repo://libs/deepagents/tests/unit_tests/test_middleware.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-23T08:05:59.666Z" }
+  - id: openwiki-source-fb60ee46c55b974b8341651c
+    resource: repo://libs/DEVELOPMENT.md
+  - id: openwiki-source-ba53b2ab73965694b2510a58
+    resource: repo://libs/talon/Makefile
+  - id: openwiki-source-4d6726e17c8a0c78539a7d33
+    resource: repo://libs/talon/tests/test_runtime.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 ---
 
 # Testing Guide
 
-Test at the owning boundary first, then run the corresponding package suite. `libs/code` owns the dcode CLI, session state, retry policy, and Textual UI. `libs/deepagents` owns SDK backends and middleware. `.github/scripts/tests` owns committed automation contracts. These are deliberately separate: a mocked backend test does not prove dcode UI lifecycle, and a workflow/YAML test does not validate package runtime behavior.
+Work from the package that owns the behavior. This monorepo has independently versioned packages with their own `pyproject.toml`, `Makefile`, and test environment; sibling packages are editable local dependencies. Install dependencies explicitly with `uv sync --all-groups`, use the package `Makefile` as the standard command interface, and use `make help` when a target is uncertain. Test paths mirror source layout. Warnings are errors unless they are on the reviewed per-package allowlist.
 
 ```mermaid
 flowchart TD
-    Change["Changed behavior"] --> Area{"Owning boundary"}
-    Area -->|"dcode CLI or TUI"| CodeFocus["Run focused libs/code test"]
-    CodeFocus --> CodeSuite["Run libs/code make test"]
-    Area -->|"SDK backend or middleware"| SDKFocus["Run focused libs/deepagents test"]
-    SDKFocus --> SDKSuite["Run libs/deepagents make test"]
-    Area -->|"GitHub helper or workflow"| Automation["Run focused Node or pytest automation test"]
-    Automation --> Review["Run relevant automation suite"]
-    CodeSuite --> Integration{"External contract changed"}
-    SDKSuite --> Integration
-    Integration -->|"yes"| IntegrationRun["Run make integration_test"]
-    Integration -->|"no"| Done["Review targeted results"]
-    IntegrationRun --> Done
-    Review --> Done
+    Change["Changed behavior"] --> Owner{"Owning boundary"}
+    Owner --> SDK["Deep Agents SDK"]
+    Owner --> Code["dcode CLI and TUI"]
+    Owner --> Talon["Talon runtime"]
+    Owner --> ACP["ACP server"]
+    SDK --> SdkTest["Focused fake-model or backend test"]
+    Code --> CodeTest["Focused unit test"]
+    Talon --> TalonTest["Focused runtime test"]
+    ACP --> AcpTest["Focused protocol test"]
+    SdkTest --> Package["Run package test and lint"]
+    CodeTest --> Package
+    TalonTest --> Package
+    AcpTest --> Package
+    Package --> External{"External contract changed"}
+    External -->|"yes"| Integration["Run integration target if available"]
+    External -->|"no"| Review["Review focused results"]
+    Integration --> Review
 ```
 
-*Focused tests establish the changed contract; package and integration runs provide progressively broader confidence.*
+*Start at the boundary that owns the contract; broaden only after its deterministic test passes.*
 
-## Commands and escalation
+## Package commands and test discipline
 
-From `libs/code`, `make test` runs `tests/unit_tests/` with xdist, benchmarks disabled, and network sockets disabled except Unix sockets. `make integration_test` switches to `tests/integration_tests/`, permits the external interaction implied by that route, and applies a 30-second timeout. `make check` layers lint, type and import checks, command-catalog verification, extras/version/lock checks, and an advisory SDK-pin check over unit tests.
-
-```bash
-cd libs/code
-make test TEST_FILE=tests/unit_tests/test_model_retry.py
-make test
-make check
-make integration_test
-```
-
-The SDK package uses the same focused-test pattern from `libs/deepagents`; its unit target also uses xdist, disables sockets other than Unix sockets, and disables benchmarks. Use the integration target only when the changed promise needs a real provider, executable, or service—not merely because a unit test uses async code.
+From `libs/deepagents` and `libs/code`, a focused file uses `TEST_FILE`; `make test` runs unit tests with xdist, disables benchmarks, and blocks network sockets while allowing Unix sockets. `make integration_test` selects integration tests and uses a 30-second timeout. In dcode, `make check` adds Ruff formatting/checking, `ty`, import and command checks, unit tests, and repository consistency checks; an SDK-pin failure is advisory.
 
 ```bash
 cd libs/deepagents
-make test TEST_FILE=tests/unit_tests/backends/test_sandbox_backend.py
-make test TEST_FILE=tests/unit_tests/test_middleware.py
+uv sync --all-groups
+make test TEST_FILE=tests/unit_tests/test_end_to_end.py
+make lint
 make test
 make integration_test
+
+cd ../code
+make test TEST_FILE=tests/unit_tests/test_mcp_auth.py
+make check
 ```
 
-## dcode: choose the behavioral seam
+For an isolated direct invocation, use the package test group, for example `uv run --group test pytest tests/unit_tests/test_specific.py`. Keep the default socket block intact for unit tests: a change requiring a provider, service, or executable belongs in an integration route rather than weakening a deterministic test.
 
-| Changed contract | First command | Deterministic seam to preserve |
+Talon and ACP use package-local `TEST_FILE` too, but their targets do not use xdist. Both apply a 10-second pytest timeout and block non-Unix sockets. Talon's `make test` first runs its WhatsApp bridge Node unit tests; ACP's test target writes both terminal and XML coverage reports. Their lint targets run Ruff format-in-check mode, Ruff checks, and `ty` against the package.
+
+```bash
+cd libs/talon
+make test TEST_FILE=tests/test_runtime.py
+make lint
+
+cd ../acp
+make test TEST_FILE=tests/test_agent.py
+make lint
+```
+
+## Deep Agents SDK: prove end-to-end behavior without a provider
+
+Use `libs/deepagents/tests/unit_tests/test_end_to_end.py` when a change crosses graph construction, middleware, model invocation, tool calling, streaming, or filesystem backends. It scripts `AIMessage` responses through `GenericFakeChatModel`, invokes real agents, and parameterizes filesystem behavior over virtual filesystem, state, and store backends. The test seam is deliberately end-to-end: assertions observe messages, tool results, state continuity, and stream metadata rather than implementation-private calls.
+
+This is the preferred pattern for a new agent capability:
+
+1. Feed a finite fake-model response sequence containing the intended tool calls and final answer.
+2. Build the real agent with an in-memory checkpointer/store or temporary virtual filesystem.
+3. Invoke or stream it exactly as a caller would.
+4. Assert the externally visible messages, tool output, stream metadata, and persisted state, including a second turn when state shape or continuity matters.
+
+The end-to-end suite protects, among other contracts, filesystem tool use, multiple sequential calls, propagation of tags and metadata into main-agent streams, and prevention of a `StateBackend` files value degrading from a dictionary between turns. Fake models also let tests distinguish provider-class-specific behavior without credentials.
+
+### Middleware and sandbox boundaries
+
+Use `test_middleware.py` for composition and installation changes. It creates agents with `StateBackend`, `StoreBackend`, `CompositeBackend`, and small in-memory sandbox seams to verify that filesystem middleware provides its tools and stream channel, subagent middleware provides `task`, and combining middleware retains both capabilities. It is the narrow route for tool registration, message/result shaping, filesystem actions, or subagent composition.
+
+Use `backends/test_sandbox_backend.py` for `BaseSandbox` protocol and command-template changes. Its concrete in-process mock exercises server-side reads and small edits, upload-backed writes and large edits, parsing and failure propagation, cleanup, safe command construction, and sync/async parity. Do not substitute a live sandbox for these protocol tests; reserve integration coverage for a provider-specific boundary.
+
+## dcode: test the state and security boundary
+
+| Changed contract | Focused command | What the test should establish |
 | --- | --- | --- |
-| Approval, graph composition, local artifacts, or shell/tool policy | `make test TEST_FILE=tests/unit_tests/test_agent.py` | Constructed graph and capability behavior with fakes and local seams. |
-| Autonomous classifier decisions and approval routing | `make test TEST_FILE=tests/unit_tests/test_auto_mode.py` | Fake structured models, stores, events, and temporary paths. |
-| Model error classification, backoff, retry events, or streaming | `make test TEST_FILE=tests/unit_tests/test_model_retry.py` | Controlled errors, clocks, and no-op sleeps. |
-| Thread listing, metadata, deletion, or conversation archive cleanup | `make test TEST_FILE=tests/unit_tests/test_sessions.py` | Temporary SQLite checkpoints and filesystem archives. |
-| Textual startup, resume, queue, cancellation, restart, or teardown | `make test TEST_FILE=tests/unit_tests/test_app.py` | Textual async lifecycle and rendered-state behavior. |
+| MCP OAuth storage, discovery, callback, refresh, or re-auth | `make test TEST_FILE=tests/unit_tests/test_mcp_auth.py` | Private, isolated token persistence and safe authentication lifecycle behavior. |
+| MCP config discovery, loading, trust, filtering, or reconnect | `make test TEST_FILE=tests/unit_tests/test_mcp_tools.py` | Configuration and tool-selection behavior without an MCP service. |
+| Bound workspace configuration or user-facing drift explanation | `make test TEST_FILE=tests/unit_tests/test_workspace_diagnostics.py` | Persisted diagnostics remain useful without storing private paths or values. |
+| Approval classifier routing or failure fallback | `make test TEST_FILE=tests/unit_tests/test_auto_mode.py` | Structured fake-model policy decisions fail closed at the right boundary. |
+| Model retry classification or streaming retry cleanup | `make test TEST_FILE=tests/unit_tests/test_model_retry.py` | Retryable failures retry deterministically; control-flow interrupts do not. |
+| Checkpoint metadata, thread lookup, or deletion | `make test TEST_FILE=tests/unit_tests/test_sessions.py` | SQLite persistence and cleanup invariants. |
+| Startup, resume, queue, restart, or teardown in the terminal UI | `make test TEST_FILE=tests/unit_tests/test_app.py` | User-visible lifecycle ordering under Textual scheduling. |
 
-### Auto mode and retries
+### MCP authentication and configuration
 
-`test_auto_mode.py` is the security-sensitive route for classifier-backed approval. It checks deterministic allowances separately from classifier decisions, verifies that writes outside the permitted workspace or through symlink escape cannot obtain an accidental bypass, and exercises unavailable, timed-out, malformed, and context-overflow classifier paths. Keep these tests provider-free: inject structured fake models and in-memory or temporary stores, then assert the resulting approval plan, event, and fallback behavior.
+`test_mcp_auth.py` uses an isolated home/state directory, canned `httpx`/`httpx2` errors and responses, callback handlers, and controlled threads rather than a remote server. For `FileTokenStorage`, retain tests for server and URL isolation, invalid server-name rejection, POSIX `0600` permissions, corrupt-file remediation, expiry sidecars, and concurrent update serialization. Its async API must move blocking disk reads and writes off the event-loop thread; cancellation must remain joined to an in-flight persistence operation so a rotated token is not abandoned. A failed write must be surfaced rather than silently lost.
 
-`test_model_retry.py` is the narrow route for model-node retry changes. It distinguishes transient transport/service failures from authentication, permission, invalid-request, and context-overflow failures; graph interrupts must propagate as graph control flow, not be reported as retryable or non-transient model errors. It also protects retry/attempt status events and streaming behavior, including avoiding orphaned output from a failed streaming attempt. Patch sleep and use controlled exception/model doubles so retry timing never makes the unit suite flaky.
+OAuth/provider tests should drive the generator flow by returning canned HTTP responses to it. Important boundaries include cold-start expiry restoration, legacy-token refresh behavior, Bearer `resource_metadata` challenges through wrapped exceptions, loopback and paste-back callback parsing, and metadata discovery/caching for later refresh. Error summaries must give a re-login or configuration remedy without copying an unknown exception payload that may contain credentials. When modifying configuration resolution, pair this file with `test_mcp_tools.py`, `test_mcp_login_service.py`, or the MCP UI test that owns the visible continuation.
 
-### Sessions and Textual lifecycle
+### Workspace diagnostics
 
-`test_sessions.py` tests the durable checkpoint boundary directly with temporary SQLite. It keeps legacy short IDs and newer generated IDs discoverable together, takes current `cwd` and update metadata from the newest checkpoint, and treats checkpoint deletion as authoritative even when offloaded-history cleanup fails. Run it whenever checkpoint queries, metadata ordering, thread deletion, or archive location changes.
+`test_workspace_diagnostics.py` isolates the session database through `DEEPAGENTS_CODE_SERVER_DB_PATH` and inspects the real SQLite rows. It verifies that a thread binding persists a versioned, allowlisted snapshot; path-valued fields are excluded, oversized values are omitted, and a refusal never overwrites the prior comparison snapshot. On a later bind or require operation, diagnostics distinguish configuration drift, unbound threads, and context mismatch.
 
-`test_app.py` is not interchangeable with a helper-only test: it drives the application’s async state and widgets. For resume changes, protect the ordering invariant that restored history—and any adopted model—settles before startup submission; failures must clear the resuming state rather than strand the UI. For queue, cancellation, restart, and shutdown changes, test the user-visible release of a turn/queue and the correct teardown ordering under Textual scheduling.
+This is also a privacy boundary. Tests assert that diagnostic changes and logs name safe fields but not their sensitive values, snapshots tolerate legacy/malformed input as specified, and rendered restoration advice treats unavailable historical values as unavailable—not as an instruction to unset them. Change the allowlist, serialization, refusal behavior, or UI-facing diagnostics only with these cases covered.
+
+### Autonomous mode, retry, sessions, and the TUI
+
+Auto-mode tests inject fake structured models, stores, events, and temporary paths. They protect bounded classifier history, context-overflow fallback, deterministic trusted-tool routes, write and symlink-escape safeguards, and the fail-closed path when the classifier is unavailable. Keep classifier tests provider-free and assert the decision plan and emitted event, not just a helper return value.
+
+Model-retry tests use controlled exceptions, streaming model doubles, and no-sleep seams. They separate retryable transport/provider errors from authentication, permission, invalid-request, and context-overflow cases; LangGraph interrupts remain control flow. The suite also protects attempt/status events and prevents failed streaming attempts from leaving orphaned output.
+
+Session tests use temporary SQLite checkpoints and filesystem archives. They cover coexistence of legacy and current thread identifiers, metadata from the newest checkpoint, deletion, and best-effort offloaded-history cleanup. Test a persistence change there rather than relying on the UI to discover ordering bugs.
 
 ```mermaid
 sequenceDiagram
     participant User
     participant TUI as Textual TUI
-    participant Session as Session state
+    participant Sessions as Session storage
     participant Agent as Agent server
     User->>TUI: resume or submit input
-    TUI->>Session: resolve thread and restore state
-    Session-->>TUI: history and model selection
+    TUI->>Sessions: resolve thread and restore history
+    Sessions-->>TUI: history and selected model
     TUI->>Agent: start or reconnect
-    alt restored successfully
+    alt restore succeeds
         TUI->>TUI: submit startup or queued input
     else restore or startup fails
         TUI->>TUI: clear resuming state and release input
     end
 ```
 
-*The TUI tests protect lifecycle ordering and recovery, rather than only the data returned by a session helper.*
+*`test_app.py` tests the ordering and recovery observable to an interactive user.*
 
-## Deep Agents SDK: backend and middleware contracts
+`test_app.py` drives the async Textual app, so it is the boundary for resume/startup ordering, queued input, cancellation, restart, and shutdown. Preserve the invariant that restored history and adopted model settle before startup submission. A failed resume must clear the resuming state, and an interrupted or restarted turn must make input/queue progress possible again. Add a focused widget test for isolated rendering or key handling, but retain an app-level lifecycle test whenever scheduler ordering can change the outcome.
 
-Use `test_sandbox_backend.py` for `BaseSandbox` file and command behavior. Its `MockSandbox` is a concrete in-process transport seam: reads and small edits execute server-side commands; writes upload files; oversized edits upload temporary old/new payloads and perform a server-side replacement. The suite checks parsing and propagation of backend/child failures, pagination and binary reads, preflight errors, cleanup, traversal-safe command construction, and sync/async parity. Prefer this test to a live sandbox whenever a change is in the shared backend protocol or command template.
+## Talon runtime: replacement, approval, and recovery
 
-Use `test_middleware.py` when changing filesystem tools, tool descriptions, result shaping, message eviction, or subagent composition. It builds agents with `StateBackend`, `StoreBackend`, `CompositeBackend`, and a small sandbox-capable backend, then invokes tools against in-memory state. The suite establishes that filesystem middleware installs its file tools and stream channel, subagent middleware installs `task`, and composition preserves both sets. It also exercises read/list/search/edit behavior and result limits without requiring a filesystem service.
+Run `libs/talon/tests/test_runtime.py` for `DeepAgentRuntime` lifecycle changes. It replaces `create_deep_agent` with recording graphs and uses in-memory stores, fake tools, callbacks, and temporary directories to make runtime wiring inspectable. The focused tests cover construction of the composite backend, checkpointer, tools, skills, memory, subagents, model settings, and environment-derived limits without a model provider.
 
-## Automation: labeling and release notes
+Tool refresh and MCP reload are particularly sensitive: refreshed tools rebuild the graph between turns, while an MCP configuration reload must replace tools and graph transactionally. If construction of the replacement graph fails, the previous tools and graph remain active. Similarly, an invocation already waiting on a human approval must resume against the graph that raised its interrupt even if the runtime graph is later replaced.
 
-Run automation tests from the repository root. They use local Node processes, mocked `fetch`, temporary workspaces, and static workflow inspection; they do not perform GitHub mutations.
+Runtime approval tests send a graph interrupt through an `AgentRequest` approval handler and assert the resumed decision. They also assert that rejected calls do not run, scheduled/cron invocations auto-reject gated tools because no interactive approval exists, and logs expose action names/counts but not argument values or raw conversation identifiers. Recovery tests repair a dangling tool call before writing the interruption marker at the latest checkpoint. Treat these as lifecycle and privacy invariants, not merely mock expectations.
 
-```bash
-node --test .github/scripts/tests/labeling/semif-topic-classifier.test.js
-node --test .github/scripts/tests/release/release-notes.test.js \
-  .github/scripts/tests/release/draft-release-notes.test.js
-python -m pytest .github/scripts/tests/release/test_release_notes.py -v
-python -m pytest .github/scripts/tests/workflows/test_workflow_secret_scoping.py -v
-```
+## ACP: protocol behavior with a fake client and model
 
-### Topic labeling
+`libs/acp/tests/test_agent.py` is the protocol-level end-to-end suite for `AgentServerACP`. It constructs real deep-agent or LangChain graphs with `MemorySaver`, connects a `FakeACPClient`, creates ACP sessions, then calls `prompt`, cancellation, mode/config updates, and session loading. This tests the ACP boundary without a live client or LLM.
 
-Run `semif-topic-classifier.test.js` for a change to the Semif request, response validation, ranking, labels, threshold, headers, batching, or timeout. It verifies that only allowed labels are submitted and returned, each label receives only its own description, scores must be valid probabilities, the 0.8 threshold is inclusive, and at most three distinct labels are returned in score order. It also protects the 32-question batch cap and the abort signal through response-body parsing. The default classifier follows a separate Groq contract; provider selection and its JSON allowlist belong to `topic-classifier.js`, so run its Node suite alongside Semif when shared routing or taxonomy behavior changes.
+Use it for streamed content ordering, reasoning and multimodal blocks, tool-call start/result updates, per-session cancellation, and human-in-the-loop permissions. In particular, preserve whitespace-only reasoning deltas, emit content before its tool call, prompt once per interrupt, and apply `approve_always` only to the appropriate session's allowed command/tool type.
 
-The issue labeling workflow confines topic-classifier credentials to the opened-issue topic-label step in the dedicated labeling environment; the classifier routes to Groq by default or Semif when configured, bounds untrusted input, filters labels to the allowlist, and fails as a warning at the workflow boundary.
-
-### Release notes
-
-`release-notes.test.js` is the behavioral suite for release PR recognition, exact version-section extraction/replacement, command parsing, instruction sanitization, bot identity checks, fingerprints, override comments, and apply/draft flows. Its mocked GitHub client and temporary changelog distinguish stale or forged state from a valid release branch without writing a repository. Use it for helper changes; use `test_release_notes.py` as the pytest entrypoint and workflow-contract suite when workflow YAML, permissions, required checks, component mapping, or privileged job structure changes.
-
-Release-note tests run the curated Node suites and assert that required checks target the validated PR head, every release-please component has a target, and privileged draft/apply workflow paths remain gated, token-scoped, and free of untrusted checkout or arbitrary shell operations.
+When `load_sessions=True`, test a persisted session through a restarted server. The suite verifies replay of user/agent messages, visible reasoning, tool calls, compacted history, and saved mode/model options. It also rejects session IDs the server did not create and reload requests from a different `cwd`; these tests protect ownership and workspace isolation. Mode or model changes rebuild the agent using the session context, including its original working directory.
 
 ## Completion checklist
 
-1. Run the smallest owned test file first, using fakes, temporary SQLite/filesystems, controlled events, and mock transports rather than live infrastructure.
-2. Run `make test` in the changed package after a focused test passes; run `make check` for a dcode change intended for review.
-3. Test dcode lifecycle through `test_app.py`, persistent thread behavior through `test_sessions.py`, and retry policy through `test_model_retry.py`; do not collapse them into generic graph tests.
-4. Test SDK protocol and command-template changes through `test_sandbox_backend.py`, and tool/middleware composition through `test_middleware.py`.
-5. Run Node automation tests separately from package tests. Include workflow-secret scoping when changing classifier credentials or their environment.
-6. Escalate to `make integration_test` only for a changed external contract, then investigate any failure at the narrowest responsible boundary.
+1. Sync the changed package and run its focused test file first.
+2. Use fake models, fake clients, in-memory stores/checkpointers, temporary files, and canned transport responses to exercise the real graph or protocol boundary.
+3. Preserve socket blocking and warnings-as-errors in unit tests; do not add live provider dependencies to recover determinism.
+4. Run `make test` and `make lint` in the changed package; run `make check` for a dcode review-ready change.
+5. Run dcode MCP, workspace, persistence, retry, and Textual tests at their distinct boundaries rather than folding them into a generic agent test.
+6. For Talon graph replacement or ACP session work, include the relevant concurrency, ownership, approval, and recovery failure path.
+7. Escalate to `make integration_test` only when the externally hosted contract changed.

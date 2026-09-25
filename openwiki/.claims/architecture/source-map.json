@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f4b25edf824d55a0e15574f056f5344e0f6e3a27853b3298046f98303cb36c8e",
+  "pageVersion": "sha256:8be7a541140816fec5bdbb73abde38739b1c56e44660463baac6edeb5f170494",
   "claims": [
     {
       "id": "claim_1ccebbf030474db9a31785700d47a5d0",
@@ -100,7 +100,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:e6c57390b37a9fb54e9388e5b9d439d335eebd5fb69e271e10eef1b96defe57d"
+          "version": "repo-file-v1:sha256:c8f6784ca9bc12d339526667c6898608c326b8121ccd39036fab125491840715"
         }
       ]
     },
@@ -110,7 +110,7 @@
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:98947404a8fc954285982a611564c957ac77cd393f995aaf3aee7b19387ad672"
+          "version": "repo-file-v1:sha256:e5f4e2a7253cad1ac8f72dfcce99ba82661d21122a62ae13bfefb0f41e55cf88"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -120,21 +120,21 @@
     },
     {
       "id": "claim_b7d8cff022f4413e8badbab12c753210",
-      "statement": "The current release manifest baselines are deepagents 0.7.18, deepagents-acp 0.0.12, deepagents-code 0.1.75, deepagents-talon 0.0.8, and Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7.",
+      "statement": "The current release manifest baselines are deepagents 0.7.19, deepagents-acp 0.0.12, deepagents-code 0.1.77, deepagents-talon 0.0.8, and Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:98947404a8fc954285982a611564c957ac77cd393f995aaf3aee7b19387ad672"
+          "version": "repo-file-v1:sha256:e5f4e2a7253cad1ac8f72dfcce99ba82661d21122a62ae13bfefb0f41e55cf88"
         }
       ]
     },
     {
       "id": "claim_221b76acb3984fa5a1707e9df459d7fb",
-      "statement": "Code exposes both deepagents-code and dcode console scripts through deepagents_code:cli_main, pins deepagents exactly at 0.7.18, requires langchain-quickjs >=0.3.4,<0.4.0, and locally develops ACP and partner packages as editable sibling sources.",
+      "statement": "Code exposes both deepagents-code and dcode console scripts through deepagents_code:cli_main, pins deepagents exactly at 0.7.19, requires langchain-quickjs >=0.3.4,<0.4.0, and locally develops ACP and partner packages as editable sibling sources.",
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:a7d73920dae227cca0fdcd37cfa400febaac0d8cd35c25217c6e6401110816fc"
+          "version": "repo-file-v1:sha256:2d14af7a5648af6d20d344480917fd11836c1745b05af3b76d33f2dfc796282c"
         }
       ]
     },
@@ -144,7 +144,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:1968993918ba543591d6ab20003513ab748cc0011b94d7fdfeee3f8df3e51ba4"
+          "version": "repo-file-v1:sha256:bf6d9ccff1df66aeb4568ca94fce8220a79f70085916257f8dee227826d37673"
         }
       ]
     },
@@ -310,7 +310,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:a7d73920dae227cca0fdcd37cfa400febaac0d8cd35c25217c6e6401110816fc"
+          "version": "repo-file-v1:sha256:2d14af7a5648af6d20d344480917fd11836c1745b05af3b76d33f2dfc796282c"
         }
       ]
     },
@@ -384,7 +384,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py",
-          "version": "repo-file-v1:sha256:83d9c96c5b10f93d1335c5663d729987a0ca794a84f9cadcc99947d765e12f5c"
+          "version": "repo-file-v1:sha256:527a8c3dae3bea0013d0831a0471a8bddf337291d2631fc57993f51bc4bb79a8"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
@@ -399,6 +399,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-24T08:06:01.996Z"
+    "at": "2026-09-25T08:06:00.203Z"
   }
 }

@@ -1,11 +1,8 @@
 ---
 type: repository source map
-title: Repository Source Map
-description: Practical map of Deep Agents package ownership, executable entrypoints, focused tests, and independent release units. It highlights the Code MCP loader and debug console plus the SDK backend and context-eviction seams.
+title: Source Map and Ownership Boundaries
+description: Practical change map from Deep Agents public surfaces to their implementation owners, focused tests, package manifests, and independent release units. It highlights lifecycle and safety boundaries that must remain aligned across packages.
 tags: [source-map, architecture, monorepo, deepagents, releases, integrations]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-24T08:06:01.996Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -81,10 +78,13 @@ sources:
     resource: repo://libs/talon/tests/test_mcp_middleware.py
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-09-24T08:06:01.996Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-25T08:06:00.203Z
 ---
 
-# Repository Source Map
+# Source Map and Ownership Boundaries
 
 Use this page to select the owning boundary before changing behavior. This is a monorepo of independently versioned packages: the core SDK owns reusable agent construction and middleware, while Code, ACP, Talon, evaluations, and partner integrations own their product boundaries. See the [architecture overview](./overview.md) for the SDK model and [development operations](../operations/development.md) for repository commands and release workflow.
 
@@ -173,9 +173,9 @@ Release Please manages nine independent Python release units, with package-speci
 
 | Path | Distribution / component | Manifest baseline |
 | --- | --- | --- |
-| `libs/deepagents` | `deepagents` / `deepagents` | `0.7.18` |
+| `libs/deepagents` | `deepagents` / `deepagents` | `0.7.19` |
 | `libs/acp` | `deepagents-acp` / `deepagents-acp` | `0.0.12` |
-| `libs/code` | `deepagents-code` / `deepagents-code` | `0.1.75` |
+| `libs/code` | `deepagents-code` / `deepagents-code` | `0.1.77` |
 | `libs/talon` | `deepagents-talon` / `deepagents-talon` | `0.0.8` |
 | `libs/partners/daytona` | `langchain-daytona` / `langchain-daytona` | `0.0.8` |
 | `libs/partners/modal` | `langchain-modal` / `langchain-modal` | `0.0.6` |
@@ -183,7 +183,7 @@ Release Please manages nine independent Python release units, with package-speci
 | `libs/partners/vercel` | `langchain-vercel-sandbox` / `langchain-vercel-sandbox` | `0.0.2` |
 | `libs/partners/quickjs` | `langchain-quickjs` / `langchain-quickjs` | `0.3.7` |
 
-The Code distribution is `0.1.75`, pins `deepagents==0.7.18`, requires `langchain-quickjs>=0.3.4,<0.4.0`, and develops the SDK, ACP, and partner packages as editable siblings. That exact SDK pin means a consumed SDK change requires a paired Code release and validation. Talon is an experimental local runtime host entered via `deepagents_talon.__main__:main`; it accepts `deepagents>=0.7.0` and `deepagents-code>=0.1.71,<1.0.0`. QuickJS is independently released as `langchain-quickjs`, supplies JavaScript REPL middleware, and accepts `deepagents>=0.7.0,<0.8.0`.
+The Code distribution is `0.1.77`, pins `deepagents==0.7.19`, requires `langchain-quickjs>=0.3.4,<0.4.0`, and develops the SDK, ACP, and partner packages as editable siblings. That exact SDK pin means a consumed SDK change requires a paired Code release and validation. Talon is an experimental local runtime host entered via `deepagents_talon.__main__:main`; it accepts `deepagents>=0.7.0` and `deepagents-code>=0.1.71,<1.0.0`. QuickJS is independently released as `langchain-quickjs`, supplies JavaScript REPL middleware, and accepts `deepagents>=0.7.0,<0.8.0`.
 
 Talon's MCP provider independently loads available servers, prefixes and metadata-marks tools, adds management capabilities, rejects name conflicts, and serializes revision-gated refresh. Its middleware wraps only metadata-marked MCP tools, scopes authorization to the individual call ID, normalizes empty optional strings, converts MCP protocol errors to safe `ToolMessage` values, and propagates other exceptions. Talon local subagents build fresh graphs with selected tools, MCP and applicable approval middleware, and no checkpointer; fork mode and malformed async configuration fail closed.
 

@@ -1,8 +1,11 @@
 ---
 type: protocol integration
-title: Agent Client Protocol Bridge
+title: Agent Client Protocol Integration
 description: Explains how deepagents-acp projects a LangGraph agent into an ACP stdio server, including session-scoped graph construction, streaming, permissions, cancellation, and optional durable recovery. It also describes dcode's ACP launcher and its separate tool, policy, and checkpoint ownership.
 tags: [acp, deepagents, langgraph, dcode, stdio, sessions, streaming]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-25T08:06:00.203Z
 sources:
   - id: openwiki-source-532ea636a0657c1d2714bd7a
     resource: repo://libs/acp/CHANGELOG.md
@@ -26,13 +29,10 @@ sources:
     resource: repo://libs/code/deepagents_code/main.py
   - id: openwiki-source-5dc287d30945406e0821cb29
     resource: repo://libs/code/tests/integration_tests/test_acp_mode.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-19T08:04:56.519Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-19T08:04:56.519Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 ---
 
-# Agent Client Protocol Bridge
+# Agent Client Protocol Integration
 
 [Agent Client Protocol (ACP)](https://agentclientprotocol.com/overview/introduction) lets an editor communicate with an agent process over stdio. `deepagents-acp` supplies `AgentServerACP`, an ACP `Agent` implementation that turns a compiled LangGraph into ACP session operations and `session/update` events. It is an adapter, not a new agent runtime: graph construction, tools, checkpoint storage, and interrupt policy remain application responsibilities.
 

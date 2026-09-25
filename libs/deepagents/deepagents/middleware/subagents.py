@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
+from deepagents.middleware._skill_tools import SKILL_TOOLS_DISCLOSED_KEY
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.summarization import (
@@ -47,12 +48,13 @@ if TYPE_CHECKING:
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
 
-_FORK_EXCLUDED_STATE_KEYS = frozenset({"structured_response", SUMMARIZATION_EVENT_KEY, SUMMARIZATION_SESSION_ID_KEY})
+_FORK_EXCLUDED_STATE_KEYS = frozenset({"structured_response", SUMMARIZATION_EVENT_KEY, SUMMARIZATION_SESSION_ID_KEY, SKILL_TOOLS_DISCLOSED_KEY})
 """State a fork must not resume.
 
 The summarization event is folded into the fork's messages instead. Dropping the
 session ID lets the subagent generate its own, and dropping a prior structured response
-ensures it cannot be mistaken for the fork's result.
+ensures it cannot be mistaken for the fork's result. The disclosed skill tools
+describe the parent's last model call; the fork records its own.
 """
 
 _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
@@ -115,6 +117,11 @@ class SubAgent(TypedDict):
 
             List of paths to skill directories
             (e.g., `["/skills/user/", "/skills/project/"]`).
+        skill_tools: Tools this subagent sees only after reading a skill that
+            names them in `metadata.include_tools`.
+
+            Never inherited from the main agent. Requires `skills`, and is
+            forbidden under `mode="fork"`, which inherits the parent's.
         permissions: Filesystem permission rules for this subagent.
 
             If omitted, inherits the parent agent's permissions. If provided,
@@ -152,6 +159,9 @@ class SubAgent(TypedDict):
 
     skills: NotRequired[list[str]]
     """Skill source paths for `SkillsMiddleware`. Forbidden under `mode="fork"`."""
+
+    skill_tools: NotRequired[Sequence[BaseTool | Callable[..., Any]]]
+    """Tools disclosed once a skill naming them is read. Requires `skills`; forbidden under `mode="fork"`."""
 
     permissions: NotRequired[list[FilesystemPermission]]
     """List of `FilesystemPermission` rules for this subagent.
@@ -215,8 +225,8 @@ class SubAgent(TypedDict):
 
     Under `fork`, the subagent receives the parent's effective conversation
     history and state, and mirrors the parent's prompt-producing middleware so
-    it rebuilds the same system prompt. It cannot define `skills`, which would
-    diverge from the parent's. `tools` isn't restricted the same way -- a fork's
+    it rebuilds the same system prompt. It cannot define `skills` or
+    `skill_tools`, which would diverge from the parent's. `tools` isn't restricted the same way -- a fork's
     own tools work normally; the tradeoff is cache misses.
     """
 
@@ -320,6 +330,9 @@ def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
     if mode == "fork" and spec.get("skills"):
         msg = f"SubAgent '{spec['name']}' cannot set skills under mode='fork'; the parent's skills are inherited instead."
         raise ValueError(msg)
+    if mode == "fork" and spec.get("skill_tools"):
+        msg = f"SubAgent '{spec['name']}' cannot set skill_tools under mode='fork'; the parent's skill tools are inherited instead."
+        raise ValueError(msg)
 
 
 def _validate_unique_subagent_names(subagents: Sequence[_SubAgentSpec]) -> None:
@@ -398,6 +411,7 @@ _EXCLUDED_STATE_KEYS = {
     "todos",
     "structured_response",
     "skills_metadata",
+    SKILL_TOOLS_DISCLOSED_KEY,
     _FORKED_CONTEXT_KEY,
 }
 """State keys that are excluded when passing state to subagents and when
@@ -412,7 +426,8 @@ When returning updates:
     to the main agent.
 3. `skills_metadata` is excluded so a subagent loads skills from its own
     sources rather than reusing the parent's list, and cannot replace the
-    parent's list with its own.
+    parent's list with its own. `_skill_tools_disclosed` is excluded because it
+    describes one agent's latest model call.
 4. Agent-private fields on middleware state schemas are excluded from both
     subagent output and subagent inputs.
 """

@@ -127,6 +127,11 @@ on:
           - semif-choice-tool-selector
           - semif-hybrid-tool-selector
           - tau3
+      relevance_threshold:
+        description: "Minimum tool relevance (0–1) for Jev and SemIf Noul selectors; default 0.5. Ignored by other agents."
+        required: true
+        default: "0.5"
+        type: string
       n_tasks:
         description: "Maximum number of tasks to run (0 = all)."
         required: true
@@ -327,6 +332,7 @@ jobs:
       dataset: ${{ inputs.dataset_override || inputs.dataset }}
       dataset_path: ${{ inputs.dataset_path }}
       agent_impl: ${{ inputs.agent_impl }}
+      relevance_threshold: ${{ inputs.relevance_threshold }}
       # Empty: the leaf derives the dataset name itself.
       langsmith_dataset: ""
       rollouts: ${{ inputs.rollouts_per_task }}

@@ -18,6 +18,9 @@ on:
       agent_impl:
         type: string
         default: "dcode"
+      relevance_threshold:
+        type: string
+        default: "0.5"
       branch:
         type: string
         default: "current"
@@ -295,6 +298,7 @@ jobs:
       HARBOR_N_SHARDS: ${{ matrix.n_shards || needs.prep.outputs.n_shards || '1' }}
       HARBOR_SANDBOX_ENV: ${{ matrix.sandbox_env || inputs.sandbox_env }}
       HARBOR_AGENT_IMPL: ${{ matrix.agent_impl || inputs.agent_impl }}
+      HARBOR_RELEVANCE_THRESHOLD: ${{ inputs.relevance_threshold }}
       HARBOR_BRANCH: ${{ inputs.branch }}
       HARBOR_MODEL: ${{ matrix.model }}
       # Per-leaf category, so a multi-category flat_matrix run can be
@@ -930,6 +934,22 @@ jobs:
             --agent-env 'OPENAI_BASE_URL=${OPENAI_BASE_URL}'
           )
           agent_host_args=()
+          if [[ "$HARBOR_AGENT_IMPL" == "ts-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-tool-selector" ]]; then
+            python3 - <<'PY'
+          import math
+          import os
+          import sys
+
+          raw = os.environ["HARBOR_RELEVANCE_THRESHOLD"]
+          try:
+              threshold = float(raw)
+          except ValueError:
+              sys.exit("::error::relevance_threshold must be a number between 0 and 1")
+          if not math.isfinite(threshold) or not 0 <= threshold <= 1:
+              sys.exit("::error::relevance_threshold must be a number between 0 and 1")
+          PY
+            agent_env_args+=(--agent-env "HARBOR_RELEVANCE_THRESHOLD=$HARBOR_RELEVANCE_THRESHOLD")
+          fi
           if [[ "$HARBOR_AGENT_IMPL" == "ts-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "ts-hybrid-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-choice-tool-selector" || "$HARBOR_AGENT_IMPL" == "semif-hybrid-tool-selector" ]]; then
             agent_env_args+=(
               --agent-env 'TYPESAFE_API_KEY=${TYPESAFE_API_KEY}'
@@ -1089,6 +1109,9 @@ jobs:
               echo "- Actual retries: ${ACTUAL_RETRIES:-unknown}"
             fi
             echo "- Agent: Harbor LangGraph ${HARBOR_AGENT_GRAPH}"
+            if [[ "$HARBOR_AGENT_GRAPH" == "ts-tool-selector" || "$HARBOR_AGENT_GRAPH" == "semif-tool-selector" ]]; then
+              echo "- Tool relevance threshold: ${HARBOR_RELEVANCE_THRESHOLD}"
+            fi
             echo "- LangSmith dataset: ${HARBOR_LANGSMITH_DATASET}"
             echo "- LangSmith experiment: ${HARBOR_LANGSMITH_EXPERIMENT}"
             if [ "$LATEST_JOB_OUTCOME" = "success" ]; then

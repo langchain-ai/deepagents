@@ -15,6 +15,10 @@ on:
         description: "Comma-separated deep-agents harnesses for the autonomous and context categories (conversation always uses tau3). Each must be bare (SDK create_deep_agent) or dcode (deep-agents-code product agent). Every listed config runs as its own (model, config) row."
         type: string
         default: "bare"
+      relevance_threshold:
+        description: "Minimum tool relevance (0–1) for Jev and SemIf Noul selectors; default 0.5. Ignored by other agents."
+        type: string
+        default: "0.5"
       branches_to_compare:
         description: "Comma-separated git refs to pull the agent source (deepagents + deepagents-code + quickjs) from, one eval per (model, branch, config). Empty compares only the current checkout. Datasets, verifiers, and scoring always come from the workflow ref."
         type: string
@@ -314,6 +318,7 @@ jobs:
       dataset: ""
       dataset_path: ""
       agent_impl: ""
+      relevance_threshold: ${{ inputs.relevance_threshold }}
       rollouts: ${{ inputs.rollouts }}
       n_retries: ${{ inputs.n_retries }}
       agent_timeout_multiplier: ${{ inputs.agent_timeout_multiplier }}

@@ -801,11 +801,13 @@ def test_make_typesafe_tool_selector_graph_adds_selector(
     monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
     monkeypatch.setattr(langgraph_agent, "LocalShellBackend", lambda **_: "backend")
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **kwargs: kwargs)
-    selected: list[tuple[str, str | None]] = []
+    selected: list[tuple[str, str | None, float | None]] = []
 
     def selector(name: str):
-        def build(*, classifier_model: str | None = None) -> str:
-            selected.append((name, classifier_model))
+        def build(
+            *, classifier_model: str | None = None, relevance_threshold: float | None = None
+        ) -> str:
+            selected.append((name, classifier_model, relevance_threshold))
             return name
 
         return build
@@ -816,6 +818,7 @@ def test_make_typesafe_tool_selector_graph_adds_selector(
         TsHybridToolSelectorMiddleware=selector("hybrid"),
     )
     monkeypatch.setattr(langgraph_agent, "import_module", lambda _: module)
+    monkeypatch.setenv("HARBOR_RELEVANCE_THRESHOLD", "0.7")
 
     graph = getattr(langgraph_agent, factory)({"configurable": {"model": "test:model"}})
 
@@ -824,8 +827,33 @@ def test_make_typesafe_tool_selector_graph_adds_selector(
         "TsChoiceToolSelectorMiddleware": "choice",
         "TsHybridToolSelectorMiddleware": "hybrid",
     }[selector_name]
-    assert selected == [(expected, classifier_model)]
+    assert selected == [
+        (expected, classifier_model, 0.7 if selector_name == "TsToolSelectorMiddleware" else None)
+    ]
     assert cast("dict[str, object]", graph)["middleware"] == [expected]
+
+
+@pytest.mark.parametrize("threshold", ["0.3", "0.5", "0.7"])
+def test_make_ts_tool_selector_graph_uses_threshold(
+    monkeypatch: pytest.MonkeyPatch, threshold: str
+) -> None:
+    monkeypatch.setenv("HARBOR_RELEVANCE_THRESHOLD", threshold)
+    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
+    monkeypatch.setattr(langgraph_agent, "LocalShellBackend", lambda **_: "backend")
+    monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **kwargs: kwargs)
+    captured: list[float] = []
+    module = SimpleNamespace(
+        TsToolSelectorMiddleware=lambda *, relevance_threshold: captured.append(
+            relevance_threshold
+        ),
+        TsChoiceToolSelectorMiddleware=object(),
+        TsHybridToolSelectorMiddleware=object(),
+    )
+    monkeypatch.setattr(langgraph_agent, "import_module", lambda _: module)
+
+    langgraph_agent.make_ts_tool_selector_graph({"configurable": {"model": "test:model"}})
+
+    assert captured == [float(threshold)]
 
 
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):

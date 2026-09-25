@@ -444,11 +444,14 @@ def _make_bare_graph(
             "semif-choice": typesafe_middleware.TsChoiceToolSelectorMiddleware,
             "semif-hybrid": typesafe_middleware.TsHybridToolSelectorMiddleware,
         }[selector]
-        middleware = [
-            selector_class(classifier_model="semif-qwen3.5-4b")
-            if selector.startswith("semif")
-            else selector_class()
-        ]
+        selector_kwargs: dict[str, object] = {}
+        if selector.startswith("semif"):
+            selector_kwargs["classifier_model"] = "semif-qwen3.5-4b"
+        if selector in {"typesafe", "semif"}:
+            selector_kwargs["relevance_threshold"] = float(
+                os.environ.get("HARBOR_RELEVANCE_THRESHOLD", "0.5")
+            )
+        middleware = [selector_class(**selector_kwargs)]
     else:
         middleware = []
     return create_deep_agent(

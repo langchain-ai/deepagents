@@ -173,6 +173,28 @@ def test_disclosed_record_follows_each_model_call(tmp_path: Path, mode: str) -> 
     assert "_skill_tools_disclosed" not in invoke(agent, {"messages": [HumanMessage("again")]}, mode, config)
 
 
+def test_rebuild_without_skill_tools_clears_a_checkpointed_record(tmp_path: Path, mode: str) -> None:
+    """A record left by an earlier build never admits a call its model call wasn't shown."""
+    write_skill(tmp_path, "crm", "create_customer_request")
+    checkpointer = InMemorySaver()
+    config: RunnableConfig = {"configurable": {"thread_id": "rebuild"}}
+    approval = {"create_customer_request": True}
+
+    # Built with the skill tool: reading the skill records it as disclosed.
+    invoke(skills_agent(tmp_path, _model(ai(read("r1"))), checkpointer=checkpointer), {"messages": [HumanMessage("go")]}, mode, config)
+    # Rebuilt without skill tools: the model reuses the call from history and pauses for approval.
+    without = skills_agent(
+        tmp_path, _model(ai(call("create_customer_request", "c1", title="x"))), skill_tools=None, interrupt_on=approval, checkpointer=checkpointer
+    )
+    assert invoke(without, {"messages": [HumanMessage("file it")]}, mode, config)["__interrupt__"]
+    # Rebuilt with the skill tool again: resuming runs the tools without a new model call.
+    with_tools = skills_agent(tmp_path, _model(), interrupt_on=approval, checkpointer=checkpointer)
+    result = invoke(with_tools, Command(resume={"decisions": [{"type": "approve"}]}), mode, config)
+
+    [rejected] = tool_messages(result, "create_customer_request")
+    assert rejected.content == "Error: create_customer_request is not available yet. Read the crm skill (/skills/crm/SKILL.md) to make it available."
+
+
 def _discloses_after(tmp_path: Path, mode: str, history: list[AIMessage | ToolMessage]) -> bool:
     """Return whether one model call over `history` is shown `create_customer_request`."""
     model = _model()

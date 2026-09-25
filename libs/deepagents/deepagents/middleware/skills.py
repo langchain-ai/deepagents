@@ -323,8 +323,9 @@ class SkillsState(AgentState):
     _skill_tools_disclosed: NotRequired[Annotated[list[str], PrivateStateAttr]]
     """Skill tools disclosed to the latest model call, sorted. Not propagated to parent agents.
 
-    Written on every model call when skill tools are configured, so the tool-time
-    gate admits exactly the calls whose schema the model was shown.
+    Written on every model call, including `[]`, so the tool-time gate admits
+    exactly the calls whose schema the model was shown, and a record checkpointed
+    by an earlier build of the agent never outlives the next model call.
     """
 
 
@@ -1175,12 +1176,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             return request.override(tools=bind_disclosures(request.tools, disclosure)), gated
         return request.override(messages=insert_disclosures(request.messages, disclosure, build)), gated
 
-    def _record_disclosed(
-        self, response: ModelResponse[ResponseT], disclosed: list[str]
-    ) -> ModelResponse[ResponseT] | ExtendedModelResponse[ResponseT]:
+    def _record_disclosed(self, response: ModelResponse[ResponseT], disclosed: list[str]) -> ExtendedModelResponse[ResponseT]:
         """Record which skill tools `response`'s model call was shown, for the tool-time gate."""
-        if not self._skill_tools:
-            return response
         return ExtendedModelResponse(model_response=response, command=Command(update={SKILL_TOOLS_DISCLOSED_KEY: disclosed}))
 
     def wrap_model_call(
@@ -1195,8 +1192,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             handler: Handler function to call with modified request
 
         Returns:
-            Model response from handler, with the disclosed skill tools recorded
-                when `skill_tools` are configured.
+            Model response from handler, with the skill tools it disclosed recorded
+                in state.
         """
         request, disclosed = self._disclose(self.modify_request(request))
         return self._record_disclosed(handler(request), disclosed)
@@ -1213,8 +1210,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             handler: Async handler function to call with modified request
 
         Returns:
-            Model response from handler, with the disclosed skill tools recorded
-                when `skill_tools` are configured.
+            Model response from handler, with the skill tools it disclosed recorded
+                in state.
         """
         request, disclosed = self._disclose(self.modify_request(request))
         return self._record_disclosed(await handler(request), disclosed)

@@ -4894,6 +4894,40 @@ class TestFilesystemMiddlewareToolsAllowlist:
         # The excluded tool must not have actually run.
         assert "/pwned.txt" not in result.get("files", {})
 
+    def test_backend_unsupported_tool_is_not_dispatchable(self) -> None:
+        """A backend-filtered tool is neither advertised nor dispatched."""
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "pwd", "args": {}, "id": "call_invalid"},
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "execute", "args": {"command": "echo should-not-run"}, "id": "call_execute"},
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+        agent = create_deep_agent(
+            model=model,
+            middleware=[FilesystemMiddleware(backend=StateBackend())],
+        )
+
+        result = agent.invoke({"messages": [HumanMessage(content="hi")]})
+
+        tool_messages = [m for m in result["messages"] if isinstance(m, ToolMessage)]
+        invalid_tool_messages = {message.name: message for message in tool_messages}
+        assert "execute" not in str(invalid_tool_messages["pwd"].content)
+        assert "not a valid tool" in str(invalid_tool_messages["execute"].content)
+        assert "Execution not available" not in str(invalid_tool_messages["execute"].content)
+
 
 # Fails on Windows / Python 3.13. Python <= 3.13 has no built-in `.docx` MIME type; Linux/macOS read
 # one from `/etc/mime.types`, but Windows relies on the registry, so `read_file` labels `.docx`

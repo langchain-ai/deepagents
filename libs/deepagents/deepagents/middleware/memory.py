@@ -35,7 +35,22 @@ agent = create_deep_agent(middleware=[middleware])
 ## Memory Sources
 
 Sources are simply paths to AGENTS.md files that are loaded in order and combined.
-Multiple sources are concatenated in order, with all content included.
+Multiple sources are concatenated in order. By default, each file's full content is
+included so existing unstructured files keep their behavior. A file can opt into a
+memory-only section with explicit markers:
+
+```markdown
+# Agent instructions
+
+These instructions are injected as authored project context, outside the memory block.
+
+<!-- deepagents:memory:start -->
+Only this content is injected as memory.
+<!-- deepagents:memory:end -->
+```
+
+Content outside the markers is injected as authored system context, outside
+`<agent_memory>`. Files without a valid marker pair retain full-file memory loading.
 Later sources appear after earlier ones in the combined prompt.
 
 ## File Format
@@ -118,6 +133,7 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
     **Learning from feedback:**
     - Learning from your interactions with the user is a top priority. These learnings can be implicit or explicit so you can apply them in future turns.
     - To persist new knowledge, call `edit_file` to update memory promptly—usually in the same turn once you have enough context to record it accurately. Do **not** skip essential investigation when the current request requires it (for example, reading files the user asked about or reproducing failures); complete investigation, respond accurately, then save durable learnings without unnecessary delay.
+    - Read a memory file before editing it. If it has a marked memory section, write new memory inside that section, preserving its boundary markers and the rest of the file. Content appended after the closing marker will not be loaded as memory.
     - When user says something is better/worse, capture WHY and encode it as a pattern.
     - Each correction is a chance to improve permanently - don't just fix the immediate issue, update your instructions.
     - A great opportunity to update your memories is when the user interrupts a tool call and provides feedback. Update your memories promptly before revising the tool call.
@@ -171,10 +187,38 @@ MEMORY_SYSTEM_PROMPT = """<agent_memory>
 
 
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+_MEMORY_SECTION_START = "<!-- deepagents:memory:start -->"
+_MEMORY_SECTION_END = "<!-- deepagents:memory:end -->"
 
 
 def _strip_html_comments(text: str) -> str:
     return _HTML_COMMENT_RE.sub("", text)
+
+
+def _split_memory_section(text: str) -> tuple[str | None, str]:
+    """Separate authored instructions from memory in a structured file."""
+    lines = text.splitlines(keepends=True)
+    starts = []
+    ends = []
+    fence: str | None = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if fence is not None:
+            if stripped.rstrip(fence[0]) == "" and len(stripped) >= len(fence):
+                fence = None
+            continue
+        if match := _FENCE_OPEN_RE.match(line):
+            fence = match[1]
+        elif stripped == _MEMORY_SECTION_START:
+            starts.append(index)
+        elif stripped == _MEMORY_SECTION_END:
+            ends.append(index)
+    if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
+        return None, text
+    authored = "".join([*lines[: starts[0]], *lines[ends[0] + 1 :]])
+    memory = "".join(lines[starts[0] + 1 : ends[0]])
+    return authored, memory
 
 
 class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
@@ -208,6 +252,11 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
                 Display names are automatically derived from the paths.
 
                 Sources are loaded in order.
+
+                Files are loaded in full as memory unless one memory section is
+                delimited by `<!-- deepagents:memory:start -->` and
+                `<!-- deepagents:memory:end -->` on separate lines. Content
+                outside the markers is added as authored system context.
             add_cache_control: If `True`, tag the last system-message
                 content block with `cache_control: {"type": "ephemeral"}`
                 when the request model is `ChatAnthropic`.
@@ -222,8 +271,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
                 not qualify.
             system_prompt: System-prompt fragment template. Must contain a
                 `{agent_memory}` slot for runtime memory substitution. Pass
-                `None` to skip appending entirely (memory is still loaded
-                into `state["memory_contents"]`).
+                `None` to skip the memory prompt (memory is still loaded into
+                `state["memory_contents"]`). Authored instructions outside a
+                structured memory section are still injected.
 
         Raises:
             TypeError: If `system_prompt` is not `str` or `None`.
@@ -264,7 +314,8 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
             raw = contents.get(path)
             if not raw:
                 continue
-            stripped = _strip_html_comments(raw).rstrip()
+            _, memory = _split_memory_section(raw)
+            stripped = _strip_html_comments(memory).rstrip()
             if not stripped:
                 logger.debug("Memory source %s was empty after stripping HTML comments", path)
                 continue
@@ -275,6 +326,18 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
 
         memory_body = "\n\n".join(sections)
         return template.format(agent_memory=memory_body)
+
+    def _format_authored_instructions(self, contents: dict[str, str]) -> str:
+        """Format non-memory content of explicitly structured sources."""
+        sections = []
+        for path in self.sources:
+            raw = contents.get(path)
+            if not raw:
+                continue
+            authored, _ = _split_memory_section(raw)
+            if authored is not None and (stripped := _strip_html_comments(authored).rstrip()):
+                sections.append(f"{path}\n\n{stripped}")
+        return "\n\n".join(sections)
 
     def before_agent(self, state: MemoryState, runtime: Runtime, config: RunnableConfig) -> MemoryStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load memory content before agent execution (synchronous).
@@ -353,12 +416,14 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
         Returns:
             Modified request with memory injected into system message.
         """
-        if self.system_prompt is None:
-            new_system_message = request.system_message
-        else:
-            contents = request.state.get("memory_contents", {})
+        contents = request.state.get("memory_contents", {})
+        authored = self._format_authored_instructions(contents)
+        new_system_message = request.system_message
+        if authored:
+            new_system_message = append_to_system_message(new_system_message, authored)
+        if self.system_prompt is not None:
             agent_memory = self._format_agent_memory(contents, self.system_prompt)
-            new_system_message = append_to_system_message(request.system_message, agent_memory)
+            new_system_message = append_to_system_message(new_system_message, agent_memory)
 
         # Runtime check uses `request.model` (not a flag captured at init) so
         # the breakpoint correctly follows middleware-level model overrides.

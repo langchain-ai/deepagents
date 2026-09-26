@@ -1,8 +1,10 @@
 """Middleware for providing subagents to an agent via a `task` tool."""
 
+import asyncio
 import contextlib
 import dataclasses
 import json
+import logging
 from collections.abc import Awaitable, Callable, Generator, Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypedDict, cast
 
@@ -24,6 +26,7 @@ from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
+from langchain_core.runnables.config import var_child_runnable_config
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langsmith.run_helpers import get_tracing_context, tracing_context
@@ -43,6 +46,8 @@ from deepagents.middleware.unsupported_content import UnsupportedContentMiddlewa
 
 if TYPE_CHECKING:
     from pydantic_core import InitErrorDetails
+
+logger = logging.getLogger(__name__)
 
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
@@ -311,6 +316,41 @@ class CompiledSubAgent(TypedDict):
 _SubAgentSpec = SubAgent | CompiledSubAgent
 
 
+class BackgroundTask(TypedDict):
+    """A subagent the `task` tool started with `run_in_background`.
+
+    !!! warning "Experimental"
+
+        Background subagents are in beta; this shape may change.
+    """
+
+    task_id: str
+    """ID the `task` tool returned to the model when the subagent started."""
+
+    subagent_type: str
+    """Name of the subagent that ran."""
+
+    description: str
+    """The task the model gave the subagent."""
+
+    status: Literal["running", "success", "error"]
+    """`success` or `error` by the time the report reaches the callback."""
+
+    result: str
+    """The subagent's final message, or the error it raised."""
+
+    config: RunnableConfig
+    """The parent run's config without its per-run internals.
+
+    Carries the parent's `thread_id` and metadata, so the callback can notify
+    the parent, for example by queuing a run on the same thread.
+    """
+
+
+BackgroundTaskCallback = Callable[[BackgroundTask], Awaitable[None]]
+"""Receives each background subagent's report when it finishes."""
+
+
 def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
     """Reject unsupported context modes before a subagent can run."""
     mode = spec.get("mode")
@@ -460,6 +500,15 @@ class TaskToolSchema(BaseModel):
         return data
 
 
+class BackgroundTaskToolSchema(TaskToolSchema):
+    """Input schema for the `task` tool when background subagents are enabled."""
+
+    run_in_background: bool = Field(
+        default=False,
+        description="Return at once with a task ID instead of waiting for the subagent's report.",
+    )
+
+
 TASK_TOOL_DESCRIPTION = """Launch an ephemeral subagent to handle a complex, multi-step task.
 
 Available agent types and the tools they have access to:
@@ -472,6 +521,16 @@ Specify subagent_type to select the agent. Usage notes:
 - Tell the agent whether to create content, analyze, or only research, since it can't necessarily see the user's intent unless it inherits your conversation, as noted per agent type below.
 - If an agent's description says to use it proactively, do so without waiting to be asked.
 - When only general-purpose is available, use it for any complex, context-heavy task; it has the same capabilities as the main agent."""  # noqa: E501
+
+_BACKGROUND_TASK_TOOL_NOTE = """
+- Set `run_in_background` for long work you don't need to wait on: the call returns a task ID at once, and the agent's report arrives in a later message when it finishes. Don't poll for it."""  # noqa: E501
+
+_BACKGROUND_SYNC_REFUSAL = "Background subagents need the async entrypoint (`ainvoke` or `astream`); call `task` without `run_in_background`."
+
+_BACKGROUND_TASKS: set[asyncio.Task[None]] = set()
+"""Running background subagents, held so the event loop does not drop them."""
+
+_PER_RUN_CONFIG_PREFIXES = ("__pregel_", "checkpoint_")
 
 _FORKED_SUBAGENT_TOOL_NOTE = " (inherits your full conversation and system prompt — no need to restate context here)"
 """Appended to a forked subagent's line in the task tool's listing.
@@ -540,6 +599,62 @@ def _subagent_tracing_context() -> Generator[None, None, None]:
 
     with tracing_context(**kwargs):
         yield
+
+
+def _subagent_report(result: dict[str, Any]) -> str:
+    """Return a subagent's report: its structured response, else its last non-empty AI text."""
+    structured = result.get("structured_response")
+    if structured is not None:
+        if hasattr(structured, "model_dump_json"):
+            return structured.model_dump_json()
+        if dataclasses.is_dataclass(structured) and not isinstance(structured, type):
+            return json.dumps(dataclasses.asdict(structured))
+        return json.dumps(structured)
+    # Walk back to the last AIMessage with non-empty text. Anthropic
+    # occasionally emits a trailing empty `end_turn` AIMessage after a
+    # successful final tool call, which would otherwise be forwarded
+    # as an empty ToolMessage.
+    for msg in reversed(result.get("messages", [])):
+        if isinstance(msg, AIMessage):
+            text = msg.text.rstrip() if msg.text else ""
+            if text:
+                return text
+    return ""
+
+
+def _detached_config(config: RunnableConfig) -> RunnableConfig:
+    """Return the parent's config without the internals of a run that may have ended.
+
+    A background subagent can outlive the parent's run, so it must not write to
+    that run's checkpoints or report to its callbacks. The thread ID and metadata
+    stay, so thread-scoped backends and tools resolve the parent's thread.
+    """
+    configurable = {key: value for key, value in (config.get("configurable") or {}).items() if not key.startswith(_PER_RUN_CONFIG_PREFIXES)}
+    detached = {key: value for key, value in config.items() if key not in {"configurable", "callbacks"}}
+    return cast("RunnableConfig", {**detached, "configurable": configurable})
+
+
+def _start_background_task(subagent: Runnable, state: dict[str, Any], report: BackgroundTask, on_complete: BackgroundTaskCallback) -> str:
+    """Start `subagent` on the running event loop and return the `task` tool's reply."""
+    handle = asyncio.get_running_loop().create_task(_run_background_task(subagent, state, report, on_complete))
+    _BACKGROUND_TASKS.add(handle)
+    handle.add_done_callback(_BACKGROUND_TASKS.discard)
+    return f"Started `{report['subagent_type']}` in the background as {report['task_id']}. Its report arrives in a later message when it finishes."
+
+
+async def _run_background_task(subagent: Runnable, state: dict[str, Any], report: BackgroundTask, on_complete: BackgroundTaskCallback) -> None:
+    """Run a background subagent under its parent's detached config, then hand over its report."""
+    var_child_runnable_config.set(report["config"])
+    try:
+        with _subagent_tracing_context():
+            result = await subagent.ainvoke(state, {"configurable": {"ls_agent_type": "subagent"}})
+        report.update(status="success", result=_subagent_report(result))
+    except Exception as error:  # noqa: BLE001  # the report tells the parent how its subagent failed
+        report.update(status="error", result=f"{type(error).__name__}: {error}")
+    try:
+        await on_complete(report)
+    except Exception:
+        logger.exception("`on_background_complete` failed for background task %s", report["task_id"])
 
 
 def create_sub_agent(
@@ -620,6 +735,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     *,
     private_state_keys: frozenset[str] = frozenset(),
     state_schema: type | None = None,
+    on_background_complete: BackgroundTaskCallback | None = None,
 ) -> BaseTool:
     """Create a task tool from subagent specs.
 
@@ -630,6 +746,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
         private_state_keys: State keys marked with `PrivateStateAttr` that
             should be stripped from parent state before invoking subagents.
         state_schema: Base graph state schema forwarded to raw subagent specs.
+        on_background_complete: Receives background subagents' reports. When
+            set, the tool accepts `run_in_background`.
 
     Returns:
         A StructuredTool that can invoke subagents by type.
@@ -654,6 +772,10 @@ def _build_task_tool(  # noqa: C901, PLR0915
         description = task_description.format(available_agents=subagent_description_str)
     else:
         description = task_description
+    args_schema = TaskToolSchema
+    if on_background_complete is not None:
+        description += _BACKGROUND_TASK_TOOL_NOTE
+        args_schema = BackgroundTaskToolSchema
 
     def _resolved_declarative_spec(spec: SubAgent) -> SubAgent:
         """Resolve the inherited prompt for a declarative fork."""
@@ -666,7 +788,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             coroutine=atask,
             description=description,
             infer_schema=False,
-            args_schema=TaskToolSchema,
+            args_schema=args_schema,
         )
         fork_middleware = list(spec.get("middleware", []))
         # The parent's `task` sits right after its filesystem tools; matching that
@@ -725,27 +847,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             raise ValueError(error_msg)
 
         state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys}
-
-        structured = result.get("structured_response")
-        if structured is not None:
-            if hasattr(structured, "model_dump_json"):
-                content: str = structured.model_dump_json()
-            elif dataclasses.is_dataclass(structured) and not isinstance(structured, type):
-                content = json.dumps(dataclasses.asdict(structured))
-            else:
-                content = json.dumps(structured)
-        else:
-            # Walk back to the last AIMessage with non-empty text. Anthropic
-            # occasionally emits a trailing empty `end_turn` AIMessage after a
-            # successful final tool call, which would otherwise be forwarded
-            # as an empty ToolMessage.
-            content = ""
-            for msg in reversed(result["messages"]):
-                if isinstance(msg, AIMessage):
-                    text = msg.text.rstrip() if msg.text else ""
-                    if text:
-                        content = text
-                        break
+        content = _subagent_report(result)
 
         return Command(
             update={
@@ -807,7 +909,11 @@ def _build_task_tool(  # noqa: C901, PLR0915
         description: str,
         subagent_type: str,
         runtime: ToolRuntime,
+        *,
+        run_in_background: bool = False,
     ) -> str | Command:
+        if run_in_background:
+            return _BACKGROUND_SYNC_REFUSAL
         if runtime.state.get(_FORKED_CONTEXT_KEY):
             return _FORK_RECURSION_REFUSAL
         if subagent_type not in subagent_graphs:
@@ -837,6 +943,8 @@ def _build_task_tool(  # noqa: C901, PLR0915
         description: str,
         subagent_type: str,
         runtime: ToolRuntime,
+        *,
+        run_in_background: bool = False,
     ) -> str | Command:
         if runtime.state.get(_FORKED_CONTEXT_KEY):
             return _FORK_RECURSION_REFUSAL
@@ -851,6 +959,16 @@ def _build_task_tool(  # noqa: C901, PLR0915
             description,
             runtime,
         )
+        if run_in_background and on_background_complete is not None:
+            report: BackgroundTask = {
+                "task_id": f"bg_{runtime.tool_call_id}",
+                "subagent_type": subagent_type,
+                "description": description,
+                "status": "running",
+                "result": "",
+                "config": _detached_config(runtime.config),
+            }
+            return _start_background_task(subagent, subagent_state, report, on_background_complete)
         # The parent's callbacks, tags and configurable reach the subagent
         # automatically: langgraph's `ensure_config` seeds each run from the
         # ambient parent config and (as of langgraph#7926) merges it per-key, so
@@ -875,7 +993,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         coroutine=atask,
         description=description,
         infer_schema=False,
-        args_schema=TaskToolSchema,
+        args_schema=args_schema,
     )
 
 
@@ -909,6 +1027,34 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             Leave unset to use `create_agent`'s default. `CompiledSubAgent`
             entries are unaffected — callers own those runnables' schemas.
+        on_background_complete: Receives each background subagent's report.
+
+            !!! warning "Experimental"
+
+                Setting it lets the model pass `run_in_background` to `task`:
+                the subagent starts on the running event loop under the
+                parent's thread config, and the call returns at once. The
+                callback decides how the parent hears about the result, for
+                example by queuing a run on the parent's thread. Only the
+                report comes back; state updates such as `StateBackend` files
+                are not merged into the parent. Requires the async entrypoint.
+
+            On an Agent Server, queue a run on the parent's thread:
+
+            ```python
+            from deepagents.middleware.subagents import BackgroundTask
+            from langgraph_sdk import get_client
+
+
+            async def notify_parent(task: BackgroundTask) -> None:
+                config = task["config"]
+                await get_client().runs.create(
+                    config["configurable"]["thread_id"],
+                    config["metadata"]["assistant_id"],
+                    input={"messages": [{"role": "user", "content": f"Task {task['task_id']} finished: {task['result']}"}]},
+                    multitask_strategy="enqueue",
+                )
+            ```
 
     Example:
         ```python
@@ -948,6 +1094,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         task_description: str | None = None,
         private_state_keys: frozenset[str] | None = None,
         state_schema: type | None = None,
+        on_background_complete: BackgroundTaskCallback | None = None,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
@@ -960,8 +1107,11 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._private_state_keys = private_state_keys or frozenset()
         self._task_description = task_description
         self._state_schema = state_schema
+        self._on_background_complete = on_background_complete
         if any(_is_forked_subagent(spec) or _is_forked_compiled_subagent(spec) for spec in subagents):
             warn_beta(name="forked subagents", obj_type="feature")
+        if on_background_complete is not None:
+            warn_beta(name="background subagents", obj_type="feature")
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagents)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""
@@ -971,6 +1121,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             task_description,
             private_state_keys=self._private_state_keys,
             state_schema=self._state_schema,
+            on_background_complete=on_background_complete,
         )
 
         # Build system prompt with available agents
@@ -1002,6 +1153,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             task_description=self._task_description,
             private_state_keys=value,
             state_schema=self._state_schema,
+            on_background_complete=self._on_background_complete,
         )
         self.tools = [task_tool]
 

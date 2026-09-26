@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.0.9](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.8...deepagents-talon==0.0.9) (2026-09-26)
+
+
+### Features
+
+* **talon:** add `/context-doctor` command ([#6557](https://github.com/langchain-ai/deepagents/issues/6557)) ([60c0228](https://github.com/langchain-ai/deepagents/commit/60c0228aad14d042080743ead04e135994d3fa75))
+* **talon:** batch concurrent tool approvals ([#6435](https://github.com/langchain-ai/deepagents/issues/6435)) ([1660147](https://github.com/langchain-ai/deepagents/commit/16601472424400ab4a90608d7d95e8fc61f23267))
+* **talon:** register chat commands as Discord slash commands ([#6303](https://github.com/langchain-ai/deepagents/issues/6303)) ([f36b641](https://github.com/langchain-ai/deepagents/commit/f36b641ce3e1f44dbd47835d6dc9f5bb1c82324a))
+* **talon:** run a scheduled job's subagents inline ([#6425](https://github.com/langchain-ai/deepagents/issues/6425)) ([c3a041e](https://github.com/langchain-ai/deepagents/commit/c3a041e3d8f593e4e4c9bfc273d52264ceff165b))
+
+
+### Bug Fixes
+
+* **talon:** declare the packages talon imports directly ([#6436](https://github.com/langchain-ai/deepagents/issues/6436)) ([c63eba4](https://github.com/langchain-ai/deepagents/commit/c63eba426b28f1d1685e40767f087dcc3f34334c))
+* **talon:** index only visible conversation text ([#6358](https://github.com/langchain-ai/deepagents/issues/6358)) ([f6850e9](https://github.com/langchain-ai/deepagents/commit/f6850e9d25854b5679010c08f02adae99e6b8a2c))
+* **talon:** persist history vector deduplication ([#6357](https://github.com/langchain-ai/deepagents/issues/6357)) ([b3d4967](https://github.com/langchain-ai/deepagents/commit/b3d4967bdcda5b42e976b3e97c357deea82d63ac))
+* **talon:** retry statusless provider overload errors ([#6304](https://github.com/langchain-ai/deepagents/issues/6304)) ([f8acbd0](https://github.com/langchain-ai/deepagents/commit/f8acbd0ae24278d35aeb1fa014056084a58f70d2))
+* **talon:** store offloaded artifacts in the assistant home ([#6530](https://github.com/langchain-ai/deepagents/issues/6530)) ([74d768b](https://github.com/langchain-ai/deepagents/commit/74d768bd45dd4eca977dc320ebfe5838f1691682))
+* **talon:** validate archive pagination arguments ([#6442](https://github.com/langchain-ai/deepagents/issues/6442)) ([f84d963](https://github.com/langchain-ai/deepagents/commit/f84d96358a111872fba3f9b69c5b08ad1565c083))
+
+
+### Performance Improvements
+
+* **talon:** reduce archive replay transactions ([#6320](https://github.com/langchain-ai/deepagents/issues/6320)) ([89bd48f](https://github.com/langchain-ai/deepagents/commit/89bd48f7d531c9affafa3f0dc096083cbc5969dd))
+
 ## [0.0.8](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.7...deepagents-talon==0.0.8) (2026-09-11)
 
 ### Features

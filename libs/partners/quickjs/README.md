@@ -112,7 +112,9 @@ hi 2
 
 ### Timeouts and memory
 
-Each call has a per-call wall-clock timeout (default 5 s). Breaching it produces:
+Each call has a per-call wall-clock timeout (default 5 s). Set
+`timeout=None` to disable the per-call deadline when the host provides its own
+execution limits. Breaching an enabled deadline produces:
 
 ```xml
 <error type="Timeout">...</error>
@@ -273,7 +275,7 @@ This visibility does not route PTC calls through `ToolNode` or add per-call huma
 ```python
 CodeInterpreterMiddleware(
     memory_limit=64 * 1024 * 1024,  # bytes, shared across contexts
-    timeout=5.0,                     # per-call seconds
+    timeout=5.0,                     # per-call seconds; None disables it
     max_ptc_calls=256,     # per-eval `tools.*` bridge calls, None disables (DoS risk)
     tool_name="eval",                # what the model calls it
     max_result_chars=4000,           # result/stdout truncation, each
@@ -290,7 +292,7 @@ CodeInterpreterMiddleware(
 | Type | Cause |
 | --- | --- |
 | `SyntaxError`, `TypeError`, `ReferenceError`, ... | User-code error. Re-surfaces the JS error name verbatim. |
-| `Timeout` | Call exceeded `timeout=`. |
+| `Timeout` | Call exceeded an enabled `timeout=`. |
 | `OutOfMemory` | Runtime hit `memory_limit=`. |
 | `PTCCallBudgetExceeded` | Uncaught `tools.*` call-budget overflow in one eval (`max_ptc_calls=`). |
 | `Deadlock` | Top-level promise never resolved with no async host work in flight. |

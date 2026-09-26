@@ -26,7 +26,7 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
     "unavailable or stubbed).\n"
     "{side_effects_line}\n"
-    "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
+    "{timeout_line} Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result."
 )
 _SUBAGENT_SYSTEM_PROMPT_TEMPLATE = """
@@ -262,7 +262,7 @@ parallel, not to grind through it one tool call at a time.
 def render_repl_system_prompt(
     *,
     tool_name: str,
-    timeout: float,
+    timeout: float | None,
     memory_limit_mb: int,
     mode: Literal["thread", "turn", "call"],
     ptc_attached: bool = False,
@@ -310,11 +310,16 @@ def render_repl_system_prompt(
             "- State (variables, functions) persists across tool calls within "
             "a single turn of conversation. They DO NOT persist across multiple turns."
         )
+    timeout_line = (
+        f"- Timeout: {timeout}s per call."
+        if timeout is not None
+        else "- No per-call timeout."
+    )
     return _REPL_SYSTEM_PROMPT_TEMPLATE.format(
         repl_intro_line=repl_intro_line,
         state_persistence_line=state_persistence_line,
+        timeout_line=timeout_line,
         side_effects_line=side_effects_line,
-        timeout=timeout,
         memory_limit_mb=memory_limit_mb,
     )
 

@@ -6,8 +6,10 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
+import langchain.mcp as langchain_mcp
 import pytest
 from deepagents_code.config import runtime_state
 from fastmcp import FastMCP
@@ -52,6 +54,10 @@ def test_langgraph_config_points_to_deepagent_factory() -> None:
     assert config["graphs"] == {
         "dcode": "./langgraph_agent.py:make_graph",
         "bare": "./langgraph_agent.py:make_bare_graph",
+        "llm-tool-selector": "./langgraph_agent.py:make_llm_tool_selector_graph",
+        "ts-tool-selector": "./langgraph_agent.py:make_ts_tool_selector_graph",
+        "ts-choice-tool-selector": "./langgraph_agent.py:make_ts_choice_tool_selector_graph",
+        "ts-hybrid-tool-selector": "./langgraph_agent.py:make_ts_hybrid_tool_selector_graph",
         "tau3": "./langgraph_agent.py:make_tau3_graph",
     }
     assert not (project_path / "langsmith.py").exists()
@@ -744,9 +750,60 @@ def test_make_bare_graph_builds_sdk_deepagent_with_local_shell(
     assert captured_create
     assert captured_create[0]["model"] == "chat-model"
     assert captured_create[0]["backend"] is backend
+    assert captured_create[0]["middleware"] == []
     # The bare path must not inject a harness system prompt, preserving the
     # prompt-free SDK default.
     assert "system_prompt" not in captured_create[0]
+
+
+def test_make_llm_tool_selector_graph_adds_selector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
+    monkeypatch.setattr(langgraph_agent, "LocalShellBackend", lambda **_: "backend")
+    monkeypatch.setattr(
+        langgraph_agent,
+        "LLMToolSelectorMiddleware",
+        lambda *, model: ("llm-selector", model),
+    )
+    monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **kwargs: kwargs)
+
+    graph = langgraph_agent.make_llm_tool_selector_graph({"configurable": {"model": "test:model"}})
+
+    assert cast("dict[str, object]", graph)["middleware"] == [("llm-selector", "model")]
+
+
+@pytest.mark.parametrize(
+    ("factory", "selector_name"),
+    [
+        ("make_ts_tool_selector_graph", "TsToolSelectorMiddleware"),
+        ("make_ts_choice_tool_selector_graph", "TsChoiceToolSelectorMiddleware"),
+        ("make_ts_hybrid_tool_selector_graph", "TsHybridToolSelectorMiddleware"),
+    ],
+)
+def test_make_typesafe_tool_selector_graph_adds_selector(
+    monkeypatch: pytest.MonkeyPatch, factory: str, selector_name: str
+) -> None:
+    monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
+    monkeypatch.setattr(langgraph_agent, "LocalShellBackend", lambda **_: "backend")
+    monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **kwargs: kwargs)
+    module = SimpleNamespace(
+        TsToolSelectorMiddleware=lambda: "ts-selector",
+        TsChoiceToolSelectorMiddleware=lambda: "ts-choice-selector",
+        TsHybridToolSelectorMiddleware=lambda: "ts-hybrid-selector",
+    )
+    monkeypatch.setattr(langgraph_agent, "import_module", lambda _: module)
+
+    graph = getattr(langgraph_agent, factory)({"configurable": {"model": "test:model"}})
+
+    middleware = cast("dict[str, object]", graph)["middleware"]
+    assert middleware == [
+        {
+            "TsToolSelectorMiddleware": "ts-selector",
+            "TsChoiceToolSelectorMiddleware": "ts-choice-selector",
+            "TsHybridToolSelectorMiddleware": "ts-hybrid-selector",
+        }[selector_name]
+    ]
 
 
 def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):
@@ -767,7 +824,7 @@ def test_make_tau3_graph_does_not_inject_system_prompt(monkeypatch):
         return "graph"
 
     monkeypatch.setattr(langgraph_agent, "init_chat_model", fake_init_chat_model)
-    monkeypatch.setattr(langgraph_agent, "MCPAdapter", FakeMCPAdapter)
+    monkeypatch.setattr(langchain_mcp, "MCPAdapter", FakeMCPAdapter)
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", fake_create_deep_agent)
 
     result = asyncio.run(
@@ -815,7 +872,7 @@ async def test_tau3_tools_remain_callable_after_discovery(monkeypatch):
         }
         return MCPAdapter(server)
 
-    monkeypatch.setattr(langgraph_agent, "MCPAdapter", adapter)
+    monkeypatch.setattr(langchain_mcp, "MCPAdapter", adapter)
     monkeypatch.setattr(langgraph_agent, "_build_model", lambda _: "model")
     monkeypatch.setattr(langgraph_agent, "create_deep_agent", lambda **kwargs: kwargs["tools"])
     tools = await langgraph_agent.make_tau3_graph(

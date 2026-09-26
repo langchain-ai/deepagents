@@ -104,7 +104,10 @@ def test_lookup_delegates_to_the_tested_selector() -> None:
     # `gh pr list` caps results client-side, and the maintained PR is the
     # oldest open one, so it falls off the page first.
     assert "gh pr list" not in run
-    assert "--paginate" in run
+    assert "gh api --paginate" in run
+    assert "gh api --paginate --slurp" not in run
+    assert "--jq '[.[][]" not in run
+    assert "jq -s '[.[][]" in run
     assert 'echo "branch=$branch" >> "$GITHUB_OUTPUT"' in run
 
 

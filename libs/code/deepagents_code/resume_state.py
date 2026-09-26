@@ -77,6 +77,8 @@ from langchain.agents.middleware.types import (
 )
 from langchain_core.messages import AIMessage
 
+# LangGraph resolves state annotations at runtime when compiling the graph.
+from deepagents_code.cold_cache import CacheActivity  # noqa: TC001
 from deepagents_code.goal_state_limits import GOAL_STATUS_VALUES, GoalStatus
 
 if TYPE_CHECKING:
@@ -269,6 +271,12 @@ class ResumeState(GoalRubricChannels):
 
     _last_cache_endpoint: Annotated[NotRequired[str], PrivateStateAttr]
     """Normalized endpoint identity associated with `_last_model_request_at`."""
+
+    _last_cache_write: Annotated[NotRequired[CacheActivity], PrivateStateAttr]
+    """Latest main-model request with reported cache writes, including identity."""
+
+    _last_cache_use: Annotated[NotRequired[CacheActivity], PrivateStateAttr]
+    """Latest main-model request with reported cache reads or writes."""
 
     _pending_goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Goal objective awaiting acceptance of proposed criteria."""

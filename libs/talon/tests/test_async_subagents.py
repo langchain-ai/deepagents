@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from deepagents_talon.async_subagents import load_async_subagents
 
 
@@ -42,7 +44,7 @@ Authorization = "Bearer test"
     ]
 
 
-def test_load_async_subagents_skips_invalid_specs(tmp_path, caplog) -> None:
+def test_load_async_subagents_rejects_invalid_specs(tmp_path, caplog) -> None:
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         """
@@ -60,12 +62,13 @@ graph_id = "agent"
         encoding="utf-8",
     )
 
-    with caplog.at_level(logging.WARNING):
-        agents = load_async_subagents(config_path)
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(ValueError, match="Invalid async subagent"),
+    ):
+        load_async_subagents(config_path)
 
-    assert agents == [{"name": "valid", "description": "Valid agent", "graph_id": "agent"}]
     assert "missing fields" in caplog.text
-    assert "description and graph_id must be strings" in caplog.text
 
 
 def test_load_async_subagents_returns_empty_for_absent_config(tmp_path) -> None:

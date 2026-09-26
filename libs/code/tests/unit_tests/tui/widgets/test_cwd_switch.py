@@ -44,7 +44,42 @@ class TestCwdSwitchPromptScreen:
         )
 
         assert "project-specific config" not in unchanged._body_text()
-        assert "project-specific config" in changed._body_text()
+        assert "will also reload project-specific config" in changed._body_text()
+
+    def test_owned_server_refusal_explains_restart(self) -> None:
+        """The restart prompt concisely explains the choice and its cost."""
+        screen = CwdSwitchPromptScreen(
+            current_cwd="/a/current",
+            thread_cwd="/b/target",
+            server_refusal="restart",
+        )
+
+        assert screen._title_text() == "Restart required to switch directories"
+        assert screen._body_text() == (
+            "To use /b/target, restart the agent server. Any running work will stop."
+        )
+        assert screen._help_text() == (
+            f"Enter: restart and switch {get_glyphs().separator} Esc: stay here"
+        )
+
+    def test_unowned_server_refusal_has_no_restart(self) -> None:
+        """A client without server ownership only offers staying."""
+        screen = CwdSwitchPromptScreen(
+            current_cwd="/a/current",
+            thread_cwd="/b/target",
+            server_refusal="unavailable",
+        )
+        dismiss = MagicMock()
+        screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
+
+        assert screen._title_text() == "Cannot switch directories from this client"
+        assert screen._body_text() == (
+            "This client cannot switch to /b/target. Open this thread in a client "
+            "that can use that directory."
+        )
+        assert screen._help_text() == "Enter or Esc: stay here"
+        screen.action_switch()
+        dismiss.assert_called_once_with("stay")
 
     def test_modal_binds_resume_and_quit_shortcuts(self) -> None:
         """The modal handles resume keys and delegates quit shortcuts."""

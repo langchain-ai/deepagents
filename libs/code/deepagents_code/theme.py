@@ -610,6 +610,8 @@ def _load_user_themes(
         .get(option)
         .value
     )
+    if themes_section is None:
+        return
     if not isinstance(themes_section, dict):
         # Not merely absent: the table resolved to something that is not a
         # table, which means every user theme is inert. This reader emits no

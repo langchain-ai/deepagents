@@ -1,21 +1,39 @@
 [
   {
+    "id": "openai",
+    "name": "OpenAI",
+    "api_pattern": "https://api\\.openai\\.com",
+    "models": [
+      {
+        "id": "gpt-6-astra",
+        "match": { "or": [{ "equals": "gpt-6-astra" }, { "regex": "^gpt-6-astra-\\d{4}-\\d{2}-\\d{2}$" }] },
+        "price_comments": "Stopgap pending release of merged pydantic/genai-prices#680",
+        "prices": {
+          "input_mtok": { "base": 10.0, "tiers": [{ "start": 271999, "price": 20.0 }] },
+          "cache_write_mtok": { "base": 12.5, "tiers": [{ "start": 271999, "price": 25.0 }] },
+          "cache_read_mtok": { "base": 1.0, "tiers": [{ "start": 271999, "price": 2.0 }] },
+          "output_mtok": { "base": 50.0, "tiers": [{ "start": 271999, "price": 75.0 }] }
+        }
+      }
+    ]
+  },
+  {
     "id": "baseten",
     "name": "Baseten",
     "api_pattern": "https://inference\\.baseten\\.co",
     "models": [
-      { "id": "deepseek-ai/DeepSeek-V4-Pro", "match": { "equals": "deepseek-ai/DeepSeek-V4-Pro" }, "price_comments": "Stopgap pending pydantic/genai-prices#549", "prices": { "input_mtok": 1.74, "cache_read_mtok": 0.145, "output_mtok": 3.48 } },
-      { "id": "deepseek-ai/DeepSeek-V4-Flash-0731", "match": { "equals": "deepseek-ai/DeepSeek-V4-Flash-0731" }, "price_comments": "Stopgap pending pydantic/genai-prices#549", "prices": { "input_mtok": 0.13, "cache_read_mtok": 0.028, "output_mtok": 0.26 } },
-      { "id": "zai-org/GLM-4.7", "match": { "or": [{ "equals": "zai-org/GLM-4.7" }, { "equals": "glm-4-7" }] }, "price_comments": "Stopgap pending pydantic/genai-prices#549", "prices": { "input_mtok": 0.6, "cache_read_mtok": 0.12, "output_mtok": 2.2 } },
-      { "id": "zai-org/GLM-5.2", "match": { "equals": "zai-org/GLM-5.2" }, "price_comments": "Stopgap pending pydantic/genai-prices#549", "prices": { "input_mtok": 1.4, "cache_read_mtok": 0.14, "output_mtok": 4.4 } },
-      { "id": "zai-org/GLM-5.2-Fast", "match": { "equals": "zai-org/GLM-5.2-Fast" }, "price_comments": "Stopgap pending pydantic/genai-prices#549", "prices": { "input_mtok": 2.1, "cache_read_mtok": 0.21, "output_mtok": 6.6 } },
-      { "id": "thinkingmachines/inkling", "match": { "or": [{ "equals": "thinkingmachines/inkling" }, { "equals": "inkling" }] }, "price_comments": "Stopgap pending pydantic/genai-prices#549", "prices": { "input_mtok": 1.0, "cache_read_mtok": 0.17, "output_mtok": 4.05 } },
-      { "id": "thinkingmachines/inkling-small", "match": { "or": [{ "equals": "thinkingmachines/inkling-small" }, { "equals": "inkling-small" }] }, "price_comments": "Stopgap pending pydantic/genai-prices#549", "prices": { "input_mtok": 0.5, "cache_read_mtok": 0.1, "output_mtok": 1.2 } },
-      { "id": "moonshotai/Kimi-K2.6", "match": { "equals": "moonshotai/Kimi-K2.6" }, "price_comments": "Stopgap pending pydantic/genai-prices#549", "prices": { "input_mtok": 0.95, "cache_read_mtok": 0.16, "output_mtok": 4.0 } },
-      { "id": "moonshotai/Kimi-K2.7-Code", "match": { "equals": "moonshotai/Kimi-K2.7-Code" }, "price_comments": "Stopgap pending pydantic/genai-prices#549", "prices": { "input_mtok": 0.95, "cache_read_mtok": 0.16, "output_mtok": 4.0 } },
-      { "id": "moonshotai/Kimi-K3", "match": { "equals": "moonshotai/Kimi-K3" }, "price_comments": "Stopgap pending pydantic/genai-prices#549", "prices": { "input_mtok": 3.0, "cache_read_mtok": 0.3, "output_mtok": 15.0 } },
-      { "id": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B", "match": { "equals": "nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B" }, "price_comments": "Stopgap pending pydantic/genai-prices#549", "prices": { "input_mtok": 0.6, "cache_read_mtok": 0.12, "output_mtok": 2.4 } },
-      { "id": "openai/gpt-oss-120b", "match": { "equals": "openai/gpt-oss-120b" }, "price_comments": "Stopgap pending pydantic/genai-prices#549; no cached-input rate published", "prices": { "input_mtok": 0.1, "output_mtok": 0.5 } }
+      { "id": "zai-org/GLM-4.7", "match": { "equals": "glm-4-7" }, "price_comments": "Bare alias omitted from pydantic/genai-prices#660", "prices": { "input_mtok": 0.6, "cache_read_mtok": 0.12, "output_mtok": 2.2 } },
+      { "id": "thinkingmachines/inkling", "match": { "equals": "inkling" }, "price_comments": "Bare alias omitted from pydantic/genai-prices#660", "prices": { "input_mtok": 1.0, "cache_read_mtok": 0.17, "output_mtok": 4.05 } },
+      { "id": "thinkingmachines/inkling-small", "match": { "equals": "inkling-small" }, "price_comments": "Bare alias omitted from pydantic/genai-prices#660", "prices": { "input_mtok": 0.5, "cache_read_mtok": 0.1, "output_mtok": 1.2 } }
+    ]
+  },
+  {
+    "id": "fireworks",
+    "name": "Fireworks",
+    "api_pattern": "https://api\\.fireworks\\.ai",
+    "models": [
+      { "id": "glm-5p3", "match": { "equals": "accounts/fireworks/models/glm-5p3" }, "price_comments": "Fireworks deployment omitted from pydantic/genai-prices#617", "prices": { "input_mtok": 1.4, "cache_read_mtok": 0.26, "output_mtok": 4.4 } },
+      { "id": "glm-5p3-flash", "match": { "equals": "accounts/fireworks/models/glm-5p3-flash" }, "price_comments": "Fireworks deployment omitted from pydantic/genai-prices#617", "prices": { "input_mtok": 0.15, "cache_read_mtok": 0.03, "output_mtok": 0.5 } }
     ]
   }
 ]

@@ -488,7 +488,7 @@ def _create(
 
     template = _generate_template(skill_name)
     skill_md = skill_dir / "SKILL.md"
-    skill_md.write_text(template)
+    skill_md.write_text(template, encoding="utf-8")
 
     if output_format == "json":
         from deepagents_code.output import write_json

@@ -199,6 +199,130 @@ class TestServerConfigEdgeCases:
             enable_interpreter=None, sandbox_type="daytona", local_default=True
         )
 
+    def test_workspace_claim_partitions_every_policy_field(self) -> None:
+        config = ServerConfig()
+
+        assert set(config.to_workspace_payload()) == set(
+            config.to_session_workspace_claim()
+        ) | set(config.to_project_workspace_policy())
+        assert not (
+            set(config.to_session_workspace_claim())
+            & set(config.to_project_workspace_policy())
+        )
+        assert {"no_mcp", "allow_fs_tools"} <= set(config.to_session_workspace_claim())
+
+    def test_every_config_field_is_classified_for_the_split(self) -> None:
+        """No `ServerConfig` field may fall outside the policy/runtime split."""
+        import dataclasses
+
+        from deepagents_code._server_config import (
+            MODEL_COMPATIBLE_FIELDS,
+            RUNTIME_ONLY_FIELDS,
+            WORKSPACE_IDENTITY_FIELDS,
+            classified_config_fields,
+        )
+
+        classification = classified_config_fields()
+        all_fields = {f.name for f in dataclasses.fields(ServerConfig)}
+
+        # Every field is classified into exactly one bucket.
+        assert set(classification) == all_fields
+        buckets = {
+            "model": MODEL_COMPATIBLE_FIELDS,
+            "runtime": RUNTIME_ONLY_FIELDS,
+            "identity": WORKSPACE_IDENTITY_FIELDS,
+        }
+        classified_once = set().union(*buckets.values())
+        policy = set(ServerConfig().to_workspace_payload())
+        # The named buckets are disjoint and policy covers the rest.
+        assert len(classified_once) == sum(len(b) for b in buckets.values())
+        assert all_fields == classified_once | policy
+        # Trust/tool/sandbox/approval policy stays in the durable bucket.
+        for field_name in (
+            "auto_approve",
+            "trust_project_mcp",
+            "trust_project_extensions",
+            "sandbox_type",
+            "shell_allow_list",
+            "allow_fs_tools",
+            "enable_shell",
+        ):
+            assert classification[field_name] == "policy"
+        # Harmless model settings are the cosmetic bucket.
+        assert classification["model"] == "model"
+        assert classification["summarization_model"] == "model"
+
+    def test_policy_fingerprint_ignores_cosmetic_model_changes(self) -> None:
+        """Model switching must not change durable access-policy compatibility."""
+        baseline = ServerConfig(model="anthropic:claude-a", auto_approve=False)
+        switched = ServerConfig(model="openai:gpt-b", auto_approve=False)
+
+        assert baseline.policy_fingerprint() == switched.policy_fingerprint()
+        # ...but the full runtime identity changes, so the runtime rebuilds.
+        assert baseline.runtime_fingerprint() != switched.runtime_fingerprint()
+
+    def test_policy_fingerprint_changes_on_real_policy_drift(self) -> None:
+        baseline = ServerConfig(auto_approve=False)
+
+        assert (
+            baseline.policy_fingerprint()
+            != ServerConfig(auto_approve=True).policy_fingerprint()
+        )
+        assert (
+            baseline.policy_fingerprint()
+            != ServerConfig(sandbox_type="daytona").policy_fingerprint()
+        )
+
+    def test_session_fingerprint_excludes_every_project_field(self) -> None:
+        baseline = ServerConfig()
+        project_changed = ServerConfig(
+            extension_paths=("/tmp/extension.py",),
+            mcp_config_path="/tmp/mcp.json",
+            sandbox_setup="/tmp/setup.sh",
+            trust_project_extensions=True,
+            trust_project_mcp=True,
+        )
+
+        assert (
+            baseline.session_workspace_fingerprint()
+            == project_changed.session_workspace_fingerprint()
+        )
+        assert (
+            baseline.workspace_fingerprint() != project_changed.workspace_fingerprint()
+        )
+        assert (
+            baseline.session_workspace_fingerprint()
+            != ServerConfig(no_mcp=True).session_workspace_fingerprint()
+        )
+        assert (
+            baseline.session_workspace_fingerprint()
+            != ServerConfig(
+                allow_fs_tools=["read_file"]
+            ).session_workspace_fingerprint()
+        )
+
+    def test_second_project_resolves_its_persisted_extension_trust(
+        self, tmp_path: Path
+    ) -> None:
+        launch = tmp_path / "launch"
+        other = tmp_path / "other"
+        launch.mkdir()
+        other.mkdir()
+        config = ServerConfig(
+            cwd=str(launch),
+            project_root=str(launch),
+            trust_project_extensions=False,
+        )
+
+        with patch(
+            "deepagents_code.extensions.trust.is_project_extensions_trusted",
+            return_value=True,
+        ) as trusted:
+            resolved = config.resolve_workspace(str(other), str(other))
+
+        assert resolved.trust_project_extensions is True
+        trusted.assert_called_once_with(str(other))
+
     def test_trust_project_mcp_false_round_trips(self) -> None:
         """False must survive round-trip (not collapse to None)."""
         original = ServerConfig(trust_project_mcp=False)

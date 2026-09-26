@@ -27,12 +27,15 @@ PROMPT_SEARCH_MAX_ROWS = 5
 """Result rows the inline panel shows before the list scrolls."""
 
 
-def prompt_search_hint() -> str:
+def prompt_search_hint(*, has_matches: bool = True) -> str:
     """Build the footer line for the current charset mode.
 
     The Ctrl+R mention is what makes the modal tier discoverable. The line is
     kept short enough to wrap within `PROMPT_SEARCH_MAX_HINT_ROWS` at the
     narrow widths the composer supports.
+
+    Args:
+        has_matches: Whether navigation and insertion are available.
 
     Returns:
         The hint text, using ASCII glyphs on terminals that need them.
@@ -41,14 +44,13 @@ def prompt_search_hint() -> str:
 
     glyphs = get_glyphs()
     sep = f"  {glyphs.bullet}  "
-    return sep.join(
-        (
+    hints = ["Ctrl+R full view", "Esc cancel"]
+    if has_matches:
+        hints[:0] = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
             "Tab/Enter insert",
-            "Ctrl+R full view",
-            "Esc cancel",
-        )
-    )
+        ]
+    return sep.join(hints)
 
 
 PROMPT_SEARCH_WINDOW = 50
@@ -114,7 +116,21 @@ def filter_prompts(prompts: tuple[str, ...], query: str) -> list[str]:
     return [prompt for prompt in prompts if needle in prompt.casefold()]
 
 
-class PromptSearchInput(Input):
+class PromptFilterInput(Input):
+    """Prompt filter with standard modified-Backspace word deletion."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding(
+            "ctrl+backspace,alt+backspace",
+            "delete_left_word",
+            "Delete word left",
+            show=False,
+            priority=True,
+        )
+    ]
+
+
+class PromptSearchInput(PromptFilterInput):
     """Query field for the inline prompt search panel.
 
     Plain `Input` apart from the class name, which lets `ChatInput` filter
@@ -334,7 +350,9 @@ class PromptSearchPanel(Vertical):
             Widgets for the prompt search panel.
         """
         yield PromptSearchInput(
-            placeholder="Search submitted prompts", id="prompt-search-input"
+            placeholder="Search submitted prompts",
+            id="prompt-search-input",
+            select_on_focus=False,
         )
         yield VerticalScroll(id="prompt-search-results")
         yield Static(prompt_search_hint(), classes="prompt-search-hint")
@@ -366,6 +384,8 @@ class PromptSearchPanel(Vertical):
         """
         if empty is not None:
             titles = []
+        if self._hint_static is not None:
+            self._hint_static.update(prompt_search_hint(has_matches=bool(titles)))
         self._selected_index = selected_index
         # Copy: the panel keeps this list across frames, so an owner that
         # mutated the list it passed would rewrite the pending window in place.
@@ -376,7 +396,8 @@ class PromptSearchPanel(Vertical):
         self._rebuild_generation += 1
         gen = self._rebuild_generation
         if self._query_input is not None and self._query_input.value != query:
-            self._query_input.value = query
+            with self._query_input.prevent(Input.Changed):
+                self._query_input.value = query
         self.call_next(lambda: self._rebuild_options(gen))
 
     async def _fit_rows_to_window(

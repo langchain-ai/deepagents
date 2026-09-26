@@ -103,10 +103,12 @@ class ResumeCompactPromptScreen(ModalScreen[bool]):
         else:
             title = "Compact this thread?"
             body = (
-                f"This thread uses {format_token_count(self._context_tokens)} "
-                "context tokens, above the configured "
+                "This prompt appears because the thread uses "
+                f"{format_token_count(self._context_tokens)} context tokens, exceeding "
+                "the configured "
                 f"{format_token_count(self._threshold)} token threshold. "
-                "Compacting summarizes older messages so later turns cost less."
+                "Compacting replaces older messages with a summary, reducing the cost "
+                "of future turns."
             )
             enter_hint = "Enter: compact now"
 

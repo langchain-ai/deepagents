@@ -16,6 +16,8 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
 
+from deepagents_talon.cron.errors import CronJobError
+from deepagents_talon.cron.expression import iter_local_matches, parse_expression
 from deepagents_talon.timezones import TimeZoneError, resolve_zone
 
 if TYPE_CHECKING:
@@ -36,6 +38,9 @@ MAX_SCHEDULE_TEXT_LENGTH = 200
 
 _INTERVAL_TOKENS = 2
 _WALL_CLOCK_TOKENS = 4
+_CRON_MACRO_TOKENS = 3
+_CRON_FIELD_TOKENS = 7
+_UNTIL_TOKENS = 3
 _TIME_FIELDS = 2
 _MAX_HOUR = 23
 _MAX_MINUTE = 59
@@ -56,25 +61,30 @@ _MAX_DAY = 31
 _MIN_YEAR = 1
 _MAX_YEAR = 9999
 
+_UNTIL_GRACE = timedelta(minutes=5)
+"""How late a run scheduled inside a job's `until` window may still start.
+
+Covers scheduler tick latency, so a run due exactly at `until` is not lost to a
+tick that lands a few seconds after it. A run later than this is dropped rather
+than delivered after the window the user asked for has closed.
+"""
+
 _SCHEDULE_FORMS_HELP = (
     "schedule must be 'in 30m', 'every 15m', "
-    "'at 2026-09-04 13:30 America/New_York', or 'daily at 08:00 America/New_York'"
+    "'at 2026-09-04 13:30 America/New_York', 'daily at 08:00 America/New_York', "
+    "or 'cron */15 9-17 * * mon-fri America/New_York'"
 )
 
 JobStatus = Literal["ok", "error"]
 ScheduleKind = Literal["one_shot", "recurring"]
-ScheduleForm = Literal["interval", "at", "daily"]
+ScheduleForm = Literal["interval", "at", "daily", "cron"]
 
 _FileIdentity = tuple[int, int, int]
 """Store file fingerprint: modification time in ns, size, and inode."""
 
 _JOB_STATUSES: tuple[str, ...] = ("ok", "error")
 _SCHEDULE_KINDS: tuple[str, ...] = ("one_shot", "recurring")
-_SCHEDULE_FORMS: tuple[str, ...] = ("interval", "at", "daily")
-
-
-class CronJobError(ValueError):
-    """Raised when a cron job request is invalid."""
+_SCHEDULE_FORMS: tuple[str, ...] = ("interval", "at", "daily", "cron")
 
 
 class CronOriginDict(TypedDict):
@@ -95,6 +105,8 @@ class CronScheduleDict(TypedDict):
 
     Interval schedules carry `minutes`. Wall-clock schedules carry `timezone`,
     `hour`, and `minute`; the one-shot `at` form adds `year`, `month`, `day`.
+    Cron schedules carry `timezone` and the five-field `expression`, which is
+    reparsed on load through a bounded cache.
     """
 
     form: ScheduleForm
@@ -107,6 +119,7 @@ class CronScheduleDict(TypedDict):
     day: NotRequired[int]
     hour: NotRequired[int]
     minute: NotRequired[int]
+    expression: NotRequired[str]
 
 
 class CronScheduleWireDict(TypedDict):
@@ -119,6 +132,7 @@ class CronScheduleWireDict(TypedDict):
     timezone: NotRequired[str]
     local_time: NotRequired[str]
     local_date: NotRequired[str]
+    expression: NotRequired[str]
 
 
 class CronRepeatDict(TypedDict):
@@ -149,6 +163,8 @@ class CronJobDict(TypedDict):
     last_status: JobStatus | None
     last_error: str | None
     origin: CronOriginDict
+    until: NotRequired[int | None]
+    claimed_at: NotRequired[int | None]
 
 
 class CronJobWireDict(TypedDict):
@@ -167,6 +183,8 @@ class CronJobWireDict(TypedDict):
     last_status: JobStatus | None
     last_error: str | None
     origin: CronOriginDict
+    until: str | None
+    claimed_at: str | None
 
 
 class CronStoreDict(TypedDict):
@@ -237,17 +255,18 @@ class CronSchedule:
 
     The first three fields keep the argument positions they have always had, so
     `CronSchedule("recurring", 15, "every 15m")` still constructs an interval
-    schedule. Wall-clock forms pass `minutes=None`.
+    schedule. Wall-clock and cron forms pass `minutes=None`.
 
     Args:
         kind: Whether the schedule is one-shot or recurring.
         minutes: Delay or interval in minutes, or `None` for wall-clock forms.
         display: Human-readable schedule text. Canonicalized for wall-clock forms.
         form: Which arithmetic computes the next run.
-        timezone: IANA timezone name. Wall-clock schedules only.
+        timezone: IANA timezone name. Wall-clock and cron schedules only.
         hour: Local wall-clock hour, 0-23. Wall-clock schedules only.
         minute: Local wall-clock minute, 0-59. Wall-clock schedules only.
         local_date: Local calendar date. One-shot wall-clock schedules only.
+        expression: Five-field cron expression or `@` macro. Cron schedules only.
     """
 
     kind: ScheduleKind
@@ -258,6 +277,7 @@ class CronSchedule:
     hour: int | None = None
     minute: int | None = None
     local_date: date | None = None
+    expression: str | None = None
 
     def __post_init__(self) -> None:
         """Validate the fields required by this schedule form.
@@ -270,6 +290,8 @@ class CronSchedule:
             raise CronJobError(msg)
         if self.form == "interval":
             self._validate_interval()
+        elif self.form == "cron":
+            self._validate_cron()
         else:
             self._validate_wall_clock()
 
@@ -285,13 +307,35 @@ class CronSchedule:
             or self.hour is not None
             or self.minute is not None
             or self.local_date is not None
+            or self.expression is not None
         ):
             msg = "interval schedules cannot carry wall-clock fields"
             raise CronJobError(msg)
 
+    def _validate_cron(self) -> None:
+        if self.kind != "recurring":
+            msg = "cron-expression schedules are always recurring"
+            raise CronJobError(msg)
+        if self.timezone is None or self.expression is None:
+            msg = "cron-expression schedules require a timezone and an expression"
+            raise CronJobError(msg)
+        if (
+            self.minutes is not None
+            or self.hour is not None
+            or self.minute is not None
+            or self.local_date is not None
+        ):
+            msg = "cron-expression schedules carry only a timezone and an expression"
+            raise CronJobError(msg)
+        _resolve_zone(self.timezone)
+        parse_expression(self.expression)
+
     def _validate_wall_clock(self) -> None:
         if self.minutes is not None:
             msg = "wall-clock schedules cannot carry a minute count"
+            raise CronJobError(msg)
+        if self.expression is not None:
+            msg = "wall-clock schedules cannot carry a cron expression"
             raise CronJobError(msg)
         if self.timezone is None or self.hour is None or self.minute is None:
             msg = "wall-clock schedules require a timezone, an hour, and a minute"
@@ -313,8 +357,10 @@ class CronSchedule:
         """Parse a supported schedule string.
 
         Recognized forms are `in 30m`, `every 15m`,
-        `at YYYY-MM-DD HH:MM <tz>`, and `daily at HH:MM <tz>`, where `<tz>` is a
-        required IANA timezone name such as `America/New_York`.
+        `at YYYY-MM-DD HH:MM <tz>`, `daily at HH:MM <tz>`, and
+        `cron <minute> <hour> <day-of-month> <month> <day-of-week> <tz>` (or
+        `cron @daily <tz>`), where `<tz>` is a required IANA timezone name such
+        as `America/New_York`.
 
         Keywords are matched case-insensitively; the timezone token keeps its
         original case because IANA keys are case-sensitive on Linux.
@@ -351,7 +397,31 @@ class CronSchedule:
                 return cls._at(tokens[1], tokens[2], tokens[3])
             if tokens[0].lower() == "daily" and tokens[1].lower() == "at":
                 return cls._daily(tokens[2], tokens[3])
+        if tokens and tokens[0].lower() == "cron":
+            return cls._cron(tokens[1:])
         raise CronJobError(_SCHEDULE_FORMS_HELP)
+
+    @classmethod
+    def _cron(cls, tokens: list[str]) -> CronSchedule:
+        if len(tokens) not in {_CRON_MACRO_TOKENS - 1, _CRON_FIELD_TOKENS - 1}:
+            msg = (
+                "cron schedules must look like 'cron */15 9-17 * * mon-fri America/New_York' "
+                "or 'cron @daily America/New_York': five fields (or one @ macro) and "
+                "an IANA timezone"
+            )
+            raise CronJobError(msg)
+        *fields, zone_name = tokens
+        expression = " ".join(field.lower() for field in fields)
+        parse_expression(expression)
+        _resolve_zone(zone_name)
+        return cls(
+            kind="recurring",
+            minutes=None,
+            display=f"cron {expression} {zone_name}",
+            form="cron",
+            timezone=zone_name,
+            expression=expression,
+        )
 
     @classmethod
     def _at(cls, date_text: str, time_text: str, zone_name: str) -> CronSchedule:
@@ -402,6 +472,8 @@ class CronSchedule:
         if self.form == "interval":
             return self._next_interval(now, previous)
         zone = _resolve_zone(cast("str", self.timezone))
+        if self.form == "cron":
+            return _next_cron_instant(now, zone, cast("str", self.expression))
         hour, minute = cast("int", self.hour), cast("int", self.minute)
         if self.form == "at":
             naive = datetime.combine(cast("date", self.local_date), time(hour, minute))
@@ -430,10 +502,13 @@ class CronSchedule:
         }
         if self.minutes is not None:
             data["minutes"] = self.minutes
-        if self.form != "interval":
-            data["timezone"] = cast("str", self.timezone)
-            data["hour"] = cast("int", self.hour)
-            data["minute"] = cast("int", self.minute)
+        if self.timezone is not None:
+            data["timezone"] = self.timezone
+        if self.hour is not None and self.minute is not None:
+            data["hour"] = self.hour
+            data["minute"] = self.minute
+        if self.expression is not None:
+            data["expression"] = self.expression
         if self.local_date is not None:
             data["year"] = self.local_date.year
             data["month"] = self.local_date.month
@@ -456,11 +531,12 @@ class CronSchedule:
         if self.form != "interval":
             data["form"] = self.form
             data["timezone"] = cast("str", self.timezone)
-            data["local_time"] = _format_local_time(
-                cast("int", self.hour), cast("int", self.minute)
-            )
+        if self.hour is not None and self.minute is not None:
+            data["local_time"] = _format_local_time(self.hour, self.minute)
         if self.local_date is not None:
             data["local_date"] = self.local_date.isoformat()
+        if self.expression is not None:
+            data["expression"] = self.expression
         return data
 
     @classmethod
@@ -490,6 +566,7 @@ class CronSchedule:
             hour=_optional_int_field(record, "hour"),
             minute=_optional_int_field(record, "minute"),
             local_date=_optional_date_fields(record),
+            expression=_optional_str_field(record, "expression"),
         )
 
 
@@ -573,6 +650,11 @@ class CronJob:
         last_status: Last run outcome.
         last_error: Last run error text.
         origin: Conversation that receives results.
+        until: Last instant a recurring job may run, inclusive. The job is
+            deleted once it passes.
+        claimed_at: When the scheduler claimed the current run, or `None` once
+            its outcome is recorded. Still set after a restart means the run
+            was interrupted and its outcome is unknown.
     """
 
     id: str
@@ -588,6 +670,34 @@ class CronJob:
     last_status: JobStatus | None
     last_error: str | None
     origin: CronOrigin
+    until: datetime | None = None
+    claimed_at: datetime | None = None
+
+    def upcoming(self, count: int = 3) -> list[datetime]:
+        """Return the next few scheduled runs, honoring `until` and the repeat cap.
+
+        Lets the agent check a schedule against what the user asked for, which
+        catches a misread cron expression before it fires.
+
+        Args:
+            count: Maximum number of runs to return.
+
+        Returns:
+            Upcoming run timestamps in UTC, soonest first.
+        """
+        remaining = count
+        if self.repeat.times is not None:
+            remaining = min(count, self.repeat.times - self.repeat.completed)
+        runs: list[datetime] = []
+        current = self.next_run_at
+        while current is not None and len(runs) < remaining:
+            if self.until is not None and current > self.until:
+                break
+            runs.append(current)
+            if self.schedule.kind == "one_shot":
+                break
+            current = self.schedule.next_after(current, previous=current)
+        return runs
 
     def to_dict(self) -> CronJobDict:
         """Serialize this job for disk storage.
@@ -609,6 +719,8 @@ class CronJob:
             "last_status": self.last_status,
             "last_error": self.last_error,
             "origin": self.origin.to_dict(),
+            "until": _to_optional_epoch(self.until),
+            "claimed_at": _to_optional_epoch(self.claimed_at),
         }
 
     def to_wire(self) -> CronJobWireDict:
@@ -635,6 +747,8 @@ class CronJob:
             "last_status": self.last_status,
             "last_error": self.last_error,
             "origin": self.origin.to_dict(),
+            "until": _format_optional_time(self.until),
+            "claimed_at": _format_optional_time(self.claimed_at),
         }
 
     @classmethod
@@ -668,6 +782,8 @@ class CronJob:
             ),
             last_error=_optional_str_field(record, "last_error"),
             origin=CronOrigin.from_dict(record.get("origin")),
+            until=_from_optional_epoch(_optional_int_field(record, "until")),
+            claimed_at=_from_optional_epoch(_optional_int_field(record, "claimed_at")),
         )
 
 
@@ -695,6 +811,7 @@ class CronJobStore:
         origin: CronOrigin,
         name: str = "",
         repeat_times: int | None = None,
+        until: datetime | None = None,
         now: datetime | None = None,
     ) -> CronJob:
         """Create and persist a cron job.
@@ -705,16 +822,24 @@ class CronJobStore:
             origin: Conversation that receives results.
             name: Human-readable label.
             repeat_times: Optional cap for recurring jobs.
+            until: Optional last instant a recurring job may run, inclusive.
             now: Creation time override for deterministic tests.
 
         Returns:
             Created job record.
+
+        Raises:
+            CronJobError: If the options do not fit the schedule, or no run
+                falls before `until`.
         """
         current = _coerce_utc(now)
         repeat = CronRepeat(times=repeat_times)
         if schedule.kind == "one_shot" and repeat_times is not None:
             msg = "repeat cap is only valid for recurring jobs"
             raise CronJobError(msg)
+        until = None if until is None else _coerce_utc(until)
+        next_run_at = _first_run_at(schedule, current)
+        _check_until(schedule, next_run_at, until)
         job = CronJob(
             id=uuid.uuid4().hex[:12],
             assistant_id=self.assistant_id,
@@ -724,11 +849,12 @@ class CronJobStore:
             repeat=repeat,
             enabled=True,
             created_at=current,
-            next_run_at=_first_run_at(schedule, current),
+            next_run_at=next_run_at,
             last_run_at=None,
             last_status=None,
             last_error=None,
             origin=origin,
+            until=until,
         )
         jobs = [*self.list_jobs(), job]
         self._write_jobs(jobs)
@@ -789,6 +915,8 @@ class CronJobStore:
         schedule: CronSchedule | None = None,
         enabled: bool | None = None,
         repeat_times: int | None = None,
+        until: datetime | None = None,
+        clear_until: bool = False,
         now: datetime | None = None,
     ) -> CronJob:
         """Edit a job within the current conversation scope.
@@ -801,14 +929,20 @@ class CronJobStore:
             schedule: Optional replacement schedule.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
+            until: Optional replacement for the job's last allowed run instant.
+            clear_until: Remove the job's `until` bound.
             now: Timestamp used to recalculate `next_run_at` when schedule changes.
 
         Returns:
             Updated job.
 
         Raises:
-            CronJobError: If no scoped job matches.
+            CronJobError: If no scoped job matches, or the edit leaves no run
+                before `until`.
         """
+        if until is not None and clear_until:
+            msg = "pass either until or clear_until, not both"
+            raise CronJobError(msg)
         jobs = self.list_jobs()
         updated: CronJob | None = None
         current = _coerce_utc(now)
@@ -827,6 +961,9 @@ class CronJobStore:
                     msg = "repeat cap is only valid for recurring jobs"
                     raise CronJobError(msg)
                 new_repeat = CronRepeat(times=repeat_times)
+            new_until = _edited_until(job.until, until, clear=clear_until)
+            if next_run_at is not None:
+                _check_until(new_schedule, next_run_at, new_until)
             updated = replace(
                 job,
                 name=job.name if name is None else name,
@@ -835,6 +972,7 @@ class CronJobStore:
                 repeat=new_repeat,
                 enabled=job.enabled if enabled is None else enabled,
                 next_run_at=next_run_at,
+                until=new_until,
             )
             result.append(updated)
         if updated is None:
@@ -877,12 +1015,18 @@ class CronJobStore:
             job_id: Job identifier.
             now: Current timestamp override for deterministic tests.
 
+        A job whose `until` has passed, beyond a short grace for tick latency,
+        is finished instead of claimed, so a run missed during host downtime is
+        not delivered after its window closed.
+
         Returns:
-            Updated claimed job, or `None` if the job is no longer due.
+            Updated claimed job, or `None` if the job is no longer due or has
+            expired.
         """
         current = _coerce_utc(now)
         jobs = self.list_jobs()
         claimed: CronJob | None = None
+        expired = False
         result: list[CronJob] = []
         for job in jobs:
             if job.id != job_id:
@@ -891,9 +1035,13 @@ class CronJobStore:
             if not job.enabled or job.next_run_at is None or job.next_run_at > current:
                 result.append(job)
                 continue
+            if _is_expired(job, current):
+                result.append(replace(job, enabled=False, next_run_at=None))
+                expired = True
+                continue
             claimed = _advance_claimed_job(job, current)
             result.append(claimed)
-        if claimed is not None:
+        if claimed is not None or expired:
             self._write_jobs(result)
         return claimed
 
@@ -928,11 +1076,47 @@ class CronJobStore:
                 last_run_at=current,
                 last_status=status,
                 last_error=error,
+                claimed_at=None,
             )
             result.append(updated)
         if updated is not None:
             self._write_jobs(result)
         return updated
+
+    def discard_finished(self, *, now: datetime | None = None) -> list[CronJob]:
+        """Delete jobs that will never run again, or whose `until` has passed.
+
+        Two kinds of job are kept for `list_jobs` to show, and `prune_completed`
+        removes them after the retention window: one whose last run failed, and
+        one whose claimed run never recorded an outcome, because the process
+        stopped mid-run. An expired job kept for either reason is marked
+        finished so the retention prune applies to it. Any other expired job is
+        deleted whether or not it ever ran: expiry does not depend on a run
+        happening.
+
+        Args:
+            now: Current timestamp override for deterministic tests.
+
+        Returns:
+            Removed job records.
+        """
+        current = _coerce_utc(now)
+        jobs = self.list_jobs()
+        kept: list[CronJob] = []
+        removed: list[CronJob] = []
+        for job in jobs:
+            expired = _is_expired(job, current)
+            if not (expired or _is_finished(job)):
+                kept.append(job)
+            elif job.last_status != "error" and job.claimed_at is None:
+                removed.append(job)
+            elif expired:
+                kept.append(replace(job, enabled=False, next_run_at=None))
+            else:
+                kept.append(job)
+        if removed or kept != jobs:
+            self._write_jobs(kept)
+        return removed
 
     def prune_completed(
         self,
@@ -1066,6 +1250,7 @@ class CronJobStore:
 
 
 def _advance_claimed_job(job: CronJob, now: datetime) -> CronJob:
+    job = replace(job, claimed_at=now)
     if job.schedule.kind == "one_shot":
         return replace(job, enabled=False, next_run_at=None)
 
@@ -1074,7 +1259,81 @@ def _advance_claimed_job(job: CronJob, now: datetime) -> CronJob:
         return replace(job, repeat=repeat, enabled=False, next_run_at=None)
 
     next_run_at = job.schedule.next_after(now, previous=job.next_run_at)
+    if job.until is not None and next_run_at > job.until:
+        return replace(job, repeat=repeat, enabled=False, next_run_at=None)
     return replace(job, repeat=repeat, next_run_at=next_run_at)
+
+
+def _is_finished(job: CronJob) -> bool:
+    return not job.enabled and job.next_run_at is None
+
+
+def _is_expired(job: CronJob, now: datetime) -> bool:
+    # Subtract from `now` rather than add to `until`: `until` may sit at the
+    # largest representable datetime, and adding the grace would overflow.
+    return job.until is not None and now - _UNTIL_GRACE > job.until
+
+
+def _edited_until(
+    current: datetime | None, replacement: datetime | None, *, clear: bool
+) -> datetime | None:
+    if clear:
+        return None
+    return current if replacement is None else _coerce_utc(replacement)
+
+
+def _check_until(schedule: CronSchedule, next_run_at: datetime, until: datetime | None) -> None:
+    """Reject an `until` bound that cannot apply or that no run falls within.
+
+    Args:
+        schedule: Schedule the bound is paired with.
+        next_run_at: First run the schedule resolves to.
+        until: Last allowed run instant, or `None`.
+
+    Raises:
+        CronJobError: If `until` is set on a one-shot schedule, or the first
+            run is already past it.
+    """
+    if until is None:
+        return
+    if schedule.kind == "one_shot":
+        msg = "until is only valid for recurring jobs; a one-shot job already runs once"
+        raise CronJobError(msg)
+    if next_run_at > until:
+        msg = (
+            f"{schedule.display!r} first runs at {next_run_at.isoformat()}, "
+            f"after until {until.isoformat()}; the job would never run"
+        )
+        raise CronJobError(msg)
+
+
+def parse_until(value: str) -> datetime:
+    """Parse an `until` bound written as `YYYY-MM-DD HH:MM <IANA tz>`.
+
+    Uses the same local-time rules as the `at` schedule form.
+
+    Args:
+        value: Bound text, such as `2026-12-31 23:59 America/New_York`.
+
+    Returns:
+        The bound in UTC.
+
+    Raises:
+        CronJobError: If the text is not a local date, time, and timezone.
+    """
+    tokens = value.split()
+    if len(tokens) != _UNTIL_TOKENS:
+        msg = f"until must look like '2026-12-31 23:59 America/New_York', not {value!r}"
+        raise CronJobError(msg)
+    local_date = _parse_local_date(tokens[0])
+    hour, minute = _parse_local_time(tokens[1])
+    zone = _resolve_zone(tokens[2])
+    naive = datetime.combine(local_date, time(hour, minute))
+    try:
+        return _localize(naive, zone).astimezone(UTC)
+    except OverflowError as exc:
+        msg = f"until {value!r} falls outside the supported date range"
+        raise CronJobError(msg) from exc
 
 
 def _first_run_at(schedule: CronSchedule, now: datetime) -> datetime:
@@ -1195,6 +1454,35 @@ def _next_daily_instant(now: datetime, zone: ZoneInfo, hour: int, minute: int) -
         if instant > now:
             return instant
     msg = f"could not find a daily run after {now.isoformat()} in {zone.key}"
+    raise CronJobError(msg)
+
+
+def _next_cron_instant(now: datetime, zone: ZoneInfo, expression: str) -> datetime:
+    """Return the first instant strictly after `now` that `expression` matches in `zone`.
+
+    Candidates are local wall-clock times, localized with the same rules as
+    `daily at`: a time skipped by spring-forward snaps to the first minute that
+    exists, and a repeated fall-back time fires at its earlier occurrence.
+    Several skipped minutes can snap to one instant; the strictly-after check
+    collapses them into a single run.
+
+    Args:
+        now: Current timestamp.
+        zone: Schedule timezone.
+        expression: Five-field cron expression or `@` macro.
+
+    Returns:
+        Next run timestamp in UTC.
+
+    Raises:
+        CronJobError: If the expression has no run within the search horizon.
+    """
+    parsed = parse_expression(expression)
+    for candidate in iter_local_matches(parsed, now.astimezone(zone).replace(tzinfo=None)):
+        instant = _localize(candidate, zone).astimezone(UTC)
+        if instant > now:
+            return instant
+    msg = f"cron expression {expression!r} never fires after {now.isoformat()} in {zone.key}"
     raise CronJobError(msg)
 
 

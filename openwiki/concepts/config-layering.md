@@ -1,114 +1,147 @@
 ---
 type: configuration-model
-title: dcode Configuration Model
-description: dcode resolves typed settings through ranked providers while retaining one shared file-snapshot generation. This page explains precedence, managed-policy failure retention, runtime reload overrides, and the limited callers that intentionally inspect independent snapshots.
-tags: [configuration, config-layering, resolver, precedence, reload, deepagents-code, dcode]
+title: Configuration Layering and Workspace Binding
+description: How dcode resolves ranked configuration, safely writes and reloads TOML policy, controls MCP trust and disablement, and binds server runtimes to workspace policy with drift diagnostics.
+tags: [configuration, config-layering, resolver, precedence, reload, workspace-binding, mcp, deepagents-code, dcode]
+sources:
+  - id: openwiki-source-216ca680d81dc35eb4d3e76e
+    resource: repo://libs/code/deepagents_code/mcp_config.py
+  - id: openwiki-source-20b5bbd05beabea1df7e2b53
+    resource: repo://libs/code/deepagents_code/mcp_disabled.py
+  - id: openwiki-source-f6d553e7afdf54acac36e7d3
+    resource: repo://libs/code/deepagents_code/mcp_tools.py
+  - id: openwiki-source-17253964e859bb0abf2094e8
+    resource: repo://libs/code/deepagents_code/workspace_diagnostics.py
+  - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
+    resource: repo://libs/code/deepagents_code/workspace.py
+  - id: openwiki-source-5a5147d4654f226b03e92ab9
+    resource: repo://libs/code/tests/unit_tests/test_workspace_diagnostics.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-08-28T11:44:48.051Z
-sources:
-  - id: openwiki-source-6f5b1b7a043ee1d414708793
-    resource: repo://libs/code/ARCHITECTURE.md
-  - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
-    resource: repo://libs/code/deepagents_code/config_manifest.py
-  - id: openwiki-source-7f6b98925b5f1ba065df3a04
-    resource: repo://libs/code/deepagents_code/config.py
-  - id: openwiki-source-5094ef2441b72710a0b2056c
-    resource: repo://libs/code/deepagents_code/configuration/provider.py
-  - id: openwiki-source-dfdee0a6f0ea427a4490f98a
-    resource: repo://libs/code/deepagents_code/configuration/providers.py
-  - id: openwiki-source-52d96f61bc4737f02a18cf79
-    resource: repo://libs/code/deepagents_code/configuration/resolver.py
-  - id: openwiki-source-2d5bc2a1a6685429db181b39
-    resource: repo://libs/code/deepagents_code/configuration/service.py
-  - id: openwiki-source-80ad1e0223472d67f28c7919
-    resource: repo://libs/code/deepagents_code/configuration/writer.py
-  - id: openwiki-source-2e03fee957625ca21a1c21af
-    resource: repo://libs/code/deepagents_code/main.py
-  - id: openwiki-source-116a1f598e2b0900a09761fc
-    resource: repo://libs/code/deepagents_code/update_check.py
-  - id: openwiki-source-149abfd7a1ab6a5a2d1a0e71
-    resource: repo://libs/code/tests/unit_tests/test_configuration_resolver.py
-  - id: openwiki-source-4df2bda291da47157bed7cbb
-    resource: repo://libs/code/tests/unit_tests/test_reload.py
-generated: { by: "openwiki/0.4.2", at: "2026-08-28T11:44:48.051Z" }
+    at: 2026-09-25T08:06:00.203Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 ---
 
-# dcode Configuration Model
+# Configuration Layering and Workspace Binding
 
-Deep Agents Code (`dcode`) turns source-specific input into typed provider results and resolves ordinary process reads consistently. Its governing tradeoff is to serve a coherent, potentially stale file generation rather than partly apply an edit. Managed policy is protected more strongly: a failed or unenforceable replacement must not remove restrictions and let a lower tier win.
+Deep Agents Code (`dcode`) resolves typed settings from ranked sources. Its central consistency choice is to serve one coherent file generation—even when stale—rather than mix an edit into only some reads. Managed policy is the trust root and must fail closed: a bad replacement must not remove a restriction and let a weaker source win.
 
-For session use, see [run a dcode session](/openwiki/workflows/run-dcode-session.md). For operational implications, see [security](/openwiki/operations/security.md), [cost and sessions](/openwiki/operations/cost-and-sessions.md), and [code agent architecture](/openwiki/architecture/code-agent.md).
+For model-specific settings, see [profiles and models](/openwiki/concepts/profiles-models.md); for an MCP integration overview, see [MCP](/openwiki/integrations/mcp.md).
 
-## Scopes, providers, and precedence
+## Source model and precedence
 
-Configuration spans user, project, session, and runtime scopes. This lets projects share defaults and integrations while users retain credentials, preferences, skills, and local settings. The resolver represents applicable sources as ranked providers; lower numeric rank has stronger precedence. Its standard file-backed chain is managed policy (200), CLI arguments (300), environment (400), user `config.toml` (500), then manifest defaults (1000). Runtime reload can additionally install a retained in-memory override tier at rank 350.
+Configuration is layered across user, project, session, and runtime scopes. Teams can share project defaults while individual users retain credentials, preferences, skills, and local settings. The generic resolver only handles numeric ranks, provider health, and `Found`, `Unset`, or `Invalid` results; providers own domain coercion.
+
+For replacement settings, lower rank wins:
 
 ```mermaid
 flowchart TD
     M["Managed policy rank 200"] --> C["CLI arguments rank 300"]
-    C --> R["Retained reload value rank 350 when installed"]
-    R --> E["Process environment rank 400"]
+    C --> R["Retained reload values rank 350 when installed"]
+    R --> E["Environment rank 400"]
     E --> U["User config.toml rank 500"]
     U --> D["Manifest defaults rank 1000"]
 ```
 
-The rank order for replacement settings; the lowest eligible rank wins, and the reload-retention tier is conditional.
+The standard replacement precedence chain, including the conditional in-memory reload-retention tier.
 
-Managed policy is the trust root, ahead of parsed arguments, retained runtime values, environment, and the writable user file. Thus an environment variable overrides `config.toml`. `resolver_from_snapshots` requires named `managed=` and `user=` arguments: because both are the same snapshot type, keyword-only arguments prevent a positional swap from granting writable user content managed precedence.
+Managed policy outranks CLI, runtime retention, environment, and the writable user file. `resolver_from_snapshots()` requires keyword-only `managed=` and `user=` arguments, so same-typed snapshots cannot be transposed. Provider ranks must be unique. Options select `replace`, `union`, or `deep_merge`; accumulation retains valid tier contributions while treating manifest defaults as fallback rather than ordinary accumulated input.
 
-The generic engine is deliberately unaware of the manifest, UI, models, theme, environment, and filesystem. Providers own domain reading and coercion, returning `Found`, `Unset`, or `Invalid`, while the engine records numeric-rank provenance and health. A `ResolvedValue` validates that rank-keyed status, health, diagnostics, and provenance are mutually usable by consumers.
+The parsed command line becomes an immutable `CliProvider` snapshot of the `argparse` namespace. Installing a different CLI provider is rejected: one process has one argv. An ad-hoc snapshot resolver has no CLI tier unless its caller supplies the installed provider.
 
-Options select `replace`, `union`, or `deep_merge`. Accumulating strategies retain every valid contributing tier, which is important for deny lists and sibling mapping leaves; if a contribution cannot be combined, resolution falls back to the strongest provider. For replacement, a durable winning tier masks only lower-precedence non-durable results; it cannot hide an already stronger CLI or environment value.
+### Inspecting effective configuration
 
-## One shared generation and CLI lifecycle
+`dcode config` and `dcode config get <key-or-prefix>` are diagnostic entrypoints, not views of the cached resolver. After dotenv bootstrap, an invocation snapshots managed and user files once, carries over the installed CLI provider, and resolves displayed options against that local generation. It reports source as well as value; `--verbose` / `--all` adds catalog detail and per-leaf provenance. Secrets are redacted in text and JSON, and unreadable stored credentials fall back to other sources with a secret-free warning.
 
-`get_config_resolver()` owns the normal process-wide resolver cache. It has one entry keyed by `DEFAULT_CONFIG_PATH` and the managed-policy path. On a cache miss it reads the user TOML once and assembles managed, environment, user, and default providers from that file generation, adding the installed CLI provider when one exists. Readers through this resolver consequently do not independently see different file edits.
+## Shared generations, reload, and safe writes
 
-`CliProvider` snapshots the parsed `argparse` namespace. Startup installs it without building the resolver, preserving help-only fast paths that must not read TOML; the first real resolver read incorporates it. Replacing it with a different provider is rejected because one process argv must correspond to one CLI tier. One-off resolvers do not acquire that process tier automatically, so callers that require CLI provenance must pass it explicitly.
+`get_config_resolver()` owns the normal process-wide cache, keyed by default user and managed-policy paths. On first read it builds providers for managed and user TOML snapshots, environment, manifest defaults, and installed CLI values. Ordinary readers through it observe one generation; files are not watched.
 
-The environment is intentionally live rather than snapshotted. `EnvProvider` consults `os.environ` at resolution time and is non-durable, accommodating dotenv bootstrap and cwd changes while TOML providers continue to serve their cached generation.
+There are three deliberate read models:
 
-## Reload, retention, and policy safety
+- **Shared generation:** managed and user TOML providers retain parsed snapshots; edits become visible only when the generation advances.
+- **Direct snapshot:** a caller reads a file itself when it needs exact file health or precedence the common chain cannot express. This is a caller-level exception, not a per-setting cache policy.
+- **Active environment:** `EnvProvider` resolves `active_environment()` for every lookup. It is live `os.environ` normally and an immutable context-local mapping inside `use_environment()`.
 
-There is no file watcher. An edit to `config.toml` has no effect on shared-resolver readers until a generation advance: an in-app write to `DEFAULT_CONFIG_PATH`, or `/reload`. A write to another path does not refresh the shared resolver, because it is not that resolver's user path; once the write has committed, refresh errors are logged rather than returned as a failed write.
+A default-path in-app write and `/reload` advance the shared generation. `update_user_config()` serializes a read-modify-write under a shared reentrant lock, calls the mutation against the current parsed table, writes a temporary TOML file in the target directory, then atomically replaces the target. It rejects the managed path and refuses unreadable or malformed existing TOML, preventing an edit from overwriting policy or dropping sibling tables. A committed default-path write best-effort refreshes the resolver; a refresh failure logs that the process is still serving old values rather than falsely reporting that the on-disk write failed.
 
 ```mermaid
 flowchart TD
-    A["Reload or committed default config write"] --> B["Fetch and validate managed candidate"]
+    A["Reload or default config write"] --> B["Fetch managed candidate before resolver lock"]
     B --> C{"Managed candidate enforceable"}
-    C -->|"no"| D["Keep last enforceable policy and block reload"]
-    C -->|"yes"| E["Refresh shared resolver with that managed snapshot"]
+    C -->|"no"| D["Keep previous policy and block reload"]
+    C -->|"yes"| E["Install managed replacement"]
     E --> F{"User TOML usable"}
-    F -->|"yes"| G["Serve refreshed file generation"]
-    F -->|"no"| H["Keep prior user snapshot and report notice"]
+    F -->|"yes"| G["Publish refreshed shared generation"]
+    F -->|"no"| H["Retain prior user snapshot and report notice"]
 ```
 
-The reload decision flow: policy is validated before publication, and an unusable user candidate retains the prior snapshot.
+The refresh path preserves a coherent managed and user generation while handling failed candidates.
 
-Each `TomlFileProvider` retains its last usable snapshot when a reload candidate is missing, unreadable, or corrupt, while reporting the failed on-disk status through diagnostics and health. A first failed read has no earlier snapshot, so it falls through. On `/reload`, a corrupt user file retains prior values and returns a `Kept previous config.toml` notice. A managed configuration error blocks runtime settings publication and is surfaced as a blocking notice.
+`TomlFileProvider` retains its last usable snapshot when a reload candidate is missing, unreadable, or malformed. A malformed user file therefore keeps earlier values and produces a `Kept previous config.toml:` notice; a first failed read falls through. Managed policy has an enforceability gate for invalid enforced declarations, malformed known sections, and inconsistent model ceilings. Its candidate is fetched before acquiring the resolver lock and installed as an already-refreshed replacement. This avoids remote I/O under the reader lock and prevents a user-only advance past managed policy; an un-enforceable policy blocks reload with a notice.
 
-Managed policy has an extra enforceability gate. A parseable document can still contain an invalid enforced value or malformed managed section; it is not allowed to replace the cached policy unless policy can enforce it. This prevents an administrator-side failure from erasing an already-enforced managed value and allowing a lower-ranked user value to take effect. The managed candidate is fetched before the resolver generation lock, then installed as an already-refreshed replacement. That avoids remote I/O while holding the resolver lock and prevents a user snapshot from advancing past the policy snapshot into a split generation.
+For resolver values runtime reload owns, `_ReloadOverrideProvider` retains accepted values that a refreshed resolver cannot reproduce. It is non-durable, atomically replaces its mapping, and ranks 350. Reload preview reads fresh user TOML for the proposed edit but deliberately does not refresh enforced managed policy.
 
-Runtime reload also has a narrow, in-memory retention mechanism. After an accepted environment reload, `_ReloadOverrideProvider` can preserve reloadable resolver values that the refreshed resolver cannot reproduce; it is non-durable and sits at rank 350. Its values are atomically replaced, and its own rank is excluded when calculating the candidate used to decide which values must be retained. It is not a general user-config tier or an alternate policy channel.
+## Project dotenv and MCP controls
 
-## Independent snapshots are caller decisions
+The dotenv stack is derived from an explicit environment mapping. Shell values win; enabled nearest-project and global-profile dotenv files fill only absent values. `resolve_read_project_dotenv()` reads configuration locally before project `.env` is layered, because it needs a trusted-global-dotenv tier that the shared resolver cannot express and must not create a shared generation as a bootstrap side effect.
 
-A caller may intentionally use its own file snapshots when it must report the exact generation and health it inspected, or when its required precedence cannot be expressed by the shared chain. These are per-caller exceptions, not an option-level policy that makes one setting live for one reader and cached for another.
+A repository-controlled project `.env` cannot set user-level MCP authorization, Auto review controls, subagent inheritance, graph recursion fallback, or launch terminal tracing. Trusted shell and global dotenv inputs remain eligible. `resolve_env_var()` gives `DEEPAGENTS_CODE_{NAME}` precedence over `{NAME}`; a present but empty prefixed variable suppresses the canonical value.
 
-- `get_config_sources()` loads a user snapshot and the current managed snapshot for reporting. If given an explicit `user_path`, it excludes managed policy so the result is clearly a single-file tooling or test inspection, not effective configuration.
-- `dcode config`, `dcode doctor`, theme and sandbox-related diagnostic paths can build a resolver over their inspected snapshots when they need value and source/health from the same read. Ad-hoc snapshot resolvers must explicitly opt into the installed CLI provider if it matters.
-- `update_check` reads managed and user snapshots itself and resolves exactly those snapshots, allowing its report to pair a result with the file health it just read rather than process cache state.
-- `resolve_read_project_dotenv()` parses locally during dotenv bootstrap. It runs before project `.env` data is layered into `os.environ` and needs a trusted global dotenv tier between process environment and `config.toml`, which the shared resolver does not express. It therefore does not establish the shared generation as a bootstrap side effect.
-- `resolve_startup_mode_with_source()` retains its own user parse because its `startup.recent` fallback needs the raw user table, which `ResolvedValue` does not expose.
-- `/reload` preview reads a fresh user candidate so the dry run shows the edit under review, but does not refresh managed policy. It must not mutate the policy generation that the process is enforcing. Preview uses its explicit environment mapping rather than accepting an environment hit from the shared resolver, since that provider reads the already-live `os.environ`.
+MCP server fields `command`, `url`, `args`, `env`, and `headers` support only braced `${VAR}` and `${VAR:-default}` expansion against the active environment. The latter uses its default for unset *or empty* input. Malformed braced references and an unset required variable fail validation instead of reaching a command, URL, or header; unsupported fields are copied unchanged and the input mapping is not mutated.
 
-## Safe extension checklist
+User MCP disablement is persisted as `[mcp].disabled_servers` in user `config.toml`; the legacy `[mcp_disabled].servers` spelling is read for compatibility and removed on a successful write. User and managed disabled-name lists union, and disabled servers are filtered before validation, tool exposure, or connection attempts. The persistent key is server name alone, so the same name is disabled across overlapping configurations. An unreadable or ill-typed managed deny list is treated as a failure to authorize: MCP loading disables every candidate, and `is_server_disabled()` returns true. A corrupt user file is instead preserved and warned about, without erasing managed denials. Re-enabling is refused when managed policy cannot be read, and a managed denial can shadow a successfully saved user preference.
 
-When adding configurable behavior:
+## Server boundary and workspace isolation
 
-1. Declare and coerce the option in its manifest/provider domain; do not teach the generic ranked engine about a subsystem.
-2. Choose the merge strategy and rank deliberately. Preserve managed-policy precedence, and never swap managed and user snapshots.
-3. Route ordinary reads through `get_config_resolver()` and expose ranked diagnostics for rejected values.
-4. Treat independent parsing as a documented caller-level exception with a concrete reason; decide explicitly whether that resolver needs the installed CLI provider.
-5. Preserve last-usable reload behavior. A failed managed candidate must not unmanage a session, and tests should prove a lower-ranked value cannot become effective after the failure.
+The interactive client launches `langgraph dev` in a separate process and cannot share resolver memory. `ServerConfig` is the typed boundary: the launcher derives it from CLI settings, normalizes relative paths against captured project context, serializes it as `DEEPAGENTS_CODE_SERVER_*` variables, and clears variables for `None`. The server reconstructs and validates the payload; malformed or unsafe filesystem-tool allowlists fail closed.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Server as langgraph dev server
+    participant Binding as SQLite workspace binding
+    participant Graph as Server graph
+    Client->>Server: ServerConfig via prefixed environment
+    Client->>Binding: Bind thread with server-resolved policy
+    Server->>Graph: Reconstruct ServerConfig
+    Graph->>Binding: Validate thread id and context payload
+    Binding-->>Graph: Canonical workspace and stored policy
+    Graph->>Graph: Resolve policy for this workspace
+    Graph->>Graph: Reject policy drift or rebuild for runtime drift
+    Graph->>Graph: Snapshot dotenv and credentials off event loop
+    Graph->>Graph: Build or reuse workspace runtime
+```
+
+The subprocess handoff, durable binding, and execution-time policy check are separate controls.
+
+A binding is server-authoritative SQLite state for one thread. It canonicalizes an existing absolute directory and project root, persists canonical non-secret workspace policy plus server-side policy and runtime SHA-256 fingerprints, and atomically refuses a different workspace or policy. Schema v4 separates durable access-policy compatibility from full runtime identity: a policy change refuses the request, while a compatible model or runtime change refreshes identity and rebuilds without losing checkpoints. The LRU runtime cache holds 32 workspace-and-runtime-fingerprint entries. A configured sandbox is process-wide: the first workspace claims it and another workspace is refused.
+
+`make_graph()` requires a thread ID and workspace context for execution, validates the context against the binding, then resolves current `ServerConfig` for the bound directory. Project grants—MCP configuration, sandbox setup, extension paths, and their trust decisions—are resolved for that project, never accepted from the client. For a target outside the launch project, `resolve_workspace()` drops launch-project MCP, sandbox, and extension grants, resets MCP trust, and re-reads target extension trust; uncertainty comparing directories follows that fail-closed path. Revoked extension trust and project or durable policy drift refuse execution.
+
+Before assembly, `_make_graphs()` makes the workspace dotenv mapping and `CredentialsSnapshot` in a worker thread, freezes the mapping, and enters `use_environment(workspace_env)`. Construction consequently uses the workspace environment instead of mutable server `os.environ`; changes after a runtime is built do not alter it.
+
+## Drift diagnostics without secret disclosure
+
+Bindings persist a versioned comparison snapshot beside their durable row. It is a deliberately bounded allowlist of reportable booleans, integers, short identifiers, and tool/command lists from workspace policy. Paths, model specifications and parameters, prompts, environment values, credentials, and profile overrides are neither persisted nor logged for reporting. Unsupported, oversized, or snapshot-size-exceeding values are omitted without changing whether a binding is accepted.
+
+On a binding conflict or execution-time policy drift, `WorkspaceConflictError` carries `WorkspaceDiagnostics`: a category, safe reason, snapshot availability, optional schema versions, and field changes. Allowlisted values are shown only when both bound and current snapshots contain them; fingerprint-only or excluded changes identify their field with `values_unavailable`. Older bindings explicitly report unavailable snapshots rather than treating missing historical data as an unset value. The workspace route returns this as additive `diagnostics` in its HTTP 409 body, while clients tolerate absent or malformed diagnostic payloads for compatibility. Logs name changed fields but not values, and the TUI renders restore instructions with markup-safe, dangerous-Unicode-stripped dynamic content.
+
+## Safe change checklist
+
+1. Put source coercion in providers or the manifest domain, not in the generic rank engine.
+2. Choose rank and merge strategy deliberately; preserve managed precedence and keyword-only managed/user snapshot construction.
+3. Use `get_config_resolver()` for ordinary process reads. Document any direct snapshot as a caller-level exception and decide whether it needs CLI values.
+4. Preserve last-usable behavior and test failed managed refreshes so weaker settings never become effective.
+5. Treat project `.env` as untrusted for user-level security controls; preserve explicit workspace environment snapshots.
+6. For MCP changes, validate interpolation strictly and retain the managed-deny fail-closed path before tools connect.
+7. For server-facing settings, extend `ServerConfig` serialization and classify resource-affecting data in workspace policy/fingerprint validation. Add to drift snapshots only after deciding that its value is safe to store and display.
+
+## Focused validation
+
+- Configuration and reload tests cover rank/merge behavior, CLI installation, coherent replacement, preview semantics, notices, and failed user or managed candidates.
+- MCP configuration and disabled-server tests cover interpolation syntax, unioned user/managed denials, corrupt policy behavior, safe preference writes, and filtering before connection.
+- Workspace and server-graph tests cover canonical SQLite binding, policy/runtime distinction, scoped environment snapshots, policy and extension-trust drift, runtime rebuilding, LRU behavior, and sandbox ownership.
+- `test_workspace_diagnostics.py` pins the snapshot allowlist and bounds, durable persistence, refusal categories and wire parsing, value-unavailable behavior for legacy/excluded fields, secret-free logging, and safe TUI rendering.
+
+When adding a setting, test the decision boundary it changes—rank and merge, reload publication, dotenv trust, MCP authorization, server serialization, workspace policy/runtime classification, diagnostic redaction, or introspection—not only its parser.

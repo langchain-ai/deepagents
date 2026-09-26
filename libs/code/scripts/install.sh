@@ -212,6 +212,8 @@ TEMP_DIRS=()
 INSTALL_LOCK_KIND=""
 INSTALL_LOCK_DIR=""
 INSTALL_LOCK_TOKEN=""
+LEGACY_INSTALL_LOCK_DIR=""
+LEGACY_INSTALL_LOCK_TOKEN=""
 INSTALL_LOCK_STALE_ID=""
 INSTALL_LOCK_RECLAIM_DIR=""
 INSTALL_LOCK_RECLAIM_TOKEN=""
@@ -1156,7 +1158,9 @@ acquire_install_lock() {
   local installation_root
   local installation_parent
   local installation_name
+  local lock_parent
   local lock_root
+  local legacy_root
   local resolution
   local guessed
   # Keep this a command substitution: `set -e` must still abort if resolution
@@ -1168,19 +1172,43 @@ acquire_install_lock() {
   [ "$guessed" != "$resolution" ] || guessed=false
   installation_parent="${installation_root%/*}"
   installation_name="${installation_root##*/}"
-  lock_root="${installation_parent}/.${installation_name}.deepagents-code-locks"
+  # uv treats every directory inside its tool directory as a package. Keep
+  # locks beside that directory, outside the environment uv replaces on upgrade.
+  # Mirror _paths._installation_paths, including custom UV_TOOL_DIR locations.
+  installation_parent="${installation_parent:-/}"
+  lock_parent="$(dirname "$installation_parent")"
+  lock_root="${lock_parent%/}/.${installation_parent##*/}.${installation_name}.deepagents-code-locks"
+  if [ "${guessed:-false}" = true ]; then
+    log_warn "Could not ask uv for its tool directory; guessing the installer lock root."
+    log_warn "  Concurrent installs may not serialize. Lock root: ${lock_root}"
+  fi
+  # Coordinate through existing legacy roots, without creating an invalid uv
+  # tool entry on fresh installs. An older installer that creates a legacy root
+  # after this check cannot share this protection. Preserve existing roots for
+  # waiters and keep their lock until exit, including while waiting for the new one.
+  legacy_root="${installation_parent}/.${installation_name}.deepagents-code-locks"
+  if [ -e "$legacy_root" ] || [ -L "$legacy_root" ]; then
+    acquire_install_lock_root "$legacy_root"
+    LEGACY_INSTALL_LOCK_DIR="$INSTALL_LOCK_DIR"
+    LEGACY_INSTALL_LOCK_TOKEN="$INSTALL_LOCK_TOKEN"
+    INSTALL_LOCK_KIND=""
+    INSTALL_LOCK_TOKEN=""
+  fi
+  acquire_install_lock_root "$lock_root"
+}
+
+# Use the same metadata, stale-owner handling, and reclaim guard at both paths.
+acquire_install_lock_root() {
+  local lock_root="$1"
   if [ -L "$lock_root" ]; then
     log_error "Installer lock root is a symlink: $lock_root"
     log_error "Remove it or choose a different uv tool directory, then retry."
     exit 1
   fi
-  if [ "${guessed:-false}" = true ]; then
-    log_warn "Could not ask uv for its tool directory; guessing the installer lock root."
-    log_warn "  Concurrent installs may not serialize. Lock root: ${lock_root}"
-  fi
   if [ ! -d "$lock_root" ]; then
     if ! mkdir -p "$lock_root"; then
       log_error "Could not create the installer lock directory: ${lock_root}"
+      log_error "Check that the parent of the uv tool directory is writable."
       log_error "  This serializes concurrent installs; it is not related to DEEPAGENTS_HOME."
       exit 1
     fi
@@ -1280,6 +1308,14 @@ release_install_lock() {
   release_install_lock_reclaim_guard
   INSTALL_LOCK_KIND=""
   INSTALL_LOCK_TOKEN=""
+  if [ -n "${LEGACY_INSTALL_LOCK_TOKEN:-}" ] && \
+    [ "$(cat "$LEGACY_INSTALL_LOCK_DIR/token" 2>/dev/null || true)" = "$LEGACY_INSTALL_LOCK_TOKEN" ]; then
+    rm -rf "$LEGACY_INSTALL_LOCK_DIR" 2>/dev/null || true
+    # Keep the root even when empty: waiting installers have already resolved
+    # this path and retry mkdir of the lock directory without recreating its parent.
+  fi
+  LEGACY_INSTALL_LOCK_DIR=""
+  LEGACY_INSTALL_LOCK_TOKEN=""
 }
 
 # ---------------------------------------------------------------------------

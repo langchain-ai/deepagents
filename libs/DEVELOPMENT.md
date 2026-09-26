@@ -188,9 +188,9 @@ How a stray warning surfaces depends on when it is raised:
 - During module import: collection of that file fails.
 - While pytest is still configuring (typically from a plugin): the run aborts with `INTERNALERROR`, which is the hardest to read from CI output. Warnings emitted while pytest loads plugins, before the ini filters are installed, are not caught at all — a clean run does not prove a dependency is warning-free.
 
-#### `bypass-warnings-check` label
+#### `ci:allow-warnings` label
 
-Maintainers can apply the `bypass-warnings-check` PR label and re-run failed jobs to demote warnings from errors. This is an escape hatch for landing fixes under time pressure, not a permanent fix: merge-queue runs enforce the policy again, so the warning must still be addressed or allowlisted. Two limits on its reach:
+Maintainers can apply the `ci:allow-warnings` PR label and re-run failed jobs to demote warnings from errors. This is an escape hatch for landing fixes under time pressure, not a permanent fix: merge-queue runs enforce the policy again, so the warning must still be addressed or allowlisted. Two limits on its reach:
 
 - It applies only to jobs that go through `_test.yml`. The `test-quickjs-sdk-smoke` job in `ci.yml` invokes pytest directly and has no bypass path.
 - Release runs (`release.yml`) always enforce, so a warning that only appears against the built wheel cannot be labeled past.

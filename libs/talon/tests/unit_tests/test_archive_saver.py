@@ -10,8 +10,11 @@ from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from deepagents_talon.archive import ArchiveScope, SQLiteConversationArchive
+from deepagents_talon.archive import ArchiveScope
 from deepagents_talon.archive_saver import ConversationSaver
+from deepagents_talon.store_archive import StoreConversationArchive
+from tests.archive_helpers import open_archive
+from tests.unit_tests.test_store_archive import CountingStore
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -51,7 +54,7 @@ async def _save(saver, session="session", scope=SCOPE, namespace=""):
 async def test_backend_delete_failure_can_retry_after_archive_reopens(tmp_path, monkeypatch):
     backend = InMemorySaver()
     path = str(tmp_path / "archive.sqlite")
-    async with SQLiteConversationArchive.from_conn_string(path) as archive:
+    async with open_archive(path) as archive:
         saver = ConversationSaver(backend, archive=archive)
         owned = await _save(saver)
         child = await _save(saver, namespace="worker")
@@ -69,7 +72,7 @@ async def test_backend_delete_failure_can_retry_after_archive_reopens(tmp_path, 
         assert await archive.entries(SCOPE)
         assert await saver.aget(owned)
     monkeypatch.setattr(backend, "adelete_thread", deletion)
-    async with SQLiteConversationArchive.from_conn_string(path) as archive:
+    async with open_archive(path) as archive:
         saver = ConversationSaver(backend, archive=archive)
         await saver.clear_history(SCOPE)
         await saver.clear_history(SCOPE)
@@ -82,12 +85,10 @@ async def test_backend_delete_failure_can_retry_after_archive_reopens(tmp_path, 
 
 
 async def test_scope_reassignment_rejected_before_checkpoint_mutation(tmp_path):
-    async with SQLiteConversationArchive.from_conn_string(
-        str(tmp_path / "archive.sqlite")
-    ) as archive:
+    async with open_archive(str(tmp_path / "archive.sqlite")) as archive:
         saver = ConversationSaver(InMemorySaver(), archive=archive)
         original = await _save(saver)
-        with pytest.raises(ValueError, match="different channel or chat"):
+        with pytest.raises(ValueError, match="another scope"):
             await _save(saver, scope=OTHER)
         checkpoints = [item async for item in saver.alist(_config())]
         assert len(checkpoints) == 1
@@ -98,9 +99,7 @@ async def test_scope_reassignment_rejected_before_checkpoint_mutation(tmp_path):
 
 async def test_failed_checkpoint_does_not_archive_uncommitted_messages(tmp_path, monkeypatch):
     backend = InMemorySaver()
-    async with SQLiteConversationArchive.from_conn_string(
-        str(tmp_path / "archive.sqlite")
-    ) as archive:
+    async with open_archive(str(tmp_path / "archive.sqlite")) as archive:
         saver = ConversationSaver(backend, archive=archive)
         put = backend.aput
 
@@ -126,19 +125,19 @@ async def test_archive_failure_retries_exact_checkpoint_after_reopen(
         backend = backend(connection) if backend is AsyncSqliteSaver else backend()
         path = str(tmp_path / "archive.sqlite")
         checkpoint = _checkpoint()
-        async with SQLiteConversationArchive.from_conn_string(path) as archive:
+        async with open_archive(path) as archive:
             saver = ConversationSaver(backend, archive=archive)
 
             async def fail_message(*_args: object):
                 msg = "archive unavailable"
                 raise OSError(msg)
 
-            monkeypatch.setattr(archive, "_index_message", fail_message)
+            monkeypatch.setattr(archive, "_append_chunk", fail_message)
             with pytest.raises(OSError, match="archive unavailable"):
                 await saver.aput(_config(), checkpoint, {}, checkpoint["channel_versions"])
             assert await backend.aget(_config())
             assert await archive.entries(SCOPE) == []
-        async with SQLiteConversationArchive.from_conn_string(path) as archive:
+        async with open_archive(path) as archive:
             saver = ConversationSaver(backend, archive=archive)
             for _ in range(2):
                 await saver.aput(_config(), checkpoint, {}, checkpoint["channel_versions"])
@@ -147,9 +146,7 @@ async def test_archive_failure_retries_exact_checkpoint_after_reopen(
 
 
 async def test_unscoped_and_nested_writes_do_not_enter_archive(tmp_path):
-    async with SQLiteConversationArchive.from_conn_string(
-        str(tmp_path / "archive.sqlite")
-    ) as archive:
+    async with open_archive(str(tmp_path / "archive.sqlite")) as archive:
         saver = ConversationSaver(InMemorySaver(), archive=archive)
         await _save(saver, "cron", {})
         await _save(saver, "nested", namespace="worker")
@@ -168,7 +165,7 @@ async def test_cancelled_write_finishes_archiving_before_return_or_reset(
     observed: list[ArchiveEntry] = []
     async with (
         AsyncSqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as backend,
-        SQLiteConversationArchive.from_conn_string(str(tmp_path / "archive.sqlite")) as archive,
+        open_archive(str(tmp_path / "archive.sqlite")) as archive,
     ):
         saver = ConversationSaver(backend, archive=archive)
         put, append, delete = backend.aput, archive.append, backend.adelete_thread
@@ -236,12 +233,89 @@ async def test_idless_occurrences_survive_checkpoint_retries_and_reopening(tmp_p
     first["channel_values"]["messages"] = messages
     second["channel_values"]["messages"] = messages
     for checkpoint in (first, first, second, second):
-        async with SQLiteConversationArchive.from_conn_string(path) as archive:
+        async with open_archive(path) as archive:
             saver = ConversationSaver(backend, archive=archive)
             await saver.aput(_config(), checkpoint, {}, checkpoint["channel_versions"])
-    async with SQLiteConversationArchive.from_conn_string(path) as archive:
+    async with open_archive(path) as archive:
         entries = await archive.entries(SCOPE, session_id="session")
         assert [item["text"] for item in entries] == ["yes", "yes", "noted", "yes", "yes"]
         assert len({item["message_id"] for item in entries}) == 5
         assert (await archive.conversations(SCOPE))[0]["message_count"] == 5
     assert [message.id for message in messages] == [None, None, "stable"]
+
+
+@pytest.mark.parametrize("changed", [False, True])
+async def test_snapshot_archiving_cost_depends_on_new_messages(*, changed: bool) -> None:
+    metadata = CountingStore()
+    archive = StoreConversationArchive(metadata, namespace=("checkpoint-cost",))
+    saver = ConversationSaver(InMemorySaver(), archive=archive)
+    first = _checkpoint()
+    first["channel_values"]["messages"] = [
+        HumanMessage(f"old-{index}", id=str(index)) for index in range(100)
+    ]
+    config = await saver.aput(_config(), first, {}, {"messages": "1"})
+    config["metadata"] = SCOPE
+    second = _checkpoint()
+    second["channel_values"]["messages"] = list(first["channel_values"]["messages"])
+    versions = {}
+    if changed:
+        added = HumanMessage("new", id="new")
+        await saver.aput_writes(config, [("messages", [added])], "task")
+        second["channel_values"]["messages"].append(added)
+        second["channel_versions"]["messages"] = "2"
+        versions = {"messages": "2"}
+    metadata.reads = 0
+    await saver.aput(config, second, {}, versions)
+    assert metadata.reads < 30  # Independent of the 100 unchanged messages in the snapshot.
+    entries = await archive.entries(SCOPE, session_id="session", query="new")
+    assert [entry["text"] for entry in entries] == (["new"] if changed else [])
+
+
+async def test_snapshot_filter_preserves_edits_and_idless_occurrences() -> None:
+    archive = StoreConversationArchive(CountingStore(), namespace=("snapshot-edits",))
+    saver = ConversationSaver(InMemorySaver(), archive=archive)
+    config = await saver.aput(_config(), _checkpoint("before"), {}, {"messages": "1"})
+    config["metadata"] = SCOPE
+    changed = HumanMessage("after", id="message")
+    await saver.aput_writes(config, [("messages", [changed])], "task")
+    checkpoint = _checkpoint()
+    checkpoint["channel_values"]["messages"] = [changed, HumanMessage("yes"), HumanMessage("yes")]
+    checkpoint["channel_versions"]["messages"] = "2"
+    await saver.aput(config, checkpoint, {}, {"messages": "2"})
+    entries = await archive.entries(SCOPE, session_id="session")
+    assert [entry["text"] for entry in entries] == ["before", "after", "yes", "yes"]
+
+
+@pytest.mark.parametrize("changed", [False, True])
+@pytest.mark.parametrize("backend", [InMemorySaver, AsyncSqliteSaver])
+async def test_later_checkpoint_repairs_failed_parent_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend, *, changed: bool
+) -> None:
+    async with aiosqlite.connect(str(tmp_path / "checkpoints.sqlite")) as connection:
+        saver_backend = backend(connection) if backend is AsyncSqliteSaver else backend()
+        path = str(tmp_path / "archive.sqlite")
+        async with open_archive(path) as archive:
+            saver = ConversationSaver(saver_backend, archive=archive)
+
+            async def fail_message(*_args: object) -> None:
+                msg = "archive unavailable"
+                raise OSError(msg)
+
+            monkeypatch.setattr(archive, "_append_chunk", fail_message)
+            with pytest.raises(OSError, match="archive unavailable"):
+                await _save(saver)
+            parent = await saver.aget_tuple(_config())
+            assert parent is not None
+            assert await archive.entries(SCOPE) == []
+        async with open_archive(path) as archive:
+            saver = ConversationSaver(saver_backend, archive=archive)
+            config = {**parent.config, "metadata": SCOPE}
+            checkpoint = _checkpoint()
+            if changed:
+                checkpoint["channel_values"]["messages"].append(HumanMessage("later", id="later"))
+                checkpoint["channel_versions"]["messages"] = "2"
+            await saver.aput(config, checkpoint, {}, {"messages": "2"} if changed else {})
+            entries = await archive.entries(SCOPE, session_id="session")
+            assert [entry["text"] for entry in entries] == (
+                ["orchard", "later"] if changed else ["orchard"]
+            )

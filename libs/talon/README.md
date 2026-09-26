@@ -27,7 +27,7 @@ AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-tal
 
 If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful for checking host lifecycle and channel wiring without provider credentials.
 
-Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
+Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. Offloaded conversation history and large tool results live in the assistant home’s `artifacts/` directory. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
 ## Conversation history
 
@@ -40,7 +40,9 @@ text, tool-call arguments, and distinct message revisions are retained.
 - `/reset-all-history` stops active work, deletes this chat's archived sessions and
   checkpoints, and starts a fresh context. Other chats are unaffected. Cancellation
   timeouts leave history intact; deletion failures may leave a partial reset that
-  you can retry.
+  you can retry. Because the deletion cannot be undone and Talon does not ask for
+  confirmation, this command is deliberately left out of `/help` and is not
+  registered as a Discord slash command: type it in full to use it.
 
 Reset does not remove cron jobs, memory files, downloaded media, traces, or backups.
 Attachment binaries and archive-tool results are not indexed. Scheduled runs do not
@@ -48,6 +50,145 @@ add conversation history, and existing checkpoints are not backfilled.
 
 The echo runtime and unwrapped custom checkpointers do not support history tools or
 reset. Custom async LangGraph checkpointers can enable history with `ConversationSaver`.
+
+Set `DEEPAGENTS_TALON_HISTORY_URI` to `mongodb://host/database` or
+`postgresql://user:password@host/database` and install the `mongodb` or `postgres`
+extra (`uv sync --extra mongodb`). All three backends use the same archive; SQLite
+is the default. This alpha requires fresh history storage. Checkpoints stay local.
+Default SQLite uses the same store factory and assistant namespace as configured
+backends, with its own connection to the checkpoint database.
+
+For a separate SQLite database, set the URI to `sqlite:///absolute/path/history.sqlite`
+or a SQLite `file:` URI, including connection options such as `?mode=rwc`.
+Paths containing spaces must be percent-encoded. All archives are
+namespaced by assistant ID, so assistants can share a database.
+
+Additional backends can be installed as Python packages without changing Talon.
+Register the URI scheme in the package's `pyproject.toml`:
+
+```toml
+[project.entry-points."deepagents_talon.history_backends"]
+mysql = "my_history_backend:open_store"
+```
+
+The entry point is a trusted operator-installed callable that accepts the unchanged
+URI and returns an async context manager yielding an initialized LangGraph
+`BaseStore`. It owns connection setup and cleanup, including cancellation, and
+validates its backend-specific URI requirements. Talon wraps the store in its shared
+archive and verifies write access before startup completes. Built-in schemes take
+precedence; unknown or duplicate plugin schemes fail startup. The plugin API is
+experimental and may change with Talon.
+
+Archives require one writer per assistant. Retrieval scans at most 500
+records and raises an error if it cannot complete the page within that budget.
+
+Set `DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH=1` to add semantic matches to keyword
+search. Select an embedding adapter independently of the history database:
+
+| Adapter | Install extra | Credentials | Inference |
+| --- | --- | --- | --- |
+| `local` (default) | `history-local` | None | Local CPU, lazy Qwen loading |
+| `voyage` | `history-voyage` | `VOYAGE_API_KEY` | Voyage API |
+| `openai-compatible` | `history-openai` | `OPENAI_API_KEY` or `OPENROUTER_API_KEY` | HTTPS embedding API |
+| `atlas` | `mongodb` | Configure the model in Atlas | Atlas Automated Embedding |
+
+Remote adapters do not require torch or sentence-transformers. The former `history`
+extra is now `history-local`. Provider packages supply the maintained API integrations;
+`langchain-voyageai` and `langchain-openai` are MIT-licensed LangChain packages.
+
+For Voyage, install `uv sync --extra history-voyage` and configure:
+
+```sh
+DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH=1
+DEEPAGENTS_TALON_HISTORY_EMBED_ADAPTER=voyage
+DEEPAGENTS_TALON_HISTORY_EMBED_MODEL=voyage-4-large
+DEEPAGENTS_TALON_HISTORY_EMBED_DIMS=1024
+DEEPAGENTS_TALON_HISTORY_EMBED_MAX_INPUT_TOKENS=32000
+```
+
+Supply `VOYAGE_API_KEY` through the environment. For OpenRouter, install
+`history-openai`, select `openai-compatible`, set `BASE_URL` below to
+`https://openrouter.ai/api/v1`, and supply `OPENROUTER_API_KEY`. For example,
+`qwen/qwen3-embedding-8b` supports 4096 dimensions and a 32768-token context.
+Verify the selected model's limits in the [Voyage documentation](https://docs.voyageai.com/docs/embeddings)
+or [OpenRouter catalog](https://openrouter.ai/models?output_modalities=embeddings).
+
+Embedding settings use the `DEEPAGENTS_TALON_HISTORY_EMBED_` prefix:
+
+| Suffix | Meaning |
+| --- | --- |
+| `ADAPTER` | `local`, `voyage`, `openai-compatible`, or `atlas` |
+| `MODEL` | Required for remote adapters; local defaults to `Qwen/Qwen3-Embedding-0.6B` |
+| `DIMS` | Output width; required for remote client adapters |
+| `MAX_INPUT_TOKENS` | Model context budget; required remotely, local defaults to 8192 |
+| `BATCH_SIZE` | Local defaults to 4 (maximum 4); remote defaults to 32 (maximum 96) |
+| `CONCURRENCY` | Indexing requests in flight; local uses 1, remote defaults to 4 (maximum 16) |
+| `BYTES_PER_TOKEN` | UTF-8 bytes budgeted per token, 1-4; defaults to the worst case of 1 |
+| `QUERY_PROMPT` | Optional query instruction; Qwen3-Embedding models default to Qwen's prefix |
+| `SEND_DIMENSIONS` | Send the OpenAI `dimensions` parameter; set `0` for models that reject it |
+| `BASE_URL` | Optional HTTPS endpoint, routable host, without credentials, query, or fragments |
+| `API_KEY` | Optional environment override for the adapter's standard API key |
+| `QUERY_MODEL` | Optional compatible query-time model, supported only by Atlas |
+
+Queries retain each provider's query/document semantics on all three databases,
+and the instruction prefix follows the model rather than the adapter, so a
+Qwen3-Embedding model reached through OpenRouter is prompted like a local one.
+
+Inputs use UTF-8 byte counts as a conservative token bound, reserving 128 tokens
+for provider instructions. `BYTES_PER_TOKEN` converts the token limit into that
+byte measure and defaults to 1, which assumes every byte can become its own token.
+Natural non-ASCII text is far cheaper than that -- a CJK character is roughly three
+bytes but about one token -- so the default splits transcripts a model could embed
+whole. Raising it trades safety margin for fewer splits; the value is part of the
+embedding fingerprint, so a change rebuilds the index.
+
+Oversized documents are split without losing text and their vectors are combined
+with a length-weighted mean, which is logged once per run because pooled documents
+are compared against unpooled queries. Transcript pagination stays unchanged.
+Oversized queries fall back to keyword search. Atlas requires a budget
+large enough for a complete archive chunk because embedding happens server-side.
+A search holds a slot of its own at both the store and the provider, so it never
+queues behind indexing and may add one request above `CONCURRENCY`.
+
+`BASE_URL` must name a routable host: address literals in loopback, private,
+link-local, or reserved ranges are refused, as is `localhost`, because the
+configured endpoint receives the provider API key. Abbreviated IPv4 spellings
+that the C resolver still accepts, such as `127.1` and `2130706433`, are
+refused as the addresses they reach. A public name that resolves
+to a private address still connects, which needs resolution-time control the
+embedding clients do not expose.
+
+Remote indexing uses bounded batches and concurrency; errors retain pending work
+for retry. Selecting a remote adapter sends archived text and queries to that
+provider and may incur charges.
+
+Vector data uses fingerprint-specific SQLite files, PostgreSQL schemas, or MongoDB
+collections, keeping incompatible dimensions separate. PostgreSQL uses exact vector
+search above 2000 dimensions. Metadata and vectors always use separate Store instances.
+Changing a model, endpoint, dimensions, prompt, or input budget fails startup when
+an existing index is incompatible. Set `DEEPAGENTS_TALON_HISTORY_REINDEX=1` explicitly
+to remove the old vectors and rebuild from retained transcripts; this can incur
+embedding charges. Deletion progress survives interruption. Remove the flag afterward;
+it does not rebuild an already matching index. Empty old vector files/schemas/collections
+remain for operator cleanup. Missing fingerprints on older indexes also require reindexing.
+Reset deletes vectors even after semantic search has been disabled.
+
+Backend plugins can optionally register `deepagents_talon.history_vector_backends`
+under the same URI scheme. The vector factory receives `(uri, *, index, generation)`
+and yields a separate initialized `BaseStore`; `index=None` means deletion-only mode.
+It must isolate generations, own cleanup, and apply backend-specific index options.
+The existing metadata factory remains unchanged. Atlas mode requires MongoDB.
+
+`search_conversations` returns results, indexing coverage, and an opaque
+`next_after` token. Continue with the same query and chat; expired tokens require
+a new search. Semantic errors and timeouts fall back to keyword matches. Unknown
+or pending indexing coverage means an empty page does not prove history is absent.
+
+When asked, the agent can use `delete_conversations` with one session ID or a list
+from `list_conversations` or `search_conversations`. This deletes those sessions'
+transcripts, search indexes, and checkpoints in the current chat. The active
+conversation is protected; use `/new` before asking to delete it. Failed batches
+may be partially deleted and can be retried with the same IDs.
 
 ## Interrupt and Continue
 
@@ -57,13 +198,69 @@ A new message in a conversation cancels the active turn, records an interruption
 
 Set `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING=true` to emit agent run, model activity, and tool call events to the local process logs at `INFO`. Tool inputs and outputs are redacted and truncated to 1,000 characters, but may still contain sensitive application data; enable these logs only where local log access is appropriately restricted. “Thinking” events report model-call lifecycle activity and do not expose hidden chain-of-thought.
 
-## Tool Approval Overrides
+## Tool Approvals
 
-Set `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` to a comma-separated list of tool names that should always require Talon's channel approval flow. This local override is additive with agent-provided HITL configuration and applies to MCP or local runtime tools.
+Each assistant has one fixed policy at `TalonConfig.home / "tools.json"`, normally
+`~/.deepagents/<assistant_id>/tools.json`. It is a flat JSON object mapping exact
+tool names to booleans: `true` requires a channel approval prompt; `false` does
+not. There are no patterns or per-agent policy files. The defaults are:
 
-```bash
-DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS=bash,execute,github_create_pr
+```json
+{
+  "update_tool_approvals": true,
+  "delete_conversations": true,
+  "update_mcp_server": true,
+  "start_async_task": true
+}
 ```
+
+Native and container startup create these defaults when the file is missing and
+preserve existing configuration. Unspecified tools default to `false`; listing,
+searching, and reading conversation history do not prompt by default. A `false` value controls prompting, not tool
+availability or authorization. There is no migration from the old approval settings.
+
+Read `get_tool_approvals` before editing:
+
+- `tools` is the persisted policy; `active_tools` is the current invocation's policy.
+- `persisted_revision` is the revision to use for the next write; `active_revision`
+  identifies the current invocation's snapshot.
+- `saved_changes_inactive` indicates that saved changes are not active in this invocation.
+
+Call `update_tool_approvals(updates={"execute": true, "delete_conversations": true},
+expected_revision=<persisted_revision>)` with an updates mapping and the revision
+returned by the read. The batch is atomic compare-and-swap: a stale revision
+rejects the entire write, and unrelated entries are preserved. Read again and
+review before retrying; do not replace the whole file to resolve a conflict.
+
+Saved changes activate on the next invocation without a restart. Existing turns
+and tasks keep their policy snapshot. An invalid file fails closed on the next
+invocation rather than silently using an older policy; repair it as the operator.
+
+Policy self-edits are checked against the **pre-edit** policy, so disabling
+`update_tool_approvals` prompting cannot bypass the approval required for that
+edit. An operator is required even when its prompt is `false`. In `self` exposure,
+messages identified as `from_self` qualify without an extra operator list;
+otherwise only the configured channel operator IDs qualify, not chat/user
+allowlists or mention matches. Configure `DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID`,
+`DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID`, or `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID`
+for the applicable channel. Unidentified senders, scheduled runs, detached workers,
+and background-result follow-ups cannot edit policy. Unattended follow-ups cannot
+start interactive approvals or authorization flows.
+
+`DeepAgentRuntime` no longer accepts `interrupt_on`; embedding hosts can pass an
+`approval_store=ToolApprovalStore(path)` instead. The underlying Deep Agents
+`interrupt_on` graph API is unchanged. Embedding hosts are responsible for supplying
+trusted `AgentRequest.metadata["tool_approval_operator"]` authorization; never copy
+that value from model arguments or untrusted inbound metadata.
+
+Keep the assistant home outside the workspace, just like MCP configuration, and
+persist its parent directory rather than bind-mounting a single `tools.json`:
+updates use atomic file replacement. These controls are not a sandbox boundary.
+A shell running as the same UID can bypass the tool API and edit the file directly;
+filesystem isolation must be enforced separately. Talon-built local subagents inherit
+this policy for their attached tools. Local tool gates do not enforce policy inside
+opaque remote or precompiled graphs: `start_async_task` gates delegation, not the
+remote graph's internal calls.
 
 ## WhatsApp
 
@@ -91,6 +288,10 @@ DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_ENABLED=true
 
 When enabled without `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_MODEL`, Talon uses the same local default as the original WhatsApp example: `nvidia/parakeet-tdt-0.6b-v3` through Transformers, with ffmpeg converting inbound audio to 16 kHz mono WAV first. Set `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_DEVICE=cuda` to use a GPU. The legacy example variables `SPEECH_ENABLED` and `SPEECH_DEVICE` are also accepted. Setting `DEEPAGENTS_TALON_VOICE_TRANSCRIPTION_MODEL` to a non-Parakeet model keeps the existing OpenAI SDK transcription path.
 
+Local Parakeet and Qwen embedding model downloads share a Hugging Face cache in
+`$DEEPAGENTS_TALON_HOME/cache/models/huggingface` (default:
+`~/.deepagents/cache/models/huggingface`), shared across assistants.
+
 `open` exposure allows arbitrary WhatsApp senders to trigger the agent while it runs with the operator's model credentials, channel credentials, MCP tool access, and local-host access when the local execution backend is active. Enabling it requires explicit acknowledgement:
 
 ```bash
@@ -98,7 +299,7 @@ DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=open
 DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK=allow-arbitrary-senders
 ```
 
-See `../../examples/talon-whatsapp/` for a runnable Docker Compose topology and `.env` reference.
+See `../../examples/talon/` for a runnable Docker Compose topology and `.env` reference.
 
 ## Telegram
 
@@ -158,6 +359,12 @@ AGENT_MODEL=<provider>:<model-id> \
 uv run --directory libs/talon deepagents-talon --discord
 ```
 
+Talon's commands are also registered as native Discord slash commands, so typing `/` in a chat with the bot offers `/help`, `/new`, `/stop`, `/mcp-reload`, and `/context-doctor` with autocomplete. The reply arrives as that command's own response rather than as a separate message. `/reset-all-history` is deliberately not registered, because it deletes stored history irreversibly and Talon has no confirmation step; it still works when typed in full.
+
+Registration needs the **`applications.commands`** scope alongside `bot` in the bot's invite URL. A bot invited with only `bot` still receives messages, but a guild-scoped registration is rejected. Registration runs once per process, the first time the Gateway reports ready; a failure is logged and leaves the channel connected and usable. Because Discord requires a response to every slash command, an invocation that the exposure policy refuses now receives a brief private refusal, where a typed command is silently ignored — slash commands are visible to anyone who can see the bot, so the exposure policy, not their visibility, is what restricts use.
+
+`DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID` scopes registration to one guild, which applies immediately and is useful while developing; global registration can take several minutes to propagate but is the only kind that reaches DMs, so leave this unset for an operator-DM deployment. `DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS=false` disables registration entirely, leaving commands available as typed text.
+
 `conversation_id` is the Discord channel ID, which works uniformly for DM channels and guild text channels. In `allowlist` mode, `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS` allows DMs from specific Discord user IDs regardless of channel, while `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS` allows messages from specific channel IDs (DM or guild). `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure, the default mode, which only accepts DMs from those operators. Outbound text over Discord's 2000-character message limit is split into multiple separate messages sent in order; outbound media is sent as a file attachment with the caption as the message content when it fits, or as a preceding separate message otherwise. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB). If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
 
 ## Tracing
@@ -174,9 +381,26 @@ When enabled, Talon wraps each agent run in a LangSmith tracing context with ass
 
 ## Chat commands
 
+The agent can call `send_message(text)` to post a progress update to the same chat
+while continuing to work. Updates do not end the turn; the final reply is sent
+normally. The destination is fixed by the host, and sending is disabled once the
+originating turn finishes or is superseded. Runs without a channel cannot send updates.
+
 Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
-and `/mcp-reload`), and using MCP configuration and OAuth through chat. Help does
+`/mcp-reload`, and `/context-doctor`), and using MCP configuration and OAuth through chat. Help does
 not interrupt current work or consume a pending approval or sign-in response.
+
+Send `/context-doctor` to estimate the token cost of the configured system prompt,
+memory, skill index, and all active tool schemas (including MCP). It also shows
+the current conversation estimate and the last provider-reported input count,
+when available. Estimates exclude middleware additions and provider overhead.
+The command reads the current chat's checkpoint without calling the model,
+changing history, or interrupting active work. It reports counts, not contents.
+
+Commands work as ordinary message text on every channel, and are case-insensitive
+with an optional `@bot` suffix. On Discord they are additionally registered as
+native slash commands, so typing `/` offers them with autocomplete and the reply
+arrives as that command's own response; see [Discord](#discord) below.
 
 ## MCP Tools
 
@@ -206,9 +430,14 @@ Run `deepagents-talon mcp config` to print the resolved config path. The termina
 
 On Linux/macOS, Talon can manage its MCP configuration through chat using
 `get_mcp_configuration` (redacted view) and `update_mcp_server` (add, replace, or
-remove one server). Updates require human approval by default and reload before
-the next turn. Set `DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE=true` in the host
-environment to opt out; explicit tool approval policies still apply.
+remove one server). Updates require human approval by default through the
+`update_mcp_server` entry in `tools.json` and reload before the next turn.
+Setting that entry to `false` disables its prompt, not validation or secret-safety
+restrictions. Unprompted updates that reuse `<redacted>` values may change only
+`allowedTools` and `disabledTools`; other managed settings must remain unchanged.
+To change those settings, supply `${ENV_VAR}` references instead of redacted
+values, or have the operator re-enable approval. Redaction is not permission to
+redirect stored credentials.
 
 Use `${ENV_VAR}` references for credentials. Set `DEEPAGENTS_TALON_MCP_CONFIG`
 to keep the file outside the workspace. These tools do not sandbox Talon's local
@@ -242,15 +471,47 @@ imports into `~/.deepagents/crowbar/`. Pass `--assistant-id <id>` to select a
 different assistant for the import, or `--target-dir <dir>` to write all
 imported files under an explicit directory.
 
-The importer writes Fleet prompts, skills, and subagent prompts. Talon loads local
-subagents from `agents/<name>/AGENTS.md` using dcode's YAML frontmatter format:
+Talon loads local subagents from `agents/<name>/AGENTS.md` using YAML frontmatter:
 `description` is required, `name` defaults to the directory name, and `model` is
-optional. Local subagents use fork mode so they inherit the current conversation and
-runtime policy; Talon also provides the standard `general-purpose` subagent unless the
-assistant defines one. Fleet `tools.json` and `config.json` are ignored and are not
-copied into the Talon agent directory. Talon does not support the old Fleet direct-run
-startup path or its environment variables; import the zip first, then run Talon against
-the materialized local assistant.
+optional.
+
+## Research defaults
+
+Talon also installs the `configuration-hardening` skill and its reference under the
+assistant home's `skills/` directory, preserving existing files. Ask it to review
+tool separation or minimize tools; the default main instructions also trigger a
+placement review when tools or subagents change. The skill proposes scoped changes,
+uses existing confirmation controls, and verifies active attachments after reload.
+Sensitive-action and access reviews are advisory: it never edits HITL/Ask controls.
+Existing customized main instructions need a reviewed update to add this trigger.
+
+On startup, homes receive any missing `AGENTS.md` files for main, `internal-research`, and
+`external-research`, with defensive prompts. External research declares `web: true` in its
+frontmatter, which is what attaches `fetch_url` and Tavily-backed `web_search` at
+construction; the capability follows the declaration, not the directory name. Search is added
+only when `TAVILY_API_KEY` is nonempty in the runtime environment; without it,
+startup and reload still work and `fetch_url` remains available.
+Main and internal research are constructed without them; disabling web tools leaves
+external research usable without built-in web access. Internal research starts
+with `tools: []`. Main passes additional reads through `task(..., tools=[...])`, such as
+applicable GitHub, Notion, email, and calendar reads internally. No integrations are
+connected automatically. Set persistent tools with standard `tools` frontmatter;
+launch-time additions apply only to that task. Main retains filesystem, action tools, and existing
+approval controls, chooses placement from the workflow, and mediates minimal
+internal-to-external context.
+
+Existing files are unchanged; missing research definitions are installed automatically.
+Review the packaged `deepagents_talon/defaults/` files,
+back up affected instructions, and merge the selected changes without replacing custom
+content. Call `reload_subagent_configuration` and inspect `get_agent_tools`; roll back
+by restoring those files and reloading. Include restored capabilities in the rollback
+review. Running tasks retain their original graphs until finished or canceled.
+
+Prompts are not a sandbox: main filesystem/shell access, injected results, classification
+mistakes, shared runtime/credentials, and retrieval of private destinations remain
+operator-managed risks. The benign fixtures in `tests/unit_tests/fixtures/research_injections.json`
+exercise missing capabilities and approval gates with scripted calls, not model refusal
+or guaranteed public-only retrieval. Evaluate prompt behavior separately with your model.
 
 ## Background Subagents
 
@@ -261,11 +522,22 @@ changes on subsequent turns. Ordinary turns reuse the loaded definitions. Invali
 edits retain the last valid configuration; running subagents keep their original
 configuration.
 
+Subagents use fresh task context; fork is unsupported. Attach local tools with
+`tools: [exact_tool_name]` (omitted means none); named agents start with those configured tools.
+Add `web: true` to grant whichever web tools the runtime has, without naming them; an agent
+without it never receives them, whatever its directory is called.
+There is no automatic general-purpose agent; delegate to a research role or another
+configured agent. Pass a `tools` list to `task` on each launch
+to add capabilities to any local agent for that task, including `execute` for shell access. Supply context and skill
+instructions in `description` or select
+`read_file` to load them. `get_agent_tools` shows available attachments and inactive
+edits; `list_subagents` shows launch-time additions.
+
 `task` launches local subagents and `start_async_task` launches remote subagents.
-Both return immediately. The user can continue chatting while the main agent uses
-`list_subagents` to inspect work and `cancel_subagent` to cancel it. When work
-finishes, its result is passed to the main agent for processing on the next idle
-turn, then the main agent replies to the channel.
+In a chat conversation both return immediately. The user can continue chatting while
+the main agent uses `list_subagents` to inspect work and `cancel_subagent` to cancel
+it. When work finishes, its result is passed to the main agent for processing on the
+next idle turn, then the main agent replies to the channel.
 
 Workers and pending results live only in memory and are discarded on restart.
 `/stop` and `/new` cancel all subagents belonging to that conversation; ordinary
@@ -276,9 +548,26 @@ complete the action. Remote runs cancel when their stream disconnects.
 Talon allows four simultaneous subagents, retains at most 128 unprocessed jobs,
 and limits each run to one hour. Completed results are capped at 64,000 characters.
 
+### Scheduled runs
+
+A scheduled run is already unattended, so it does not delegate in the background.
+Both tools run the subagent to completion and return its result, and the run acts on
+that result in the turn that asked for it; there is no follow-up turn and no separate
+delivery. `list_subagents` and `cancel_subagent` are hidden from a scheduled run,
+which owns no background work to inspect. Subagents launched in one assistant message
+still run concurrently, and a scheduled run no longer competes with chat for the four
+worker slots.
+
+One delegation may take ten minutes, at most four run at once, and further ones queue
+rather than being refused. Set `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT` to change
+the per-delegation bound; because due jobs run one at a time, it caps how long one
+stuck subagent holds up every other job. A delegation that overruns or fails reports
+that to the run, which still writes and delivers its own reply. A whole run is bounded
+at 30 minutes, after which its thread is repaired and the job is recorded as failed.
+
 ## Cron Schedules
 
-`create_job` and `edit_job` accept four schedule forms:
+`create_job` and `edit_job` accept five schedule forms:
 
 | Form | Kind | Example |
 | --- | --- | --- |
@@ -286,8 +575,48 @@ and limits each run to one hour. Completed results are capped at 64,000 characte
 | `every <N>{m,h}` | recurring | `every 6h` |
 | `at <YYYY-MM-DD> <HH:MM> <tz>` | one-shot | `at 2026-09-04 13:30 America/New_York` |
 | `daily at <HH:MM> <tz>` | recurring | `daily at 08:00 America/New_York` |
+| `cron <min> <hour> <dom> <month> <dow> <tz>` | recurring | `cron */15 * * jun mon-fri America/New_York` |
 
-The wall-clock forms require an explicit IANA timezone name; there is no default
+The `cron` form is a standard five-field crontab expression evaluated in the
+given timezone's local time:
+
+| Field | Values | Extensions |
+| --- | --- | --- |
+| minute | `0-59` | |
+| hour | `0-23` | |
+| day of month | `1-31` | `L` last day, `LW` last weekday, `15W` weekday nearest the 15th |
+| month | `1-12`, `jan`-`dec` | |
+| day of week | `0-7` (0 and 7 are Sunday), `sun`-`sat` | `5L` last Friday, `2#1` first Tuesday |
+
+Each field accepts `*`, a value, a range (`1-5`), a step (`*/15`, `9-17/2`, or
+`5/10` meaning 5 through the field maximum), and comma lists of those. `L`, `W`,
+and `#` terms stand alone in their field. `@hourly`, `@daily`/`@midnight`,
+`@weekly`, `@monthly`, and `@yearly`/`@annually` may replace the five fields, as
+in `cron @daily UTC`; `@reboot` is not supported. As in Vixie cron, when both day
+fields are restricted, a day matches if either one does; when either starts with
+`*`, both must match. So `0 0 13 * 5` fires on the 13th and on every Friday,
+while `0 0 */2 * 5` fires only on odd-numbered Fridays. An expression that can
+never fire, such as `0 0 31 2 *`, is rejected at create time.
+
+`create_job` and `edit_job` return an `upcoming` list with the next three run
+times, so the agent can check a schedule against what the user asked for.
+
+Recurring jobs accept an optional `until`, written `YYYY-MM-DD HH:MM <tz>`: the
+last local time the job may run, inclusive. "Weekends at noon for the next three
+months" is `cron 0 12 * * sat,sun <tz>` with `until` set three months out. A
+`until` that falls before the first run is rejected. A run due inside the window
+may start up to five minutes late to absorb scheduler latency; a run missed for
+longer, such as across host downtime that spans `until`, is dropped rather than
+delivered after the window closed. Pass `until=""` to `edit_job` to remove the
+bound.
+
+Jobs clean up after themselves. A job that will never run again (a one-shot that
+ran, a recurring job whose `repeat_times` cap is used up, or one whose `until`
+has passed) is deleted at the start of the next scheduler tick, whether or not
+it ever ran. A job whose last run failed is kept, so `list_jobs` still shows the
+error, until the retention window below removes it.
+
+The wall-clock and cron forms require an explicit IANA timezone name; there is no default
 zone, and legacy POSIX aliases (`EST5EDT`) and bare UTC offsets (`+02:00`) are
 rejected because they cannot express a region's future daylight-saving rules.
 
@@ -311,6 +640,10 @@ resolve deterministically:
 - An ambiguous local time repeated by a fall-back transition resolves to its
   earlier occurrence, so the job fires once.
 
+`cron` schedules follow the same two rules. Every minute of a spring-forward gap
+snaps to the same first valid minute, so `*/15 * * * *` fires once at 03:00
+rather than four times. In a repeated fall-back hour, only the first pass fires.
+
 Interval schedules stay phase-locked to their previous run, so a late scheduler
 tick does not shift an `every 15m` job off its cadence. A one-shot `at` schedule
 that has already passed is rejected at create and edit time with the resolved
@@ -328,6 +661,8 @@ Cron jobs are persisted in `cron/jobs.json` under the assistant state directory.
 - `cron.delivery`
 - `cron.delivery_suppressed`
 - `cron.delivery_failure`
+- `cron.run_timeout`
+- `cron.job_removed`
 
 These logs complement the persisted `last_status` and `last_error` fields.
 
@@ -350,7 +685,7 @@ Outbound data leaves Talon through these integrations:
 Sensitive local state is stored under `~/.deepagents/<assistant_id>/` by default with `0700` directories and `0600` cron files:
 
 - `AGENTS.md`, `skills/`, and `agents/` store the materialized assistant instructions, skills, and subagent definitions.
-- `cron/jobs.json` stores cron prompts, origin conversation ids, message ids, run status, and errors. Active jobs are retained while enabled. Completed jobs are deleted on startup after `DEEPAGENTS_TALON_CRON_RETENTION_DAYS`, default `30`.
+- `cron/jobs.json` stores cron prompts, origin conversation ids, message ids, run status, and errors. Active jobs are retained while enabled. Jobs that finish successfully or pass their `until` are deleted on the next scheduler tick. Jobs whose final run failed are deleted on startup after `DEEPAGENTS_TALON_CRON_RETENTION_DAYS`, default `30`.
 - `channels/whatsapp/` stores WhatsApp `LocalAuth` credentials and Chromium profile state. These credentials are retained until the operator deletes the directory, because automatic deletion would silently unpair the channel.
 - `media/inbound/` is reserved for downloaded inbound media. Files older than `DEEPAGENTS_TALON_INBOUND_MEDIA_RETENTION_HOURS`, default `24`, are deleted on startup. Inbound and outbound channel media are capped by `DEEPAGENTS_TALON_MAX_MEDIA_BYTES`, default `1073741824` (1 GiB); WhatsApp is further clamped to `67108864` (64 MiB). The WhatsApp bridge stores downloaded inbound media under the assistant's inbound media directory and passes local paths plus MIME metadata to the host.
 

@@ -1,6 +1,6 @@
-# Apply "do-not-close" when a maintainer comments `!keep-open` on a PR, so
+# Apply "ci:keep-open" when a maintainer comments `!keep-open` on a PR, so
 # exempting a PR from the close_old_prs.yml sweep does not require a trip to
-# the label picker. The step also removes any "pending-deletion" label and
+# the label picker. The step also removes any "auto:pending-deletion" label and
 # minimizes the stale auto-close warning itself — the same end state as
 # adding the label by hand — because it cannot rely on
 # clear_pending_deletion.yml for that cleanup (see the token note below).
@@ -31,14 +31,14 @@
 # and a dozen other workflows listen for label events on PRs, and an app
 # token would arm all of them from every keep-open comment — and worked
 # around in the other: clear_pending_deletion.yml listens for exactly that
-# suppressed `labeled` event, so the pending-deletion cleanup runs inline
+# suppressed `labeled` event, so the auto:pending-deletion cleanup runs inline
 # here via the shared clearPendingDeletion helper instead.
 #
 # `!keep-open` (rather than a bare-word match) keeps ordinary prose from
 # exempting a PR, and a substring match (rather than exact equality) lets a
 # maintainer write "still relevant — !keep-open" instead of a lone command.
 
-name: Apply do-not-close on !keep-open comment
+name: Apply ci:keep-open on !keep-open comment
 
 on:
   issue_comment:
@@ -85,7 +85,7 @@ jobs:
       # is unnecessary here.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Apply do-not-close label and clear pending deletion
+      - name: Apply ci:keep-open label and clear pending deletion
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           # `created` fires exactly once per comment, so unlike the daily
@@ -134,10 +134,10 @@ jobs:
             // This step's addLabels call uses the default GITHUB_TOKEN, so
             // GitHub emits no `labeled` event for it and
             // clear_pending_deletion.yml never runs for a !keep-open comment.
-            // Do the same cleanup inline: drop pending-deletion and minimize
+            // Do the same cleanup inline: drop auto:pending-deletion and minimize
             // the stale auto-close warning. Unconditional (not gated on
-            // `applied`) because a PR can already carry do-not-close while
-            // still wearing pending-deletion from the daily sweep.
+            // `applied`) because a PR can already carry ci:keep-open while
+            // still wearing auto:pending-deletion from the daily sweep.
             const cleared = await clearPendingDeletion({
               github,
               core,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -13,6 +13,7 @@ from deepagents_code.cold_cache import (
     CacheConfidence,
     CacheWriteBucket,
     PromptCachePolicy,
+    cache_identity_params,
     endpoint_cache_identity,
     estimate_rewarm_cost,
     load_trusted_cache_endpoints,
@@ -97,6 +98,95 @@ def _policy(
         minimum_tokens=minimum_tokens,
         write_bucket=write_bucket,
     )
+
+
+def test_gpt_5_6_and_newer_ignore_legacy_retention() -> None:
+    for model_spec in ("openai:gpt-5.6", "openai:gpt-6-astra"):
+        assert resolve_prompt_cache_policy(
+            model_spec, {"prompt_cache_retention": "24h"}
+        ) == _policy("OpenAI", 1800, "may_be_cold", 1024, "generic_write")
+
+
+@pytest.mark.parametrize(
+    ("model_spec", "params", "expected"),
+    [
+        # OpenAI: effort participates for every model, flat or nested.
+        (
+            "openai:gpt-6-astra",
+            {"reasoning_effort": "high"},
+            {"reasoning_effort": "high"},
+        ),
+        ("openai:gpt-5.6", {"reasoning_effort": "high"}, {"reasoning_effort": "high"}),
+        (
+            "openai_codex:gpt-5.6-codex",
+            {"reasoning_effort": "high"},
+            {"reasoning_effort": "high"},
+        ),
+        # Anthropic: both the flat and the native `output_config` shape.
+        ("anthropic:claude-opus-5", {"effort": "high"}, {"reasoning_effort": "high"}),
+        (
+            "anthropic:claude-opus-5",
+            {"output_config": {"effort": "high"}},
+            {"reasoning_effort": "high"},
+        ),
+        # Providers with no documented effort-to-cache link stay inert.
+        ("google_genai:gemini-3", {"reasoning_effort": "high"}, {}),
+        (
+            "fireworks:accounts/fireworks/models/glm-5p2",
+            {"reasoning_effort": "high"},
+            {},
+        ),
+        ("xai:grok-5", {"reasoning_effort": "high"}, {}),
+        # Unknown provider and unprefixed spec cannot resolve one either.
+        ("unknown:model", {"reasoning_effort": "high"}, {}),
+        ("gpt-5.6", {"reasoning_effort": "high"}, {}),
+        (None, {"reasoning_effort": "high"}, {}),
+        # Unrelated knobs never participate, on any provider.
+        (
+            "openai:gpt-5.6",
+            {"temperature": 0.7, "max_tokens": 4096},
+            {},
+        ),
+    ],
+)
+def test_cache_identity_params_scope_effort_to_documented_providers(
+    model_spec: str | None, params: dict[str, Any], expected: dict[str, Any]
+) -> None:
+    """Effort joins the identity only where a change moves the cached prefix.
+
+    OpenAI's caching guide lists `reasoning.effort` as a setting that can
+    change model-side reasoning instructions; Anthropic renders thinking
+    config into the prompt. Other providers document no such link, so
+    including their effort settings would fire the modal on a false premise.
+    """
+    assert cache_identity_params(params, model_spec=model_spec) == expected
+
+
+def test_cache_identity_params_includes_nested_openai_reasoning() -> None:
+    """The composed `reasoning` mapping participates, not just its `effort`.
+
+    `/effort` composes a session override into the native `reasoning` block
+    when config carries one, so the flat `reasoning_effort` key alone would
+    miss effort changes for those users. The projection is canonical -- both
+    shapes map to the same identity -- so neither a flat-to-nested
+    representation swap nor a `reasoning.summary` change reads as a cache
+    identity change, while a real effort change still does.
+    """
+    assert cache_identity_params(
+        {"reasoning": {"effort": "high", "summary": "auto"}},
+        model_spec="openai:gpt-5.6",
+    ) == {"reasoning_effort": "high"}
+    assert cache_identity_params(
+        {"reasoning_effort": "high"}, model_spec="openai:gpt-5.6"
+    ) == {"reasoning_effort": "high"}
+    assert cache_identity_params(
+        {"reasoning": {"effort": "high", "summary": "detailed"}},
+        model_spec="openai:gpt-5.6",
+    ) == {"reasoning_effort": "high"}
+    assert cache_identity_params(
+        {"reasoning": {"effort": "low", "summary": "auto"}},
+        model_spec="openai:gpt-5.6",
+    ) == {"reasoning_effort": "low"}
 
 
 def test_trusted_endpoints_enable_policies_on_alternate_hosts() -> None:
@@ -527,6 +617,25 @@ def test_prefixed_same_format_route_can_be_priced(endpoint: str) -> None:
         assert estimate is not None
         assert estimate.incremental_cost_usd > 0
         assert estimate == estimate_rewarm_cost(150_000, bare, policy)
+
+
+@pytest.mark.parametrize(
+    ("context_tokens", "cold_cost", "incremental_cost"),
+    [
+        (150_000, 1.875, 1.725),
+        (272_000, 6.8, 6.256),
+    ],
+)
+def test_astra_rewarm_pricing_covers_long_context_tier(
+    context_tokens: int, cold_cost: float, incremental_cost: float
+) -> None:
+    policy = resolve_prompt_cache_policy("openai:gpt-6-astra")
+
+    assert policy is not None
+    estimate = estimate_rewarm_cost(context_tokens, "openai:gpt-6-astra", policy)
+    assert estimate is not None
+    assert estimate.cold_cost_usd == pytest.approx(cold_cost)
+    assert estimate.incremental_cost_usd == pytest.approx(incremental_cost)
 
 
 def test_trusted_endpoints_reject_what_the_loader_rejects() -> None:

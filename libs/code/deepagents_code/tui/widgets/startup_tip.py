@@ -22,7 +22,8 @@ _TIP_SHIFT_TAB_WITHOUT_YOLO = "Press Shift+Tab to toggle Manual and Auto modes"
 
 _TIPS: dict[str, int] = {
     "Use @ to reference files and / for commands": 3,
-    "Try /threads to resume a previous conversation": 2,
+    "Use @@ to reference a recent conversation": 2,
+    "Try /threads to resume a previous conversation or copy its ID": 2,
     "Use /offload to summarize older messages and free up the context window": 2,
     "Use /context to see context window usage and remaining space": 1,
     "Use /context-doctor to audit the token cost of injected context": 1,
@@ -30,6 +31,7 @@ _TIPS: dict[str, int] = {
     "Press Ctrl+R to search and reuse submitted prompts": 2,
     "Use /cost to see a breakdown of estimated spend": 1,
     "Use /tools to list the tools available to the agent": 1,
+    "Use /plugins to inspect a plugin's contents before installing": 1,
     "Open /mcp and press Enter on a remote server to sign in again": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,

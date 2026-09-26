@@ -28,7 +28,7 @@ How it stays faithful to release-please:
         `revert` are visible sections that may not always bump. We accept the rare
         false positive on a `perf`/`revert`-only multi-package/lockfile PR to avoid
         missing a real fan-out; such a PR can be cleared with the
-        `allow-lockfile-release` label.
+        `ci:allow-lockfile-release` label.
 
     This script only *reports* offenders (and always exits 0 on success). The
     blocking decision — failing the check — lives in the workflow that calls it

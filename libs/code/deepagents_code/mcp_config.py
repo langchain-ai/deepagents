@@ -47,13 +47,14 @@ def _interpolate_env(value: str, *, field: str) -> str:
         RuntimeError: If a required environment variable is unset, or the
             string contains a malformed `${...}` reference.
     """
+    from deepagents_code.config import active_environment
+
+    environ = active_environment()
 
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)
         default = match.group(2)
-        from deepagents_code.config import active_environment
-
-        resolved = active_environment().get(name)
+        resolved = environ.get(name)
         # A non-empty value always wins, for both `${VAR}` and `${VAR:-default}`.
         if resolved:
             return resolved

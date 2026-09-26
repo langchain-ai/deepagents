@@ -101,6 +101,9 @@ class SendResult:
     retryable: bool = False
 
 
+ProgressMessageHandler = Callable[[str], Awaitable[SendResult]]
+
+
 ToolApprovalDecision = Literal["approve", "reject"]
 
 
@@ -110,7 +113,7 @@ class ToolApprovalRequest:
 
     Args:
         conversation_id: Conversation whose run is waiting for approval.
-        interrupt_id: LangGraph interrupt identifier to resume.
+        interrupt_id: First LangGraph interrupt identifier in this approval batch.
         action_requests: Tool calls awaiting one approve/reject decision.
     """
 
@@ -132,6 +135,7 @@ class AgentRequest:
         metadata: Runtime context supplied by the triggering component.
         approval_handler: Optional callback used by runtimes that surface
             tool approval interrupts over the originating channel.
+        message_handler: Optional callback for progress updates to the originating chat.
         authorization_handler: Optional callback used for authorization events
             that must be handled outside model context.
     """
@@ -152,6 +156,13 @@ class AgentRequest:
         compare=False,
     )
 
+    message_handler: ProgressMessageHandler | None = field(
+        default=None,
+        kw_only=True,
+        repr=False,
+        compare=False,
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class AgentResult:
@@ -161,10 +172,15 @@ class AgentResult:
         text: Text to deliver to the triggering channel. Empty text means the
             runtime has no message to send.
         metadata: Runtime metadata for future observability integrations.
+        background_results: Background result ids this turn consumed, which the
+            runtime has already acknowledged. A host that then discards the turn's
+            reply hands these back through `BackgroundSubagents.requeue`, so work
+            the user never heard about is offered to the next turn instead.
     """
 
     text: str
     metadata: Mapping[str, object] = field(default_factory=dict)
+    background_results: tuple[str, ...] = ()
 
 
 MessageHandler = Callable[[ChannelMessage], Awaitable[None]]
@@ -278,6 +294,21 @@ class AgentRuntime(Protocol):
 
 
 @runtime_checkable
+class ContextDoctorRuntime(Protocol):
+    """Optional runtime capability for read-only context diagnostics."""
+
+    async def context_doctor(self, conversation_id: str) -> str:
+        """Audit the current conversation without invoking the model.
+
+        Args:
+            conversation_id: Host-resolved agent thread to inspect.
+
+        Returns:
+            Context token estimates, without prompt or conversation contents.
+        """
+
+
+@runtime_checkable
 class MCPReloadableRuntime(Protocol):
     """Optional runtime capability for reloading MCP configuration."""
 
@@ -292,6 +323,23 @@ class BackgroundRuntime(Protocol):
     @property
     def background(self) -> BackgroundSubagents:
         """Workers whose results need a main-agent turn."""
+
+
+@runtime_checkable
+class ConversationDeliveryRuntime(Protocol):
+    """Optional runtime support for indexing acknowledged final replies."""
+
+    async def record_delivered_reply(
+        self, conversation_id: str, channel: str, chat: str, text: str
+    ) -> None:
+        """Record text only after successful channel delivery.
+
+        Args:
+            conversation_id: Agent thread producing the reply.
+            channel: Trusted provider identifier.
+            chat: Destination chat identifier.
+            text: Delivered reply text.
+        """
 
 
 @runtime_checkable

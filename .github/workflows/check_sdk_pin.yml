@@ -3,7 +3,7 @@
 # - Stale pin: posts an advisory comment/warning only. The release workflow
 #   enforces the pin at publish time.
 # - Prerelease pin: posts a warning and fails until the PR carries the
-#   `release-deps: acknowledged` label (re-runs on labeled/unlabeled).
+#   `ci:ack-release-deps` label (re-runs on labeled/unlabeled).
 # Removes the comment once the pin no longer needs attention.
 # See also: release.yml "Verify package pins SDK at or ahead of workspace
 # version" step (hard gate for stale pins at publish).
@@ -91,8 +91,8 @@ jobs:
       - name: Manage PR comment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          SDK_PIN_BYPASS_LABEL: "release: skip sdk pin check"
-          RELEASE_DEPS_BYPASS_LABEL: "release-deps: acknowledged"
+          SDK_PIN_BYPASS_LABEL: "ci:dcode-skip-sdk-pin"
+          RELEASE_DEPS_BYPASS_LABEL: "ci:ack-release-deps"
           SDK_VERSION: ${{ steps.check.outputs.sdk_version }}
           PKG_PIN: ${{ steps.check.outputs.pkg_pin }}
           PIN_STALE: ${{ steps.check.outputs.stale }}

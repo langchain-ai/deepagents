@@ -109,7 +109,7 @@ class TestWarnAndContinue:
         assert "0.2.4" in text
         assert "0.2.5" in text
         assert "Refresh the active environment:" in text
-        assert "uv pip install --python" in text
+        assert "uv pip install --directory" in text
         assert "--upgrade" in text
         # The satisfied floor is not listed as a violation.
         assert "packaging 26.2" not in text
@@ -302,7 +302,7 @@ class TestRefreshCommand:
         command = dep_floor_check.refresh_command()
 
         assert command == (
-            "/usr/bin/uv pip install --python /venv/bin/python "
+            f"/usr/bin/uv pip install --directory {code} --python /venv/bin/python "
             f"-e {code} -e {deepagents} -e {acp} -e {quickjs} --upgrade"
         )
 
@@ -316,7 +316,7 @@ class TestRefreshCommand:
         deepagents = (code / "../deepagents").resolve()
 
         assert dep_floor_check.refresh_command() == (
-            "/usr/bin/uv pip install --python /venv/bin/python "
+            f"/usr/bin/uv pip install --directory {code} --python /venv/bin/python "
             f"-e {code} -e {deepagents} --upgrade"
         )
 
@@ -333,7 +333,7 @@ class TestRefreshCommand:
         deepagents = (code / "../deepagents").resolve()
 
         assert dep_floor_check.refresh_command() == (
-            "/usr/bin/uv pip install --python /venv/bin/python "
+            f"/usr/bin/uv pip install --directory {code} --python /venv/bin/python "
             f"-e {code} -e {deepagents} --upgrade"
         )
 
@@ -347,7 +347,8 @@ class TestRefreshCommand:
         (code / "../deepagents").resolve().rmdir()
 
         assert dep_floor_check.refresh_command() == (
-            f"/usr/bin/uv pip install --python /venv/bin/python -e {code} --upgrade"
+            f"/usr/bin/uv pip install --directory {code} --python /venv/bin/python "
+            f"-e {code} --upgrade"
         )
 
     def test_unreadable_pyproject_uses_standalone_command(
@@ -364,7 +365,8 @@ class TestRefreshCommand:
         )
 
         assert dep_floor_check.refresh_command() == (
-            f"/usr/bin/uv pip install --python /venv/bin/python -e {code} --upgrade"
+            f"/usr/bin/uv pip install --directory {code} --python /venv/bin/python "
+            f"-e {code} --upgrade"
         )
 
 
@@ -485,7 +487,7 @@ class TestDebugDepFloor:
         assert "Warning" in text
         assert "packaging" in text
         assert "0.0.1" in text
-        assert "uv pip install --python" in text
+        assert "uv pip install --directory" in text
 
     def test_debug_var_drives_the_interactive_prompt(
         self, monkeypatch: pytest.MonkeyPatch

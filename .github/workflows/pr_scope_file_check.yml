@@ -12,7 +12,7 @@
 #   - `release(...)` PR titles pass only when every changed file matches a
 #     release-please generated/version-file pattern. Release-please PRs can touch
 #     those files across package dirs.
-#   - Apply the `allow-scope-mismatch` label when another mismatch is intentional.
+#   - Apply the `ci:allow-scope-mismatch` label when another mismatch is intentional.
 #     The check re-runs on `labeled`/`unlabeled`, leaves an informational sticky
 #     note, and passes while the label is present.
 #
@@ -176,7 +176,7 @@ jobs:
         with:
           script: |
             const STICKY_MARKER = '<!-- pr-scope-file-check -->';
-            const BYPASS_LABEL = 'allow-scope-mismatch';
+            const BYPASS_LABEL = 'ci:allow-scope-mismatch';
             const { title, number, labels } = context.payload.pull_request;
 
             // Strict, fail-closed parse. The detector always prints a JSON array

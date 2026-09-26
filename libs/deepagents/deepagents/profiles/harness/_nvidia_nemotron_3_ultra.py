@@ -131,6 +131,21 @@ class NemotronToolCallShim(AgentMiddleware):
         return self._normalize(await handler(fixed))
 
 
+_MAX_READ_NOTICE_LINES = 2
+"""Most explanation lines `read_file` places above its status header.
+
+A size-truncation disclosure and an offset-clamp disclosure, one line each.
+"""
+
+_READ_STATUS_HEADER_RE = re.compile(r"^@@ lines (\d+)-(\d+)(?: of \d+)?(?: \| .*)? @@$")
+"""Match the status header of a `read_file` result, capturing its line range.
+
+Anchored, and matched only against the rows a header can occupy: the same
+shape can occur in ordinary file content, so position decides which line is
+the header.
+"""
+
+
 class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
     """Append a continuation notice to exactly-at-limit `read_file` results."""
 
@@ -173,8 +188,15 @@ class ReadFileContinuationNoticeMiddleware(AgentMiddleware):
         except (TypeError, ValueError):
             limit = _DEFAULT_READ_LIMIT
 
-        is_source_row = ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row
-        n_lines = sum(1 for row in content.split("\n") if is_source_row(row))
+        # A truncation explanation can precede the header, so scan the rows a
+        # header can occupy. The `maxsplit` remainder is dropped, not matched.
+        header_rows = content.split("\n", _MAX_READ_NOTICE_LINES + 1)[: _MAX_READ_NOTICE_LINES + 1]
+        range_match = next(filter(None, map(_READ_STATUS_HEADER_RE.match, header_rows)), None)
+        if range_match:
+            n_lines = int(range_match.group(2)) - int(range_match.group(1)) + 1
+        else:
+            is_source_row = ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row
+            n_lines = sum(1 for row in content.split("\n") if is_source_row(row))
         if n_lines < limit:
             return result
 
@@ -436,6 +458,7 @@ _FILESYSTEM_ACCESS_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _TRANSITION_NUDGE_MIN_MESSAGES = 6
+_TRANSITION_NUDGE_MIN_USER_TURNS = 2
 _COMPACT_NEW_TASK_RE = re.compile(
     r"\b(?:move on|switch(?:ing)? to|new task|different task|unrelated task|"
     r"separate task|new topic|different topic|unrelated topic)\b",
@@ -759,8 +782,16 @@ def _message_text(message: AIMessage | HumanMessage | ToolMessage) -> str:
     return ""
 
 
+def _external_human_message_indexes(messages: list[Any]) -> list[int]:
+    return [
+        index
+        for index, message in enumerate(messages)
+        if isinstance(message, HumanMessage) and getattr(message, "name", None) not in _INTERNAL_MESSAGE_NAMES
+    ]
+
+
 def _external_human_messages(messages: list[Any]) -> list[HumanMessage]:
-    return [message for message in messages if isinstance(message, HumanMessage) and getattr(message, "name", None) not in _INTERNAL_MESSAGE_NAMES]
+    return [cast("HumanMessage", messages[index]) for index in _external_human_message_indexes(messages)]
 
 
 def _last_external_human_text(messages: list[Any]) -> str:
@@ -1139,17 +1170,17 @@ class NemotronPolicyNudgeMiddleware(AgentMiddleware):
         if len(messages) < _TRANSITION_NUDGE_MIN_MESSAGES:
             return False
 
-        humans = _external_human_messages(messages)
-        if not humans:
+        human_indexes = _external_human_message_indexes(messages)
+        if len(human_indexes) < _TRANSITION_NUDGE_MIN_USER_TURNS:
             return False
 
-        latest = humans[-1]
+        latest_index = human_indexes[-1]
+        latest = cast("HumanMessage", messages[latest_index])
         user_text = _message_text(latest)
-        window = _messages_since_last_user(messages)
-        if any(call.get("name") == "compact_conversation" for call in _iter_tool_calls(window)):
+        if any(call.get("name") == "compact_conversation" for call in _iter_tool_calls(messages[latest_index:])):
             return False
 
-        has_prior_file_work = any(call.get("name") in _FILESYSTEM_TOOLS for call in _iter_tool_calls(messages[:-1]))
+        has_prior_file_work = any(call.get("name") in _FILESYSTEM_TOOLS for call in _iter_tool_calls(messages[:latest_index]))
         starts_new_task = _COMPACT_NEW_TASK_RE.search(user_text) is not None
         asks_follow_on_file = _FOLLOW_ON_WORK_RE.search(user_text) is not None
         asks_large_file_work = _COMPACT_LARGE_READ_RE.search(user_text) is not None

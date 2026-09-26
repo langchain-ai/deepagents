@@ -1,149 +1,159 @@
 ---
 type: operator workflow guide
-title: "Workflow: Run & Extend a dcode Session"
-description: "Run dcode as an interactive TUI, a bounded headless task, or an ACP server; manage persisted threads and approvals; and safely configure hooks, MCP, skills, extensions, and sandboxes."
-tags: [dcode, deepagents-code, cli, sessions, resume, approvals, headless, hooks, mcp, sandboxes]
+title: Run a Deep Agents Code Session
+description: Operate dcode in interactive, headless, or ACP mode, following configuration and workspace resolution through tool approval, MCP setup, session persistence, and diagnostics.
+tags: [dcode, deepagents-code, cli, sessions, headless, acp, workspaces, mcp, debugging]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-02T08:05:45.554Z
+    at: 2026-09-25T08:06:00.203Z
 sources:
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
-  - id: openwiki-source-a9143c1c174362216a1cfa2c
-    resource: repo://libs/code/deepagents_code/approval_mode.py
   - id: openwiki-source-b9ef532d79a0667acf40e58b
     resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
+  - id: openwiki-source-71cf5dd9cb185a031e8f6442
+    resource: repo://libs/code/deepagents_code/mcp_login_service.py
+  - id: openwiki-source-c101168dc0286ff6c29ed37f
+    resource: repo://libs/code/deepagents_code/model_retry.py
+  - id: openwiki-source-ea1089f0d7536fbc96c64866
+    resource: repo://libs/code/deepagents_code/offload_api.py
+  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
+    resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-0f8622164498a685abc913d5
     resource: repo://libs/code/deepagents_code/sessions.py
-  - id: openwiki-source-88fb8e5a1d032ebc6b6d11b3
-    resource: repo://libs/code/EXTENSIONS.md
-  - id: openwiki-source-a7917911d186cc47811a1430
-    resource: repo://libs/code/HOOKS.md
+  - id: openwiki-source-29a60a7d68da0bf4ec625403
+    resource: repo://libs/code/deepagents_code/tui/textual_adapter.py
+  - id: openwiki-source-573dc99bae7d0ca36b0253ee
+    resource: repo://libs/code/deepagents_code/ui.py
+  - id: openwiki-source-17253964e859bb0abf2094e8
+    resource: repo://libs/code/deepagents_code/workspace_diagnostics.py
+  - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
+    resource: repo://libs/code/deepagents_code/workspace.py
+  - id: openwiki-source-2210f4f5fcd450ae7e603c49
+    resource: repo://libs/code/DEVELOPMENT.md
   - id: openwiki-source-1d73b3e2b56b5f0d27273379
     resource: repo://libs/code/README.md
-  - id: openwiki-source-367158c802f149f08ef8801f
-    resource: repo://libs/code/tests/unit_tests/test_main_args.py
-  - id: openwiki-source-103d356d5a4b15ce2fd743f9
-    resource: repo://libs/code/tests/unit_tests/test_main.py
-  - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
-    resource: repo://libs/code/tests/unit_tests/test_sessions.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-02T08:05:45.554Z" }
+  - id: openwiki-source-11d6c59d85493653aee76558
+    resource: repo://libs/code/tests/unit_tests/test_app.py
+  - id: openwiki-source-ce7c77212097a5580fb10672
+    resource: repo://libs/code/tests/unit_tests/test_input_parsing.py
+  - id: openwiki-source-c04c6318f6e59e0d1c9d6182
+    resource: repo://libs/code/tests/unit_tests/test_model_retry.py
+  - id: openwiki-source-d86dd82872da8545a6c8d896
+    resource: repo://libs/code/tests/unit_tests/test_non_interactive.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 ---
 
-# Workflow: Run & Extend a dcode Session
+# Run a Deep Agents Code Session
 
-`deepagents-code` (`dcode`) is a terminal coding agent. One CLI dispatches administrative commands or starts an interactive Textual session, one bounded headless task, or an Agent Client Protocol (ACP) server. Session clients use a local LangGraph server process and durable graph checkpoints; the selected mode and trust decisions determine the available tools and extensions.
+`dcode` has three execution boundaries. The default starts the interactive Textual UI; `-n` performs one headless task; `--acp` provides Agent Client Protocol (ACP) over standard input and output. Interactive and headless modes are clients of a temporary loopback LangGraph server, while ACP constructs its agent in-process. Related background: [code agent architecture](../architecture/code-agent.md), [configuration layering](../concepts/config-layering.md), [MCP integration](../integrations/mcp.md), and [costs and sessions](../operations/cost-and-sessions.md).
 
-For subsystem detail, see [code-agent architecture](../architecture/code-agent.md), [config layering](../concepts/config-layering.md), [permissions & HITL](../concepts/permissions-hitl.md), [state persistence](../concepts/state-persistence.md), [ACP](../integrations/acp.md), [MCP](../integrations/mcp.md), and [cost & sessions](../operations/cost-and-sessions.md).
-
-## Install and establish the trust boundary
+## Select a mode
 
 ```bash
-curl -LsSf https://langch.in/dcode | bash
+# Interactive TUI
 dcode
+
+# One bounded, script-friendly task
+dcode -n "run the focused tests" --max-turns 8 --timeout 600
+
+# Editor-host protocol service over stdin/stdout
+dcode --acp
 ```
 
-OpenAI, Anthropic, and Gemini support is bundled. Add optional providers at installation, for example `DEEPAGENTS_CODE_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/dcode | bash`.
+Use the TUI when a person must review tool calls, answer `ask_user`, select a model, resume a conversation, or inspect `/mcp`. Use headless mode for a bounded automation task: it starts a fresh UUID7 thread and does not resume a TUI thread. Its turn or wall-clock budget ending is an error exit (`124`); `-q` keeps response text on stdout and operational output on stderr, and `--no-stream` buffers the reply.
 
-The directory from which dcode is launched is a trust boundary. dcode reads project artifacts before its tool-approval UI appears, so approvals do **not** protect against an untrusted repository's instructions or configuration. Do not run an untrusted repository locally; select a remote sandbox when isolation from the host is required. Treat project hooks, MCP configuration, skills, and Python extensions as separately executable or influential project content and review them before granting their trust flags.
+Treat the launch checkout as trusted input. Configuration, workspace discovery, skills, and MCP discovery can read project files before a tool-approval panel exists. Approval governs model-requested operations, not every startup read. Use an explicitly selected remote sandbox rather than a host checkout when isolation is required.
 
-## Dispatch: administration is not an agent launch
-
-The CLI parses options, retains lightweight diagnostic paths, then requires usable managed policy before dispatching normal commands or a session. `config`, `doctor`, and `auth path` remain available to diagnose an unusable policy file; other gated operations exit 78 if present managed policy cannot be read or enforced. `threads` operations are dispatched before the session branches: `dcode threads list` (alias `ls`) queries stored metadata and `dcode threads delete <ID>` removes a thread without starting an agent. Listing supports agent, branch, cwd, sort, limit, verbosity, and relative-display options; an explicitly supplied nonexistent cwd warns but is still used to query metadata.
-
-Mode-specific validation happens before launch. `--no-mcp` and `--mcp-config` are mutually exclusive. `--max-turns`, `--timeout`, `--rubric`, `--rubric-model`, `--rubric-max-iterations`, `--quiet`, and `--no-stream` require `-n` or a piped task; usage failures exit 2. `--goal` is interactive-only, cannot be blank, and conflicts with rubric and initial prompt/skill inputs.
+## Startup and execution flow
 
 ```mermaid
-flowchart TD
-    Parse["Parse arguments and install CLI settings"] --> Diagnostic{"Diagnostic path"}
-    Diagnostic -->|"yes"| Admin["Run command without session"]
-    Diagnostic -->|"no"| Policy["Require enforceable managed policy"]
-    Policy --> Threads{"Threads command"}
-    Threads -->|"yes"| ThreadAdmin["List or delete persisted threads"]
-    Threads -->|"no"| Validate["Apply stdin and validate mode flags"]
-    Validate --> Acp{"--acp"}
-    Acp -->|"yes"| AcpServer["ACP server over stdio"]
-    Acp -->|"no"| Headless{"Headless task"}
-    Headless -->|"yes"| Task["Run one task and exit"]
-    Headless -->|"no"| Tui["Start Textual session"]
+sequenceDiagram
+    participant CLI
+    participant Client as TUI or headless client
+    participant Server as temporary LangGraph server
+    participant Graph as workspace graph
+    participant Store as SQLite checkpoint store
+    participant User
+    CLI->>Client: resolve launch options
+    Client->>Client: validate explicit MCP config
+    Client->>Server: start loopback server
+    Server->>Graph: build or reuse workspace runtime
+    Client->>Server: wait for agent graph
+    Client->>Server: bind thread workspace
+    Client->>Graph: stream prompt with thread context
+    Graph->>Store: checkpoint state
+    Graph-->>Client: messages and interrupts
+    Client->>User: render output or request approval
+    User-->>Client: decision or answer
+    Client->>Graph: resume with Command
+    Client->>Server: stop server on session exit
 ```
 
-This inspected CLI lifecycle shows that administrative thread work completes before any agent-client launch.
+*Interactive and headless dcode clients bind a workspace before graph execution and use a temporary server for the duration of the client session.*
 
-## Choose a session shape
+### Resolve configuration, model, and workspace
 
-- **Interactive TUI:** `dcode` opens the Textual UI. `-m/--message` auto-submits an initial prompt; `-s/--skill` invokes a startup skill; and `--startup-cmd` runs a shell command before the first prompt. A non-zero startup command warns but does not abort.
-- **Headless task:** `dcode -n "<task>"` (or a piped task) runs `run_non_interactive` once and exits. `-q/--quiet` sends diagnostics to stderr so stdout has only agent response text; `--no-stream` buffers that response. The headless runner creates a new UUID7 thread and has no resume or thread-ID input. Startup skills and commands are supported; an undiscoverable, unreadable, disallowed, or empty skill returns exit 1.
-- **ACP:** `--acp` serves ACP over stdio rather than mounting the TUI. Missing ACP dependencies produce an explanatory exit 1. ACP resolves its local approval configuration before creating its server.
+The launch path resolves a cheap model identity first so the TUI can paint its status bar without importing a provider. If no credentials are configured it defers server startup for onboarding; a malformed or disallowed model configuration ends launch before the UI is run. The resolved model specification, supplied model parameters, profile overrides, and CLI retry limit are handed to the server configuration. A prefixed environment variable such as `DEEPAGENTS_CODE_ANTHROPIC_API_KEY` takes precedence even when it is empty, which deliberately suppresses the corresponding canonical variable.
 
-Both interactive and headless clients use `server_session`. It resolves `ServerConfig`, writes its serialized server environment, scaffolds a temporary `langgraph dev` runtime including a checkpointer module, starts the server and waits for the `agent` graph, then returns a `RemoteAgent`. It binds that client to the explicit project workspace with a configuration fingerprint. Failed or cancelled startup stops the process; after successful handoff the context manager stops it and emits preserved-log notices during teardown. An explicit malformed `--mcp-config` fails preflight before a subprocess is spawned, while discovered MCP configuration errors remain visible but non-fatal.
+The TUI starts with an initial approval mode, then hands interactive execution to `run_textual_app`. Approval is live per-thread state, so changing it does not itself require reconstructing the graph. A blank `--auto-classifier-model` is distinct from an absent argument: it explicitly requests inheritance from the main model rather than falling back to a configured classifier.
 
-### Bound headless automation
+For the server-backed paths, `server_session` preflights an explicit `--mcp-config`, serializes `ServerConfig` into a temporary server directory, starts `langgraph dev` on `127.0.0.1` and an ephemeral port, waits for the `agent` graph, and configures a `RemoteAgent` with the launch workspace and a session policy claim. Failed startup, cancellation, and normal context-manager exit stop the subprocess. Auto-discovered project and user MCP configurations are intentionally not fatal at this parent-side preflight; their individual failures can instead appear in MCP status metadata.
 
-Headless execution is not interactive approval automation. Without `--shell-allow-list`, shell execution is disabled and non-shell tools are auto-approved. `recommended` or an explicit list enables shell access restricted by that allow-list; `all` enables any shell command and auto-approves all tools. If permission hooks exist, they override shortcuts so gated calls can reach those hooks. Explicit `-y/--auto-approve` and `--yolo` are warned as ineffective in headless mode.
+### Workspace binding is the execution gate
 
-Use `--max-turns N` for a turn cap and `--timeout SECONDS` for wall-clock cancellation; both budget expiries return 124. The CLI wraps the entire headless coroutine in `asyncio.wait_for`, reports a timeout to stderr, and maps Ctrl-C during that wait to 130. Headless itself maps shell/HITL iteration exhaustion to 124, hook-requested stop to 0, expected errors to 1, and interruption to 130. For CI, combine a deliberately narrow shell list, a turn limit, and a timeout rather than relying on model behavior.
+A `RemoteAgent` needs a `configurable.thread_id`. Before a stream, the client binds or validates the workspace for that thread and supplies workspace context. At graph selection, the server refuses execution without both a thread ID and valid workspace context. The durable binding establishes the workspace identity and policy; it is not merely a client-side hint.
 
-## Approvals in interactive and ACP sessions
+On each execution, the server resolves the current workspace configuration and rejects project-policy or access-policy drift rather than silently applying it to an existing thread. Model, prompt, and other runtime-only changes are deliberately different: they preserve the binding and checkpoint history but produce a new runtime-cache key, rebuilding the runtime. The bounded workspace runtime cache prevents repeated MCP discovery and sandbox creation; the configured sandbox is process-wide, so a second workspace cannot claim it after the first sandboxed runtime does.
 
-Interactive approval policy is `manual`, classifier-backed `auto`, or unrestricted `yolo`. Invalid stored values fail closed to Manual. Shift+Tab normally cycles Manual → Auto → YOLO → Manual; it omits Auto when ineligible, such as with a remote sandbox, and omits YOLO when `startup.yolo_switcher` is disabled. A TUI launch requesting Auto while sandboxed falls back to Manual.
+Diagnostics for a refusal are structured but secret-safe. The persisted comparison snapshot has an allowlist of small policy values; paths, credentials, environment values, model specifications and parameters, prompts, and profile overrides are neither persisted nor reported as diagnostic substitutes. Clients must tolerate missing diagnostics from older servers or intermediaries.
 
-- `-y/--auto-approve` selects Auto in the local TUI or ACP. Its classifier model can be supplied by `--auto-classifier-model`; otherwise it resolves from `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`, `[models].auto_classifier`, then the main agent model. A weaker classifier weakens this review boundary. In the TUI, a classifier override is unavailable with a sandbox or headless run; in ACP it requires resolved Auto mode.
-- `--yolo` removes gated-action review only after the versioned local acknowledgement. In ACP, the acknowledgement must already have been made in the interactive TUI. The persistent YOLO status indicator remains even when its recurring toast is suppressed.
-- The two flags are mutually exclusive. Managed `startup.mode` participates in resolving ACP approval behavior, so raw flags are not authoritative when policy revokes them.
+## Tools, approvals, and headless constraints
 
-These are tool-execution policies, not a defense against project content read during launch.
+Interactive mode can use Manual, Auto, or YOLO approval. The UI obtains interrupts from the remote graph, renders them, and resumes graph work after a decision or `ask_user` answer. Invalid persisted modes fall back to Manual; YOLO requires its acknowledgement. Project hooks and project Python extensions are separate trust boundaries, not consequences of ordinary tool approval.
 
-## Persist, inspect, and resume threads
+Headless mode has no approval UI. Without `--shell-allow-list`, shell execution is disabled; a restrictive allow-list gates shell commands, and `all` enables unrestricted shell execution. Non-shell tools are otherwise auto-approved, but a project permission hook can still override these shortcuts. MCP tools whose metadata is not coherently read-only are rejected in headless mode instead of waiting forever for a human decision.
 
-Sessions use LangGraph's `AsyncSqliteSaver` against the global `DEFAULT_STATE_DIR/sessions.db`. The sessions module owns its connection and drains it after an interrupted connection. Thread IDs are UUID7 strings, which sort naturally by creation time. `list_threads` reads compact checkpoint metadata—timestamps, agent, branch, and cwd—not full state blobs. Its `idx_dcode_threads_list` covering index keeps the common grouping query index-only; failure to create that index is non-fatal but can make listing slow on large databases.
+## MCP loading, login, and reconnect
 
-`-r` means the most recent eligible thread and `-r <ID>` names a specific thread. The TUI resolves this intent asynchronously before server startup. It finds the recent or explicit candidate, offers a stored-working-directory switch if cwd differs, and creates a fresh thread on no match, lookup failure, or user abort. Unknown explicit IDs also receive prefix-match suggestions. A confirmed resume may adopt the stored agent: bare `-r` does so even over an explicitly pinned agent, while explicit `-r <ID>` only does so if the launch did not pin a non-default agent. A one-off resume does not change the persisted default agent.
+`--no-mcp` disables MCP loading. Otherwise an explicit `--mcp-config` is loaded at highest precedence; without it, the resolver merges discovered user configuration, trusted project entries, and enabled-plugin MCP declarations. Project MCP entries are filtered through whole-session trust plus persisted per-server approvals and denials. If the user trust policy cannot be read, project trust fails closed; malformed discovered configuration is reported rather than making an unrelated usable source disappear silently.
 
-```mermaid
-flowchart TD
-    Intent["Resume intent"] --> Recent{"Most recent intent"}
-    Recent -->|"yes"| RecentLookup["Find most recent eligible thread"]
-    Recent -->|"no"| IdLookup["Check explicit thread ID"]
-    RecentLookup --> Candidate{"Candidate found"}
-    IdLookup --> Candidate
-    Candidate -->|"no or lookup error"| NewThread["Generate new UUID7 thread"]
-    Candidate -->|"yes"| Cwd["Offer stored cwd switch"]
-    Cwd -->|"abort"| NewThread
-    Cwd -->|"continue"| Adopt["Adopt eligible stored agent"]
-    Adopt --> Server["Start session server and restore checkpoint"]
+The same resolution rules support `dcode mcp login`. Login resolves and validates the named server before OAuth is attempted, and gives actionable outcomes for no config, an invalid explicit file, unknown servers, trust-policy failure, and untrusted project entries. An explicit config path is a deliberate direct request; discovery-based project sources remain subject to trust filtering.
+
+In the TUI, MCP metadata is preloaded concurrently with server startup for display, but the server owns the live tool instances. A successful OAuth login writes a token for a later server restart; it does not mutate tools in the already-running graph. The UI offers or defers reconnect, and `/mcp reconnect` applies the new token or server enablement by restarting the app-owned server. Remote-server sessions and `--no-mcp` cannot apply this local reconnect operation.
+
+## Streaming, retries, interruption, and persistence
+
+Model retry middleware wraps the model node rather than an entire agent turn. A transient model failure may therefore retry without replaying completed tool calls. Retry settings are taken from the request's effective model; terminal provider failure is re-raised instead of being converted into an AI response. Correlated `model_attempt` and retry events let both clients distinguish partially displayed failed output from the replayed attempt and discard tentative transcript or tool state.
+
+SQLite checkpointing owns persisted conversation state. TUI resume chooses the most recent eligible thread for bare `-r` or resolves a named thread, enforcing configured age policy. Missing threads, unsafe timestamps, and database errors fall back to a new session; when its stored working directory differs, the UI can offer a workspace switch. Interrupt cleanup is also server-facing: active runs are cancelled and pending graph work is reconciled rather than merely removing a local spinner.
+
+ACP does not enter `server_session` or use `RemoteAgent`. It creates its model and MCP tool set, opens the SQLite checkpointer, builds per-ACP-session agent graphs, and cleans up MCP sessions in `finally`. Diagnose ACP model or MCP failures separately from loopback-server startup.
+
+## Diagnose and verify
+
+For development from `libs/code`:
+
+```bash
+make bootstrap
+export DEEPAGENTS_CODE_DEBUG=1
+uv run deepagents-code
 ```
 
-This inspected TUI resume lifecycle does not apply to headless calls, which always generate a new thread.
+Debug mode preserves the temporary server log and attaches a per-thread client log. The file logger hardens its directory and rejects symlinked log targets where possible; if secure file logging cannot be established, use the in-app `Ctrl+\\` Debug Console. Check the preserved server log for graph-construction failures, the thread log for client/stream behavior, and `/mcp` for server-level MCP status before changing policy or credentials.
 
-Resume-state channels allow rehydration without replaying or re-tokenizing history. They include context-token count; effective model spec and parameters; cache-related model timestamps; accepted goal/rubric state; rubric-model choice; and pending goal proposals. Model-turn channels are written in the graph checkpoint with the successful model response, so resuming a particular checkpoint restores their values at that checkpoint rather than a thread-wide aggregate. TUI-owned accepted goal/rubric values use client-side `aupdate_state`; graph-owned proposals and agent status changes are written in the graph.
+Choose tests by the boundary changed:
 
-## Extend a session safely
+```bash
+make test TEST_FILE=tests/unit_tests/test_non_interactive.py
+make test TEST_FILE=tests/unit_tests/test_model_retry.py
+make test TEST_FILE=tests/unit_tests/test_app.py
+make test TEST_FILE=tests/unit_tests/test_input_parsing.py
+make check
+```
 
-**Skills and commands.** Skills provide reusable instructions and slash commands. Invoke one at startup with `-s/--skill`; `/skill-creator` creates or refines skills and `/remember` saves useful context. The generated catalog lists 45 public slash commands and two hidden debug commands, including session control, context/cost, model and approval selection, plus MCP, plugins, and extension management.
-
-**Hooks.** Hooks are trusted local shell commands that receive JSON on stdin at lifecycle events. User hooks always load, project hooks load only after workspace trust, and enabled plugin hooks load with their plugin. Every matching handler runs concurrently; results are then reduced project → user → plugin, so a first stopping result determines the decision but does not prevent plugin handler side effects.
-
-Interactive dcode prompts before loading untrusted `.deepagents/hooks.json`; always-allow persists canonical-workspace trust in `~/.deepagents/.state/hooks_trust.json`. Denial skips project hooks and continues with user hooks, while cancellation aborts startup. Headless/CI never prompts and requires `--trust-project-hooks`. Client events include session start/end, prompt submission, permission requests, and notifications; server events cover pre/post tool work, compaction, stop, and subagent lifecycle. Server event registrations are fixed when the session starts, so newly enabled plugin hooks need `/reload`. Exit code 2 creates an event-specific block; other non-zero exits are diagnostics. JSON stdout can set decisions, additional context, notices, and continuation control; timeout termination is diagnostic rather than a successful decision.
-
-**MCP, extensions, and sandboxes.** `--mcp-config` accepts Claude Desktop-format server JSON and is highest precedence over discovered configurations; `--no-mcp` disables all MCP loading. Project stdio and remote MCP servers require trust unless `--trust-project-mcp` bypasses the interactive prompt.
-
-Python extensions are experimental: `DEEPAGENTS_CODE_EXPERIMENTAL=1` is required for `-e/--extension` and project-extension trust. Project extensions execute arbitrary Python, so interactive launches ask for trust and headless/CI requires `--trust-project-extensions`. An extension can register middleware, a tool, a backend route, and a shutdown callback; graph composition means route and middleware changes need `/restart`, while runtime tools appear on the next model request. Treat extension tools as their authors' approval responsibility: they are not automatically added to dcode's human-approval map.
-
-`--sandbox [TYPE]` selects remote code execution. No argument resolves `[sandboxes].default`; its normal default is `none` (local only). Built-ins include `agentcore`, `daytona`, `langsmith`, `modal`, `runloop`, and `vercel`; `--sandbox-id`, `--sandbox-snapshot-name`, and `--sandbox-setup` attach to or provision an environment. dcode verifies selected sandbox dependencies before starting the server. A configured default names the backend only when the launch requests `--sandbox`; it does not force an otherwise local launch.
-
-## Operational policy and regression checks
-
-Managed policy is checked before normal commands and session launches. If a present managed file is unreadable, invalid, or contains unenforceable policy, dcode fails closed with exit 78 rather than running under partially enforced policy. Keep `config`, `doctor`, and `auth path` available in operating procedures because they are deliberate diagnostic exceptions. See [config layering](../concepts/config-layering.md) for deployment and precedence.
-
-When changing this workflow, protect behavior at its boundaries:
-
-- `tests/unit_tests/test_main_args.py` covers CLI validation and forwarding, including headless budgets and thread-list cwd normalization.
-- `tests/unit_tests/test_main.py` covers `threads list --cwd` semantics and trust-picker behavior.
-- `tests/unit_tests/test_sessions.py` covers persisted cwd and deletion, including cleanup of offloaded history.
-
-These focused tests complement integration coverage. Preserve exit codes, stderr diagnostics, managed-policy gating, workspace binding, and the no-agent-launch contract of administrative subcommands when altering dispatch or session startup.
+These focused suites cover headless approval behavior, retry and stream failures, TUI startup and resume, and defensive parsing of thread references and pasted paths. Pair remote streaming, binding, offload, or pending-work changes with remote-client tests; pair runtime resolution and policy changes with workspace and server-graph tests.

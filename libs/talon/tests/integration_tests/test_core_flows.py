@@ -86,7 +86,11 @@ class SchedulingAgent(ScriptedAgent):
             job = self.store.create_job(
                 prompt="scheduled prompt",
                 schedule=CronSchedule.parse("in 1m"),
-                origin=CronOrigin(conversation_id=request.conversation_id),
+                origin=CronOrigin(
+                    conversation_id=str(
+                        request.metadata.get("origin_conversation_id", request.conversation_id)
+                    )
+                ),
                 name="integration",
                 now=self.now,
             )

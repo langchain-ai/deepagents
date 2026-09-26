@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import dataclasses
 import logging
 import sys
 from collections import OrderedDict
@@ -36,15 +35,35 @@ from deepagents_code._startup_error import (
 from deepagents_code.configuration.interpreter import InterpreterConfig
 from deepagents_code.configuration.resolver import get_config_resolver
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
-from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
+from deepagents_code.workspace import (
+    PROJECT_POLICY_DRIFT_REASON,
+    SERVER_CONFIG_DRIFT_REASON,
+    WorkspaceConflictError,
+    canonical_fingerprint,
+    drifted_project_fields,
+    get_snapshot_for_binding,
+    resolve_workspace,
+)
+from deepagents_code.workspace_diagnostics import (
+    WorkspaceDiagnostics,
+    diff_snapshots,
+    snapshot_for_payload,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
+    from contextlib import AbstractContextManager
 
     from deepagents.backends.composite import CompositeBackend
+    from deepagents.backends.protocol import SandboxBackendProtocol
+
+    EnvironmentContext = Callable[
+        [Mapping[str, str] | None], AbstractContextManager[None]
+    ]
 
     from deepagents_code.config import CredentialsSnapshot
     from deepagents_code.extensions.registry import ExtensionRegistry
+    from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import OffloadOperation
     from deepagents_code.workspace import WorkspaceBinding
 
@@ -53,6 +72,68 @@ logger = logging.getLogger(__name__)
 _sandbox_cm: Any = None
 _sandbox_backend: Any = None
 _mcp_session_manager: Any = None
+_server_tracing_settings: tuple[dict[str, str | None], bool] | None = None
+_server_tracing_initialized = False
+
+
+def _close_sandbox(context: AbstractContextManager[Any]) -> None:
+    context.__exit__(None, None, None)
+
+
+async def _open_sandbox(
+    create: Callable[[], AbstractContextManager[Any]],
+) -> tuple[AbstractContextManager[Any], Any]:
+    def _enter() -> tuple[AbstractContextManager[Any], Any]:
+        context = create()
+        return context, context.__enter__()  # noqa: PLC2801
+
+    task = asyncio.create_task(asyncio.to_thread(_enter))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        try:
+            context, _ = await asyncio.shield(task)
+        except BaseException:  # Preserve the caller's cancellation
+            logger.debug(
+                "Sandbox startup did not complete after cancellation", exc_info=True
+            )
+        else:
+            await asyncio.to_thread(_close_sandbox, context)
+        raise
+
+
+def _configure_server_tracing(environ: Mapping[str, str], *, redact: bool) -> None:
+    """Pin tracing for the server lifetime before any runtime can execute.
+
+    LangSmith uses process-wide env caches and a default client. Replacing
+    them, even under a build lock, reroutes cached and concurrently executing
+    runtimes. Only workspaces with matching tracing settings can share this
+    process. Keep the reservation across failed builds and cache eviction.
+
+    Called on the server loop with no suspension between claim and setup.
+    """
+    from deepagents_code.config import (
+        _tracing_environment_values,
+        configure_langsmith_secret_redaction,
+        reconcile_tracing_environment,
+    )
+
+    global _server_tracing_settings, _server_tracing_initialized  # noqa: PLW0603  # process-lifetime policy
+    settings = (_tracing_environment_values(environ), redact)
+    if _server_tracing_settings is not None and settings != _server_tracing_settings:
+        reason = (
+            "its LangSmith tracing settings differ from this server's; "
+            "start a separate server for this workspace"
+        )
+        conflict = WorkspaceConflictError.from_reason(reason)
+        raise conflict
+    _server_tracing_settings = settings
+    if not _server_tracing_initialized:
+        reconcile_tracing_environment(environ)
+        # Keep redaction on the server task: its fail-closed disable must
+        # reach this task's LangSmith ContextVar, not a worker's copied context.
+        configure_langsmith_secret_redaction()
+        _server_tracing_initialized = True
 
 
 def _print_startup_error(message: str) -> None:
@@ -91,9 +172,8 @@ async def _build_tools(
     config: ServerConfig,
     project_context: ProjectContext | None,
     *,
-    has_tavily: bool | None = None,
-    tavily_api_key: str | None = None,
-) -> tuple[list[Any], list[Any] | None, list[Any]]:
+    tavily_api_key: str | None,
+) -> tuple[list[Any], list[Any] | None, list[Any], list[Any]]:
     """Assemble the tool list based on server config.
 
     Loads built-in tools (conditionally including web search when Tavily is
@@ -111,32 +191,32 @@ async def _build_tools(
     Args:
         config: Deserialized server configuration.
         project_context: Resolved project context for MCP discovery.
-        has_tavily: Workspace credential availability override.
-        tavily_api_key: Workspace Tavily key that pairs with `has_tavily`.
+        tavily_api_key: Workspace Tavily key, or `None` when the workspace
+            configures none. An empty string still binds the tool, which then
+            reports the key as unconfigured.
 
     Returns:
-        Tuple of `(tools, mcp_server_info, mcp_tools)`.
+        Tuple of `(tools, mcp_server_info, mcp_tools, read_only_builtins)`. The
+        last element is the exact built-in tool objects that are safe to expose
+        to criteria drafting and rubric grading; read-only-ness is known here,
+        at construction, so no consumer has to re-derive it.
 
     Raises:
         FileNotFoundError: If the MCP config file is not found.
         RuntimeError: If MCP tool loading fails.
     """
-    from deepagents_code.config import credentials
     from deepagents_code.tools import (
         create_web_search_tool,
         fetch_url,
         get_current_thread_id,
-        web_search,
     )
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
-    tavily_available = credentials.has_tavily if has_tavily is None else has_tavily
-    if tavily_available:
-        tools.append(
-            web_search
-            if has_tavily is None
-            else create_web_search_tool(tavily_api_key or "")
-        )
+    read_only_builtins: list[Any] = [fetch_url]
+    if tavily_api_key is not None:
+        search_tool = create_web_search_tool(tavily_api_key)
+        tools.append(search_tool)
+        read_only_builtins.append(search_tool)
 
     mcp_server_info: list[Any] | None = None
     mcp_tools: list[Any] = []
@@ -178,28 +258,28 @@ async def _build_tools(
         if mcp_tools:
             logger.info("Loaded %d MCP tool(s)", len(mcp_tools))
 
-    return tools, mcp_server_info, mcp_tools
+    return tools, mcp_server_info, mcp_tools, read_only_builtins
 
 
 def _criteria_context_tools(
     tools: list[Any],
     mcp_tools: list[Any],
+    read_only_builtins: list[Any],
 ) -> list[Any]:
     """Select read-only external tools for criteria drafting and rubric grading.
 
     Args:
         tools: Main agent tools in execution order.
         mcp_tools: Exact tool objects returned by MCP discovery.
+        read_only_builtins: Built-in tool objects `_build_tools` created and
+            marked read-only.
 
     Returns:
         External context tools available to criteria generation and grading.
         MCP tools are included only when their protocol annotations explicitly
         declare them read-only.
     """
-    from deepagents_code.tools import fetch_url, is_web_search_tool
-
-    allowed_ids = {id(fetch_url)}
-    allowed_ids.update(id(tool) for tool in tools if is_web_search_tool(tool))
+    allowed_ids = {id(tool) for tool in read_only_builtins}
     allowed_ids.update(
         id(tool) for tool in mcp_tools if _mcp_tool_is_explicitly_read_only(tool)
     )
@@ -223,13 +303,7 @@ def _mcp_tool_is_explicitly_read_only(tool: Any) -> bool:  # noqa: ANN401
 
 
 class ServerRuntime(NamedTuple):
-    """The one-per-process result of building this server's agent.
-
-    A named tuple rather than a bare tuple so the three slots are addressed by
-    name: `agent` is structurally opaque to the type checker (the SDK exposes no
-    usable compiled-graph type here), so a positional transposition would hand
-    LangGraph the backend as its compiled graph with no complaint.
-    """
+    """The one-per-process result with named slots to prevent transposition."""
 
     agent: Any
     """Compiled LangGraph agent graph served as `agent`."""
@@ -240,11 +314,15 @@ class ServerRuntime(NamedTuple):
     offload: OffloadOperation
     """Server-owned thread offload operation bound to `backend`."""
 
+    mcp_server_info: list[MCPServerInfo] | None = None
+    """Workspace-scoped MCP metadata for the interactive client."""
+
 
 async def _make_graphs(
     *,
     config_override: ServerConfig | None = None,
     project_context_override: ProjectContext | None = None,
+    sandbox_backend_override: SandboxBackendProtocol | None = None,
 ) -> ServerRuntime:
     """Create the agent graph and the backend carrying its shared resources.
 
@@ -257,12 +335,6 @@ async def _make_graphs(
             offload operation bound to that backend.
     """
     config = config_override or ServerConfig.from_env()
-    from deepagents_code.config import (
-        Credentials,
-        _preview_dotenv_environ,
-        use_environment,
-    )
-
     workspace_path = (
         project_context_override.user_cwd
         if project_context_override is not None
@@ -278,24 +350,47 @@ async def _make_graphs(
     # rejects when invoked directly from the server loop (see issue #5043),
     # for the same reason as the offload in `_make_graphs_in_environment`.
     def _resolve_workspace_environment() -> tuple[
-        Mapping[str, str], CredentialsSnapshot
+        Mapping[str, str], CredentialsSnapshot, EnvironmentContext, bool
     ]:
-        environ = MappingProxyType(_preview_dotenv_environ(start_path=workspace_path))
-        return environ, Credentials.snapshot_from_environment(
-            start_path=workspace_path,
-            environ=environ,
+        from deepagents_code.config import (
+            Credentials,
+            _ensure_bootstrap,
+            _preview_dotenv_environ,
+            is_langsmith_redaction_enabled,
+            use_environment,
         )
 
-    workspace_env, workspace_credentials = await asyncio.to_thread(
-        _resolve_workspace_environment
-    )
+        # Finish the one-time global credential publication before pinning
+        # tracing. A later lazy import of `agent` must not overwrite the pin.
+        _ensure_bootstrap()
+        environ = MappingProxyType(_preview_dotenv_environ(start_path=workspace_path))
+        with use_environment(environ):
+            redact = is_langsmith_redaction_enabled()
+        return (
+            environ,
+            Credentials.snapshot_from_environment(
+                start_path=workspace_path,
+                environ=environ,
+            ),
+            use_environment,
+            redact,
+        )
+
+    (
+        workspace_env,
+        workspace_credentials,
+        use_environment,
+        redact,
+    ) = await asyncio.to_thread(_resolve_workspace_environment)
 
     with use_environment(workspace_env):
+        _configure_server_tracing(workspace_env, redact=redact)
         return await _make_graphs_in_environment(
             config=config,
             project_context_override=project_context_override,
             workspace_env=workspace_env,
             workspace_credentials=workspace_credentials,
+            sandbox_backend_override=sandbox_backend_override,
         )
 
 
@@ -305,6 +400,7 @@ async def _make_graphs_in_environment(
     project_context_override: ProjectContext | None,
     workspace_env: Mapping[str, str],
     workspace_credentials: CredentialsSnapshot,
+    sandbox_backend_override: SandboxBackendProtocol | None = None,
 ) -> ServerRuntime:
     """Build one runtime while its immutable workspace environment is active.
 
@@ -317,16 +413,8 @@ async def _make_graphs_in_environment(
     # `blockbuster` rejects when invoked directly from the server loop (see
     # issue #5043). Importing `deepagents_code.agent` / first `settings` access
     # can also trigger `find_project_root()` -> `Path.cwd()`.
-    #
-    # Keep LangSmith redaction configuration on the server task: its fail-closed
-    # path calls `langsmith.configure(enabled=False)`, which sets both a global
-    # fallback and the current `_TRACING_ENABLED` ContextVar. `asyncio.to_thread`
-    # only updates a copied worker context, so a ContextVar disable there would
-    # not reach a parent tracing context that already has `enabled=True` (ContextVar
-    # wins over the global flag).
     def _resolve_project_context_and_settings() -> tuple[
         ProjectContext | None,
-        Any,
         Any,
         Any,
         Any,
@@ -337,7 +425,6 @@ async def _make_graphs_in_environment(
 
         from deepagents_code.agent import create_cli_agent, load_async_subagents
         from deepagents_code.config import (
-            configure_langsmith_secret_redaction,
             create_model,
             is_memory_auto_save_enabled,
             resolve_auto_classifier_model_for_provider,
@@ -349,7 +436,6 @@ async def _make_graphs_in_environment(
             load_async_subagents,
             create_model,
             is_memory_auto_save_enabled,
-            configure_langsmith_secret_redaction,
             resolve_auto_classifier_model_for_provider,
         )
 
@@ -359,11 +445,8 @@ async def _make_graphs_in_environment(
         load_async_subagents,
         create_model,
         is_memory_auto_save_enabled,
-        configure_langsmith_secret_redaction,
         resolve_auto_classifier_model_for_provider,
     ) = await asyncio.to_thread(_resolve_project_context_and_settings)
-    configure_langsmith_secret_redaction()
-
     # Offload to a worker thread: `create_model` does blocking disk IO for some
     # providers (e.g. the `openai_codex` token store currently acquires a file
     # lock via `langchain-openai` that calls `os.mkdir`), which `blockbuster`
@@ -377,13 +460,14 @@ async def _make_graphs_in_environment(
     )
     result.apply_to_runtime_state()
 
-    tools, mcp_server_info, mcp_tools = await _build_tools(
+    tools, mcp_server_info, mcp_tools, read_only_builtins = await _build_tools(
         config,
         project_context,
-        has_tavily=workspace_credentials.has_tavily,
         tavily_api_key=workspace_credentials.tavily_api_key,
     )
-    read_only_context_tools = _criteria_context_tools(tools, mcp_tools)
+    read_only_context_tools = _criteria_context_tools(
+        tools, mcp_tools, read_only_builtins
+    )
 
     # Create sandbox backend if a sandbox provider is configured.
     # The context manager is created here in the factory, but its reference is
@@ -392,25 +476,23 @@ async def _make_graphs_in_environment(
     # graph, so this runs once per process despite LangGraph's per-run factory
     # invocation.
     global _sandbox_cm, _sandbox_backend  # noqa: PLW0603
-    sandbox_backend = None
-    if config.sandbox_type:
+    sandbox_backend = sandbox_backend_override
+    if (sandbox_type := config.sandbox_type) and sandbox_backend is None:
         from deepagents_code.integrations.sandbox_factory import create_sandbox
 
         try:
-            _sandbox_cm = create_sandbox(
-                config.sandbox_type,
-                sandbox_id=config.sandbox_id,
-                snapshot_name=config.sandbox_snapshot_name,
-                setup_script_path=config.sandbox_setup,
+            context, backend = await _open_sandbox(
+                lambda: create_sandbox(
+                    sandbox_type,
+                    sandbox_id=config.sandbox_id,
+                    snapshot_name=config.sandbox_snapshot_name,
+                    setup_script_path=config.sandbox_setup,
+                )
             )
-            _sandbox_backend = _sandbox_cm.__enter__()  # noqa: PLC2801  # Context manager kept open for server process lifetime
-            sandbox_backend = _sandbox_backend
-
-            def _cleanup_sandbox() -> None:
-                if _sandbox_cm is not None:
-                    _sandbox_cm.__exit__(None, None, None)
-
-            atexit.register(_cleanup_sandbox)
+            _sandbox_cm = context
+            _sandbox_backend = backend
+            sandbox_backend = backend
+            atexit.register(_close_sandbox, context)
         except ImportError:
             logger.exception(
                 "Sandbox provider '%s' is not installed", config.sandbox_type
@@ -509,6 +591,7 @@ async def _make_graphs_in_environment(
             agent=agent,
             backend=composite_backend,
             offload=offload,
+            mcp_server_info=mcp_server_info,
         )
 
     from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
@@ -639,12 +722,51 @@ _workspace_runtime_lock = asyncio.Lock()
 _sandbox_workspace_id: str | None = None
 
 
-def _cached_workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime | None:
+def _runtime_cache_key(
+    binding: WorkspaceBinding, *, current_config_fingerprint: str | None = None
+) -> str:
+    """Key the runtime cache on full runtime identity, not just the binding.
+
+    The binding's `resource_key` mixes workspace identity with the policy
+    fingerprint; the runtime cache must *also* change when the full runtime
+    identity (model, model params, prompt, runtime-only fields) changes, so a
+    model switch rebuilds the runtime while the durable binding — and its
+    checkpoints/history — are preserved.
+
+    Args:
+        binding: The durable binding (workspace identity).
+        current_config_fingerprint: The runtime fingerprint of the *current*
+            resolved config, when the caller has resolved one. Falls back to
+            the binding's recorded fingerprint otherwise.
+
+    Returns:
+        The cache key for this binding's current runtime identity.
+    """
+    from deepagents_code.workspace import canonical_fingerprint
+
+    return canonical_fingerprint(
+        {
+            "runtime_fingerprint": (
+                current_config_fingerprint
+                or binding.runtime_fingerprint
+                or binding.config_fingerprint
+            ),
+            "workspace_id": binding.workspace_id,
+        }
+    )
+
+
+def _cached_workspace_runtime(
+    binding: WorkspaceBinding, *, current_config_fingerprint: str | None = None
+) -> ServerRuntime | None:
     """Return and refresh a cached runtime for one workspace binding."""
-    cached = _workspace_runtimes.get(binding.resource_key)
+    key = _runtime_cache_key(
+        binding, current_config_fingerprint=current_config_fingerprint
+    )
+    cached = _workspace_runtimes.get(key)
     if cached is None:
         return None
-    _workspace_runtimes.move_to_end(binding.resource_key)
+    _workspace_runtimes.move_to_end(key)
     return cached
 
 
@@ -667,16 +789,29 @@ def _claim_sandbox_workspace(
     )
     # Built into a local first: `raise X.from_reason(...)` reads as a
     # `from_reason` raise to ruff's DOC501.
-    conflict = WorkspaceConflictError.from_reason(reason)
+    conflict = WorkspaceConflictError.from_reason(
+        reason,
+        diagnostics=WorkspaceDiagnostics(
+            category="policy_drift",
+            reason=reason,
+            snapshot_status="unavailable",
+        ),
+    )
     raise conflict
 
 
 def _remember_workspace_runtime(
     binding: WorkspaceBinding,
     runtime: ServerRuntime,
+    *,
+    current_config_fingerprint: str | None = None,
 ) -> None:
     """Cache one workspace runtime and enforce the bounded LRU size."""
-    _workspace_runtimes[binding.resource_key] = runtime
+    _workspace_runtimes[
+        _runtime_cache_key(
+            binding, current_config_fingerprint=current_config_fingerprint
+        )
+    ] = runtime
     if len(_workspace_runtimes) > _MAX_WORKSPACE_RUNTIMES:
         _workspace_runtimes.popitem(last=False)
 
@@ -689,52 +824,195 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
     """
     if config.cwd is None:
         return None
-    return await asyncio.to_thread(
-        resolve_workspace,
-        config.cwd,
-        config.to_workspace_payload(),
-        config_fingerprint=config.workspace_fingerprint(),
+
+    def _bind() -> WorkspaceBinding:
+        # First pass resolves identity only (cwd plus project root); its
+        # fingerprints are digests of an empty policy and are discarded.
+        identity = resolve_workspace(config.cwd)
+        # The shared policy resolver honors the explicit launch root while
+        # keeping the durable identity consistent with workspace validation.
+        resolved = config.resolve_workspace(identity.cwd, identity.project_root)
+        return resolve_workspace(
+            identity.cwd,
+            resolved.to_workspace_payload(),
+            config_fingerprint=resolved.workspace_fingerprint(),
+        )
+
+    return await asyncio.to_thread(_bind)
+
+
+async def _resolve_bound_workspace_config(
+    binding: WorkspaceBinding,
+) -> ServerConfig:
+    """Resolve current workspace policy and reject drift from its binding.
+
+    Refusals name the fields that drifted. This runs on every request, and it
+    reads the extension trust store each time, so a transient read failure
+    reports as a policy change; without the field names that refusal is not
+    diagnosable. Only allowlisted, non-path policy values reach the attached
+    diagnostics: paths, model parameters, and prompts are never reported.
+
+    Returns:
+        The current server configuration resolved for the workspace.
+    """
+    config = await asyncio.to_thread(ServerConfig.from_env)
+
+    def _resolve_current() -> ServerConfig:
+        resolved = config.resolve_workspace(binding.cwd, binding.project_root)
+        return resolved.preserve_bound_extension_trust(binding.workspace_config())
+
+    current_config = await asyncio.to_thread(_resolve_current)
+    bound_policy = binding.workspace_config()
+    snapshot = await get_snapshot_for_binding(binding)
+    snapshot_status = "current" if snapshot is not None else "unavailable"
+    # Fail closed on a disappeared extension-trust grant. A grant recorded at
+    # bind time that the trust store no longer reports is either a genuine
+    # revocation or a transient store-read failure (which fails closed to
+    # `False`). `preserve_bound_extension_trust` only *adds* privilege, so
+    # without this guard a vanished grant would be silently dropped — the policy
+    # payload still matches (it omits nothing) but the runtime fingerprint
+    # changes and the rebuild would run without the grant. Refuse instead.
+    if (
+        bound_policy.get("trust_project_extensions") is True
+        and current_config.trust_project_extensions is not True
+    ):
+        reason = (
+            "the project's extension trust recorded at binding is no longer "
+            "present; re-bind the thread to re-evaluate trust"
+        )
+        conflict = WorkspaceConflictError.from_reason(
+            reason,
+            diagnostics=WorkspaceDiagnostics(
+                category="policy_drift",
+                reason=reason,
+                snapshot_status=snapshot_status,
+            ),
+        )
+        logger.warning(
+            "Workspace %s extension trust changed since binding", binding.cwd
+        )
+        raise conflict
+    current_snapshot = snapshot_for_payload(current_config.to_workspace_payload())
+    drifted = drifted_project_fields(
+        bound_policy, current_config.to_project_workspace_policy()
     )
+    if drifted:
+        fields = ", ".join(drifted)
+        changes = diff_snapshots(snapshot, current_snapshot, changed_names=drifted)
+        conflict = WorkspaceConflictError.from_reason(
+            f"{PROJECT_POLICY_DRIFT_REASON} ({fields})",
+            diagnostics=WorkspaceDiagnostics(
+                category="policy_drift",
+                reason=PROJECT_POLICY_DRIFT_REASON,
+                changes=changes,
+                snapshot_status=snapshot_status,
+            ),
+        )
+        logger.warning(
+            "Workspace %s project policy drifted since binding: %s",
+            binding.cwd,
+            conflict.diagnostics.log_summary()
+            if conflict.diagnostics is not None
+            else fields,
+        )
+        raise conflict
+    # Durable access-policy compatibility: only trust/tool/sandbox/approval
+    # policy (and workspace identity) invalidate a binding. Cosmetic model
+    # settings and runtime-only fields are excluded from the policy payload, so
+    # a model switch no longer refuses the thread — it rebuilds the runtime via
+    # the runtime-fingerprint cache key instead.
+    current_policy = current_config.to_workspace_payload()
+    if binding.policy_fingerprint:
+        policy_changed = binding.policy_fingerprint != canonical_fingerprint(
+            {
+                "cwd": binding.cwd,
+                "policy": current_policy,
+                "project_root": binding.project_root,
+            }
+        )
+    else:
+        # Pre-v4 row: no policy fingerprint recorded. Fall back to the strict
+        # full-fingerprint comparison (fail closed on any change).
+        policy_changed = (
+            current_config.workspace_fingerprint() != binding.config_fingerprint
+        )
+    if policy_changed:
+        payload_drift = sorted(
+            key
+            for key in bound_policy
+            if bound_policy.get(key) != current_policy.get(key)
+        )
+        changes = diff_snapshots(
+            snapshot, current_snapshot, changed_names=payload_drift
+        )
+        conflict = WorkspaceConflictError.from_reason(
+            SERVER_CONFIG_DRIFT_REASON,
+            diagnostics=WorkspaceDiagnostics(
+                category="config_drift",
+                reason=SERVER_CONFIG_DRIFT_REASON,
+                changes=changes,
+                snapshot_status=snapshot_status,
+            ),
+        )
+        logger.warning(
+            "Workspace %s access policy changed since binding: %s",
+            binding.cwd,
+            conflict.diagnostics.log_summary()
+            if conflict.diagnostics is not None
+            else SERVER_CONFIG_DRIFT_REASON,
+        )
+        raise conflict
+    if current_config.runtime_fingerprint() != (
+        binding.runtime_fingerprint or binding.config_fingerprint
+    ):
+        # Runtime identity (model/params/prompt/runtime fields) changed without
+        # any policy drift. Not a refusal: log it and let the cache key rebuild.
+        logger.info(
+            "Workspace %s runtime identity changed since binding; "
+            "rebuilding the runtime (access policy unchanged)",
+            binding.cwd,
+        )
+    return current_config
 
 
 async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
     """Build or reuse a runtime from the persisted workspace resource policy.
 
     Returns:
-        The runtime selected by the binding's immutable resource key.
+        The runtime selected by the binding's workspace identity and the
+            current full runtime fingerprint (so a model change rebuilds while
+            the binding and its checkpoints are preserved).
     """
-    cached = _cached_workspace_runtime(binding)
+    current_config = await _resolve_bound_workspace_config(binding)
+    runtime_fp = current_config.runtime_fingerprint()
+    cached = _cached_workspace_runtime(binding, current_config_fingerprint=runtime_fp)
     if cached is not None:
         return cached
     async with _workspace_runtime_lock:
-        cached = _cached_workspace_runtime(binding)
+        cached = _cached_workspace_runtime(
+            binding, current_config_fingerprint=runtime_fp
+        )
         if cached is not None:
             return cached
-        config = ServerConfig.from_env()
-        current_config = dataclasses.replace(
-            config,
-            cwd=binding.cwd,
-            project_root=binding.project_root,
-        )
-        if (
-            current_config.workspace_fingerprint() != binding.config_fingerprint
-            or current_config.to_workspace_payload() != binding.workspace_config()
-        ):
-            reason = "the server configuration changed after this workspace was bound"
-            # Built into a local first: `raise X.from_reason(...)` reads as a
-            # `from_reason` raise to ruff's DOC501.
-            conflict = WorkspaceConflictError.from_reason(reason)
-            raise conflict
         _claim_sandbox_workspace(current_config.sandbox_type, binding)
         project_context = ProjectContext(
             user_cwd=Path(binding.cwd),
-            project_root=Path(binding.project_root) if binding.project_root else None,
+            project_root=(
+                Path(current_config.project_root)
+                if current_config.project_root
+                else None
+            ),
         )
         runtime = await _make_graphs(
             config_override=current_config,
             project_context_override=project_context,
+            sandbox_backend_override=(
+                _sandbox_backend if current_config.sandbox_type else None
+            ),
         )
-        _remember_workspace_runtime(binding, runtime)
+        _remember_workspace_runtime(
+            binding, runtime, current_config_fingerprint=runtime_fp
+        )
         return runtime
 
 

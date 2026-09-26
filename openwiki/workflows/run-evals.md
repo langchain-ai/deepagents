@@ -1,34 +1,25 @@
 ---
-type: workflow
-title: "Workflow: Evaluate & Benchmark Agents"
-description: How to run the Deep Agents eval suite and Harbor/unified benchmarks — the deepagents-evals CLI, Makefile parity, model groups, trial aggregation, exit codes, and the cross-model scorecard.
-tags: [evals, benchmarking, harbor, langsmith, cli, testing, deep-agents]
-verified:
-  - by: openwiki/0.4.0
-    at: 2026-08-26T21:35:57.774Z
+type: evaluation operations guide
+title: Run and Interpret Evals
+description: Operate the Deep Agents real-model eval suite and interpret its trial reports, exit codes, Harbor sandbox results, and unified cross-model comparisons.
+tags: [evaluations, testing, langsmith, harbor, benchmarking]
 sources:
   - id: openwiki-source-0153e073a6645f3118ca08c4
     resource: repo://libs/evals/AGENTS.md
   - id: openwiki-source-c0799cb44ce695871e7f3bf6
     resource: repo://libs/evals/CONTRIBUTING.md
-  - id: openwiki-source-3eec076d0f32988b5a894fca
-    resource: repo://libs/evals/deepagents_clbench/README.md
   - id: openwiki-source-b57141bb692e5ccd2249f996
     resource: repo://libs/evals/deepagents_evals/cli.py
-  - id: openwiki-source-d833c2eb4c6bb83a9cedcbd2
-    resource: repo://libs/evals/deepagents_evals/tau3_subset.py
-  - id: openwiki-source-ea2f91740b23f7bbf14d494b
-    resource: repo://libs/evals/deepagents_evals/trial_summary.py
   - id: openwiki-source-5854948cfe9e7edf6943e1ea
     resource: repo://libs/evals/deepagents_harbor/__init__.py
   - id: openwiki-source-634cf5b2e797bfa8ac22f91a
     resource: repo://libs/evals/deepagents_harbor/failure.py
+  - id: openwiki-source-dd120a1be03e34bad3c59b22
+    resource: repo://libs/evals/deepagents_harbor/langgraph_project/langgraph_agent.py
   - id: openwiki-source-6bec48920118df08bae9c302
     resource: repo://libs/evals/deepagents_harbor/langsmith.py
   - id: openwiki-source-02279348940c05e8a156489b
     resource: repo://libs/evals/EVAL_CATALOG.md
-  - id: openwiki-source-bbb5c7fc35af651819a20962
-    resource: repo://libs/evals/harbor_adapters/contextbench/adapter.py
   - id: openwiki-source-be7f6aa28551fac7310db803
     resource: repo://libs/evals/Makefile
   - id: openwiki-source-8c6d7f462707fd1efefae7bc
@@ -37,249 +28,208 @@ sources:
     resource: repo://libs/evals/pyproject.toml
   - id: openwiki-source-8565b7f246ed6e34051d8dfe
     resource: repo://libs/evals/README.md
+  - id: openwiki-source-f3c8f48b7dd96f2acf2b21a8
+    resource: repo://libs/evals/scripts/run_trials.py
+  - id: openwiki-source-4c40634a8db8c72db8e98001
+    resource: repo://libs/evals/tests/evals/utils.py
+  - id: openwiki-source-57ffc78483cbb0541044827d
+    resource: repo://libs/evals/tests/unit_tests/test_eval_catalog.py
   - id: openwiki-source-7daa825b2b1033e42c95e741
     resource: repo://libs/evals/UNIFIED_EVALS.md
-  - id: openwiki-source-9731136dc92d76802b2fc11a
-    resource: repo://libs/evals/UNIFIED_SCORECARD.md
-generated: {by: "openwiki/0.4.0", at: "2026-08-26T21:35:57.774Z"}
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-18T16:46:37.183Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
 ---
 
-# Workflow: Evaluate & Benchmark Agents
+# Run and Interpret Evals
 
-This page is the operator's guide to `libs/evals`, the end-to-end **behavioral
-evaluation suite** for the Deep Agents SDK. An eval runs an agent against a real
-LLM, captures the full trajectory (tool calls, file mutations, final response),
-and scores it on correctness and efficiency. The suite also carries
-[Harbor](https://github.com/laude-institute/harbor) integration for running
-sandboxed benchmarks such as Terminal-Bench, and a **unified evals** CI battery
-that produces one cross-model comparison.
+`libs/evals` is the end-to-end behavioral evaluation suite for the Deep Agents SDK. Each eval runs a real LLM, records the agent trajectory—including tool calls, file mutations, and final response—and scores correctness and efficiency. It complements, rather than replaces, deterministic unit tests: use the latter for harness mechanics and the real-model suite for a behavioral or model-quality conclusion.
 
-For how the SDK agent under test is assembled, see
-[Build a Deep Agent](build-a-deep-agent.md) and the
-[Architecture Overview](../architecture/overview.md). Model identifiers
-(`provider:model` specs) and how the suite resolves them are covered in
-[Profiles & Models](../concepts/profiles-models.md). The unit-test side of the
-same package — and how these behavioral evals differ from ordinary tests — is in
-the [Testing Guide](../testing/testing-guide.md).
+Related guidance: [development](../operations/development.md), [security](../operations/security.md), [cost and sessions](../operations/cost-and-sessions.md), and the [testing guide](../testing/testing-guide.md).
 
-## What the suite measures
+## Choose an evaluation boundary
 
-Each eval scores the agent's trajectory through a two-tier assertion model
-implemented by `TrajectoryScorer`:
+| Question | Entry point | Result |
+| --- | --- | --- |
+| Did deterministic eval tooling change correctly? | `make test` | Unit tests in `tests/unit_tests`, with network sockets disabled except Unix sockets. |
+| Does one model exhibit an SDK behavior? | `deepagents-evals run` | One traced pytest rollout. |
+| Is a model-sensitive result repeatable? | `deepagents-evals trials` | Per-trial reports and aggregate statistics. |
+| Can the agent solve external sandbox tasks? | Harbor targets or `harbor run` | Task-owned verification and sandbox trajectory. |
+| How do models compare on external capability axes? | `unified_evals.yml` | Cross-model leaderboard and, with enough axes, radar chart. |
 
-- **Success assertions** (`.success(...)`) are correctness checks that
-  **hard-fail** the test — e.g. `final_text_contains`, `file_equals`,
-  `llm_judge`.
-- **Efficiency assertions** (`.expect(...)`) are trajectory-shape expectations
-  (expected step count, expected tool calls) that are **logged but never fail**
-  the test.
-
-Evals are `@pytest.mark.langsmith` test functions that accept a `model` fixture,
-build an agent with `create_deep_agent(...)`, and drive it via `run_agent(...)`.
-The catalog of every eval, grouped by category, lives in the auto-generated
-[`EVAL_CATALOG.md`](../../libs/evals/EVAL_CATALOG.md) — do not edit it by hand;
-it is regenerated from `tests/evals/`.
-
-## Package structure
-
-`libs/evals` is a single package with several cooperating pieces, each owning a
-distinct part of the workflow:
-
-| Component | Role |
-|---|---|
-| `deepagents_evals/` (`cli`, `radar`, `tau3_subset`, `trial_summary`) | The installable `deepagents-evals` console script plus its supporting modules: radar-chart rendering, the curated τ³ conversation subset, and the GHA step-summary table renderer. |
-| `deepagents_clbench/` | Version-controlled source of the `deepagents` system for [continual-learning-bench](https://github.com/pgasawa/continual-learning-bench); deployed into a clbench checkout to run. |
-| `deepagents_harbor/` | Deepagents-side Harbor integration: LangSmith dataset/experiment/feedback plumbing (`langsmith.py`), trial failure classification (`failure.py`), and the LangGraph agent project the Harbor sandbox installs. |
-| `harbor_adapters/` | Harbor adapters for external benchmarks (`contextbench`, `drbench`). |
-| `datasets/` | Local benchmark datasets used by the unified battery (`context-retrieval-evals`, `drbench-evals`). |
-| `tests/evals/` | The evals themselves plus the framework (`utils.py`, `llm_judge.py`, `conftest.py`, `pytest_reporter.py`) and vendored task data. |
-
-## The `deepagents-evals` CLI
-
-The canonical interface is the `deepagents-evals` console script, registered as
-`deepagents_evals.cli:main` in `pyproject.toml`. The `Makefile` targets remain
-available for CI parity — the console script is a strict superset that also adds
-discovery and JSON output. Subcommands:
-
-| Subcommand | Purpose |
-|---|---|
-| `run` | Run the eval suite once (single trial). |
-| `trials` | Run the suite N times and aggregate metrics. |
-| `aggregate` | Aggregate previously-written trial reports. |
-| `radar` | Generate a radar chart from results. |
-| `catalog` | Regenerate or check `EVAL_CATALOG.md`. |
-| `model-groups` | Regenerate or check `MODEL_GROUPS.md`. |
-| `list` | Discover categories / tiers / models / evals. |
-
-Most subcommands accept `--json` (machine-readable stdout) and `--dry-run`
-(print the underlying invocation without executing).
-
-### Discovery first
-
-Before kicking off a run, ask the CLI what is available rather than grepping
-source. `list` reads its answers from data, not by importing the test modules:
-categories come from `deepagents_evals/categories.json`, tiers are the fixed
-`("baseline", "hillclimb")` set, models come from the registry at
-`.github/scripts/evals/models.py`, and evals are discovered with the AST walker
-from `scripts/generate_eval_catalog.py` (so `list` needs neither LangSmith
-config nor the full eval dependency graph).
+Start deterministic work from `libs/evals`:
 
 ```sh
+uv sync --all-groups
+make test TEST_FILE=tests/unit_tests/
+make test TEST_FILE=tests/unit_tests/test_harbor_langgraph_agent.py
+```
+
+`make evals` is not an offline test target: it invokes real models and requires tracing credentials.
+
+## Credentials and single-run entrypoints
+
+The canonical interface is the `deepagents-evals` console script, registered as `deepagents_evals.cli:main`. Its subcommands are `run`, `trials`, `aggregate`, `radar`, `catalog`, `model-groups`, and `list`. `list` discovers categories, tiers, model registry entries, and AST-visible evals without importing real-model test modules. Most execution and maintenance subcommands offer `--json` for structured stdout and `--dry-run` for preview.
+
+The eval pytest configuration aborts if tracing is not enabled or no model is supplied. Enable one recognized tracing flag and provide `LANGSMITH_API_KEY`; also export the provider credential for the chosen model.
+
+```sh
+cd libs/evals
+uv sync --all-groups
+export LANGSMITH_TRACING=true
+export LANGSMITH_API_KEY=...
+export ANTHROPIC_API_KEY=...
+
+# Inspect available values before spending a rollout.
 deepagents-evals list categories
 deepagents-evals list tiers
 deepagents-evals list models --group set0
-deepagents-evals list models --provider anthropic
-deepagents-evals list evals --category memory
+deepagents-evals list evals --category tool_use
+
+# Execute a narrow, report-producing run.
+deepagents-evals run --model anthropic:claude-opus-4-7 \
+  --eval-category tool_use --eval-tier baseline --report evals_report.json
 ```
 
-### Running
+`run` executes `uv run --group test pytest tests/evals` from `libs/evals` and forwards model, category, tier, OpenRouter, reasoning, REPL, report, and extra pytest arguments. `--model` overrides `DEEPAGENTS_EVALS_MODEL`; the environment variable supplies the default if the flag is omitted. If neither resolves, the CLI exits with configuration code `2` and shows known model groups.
+
+Categories and labels come from `deepagents_evals/categories.json`; tiers are `baseline` (regression gate) and `hillclimb` (progress tracking). Repeated category filters are inclusive, but an `--eval-category-exclude` match wins; invalid filters fail after collection. For repeatable routing, use `--openrouter-provider` only with an `openrouter:` model and leave fallbacks disabled unless `--openrouter-allow-fallbacks` is explicitly intended. `--openai-reasoning-effort` is only valid for `openai:` models.
+
+The CI-compatible Makefile remains useful:
 
 ```sh
-# Single trial against one model.
-deepagents-evals run --model claude-opus-4-7
-
-# Restrict to a category and tier, and write a JSON report.
-deepagents-evals run --model openai:gpt-5.5 \
-    --eval-category memory --eval-tier baseline --report evals_report.json
-
-# Three trials with stats aggregation.
-deepagents-evals trials --model openai:gpt-5.5 --trials 3
-
-# Re-run only the failures from a prior sweep.
-deepagents-evals trials --model openai:gpt-5.5 --trials 1 \
-    --retry-failed trial_runs/trials_summary.json
+make evals MODEL=anthropic:claude-opus-4-7
+make evals-trials MODEL=openai:gpt-5.5 TRIALS=3 \
+  TRIAL_ARGS="--eval-category memory"
 ```
 
-`run` shells out to `uv run --group test pytest tests/evals` from `libs/evals`,
-forwarding `--model` and every category/tier/provider flag through to
-`tests/evals/conftest.py`. `trials` delegates to `scripts/run_trials.py`, and
-`aggregate` re-runs it in `--aggregate-only` mode over a directory of reports.
+Both targets fail fast if their required variables are missing. `make evals` runs the real suite directly; `make evals-trials` invokes `scripts/run_trials.py`. Prefer the console CLI when discovery, JSON output, retrying, or aggregation is needed.
 
-`--model` may be omitted when `DEEPAGENTS_EVALS_MODEL` is set — the explicit flag
-wins when both are present. If neither resolves, the CLI exits with a
-configuration error and lists known model groups in the message.
+## What a pytest eval measures
 
-### Control flow
+A normal eval is a `@pytest.mark.langsmith` test that receives a model fixture, builds an agent—normally with `create_deep_agent(...)`—and drives it through `run_agent(...)` with a `TrajectoryScorer`. `run_agent` constructs inputs from the query, optional initial files, and extra state; invokes the graph with a thread ID; logs inputs and outputs to LangSmith; turns the result into an `AgentTrajectory`; then applies the scorer.
+
+The scorer has two intentional assertion tiers:
+
+- `TrajectoryScorer.success(...)` is correctness evidence. A failed assertion fails the test.
+- `TrajectoryScorer.expect(...)` records expected trajectory shape, such as step or tool-call behavior, but never fails the test.
+
+Keep alternate valid solution paths viable by using `expect` for efficiency diagnostics, and promote an expectation to `success` only when it is essential to correctness. Inspect the LangSmith trace alongside the report to understand a hard failure rather than treating a score alone as a root cause.
+
+## Trial execution, artifacts, and exit status
+
+Use repeated trials for comparisons. One rollout is a diagnostic observation, not evidence that a stochastic model change is stable.
+
+```sh
+deepagents-evals trials --model openai:gpt-5.5 --trials 3 \
+  --eval-category memory --out-dir trial_runs/memory
+
+# Merge reports downloaded from separate CI jobs.
+deepagents-evals aggregate trial_runs/memory --summary-out summary.json
+
+# Retry every distinct node ID that failed in a prior sweep.
+deepagents-evals trials --model openai:gpt-5.5 --trials 1 \
+  --retry-failed trial_runs/memory/trials_summary.json
+```
 
 ```mermaid
 flowchart TD
-    A["deepagents-evals run / trials"] --> B{"model resolved?"}
-    B -->|no| C["exit 2 config error"]
-    B -->|yes| D{"subcommand"}
-    D -->|run| E["uv run pytest tests/evals"]
-    D -->|trials| F["scripts/run_trials.py N times"]
-    E --> G["pytest_reporter writes evals_report.json"]
-    F --> G
-    G --> H["aggregate_trials writes trials_summary.json"]
-    H --> I{"counts.failed.mean is greater than zero?"}
-    I -->|yes| J["exit 1 eval failures"]
-    I -->|no| K["exit 0 success"]
+    Start["trials command"] --> Loop["Run each pytest trial sequentially"]
+    Loop --> Report{"Report written"}
+    Report -- "yes" --> PerTrial["evals_report_trial_NNN.json"]
+    Report -- "no" --> Skip["Warn and omit trial"]
+    PerTrial --> More{"More trials"}
+    More -- "yes" --> Loop
+    More -- "no" --> Aggregate["Aggregate readable reports"]
+    Skip --> More
+    Aggregate --> Summary["trials_summary.json"]
+    Summary --> Failed{"counts.failed.mean greater than zero"}
+    Failed -- "yes" --> ExitOne["Exit 1 eval failures"]
+    Failed -- "no" --> ExitZero["Exit 0 success"]
+    Aggregate --> None{"Any readable reports"}
+    None -- "no" --> ExitThree["Exit 3 no usable reports"]
 ```
 
-Caption: How a run or trial sweep resolves the model, executes pytest, and maps
-the aggregated summary to an exit code.
+Caption: a trial sweep retains readable artifacts even when a trial process has problems, then uses the aggregate failure count—not the pytest return code—to determine the CLI result.
 
-### Exit codes
+Within one `run_trials` invocation, trials are sequential because in-process LangSmith experiment creation and provider rate limits are unsafe for parallel execution. The GitHub Actions N-trial workflow can fan trials out into separate jobs and aggregate uploaded artifacts afterward; it defaults to `max-parallel: 1` and should be made parallel only when the provider can absorb the request burst.
 
-Automation should branch on exit codes, not parse human-readable output:
+A live sweep writes `evals_report_trial_NNN.json` and aggregates readable reports into `trials_summary.json`. The summary has metric and count statistics (`n`, mean, median, sample standard deviation, minimum, maximum) for correctness, solve rate, step ratio, tool-call ratio, median duration, and passed/failed/skipped/total, plus per-category correctness. Null values do not enter a metric sample; non-numeric values are warned about and excluded. Mixed model or SDK versions produce warnings and should not support a regression conclusion.
 
-| Code | Meaning |
-|---|---|
-| `0` | Success. |
-| `1` | Eval failures. For `run`, a non-zero `pytest` exit; for `trials` / `aggregate`, an aggregated summary whose `counts.failed.mean` is greater than zero; `radar` failures also map here. |
-| `2` | Configuration error: missing `--model`, model-registry import failure, `argparse` usage error, or a `--check` drift detector finding a stale generated file. |
-| `3` | No usable reports: `trials` / `aggregate` produced no summary, or `--retry-failed` could not parse any prior reports. |
+`--retry-failed` accepts a summary path or report directory, scans the associated reports for `failures[].test_name`, and deduplicates node IDs: a test that flakes once is retried once. It returns `3` if it finds no retryable IDs, including when reports exist but none parse.
 
-The critical subtlety: the `pytest_reporter` plugin rewrites pytest's session
-exit status to `0` even when individual evals fail, so the per-trial
-`pytest_returncode` is **not** a reliable failure signal. The CLI decides
-failure from the aggregated `counts.failed.mean` in `trials_summary.json`
-instead.
+| Exit code | Automation meaning |
+| --- | --- |
+| `0` | Successful command or aggregate with no failed tests. |
+| `1` | Eval failure: a `run` pytest failure, aggregate `counts.failed.mean > 0`, or radar-generation failure. |
+| `2` | Configuration or usage error, registry load failure, or stale generated output detected by `--check`. |
+| `3` | No usable report or no parseable prior reports for retry. |
 
-## Makefile parity
+The pytest reporter deliberately rewrites its session exit status to `0` after test calls. Therefore `pytest_returncode` is not the trial/aggregate failure signal; use `trials_summary.json` at `counts.failed.mean`.
 
-`make evals MODEL=...` and `make evals-trials MODEL=... TRIALS=...` still work and
-remain the form CI invokes. `make evals` runs
-`LANGSMITH_TEST_SUITE=deepagents-evals uv run --group test pytest tests/evals`
-with the given model; `make evals-trials` calls `scripts/run_trials.py`. Both
-targets fail fast with a usage message when `MODEL` (or `TRIALS`) is unset. The
-console script exposes every flag the Makefile passes through to pytest, plus
-discovery and `--json` output the Makefile cannot offer.
+## Generated metadata and focused maintenance tests
 
-## Model groups
-
-Available `provider:model` specs are curated into named **model groups**
-(`set0`, `set1`, `frontier`, `fast`, `open`, `docs`, ...) plus per-provider
-groups. The source of truth is `.github/scripts/evals/models.py`; the
-human-readable [`MODEL_GROUPS.md`](../../libs/evals/MODEL_GROUPS.md) is
-auto-generated from it. `deepagents-evals model-groups --check` and
-`catalog --check` are drift detectors: a non-zero exit means the generated file
-is stale (mapped to exit code `2`), not that evals failed. Use
-`deepagents-evals list models --group <name>` to enumerate a group without
-opening the file. Model specs and resolution are documented in
-[Profiles & Models](../concepts/profiles-models.md).
-
-## Required environment
-
-The suite refuses to start without LangSmith tracing — `conftest.py` aborts if
-`LANGSMITH_TRACING=true` and `LANGSMITH_API_KEY` are not set, because every eval
-uses `langsmith.testing` to log inputs, outputs, and feedback that powers the
-report summary and cross-model comparisons:
+`EVAL_CATALOG.md` is generated from AST-visible evals under `tests/evals/`; do not edit it manually. The catalog check is also a unit-tested invariant.
 
 ```sh
-export LANGSMITH_TRACING=true
-export LANGSMITH_API_KEY=...
+make eval-catalog
+deepagents-evals catalog --check
+make test TEST_FILE=tests/unit_tests/test_eval_catalog.py
 ```
 
-You also need the provider key matching the chosen `--model` (any of
-`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, ...). Results are logged to LangSmith
-under the `deepagents-evals` test suite; `--evals-report-file <path>` (or
-`DEEPAGENTS_EVALS_REPORT_FILE`) additionally writes a JSON summary.
+Model specs and named groups are curated in `.github/scripts/evals/models.py`; `MODEL_GROUPS.md` is generated from that registry. Groups include sets such as `set0`, `set1`, `frontier`, `fast`, `open`, and `docs`, as well as provider groups. Run `deepagents-evals model-groups --check` and `deepagents-evals catalog --check` in maintenance or CI: their drift failures map to exit `2`, not an evaluation regression.
 
-## Trials, aggregation, and retry
+When changing Harbor’s LangGraph agent, run `make test TEST_FILE=tests/unit_tests/test_harbor_langgraph_agent.py`. These tests verify graph registration and dependency declarations, prevent accidental tracing egress in tool tests, test bounded web-search behavior, ensure model identity does not leak across tests, and verify that shell construction cannot inherit provider or LangSmith credentials.
 
-`deepagents-evals trials` runs the suite N times and writes two artifact kinds:
-per-trial `evals_report_trial_NNN.json` files (each carrying metrics and a
-`failures` array) and an aggregated `trials_summary.json` with mean / median /
-stdev / min / max for correctness, solve rate, step ratio, tool-call ratio,
-duration, pass/fail counts, and per-category scores. `--summary-out` wins for the
-summary location; otherwise it lands next to the per-trial reports under
-`--out-dir` (default `trial_runs/`).
+## Harbor: sandbox boundary and constraints
 
-`--retry-failed` accepts either a `trials_summary.json` file or a directory of
-per-trial reports, reads the `failures[].test_name` node IDs, dedupes them across
-trials (so a flake that failed once is retried once), and passes only those node
-IDs to a fresh trial run. If reports are found but none parse, the CLI exits `3`
-and prints how many it discovered.
+Harbor runs benchmark tasks in task sandboxes rather than through the pytest behavioral harness. `deepagents_harbor` owns the Deep Agents-side LangSmith and failure-classification integration. Its `langgraph_project/langgraph.json` is the dependency source of truth for the agent environment and registers the `dcode`, `bare`, and `tau3` graphs.
 
-## Harbor & unified evals
+Stage local checkouts before commands that install into Harbor sandboxes:
 
-Beyond the pytest suite, the package integrates Harbor for sandboxed benchmarks.
-The `deepagents_harbor/langgraph_project/langgraph.json` file is the source of
-truth for the packages the Harbor agent env installs; `deepagents_harbor` also
-owns the LangSmith dataset/experiment/feedback plumbing and classifies each trial
-failure as **infrastructure** (OOM, timeout, sandbox) versus **model
-capability** via `FailureCategory`, so infra flakes are not read as model
-regressions. Makefile targets such as `make run-hello-world` and
-`make run-terminal-bench-*` drive Harbor across sandbox backends (Docker, Modal,
-Daytona, Runloop, LangSmith), after `make stage-harbor-local-deps` stages
-checked-out packages for the sandbox install.
+```sh
+cd libs/evals
+make stage-harbor-local-deps
+make run-hello-world MODEL=anthropic:claude-opus-4-7
+make run-terminal-bench-docker MODEL=anthropic:claude-opus-4-7
+```
 
-The **unified evals** workflow
-(`.github/workflows/unified_evals.yml`) runs one or more models through a fixed
-battery split into capability axes — **autonomous** (Harbor-index), **conversation**
-(τ³-bench subset), **context** (Context-Bench), and **research** (DRBench) — and
-produces one cross-model comparison: a leaderboard plus (when at least three axes
-run) a radar chart. The conversation axis is bound to the `tau3` runtime because
-it hosts a **user simulator** the agent must converse with; the other axes run
-either the neutral `bare` `create_deep_agent` or the `dcode` product agent. Each
-axis reports `pass@K` (fraction of tasks passing in at least one of K rollouts)
-except graded axes like `research`, which report `avg@K`. The design rationale —
-which benchmark stands in for each capability and why — is documented in
-[`UNIFIED_EVALS.md`](../../libs/evals/UNIFIED_EVALS.md), the authoritative
-companion to `EVAL_CATALOG.md`.
+Staging copies the checked-out Deep Agents, deepagents-code, ACP, and QuickJS packages under `.local_deps`. The terminal-bench targets select Docker, Modal, Daytona, Runloop, or LangSmith environments and configure different sandbox concurrency. Treat `-n` as concurrent sandbox trials, not task count.
 
-Published cross-model results are collected in
-[`UNIFIED_SCORECARD.md`](../../libs/evals/UNIFIED_SCORECARD.md), which reports
-per-model `pass@k` / `avg@k` by category for both the full profile and a frozen
-high-signal **lite** subset.
+The Harbor agent removes provider and LangSmith credential variables while constructing the local shell-backed agent and restores them afterward. This boundary prevents task shell commands from inheriting those secrets; do not weaken it. The optional research web-search tool is gated on `TAVILY_API_KEY` and bounds both returned result count and rendered output size.
+
+Interpret failures before attributing them to model capability. `FailureCategory` distinguishes `CAPABILITY` from `INFRA_OOM` (exit 137), `INFRA_TIMEOUT` (exit 124), and `INFRA_SANDBOX`; it also has `UNKNOWN` for unclassifiable results. Retry or repair infrastructure outcomes rather than reporting them as model regressions.
+
+## Unified cross-model evaluation
+
+The dispatchable `.github/workflows/unified_evals.yml` applies a fixed external battery to comma-separated `provider:model` specifications. It defaults to autonomous, conversation, and research; context is opt-in. Keep model, task profile, rollouts, agent implementation, grader, and sandbox conditions constant for a meaningful before/after comparison.
+
+| Capability axis | Benchmark | Agent runtime |
+| --- | --- | --- |
+| Autonomous | `harbor-index/harbor-index` | `bare` or `dcode` |
+| Conversation | `tau3-subset` | `tau3` |
+| Context | `context-retrieval-evals` | `bare` or `dcode` |
+| Research | `drbench-evals` | `bare` or `dcode` |
+
+Conversation is bound to `tau3` because its MCP-hosted user simulator drives the required multi-turn protocol. The other axes may use the neutral `create_deep_agent` graph (`bare`) or the product agent (`dcode`). The workflow publishes a leaderboard and emits a radar chart once at least three axes run.
+
+For pass/fail task axes, read pass@K as the fraction of tasks that pass at least once in K rollouts. `avg@K` is passing trials divided by expected trials, so missing rollouts count as failures. Research uses a continuous reward, so its pass@K is structurally zero and the useful result is avg@K; changing its judge requires a new baseline rather than a direct comparison.
+
+```sh
+gh workflow run unified_evals.yml \
+  -f models="anthropic:claude-opus-4-7,openai:gpt-5.5" \
+  -f categories="autonomous,conversation,research" \
+  -f agent_impls="bare" \
+  -f rollouts="3"
+```
+
+The workflow exposes task profile and inclusion filters, retries, timeout multiplier, concurrency, sandbox, forced-build, branch comparison, Harbor package override, and judge-model controls. The research category intentionally pins an arm runner, Docker sandbox, and concurrency `1`; it alone receives `TAVILY_API_KEY` because it needs open-web research. Do not put credentials in a `harbor_package_override`; the workflow deliberately reports only whether an override was supplied.
+
+## Safe extension loop
+
+1. Write focused deterministic coverage for harness, report, or adapter behavior.
+2. Add a narrow traced eval with category and tier markers, hard correctness checks, and diagnostic efficiency expectations.
+3. Regenerate the catalog and update category metadata when the taxonomy changes.
+4. Inspect traces and per-run reports, then use multiple trials before claiming a model-sensitive change.
+5. For Harbor and unified results, retain configuration and artifacts, classify infrastructure failures, and compare only like-for-like runs.

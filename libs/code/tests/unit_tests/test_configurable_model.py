@@ -4,7 +4,7 @@ import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain.agents.middleware.types import (
@@ -192,6 +192,93 @@ class TestCheckpointPersistence:
         assert isinstance(result, ModelResponse)
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_cache_activity_keeps_each_requests_identity(asynchronous: bool) -> None:
+    """Writes, reads, and misses preserve distinct request times and policies."""
+    middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=False)
+    request = _make_request(_make_model("gpt-5.4"))
+    state: dict[str, object] = {}
+    times = [f"2026-09-21T12:0{i}:00+00:00" for i in range(3)]
+    for timestamp, detail in zip(
+        times, ("cache_creation", "cache_read", None), strict=True
+    ):
+        response = ModelResponse(
+            result=[
+                AIMessage(
+                    content="response",
+                    usage_metadata={
+                        "input_tokens": 2000,
+                        "output_tokens": 1,
+                        "total_tokens": 2001,
+                        "input_token_details": {detail: 2000} if detail else {},
+                    },
+                )
+            ]
+        )
+        with (
+            patch(
+                "deepagents_code.configurable_model._utc_now_iso",
+                return_value=timestamp,
+            ),
+            patch(
+                "deepagents_code.configurable_model._cache_endpoint_identity",
+                return_value="default",
+            ),
+            patch(
+                "deepagents_code.configurable_model._effective_cache_params",
+                return_value={"prompt_cache_retention": "24h"},
+            ),
+        ):
+            if asynchronous:
+                result = await middleware.awrap_model_call(
+                    request, AsyncMock(return_value=response)
+                )
+            else:
+                result = middleware.wrap_model_call(
+                    request, MagicMock(return_value=response)
+                )
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert isinstance(result.command.update, dict)
+        state.update(result.command.update)
+
+    assert state["_last_model_request_at"] == times[2]
+    identity = {
+        "model_spec": "openai:gpt-5.4",
+        "endpoint": "default",
+        "params": {"prompt_cache_retention": "24h"},
+    }
+    assert state["_last_cache_write"] == {**identity, "requested_at": times[0]}
+    assert state["_last_cache_use"] == {**identity, "requested_at": times[1]}
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_subagent_cache_activity_is_not_checkpointed(asynchronous: bool) -> None:
+    """Auxiliary model usage cannot overwrite the main model's cache identity."""
+    middleware = ConfigurableModelMiddleware(persist_model_state=False)
+    request = _make_request(_make_model("gpt-5.4"))
+    response = ModelResponse(
+        result=[
+            AIMessage(
+                content="response",
+                usage_metadata={
+                    "input_tokens": 2000,
+                    "output_tokens": 1,
+                    "total_tokens": 2001,
+                    "input_token_details": {"cache_creation": 2000},
+                },
+            )
+        ]
+    )
+    if asynchronous:
+        result = await middleware.awrap_model_call(
+            request, AsyncMock(return_value=response)
+        )
+    else:
+        result = middleware.wrap_model_call(request, MagicMock(return_value=response))
+    assert result is response
+
+
 class TestNoOverride:
     """Cases where the middleware should pass the request through unchanged."""
 
@@ -296,6 +383,102 @@ def test_checkpoint_records_effective_cache_params() -> None:
     assert update["_model_params"] is None
 
 
+@pytest.mark.parametrize(
+    ("ls_provider", "model_name", "expected"),
+    [
+        ("openai", "gpt-6-astra", {"reasoning_effort": "high"}),
+        ("openai", "gpt-5.6", {"reasoning_effort": "high"}),
+        ("anthropic", "claude-opus-5", {"reasoning_effort": "high"}),
+        ("google_genai", "gemini-3", None),
+    ],
+)
+def test_checkpoint_records_reasoning_effort_for_cache_identity(
+    ls_provider: str, model_name: str, expected: dict[str, Any] | None
+) -> None:
+    """Effort reaches `_last_cache_params` only where it moves the prefix.
+
+    OpenAI and Anthropic render reasoning effort into the prompt prefix (the
+    GPT-6 Astra `configuration_update` escape hatch exists because the
+    top-level knob rewrites it; Anthropic always renders thinking config), so
+    an effort change there can invalidate the cache. Google documents no such
+    link, so its effort settings must stay out of the identity projection.
+    """
+    model = _make_model(model_name)
+    model._get_ls_params.return_value = {"ls_provider": ls_provider}
+    request = _make_request(
+        model,
+        context=CLIContext(model_params={"reasoning_effort": "high"}),
+    )
+
+    result = ConfigurableModelMiddleware().wrap_model_call(
+        request, lambda _r: _make_response()
+    )
+
+    update = _checkpoint_update(result)
+    assert update["_last_cache_params"] == expected
+    assert update["_model_params"] == {"reasoning_effort": "high"}
+
+
+@pytest.mark.parametrize("effort", ["high", "low"])
+def test_checkpoint_composes_configured_reasoning_effort(effort: str) -> None:
+    """Runtime effort overrides nested config in the saved cache identity."""
+    from deepagents_code.model_config import ModelConfig
+
+    config = ModelConfig(
+        providers={
+            "openai": {
+                "params": {
+                    "gpt-5.6": {"reasoning": {"effort": "medium", "summary": "auto"}}
+                }
+            }
+        }
+    )
+    request = _make_request(
+        _make_model("gpt-5.6"),
+        context=CLIContext(model_params={"reasoning_effort": effort}),
+    )
+    with patch("deepagents_code.model_config.ModelConfig.load", return_value=config):
+        result = ConfigurableModelMiddleware().wrap_model_call(
+            request, lambda _r: _make_response()
+        )
+
+    update = _checkpoint_update(result)
+    assert update["_last_cache_params"] == {"reasoning_effort": effort}
+    assert update["_model_params"] == {"reasoning_effort": effort}
+    assert config.get_kwargs("openai", model_name="gpt-5.6")["reasoning"] == {
+        "effort": "medium",
+        "summary": "auto",
+    }
+
+
+def test_checkpoint_records_nested_openai_reasoning_effort() -> None:
+    """The nested `reasoning: {"effort": ...}` shape must not slip through.
+
+    `/effort` composes session overrides into the native `reasoning` mapping
+    for OpenAI when config carries one (`_compose_openai_reasoning_effort`), so
+    the flat `reasoning_effort` key alone would miss effort changes for users
+    with a configured `reasoning` block. The checkpoint stores the canonical
+    effort value, not the container: `reasoning.summary` is not documented to
+    move the prefix, so only the effort value participates.
+    """
+    request = _make_request(
+        _make_model("gpt-5.6"),
+        context=CLIContext(
+            model_params={"reasoning": {"effort": "high", "summary": "auto"}}
+        ),
+    )
+
+    result = ConfigurableModelMiddleware().wrap_model_call(
+        request, lambda _r: _make_response()
+    )
+
+    update = _checkpoint_update(result)
+    assert update["_last_cache_params"] == {"reasoning_effort": "high"}
+    assert update["_model_params"] == {
+        "reasoning": {"effort": "high", "summary": "auto"}
+    }
+
+
 def test_checkpoint_cache_params_exclude_unrelated_config() -> None:
     """Only cache-identity keys may be persisted for the cold-cache check.
 
@@ -329,9 +512,14 @@ def test_checkpoint_cache_params_exclude_unrelated_config() -> None:
         )
 
     update = _checkpoint_update(result)
-    # Only the identity key survives; `base_url` is tracked separately as the
-    # endpoint identity, and the runtime override is not a cache-identity key.
-    assert update["_last_cache_params"] == {"prompt_cache_retention": "24h"}
+    # Only the identity keys survive: `base_url` is tracked separately as the
+    # endpoint identity, `temperature` and friends are unrelated knobs, and
+    # the runtime effort override is projected too because OpenAI effort
+    # participates in cache identity.
+    assert update["_last_cache_params"] == {
+        "prompt_cache_retention": "24h",
+        "reasoning_effort": "high",
+    }
     # Resume semantics are untouched: exactly the runtime overrides.
     assert update["_model_params"] == {"reasoning_effort": "high"}
 
@@ -1069,7 +1257,9 @@ class TestModelParams:
         assert _checkpoint_update(result) == {
             "_model_spec": "openai:claude-opus-4-5",
             "_model_params": {"reasoning_effort": "high"},
-            "_last_cache_params": None,
+            # `_make_model` reports the OpenAI provider regardless of the model
+            # name, so the effort override participates in cache identity here.
+            "_last_cache_params": {"reasoning_effort": "high"},
         }
 
 

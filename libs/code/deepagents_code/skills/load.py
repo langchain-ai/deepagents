@@ -130,7 +130,7 @@ def list_skills(
             else:
                 skills = list_skills_from_backend(backend=backend, source_path=".")
             if experimental and skills:
-                logger.info(
+                logger.debug(
                     "Discovered %d skill(s) from experimental Claude path: %s",
                     len(skills),
                     skill_dir,

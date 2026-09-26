@@ -11,7 +11,7 @@
 // .github/scripts/labeling/close-old-prs.js.
 
 const STICKY_MARKER = '<!-- project-readme-check -->';
-const ACKNOWLEDGMENT_LABEL = 'readme: acknowledged';
+const ACKNOWLEDGMENT_LABEL = 'ci:ack-readme';
 
 // `GET /repos/{owner}/{repo}/pulls/{number}/files` is hard-capped at 3000
 // files no matter how the caller paginates, while `pull_request.changed_files`
@@ -57,7 +57,7 @@ async function collectChangedPaths({ github, context, core }) {
   if (files.length !== pr.changed_files) {
     if (files.length >= LISTFILES_CAP && pr.changed_files > LISTFILES_CAP) {
       // Documented API cap, not a fault. Report it as unknown-but-blocking so
-      // `readme: acknowledged` can still clear the PR; hard-failing here would
+      // `ci:ack-readme` can still clear the PR; hard-failing here would
       // run before both bypasses and leave the PR permanently unmergeable.
       truncated = true;
       core.warning(

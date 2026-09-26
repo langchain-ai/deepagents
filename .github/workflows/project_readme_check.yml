@@ -16,7 +16,7 @@
 #
 # Bypasses:
 #   - A `docs` title type passes: the README edit is the point of the PR.
-#   - Apply the `readme: acknowledged` label to confirm the landing-page
+#   - Apply the `ci:ack-readme` label to confirm the landing-page
 #     changes are intentional in a non-docs PR. The check re-runs on
 #     `labeled`/`unlabeled`, so the red clears without a new commit. Removing
 #     the label re-arms the block.
@@ -67,7 +67,7 @@ name: "📄 Project README check"
 on:
   pull_request:
     # `edited` so retitling to `docs:` clears the block, and
-    # `labeled`/`unlabeled` so toggling `readme: acknowledged` re-runs the
+    # `labeled`/`unlabeled` so toggling `ci:ack-readme` re-runs the
     # check. Without these three the only escape hatches would need a new
     # commit to take effect, leaving the PR red and unmergeable in the
     # meantime.

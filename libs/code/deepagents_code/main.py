@@ -2593,8 +2593,9 @@ def parse_args() -> argparse.Namespace:
         "--non-interactive",
         dest="non_interactive_message",
         metavar="TEXT",
-        help="Run a single task non-interactively and exit "
-        "(shell disabled unless --shell-allow-list is set)",
+        help="Run one task and exit; no human tool approvals. "
+        "Can change files and access the network. "
+        "Shell off unless a shell allow-list is configured",
     )
 
     parser.add_argument(

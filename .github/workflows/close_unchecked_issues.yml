@@ -5,7 +5,7 @@
 # issues with every box unchecked or skip the template altogether.
 #
 # Rules:
-#   0. No issue type -> close unless author is an org member
+#   0. No issue type or form label -> close unless author is an org member
 #   1. No checkboxes at all -> close unless author is an org member or bot
 #   2. Checkboxes present but none checked -> close (skipped for org members)
 #   3. "Submission checklist" section incomplete -> close (skipped for org members)
@@ -114,12 +114,16 @@ jobs:
               });
             }
 
-            // ── Rule 0: no issue type (API/CLI bypass) ──────────────────
-            // Issue types are set automatically when using web UI templates.
-            // External users cannot set issue types via the API (requires
-            // write/triage permissions), so a missing type reliably indicates
+            // ── Rule 0: no issue type or form label (API/CLI bypass) ────
+            // Web UI templates set either an issue type or a type label.
+            // External users cannot set either via the API (requires
+            // write/triage permissions), so missing both reliably indicates
             // programmatic submission.
-            if (!context.payload.issue.type) {
+            const formLabels = new Set(['type:bug', 'type:feature']);
+            const hasFormLabel = context.payload.issue.labels?.some(
+              (label) => formLabels.has(typeof label === 'string' ? label : label.name),
+            );
+            if (!context.payload.issue.type && !hasFormLabel) {
               // Transferred issues fire an "opened" event in this repo but
               // carry no issue type here, so check the timeline for a
               // `transferred` event instead of assuming programmatic
@@ -135,7 +139,7 @@ jobs:
                 core.warning(`Rule 0: timeline lookup failed, treating as not transferred: ${e.message}`);
               }
               if (transferred) {
-                console.log('No issue type, but issue has a `transferred` timeline event — skipping Rule 0');
+                console.log('No issue type or form label, but issue has a `transferred` timeline event — skipping Rule 0');
               } else {
                 let membership;
                 try {
@@ -146,11 +150,11 @@ jobs:
                   core.warning(`Rule 0: org membership check failed, skipping: ${e.message}`);
                 }
                 if (membership?.internal) {
-                  console.log(`No issue type, but ${membership.author} is internal — OK`);
+                  console.log(`No issue type or form label, but ${membership.author} is internal — OK`);
                 } else if (membership) {
-                  console.log(`No issue type and ${membership.author} is external — closing`);
+                  console.log(`No issue type or form label and ${membership.author} is external — closing`);
                   await closeWithComment([
-                    'This issue was automatically closed because it appears to have been submitted programmatically — issue types are automatically set when using the GitHub web interface, and this issue has none.',
+                    'This issue was automatically closed because it appears to have been submitted programmatically — the GitHub web interface applies an issue type or form label, and this issue has neither.',
                     '',
                     'We do not allow automated issue submission at this time.',
                   ]);

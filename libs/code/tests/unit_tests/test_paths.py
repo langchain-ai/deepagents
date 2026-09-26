@@ -70,6 +70,18 @@ class TestGetDeepagentsHome:
             first.installation.root
         )
 
+    def test_installations_have_distinct_locks_outside_their_containers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Custom tool directories must neither contain nor share lock roots."""
+        locks = set()
+        for container in (tmp_path / "tools", tmp_path / "custom tools"):
+            monkeypatch.setattr(sys, "prefix", str(container / "deepagents-code"))
+            installation = _paths_module._installation_paths()
+            assert not installation.locks_dir.is_relative_to(container)
+            locks.add(installation.locks_dir)
+        assert len(locks) == 2
+
 
 def _subprocess_env(*, home: Path, configured: str | None) -> dict[str, str]:
     """Return a synthetic launch environment without reading secret files."""

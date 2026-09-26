@@ -156,7 +156,7 @@ class StateBackend(BackendProtocol):
                 continue
 
             # This is a file directly in the current directory
-            size = len(file_data_to_string(fd))
+            size = len(file_data_to_string(fd).encode("utf-8"))
             infos.append(
                 {
                     "path": k,
@@ -308,7 +308,7 @@ class StateBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len(file_data_to_string(fd)) if fd else 0
+            size = len(file_data_to_string(fd).encode("utf-8")) if fd else 0
             infos.append(
                 {
                     "path": p,

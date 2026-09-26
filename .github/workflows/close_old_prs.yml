@@ -1,9 +1,9 @@
 # Warn on open PRs after 14 days and close them after 30 days, measured from
 # when the PR was opened (by age, not last activity). The warning also applies
-# a "pending-deletion" label. Skipped: PRs with the "do-not-close" label, and
+# a "auto:pending-deletion" label. Skipped: PRs with the "ci:keep-open" label, and
 # release-please PRs (opened by "github-actions[bot]" on a
 # release-please--branches--main--components--<pkg> branch in this repository —
-# identified by that provenance alone, not by any label). The "do-not-close"
+# identified by that provenance alone, not by any label). The "ci:keep-open"
 # label can also be applied by commenting `!keep-open` — see
 # keep_open_on_comment.yml. Thresholds and labels are defined in
 # .github/scripts/labeling/close-old-prs.js.

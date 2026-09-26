@@ -2,7 +2,7 @@
 
 import asyncio
 from asyncio import Future
-from collections.abc import AsyncIterator, Awaitable, Callable, Generator
+from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Mapping
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.graph.message import add_messages
 from langgraph.types import Command
 from pydantic import ValidationError
 from rich.console import Console
@@ -60,6 +61,7 @@ from deepagents_code.tui.textual_adapter import (
     _is_renderable_auto_mode_event,
     _parse_auto_mode_review_event,
     _read_mentioned_file,
+    _tool_call_ids_from_current_turn,
     execute_task_textual,
 )
 from deepagents_code.tui.widgets.messages import (
@@ -125,6 +127,16 @@ def _mock_approval() -> Future[object]:
 
 def _noop_status(_: str) -> None:
     """No-op status callback for tests."""
+
+
+def _apply_state_updates(updates: list[dict[str, Any]]) -> dict[str, Any]:
+    """Apply captured updates using the graph's message reducer."""
+    state: dict[str, Any] = {"messages": []}
+    for update in updates:
+        state["messages"] = add_messages(state["messages"], update.get("messages", []))
+        if "_context_tokens" in update:
+            state["_context_tokens"] = update["_context_tokens"]
+    return state
 
 
 class TestInterruptCleanup:
@@ -290,6 +302,241 @@ class TestInterruptCleanup:
         sync_message_content.assert_called_once_with("asst-1", "partial response")
         assert assistant_messages == {}
 
+    async def test_persisted_tool_request_is_not_appended_again(self) -> None:
+        """A checkpointed streamed tool call must not be duplicated by cleanup."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        calls: list[str] = []
+        persisted = AIMessage(
+            content="",
+            id="assistant-1",
+            tool_calls=[
+                {
+                    "id": "call-1",
+                    "name": "execute",
+                    "args": {"command": "sleep 120", "timeout": 130},
+                }
+            ],
+        )
+        state = SimpleNamespace(
+            values={"messages": [HumanMessage(content="Run execute"), persisted]}
+        )
+
+        def cancel_runs(_config: object) -> None:
+            calls.append("cancel")
+
+        def get_state(_config: object) -> object:
+            calls.append("get_state")
+            return state
+
+        def update_state(_config: object, _values: dict[str, Any]) -> None:
+            calls.append("update")
+
+        agent = SimpleNamespace(
+            acancel_active_runs=AsyncMock(side_effect=cancel_runs),
+            aget_state=AsyncMock(side_effect=get_state),
+            aupdate_state=AsyncMock(side_effect=update_state),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget(
+                "execute", {"command": "sleep 120", "timeout": 130}
+            )
+        }
+        config: RunnableConfig = {"configurable": {"thread_id": "t-1"}}
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config=config,
+            pending_text_by_namespace={},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        assert calls == ["cancel", "get_state", "update"]
+        agent.aupdate_state.assert_awaited_once()
+        saved = agent.aupdate_state.await_args.args[1]["messages"]
+        assert all(not isinstance(message, AIMessage) for message in saved)
+
+    async def test_fully_persisted_assistant_output_is_not_appended_again(self) -> None:
+        """Checkpointed text and tool calls require only the interruption notice."""
+        from langchain_core.messages import AIMessage
+
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    AIMessage(
+                        content="I will run that.",
+                        tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+                    )
+                ]
+            }
+        )
+        agent = SimpleNamespace(
+            aget_state=AsyncMock(return_value=state),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget("execute", {"command": "sleep 120"})
+        }
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "I will run that."},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        agent.aupdate_state.assert_awaited_once()
+        saved = agent.aupdate_state.await_args.args[1]["messages"]
+        assert all(not isinstance(message, AIMessage) for message in saved)
+
+    async def test_repeated_text_from_new_invocation_is_preserved(self) -> None:
+        """Matching earlier text does not suppress unsaved output from a later call."""
+        from langchain_core.messages import AIMessage
+
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    AIMessage(content="Let me check."),
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+                    ),
+                ]
+            }
+        )
+        agent = SimpleNamespace(
+            aget_state=AsyncMock(return_value=state),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget("execute", {"command": "sleep 120"})
+        }
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "Let me check."},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        saved = agent.aupdate_state.await_args.args[1]["messages"]
+        recovered = next(message for message in saved if isinstance(message, AIMessage))
+        assert recovered.content == "Let me check."
+        assert recovered.tool_calls == []
+
+    async def test_checkpoint_read_failure_preserves_unsaved_output(self) -> None:
+        """An indeterminate checkpoint read must not discard partial output."""
+        from langchain_core.messages import AIMessage
+
+        agent = SimpleNamespace(
+            aget_state=AsyncMock(side_effect=RuntimeError("read failed")),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget("execute", {"command": "sleep 120"})
+        }
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial explanation"},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        agent.aupdate_state.assert_awaited_once()
+        recovered = agent.aupdate_state.await_args.args[1]["messages"][0]
+        assert isinstance(recovered, AIMessage)
+        assert recovered.content == "partial explanation"
+        assert [call["id"] for call in recovered.tool_calls] == ["call-1"]
+
+    async def test_partial_text_survives_when_tool_request_was_persisted(self) -> None:
+        """Only the checkpointed tool call is removed from mixed partial output."""
+        from langchain_core.messages import AIMessage
+
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "call-1", "name": "execute", "args": {}}],
+                    )
+                ]
+            }
+        )
+        agent = SimpleNamespace(
+            aget_state=AsyncMock(return_value=state),
+            aupdate_state=AsyncMock(),
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+        adapter._current_tool_messages = {
+            "call-1": _make_tool_widget("execute", {"command": "sleep 120"})
+        }
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial explanation"},
+            captured_input_tokens=0,
+            captured_output_tokens=0,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+        )
+
+        recovered = agent.aupdate_state.await_args_list[0].args[1]["messages"][0]
+        assert recovered.content == "partial explanation"
+        assert recovered.tool_calls == []
+
     async def test_interrupt_cancels_active_remote_runs_before_state_writes(
         self,
     ) -> None:
@@ -372,16 +619,44 @@ class TestInterruptCleanup:
             == f"{UNICODE_GLYPHS.square_filled} Interrupted by user"
             for widget in mounted
         )
-        assert len(agent.aupdate_state.await_args_list) == 2
-        persisted = [
-            value
-            for call in agent.aupdate_state.await_args_list
-            for value in call.args[1]["messages"]
-        ]
-        assert any("partial answer" in str(message.content) for message in persisted)
-        assert any(
-            "Task interrupted by user" in str(message.content) for message in persisted
+        assert len(agent.aupdate_state.await_args_list) == 1
+        updates = [call.args[1] for call in agent.aupdate_state.await_args_list]
+        saved = _apply_state_updates(updates)
+        assert len(saved["messages"]) == 2
+        assert isinstance(saved["messages"][0], AIMessage)
+        assert saved["messages"][0].content == "partial answer"
+        assert isinstance(saved["messages"][1], HumanMessage)
+        assert saved["messages"][1].content == (
+            "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
         )
+        assert saved["_context_tokens"] == 15
+
+    async def test_disabled_recovery_does_not_save_state(self) -> None:
+        """Non-conversation interrupts do not persist recovery messages or tokens."""
+        agent = SimpleNamespace(aupdate_state=AsyncMock())
+        mount_message = AsyncMock()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=AsyncMock(),
+            set_active_message=MagicMock(),
+        )
+
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config={"configurable": {"thread_id": "t-1"}},
+            pending_text_by_namespace={(): "partial answer"},
+            captured_input_tokens=10,
+            captured_output_tokens=5,
+            turn_stats=SessionStats(),
+            start_time=0.0,
+            recover_interrupted_turn=False,
+        )
+
+        agent.aupdate_state.assert_not_awaited()
+        mount_message.assert_not_awaited()
 
     async def test_remote_run_cancel_failure_does_not_skip_state_writes(self) -> None:
         """Interrupt cleanup remains best-effort when remote cancel fails."""
@@ -511,11 +786,7 @@ class TestInterruptCleanup:
         )
 
     async def test_disables_tracing_when_interrupted_msg_present(self) -> None:
-        """Both `aupdate_state` calls disable tracing when interrupted_msg is set.
-
-        When there is a partial AI message to save, both writes (interrupted AI
-        message and cancellation notice) must be suppressed from LangSmith traces.
-        """
+        """The combined recovery write remains suppressed from LangSmith traces."""
         from langsmith import get_tracing_context
 
         captured: list[object] = []
@@ -546,9 +817,7 @@ class TestInterruptCleanup:
             start_time=0.0,
         )
 
-        assert len(captured) == 2, (
-            f"expected 2 aupdate_state calls, got {len(captured)}"
-        )
+        assert len(captured) == 1, f"expected 1 aupdate_state call, got {len(captured)}"
         assert all(v is False for v in captured), (
             f"tracing was not disabled: {captured}"
         )
@@ -584,11 +853,14 @@ class TestInterruptCleanupTokenPersist:
             start_time=0.0,
         )
 
-        # Only the cancellation write happens (no partial AI message in this test);
-        # it carries both `messages` and `_context_tokens`.
         assert len(captured) == 1
-        assert captured[0]["_context_tokens"] == 4321
-        assert "messages" in captured[0]
+        saved = _apply_state_updates(captured)
+        assert saved["_context_tokens"] == 4321
+        assert len(saved["messages"]) == 1
+        assert isinstance(saved["messages"][0], HumanMessage)
+        assert saved["messages"][0].content == (
+            "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+        )
 
     async def test_omits_context_tokens_when_no_usage_captured(self) -> None:
         """Zero tokens means we never saw `usage_metadata`; preserve the prior value."""
@@ -618,7 +890,10 @@ class TestInterruptCleanupTokenPersist:
         )
 
         assert len(captured) == 1
-        assert "_context_tokens" not in captured[0]
+        saved = _apply_state_updates(captured)
+        assert "_context_tokens" not in saved
+        assert len(saved["messages"]) == 1
+        assert isinstance(saved["messages"][0], HumanMessage)
 
     async def test_includes_context_tokens_for_output_only_turn(self) -> None:
         """Output-only AI turns (no input usage) still persist a count."""
@@ -688,8 +963,8 @@ class TestInterruptCleanupTokenPersist:
         assert len(captured) == 1
         assert captured[0]["_context_tokens"] == 1322
 
-    async def test_partial_ai_message_write_does_not_carry_tokens(self) -> None:
-        """Only the cancellation write carries `_context_tokens`."""
+    async def test_partial_ai_message_and_tokens_share_one_update(self) -> None:
+        """Interrupted output, notice, and token count are saved atomically."""
         captured: list[dict[str, Any]] = []
 
         async def _capture(_config: object, values: dict[str, Any]) -> None:  # noqa: RUF029
@@ -718,11 +993,23 @@ class TestInterruptCleanupTokenPersist:
             start_time=0.0,
         )
 
-        assert len(captured) == 2
-        # First write is the interrupted AI message; should not be polluted.
-        assert "_context_tokens" not in captured[0]
-        # Second write is the cancellation HumanMessage; carries the token count.
-        assert captured[1]["_context_tokens"] == 7777
+        assert len(captured) == 1
+        saved = _apply_state_updates(captured)
+        assert saved["_context_tokens"] == 7777
+        assert len(saved["messages"]) == 2
+        assert isinstance(saved["messages"][0], AIMessage)
+        assert saved["messages"][0].tool_calls == [
+            {
+                "name": "read_file",
+                "args": {"path": "notes.txt"},
+                "id": "call-1",
+                "type": "tool_call",
+            }
+        ]
+        assert isinstance(saved["messages"][1], HumanMessage)
+        assert saved["messages"][1].content == (
+            "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+        )
 
 
 class TestBuildStreamConfig:
@@ -2074,6 +2361,53 @@ class TestExecuteTaskTextualUsageStats:
 class TestSessionCostEvents:
     """The graph's absolute cost total drives the client display."""
 
+    async def test_versioned_event_forwards_optional_breakdown(self) -> None:
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(return_value=True),
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        updates: list[tuple[float, Mapping[str, Any] | None]] = []
+
+        def on_cost(
+            total: float,
+            /,
+            *,
+            thread_id: str = "",
+            pricing_ok: bool | None = None,
+            breakdown: Mapping[str, Any] | None = None,
+        ) -> None:
+            assert thread_id == "thread-1"
+            assert pricing_ok is True
+            updates.append((total, breakdown))
+
+        adapter._on_session_cost = on_cost
+        detail = {"version": 1, "input_tokens": 12}
+        chunks = [
+            (
+                (),
+                "custom",
+                {
+                    "type": "session_cost",
+                    "version": 2,
+                    "total": 0.00001,
+                    "thread_id": "thread-1",
+                    "pricing_ok": True,
+                    "breakdown": detail,
+                },
+            )
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+
+        assert updates == [(0.00001, detail)]
+
     async def test_nested_usage_updates_provisional_cost(self) -> None:
         async def mount_message(_: object) -> bool:
             await asyncio.sleep(0)
@@ -2086,7 +2420,17 @@ class TestSessionCostEvents:
             request_approval=_mock_approval,
         )
         adapter._on_usage_update = lambda: None
-        adapter._on_provisional_cost = updates.append
+
+        def _record_provisional(
+            cost_usd: float,
+            /,
+            *,
+            request_id: str | None = None,  # noqa: ARG001  # Protocol conformance.
+            is_correction: bool = False,  # noqa: ARG001  # Protocol conformance.
+        ) -> None:
+            updates.append(cost_usd)
+
+        adapter._on_provisional_cost = _record_provisional
         chunks = [
             (
                 ("tools:task",),
@@ -2123,15 +2467,8 @@ class TestSessionCostEvents:
         assert updates[0] > 0
         assert turn_stats.per_kind["subagent"].request_count == 1
 
-    async def test_usage_already_counted_from_messages_is_not_added_twice(
-        self,
-    ) -> None:
-        """A nested request the message stream recorded stays a single charge.
-
-        The graph streams provisional usage for every nested call, including the
-        ones whose messages do reach this client. Both paths share one ledger, so
-        the second arrival must move neither the stats nor the displayed cost.
-        """
+    async def test_mixed_id_usage_counts_once(self) -> None:
+        """Mixed provider and fallback IDs still identify one nested request."""
         from langchain_core.messages import AIMessageChunk
 
         async def mount_message(_: object) -> bool:
@@ -2144,7 +2481,17 @@ class TestSessionCostEvents:
             update_status=_noop_status,
             request_approval=_mock_approval,
         )
-        adapter._on_provisional_cost = updates.append
+
+        def _record_provisional(
+            cost_usd: float,
+            /,
+            *,
+            request_id: str | None = None,  # noqa: ARG001  # Protocol conformance.
+            is_correction: bool = False,  # noqa: ARG001  # Protocol conformance.
+        ) -> None:
+            updates.append(cost_usd)
+
+        adapter._on_provisional_cost = _record_provisional
         usage = {
             "input_tokens": 1_000,
             "output_tokens": 100,
@@ -2155,7 +2502,11 @@ class TestSessionCostEvents:
                 ("tools:task",),
                 "messages",
                 (
-                    AIMessageChunk(content="", id="child-1", usage_metadata=usage),  # ty: ignore[invalid-argument-type]
+                    AIMessageChunk(
+                        content="",
+                        id="lc_run--00000000-0000-0000-0000-000000000123",
+                        usage_metadata=usage,
+                    ),  # ty: ignore[invalid-argument-type]
                     {},
                 ),
             ),
@@ -2165,7 +2516,8 @@ class TestSessionCostEvents:
                 {
                     "type": "model_usage",
                     "version": 1,
-                    "request_id": "child-1",
+                    "request_id": "resp_child",
+                    "invocation_id": "00000000-0000-0000-0000-000000000123",
                     "usage_metadata": usage,
                     "model_name": "gpt-5.5",
                     "provider": "openai",
@@ -2195,6 +2547,101 @@ class TestSessionCostEvents:
         assert updates == [pytest.approx(0.42)]
         assert turn_stats.per_kind["subagent"].request_count == 1
         assert turn_stats.total_cost_usd == pytest.approx(0.42)
+
+    async def test_a_completion_after_partial_chunks_reports_a_negative_delta(
+        self,
+    ) -> None:
+        """A nested usage event correcting a chunk-built request flows on.
+
+        The provisional callback receives a signed, request-keyed delta.
+        """
+        from langchain_core.messages import AIMessageChunk
+
+        async def mount_message(_: object) -> bool:
+            await asyncio.sleep(0)
+            return True
+
+        updates: list[tuple[float, str | None, bool]] = []
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        adapter._on_usage_update = lambda: None
+        adapter._on_provisional_cost = (
+            lambda cost_usd, /, *, request_id, is_correction: updates.append(
+                (cost_usd, request_id, is_correction)
+            )
+        )
+        partial = {
+            "input_tokens": 1_000,
+            "output_tokens": 100,
+            "total_tokens": 1_100,
+        }
+        corrected = {
+            "input_tokens": 100,
+            "output_tokens": 5,
+            "total_tokens": 105,
+        }
+        chunks = [
+            (
+                ("tools:task",),
+                "messages",
+                (
+                    AIMessageChunk(  # ty: ignore[invalid-argument-type]
+                        content="",
+                        id="child-1",
+                        usage_metadata=partial,
+                        response_metadata={"model_provider": "openai"},
+                    ),
+                    {},
+                ),
+            ),
+            (
+                ("tools:task",),
+                "custom",
+                {
+                    "type": "model_usage",
+                    "version": 1,
+                    "request_id": "child-1",
+                    "usage_metadata": corrected,
+                    "model_name": "real-model",
+                    "provider": "openai",
+                    "thread_id": "thread-1",
+                    "scope": "tools:task",
+                },
+            ),
+            ((), "messages", (_text_message("Done."), {})),
+        ]
+        turn_stats = SessionStats()
+
+        def price(_usage: object, model: str, _provider: str = "") -> float | None:
+            return 0.5 if model == "gpt-5.5" else 0.05
+
+        with (
+            patch("deepagents_code.config.runtime_state") as mock_runtime_state,
+            patch("deepagents_code.cost_tracking.estimate_cost", price),
+        ):
+            mock_runtime_state.model_name = "gpt-5.5"
+            mock_runtime_state.model_provider = "openai"
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+                turn_stats=turn_stats,
+            )
+
+        # The chunk is new spend; the completion only revises it, so the app
+        # can tell a stale correction from real tokens.
+        assert updates == [
+            (pytest.approx(0.5), "child-1", False),
+            (pytest.approx(-0.45), "child-1", True),
+        ]
+        assert turn_stats.request_count == 1
+        assert turn_stats.total_cost_usd == pytest.approx(0.05)
+        assert turn_stats.input_tokens == 100
 
 
 class TestExecuteTaskTextualAutoModeClassifier:
@@ -5502,6 +5949,45 @@ class TestDictIterationSafety:
         assert len(result.tool_calls) == 4
         names = {tc["name"] for tc in result.tool_calls}
         assert names == {"tool_0", "tool_1", "tool_2", "tool_3"}
+
+    def test_current_turn_tool_ids_stop_at_user_boundary(self) -> None:
+        """Repeated IDs from an earlier turn do not suppress new partial calls."""
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "reused", "name": "execute", "args": {}}],
+                    ),
+                    HumanMessage(content="next turn"),
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"id": "current", "name": "execute", "args": {}}],
+                    ),
+                ]
+            }
+        )
+
+        assert _tool_call_ids_from_current_turn(state) == {"current"}
+
+    def test_serialized_checkpoint_tool_ids_are_supported(self) -> None:
+        """Remote state snapshots remain serialized at this boundary."""
+        state = SimpleNamespace(
+            values={
+                "messages": [
+                    {"type": "human", "content": "run it"},
+                    {
+                        "type": "ai",
+                        "content": "",
+                        "tool_calls": [{"id": "call-1", "name": "execute", "args": {}}],
+                    },
+                ]
+            }
+        )
+
+        assert _tool_call_ids_from_current_turn(state) == {"call-1"}
 
     def test_build_interrupted_ai_message_empty(self) -> None:
         """Returns None when there is no text and no tool calls."""

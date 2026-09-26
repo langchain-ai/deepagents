@@ -1,5 +1,5 @@
 # Files
 
-- [Workflow: Build a Deep Agent](build-a-deep-agent.md)
-- [Workflow: Run & Extend a dcode Session](run-dcode-session.md) - Run dcode as an interactive TUI, a bounded headless task, or an ACP server; manage persisted threads and approvals; and safely configure hooks, MCP, skills, extensions, and sandboxes.
-- [Workflow: Evaluate & Benchmark Agents](run-evals.md) - How to run the Deep Agents eval suite and Harbor/unified benchmarks — the deepagents-evals CLI, Makefile parity, model groups, trial aggregation, exit codes, and the cross-model scorecard.
+- [Build and Customize a Deep Agent](build-a-deep-agent.md) - Maintainer workflow for constructing a Deep Agents LangGraph application, selecting its model and execution boundary, extending its delegation and middleware behavior, and testing the resulting tool loop.
+- [Run a Deep Agents Code Session](run-dcode-session.md) - Operate dcode in interactive, headless, or ACP mode, following configuration and workspace resolution through tool approval, MCP setup, session persistence, and diagnostics.
+- [Run and Interpret Evals](run-evals.md) - Operate the Deep Agents real-model eval suite and interpret its trial reports, exit codes, Harbor sandbox results, and unified cross-model comparisons.

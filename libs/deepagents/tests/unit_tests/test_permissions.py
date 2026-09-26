@@ -119,6 +119,12 @@ async def _ainvoke_with_permissions(tool, args, rules, tool_call_id="test", back
     return str(result)
 
 
+_PATHLESS_GLOB_RULES = [
+    FilesystemPermission(operations=["read"], paths=["/workspace", "/workspace/**"], mode="allow"),
+    FilesystemPermission(operations=["read"], paths=["/", "/*", "/**"], mode="deny"),
+]
+
+
 class TestRecursiveDeletePermissions:
     """All-or-nothing write-permission enforcement for recursive delete.
 
@@ -1292,6 +1298,34 @@ class TestGlobToolPermissions:
         result = _invoke_with_permissions(glob_tool, {"pattern": "*.txt", "path": "/workspace"}, rules)
         assert "permission denied" not in result
 
+    def test_glob_pathless_denial_points_at_the_path_argument(self):
+        """A pathless glob is authorized on `/`, so the denial must name the remedy."""
+        backend = _make_backend({"/workspace/a.txt": "x"})
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_tool = next(t for t in middleware.tools if t.name == "glob")
+        result = _invoke_with_permissions(glob_tool, {"pattern": "/workspace/*.txt"}, _PATHLESS_GLOB_RULES)
+        assert "permission denied for read on /" in result
+        assert filesystem_module.GLOB_PATHLESS_DENIED_HINT.strip() in result
+
+    def test_glob_denial_with_explicit_path_omits_pathless_hint(self):
+        """Passing `path` is not the remedy when that path is itself denied."""
+        backend = _make_backend({"/secrets/key.txt": "top secret"})
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_tool = next(t for t in middleware.tools if t.name == "glob")
+        rules = [FilesystemPermission(operations=["read"], paths=["/secrets/**", "/secrets"], mode="deny")]
+        result = _invoke_with_permissions(glob_tool, {"pattern": "*.txt", "path": "/secrets"}, rules)
+        assert "permission denied for read on /secrets" in result
+        assert filesystem_module.GLOB_PATHLESS_DENIED_HINT.strip() not in result
+
+    def test_glob_remedy_named_in_pathless_denial_succeeds(self):
+        """The retry the hint asks for must actually be allowed."""
+        backend = _make_backend({"/workspace/a.txt": "x"})
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_tool = next(t for t in middleware.tools if t.name == "glob")
+        result = _invoke_with_permissions(glob_tool, {"pattern": "*.txt", "path": "/workspace"}, _PATHLESS_GLOB_RULES)
+        assert "permission denied" not in result
+        assert "/workspace/a.txt" in result
+
     def test_glob_filters_denied_results(self):
         backend = _make_backend(
             {
@@ -1323,6 +1357,14 @@ class TestGlobToolPermissions:
         result = await _ainvoke_with_permissions(glob_tool, {"pattern": "*.txt", "path": "/secrets"}, rules)
         assert "permission denied" in result
         assert "read" in result
+
+    async def test_glob_pathless_denial_points_at_the_path_argument_async(self):
+        backend = _make_backend({"/workspace/a.txt": "x"})
+        middleware = FilesystemMiddleware(backend=backend)
+        glob_tool = next(t for t in middleware.tools if t.name == "glob")
+        result = await _ainvoke_with_permissions(glob_tool, {"pattern": "/workspace/*.txt"}, _PATHLESS_GLOB_RULES)
+        assert "permission denied for read on /" in result
+        assert filesystem_module.GLOB_PATHLESS_DENIED_HINT.strip() in result
 
     async def test_glob_filters_denied_results_async(self):
         backend = _make_backend(

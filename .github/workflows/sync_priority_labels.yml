@@ -1,4 +1,4 @@
-# Sync priority labels (p0–p3) from linked issues to PRs.
+# Sync priority labels from linked issues to PRs.
 #
 # Triggers:
 # 1. PR opened/edited — parse issue links, copy priority label from issue(s)
@@ -6,7 +6,12 @@
 # 3. Manual dispatch — backfill open PRs (up to max_items)
 #
 # Priority labels are mutually exclusive on a PR. When a PR links to multiple
-# issues with different priorities, the highest wins (p0 > p1 > p2 > p3).
+# issues with different priorities, the highest wins
+# (priority:urgent > priority:high > priority:backlog).
+#
+# Only urgent and high propagate. Backlog is the default on issues, but leaves
+# linked PRs without a priority label. Retired `p0`-`p4` labels are stripped
+# from PRs rather than mapped to a new priority. See .github/LABELS.md.
 
 name: Sync Priority Labels
 
@@ -61,7 +66,15 @@ jobs:
             const prNumber = context.payload.pull_request.number;
             const body = context.payload.pull_request.body || '';
 
-            const PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3'];
+            const PRIORITY_LABELS = ['priority:urgent', 'priority:high', 'priority:backlog'];
+            // `priority:backlog` is every issue's default, so copying it onto PRs
+            // would label nearly every PR with no signal gained. Only an
+            // explicit escalation propagates; a PR carrying backlog from an
+            // earlier run is stripped like a stale label.
+            const PROPAGATED_PRIORITY_LABELS = ['priority:urgent', 'priority:high'];
+            // Retired names are stripped from PRs; remove once no open item has one.
+            const STALE_PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3', 'p4'];
+            const REMOVABLE_PRIORITY_LABELS = [...PRIORITY_LABELS, ...STALE_PRIORITY_LABELS];
             const LINK_RE = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*#(\d+)/gi;
 
             // ── Helpers ──
@@ -119,7 +132,10 @@ jobs:
                 if (e.status !== 404) throw e;
                 try {
                   await github.rest.issues.createLabel({
-                    owner, repo, name, color: 'b76e79',
+                    // Inline the priority prefix color from pr-labeler-config.json
+                    // because this workflow has no repository checkout.
+                    // pr-labeler.test.js checks membership in the configured palette.
+                    owner, repo, name, color: 'eba58b',
                   });
                 } catch (createErr) {
                   if (createErr.status !== 422) throw createErr;
@@ -131,7 +147,7 @@ jobs:
               const prLabels = await getPrLabelNames(prNum);
 
               // Remove stale priority labels
-              for (const p of PRIORITY_LABELS) {
+              for (const p of REMOVABLE_PRIORITY_LABELS) {
                 if (prLabels.includes(p) && p !== targetLabel) {
                   await removeLabel(prNum, p);
                 }
@@ -161,7 +177,8 @@ jobs:
 
             const labelSets = await Promise.all(issueNumbers.map(getIssueLabels));
             const best = highestPriority(labelSets);
-            const targetLabel = best !== null ? PRIORITY_LABELS[best] : null;
+            const winner = best !== null ? PRIORITY_LABELS[best] : null;
+            const targetLabel = PROPAGATED_PRIORITY_LABELS.includes(winner) ? winner : null;
 
             if (targetLabel) {
               console.log(`Highest priority across linked issues: ${targetLabel}`);
@@ -172,10 +189,16 @@ jobs:
             await syncPrLabels(prNumber, targetLabel);
 
   # ── Issue labeled/unlabeled: propagate to PRs that link to it ─────────
+  # The retired `p0`-`p4` names stay in the trigger during the label
+  # migration: removing one from an issue must still clear the stale copy a
+  # linked PR may carry. Drop them from the list once no open item has one.
   sync-to-prs:
     if: >-
       github.event_name == 'issues' &&
-      contains(fromJSON('["p0","p1","p2","p3"]'), github.event.label.name)
+      contains(
+        fromJSON('["priority:urgent","priority:high","priority:backlog","p0","p1","p2","p3","p4"]'),
+        github.event.label.name
+      )
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
@@ -189,7 +212,15 @@ jobs:
             const issueNumber = context.payload.issue.number;
             const action = context.payload.action;
 
-            const PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3'];
+            const PRIORITY_LABELS = ['priority:urgent', 'priority:high', 'priority:backlog'];
+            // `priority:backlog` is every issue's default, so copying it onto PRs
+            // would label nearly every PR with no signal gained. Only an
+            // explicit escalation propagates; a PR carrying backlog from an
+            // earlier run is stripped like a stale label.
+            const PROPAGATED_PRIORITY_LABELS = ['priority:urgent', 'priority:high'];
+            // Retired names are stripped from PRs; remove once no open item has one.
+            const STALE_PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3', 'p4'];
+            const REMOVABLE_PRIORITY_LABELS = [...PRIORITY_LABELS, ...STALE_PRIORITY_LABELS];
             const LINK_RE = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*#(\d+)/gi;
 
             console.log(`Issue #${issueNumber} ${action} with '${context.payload.label.name}'`);
@@ -249,7 +280,10 @@ jobs:
                 if (e.status !== 404) throw e;
                 try {
                   await github.rest.issues.createLabel({
-                    owner, repo, name, color: 'b76e79',
+                    // Inline the priority prefix color from pr-labeler-config.json
+                    // because this workflow has no repository checkout.
+                    // pr-labeler.test.js checks membership in the configured palette.
+                    owner, repo, name, color: 'eba58b',
                   });
                 } catch (createErr) {
                   if (createErr.status !== 422) throw createErr;
@@ -260,7 +294,7 @@ jobs:
             async function syncPrLabels(prNum, targetLabel) {
               const prLabels = await getPrLabelNames(prNum);
 
-              for (const p of PRIORITY_LABELS) {
+              for (const p of REMOVABLE_PRIORITY_LABELS) {
                 if (prLabels.includes(p) && p !== targetLabel) {
                   await removeLabel(prNum, p);
                 }
@@ -337,7 +371,8 @@ jobs:
                 );
 
                 const best = highestPriority(labelSets);
-                const targetLabel = best !== null ? PRIORITY_LABELS[best] : null;
+                const winner = best !== null ? PRIORITY_LABELS[best] : null;
+                const targetLabel = PROPAGATED_PRIORITY_LABELS.includes(winner) ? winner : null;
                 await syncPrLabels(pr.number, targetLabel);
               } catch (e) {
                 failures++;
@@ -369,7 +404,15 @@ jobs:
               return;
             }
 
-            const PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3'];
+            const PRIORITY_LABELS = ['priority:urgent', 'priority:high', 'priority:backlog'];
+            // `priority:backlog` is every issue's default, so copying it onto PRs
+            // would label nearly every PR with no signal gained. Only an
+            // explicit escalation propagates; a PR carrying backlog from an
+            // earlier run is stripped like a stale label.
+            const PROPAGATED_PRIORITY_LABELS = ['priority:urgent', 'priority:high'];
+            // Retired names are stripped from PRs; remove once no open item has one.
+            const STALE_PRIORITY_LABELS = ['p0', 'p1', 'p2', 'p3', 'p4'];
+            const REMOVABLE_PRIORITY_LABELS = [...PRIORITY_LABELS, ...STALE_PRIORITY_LABELS];
             const LINK_RE = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s*#(\d+)/gi;
 
             // ── Helpers ──
@@ -426,7 +469,10 @@ jobs:
                 if (e.status !== 404) throw e;
                 try {
                   await github.rest.issues.createLabel({
-                    owner, repo, name, color: 'b76e79',
+                    // Inline the priority prefix color from pr-labeler-config.json
+                    // because this workflow has no repository checkout.
+                    // pr-labeler.test.js checks membership in the configured palette.
+                    owner, repo, name, color: 'eba58b',
                   });
                 } catch (createErr) {
                   if (createErr.status !== 422) throw createErr;
@@ -454,18 +500,27 @@ jobs:
 
                 const labelSets = await Promise.all(issueNumbers.map(getIssueLabels));
                 const best = highestPriority(labelSets);
-                const targetLabel = best !== null ? PRIORITY_LABELS[best] : null;
+                const winner = best !== null ? PRIORITY_LABELS[best] : null;
+                const targetLabel = PROPAGATED_PRIORITY_LABELS.includes(winner) ? winner : null;
 
                 const prLabels = await getPrLabelNames(pr.number);
                 const currentPriority = PRIORITY_LABELS.find(p => prLabels.includes(p)) || null;
 
-                if (currentPriority === targetLabel) {
+                // Stale names are checked separately from `currentPriority`,
+                // which only knows the current taxonomy. A PR carrying `p2`
+                // and nothing else made `currentPriority` and `targetLabel`
+                // both null, so the equality below skipped the removal loop
+                // and the retired label survived — in the one job whose
+                // purpose is to strip it.
+                const stale = STALE_PRIORITY_LABELS.filter(p => prLabels.includes(p));
+
+                if (currentPriority === targetLabel && !stale.length) {
                   console.log(`PR #${pr.number}: already correct (${targetLabel || 'none'})`);
                   continue;
                 }
 
                 // Remove stale priority labels
-                for (const p of PRIORITY_LABELS) {
+                for (const p of REMOVABLE_PRIORITY_LABELS) {
                   if (prLabels.includes(p) && p !== targetLabel) {
                     await removeLabel(pr.number, p);
                   }
@@ -479,13 +534,11 @@ jobs:
                   });
                 }
 
-                if (currentPriority && targetLabel) {
-                  console.log(`PR #${pr.number}: ${currentPriority} → ${targetLabel}`);
-                } else if (currentPriority) {
-                  console.log(`PR #${pr.number}: ${currentPriority} → (removed)`);
-                } else {
-                  console.log(`PR #${pr.number}: (none) → ${targetLabel}`);
-                }
+                // `stale` is reported on its own: in the retired-label case
+                // both `currentPriority` and `targetLabel` are null, which
+                // would otherwise log the misleading `(none) → null`.
+                const from = currentPriority ?? (stale.length ? stale.join(', ') : '(none)');
+                console.log(`PR #${pr.number}: ${from} → ${targetLabel ?? '(removed)'}`);
                 updated++;
               } catch (e) {
                 failures++;

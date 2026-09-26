@@ -126,6 +126,36 @@ def _restore_os_environ() -> Generator[None, None, None]:
 
 
 @pytest.fixture(autouse=True)
+def _restore_dotenv_loader_state() -> Generator[None, None, None]:
+    """Snapshot and restore the dotenv loader's module-level maps.
+
+    `_load_dotenv` records every value it injects in two module dicts
+    (`_dotenv_loaded_values` and its `_dotenv_provenance` sibling) so a later
+    reload can strip them and `dcode config` can name the file behind an
+    `env (...)` source. Tests that call the loader leave entries behind, and the
+    hand-rolled `try/finally ... _dotenv_loaded_values.clear()` idiom several of
+    them use clears only the first map, leaking `tmp_path` paths that no longer
+    exist into later tests. Restoring both here removes the need for callers to
+    know how many maps the loader keeps.
+
+    Reads the module attributes on teardown rather than holding the dicts, so a
+    test that swaps one out with `monkeypatch.setattr` (whose teardown runs
+    first) still gets the real map restored.
+    """
+    import deepagents_code.config as config_mod
+
+    loaded = dict(config_mod._dotenv_loaded_values)
+    provenance = dict(config_mod._dotenv_provenance)
+    try:
+        yield
+    finally:
+        config_mod._dotenv_loaded_values.clear()
+        config_mod._dotenv_loaded_values.update(loaded)
+        config_mod._dotenv_provenance.clear()
+        config_mod._dotenv_provenance.update(provenance)
+
+
+@pytest.fixture(autouse=True)
 def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent LangSmith env vars loaded from .env from leaking into tests.
 
@@ -140,6 +170,9 @@ def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
     Each test that *needs* LangSmith variables should set them explicitly via
     `monkeypatch.setenv` or `patch.dict("os.environ", ...)`.
     """
+    import deepagents_code.config as config_mod
+
+    monkeypatch.setattr(config_mod, "_reconciled_tracing_values", {})
     for key in (
         "LANGSMITH_API_KEY",
         "LANGCHAIN_API_KEY",

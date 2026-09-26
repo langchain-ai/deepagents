@@ -679,8 +679,9 @@ class TestFilesystemMiddlewareAsync:
 
         negative_offset = await read_file_tool.ainvoke({"file_path": "/test.txt", "offset": -1, "limit": 100, "runtime": _runtime()})
         assert negative_offset.status == "success"
-        assert negative_offset.content.startswith("1  Line 1")
-        assert "before the start of the file" in negative_offset.content
+        assert negative_offset.content == (
+            "[Requested offset -1 is before the start of the file; read from line 1 instead.]\n@@ lines 1-3 of 3 @@\nLine 1\nLine 2\nLine 3"
+        )
 
     async def test_aread_file_with_offset(self):
         """Test async read_file tool with offset."""

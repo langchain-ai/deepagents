@@ -14,15 +14,17 @@ import os
 import re
 import sys
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, cast
 
+from fastmcp.client import Client as FastMCPClient
+from fastmcp.mcp_config import RemoteMCPServer, StdioMCPServer
 from httpx import HTTPError
+from httpx2 import HTTPError as MCPHTTPError
+from langchain_core._api import suppress_langchain_beta_warning
 from langchain_core.tools import InjectedToolCallId, tool
-from langchain_mcp_adapters.client import MultiServerMCPClient
 from mcp.client.auth import OAuthFlowError
-from mcp.shared.exceptions import McpError
+from mcp.shared.exceptions import MCPError
 
 from deepagents_talon.authorization import (
     AuthorizationAttempt,
@@ -43,16 +45,24 @@ from deepagents_talon.mcp_auth import (
     format_login_error,
     prepare_oauth_login,
 )
-from deepagents_talon.mcp_config import MCPConfigStore
+from deepagents_talon.mcp_config import (
+    MCPConfigStore,
+    agent_workspace_root,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 
+    import httpx2
+    from fastmcp.client.transports import ClientTransport
+    from langchain.mcp.elicitation import MCPElicitationResume
     from langchain_core.tools import BaseTool
-    from langchain_mcp_adapters.client import Connection
-    from langchain_mcp_adapters.interceptors import MCPToolCallRequest, MCPToolCallResult
 
     from deepagents_talon.config import TalonConfig
+
+with suppress_langchain_beta_warning():
+    from langchain.mcp import MCPAdapter
+    from langchain.mcp.elicitation import ELICITATION_INTERRUPT_TYPE
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +94,31 @@ class _MCPLoginRequiredError(MCPConfigError):
     """An MCP server requires OAuth login before loading tools."""
 
 
+def _exception_leaves(exc: BaseException) -> Iterator[BaseException]:
+    """Yield `exc`, or every leaf of it when it is a possibly nested group.
+
+    Anyio task groups wrap even a single exception, so any failure raised inside
+    an MCP `ClientSession` reaches callers as a group and must be matched on its
+    leaves rather than on the group type.
+
+    Args:
+        exc: Exception to flatten.
+
+    Yields:
+        Each non-group exception, in the order the group holds them.
+    """
+    if isinstance(exc, BaseExceptionGroup):
+        for nested in exc.exceptions:
+            yield from _exception_leaves(nested)
+    else:
+        yield exc
+
+
 def _authentication_required(exc: BaseException) -> bool:
-    if isinstance(exc, (_MCPLoginRequiredError, MCPAuthorizationError)):
-        return True
-    if isinstance(exc, ExceptionGroup):
-        return any(_authentication_required(nested) for nested in exc.exceptions)
-    return False
+    return any(
+        isinstance(leaf, (_MCPLoginRequiredError, MCPAuthorizationError))
+        for leaf in _exception_leaves(exc)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +193,11 @@ class MCPToolProvider:
         self._refresh_revision = 0
         self._applied_revision = 0
         self._lock = asyncio.Lock()
-        self._config_store = MCPConfigStore(mcp_config_path(config), self.request_refresh)
+        self._config_store = MCPConfigStore(
+            mcp_config_path(config),
+            self.request_refresh,
+            agent_root=agent_workspace_root(config.env),
+        )
 
     async def load(self) -> MCPTools:
         """Load tools and include the narrow proactive authorization capability."""
@@ -219,12 +252,13 @@ class MCPToolProvider:
             "reload_mcp_configuration",
             description=(
                 "Reload Talon's configured MCP servers before the next agent turn. "
-                "Use after the operator changes the MCP configuration."
+                "Use after the operator changes the MCP configuration. Verify activation "
+                "with get_agent_tools; running tasks retain their original capabilities."
             ),
         )
         def reload_mcp_configuration() -> dict[str, str]:
             self.request_refresh()
-            return {"status": "scheduled", "available": "next_turn"}
+            return {"status": "scheduled", "available": "after_successful_reload"}
 
         return reload_mcp_configuration
 
@@ -312,8 +346,10 @@ class MCPToolProvider:
                 self._refresh_revision += 1
             raise
         except (
+            ExceptionGroup,
             HTTPError,
-            McpError,
+            MCPHTTPError,
+            MCPError,
             OAuthFlowError,
             OSError,
             RuntimeError,
@@ -362,38 +398,23 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
     infos: list[MCPServerInfo] = []
     for name, server in servers.items():
         transport = _transport_label(server)
-        input_schemas: dict[str, dict[str, object]] = {}
         try:
             connection, transport = await _connection(name, server)
-            client = MultiServerMCPClient(
-                {name: connection},
-                tool_interceptors=[
-                    _authorization_interceptor,
-                    partial(
-                        _argument_normalization_interceptor,
-                        input_schemas=input_schemas,
-                    ),
-                ],
-                tool_name_prefix=True,
-                handle_tool_errors=True,
-            )
-            loaded = await asyncio.wait_for(
-                client.get_tools(server_name=name),
-                timeout=_MCP_LOAD_TIMEOUT_SECONDS,
-            )
-            loaded = _filter_tools(name, server, loaded)
-            prefix = f"{name}_"
-            input_schemas.update(
-                {
-                    tool.name.removeprefix(prefix): tool.args_schema
-                    for tool in loaded
-                    if isinstance(tool.args_schema, dict)
+            adapter = MCPAdapter(connection)
+            async with asyncio.timeout(_MCP_LOAD_TIMEOUT_SECONDS):
+                loaded = await adapter.list_tools()
+            for tool in loaded:
+                tool.name = f"{name}_{tool.name}"
+                tool.metadata = {
+                    **(tool.metadata or {}),
+                    "_deepagents_talon_mcp": True,
                 }
-            )
+            loaded = list(_filter_tools(name, server, loaded))
         except (
             ExceptionGroup,
             HTTPError,
-            McpError,
+            MCPHTTPError,
+            MCPError,
             OAuthFlowError,
             OSError,
             RuntimeError,
@@ -405,7 +426,7 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
                 f"MCP server {name!r} needs authentication"
                 if authentication_required
                 else format_login_error(exc)
-                if isinstance(exc, ExceptionGroup)
+                if isinstance(exc, (ExceptionGroup, HTTPError, MCPHTTPError))
                 else str(exc)
             )
             logger.warning("MCP server %s failed to load: %s", name, error)
@@ -470,13 +491,31 @@ async def login_mcp_server(
         if transport not in {"sse", "streamable_http"}:
             msg = f"MCP server {server_name!r} does not use a remote transport"
             raise MCPConfigError(msg)
-        client = MultiServerMCPClient({server_name: connection})
-        await _open_mcp_session(client, server_name)
+        await _open_mcp_session(FastMCPClient(connection))
     except DeviceAuthorizationCompletedError:
         pass
+    except ExceptionGroup as group:
+        # A completed device flow raises from inside the session's task group,
+        # which wraps it, and can aggregate with a sibling failure from tearing
+        # down the abandoned code flow. The marker is raised only after the
+        # credentials are persisted, so its presence still means the login
+        # succeeded; report the rest rather than discarding or misreading it.
+        leaves = tuple(_exception_leaves(group))
+        remainder = tuple(
+            leaf for leaf in leaves if not isinstance(leaf, DeviceAuthorizationCompletedError)
+        )
+        if len(remainder) == len(leaves):
+            print(f"MCP login failed: {format_login_error(group)}", file=sys.stderr)  # noqa: T201
+            return 1
+        for leaf in remainder:
+            logger.warning(
+                "MCP login session failed after credentials were saved: %s",
+                format_login_error(leaf),
+            )
     except (
         HTTPError,
-        McpError,
+        MCPHTTPError,
+        MCPError,
         OAuthFlowError,
         OSError,
         RuntimeError,
@@ -490,8 +529,26 @@ async def login_mcp_server(
     return 0
 
 
-async def _open_mcp_session(client: MultiServerMCPClient, server_name: str) -> None:
-    async with client.session(server_name):
+def _cancel_mcp_elicitation(value: object) -> MCPElicitationResume | None:
+    """Cancel MCP input requests until Talon provides an elicitation UI."""
+    if not isinstance(value, dict) or value.get("type") != ELICITATION_INTERRUPT_TYPE:
+        return None
+    requests = value.get("requests")
+    if not isinstance(requests, list) or not requests:
+        msg = "MCP elicitation interrupt has no requests"
+        raise ValueError(msg)
+    response: MCPElicitationResume = {"responses": {}}
+    for request in requests:
+        key = request.get("key") if isinstance(request, dict) else None
+        if not isinstance(key, str) or not key or key in response["responses"]:
+            msg = "MCP elicitation interrupt has invalid request keys"
+            raise ValueError(msg)
+        response["responses"][key] = {"action": "cancel"}
+    return response
+
+
+async def _open_mcp_session(client: FastMCPClient[ClientTransport]) -> None:
+    async with client:
         pass
 
 
@@ -509,31 +566,8 @@ async def _open_authenticated_session(
     )
     if transport not in {"sse", "streamable_http"}:
         return False
-    client = MultiServerMCPClient({server_name: connection})
-    await _open_mcp_session(client, server_name)
+    await _open_mcp_session(FastMCPClient(connection))
     return True
-
-
-async def _authorization_interceptor(
-    request: MCPToolCallRequest,
-    handler: Callable[[MCPToolCallRequest], Awaitable[MCPToolCallResult]],
-) -> MCPToolCallResult:
-    """Bind OAuth prompts to the exact LangGraph MCP tool invocation."""
-    invocation_id = getattr(request.runtime, "tool_call_id", None)
-    normalized_id = invocation_id if isinstance(invocation_id, str) and invocation_id else None
-    return await _run_authorized(normalized_id, lambda: handler(request))
-
-
-async def _argument_normalization_interceptor(
-    request: MCPToolCallRequest,
-    handler: Callable[[MCPToolCallRequest], Awaitable[MCPToolCallResult]],
-    *,
-    input_schemas: Mapping[str, dict[str, object]],
-) -> MCPToolCallResult:
-    schema = input_schemas.get(request.name)
-    arguments = _normalize_mcp_arguments(request.args, schema)
-    normalized = request if arguments == request.args else request.override(args=arguments)
-    return await handler(normalized)
 
 
 def _normalize_mcp_arguments(
@@ -621,9 +655,10 @@ async def _finish_authorization(
 
 
 def _authorization_failure_reason(exc: Exception) -> AuthorizationFailureReason:
-    if isinstance(exc, TimeoutError):
+    leaves = tuple(_exception_leaves(exc))
+    if any(isinstance(leaf, TimeoutError) for leaf in leaves):
         return "expired"
-    if isinstance(exc, MCPAuthorizationError):
+    if any(isinstance(leaf, MCPAuthorizationError) for leaf in leaves):
         return "invalid_callback"
     return "error"
 
@@ -717,7 +752,7 @@ async def _connection(
     interactive: bool = False,
     channel_authorization: bool = False,
     force_authorization: bool = False,
-) -> tuple[Connection, str]:
+) -> tuple[ClientTransport, str]:
     raw_transport = server.get("transport", server.get("type"))
     if raw_transport is None:
         raw_transport = "stdio" if "command" in server else "http"
@@ -752,7 +787,7 @@ def _transport_label(server: Mapping[str, object]) -> str:
     return raw.replace("-", "_") if isinstance(raw, str) else "unknown"
 
 
-def _stdio_connection(name: str, server: Mapping[str, object]) -> Connection:
+def _stdio_connection(name: str, server: Mapping[str, object]) -> ClientTransport:
     command = server.get("command")
     args = server.get("args", [])
     values = server.get("env")
@@ -764,14 +799,10 @@ def _stdio_connection(name: str, server: Mapping[str, object]) -> Connection:
         raise MCPConfigError(msg)
     if values is not None:
         _validate_stdio_env(name, values)
-    connection: dict[str, object] = {
-        "transport": "stdio",
-        "command": command,
-        "args": args,
-    }
+    config: dict[str, object] = {"command": command, "args": args, "keep_alive": False}
     if values is not None:
-        connection["env"] = values
-    return cast("Connection", connection)
+        config["env"] = values
+    return StdioMCPServer.model_validate(config).to_transport()
 
 
 def _validate_stdio_env(name: str, values: object) -> None:
@@ -794,7 +825,7 @@ async def _remote_connection(  # noqa: PLR0913  # keeps distinct OAuth modes exp
     interactive: bool = False,
     channel_authorization: bool = False,
     force_authorization: bool = False,
-) -> Connection:
+) -> ClientTransport:
     url = server.get("url")
     headers = server.get("headers")
     if not isinstance(url, str) or not url:
@@ -808,9 +839,7 @@ async def _remote_connection(  # noqa: PLR0913  # keeps distinct OAuth modes exp
     ):
         msg = f"MCP remote server {name!r} headers must contain strings"
         raise MCPConfigError(msg)
-    connection: dict[str, object] = {"transport": transport, "url": url, "timeout": 30.0}
-    if headers is not None:
-        connection["headers"] = headers
+    auth: httpx2.Auth | None = None
     if server.get("auth") == "oauth" or interactive:
         if isinstance(headers, dict) and any(
             isinstance(key, str) and key.lower() == "authorization" for key in headers
@@ -826,7 +855,7 @@ async def _remote_connection(  # noqa: PLR0913  # keeps distinct OAuth modes exp
             msg = f"MCP server {name!r} needs authentication; run deepagents-talon mcp login {name}"
             raise _MCPLoginRequiredError(msg)
         await prepare_oauth_login(server_url=url, storage=storage)
-        connection["auth"] = build_oauth_provider(
+        auth = build_oauth_provider(
             server_name=name,
             server_url=url,
             storage=storage,
@@ -835,7 +864,15 @@ async def _remote_connection(  # noqa: PLR0913  # keeps distinct OAuth modes exp
     elif server.get("auth") is not None:
         msg = f"MCP server {name!r} uses unsupported auth {server['auth']!r}"
         raise MCPConfigError(msg)
-    return cast("Connection", connection)
+    remote = RemoteMCPServer.model_validate(
+        {
+            "url": url,
+            "transport": "sse" if transport == "sse" else "http",
+            "headers": headers or {},
+        }
+    )
+    remote.auth = auth
+    return remote.to_transport()
 
 
 def _filter_tools(

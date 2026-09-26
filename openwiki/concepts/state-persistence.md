@@ -1,181 +1,130 @@
 ---
-type: state persistence model
-title: State Persistence
-description: Explains checkpoint ownership, delta-reduced graph state, and the state-transfer boundary between isolated and forked subagents. Covers private middleware channels and dcode's local session persistence.
-tags: [state, persistence, checkpoints, reducer, middleware, subagents, sessions, langgraph]
+type: persistence boundaries
+title: State and Persistence
+description: Separates LangGraph thread checkpoints from backend file storage, dcode local session data, and Talon's durable conversation archive. Explains ownership, scope, recovery, and lifecycle boundaries.
+tags: [state, persistence, checkpoints, sessions, sqlite, backends, history]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-03T08:05:39.427Z
+    at: 2026-09-25T08:06:00.203Z
 sources:
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
-  - id: openwiki-source-620b4c9d0fcbd4c7e6aa0120
-    resource: repo://libs/code/deepagents_code/resume_state.py
   - id: openwiki-source-0f8622164498a685abc913d5
     resource: repo://libs/code/deepagents_code/sessions.py
+  - id: openwiki-source-0fb3334c2f2fc8575c82dca6
+    resource: repo://libs/code/deepagents_code/state_migration.py
   - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
     resource: repo://libs/code/tests/unit_tests/test_sessions.py
   - id: openwiki-source-822ae989625ba99d4c7cc08b
     resource: repo://libs/deepagents/deepagents/_messages_reducer.py
   - id: openwiki-source-07f9eac13e71bcbdb4e6994b
     resource: repo://libs/deepagents/deepagents/backends/state.py
+  - id: openwiki-source-21e2b0401425a427d8cea9c1
+    resource: repo://libs/deepagents/deepagents/backends/store.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-421bc4b065189ae1165ca326
-    resource: repo://libs/deepagents/deepagents/middleware/_state.py
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-  - id: openwiki-source-114a1c7a58992fa867a94ef0
-    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-454da083c2cc29febd156c7e
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
-  - id: openwiki-source-dc64f28a66d10932b86fcd61
-    resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
-  - id: openwiki-source-ca8183c87e6002c442ee2d62
-    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-03T08:05:39.427Z" }
+  - id: openwiki-source-470e982344d3fb19aa4cd0a7
+    resource: repo://libs/talon/deepagents_talon/history_backends.py
+  - id: openwiki-source-811fef57cecdbee2ba06a7b5
+    resource: repo://libs/talon/deepagents_talon/store_archive.py
+  - id: openwiki-source-fcdff263e59dd54dfd953e9b
+    resource: repo://libs/talon/deepagents_talon/store_records.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 ---
 
-# State Persistence
+# State and Persistence
 
-Deep Agents separates three concerns that are easy to conflate:
-
-1. **Graph state and checkpoints** are owned by LangGraph. A checkpointer preserves a thread's channel values, interrupts, and resumability.
-2. **Message reduction** controls the checkpoint representation of one channel; it is not a separate durability policy.
-3. **Subagent transfer** projects state into an invocation and projects an allowed result back. It does not make the child and parent share mutable state.
-
-The important refinement is that a task subagent can leave a transcript in the *parent checkpointer* under a `tools:` checkpoint namespace, while its transcript is still isolated from the parent's root `messages` state and normal output projection. Checkpoint storage and state visibility are therefore different boundaries.
-
-For context compaction, see [Context management](/openwiki/concepts/context-management.md). For backend durability choices, see [Backends](/openwiki/concepts/backends.md); for subagent configuration, see [Subagents and skills](/openwiki/concepts/subagents-skills.md).
-
-## Checkpoint and backend ownership
-
-`create_deep_agent` forwards `checkpointer` and `store` to LangChain's `create_agent`. The checkpointer is optional and preserves graph state between runs. A `store` is separately required for a backend route that uses a store.
-
-| Concern | Owner | Scope |
-| --- | --- | --- |
-| Conversation state, interrupts, and resume | LangGraph checkpointer | A graph thread and its checkpoint namespaces |
-| Files and memory data | Deep Agents backend | Determined by the selected route |
-| Local session catalog | dcode `sessions.py` | Metadata and checkpoint rows in local SQLite |
-
-The default `StateBackend` reads and queues writes to the `files` channel through LangGraph's `CONFIG_KEY_READ` and `CONFIG_KEY_SEND`. Its files are checkpointed within a thread, do not cross threads, and the backend rejects use outside graph execution. Store- and filesystem-backed routes have their own durability boundaries; a checkpointer alone does not make those resources durable.
-
-```mermaid
-flowchart LR
-    Input["Agent input"] --> Root["Root graph state"]
-    Root --> CP["Checkpointer by thread"]
-    CP --> Resume["Resume and interrupts"]
-    Root --> Files["StateBackend files channel"]
-    Files --> CP
-    Root --> Route["Store or filesystem route"]
-```
-
-This diagram distinguishes thread checkpointing from backend-route durability.
-
-## DeepAgentState and delta reduction
-
-`DeepAgentState` subclasses LangChain's `AgentState` and overrides `messages` with `DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)`. It is the default schema used when `create_deep_agent` receives no custom `state_schema`.
-
-`DeltaChannel` persists message deltas and only periodically writes a full snapshot, every 50 pregel steps. This changes long-thread checkpoint growth from repeated full histories to linear persisted volume while bounding replay depth. `FilesystemState.files` applies the same delta-channel and snapshot-frequency pattern.
-
-A custom schema is expected to subclass `DeepAgentState` so it retains this messages channel, but that constraint is type-only: `TypedDict` prevents an `issubclass` runtime validation. Middleware schemas are merged with the caller's base schema, which lets middleware own fields used by its hooks and tools while a custom schema supplies graph-wide application fields.
-
-### Reducer invariants
-
-`_messages_delta_reducer` receives a batch of writes for `DeltaChannel` and reconstructs `messages` as follows:
-
-- It flattens list writes and coerces raw dictionaries, strings, and tuples to typed messages.
-- It replaces or appends by message ID, appends `id=None` messages unchanged, and tombstones an identified message with `RemoveMessage`.
-- The last `RemoveMessage(REMOVE_ALL_MESSAGES)` resets prior state and discards earlier writes in the batch.
-- `state=None` is treated as an empty list, supporting replay of old threads whose earliest checkpoint did not seed `messages: []`.
-
-Message IDs are deliberately not assigned in the reducer. LangGraph's `ensure_message_ids` stamps stable IDs before checkpoint serialization, which prevents replay from manufacturing IDs different from persisted ones. Focused tests cover non-`None`, stable IDs returned by `get_state()` for object and dictionary-style inputs across sync and async resumed invocations. The local adaptation does not coerce `BaseMessageChunk`, because Deep Agents writes full `AIMessage` values to state and streams on the output-event path.
+Persistence has distinct owners and scopes. A LangGraph **checkpointer** versions graph state for a thread. A Deep Agents **backend** owns filesystem-like files and determines their scope. dcode's `sessions.db` is a local SQLite checkpoint implementation and thread-query surface. Talon additionally maintains a durable conversation archive, which is deliberately separate from checkpoint state. In-process selector caches are not durable authority.
 
 ```mermaid
 flowchart TD
-    Writes["Message writes"] --> Coerce["Flatten and coerce message values"]
-    Coerce --> Clear{"Clear-all sentinel"}
-    Clear -->|"yes"| Reset["Discard prior state and earlier writes"]
-    Clear -->|"no"| Index["Index existing messages by ID"]
-    Reset --> Index
-    Index --> Apply["Append update or tombstone"]
-    Apply --> Result["Reduced message list"]
+    Invoke["Invoke graph with thread ID"] --> Graph["Deep Agents graph"]
+    Graph --> Checkpoint["LangGraph checkpointer"]
+    Checkpoint --> ThreadState["Versioned state and messages"]
+    Graph --> StateBackend["StateBackend files channel"]
+    StateBackend --> ThreadState
+    Graph --> StoreBackend["StoreBackend namespace"]
+    StoreBackend --> BaseStore["LangGraph BaseStore"]
+    SQLite["dcode sessions.db"] --> Checkpoint
+    Talon["Talon conversation archive"] --> ArchiveStore["URI selected BaseStore"]
+    ArchiveStore --> Records["Redo journal and transcript records"]
 ```
+*Checkpoint state and `StateBackend` files are thread-scoped. `StoreBackend` and Talon's archive delegate durability to their selected stores, but serve different data contracts.*
 
-This is channel-value reconstruction; `DeltaChannel` decides whether a checkpoint contains a snapshot or writes only.
+## Checkpoints, state schema, and thread identity
 
-## Middleware privacy and subagent state transfer
+LangGraph checkpoints and backend persistence answer different questions:
 
-`private_state_field_names` finds `PrivateStateAttr` annotations across the assembled state schemas, and `create_deep_agent` assigns the resulting keys to `SubAgentMiddleware`. The task tool removes private keys on both input and result projection. This is a confidentiality boundary, not merely an output-schema preference.
+- A checkpointer preserves graph state, conversation messages, interrupts, and the data needed to resume a particular `thread_id`.
+- A backend implements filesystem-like data and determines whether it remains in state, is shared under a store namespace, or is provided by another backend route.
+- `create_deep_agent()` accepts `checkpointer`, `store`, and `cache` independently, forwards them to LangChain's `create_agent`, and selects `DeepAgentState` unless the caller supplies `state_schema`. A cache is an execution optimization, not a checkpoint or durability guarantee.
 
-Annotation resolution happens at runtime. If `get_type_hints` cannot resolve a schema because an annotation references a `TYPE_CHECKING`-only name, the schema is skipped with a warning. None of that schema's private fields are then protected, so they can cross the task boundary. Ensure names used by private annotations are imported at runtime.
+`DeepAgentState` subclasses LangChain's `AgentState` and overrides its `messages` field with `DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)`. This stores deltas between periodic snapshots, reducing long-thread checkpoint growth from O(N squared) to O(N). Its reducer coerces raw message-like inputs, deduplicates by stable message ID, applies `RemoveMessage` tombstones, and resets at `REMOVE_ALL_MESSAGES`. It intentionally does not assign IDs: LangGraph's checkpoint serialization hook assigns them before reduction, and assigning random IDs during replay would make replay inconsistent.
 
-A custom base `state_schema` is forwarded while declarative `SubAgent` specifications are compiled; a precompiled `CompiledSubAgent` and remote `AsyncSubAgent` own their schemas and do not inherit it.
+A checkpoint may therefore omit an inline full `messages` list. Code inspecting checkpoint rows must load state through LangGraph or replay stored deltas using compatible reducer semantics; a missing inline value is not an empty conversation. Custom state that needs standard message behavior should extend `DeepAgentState` rather than replace it with an unrelated schema.
 
-### Isolated is the default; `handoff` is legacy
+## Files: thread state versus shared store
 
-The current default mode is `"isolated"`. `"handoff"` remains an accepted legacy alias for the same behavior; neither mode forks the parent. For either mode, the task tool starts with permitted parent fields, removes `messages`, `todos`, `structured_response`, the fork marker, and private keys, and sets `messages` to one `HumanMessage` containing the task description.
+`StateBackend` stores its `files` map in graph state. It reads with `CONFIG_KEY_READ` and `fresh=True`, applying pending writes through the channel reducer so a write followed by a read in the same superstep sees the change. It queues partial `files` updates with `CONFIG_KEY_SEND`; the dictionary-merge channel preserves unchanged files and commits at the node boundary.
 
-On return, the result must contain `messages`. The tool filters the same excluded and private keys from state updates, then adds exactly one root `ToolMessage`: serialized `structured_response` when present, otherwise the last non-empty `AIMessage` text. Thus a parent receives an allowed state update and report, not the child's working transcript or todo list.
+That convenience is deliberately constrained: `StateBackend` requires LangGraph graph execution and is thread-scoped. With a durable checkpointer, its files survive and resume in that conversation thread; they are not a cross-thread filesystem. To seed files, pass `files` in the graph invocation rather than calling the backend outside the graph.
 
-```mermaid
-sequenceDiagram
-    participant Parent
-    participant Task as task tool
-    participant Child as isolated subagent
-    Parent->>Task: parent state and description
-    Task->>Task: filter excluded and private keys
-    Task->>Child: permitted fields and one task message
-    Child-->>Task: child result state
-    Task->>Task: filter result and select report
-    Task-->>Parent: allowed updates and one ToolMessage
-```
+`StoreBackend` instead uses a LangGraph `BaseStore`. It uses an explicitly supplied store or resolves the current graph store at call time, then maps operations through a caller-provided namespace factory. The same namespace can share files across threads, while separate namespaces isolate users or workspaces. Each namespace component must be a nonempty safe string; wildcard and glob-like syntax is rejected before lookup. A runtime-dependent namespace factory requires graph context, whereas a context-independent factory can be used with an explicitly supplied store outside a graph.
 
-This is the isolated task-transfer flow. Private keys are filtered in both directions.
+The store route preserves a filesystem contract: data are put under the namespace, and deleting a directory enumerates every page then batches deletion of the exact key and nested-key prefix. The chosen `BaseStore`—not `StoreBackend`—determines actual durability, consistency, and transaction behavior.
 
-### Fork inherits input context but not root-state visibility
+## dcode SQLite sessions
 
-`mode="fork"` is experimental and explicitly opts into inherited context. A declarative fork receives parent state except `structured_response`, summarization event, and summarization session ID; it receives a fork marker and a message list made from the effective (including applied summarization) parent conversation plus a task preamble. It mirrors parent prompt-producing middleware, appends its own system prompt rather than replacing the inherited prompt, and cannot define `skills`.
+The local dcode CLI opens a guarded `AsyncSqliteSaver` over its global `sessions.db`, runs `setup()` before constructing its agent graph, and supplies it as the graph checkpointer. The session database is consequently the durable source for local graph-thread state; a thread ID is the stable handle used to list, resume, or delete checkpoint history.
 
-A forked `CompiledSubAgent` is deliberately narrower because its runnable is opaque: it receives inherited non-private permitted state and the prepared conversation, but private keys remain excluded. The fork marker causes nested `task` calls to be refused, preventing recursive delegation. In either kind of fork, output projection remains the normal filtered return path.
+Thread listing reads checkpoint metadata rather than deserializing every state blob. It returns thread ID, agent name, update and creation times, latest checkpoint ID, Git branch, and working directory; optional agent, branch, and exact `cwd` filters apply to metadata. dcode attempts a covering index so listing avoids large checkpoint blobs. A failed index creation, including on a read-only or locked database, changes performance rather than listing correctness.
+
+The recent-thread, initial-prompt, and message-count caches are bounded process-local conveniences. Prompt and count entries are keyed by checkpoint freshness, and recent rows are copied before return. A count can briefly lag while an active superstep has new writes but no new checkpoint ID; the caches must not be treated as authority for resume or deletion.
+
+### Delta message counts
+
+A session listing counts an inline `messages` snapshot when present. Otherwise, dcode reconstructs a visible count from `writes`: it reads only root-namespace message writes for each thread, ordered by checkpoint, task, and write index, excluding subgraph writes that share the thread ID. The fold recognizes overwrite and remove-all resets and uses an exact sequential fallback for specific removals or a failed fast-path reduction. A malformed row or unreducible thread is logged and omitted rather than preventing the selector from loading.
 
 ```mermaid
 flowchart TD
-    ParentState["Parent runtime state"] --> Kind{"Fork specification"}
-    Kind -->|"declarative"| Decl["Keep private state except fork exclusions"]
-    Kind -->|"compiled"| Comp["Remove private and excluded state"]
-    Decl --> History["Apply summary and append task preamble"]
-    Comp --> History
-    History --> Child["Forked child invocation"]
-    Child --> Filter["Filter result and emit root ToolMessage"]
-    Filter --> ParentResult["Parent root state"]
+    Rows["Listed thread metadata"] --> Fresh{"Fresh count cache"}
+    Fresh -->|yes| Cached["Use cached count"]
+    Fresh -->|no| Latest["Decode latest checkpoint"]
+    Latest --> Inline{"Inline messages present"}
+    Inline -->|yes| CountInline["Count visible messages"]
+    Inline -->|no| Writes["Read root messages writes"]
+    Writes --> Replay["Replay deltas in checkpoint task index order"]
+    Replay --> CountWrites["Count visible messages"]
+    CountInline --> Save["Cache by latest checkpoint ID"]
+    CountWrites --> Save
 ```
+*The reconstruction path derives a display-time count from checkpoint data; it is not a replacement checkpoint format.*
 
-This diagram shows input inheritance by fork kind; it does not imply shared state.
+### Connection lifecycle, migration, and deletion
 
-### Checkpoint namespaces versus output projection
+dcode centralizes connection creation, including an `aiosqlite` compatibility patch and timeout. Its opening guard records the raw SQLite handle on the worker and queues an explicit close if cancellation occurs while `aiosqlite` opens it. On exit it drains the worker after close, avoiding leaked handles and workers attempting to schedule against a closed event loop. `get_checkpointer()` owns this guarded connection and drains it in `finally`; callers must keep its async context open for the graph lifetime.
 
-The `task` tool invokes a subagent directly rather than registering it as a graph node. Nevertheless, when the parent has a checkpointer, focused integration coverage shows the child transcript can be recovered by listing that checkpointer with the same thread configuration and selecting its `tools:` checkpoint namespace. It is not available through the parent's root-state projection: ordinary streaming excludes child intermediates unless `subgraphs=True`, and the root receives only the resulting `ToolMessage`.
+At startup, `migrate_legacy_state()` moves selected internal data from `~/.deepagents/` to `~/.deepagents/.state/`, including `sessions.db` and optional `-wal` and `-shm` sidecars. It is best-effort and idempotent: missing sources and existing destinations are skipped, the destination is hardened before moves, and per-entry failures are logged without blocking startup. Colliding copies are never overwritten and require operator resolution.
 
-Treat these facts separately when building observability or retention tooling: use checkpoint namespaces (or `subgraphs=True` streaming) to inspect child execution; use root state to model what the parent can continue from.
+Deleting a dcode thread deletes `checkpoints` and `writes` rows, commits them, and evicts applicable listing caches. It then separately attempts deletion of offloaded conversation history. That cleanup is best-effort: failure does not alter the checkpoint-deletion result. Retention and backup procedures should account for SQLite checkpoints and external/offloaded history separately.
 
-## dcode sessions and resume facts
+## Talon durable conversation history
 
-Local dcode obtains an `AsyncSqliteSaver` over the hardened global `sessions.db`; startup calls `setup()` before constructing CLI graphs with it. Its thread catalog derives `ThreadInfo` from checkpoint metadata, including agent name, timestamps, Git branch, working directory, latest checkpoint ID, and optional prompt/message details. `list_threads` can filter by agent, branch, and exact `cwd`.
+Talon's history archive is a separate persistence layer, not a checkpointer replacement. `open_history()` selects a store from `DEEPAGENTS_TALON_HISTORY_URI`, defaulting to the assistant's checkpoint SQLite path when unset. Built-in schemes are SQLite/file, MongoDB, and PostgreSQL; another scheme must resolve to exactly one `deepagents_talon.history_backends` entry point, otherwise startup fails rather than silently falling back. Startup errors are exposed as generalized configuration errors to avoid leaking URI credentials. The archive is namespaced as `("talon", assistant_id)`, isolating assistants that use the same store.
 
-`ResumeStateMiddleware` contributes private, checkpointed resume facts. After a successful model turn it writes context-token usage from the latest `AIMessage`; configurable-model middleware writes effective model, parameters, and cache-request facts after successful calls. Accepted goal/rubric choices may be written by the client via `aupdate_state`; pending proposals and agent-driven status updates are graph-written. Reading a checkpoint gives the facts at that checkpoint, not a thread-wide aggregate.
+The archive requires metadata storage with read-after-write consistency and no automatic TTL. `StoreRecords` hashes its caller namespace into a versioned archive namespace and serializes one active writer with an in-process lock. Before exposing records, it recovers any journal left by an interrupted mutation. A commit first durably writes a bounded redo journal, applies idempotent batch puts, and removes the journal only after success. `finish()` shields these storage mutations from cancellation until they complete, then re-raises cancellation to the caller. This is recoverability for one archive writer, not a distributed lock or cross-system transaction.
 
-A delta checkpoint can omit an inline `messages` snapshot. For message counts, dcode uses an inline list when available; otherwise it replays root-namespace message writes ordered by checkpoint, task, and index, deliberately excluding subgraph writes that share the thread ID. This keeps the thread browser's visible count about the root conversation rather than task-subagent transcripts.
+`StoreConversationArchive` separates transcript metadata from optional vector indexing and rejects using the same store instance for both. Its setup recovers records before enabling access or background indexing; close waits for indexing work before caller-owned store connections may close. Transcript chunks are deduplicated by session, message identity, revision, and chunk part. A session is bound to its trusted channel/chat scope, so a different scope or a deleting session cannot append under the same session ID. Semantic indexing promotes user messages and delivered final replies; an AI reply is only marked delivered after the host confirms its final text was sent.
 
-Deleting a local thread removes its checkpoint and writes rows and clears relevant caches, then attempts offloaded conversation-history cleanup. The Boolean result reflects checkpoint deletion only; history cleanup is a separate best-effort operation and may fail without changing that result.
+## Change and operations guidance
 
-## Safe extension checklist
+- Choose the owner first: use a checkpointer for resumable graph state, `StateBackend` for thread-local scratch files, `StoreBackend` with a correctly scoped durable `BaseStore` for cross-thread files, and Talon's archive for recoverable transcript/history records.
+- Do not bypass `CONFIG_KEY_READ`/`CONFIG_KEY_SEND` for `StateBackend`; its read-your-writes behavior depends on LangGraph channel timing and reduction.
+- Keep `DeepAgentState`'s message channel when extending state. If changing dcode display code, preserve root-namespace filtering and write replay ordering.
+- Treat metadata and process caches as indexes into checkpoint authority. Neither migration nor deletion establishes a transaction across checkpoints, offloaded history, and archive stores.
+- Preserve dcode's guarded connection and worker-drain shutdown lifecycle. For Talon storage changes, preserve redo-journal recovery and ensure cancellation does not close a backend while a shielded mutation is still running.
+- Test the relevant boundary: Deep Agents state/store backend tests cover graph context, namespace isolation, pagination, and recursive delete; dcode session tests cover listing, delta counts, and deletion; Talon's history-backend tests cover URI selection, persistence, isolation, cleanup, cancellation, and credential redaction.
 
-- Supply a checkpointer for resumable graph threads; choose a backend route independently for file durability.
-- Preserve `DeepAgentState.messages` when supplying custom state, and use middleware state for middleware-local behavior.
-- Mark sensitive middleware fields with `PrivateStateAttr`, import annotation names at runtime, and test both incoming and outgoing task projections.
-- Treat `isolated`—and legacy `handoff`—as a fresh task context. Use experimental `fork` only when inherited conversation/state semantics are intended, and account for the declarative-versus-compiled privacy distinction.
-- Do not equate root visibility with retention: child transcripts can reside in a `tools:` checkpoint namespace even though normal parent state and output only contain the final tool report.
-- For dcode thread tools, distinguish a missing delta snapshot from an empty conversation and use the writes-aware root-namespace reconstruction path.
+See [Backends](/openwiki/concepts/backends.md), [Context management](/openwiki/concepts/context-management.md), [Runtime behavior](/openwiki/architecture/runtime-behavior.md), and [MCP](/openwiki/integrations/mcp.md).

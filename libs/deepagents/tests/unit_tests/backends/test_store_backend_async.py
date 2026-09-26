@@ -1,11 +1,57 @@
 """Async tests for StoreBackend."""
 
+from typing import Any
+
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
 from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
+
+_SYNC_GET_MSG = "sync store.get() called — async methods must use aget()"
+_SYNC_SEARCH_MSG = "sync store.search() called — async methods must use asearch()"
+_SYNC_PUT_MSG = "sync store.put() called — async methods must use aput()"
+
+
+class _SyncBlockingStore(InMemoryStore):
+    """InMemoryStore whose sync ``get``/``search`` raise.
+
+    The async ``als``/``agrep``/``aglob``/``adownload_files`` overrides exist
+    precisely to avoid the ``BackendProtocol`` sync fallback, which hangs on
+    async stores (e.g. ``AsyncPostgresStore``). If any of those methods routes
+    through the sync ``get``/``search`` instead of ``aget``/``asearch``, this
+    store raises — failing the test loudly instead of hanging forever. The async
+    ``aget``/``asearch`` go through ``abatch`` (not the overridden sync methods),
+    so they keep working.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.aget_calls = 0
+        self.asearch_calls = 0
+        self.aput_calls = 0
+
+    def get(self, *args: Any, **kwargs: Any):  # type: ignore[override]
+        raise AssertionError(_SYNC_GET_MSG)
+
+    def search(self, *args: Any, **kwargs: Any):  # type: ignore[override]
+        raise AssertionError(_SYNC_SEARCH_MSG)
+
+    def put(self, *args: Any, **kwargs: Any):  # type: ignore[override]
+        raise AssertionError(_SYNC_PUT_MSG)
+
+    async def aget(self, *args: Any, **kwargs: Any):  # type: ignore[override]
+        self.aget_calls += 1
+        return await super().aget(*args, **kwargs)
+
+    async def asearch(self, *args: Any, **kwargs: Any):  # type: ignore[override]
+        self.asearch_calls += 1
+        return await super().asearch(*args, **kwargs)
+
+    async def aput(self, *args: Any, **kwargs: Any):  # type: ignore[override]
+        self.aput_calls += 1
+        return await super().aput(*args, **kwargs)
 
 
 async def test_store_backend_aread_non_positive_limit_returns_empty_read():
@@ -423,3 +469,111 @@ async def test_store_backend_aintercept_large_tool_result_async():
     stored_content = await mem_store.aget(("filesystem",), "/large_tool_results/test_async_789")
     assert stored_content is not None
     assert stored_content.value["content"] == large_content
+
+
+async def test_als_routes_through_asearch_not_sync_search():
+    """`als` must call `store.asearch`; falling back to sync `search` would hang on an async store."""
+    store = _SyncBlockingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/docs/readme.md", "hello")
+    store.asearch_calls = 0  # ignore the aput/aget during setup
+
+    result = await be.als("/docs/")
+
+    assert any(i["path"] == "/docs/readme.md" for i in result.entries)
+    assert store.asearch_calls > 0
+
+
+async def test_agrep_routes_through_asearch_not_sync_search():
+    """`agrep` must call `store.asearch`; falling back to sync `search` would hang on an async store."""
+    store = _SyncBlockingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/notes.txt", "find me here")
+    store.asearch_calls = 0
+
+    result = await be.agrep("find", path="/")
+
+    assert any(m["path"] == "/notes.txt" for m in result.matches)
+    assert store.asearch_calls > 0
+
+
+async def test_aglob_routes_through_asearch_not_sync_search():
+    """`aglob` must call `store.asearch`; falling back to sync `search` would hang on an async store."""
+    store = _SyncBlockingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/src/main.py", "code")
+    store.asearch_calls = 0
+
+    result = await be.aglob("**/*.py", path="/")
+
+    assert any(i["path"] == "/src/main.py" for i in result.matches)
+    assert store.asearch_calls > 0
+
+
+async def test_als_reports_utf8_byte_size():
+    """`als` must report UTF-8 byte sizes, not character counts (aligns with #6258)."""
+    store = _SyncBlockingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    # "héllo" = 5 chars but 6 UTF-8 bytes (é is 2 bytes)
+    await be.awrite("/unicode.txt", "héllo")
+
+    result = await be.als("/")
+
+    entry = next(i for i in result.entries if i["path"] == "/unicode.txt")
+    assert entry["size"] == 6  # bytes, not 5 chars
+
+
+async def test_aglob_reports_utf8_byte_size():
+    """`aglob` must report UTF-8 byte sizes, not character counts (aligns with #6258)."""
+    store = _SyncBlockingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/data/uni.py", "héllo")
+
+    result = await be.aglob("**/*.py", path="/")
+
+    entry = next(i for i in result.matches if i["path"] == "/data/uni.py")
+    assert entry["size"] == 6  # bytes, not 5 chars
+
+
+async def test_adownload_files_routes_through_aget_not_sync_get():
+    """`adownload_files` must call `store.aget`; falling back to sync `get` would hang on an async store."""
+    store = _SyncBlockingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/file.txt", "payload")
+    store.aget_calls = 0  # ignore the aget during awrite setup
+
+    result = await be.adownload_files(["/file.txt"])
+
+    assert len(result) == 1
+    assert result[0].error is None
+    assert store.aget_calls > 0
+    assert store.asearch_calls == 0  # download uses aget, not asearch
+
+
+async def test_adownload_files_skips_corrupt_item():
+    """A corrupt store item returns a per-file error, not an exception that kills the batch."""
+    store = _SyncBlockingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/good.txt", "payload")
+    # plant a corrupt item (content=None) directly in the store
+    await store.aput(("filesystem",), "/bad.txt", {"content": None})
+    store.aget_calls = 0  # ignore setup
+
+    result = await be.adownload_files(["/good.txt", "/bad.txt", "/missing.txt"])
+
+    assert len(result) == 3
+    assert result[0].error is None and result[0].content is not None  # good.txt
+    assert result[1].error == "invalid_file"  # bad.txt — corrupt, but didn't raise
+    assert result[2].error == "file_not_found"  # missing.txt
+
+
+async def test_aupload_files_routes_through_aput_not_sync_put():
+    """`aupload_files` must call `store.aput`; falling back to sync `put` would hang on an async store."""
+    store = _SyncBlockingStore()
+    be = StoreBackend(store=store, namespace=lambda _rt: ("filesystem",))
+
+    result = await be.aupload_files([("/img.png", b"\x89PNG\r\n"), ("/notes.txt", b"hello")])
+
+    assert len(result) == 2
+    assert all(r.error is None for r in result)
+    assert store.aput_calls == 2  # one aput per file, no sync put

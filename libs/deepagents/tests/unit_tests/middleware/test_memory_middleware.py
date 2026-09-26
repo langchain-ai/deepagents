@@ -151,6 +151,131 @@ def test_format_agent_memory_single() -> None:
     assert loc_pos < content_pos
 
 
+def test_format_agent_memory_extracts_explicit_memory_section() -> None:
+    """A structured project file does not inject unrelated repository guidance."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/user/AGENTS.md"],
+    )
+    contents = {
+        "/user/AGENTS.md": (
+            "# Global development guidelines for the Deep Agents monorepo\n\n"
+            "## PR conventions\n\nUse Conventional Commits.\n\n"
+            "<!-- deepagents:memory:start -->\n"
+            "MEMORY_SENTINEL: The user prefers concise answers.\n"
+            "<!-- deepagents:memory:end -->\n\n"
+            "#### Warnings are errors\n\nRun the unit tests.\n"
+        )
+    }
+
+    result = middleware._format_agent_memory(contents)
+
+    assert "MEMORY_SENTINEL: The user prefers concise answers." in result
+    assert "Global development guidelines" not in result
+    assert "PR conventions" not in result
+    assert "Run the unit tests." not in result
+    assert "deepagents:memory" not in result
+
+
+def test_format_agent_memory_keeps_unstructured_files_backward_compatible() -> None:
+    """Files without explicit markers retain full-file injection behavior."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/user/AGENTS.md"],
+    )
+    contents = {"/user/AGENTS.md": "# Agent instructions\nGeneral guidance.\n\n## Memory\nLegacy memory."}
+
+    result = middleware._format_agent_memory(contents)
+
+    assert "General guidance." in result
+    assert "Legacy memory." in result
+
+
+def test_format_agent_memory_empty_explicit_section_shows_no_memory() -> None:
+    """An empty structured section uses the existing empty-memory representation."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/user/AGENTS.md"],
+    )
+    contents = {
+        "/user/AGENTS.md": (
+            "# Agent instructions\n\nUse the project formatter.\n\n<!-- deepagents:memory:start -->\n<!-- deepagents:memory:end -->\n"
+        )
+    }
+
+    result = middleware._format_agent_memory(contents)
+
+    assert "(No memory loaded)" in result
+    assert "Use the project formatter." not in result
+    assert "/user/AGENTS.md" not in result
+
+
+@pytest.mark.parametrize(
+    "markers",
+    [
+        "<!-- deepagents:memory:start -->\n",
+        "<!-- deepagents:memory:end -->\n",
+        "<!-- deepagents:memory:end -->\n<!-- deepagents:memory:start -->\n",
+        "<!-- deepagents:memory:start -->\n<!-- deepagents:memory:start -->\n<!-- deepagents:memory:end -->\n",
+        "<!-- deepagents:memory:start -->\n<!-- deepagents:memory:end -->\n<!-- deepagents:memory:end -->\n",
+    ],
+)
+def test_format_agent_memory_malformed_markers_fall_back_to_full_file(markers: str) -> None:
+    """Malformed opt-in markers cannot silently discard legacy file content."""
+    middleware = MemoryMiddleware(
+        backend=None,  # type: ignore[arg-type]
+        sources=["/user/AGENTS.md"],
+    )
+    contents = {"/user/AGENTS.md": f"# Agent instructions\n\nGeneral guidance.\n\n{markers}Memory content.\n"}
+
+    result = middleware._format_agent_memory(contents)
+
+    assert "General guidance." in result
+    assert "Memory content." in result
+    assert middleware._format_authored_instructions(contents) == ""
+
+
+@pytest.mark.parametrize("fence", ["```", "~~~"])
+def test_memory_markers_inside_code_fence_do_not_enable_structured_mode(fence: str) -> None:
+    """A Markdown example of the marker syntax leaves the file in legacy mode."""
+    middleware = MemoryMiddleware(backend=StateBackend(), sources=["/project/AGENTS.md"])
+    contents = {
+        "/project/AGENTS.md": (
+            "# Project instructions\nUse Conventional Commits.\n\n"
+            f"{fence}markdown\n"
+            "<!-- deepagents:memory:start -->\nexample memory\n<!-- deepagents:memory:end -->\n"
+            f"{fence}\n"
+            "Warnings are errors.\n"
+        )
+    }
+
+    memory = middleware._format_agent_memory(contents)
+    assert "Use Conventional Commits." in memory
+    assert "example memory" in memory
+    assert "Warnings are errors." in memory
+    assert middleware._format_authored_instructions(contents) == ""
+
+
+def test_code_fence_example_does_not_override_real_memory_section() -> None:
+    """A real marker pair after a fenced example still enables structured memory."""
+    middleware = MemoryMiddleware(backend=StateBackend(), sources=["/project/AGENTS.md"])
+    contents = {
+        "/project/AGENTS.md": (
+            "# Project instructions\n"
+            "```markdown\n<!-- deepagents:memory:start -->\nexample\n<!-- deepagents:memory:end -->\n```\n"
+            "<!-- deepagents:memory:start -->\nLearned preference.\n<!-- deepagents:memory:end -->\n"
+        )
+    }
+
+    memory = middleware._format_agent_memory(contents)
+    authored = middleware._format_authored_instructions(contents)
+    assert "Learned preference." in memory
+    memory_block = memory.split("<agent_memory>", 1)[1].split("</agent_memory>", 1)[0]
+    assert "example" not in memory_block
+    assert "# Project instructions" in authored
+    assert "example" in authored
+
+
 def test_format_agent_memory_multiple() -> None:
     """Test formatting with multiple sources shows each location with its content."""
     middleware = MemoryMiddleware(
@@ -763,6 +888,101 @@ def test_create_deep_agent_with_memory_and_filesystem_backend(tmp_path: Path) ->
     assert len(result["messages"]) > 0
 
 
+def test_create_deep_agent_structured_memory_excludes_unrelated_guidance(
+    tmp_path: Path,
+) -> None:
+    """Only the marked section from a project `AGENTS.md` reaches the model."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    memory_path = str(tmp_path / "AGENTS.md")
+    memory_content = (
+        "# Global development guidelines for the Deep Agents monorepo\n\n"
+        "## PR conventions\n\nUse Conventional Commits.\n\n"
+        "<!-- deepagents:memory:start -->\n"
+        "<!-- Private author note -->\n"
+        "MEMORY_SENTINEL: Prefer concise answers.\n"
+        "<!-- deepagents:memory:end -->\n\n"
+        "#### Warnings are errors\n"
+    )
+    backend.upload_files([(memory_path, memory_content.encode())])
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Memory loaded successfully.")]))
+    agent = create_deep_agent(
+        backend=backend,
+        memory=[memory_path],
+        model=fake_model,
+    )
+
+    agent.invoke({"messages": [HumanMessage(content="What do you know?")]})
+
+    system_content = fake_model.call_history[0]["messages"][0].text
+    assert "MEMORY_SENTINEL: Prefer concise answers." in system_content
+    memory_block = system_content.split("<agent_memory>", 1)[1].split("</agent_memory>", 1)[0]
+    assert system_content.count("MEMORY_SENTINEL: Prefer concise answers.") == 1
+    assert "Global development guidelines" in system_content
+    assert "PR conventions" in system_content
+    assert "Warnings are errors" in system_content
+    assert "Global development guidelines" not in memory_block
+    assert "PR conventions" not in memory_block
+    assert "Warnings are errors" not in memory_block
+    assert "Private author note" not in memory_block
+    assert "deepagents:memory" not in memory_block
+    assert "write new memory inside that section" in system_content
+    assert "Content appended after the closing marker will not be loaded" in system_content
+
+
+def test_create_deep_agent_empty_structured_memory_keeps_authored_instructions(tmp_path: Path) -> None:
+    """An empty memory region still keeps authored instructions in the model prompt."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    memory_path = str(tmp_path / "AGENTS.md")
+    content = (
+        "# Project rules\n\n<!-- Private project note -->\nUse Conventional Commits.\n"
+        "<!-- deepagents:memory:start -->\n"
+        "<!-- deepagents:memory:end -->\n"
+        "Warnings are errors.\n"
+    )
+    backend.upload_files([(memory_path, content.encode())])
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
+    agent = create_deep_agent(backend=backend, memory=[memory_path], model=fake_model)
+
+    agent.invoke({"messages": [HumanMessage(content="What do you know?")]})
+
+    system_content = fake_model.call_history[0]["messages"][0].text
+    memory_block = system_content.split("<agent_memory>", 1)[1].split("</agent_memory>", 1)[0]
+    assert "Use Conventional Commits." in system_content
+    assert "Warnings are errors." in system_content
+    assert "Use Conventional Commits." not in memory_block
+    assert "Warnings are errors." not in memory_block
+    assert "Private project note" not in system_content
+    assert "(No memory loaded)" in memory_block
+    assert "<memory_guidelines>" in system_content
+
+
+def test_structured_memory_edit_inside_section_survives_fresh_load(tmp_path: Path) -> None:
+    """An edit inside the boundary remains visible on the next invocation."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    memory_path = str(tmp_path / "AGENTS.md")
+    original = "# Project rules\n<!-- deepagents:memory:start -->\n<!-- deepagents:memory:end -->\n## Outside guidance\n"
+    backend.upload_files([(memory_path, original.encode())])
+
+    # FilesystemMiddleware's edit_file tool delegates to this same backend.edit.
+    edit = backend.edit(
+        memory_path,
+        "<!-- deepagents:memory:end -->",
+        "Saved preference.\n<!-- deepagents:memory:end -->",
+    )
+    assert edit.error is None
+    # This edit also succeeds, but it is outside the selected memory region.
+    outside_edit = backend.edit(memory_path, "## Outside guidance", "## Outside guidance\nNot memory.")
+    assert outside_edit.error is None
+
+    middleware = MemoryMiddleware(backend=backend, sources=[memory_path])
+    loaded = middleware.before_agent({}, None, {})  # type: ignore[arg-type]
+    assert loaded is not None
+    prompt = middleware._format_agent_memory(loaded["memory_contents"])
+    assert "Saved preference." in prompt
+    assert "Not memory." not in prompt
+    assert "# Project rules" not in prompt
+
+
 def test_create_deep_agent_with_memory_missing_files(tmp_path: Path) -> None:
     """Test that memory works gracefully when files don't exist."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -1064,6 +1284,26 @@ def test_modify_request_returns_unchanged_when_system_prompt_none() -> None:
 
     assert result is request
     assert result.system_message is base
+
+
+def test_structured_authored_instructions_survive_system_prompt_none(tmp_path: Path) -> None:
+    """Suppressing memory guidance still preserves structured project instructions."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    memory_path = str(tmp_path / "AGENTS.md")
+    content = "Use Conventional Commits.\n<!-- deepagents:memory:start -->\nLearned preference.\n<!-- deepagents:memory:end -->\n"
+    backend.upload_files([(memory_path, content.encode())])
+    fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="Done.")]))
+    middleware = MemoryMiddleware(backend=backend, sources=[memory_path], system_prompt=None)
+    agent = create_agent(model=fake_model, middleware=[middleware], system_prompt="Base instructions")
+
+    agent.invoke({"messages": [HumanMessage(content="What do you know?")]})
+
+    system_content = fake_model.call_history[0]["messages"][0].text
+    assert "Base instructions" in system_content
+    assert "Use Conventional Commits." in system_content
+    assert "Learned preference." not in system_content
+    assert "<agent_memory>" not in system_content
+    assert "<memory_guidelines>" not in system_content
 
 
 def test_modify_request_uses_custom_template() -> None:

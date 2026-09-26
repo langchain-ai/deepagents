@@ -733,13 +733,29 @@ TALON_TEST_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 uv run --group test pytest tests/integration_tests/test_steel_native.py
 ```
 
+### Local viewer
+
+Open the sign-in link printed to the controlling terminal to watch the browser at
+any time. The viewer shows the first tab of the same persistent profile the agent
+uses. Click **Pause automation** to log in, type, or scroll, then **Resume automation**.
+Pausing waits for the current browser command, not the entire agent run. Resuming
+waits for dispatched input to finish. Login cookies remain available to the agent.
+
+The viewer link uses a fresh credential each launch and never appears in application
+logs. Sign out ends the viewer session and a healthy pause. If the viewer disconnects
+while you are interacting, automation stays paused until you resume or the session
+expires. Uncertain input completion requires restarting Talon.
+
+Set `TALON_BROWSER_LOCAL_VIEWER=false` to disable the viewer. Remote sharing is not
+supported.
+
 ### Browser tools
 
 `TALON_BROWSER_ENABLED=true` enables `browser_cdp` independently of MCP refresh.
 Talon starts the packaged bridge and manages an owner-only control token at
 `<assistant-home>/browser/control-token`. Embedders provide this path through
 `TALON_BROWSER_TOKEN_FILE`. Control binds to `127.0.0.1:8081`
-(`TALON_BROWSER_CONTROL_PORT` overrides it); port 8080 is reserved for the local viewer.
+(`TALON_BROWSER_CONTROL_PORT` overrides it); the local viewer uses loopback port 8080 (`TALON_BROWSER_VIEWER_PORT`).
 
 One agent run uses the browser at a time. Scheduled and background runs use the
 same browser with independent run IDs. Existing tool approval policies apply.

@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import signal
 import sys
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pytest
 
@@ -15,9 +16,6 @@ from deepagents_talon import steel
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
 from deepagents_talon.runtime import EchoAgentRuntime
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="native Steel requires POSIX")
 
@@ -210,3 +208,41 @@ async def test_shutdown_during_host_start(config: TalonConfig) -> None:
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_viewer_link_is_terminal_only_and_rotates(
+    config: TalonConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    original = Path.open
+    terminals: list[io.StringIO] = []
+
+    class Terminal(io.StringIO):
+        def close(self) -> None:
+            pass
+
+    def open_terminal(path: Path, *args: object, **kwargs: object):
+        if path == Path("/dev/tty"):
+            terminal = Terminal()
+            terminals.append(terminal)
+            return terminal
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_terminal)
+    browser = steel.SteelProcess(config)
+    try:
+        await browser.start()
+        first = browser._viewer_token
+        assert len(first) == 43
+        assert bool(terminals[-1].getvalue().endswith(f"/#token={first}\n"))
+        await browser.stop()
+        assert not browser._viewer_token
+        await browser.start()
+        assert bool(browser._viewer_token != first)
+        assert bool(first not in caplog.text)
+        captured = capsys.readouterr()
+        assert bool(first not in captured.out + captured.err)
+    finally:
+        await browser.stop()

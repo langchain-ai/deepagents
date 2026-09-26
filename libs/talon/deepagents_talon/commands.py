@@ -75,6 +75,7 @@ CHAT_COMMANDS: tuple[ChatCommand, ...] = (
         # has no confirmation step to catch a mistaken invocation.
         hidden=True,
     ),
+    ChatCommand("context-doctor", "Audit injected context and its estimated token cost."),
 )
 """Every command the host dispatches, in the order `/help` lists them."""
 
@@ -83,6 +84,7 @@ NEW = CHAT_COMMANDS[1].text
 STOP = CHAT_COMMANDS[2].text
 MCP_RELOAD = CHAT_COMMANDS[3].text
 RESET_ALL_HISTORY = CHAT_COMMANDS[4].text
+CONTEXT_DOCTOR = CHAT_COMMANDS[5].text
 
 COMMANDS_BY_NAME: Mapping[str, ChatCommand] = MappingProxyType(
     {command.name: command for command in CHAT_COMMANDS},

@@ -21,6 +21,33 @@ def test_upload_files_raises_outside_graph_context():
         be.upload_files([("/hello.txt", b"hello")])
 
 
+@pytest.mark.parametrize(
+    ("initial", "uploaded", "encoding"),
+    [
+        (None, b"\x89PNG\r\n\x1a\n\x00", "base64"),
+        (b"hello", b"\x89PNG\r\n\x1a\n\x00", "base64"),
+        (b"\x89PNG\r\n\x1a\n\x00", b"hello", "utf-8"),
+    ],
+)
+def test_upload_download_round_trip(monkeypatch: pytest.MonkeyPatch, initial: bytes | None, uploaded: bytes, encoding: str) -> None:
+    """Uploaded bytes download unchanged, including when overwriting across encodings."""
+    backend = StateBackend()
+    files: dict[str, Any] = {}
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", files.update)
+
+    if initial is not None:
+        backend.upload_files([("/file.bin", initial)])
+        created_at = files["/file.bin"]["created_at"]
+    backend.upload_files([("/file.bin", uploaded)])
+
+    assert files["/file.bin"]["encoding"] == encoding
+    if initial is not None:
+        assert files["/file.bin"]["created_at"] == created_at
+    [response] = backend.download_files(["/file.bin"])
+    assert response.content == uploaded
+
+
 @pytest.mark.parametrize(("offset", "limit"), [(0, 0), (0, -3), (-1, 0)])
 def test_state_backend_read_non_positive_limit_returns_empty_read(monkeypatch: pytest.MonkeyPatch, offset: int, limit: int) -> None:
     """`StateBackend.read` inherits the shared clamp rather than raising."""

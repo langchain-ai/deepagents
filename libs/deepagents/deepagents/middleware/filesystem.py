@@ -81,6 +81,13 @@ from deepagents.backends.utils import (
     truncate_if_too_long,
     validate_path,
 )
+from deepagents.middleware._blob_offload import (
+    _ahydrate_messages,
+    _aoffload_tool_result,
+    _BlobCache,
+    _hydrate_messages,
+    _offload_tool_result,
+)
 from deepagents.middleware._message_eviction import (
     _TOO_LARGE_TOOL_MSG,
     ContentPreview,
@@ -1172,6 +1179,14 @@ def _uses_state_backend(backend: BackendProtocol) -> bool:
     return _uses_state_backend(backend.default) or any(_uses_state_backend(route) for route in backend.routes.values())
 
 
+def _routes_to_state_backend(backend: BackendProtocol, path: str) -> bool:
+    """Return whether `path` resolves to a `StateBackend` through composite routing."""
+    if isinstance(backend, CompositeBackend):
+        routed, routed_path, _ = _route_for_path(default=backend.default, sorted_routes=backend.sorted_routes, path=path)
+        return _routes_to_state_backend(routed, routed_path)
+    return isinstance(backend, StateBackend)
+
+
 GREP_GLOB_DESCRIPTION = (
     "Glob pattern (NOT regex) limiting which files are searched (e.g. '*.py', "
     "'*.ts'). A pattern without '/' matches the file name at any depth; a pattern "
@@ -1729,6 +1744,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         max_execute_timeout: int = 3600,
         grep_max_count: int | None = 1000,
         tools: list[FsToolName] | Literal["all"] | None = None,
+        offload_binary_reads: bool = False,
         _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -1762,6 +1778,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 in any list. Backend capability checks for `execute` and
                 `delete` still apply; listing them when the backend does not
                 support them is a no-op.
+            offload_binary_reads: Keep binary `read_file` content out of message history.
+
+                Payloads are written to `blobs/` under the artifacts root and
+                state keeps a content-addressed reference; model requests are
+                rehydrated from the backend. Useful with sandbox backends. Has
+                no effect when `blobs/` routes to a `StateBackend`.
             _permissions: Optional filesystem permission rules enforced directly
                 by this middleware's tool implementations.
 
@@ -1804,6 +1826,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         _root = artifacts_root.rstrip("/")
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
+        self._blobs_prefix = f"{_root}/blobs"
+        offload = offload_binary_reads and not _routes_to_state_backend(self.backend, f"{self._blobs_prefix}/")
+        self._blob_cache = _BlobCache() if offload else None
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
@@ -3214,6 +3239,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if eviction_result is not None:
             messages, state_command = eviction_result
             request = request.override(messages=messages)
+        if self._blob_cache is not None:
+            request = request.override(messages=_hydrate_messages(request.messages, self.backend, self._blobs_prefix, self._blob_cache))
         try:
             response = handler(request)
         except ModelInvalidRequestError:
@@ -3258,6 +3285,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if eviction_result is not None:
             messages, state_command = eviction_result
             request = request.override(messages=messages)
+        if self._blob_cache is not None:
+            request = request.override(messages=await _ahydrate_messages(request.messages, self.backend, self._blobs_prefix, self._blob_cache))
         try:
             response = await handler(request)
         except ModelInvalidRequestError:
@@ -3618,6 +3647,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if error := _parallel_file_mutation_error(request):
             return error
         tool_result = handler(request)
+        if self._blob_cache is not None and request.tool_call["name"] == "read_file":
+            tool_result = _offload_tool_result(tool_result, self.backend, self._blobs_prefix, self._blob_cache)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return tool_result
@@ -3645,6 +3676,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if error := _parallel_file_mutation_error(request):
             return error
         tool_result = await handler(request)
+        if self._blob_cache is not None and request.tool_call["name"] == "read_file":
+            tool_result = await _aoffload_tool_result(tool_result, self.backend, self._blobs_prefix, self._blob_cache)
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return tool_result

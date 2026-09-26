@@ -1,6 +1,7 @@
 """End-to-end unit tests for deepagents with fake LLM models."""
 
 import base64
+import hashlib
 import json
 import mimetypes
 from collections.abc import Awaitable, Callable, Iterator, Sequence
@@ -1443,6 +1444,182 @@ class TestDeepAgentEndToEnd:
         assert tm.content[0]["type"] == "image"
         assert tm.content[0]["mime_type"] == "image/png"
         assert "base64" in tm.content[0]
+
+
+_OFFLOAD_PNG = b"\x89PNG\r\n\x1a\n fake image data"
+_OFFLOAD_PNG_B64 = base64.b64encode(_OFFLOAD_PNG).decode("ascii")
+_OFFLOAD_PNG_DIGEST = hashlib.sha256(_OFFLOAD_PNG).hexdigest()
+
+
+class TestBinaryReadOffload:
+    """End-to-end tests for `FilesystemMiddleware(offload_binary_reads=True)`."""
+
+    @staticmethod
+    def _agent(backend: BackendProtocol, model: BaseChatModel, checkpointer: InMemorySaver) -> CompiledStateGraph:
+        return create_deep_agent(
+            model=model,
+            backend=backend,
+            middleware=[FilesystemMiddleware(backend=backend, offload_binary_reads=True)],
+            checkpointer=checkpointer,
+        )
+
+    @staticmethod
+    def _read_image_model() -> FixedGenericFakeChatModel:
+        return FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "call_img", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="Here is the image."),
+                ]
+            )
+        )
+
+    @staticmethod
+    def _sent_tool_message(model: FixedGenericFakeChatModel, call: int) -> BaseMessage:
+        return next(m for m in model.captured_messages[call] if m.type == "tool")
+
+    @staticmethod
+    def _record_downloads(backend: FilesystemBackend, monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+        """Record each `download_files` batch; the async variant delegates to it."""
+        downloads: list[list[str]] = []
+        original = backend.download_files
+
+        def recording(paths: list[str]) -> list[Any]:
+            downloads.append(paths)
+            return original(paths)
+
+        monkeypatch.setattr(backend, "download_files", recording)
+        return downloads
+
+    @pytest.mark.parametrize("use_async", [False, True])
+    async def test_checkpoint_keeps_reference_and_model_receives_bytes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, use_async: bool
+    ) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        downloads = self._record_downloads(backend, monkeypatch)
+        model = self._read_image_model()
+        agent = self._agent(backend, model, InMemorySaver())
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        payload = {"messages": [HumanMessage(content="Read the image")]}
+
+        if use_async:
+            await agent.ainvoke(payload, config)
+        else:
+            agent.invoke(payload, config)
+
+        checkpointed = next(m for m in agent.get_state(config).values["messages"] if m.type == "tool")
+        assert checkpointed.content == [{"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}]
+        assert (tmp_path / "blobs" / _OFFLOAD_PNG_DIGEST).read_bytes() == _OFFLOAD_PNG
+        assert self._sent_tool_message(model, 1).content == [{"type": "image", "mime_type": "image/png", "base64": _OFFLOAD_PNG_B64}]
+        # The upload filled the cache, so the model call needed no download.
+        assert downloads == []
+
+    def test_resumed_thread_rehydrates_snapshot_after_source_changes(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        checkpointer = InMemorySaver()
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        self._agent(backend, self._read_image_model(), checkpointer).invoke({"messages": [HumanMessage(content="Read the image")]}, config)
+        (tmp_path / "photo.png").write_bytes(b"changed")
+
+        # A new agent has a cold blob cache, like a fresh worker process.
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="Same image.")]))
+        self._agent(backend, model, checkpointer).invoke({"messages": [HumanMessage(content="What was in it?")]}, config)
+
+        assert self._sent_tool_message(model, 0).content[0]["base64"] == _OFFLOAD_PNG_B64
+
+    def test_resumed_thread_downloads_each_blob_once(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        checkpointer = InMemorySaver()
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        self._agent(backend, self._read_image_model(), checkpointer).invoke({"messages": [HumanMessage(content="Read the image")]}, config)
+        downloads = self._record_downloads(backend, monkeypatch)
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="", tool_calls=[{"name": "ls", "args": {"path": "/"}, "id": "call_ls", "type": "tool_call"}]),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+
+        self._agent(backend, model, checkpointer).invoke({"messages": [HumanMessage(content="List files")]}, config)
+
+        assert len(model.captured_messages) == 2
+        assert all(self._sent_tool_message(model, call).content[0]["base64"] == _OFFLOAD_PNG_B64 for call in range(2))
+        assert downloads == [[f"/blobs/{_OFFLOAD_PNG_DIGEST}"]]
+
+    def test_resumed_thread_batches_downloads_for_multiple_blobs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        other = b"\x89PNG\r\n\x1a\n another image"
+        (tmp_path / "a.png").write_bytes(_OFFLOAD_PNG)
+        (tmp_path / "b.png").write_bytes(other)
+        checkpointer = InMemorySaver()
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        reads = [{"name": "read_file", "args": {"file_path": f"/{name}"}, "id": f"call_{name}", "type": "tool_call"} for name in ("a.png", "b.png")]
+        first = FixedGenericFakeChatModel(messages=iter([AIMessage(content="", tool_calls=reads), AIMessage(content="Read both.")]))
+        self._agent(backend, first, checkpointer).invoke({"messages": [HumanMessage(content="Read both images")]}, config)
+        downloads = self._record_downloads(backend, monkeypatch)
+
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="They differ.")]))
+        self._agent(backend, model, checkpointer).invoke({"messages": [HumanMessage(content="Compare them")]}, config)
+
+        sent = [m.content[0]["base64"] for m in model.captured_messages[0] if m.type == "tool"]
+        assert sorted(sent) == sorted([_OFFLOAD_PNG_B64, base64.b64encode(other).decode("ascii")])
+        assert len(downloads) == 1
+        assert sorted(downloads[0]) == sorted(f"/blobs/{hashlib.sha256(raw).hexdigest()}" for raw in (_OFFLOAD_PNG, other))
+
+    @pytest.mark.parametrize("backend_kind", ["state", "composite_blobs_to_state"])
+    def test_offload_skipped_when_blobs_route_to_state(self, tmp_path: Path, backend_kind: str) -> None:
+        payload: dict[str, Any] = {"messages": [HumanMessage(content="Read the image")]}
+        if backend_kind == "state":
+            backend: BackendProtocol = StateBackend()
+            payload["files"] = {"/photo.png": create_file_data(_OFFLOAD_PNG_B64, encoding="base64")}
+        else:
+            backend = CompositeBackend(default=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True), routes={"/blobs/": StateBackend()})
+            (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        agent = self._agent(backend, self._read_image_model(), InMemorySaver())
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+
+        agent.invoke(payload, config)
+
+        values = agent.get_state(config).values
+        checkpointed = next(m for m in values["messages"] if m.type == "tool")
+        assert checkpointed.content == [{"type": "image", "mime_type": "image/png", "base64": _OFFLOAD_PNG_B64}]
+        assert not any("blobs" in path for path in values.get("files", {}))
+
+    def test_offload_applies_when_only_other_routes_use_state(self, tmp_path: Path) -> None:
+        backend = CompositeBackend(default=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True), routes={"/memories/": StateBackend()})
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        agent = self._agent(backend, self._read_image_model(), InMemorySaver())
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+
+        agent.invoke({"messages": [HumanMessage(content="Read the image")]}, config)
+
+        checkpointed = next(m for m in agent.get_state(config).values["messages"] if m.type == "tool")
+        assert checkpointed.content == [{"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}]
+        assert (tmp_path / "blobs" / _OFFLOAD_PNG_DIGEST).read_bytes() == _OFFLOAD_PNG
+
+    def test_resumed_thread_with_missing_blob_sends_notice(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        checkpointer = InMemorySaver()
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+        self._agent(backend, self._read_image_model(), checkpointer).invoke({"messages": [HumanMessage(content="Read the image")]}, config)
+        (tmp_path / "blobs" / _OFFLOAD_PNG_DIGEST).unlink()
+
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="I'll re-read it.")]))
+        self._agent(backend, model, checkpointer).invoke({"messages": [HumanMessage(content="What was in it?")]}, config)
+
+        content = self._sent_tool_message(model, 0).content
+        assert len(content) == 1
+        assert content[0]["type"] == "text"
+        assert "no longer available" in content[0]["text"]
 
 
 class TestDeleteFileTool:

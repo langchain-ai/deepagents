@@ -733,6 +733,31 @@ TALON_TEST_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 uv run --group test pytest tests/integration_tests/test_steel_native.py
 ```
 
+### Browser tools
+
+`TALON_BROWSER_ENABLED=true` enables `browser_cdp` independently of MCP refresh.
+Talon starts the packaged bridge and manages an owner-only control token at
+`<assistant-home>/browser/control-token`. Embedders provide this path through
+`TALON_BROWSER_TOKEN_FILE`. Control binds to `127.0.0.1:8081`
+(`TALON_BROWSER_CONTROL_PORT` overrides it); port 8080 is reserved for the local viewer.
+
+One agent run uses the browser at a time. Scheduled and background runs use the
+same browser with independent run IDs. Existing tool approval policies apply.
+Competing runs receive `browser_busy`; pausing browser automation in the viewer
+returns `browser_paused`. Commands are never automatically retried. Cancellation
+releases the run after pending commands finish; uncertain completion requires restart.
+
+Use `browser_cdp` for navigation, page text, screenshots, tabs, and browser-local
+file operations. Optional `session_id` routes commands to attached targets.
+Results are bounded untrusted JSON observations. Loopback authentication, exact
+Host/Origin checks, and request/response limits protect the bridge.
+
+The loopback integration tests run without Chrome or downloads:
+
+```sh
+uv run --group test pytest tests/integration_tests/test_browser_bridge.py
+```
+
 ## Resources
 
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.

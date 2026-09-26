@@ -47,6 +47,7 @@ from deepagents_talon.background import (
 )
 from deepagents_talon.clock import current_time
 from deepagents_talon.config import TalonConfig
+from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -344,6 +345,7 @@ class DeepAgentRuntime:
         self.max_retries = max_retries
         self.max_continuations = max_continuations
         self._graph: object | None = None
+        self._context_diagnostics: ContextDoctor | None = None
         self._attachments: list[Attachment] = []
         self._mcp_reload_failed = False
         self._invocation_graph: contextvars.ContextVar[object | None] = contextvars.ContextVar(
@@ -418,16 +420,22 @@ class DeepAgentRuntime:
         middleware.append(self.background.configured(resolved))
         if context_size is not None and not _has_summarization_tool_middleware(middleware):
             middleware.append(create_summarization_tool_middleware(model, self.backend))
+        diagnostics = ContextDoctor(
+            backend=self.backend,
+            system_prompt=self._resolve_system_prompt(),
+            skills=tuple(self._resolve_skills() or ()),
+            memory=tuple(self._resolve_memory() or ()),
+        )
         graph = create_deep_agent(
             model=model,
             tools=tools,
-            system_prompt=self._resolve_system_prompt(),
+            system_prompt=diagnostics.system_prompt,
             subagents=resolved or None,
             backend=self.backend,
-            skills=self._resolve_skills(),
+            skills=list(diagnostics.skills) or None,
             middleware=middleware,
             interrupt_on=interrupt_on,
-            memory=self._resolve_memory(),
+            memory=list(diagnostics.memory) or None,
             checkpointer=self.checkpointer,
         )
         node = getattr(getattr(graph, "nodes", {}).get("tools"), "bound", None)
@@ -453,7 +461,26 @@ class DeepAgentRuntime:
             },
         )
         self._attachments = attachments
+        self._context_diagnostics = diagnostics
         return graph
+
+    async def context_doctor(self, conversation_id: str) -> str:
+        """Report estimated context costs without running the agent.
+
+        Args:
+            conversation_id: Host-resolved agent thread to inspect.
+
+        Returns:
+            A plain-text context audit containing counts rather than contents.
+
+        Raises:
+            RuntimeError: If the runtime has not been started.
+        """
+        graph, diagnostics = self._graph, self._context_diagnostics
+        if graph is None or diagnostics is None:
+            msg = "DeepAgentRuntime must be started before context diagnostics"
+            raise RuntimeError(msg)
+        return await diagnostics.render(graph, conversation_id)
 
     def _approval_snapshot(self, snapshot: ApprovalSnapshot | None) -> ApprovalSnapshot:
         resolved = snapshot or self._active_approvals

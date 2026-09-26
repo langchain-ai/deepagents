@@ -21,10 +21,10 @@ classifiers = [
 ]
 dependencies = [
     "langchain>=1.4.2,<2.0.0",
-    "langchain-core>=1.6.4,<2.0.0",
+    "langchain-core>=1.6.5,<2.0.0",
     "langchain-anthropic>=1.7.4,<2.0.0",
     "langchain-google-genai>=4.4.0,<5.0.0",
-    "langsmith>=0.14.0",
+    "langsmith>=0.14.1",
     "packaging>=23.2",
     "wcmatch>=11.0",
 ]

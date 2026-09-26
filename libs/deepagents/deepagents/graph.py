@@ -462,6 +462,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Display names are automatically derived from paths.
 
+            Files are loaded in full as memory by default. To separate authored
+            instructions from memory, delimit the memory section with
+            `<!-- deepagents:memory:start -->` and
+            `<!-- deepagents:memory:end -->` on separate lines. Content outside
+            the markers is injected into the system prompt outside the memory block.
+
             Memory is loaded at agent startup and added into the system prompt.
         permissions: List of `FilesystemPermission` rules for the main agent
             and its subagents.

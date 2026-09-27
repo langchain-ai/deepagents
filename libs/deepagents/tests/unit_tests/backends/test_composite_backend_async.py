@@ -78,6 +78,42 @@ async def test_composite_state_backend_routes_and_search_async(tmp_path: Path): 
     assert any(i["path"] == "/memories/readme.md" for i in g)
 
 
+async def test_composite_als_nested_routes_are_direct_children_async(tmp_path: Path) -> None:
+    default = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    store = InMemoryStore()
+    comp = CompositeBackend(
+        default=default,
+        routes={
+            "/foo/bar/": StoreBackend(store=store, namespace=lambda _rt: ("bar",)),
+            "/foo/baz/": StoreBackend(store=store, namespace=lambda _rt: ("baz",)),
+            "/foo/bar/deep/": StoreBackend(store=store, namespace=lambda _rt: ("deep",)),
+        },
+    )
+    assert (await comp.awrite("/foo/bar/file.txt", "bar")).error is None
+    assert (await comp.awrite("/foo/bar/deep/file.txt", "deep")).error is None
+
+    assert [fi["path"] for fi in (await comp.als("/")).entries or []] == ["/foo/"]
+    assert [fi["path"] for fi in (await comp.als("/foo/")).entries or []] == ["/foo/bar/", "/foo/baz/"]
+    assert [fi["path"] for fi in (await comp.als("/foo")).entries or []] == ["/foo/bar/", "/foo/baz/"]
+    assert [fi["path"] for fi in (await comp.als("/foo/bar/")).entries or []] == ["/foo/bar/deep/", "/foo/bar/file.txt"]
+
+
+async def test_composite_als_virtual_directory_inside_filesystem_route_async(tmp_path: Path) -> None:
+    default = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    routed = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    store = InMemoryStore()
+    comp = CompositeBackend(
+        default=default,
+        routes={
+            "/foo/": routed,
+            "/foo/bar/deep/": StoreBackend(store=store, namespace=lambda _rt: ("deep",)),
+        },
+    )
+
+    assert [fi["path"] for fi in (await comp.als("/foo/")).entries or []] == ["/foo/bar/"]
+    assert [fi["path"] for fi in (await comp.als("/foo/bar/")).entries or []] == ["/foo/bar/deep/"]
+
+
 async def test_composite_backend_filesystem_plus_store_async(tmp_path: Path):
     """Test async operations with filesystem and store backends."""
     root = tmp_path

@@ -421,6 +421,66 @@ def test_composite_ls_root_propagates_default_error(monkeypatch: pytest.MonkeyPa
     assert result.entries is None
 
 
+def test_composite_ls_nested_routes_are_direct_children(tmp_path: Path) -> None:
+    default = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    store = InMemoryStore()
+    comp = CompositeBackend(
+        default=default,
+        routes={
+            "/foo/bar/": StoreBackend(store=store, namespace=lambda _rt: ("bar",)),
+            "/foo/baz/": StoreBackend(store=store, namespace=lambda _rt: ("baz",)),
+            "/foo/bar/deep/": StoreBackend(store=store, namespace=lambda _rt: ("deep",)),
+        },
+    )
+    assert comp.write("/foo/bar/file.txt", "bar").error is None
+    assert comp.write("/foo/bar/deep/file.txt", "deep").error is None
+
+    assert [fi["path"] for fi in comp.ls("/").entries or []] == ["/foo/"]
+    assert [fi["path"] for fi in comp.ls("/foo/").entries or []] == ["/foo/bar/", "/foo/baz/"]
+    assert [fi["path"] for fi in comp.ls("/foo").entries or []] == ["/foo/bar/", "/foo/baz/"]
+    assert [fi["path"] for fi in comp.ls("/foo/bar/").entries or []] == ["/foo/bar/deep/", "/foo/bar/file.txt"]
+
+
+def test_composite_ls_nested_route_deduplicates_existing_directory(tmp_path: Path) -> None:
+    (tmp_path / "foo").mkdir()
+    (tmp_path / "foo" / "local.txt").write_text("local")
+    default = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    store = InMemoryStore()
+    comp = CompositeBackend(default=default, routes={"/foo/bar/": StoreBackend(store=store, namespace=lambda _rt: ("bar",))})
+
+    assert [fi["path"] for fi in comp.ls("/").entries or []] == ["/foo/"]
+    assert [fi["path"] for fi in comp.ls("/foo/").entries or []] == ["/foo/bar/", "/foo/local.txt"]
+
+
+def test_composite_ls_virtual_directory_inside_filesystem_route(tmp_path: Path) -> None:
+    default = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    routed = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    store = InMemoryStore()
+    comp = CompositeBackend(
+        default=default,
+        routes={
+            "/foo/": routed,
+            "/foo/bar/deep/": StoreBackend(store=store, namespace=lambda _rt: ("deep",)),
+        },
+    )
+
+    assert [fi["path"] for fi in comp.ls("/foo/").entries or []] == ["/foo/bar/"]
+    assert [fi["path"] for fi in comp.ls("/foo/bar/").entries or []] == ["/foo/bar/deep/"]
+
+
+def test_composite_ls_nested_route_preserves_backend_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    store = InMemoryStore()
+    default = StoreBackend(store=store, namespace=lambda _rt: ("default",))
+    routed = StoreBackend(store=store, namespace=lambda _rt: ("bar",))
+    comp = CompositeBackend(default=default, routes={"/foo/bar/": routed})
+    monkeypatch.setattr(default, "ls", lambda _path: LsResult(error="Permission denied"))
+
+    result = comp.ls("/foo/")
+
+    assert result.error == "Permission denied"
+    assert result.entries is None
+
+
 async def test_composite_als_root_propagates_default_error(monkeypatch: pytest.MonkeyPatch) -> None:
     comp, default, _routed = _merge_composite()
 

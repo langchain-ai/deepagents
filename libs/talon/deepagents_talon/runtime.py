@@ -45,6 +45,14 @@ from deepagents_talon.background import (
     _SCHEDULED_TURN,
     BackgroundSubagents,
 )
+from deepagents_talon.browser import (
+    BrowserClient,
+    BrowserContext,
+    active_run,
+    browser_tools,
+    reset_run,
+    set_run,
+)
 from deepagents_talon.clock import current_time
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
@@ -306,6 +314,7 @@ class DeepAgentRuntime:
         max_retries: int = DEFAULT_MAX_RETRIES,
         max_continuations: int = DEFAULT_MAX_CONTINUATIONS,
         env: Mapping[str, str] | None = None,
+        browser: BrowserClient | None = None,
     ) -> None:
         """Initialize without constructing the graph."""
         values = os.environ if env is None else env
@@ -321,6 +330,7 @@ class DeepAgentRuntime:
             raise ValueError(msg)
 
         self.model = model
+        self.browser = browser
         self.tools = tuple(tools)
         self.refresh_tools = refresh_tools
         self.reload_tools = reload_tools
@@ -362,10 +372,17 @@ class DeepAgentRuntime:
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
-        self._resolved_subagents = self._resolve_subagents()
-        snapshot = self.approval_store.ensure()
-        self._graph = self._create_graph(approvals=snapshot)
-        self._active_approvals = snapshot
+        if self.browser is not None:
+            await self.browser.start()
+        try:
+            self._resolved_subagents = self._resolve_subagents()
+            snapshot = self.approval_store.ensure()
+            self._graph = self._create_graph(approvals=snapshot)
+            self._active_approvals = snapshot
+        except BaseException:
+            if self.browser is not None:
+                await self.browser.stop()
+            raise
 
     def _create_graph(
         self,
@@ -427,6 +444,7 @@ class DeepAgentRuntime:
             memory=tuple(self._resolve_memory() or ()),
         )
         graph = create_deep_agent(
+            **({"context_schema": BrowserContext} if self.browser is not None else {}),
             model=model,
             tools=tools,
             system_prompt=diagnostics.system_prompt,
@@ -505,6 +523,8 @@ class DeepAgentRuntime:
             msg = "Background subagents did not stop; runtime resources remain open"
             raise RuntimeError(msg)
         self._graph = None
+        if self.browser is not None:
+            await self.browser.stop()
         cleanup = getattr(self.checkpointer, "close", None)
         if callable(cleanup):
             result = cleanup()
@@ -533,6 +553,13 @@ class DeepAgentRuntime:
             {"messages": [*messages, HumanMessage(content=_INTERRUPTED_MESSAGE)]},
         )
 
+    def _refresh_approval_graph(self) -> ApprovalSnapshot:
+        snapshot = self.approval_store.read()
+        if snapshot != self._active_approvals:
+            self._graph = self._create_graph(approvals=snapshot)
+            self._active_approvals = snapshot
+        return snapshot
+
     async def invoke(self, request: AgentRequest) -> AgentResult:
         """Invoke the Deep Agents graph for one Talon request.
 
@@ -551,11 +578,7 @@ class DeepAgentRuntime:
 
         await self._refresh_runtime_tools()
         async with self._tools_lock:
-            snapshot = self.approval_store.read()
-            if snapshot != self._active_approvals:
-                graph = self._create_graph(approvals=snapshot)
-                self._graph = graph
-                self._active_approvals = snapshot
+            snapshot = self._refresh_approval_graph()
             graph_token = self._invocation_graph.set(self._graph)
             policy_token = ACTIVE_APPROVALS.set(snapshot)
         operator_token = APPROVAL_OPERATOR.set(
@@ -576,6 +599,7 @@ class DeepAgentRuntime:
         history_token = _HISTORY_SCOPE.set(_history_scope(request))
         session_token = _HISTORY_SESSION.set(request.conversation_id)
         authorization_token = set_authorization_handler(request.authorization_handler)
+        browser_token = set_run(browser_run := self.browser.bind() if self.browser else None)
         message_token = MESSAGE_HANDLER.set(request.message_handler)
         try:
             text = await self._invoke_until_text(request, activity)
@@ -586,6 +610,7 @@ class DeepAgentRuntime:
                 self.background.record_delivery_failure(pending)
             raise
         finally:
+            reset_run(browser_token)
             APPROVAL_OPERATOR.reset(operator_token)
             ACTIVE_APPROVALS.reset(policy_token)
             reset_authorization_handler(authorization_token)
@@ -596,6 +621,8 @@ class DeepAgentRuntime:
             _CRON_ORIGIN.reset(token)
             self._invocation_graph.reset(graph_token)
             self._pending_results.reset(pending_token)
+            if browser_run is not None:
+                await browser_run.close()
         if activity is not None:
             activity.run_completed(text)
         self.background.acknowledge(pending)
@@ -754,6 +781,8 @@ class DeepAgentRuntime:
         if self.cron_store is not None:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())
+        if self.browser is not None:
+            tools.extend(browser_tools())
         tools.extend(self.tools if runtime_tools is None else runtime_tools)
         return tools
 
@@ -847,6 +876,8 @@ class DeepAgentRuntime:
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
             try:
+                if (browser_run := active_run()) is not None:
+                    return await invoke(payload, config=config, context=browser_run.context)
                 return await invoke(payload, config=config)
             except asyncio.CancelledError:
                 raise

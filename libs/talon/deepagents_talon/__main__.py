@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_talon.async_subagents import load_async_subagents
+from deepagents_talon.browser import BrowserClient
 from deepagents_talon.channels.discord import DiscordChannel, DiscordChannelConfig
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
@@ -268,7 +269,15 @@ async def _agent_runtime(
             logger.warning("MCP server %s failed: %s", server.name, server.error)
         else:
             logger.info("MCP server %s loaded %d tool(s)", server.name, len(server.tools))
+    browser = (
+        BrowserClient(
+            {**env, "TALON_BROWSER_TOKEN_FILE": str(config.home / "browser/control-token")}
+        )
+        if _env_enabled(env, "TALON_BROWSER_ENABLED")
+        else None
+    )
     return DeepAgentRuntime(
+        browser=browser,
         model=config.model,
         tools=mcp.tools,
         refresh_tools=mcp_provider.refresh_if_needed,

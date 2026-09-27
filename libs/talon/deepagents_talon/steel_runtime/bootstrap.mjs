@@ -37,6 +37,7 @@ FileService.getInstance = () => files;
 const failure = (code) => Object.assign(new Error(code), { code, statusCode: 400 });
 let stopping = false;
 let service;
+let bridge;
 let launching;
 let closing;
 let markLaunch;
@@ -111,6 +112,7 @@ async function stop(exitCode = 0) {
   setTimeout(() => process.exit(1), 25000);
   try {
     await launching?.catch(() => {});
+    await bridge?.close();
     await service?.shutdown();
     process.exit(exitCode);
   } catch {
@@ -140,6 +142,8 @@ try {
   await server.listen({ host: "127.0.0.1", port: Number(process.env.PORT) });
   await firstLaunch;
   if (!service?.wsEndpoint) throw failure("browser_not_ready");
+  const { main } = await import('./bridge.mjs');
+  bridge = await main();
   process.stdout.write('{"event":"talon_steel_ready"}\n');
 } catch {
   await stop(1);

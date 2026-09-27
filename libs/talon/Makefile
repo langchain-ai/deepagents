@@ -14,8 +14,8 @@ test tests: test_bridge
 	uv run --group test pytest --disable-socket --allow-unix-socket $(PYTEST_EXTRA) $(TEST_FILE) \
 		--timeout 10 $(COV_ARGS)
 
-test_bridge: ## Run WhatsApp bridge unit tests
-	node --test tests/channels/whatsapp_bridge/*.test.js
+test_bridge: ## Run JavaScript bridge and browser unit tests
+	node --test tests/channels/whatsapp_bridge/*.test.js tests/unit_tests/browser/*.test.mjs
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw . -- $(TEST_FILE)

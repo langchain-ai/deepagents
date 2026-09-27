@@ -1000,15 +1000,51 @@ class DeepAgentRuntime:
     def _resolve_memory(self) -> list[str] | None:
         if self.memory is not None:
             return list(self.memory) or None
-        paths = _split_path_env(
-            self.env.get("DEEPAGENTS_TALON_MEMORY_PATHS") or self.env.get("AGENT_MEMORY_PATHS"),
+        paths = self._memory_candidates(
+            _split_path_env(
+                self.env.get("DEEPAGENTS_TALON_MEMORY_PATHS") or self.env.get("AGENT_MEMORY_PATHS"),
+            )
         )
         if not paths and self.assistant_dir is not None:
-            paths.extend(_manifest_memory_paths(self.assistant_dir))
+            paths.extend(self._memory_candidates(_manifest_memory_paths(self.assistant_dir)))
         if not paths and self.assistant_dir is not None:
             paths.append(str(self.assistant_dir / "memory" / "AGENTS.md"))
         prepared = [_prepare_memory_path(path) for path in paths]
         return [path for path in prepared if path is not None] or None
+
+    def _memory_candidates(self, paths: list[str]) -> list[str]:
+        """Drop memory paths a sandbox backend would read from the sandbox.
+
+        Sandbox mode only routes the assistant's `memory/` directory to the
+        host, so any other path would be created on the host but read from the
+        sandbox.
+        """
+        if self.sandbox_working_dir is None:
+            return paths
+        memory_dir = self.assistant_dir / "memory" if self.assistant_dir is not None else None
+        kept: list[str] = []
+        for path in paths:
+            routed = _routed_memory_path(path, memory_dir)
+            if routed is None:
+                logger.warning(
+                    "Ignoring memory path %s: sandbox mode reads memory only from %s",
+                    path,
+                    memory_dir,
+                )
+            else:
+                kept.append(routed)
+        return kept
+
+
+def _routed_memory_path(raw: str, memory_dir: Path | None) -> str | None:
+    """Return `raw` spelled under `memory_dir` if it resolves inside it."""
+    if memory_dir is None:
+        return None
+    root = memory_dir.resolve()
+    resolved = Path(raw).expanduser().resolve()
+    if resolved == root or not resolved.is_relative_to(root):
+        return None
+    return str(memory_dir / resolved.relative_to(root))
 
 
 def _interrupts_from_state(state: object) -> tuple[object, ...]:

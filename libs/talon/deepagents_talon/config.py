@@ -164,12 +164,23 @@ class TalonConfig:
         provider = _env_value(self.env, "DEEPAGENTS_TALON_SANDBOX")
         if provider is None:
             return None
+        sandbox_id = _env_value(self.env, "DEEPAGENTS_TALON_SANDBOX_ID")
         return SandboxSettings(
             provider=provider,
-            sandbox_id=_env_value(self.env, "DEEPAGENTS_TALON_SANDBOX_ID"),
-            snapshot=_env_value(self.env, "DEEPAGENTS_TALON_SANDBOX_SNAPSHOT"),
+            sandbox_id=sandbox_id,
+            snapshot=_env_value(self.env, "DEEPAGENTS_TALON_SANDBOX_SNAPSHOT")
+            or self._default_snapshot(provider, sandbox_id),
             setup_script=_env_value(self.env, "DEEPAGENTS_TALON_SANDBOX_SETUP"),
         )
+
+    def _default_snapshot(self, provider: str, sandbox_id: str | None) -> str | None:
+        # LangSmith snapshot names are shared across a workspace, so the
+        # provider's `deepagents-code` default can belong to another user.
+        if provider != "langsmith" or sandbox_id is not None:
+            return None
+        if _env_value(self.env, "LANGSMITH_SANDBOX_SNAPSHOT_NAME"):
+            return None
+        return f"talon-{self.assistant_id}"
 
     @property
     def history_uri(self) -> str | None:

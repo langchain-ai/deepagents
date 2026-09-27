@@ -34,8 +34,10 @@ Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host
 By default the agent's shell and file tools run on the host. Set `DEEPAGENTS_TALON_SANDBOX` to a sandbox provider to run them in a remote sandbox instead:
 
 ```bash
-DEEPAGENTS_TALON_SANDBOX=langsmith
+DEEPAGENTS_TALON_SANDBOX=langsmith AGENT_MODEL=<provider>:<model-id> uv run deepagents-talon
 ```
+
+Under systemd, put the variable in the service's environment file instead.
 
 Talon uses the `deepagents-code` sandbox providers: `langsmith` works out of the box, and `agentcore`, `daytona`, `modal`, `runloop`, and `vercel` need the matching extra, for example `uv run --with 'deepagents-code[daytona]' deepagents-talon`. Each provider reads its own credentials (such as `LANGSMITH_API_KEY` or `DAYTONA_API_KEY`) in the Talon process; they are not forwarded into the sandbox.
 
@@ -43,12 +45,12 @@ Talon uses the `deepagents-code` sandbox providers: `langsmith` works out of the
 | --- | --- |
 | `DEEPAGENTS_TALON_SANDBOX` | Provider name. Unset keeps host execution. |
 | `DEEPAGENTS_TALON_SANDBOX_ID` | Attach to an existing sandbox instead of creating one. Talon never deletes it. |
-| `DEEPAGENTS_TALON_SANDBOX_SNAPSHOT` | Snapshot or blueprint for providers that support one (`langsmith`, `runloop`). |
+| `DEEPAGENTS_TALON_SANDBOX_SNAPSHOT` | Snapshot or blueprint for providers that support one (`langsmith`, `runloop`). LangSmith defaults to `talon-<assistant_id>`, because snapshot names are shared across a workspace. |
 | `DEEPAGENTS_TALON_SANDBOX_SETUP` | Host path to a script run once after the sandbox starts. |
 
-Talon creates the sandbox at startup and deletes it on shutdown, so sandbox files do not survive a restart unless you set `DEEPAGENTS_TALON_SANDBOX_ID`. If the sandbox cannot start, Talon exits with an error rather than falling back to host execution.
+Talon creates the sandbox at startup and deletes it on shutdown, so sandbox files do not survive a restart unless you set `DEEPAGENTS_TALON_SANDBOX_ID`. If the sandbox cannot start, Talon exits with an error rather than falling back to host execution. The first LangSmith start builds the snapshot and can outlast the provider's wait; Talon then exits, and the next start uses the snapshot once it is ready. Stopping Talon with SIGTERM while the sandbox is still starting can leave it running; attach with `DEEPAGENTS_TALON_SANDBOX_ID` if that matters.
 
-The assistant's `skills/` and `memory/` directories stay on the host so skills and memory keep working; every other path, including large tool results, lives in the sandbox. `tools.json` and other assistant state are not reachable from sandbox tools. Extra paths in `DEEPAGENTS_TALON_SKILLS_DIRS` or `DEEPAGENTS_TALON_MEMORY_PATHS` resolve inside the sandbox. MCP tools, web tools, and channel media handling still run on the host, so the sandbox is not a multi-tenant boundary.
+The assistant's `skills/` and `memory/` directories stay on the host so skills and memory keep working; every other path, including large tool results, lives in the sandbox. `tools.json` and other assistant state are not reachable from sandbox tools. Memory paths from `DEEPAGENTS_TALON_MEMORY_PATHS` or the manifest must sit inside the assistant's `memory/` directory; Talon ignores others with a warning. Extra `DEEPAGENTS_TALON_SKILLS_DIRS` resolve inside the sandbox. MCP tools, web tools, and channel media handling still run on the host, so the sandbox is not a multi-tenant boundary.
 
 ## Conversation history
 

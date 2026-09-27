@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
@@ -63,6 +65,28 @@ def test_sandbox_settings_from_env(tmp_path: Path) -> None:
     assert settings.setup_script == "/opt/setup.sh"
 
 
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({"DEEPAGENTS_TALON_SANDBOX": "langsmith"}, "talon-bot"),
+        (
+            {"DEEPAGENTS_TALON_SANDBOX": "langsmith", "DEEPAGENTS_TALON_SANDBOX_SNAPSHOT": "mine"},
+            "mine",
+        ),
+        ({"DEEPAGENTS_TALON_SANDBOX": "langsmith", "LANGSMITH_SANDBOX_SNAPSHOT_NAME": "x"}, None),
+        ({"DEEPAGENTS_TALON_SANDBOX": "langsmith", "DEEPAGENTS_TALON_SANDBOX_ID": "sbx"}, None),
+        ({"DEEPAGENTS_TALON_SANDBOX": "daytona"}, None),
+    ],
+)
+def test_langsmith_snapshot_defaults_to_assistant_name(
+    tmp_path: Path, env: dict[str, str], expected: str | None
+) -> None:
+    settings = _config(tmp_path, DEEPAGENTS_TALON_ASSISTANT_ID="bot", **env).sandbox
+
+    assert settings is not None
+    assert settings.snapshot == expected
+
+
 def test_backend_keeps_approvals_out_of_host_routes(tmp_path: Path) -> None:
     fake = _FakeSandbox()
     backend = sandbox_backend(fake, tmp_path)
@@ -108,6 +132,36 @@ async def test_open_sandbox_cleans_up_on_exit(
     assert events == ["create:langsmith:None", "delete"]
 
 
+async def test_cancelled_startup_deletes_sandbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started, release, deleted = threading.Event(), threading.Event(), threading.Event()
+
+    @contextmanager
+    def create_sandbox(_provider: str, **_: object) -> Iterator[_FakeSandbox]:
+        started.set()
+        release.wait(5)
+        yield _FakeSandbox()
+        deleted.set()
+
+    _patch_factory(monkeypatch, create_sandbox)
+    config = _config(tmp_path, DEEPAGENTS_TALON_SANDBOX="langsmith")
+
+    async def start() -> None:
+        async with open_sandbox(config):
+            pytest.fail("cancelled startup should not open a session")
+
+    task = asyncio.create_task(start())
+    await asyncio.to_thread(started.wait, 5)
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert await asyncio.to_thread(deleted.wait, 5)
+
+
 async def test_open_sandbox_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     @contextmanager
     def create_sandbox(provider: str, **_: object) -> Iterator[_FakeSandbox]:
@@ -143,3 +197,21 @@ def test_system_prompt_notes_sandbox(tmp_path: Path) -> None:
 def _patch_factory(monkeypatch: pytest.MonkeyPatch, create_sandbox: object) -> None:
     monkeypatch.setattr(sandbox_factory, "create_sandbox", create_sandbox)
     monkeypatch.setattr(sandbox_factory, "get_default_working_dir", lambda _provider: "/work")
+
+
+def test_sandbox_mode_keeps_outside_memory_paths_off_the_host(tmp_path: Path) -> None:
+    outside = tmp_path / "outside" / "notes.md"
+    inside = tmp_path / "memory" / "notes.md"
+    runtime = DeepAgentRuntime(
+        model="fake",
+        backend=StateBackend(),
+        assistant_dir=tmp_path,
+        env={
+            "DEEPAGENTS_TALON_MEMORY_PATHS": f"{outside}:{tmp_path}/memory/../tools.json:{inside}"
+        },
+        sandbox_working_dir="/work",
+    )
+
+    assert runtime._resolve_memory() == [str(inside)]
+    assert not outside.exists()
+    assert not (tmp_path / "tools.json").exists()

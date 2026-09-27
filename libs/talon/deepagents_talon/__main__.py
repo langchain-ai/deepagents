@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from deepagents_talon.async_subagents import load_async_subagents
 from deepagents_talon.channels.discord import DiscordChannel, DiscordChannelConfig
+from deepagents_talon.channels.slack import SlackChannel, SlackChannelConfig
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
 from deepagents_talon.config import TalonConfig
@@ -40,6 +41,7 @@ from deepagents_talon.pairing import (
     pause_jobs,
     revoke_sender,
 )
+from deepagents_talon.sandbox import SandboxStartupError, open_sandbox
 from deepagents_talon.speech import build_voice_transcriber
 
 if TYPE_CHECKING:
@@ -49,6 +51,7 @@ if TYPE_CHECKING:
 
     from deepagents_talon.cron import CronJob
     from deepagents_talon.interfaces import AgentRuntime, ChannelAdapter
+    from deepagents_talon.sandbox import SandboxSession
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +91,11 @@ def main() -> None:
         action="store_true",
         help="Attach the Discord channel adapter.",
     )
+    parser.add_argument(
+        "--slack",
+        action="store_true",
+        help="Attach the Slack channel adapter.",
+    )
     subparsers = parser.add_subparsers(dest="command")
     _add_import_fleet_parser(subparsers)
     _add_mcp_parsers(subparsers)
@@ -115,8 +123,13 @@ def main() -> None:
         whatsapp=args.whatsapp,
         telegram=args.telegram,
         discord=args.discord,
+        slack=args.slack,
     )
-    asyncio.run(_run_host(args, config, cron_store, channels))
+    try:
+        asyncio.run(_run_host(args, config, cron_store, channels))
+    except SandboxStartupError as exc:
+        print(f"talon: {exc}", file=sys.stderr)  # noqa: T201
+        sys.exit(1)
 
 
 def _add_import_fleet_parser(
@@ -291,8 +304,25 @@ async def _run_host(
     if config.model is None:
         await _run_host_with_agent(args, config, cron_store, channels, await _agent_runtime(config))
         return
+    async with open_sandbox(config) as sandbox:
+        await _run_model_host(
+            args, config, cron_store, channels, checkpointer=checkpointer, sandbox=sandbox
+        )
+
+
+async def _run_model_host(  # noqa: PLR0913  # threads host wiring through unchanged
+    args: argparse.Namespace,
+    config: TalonConfig,
+    cron_store: CronJobStore,
+    channels: Sequence[ChannelAdapter],
+    *,
+    checkpointer: Checkpointer | None,
+    sandbox: SandboxSession | None,
+) -> None:
     if checkpointer is not None:
-        agent = await _agent_runtime(config, cron_store=cron_store, checkpointer=checkpointer)
+        agent = await _agent_runtime(
+            config, cron_store=cron_store, checkpointer=checkpointer, sandbox=sandbox
+        )
         await _run_host_with_agent(args, config, cron_store, channels, agent)
         return
 
@@ -310,6 +340,7 @@ async def _run_host(
             config,
             cron_store=cron_store,
             checkpointer=ConversationSaver(sqlite_checkpointer, archive=archive),
+            sandbox=sandbox,
         )
         await _run_host_with_agent(args, config, cron_store, channels, agent)
 
@@ -343,6 +374,7 @@ async def _agent_runtime(
     config: TalonConfig,
     cron_store: CronJobStore | None = None,
     checkpointer: Checkpointer | None = None,
+    sandbox: SandboxSession | None = None,
 ) -> AgentRuntime:
     from deepagents_talon.runtime import (  # noqa: PLC0415
         DeepAgentRuntime,
@@ -371,6 +403,8 @@ async def _agent_runtime(
         checkpointer=checkpointer,
         middleware=(talon_mcp_middleware(),),
         env=env,
+        backend=sandbox.backend if sandbox is not None else None,
+        sandbox_working_dir=sandbox.working_dir if sandbox is not None else None,
     )
 
 
@@ -395,6 +429,7 @@ def _channels(
     whatsapp: bool = False,
     telegram: bool = False,
     discord: bool = False,
+    slack: bool = False,
 ) -> tuple[ChannelAdapter, ...]:
     channels: list[ChannelAdapter] = []
     if whatsapp or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
@@ -403,6 +438,8 @@ def _channels(
         channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
     if discord or _env_enabled(config.env, "DEEPAGENTS_TALON_DISCORD_ENABLED"):
         channels.append(DiscordChannel(DiscordChannelConfig.from_talon_config(config)))
+    if slack or _env_enabled(config.env, "DEEPAGENTS_TALON_SLACK_ENABLED"):
+        channels.append(SlackChannel(SlackChannelConfig.from_talon_config(config)))
     return tuple(channels)
 
 

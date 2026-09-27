@@ -1,199 +1,142 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Package-local commands and deterministic boundary tests for the Deep Agents SDK, dcode, Talon, and ACP. Use focused fake-model, in-memory, and temporary-storage tests before expanding to package or integration suites.
-tags: [testing, deepagents, dcode, pytest, talon, acp, mcp]
+description: Deterministic Talon verification routes for persistent scheduling, chat-command consistency, and read-only context diagnostics. Use injected clocks, temporary stores, fake graphs and models, and recording channels to protect lifecycle and privacy invariants without external services.
+tags: [testing, talon, cron, scheduler, pytest, privacy]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-25T08:06:00.203Z
+    at: 2026-09-27T08:05:28.881Z
 sources:
-  - id: openwiki-source-18f01ea5159b63661c1c8b1c
-    resource: repo://libs/acp/Makefile
-  - id: openwiki-source-8288b43b279d5cf7aaf1505d
-    resource: repo://libs/acp/tests/test_agent.py
-  - id: openwiki-source-006b62af9993da1b48c11de8
-    resource: repo://libs/code/Makefile
-  - id: openwiki-source-11d6c59d85493653aee76558
-    resource: repo://libs/code/tests/unit_tests/test_app.py
-  - id: openwiki-source-30d7e9e18e8d7c616fbbb0bf
-    resource: repo://libs/code/tests/unit_tests/test_auto_mode.py
-  - id: openwiki-source-26017a12b2a7ce9851b888a4
-    resource: repo://libs/code/tests/unit_tests/test_mcp_auth.py
-  - id: openwiki-source-c04c6318f6e59e0d1c9d6182
-    resource: repo://libs/code/tests/unit_tests/test_model_retry.py
-  - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
-    resource: repo://libs/code/tests/unit_tests/test_sessions.py
-  - id: openwiki-source-5a5147d4654f226b03e92ab9
-    resource: repo://libs/code/tests/unit_tests/test_workspace_diagnostics.py
-  - id: openwiki-source-0f308f1610986e2f3ed6d53c
-    resource: repo://libs/deepagents/Makefile
-  - id: openwiki-source-5132c2eb08d294721cb871ff
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py
-  - id: openwiki-source-10e4084b6aa57e5cc82620b3
-    resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
-  - id: openwiki-source-3dd6a4926b92ae499082a552
-    resource: repo://libs/deepagents/tests/unit_tests/test_middleware.py
-  - id: openwiki-source-fb60ee46c55b974b8341651c
-    resource: repo://libs/DEVELOPMENT.md
+  - id: openwiki-source-80976c09402c30d4f886a2fa
+    resource: repo://libs/talon/deepagents_talon/commands.py
+  - id: openwiki-source-4b1e381713dec742c675816b
+    resource: repo://libs/talon/deepagents_talon/context_doctor.py
+  - id: openwiki-source-f55101eb12af3c6ae9b9d823
+    resource: repo://libs/talon/deepagents_talon/cron/jobs.py
+  - id: openwiki-source-363e56d368aecc6ab73d3e2f
+    resource: repo://libs/talon/deepagents_talon/cron/scheduler.py
+  - id: openwiki-source-6801a88de6305bc8cbdd259f
+    resource: repo://libs/talon/deepagents_talon/host.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-ba53b2ab73965694b2510a58
     resource: repo://libs/talon/Makefile
+  - id: openwiki-source-75458be2d378c9102e37d6c4
+    resource: repo://libs/talon/tests/cron/test_expression.py
+  - id: openwiki-source-058eda257c62daed009e3f78
+    resource: repo://libs/talon/tests/cron/test_jobs.py
+  - id: openwiki-source-376016a439d0559796a191a0
+    resource: repo://libs/talon/tests/cron/test_scheduler.py
+  - id: openwiki-source-3c0ee8cc5cf93b1411287e26
+    resource: repo://libs/talon/tests/cron/test_until.py
   - id: openwiki-source-4d6726e17c8a0c78539a7d33
     resource: repo://libs/talon/tests/test_runtime.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
+  - id: openwiki-source-18959cdb729a1a796d950993
+    resource: repo://libs/talon/tests/unit_tests/test_commands.py
+  - id: openwiki-source-1e472b2d67bd29dc25c17e85
+    resource: repo://libs/talon/tests/unit_tests/test_context_doctor.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-27T08:05:28.881Z" }
 ---
 
 # Testing Guide
 
-Work from the package that owns the behavior. This monorepo has independently versioned packages with their own `pyproject.toml`, `Makefile`, and test environment; sibling packages are editable local dependencies. Install dependencies explicitly with `uv sync --all-groups`, use the package `Makefile` as the standard command interface, and use `make help` when a target is uncertain. Test paths mirror source layout. Warnings are errors unless they are on the reviewed per-package allowlist.
-
-```mermaid
-flowchart TD
-    Change["Changed behavior"] --> Owner{"Owning boundary"}
-    Owner --> SDK["Deep Agents SDK"]
-    Owner --> Code["dcode CLI and TUI"]
-    Owner --> Talon["Talon runtime"]
-    Owner --> ACP["ACP server"]
-    SDK --> SdkTest["Focused fake-model or backend test"]
-    Code --> CodeTest["Focused unit test"]
-    Talon --> TalonTest["Focused runtime test"]
-    ACP --> AcpTest["Focused protocol test"]
-    SdkTest --> Package["Run package test and lint"]
-    CodeTest --> Package
-    TalonTest --> Package
-    AcpTest --> Package
-    Package --> External{"External contract changed"}
-    External -->|"yes"| Integration["Run integration target if available"]
-    External -->|"no"| Review["Review focused results"]
-    Integration --> Review
-```
-
-*Start at the boundary that owns the contract; broaden only after its deterministic test passes.*
-
-## Package commands and test discipline
-
-From `libs/deepagents` and `libs/code`, a focused file uses `TEST_FILE`; `make test` runs unit tests with xdist, disables benchmarks, and blocks network sockets while allowing Unix sockets. `make integration_test` selects integration tests and uses a 30-second timeout. In dcode, `make check` adds Ruff formatting/checking, `ty`, import and command checks, unit tests, and repository consistency checks; an SDK-pin failure is advisory.
-
-```bash
-cd libs/deepagents
-uv sync --all-groups
-make test TEST_FILE=tests/unit_tests/test_end_to_end.py
-make lint
-make test
-make integration_test
-
-cd ../code
-make test TEST_FILE=tests/unit_tests/test_mcp_auth.py
-make check
-```
-
-For an isolated direct invocation, use the package test group, for example `uv run --group test pytest tests/unit_tests/test_specific.py`. Keep the default socket block intact for unit tests: a change requiring a provider, service, or executable belongs in an integration route rather than weakening a deterministic test.
-
-Talon and ACP use package-local `TEST_FILE` too, but their targets do not use xdist. Both apply a 10-second pytest timeout and block non-Unix sockets. Talon's `make test` first runs its WhatsApp bridge Node unit tests; ACP's test target writes both terminal and XML coverage reports. Their lint targets run Ruff format-in-check mode, Ruff checks, and `ty` against the package.
+Talon changes should be proven at the boundary where persistence, time, channel delivery, or graph state becomes observable. The unit suite is designed for this: inject a UTC clock, create a `CronJobStore` below `tmp_path`, replace graph creation or model resolution with a fake, and use recording callbacks or `RecordingChannel`. Do not require a real channel, an MCP server, or a model provider for these routes.
 
 ```bash
 cd libs/talon
+make test TEST_FILE=tests/cron/test_expression.py
+make test TEST_FILE=tests/cron/test_jobs.py
+make test TEST_FILE=tests/cron/test_scheduler.py
+make test TEST_FILE=tests/cron/test_until.py
+make test TEST_FILE=tests/unit_tests/test_commands.py
+make test TEST_FILE=tests/unit_tests/test_context_doctor.py
+make test TEST_FILE=tests/test_host.py
 make test TEST_FILE=tests/test_runtime.py
 make lint
-
-cd ../acp
-make test TEST_FILE=tests/test_agent.py
-make lint
 ```
 
-## Deep Agents SDK: prove end-to-end behavior without a provider
+`make test` runs the WhatsApp bridge Node tests first, then invokes pytest for `TEST_FILE` (default `tests/`) with non-Unix sockets disabled, Unix sockets allowed, a 10-second timeout, and coverage. Use `PYTEST_EXTRA` only when a focused pytest option is genuinely needed; keeping the socket block means an accidental provider or channel call fails as a unit-test defect rather than becoming flaky integration coverage.
 
-Use `libs/deepagents/tests/unit_tests/test_end_to_end.py` when a change crosses graph construction, middleware, model invocation, tool calling, streaming, or filesystem backends. It scripts `AIMessage` responses through `GenericFakeChatModel`, invokes real agents, and parameterizes filesystem behavior over virtual filesystem, state, and store backends. The test seam is deliberately end-to-end: assertions observe messages, tool results, state continuity, and stream metadata rather than implementation-private calls.
+## Select the smallest Talon route
 
-This is the preferred pattern for a new agent capability:
-
-1. Feed a finite fake-model response sequence containing the intended tool calls and final answer.
-2. Build the real agent with an in-memory checkpointer/store or temporary virtual filesystem.
-3. Invoke or stream it exactly as a caller would.
-4. Assert the externally visible messages, tool output, stream metadata, and persisted state, including a second turn when state shape or continuity matters.
-
-The end-to-end suite protects, among other contracts, filesystem tool use, multiple sequential calls, propagation of tags and metadata into main-agent streams, and prevention of a `StateBackend` files value degrading from a dictionary between turns. Fake models also let tests distinguish provider-class-specific behavior without credentials.
-
-### Middleware and sandbox boundaries
-
-Use `test_middleware.py` for composition and installation changes. It creates agents with `StateBackend`, `StoreBackend`, `CompositeBackend`, and small in-memory sandbox seams to verify that filesystem middleware provides its tools and stream channel, subagent middleware provides `task`, and combining middleware retains both capabilities. It is the narrow route for tool registration, message/result shaping, filesystem actions, or subagent composition.
-
-Use `backends/test_sandbox_backend.py` for `BaseSandbox` protocol and command-template changes. Its concrete in-process mock exercises server-side reads and small edits, upload-backed writes and large edits, parsing and failure propagation, cleanup, safe command construction, and sync/async parity. Do not substitute a live sandbox for these protocol tests; reserve integration coverage for a provider-specific boundary.
-
-## dcode: test the state and security boundary
-
-| Changed contract | Focused command | What the test should establish |
+| Changed contract | Focused route | Test seam and assertion |
 | --- | --- | --- |
-| MCP OAuth storage, discovery, callback, refresh, or re-auth | `make test TEST_FILE=tests/unit_tests/test_mcp_auth.py` | Private, isolated token persistence and safe authentication lifecycle behavior. |
-| MCP config discovery, loading, trust, filtering, or reconnect | `make test TEST_FILE=tests/unit_tests/test_mcp_tools.py` | Configuration and tool-selection behavior without an MCP service. |
-| Bound workspace configuration or user-facing drift explanation | `make test TEST_FILE=tests/unit_tests/test_workspace_diagnostics.py` | Persisted diagnostics remain useful without storing private paths or values. |
-| Approval classifier routing or failure fallback | `make test TEST_FILE=tests/unit_tests/test_auto_mode.py` | Structured fake-model policy decisions fail closed at the right boundary. |
-| Model retry classification or streaming retry cleanup | `make test TEST_FILE=tests/unit_tests/test_model_retry.py` | Retryable failures retry deterministically; control-flow interrupts do not. |
-| Checkpoint metadata, thread lookup, or deletion | `make test TEST_FILE=tests/unit_tests/test_sessions.py` | SQLite persistence and cleanup invariants. |
-| Startup, resume, queue, restart, or teardown in the terminal UI | `make test TEST_FILE=tests/unit_tests/test_app.py` | User-visible lifecycle ordering under Textual scheduling. |
+| Cron grammar, calendar matching, time zones, or DST | `tests/cron/test_expression.py` and `tests/cron/test_jobs.py` | Explicit UTC/local datetimes and `ZoneInfo`; assert exact instants or local wall-clock results. |
+| Job claiming, JSON store state, completion, retention, or `until` | `tests/cron/test_jobs.py` and `tests/cron/test_until.py` | A fresh store at `tmp_path / "cron"`; pass `now` explicitly and reload the store when disk state matters. |
+| Dispatch, delivery, silent output, failure handling, or ticker survival | `tests/cron/test_scheduler.py` | `PersistentCronScheduler` with a fixed `now`, recording runner/delivery callback, and `tick_once()`. |
+| Scheduled agent invocation, timeout recovery, or no-interactive-approval behavior | `tests/test_host.py` and `tests/test_runtime.py` | A blocking or recording agent and fake graph; assert metadata, recovery, and resume decision rather than calling a provider. |
+| Adding, renaming, hiding, advertising, or dispatching a slash command | `tests/unit_tests/test_commands.py` | The shared registry plus host constants; validate platform-safe names, help text, and exact dispatch coverage. |
+| Context audit content, token accounting, reload behavior, or host command behavior | `tests/unit_tests/test_context_doctor.py` | A fake tool-binding model, temporary assistant files, graph checkpoint state, and recording channel. |
 
-### MCP authentication and configuration
+## Persistent scheduling: test the temporal contract
 
-`test_mcp_auth.py` uses an isolated home/state directory, canned `httpx`/`httpx2` errors and responses, callback handlers, and controlled threads rather than a remote server. For `FileTokenStorage`, retain tests for server and URL isolation, invalid server-name rejection, POSIX `0600` permissions, corrupt-file remediation, expiry sidecars, and concurrent update serialization. Its async API must move blocking disk reads and writes off the event-loop thread; cancellation must remain joined to an in-flight persistence operation so a rotated token is not abandoned. A failed write must be surfaced rather than silently lost.
-
-OAuth/provider tests should drive the generator flow by returning canned HTTP responses to it. Important boundaries include cold-start expiry restoration, legacy-token refresh behavior, Bearer `resource_metadata` challenges through wrapped exceptions, loopback and paste-back callback parsing, and metadata discovery/caching for later refresh. Error summaries must give a re-login or configuration remedy without copying an unknown exception payload that may contain credentials. When modifying configuration resolution, pair this file with `test_mcp_tools.py`, `test_mcp_login_service.py`, or the MCP UI test that owns the visible continuation.
-
-### Workspace diagnostics
-
-`test_workspace_diagnostics.py` isolates the session database through `DEEPAGENTS_CODE_SERVER_DB_PATH` and inspects the real SQLite rows. It verifies that a thread binding persists a versioned, allowlisted snapshot; path-valued fields are excluded, oversized values are omitted, and a refusal never overwrites the prior comparison snapshot. On a later bind or require operation, diagnostics distinguish configuration drift, unbound threads, and context mismatch.
-
-This is also a privacy boundary. Tests assert that diagnostic changes and logs name safe fields but not their sensitive values, snapshots tolerate legacy/malformed input as specified, and rendered restoration advice treats unavailable historical values as unavailable—not as an instruction to unset them. Change the allowlist, serialization, refusal behavior, or UI-facing diagnostics only with these cases covered.
-
-### Autonomous mode, retry, sessions, and the TUI
-
-Auto-mode tests inject fake structured models, stores, events, and temporary paths. They protect bounded classifier history, context-overflow fallback, deterministic trusted-tool routes, write and symlink-escape safeguards, and the fail-closed path when the classifier is unavailable. Keep classifier tests provider-free and assert the decision plan and emitted event, not just a helper return value.
-
-Model-retry tests use controlled exceptions, streaming model doubles, and no-sleep seams. They separate retryable transport/provider errors from authentication, permission, invalid-request, and context-overflow cases; LangGraph interrupts remain control flow. The suite also protects attempt/status events and prevents failed streaming attempts from leaving orphaned output.
-
-Session tests use temporary SQLite checkpoints and filesystem archives. They cover coexistence of legacy and current thread identifiers, metadata from the newest checkpoint, deletion, and best-effort offloaded-history cleanup. Test a persistence change there rather than relying on the UI to discover ordering bugs.
+Scheduling has two distinct boundaries. `CronSchedule` turns user text into a next UTC instant while preserving wall-clock semantics for IANA zones. `CronJobStore` owns the durable job record and advances a due job before the scheduler invokes it. `PersistentCronScheduler` scans, claims, runs, records an outcome, and optionally delivers output. Tests should preserve that division: expression tests do not need a scheduler, and scheduler tests should use simple callbacks rather than a runtime graph.
 
 ```mermaid
-sequenceDiagram
-    participant User
-    participant TUI as Textual TUI
-    participant Sessions as Session storage
-    participant Agent as Agent server
-    User->>TUI: resume or submit input
-    TUI->>Sessions: resolve thread and restore history
-    Sessions-->>TUI: history and selected model
-    TUI->>Agent: start or reconnect
-    alt restore succeeds
-        TUI->>TUI: submit startup or queued input
-    else restore or startup fails
-        TUI->>TUI: clear resuming state and release input
-    end
+flowchart TD
+    Tick["Fixed-clock tick"] --> Sweep["Discard eligible finished jobs"]
+    Sweep --> Due["Read due jobs from temporary store"]
+    Due --> Claim["Persist claim and next run"]
+    Claim --> Run["Run recording callback"]
+    Run --> Outcome{"Run result"}
+    Outcome -->|"error"| Error["Persist error outcome"]
+    Outcome -->|"silent"| Quiet["Persist success without delivery"]
+    Outcome -->|"text"| Deliver["Deliver through recording callback"]
+    Deliver --> Delivered{"Delivery result"}
+    Delivered -->|"error"| DeliveryError["Persist delivery error"]
+    Delivered -->|"success"| Done["Keep recorded success"]
 ```
 
-*`test_app.py` tests the ordering and recovery observable to an interactive user.*
+*The scheduler claims persistence before execution, then records the run and delivery outcome through explicit seams.*
 
-`test_app.py` drives the async Textual app, so it is the boundary for resume/startup ordering, queued input, cancellation, restart, and shutdown. Preserve the invariant that restored history and adopted model settle before startup submission. A failed resume must clear the resuming state, and an interrupted or restarted turn must make input/queue progress possible again. Add a focused widget test for isolated rendering or key handling, but retain an app-level lifecycle test whenever scheduler ordering can change the outcome.
+### Calendar and DST regressions
 
-## Talon runtime: replacement, approval, and recovery
+Use `test_expression.py` for parser acceptance/rejection, canonical display, macros, ranges, lists, step values, and calendar extensions such as `L`, `LW`, `W`, last weekday, and nth weekday. Pin the semantic distinction between restricted day-of-month/day-of-week fields that match either and starred fields that require both.
 
-Run `libs/talon/tests/test_runtime.py` for `DeepAgentRuntime` lifecycle changes. It replaces `create_deep_agent` with recording graphs and uses in-memory stores, fake tools, callbacks, and temporary directories to make runtime wiring inspectable. The focused tests cover construction of the composite backend, checkpointer, tools, skills, memory, subagents, model settings, and environment-derived limits without a model provider.
+The high-value regression cases are intentionally distant from today: leap day must skip 2100, and a fifth Friday in February can require searching beyond a decade. A future optimization must still find a valid rare match and reject an impossible expression at job creation rather than looping or silently creating a job that never fires.
 
-Tool refresh and MCP reload are particularly sensitive: refreshed tools rebuild the graph between turns, while an MCP configuration reload must replace tools and graph transactionally. If construction of the replacement graph fails, the previous tools and graph remain active. Similarly, an invocation already waiting on a human approval must resume against the graph that raised its interrupt even if the runtime graph is later replaced.
+Test zone behavior with named zones and exact expected local times. Daily and cron schedules retain their requested local hour through spring and fall transitions; nonexistent times snap forward once, including a sub-hour gap; and an ambiguous fall-back local time fires once rather than once per offset. In particular, a spring-forward cron whose several nominal times all resolve to 03:00 must dispatch only one 03:00 run.
 
-Runtime approval tests send a graph interrupt through an `AgentRequest` approval handler and assert the resumed decision. They also assert that rejected calls do not run, scheduled/cron invocations auto-reject gated tools because no interactive approval exists, and logs expose action names/counts but not argument values or raw conversation identifiers. Recovery tests repair a dangling tool call before writing the interruption marker at the latest checkpoint. Treat these as lifecycle and privacy invariants, not merely mock expectations.
+### Claim before run, bounded expiration, and retention
 
-## ACP: protocol behavior with a fake client and model
+A due job is atomically claimed by advancing or disabling its next occurrence and writing the record before execution. This is why scheduler callback tests inspect the stored record from inside `run_job`: a one-shot already has `next_run_at is None`, so a second tick cannot run the same occurrence after a crash or slow execution. Recurring intervals remain phase-locked to the previous occurrence, catch up after downtime, and respect a repeat cap.
 
-`libs/acp/tests/test_agent.py` is the protocol-level end-to-end suite for `AgentServerACP`. It constructs real deep-agent or LangChain graphs with `MemorySaver`, connects a `FakeACPClient`, creates ACP sessions, then calls `prompt`, cancellation, mode/config updates, and session loading. This tests the ACP boundary without a live client or LLM.
+`until` only applies to recurring schedules and is interpreted as a local wall-clock timestamp. The occurrence exactly at `until` is included. A short five-minute grace admits a tick that arrives slightly late, but a job missed well beyond the window is disabled without a late delivery. Test both boundaries with explicit timestamps; do not depend on wall-clock sleeps. Also verify parsing rejects incomplete or out-of-range text, a limit before the first run, and `until` on a one-shot job.
 
-Use it for streamed content ordering, reasoning and multimodal blocks, tool-call start/result updates, per-session cancellation, and human-in-the-loop permissions. In particular, preserve whitespace-only reasoning deltas, emit content before its tool call, prompt once per interrupt, and apply `approve_always` only to the appropriate session's allowed command/tool type.
+Completion is not synonymous with immediate deletion. On the next tick, successful one-shots and cleanly expired jobs can be removed. A failed final run, or a job claimed before a process interruption but never given an outcome, remains inspectable; retention pruning removes it only after the configured period. An edit that gives a just-finished job a new enabled schedule must prevent the sweep from deleting it. These cases protect operational diagnosis after a failure.
 
-When `load_sessions=True`, test a persisted session through a restarted server. The suite verifies replay of user/agent messages, visible reasoning, tool calls, compacted history, and saved mode/model options. It also rejects session IDs the server did not create and reload requests from a different `cwd`; these tests protect ownership and workspace isolation. Mode or model changes rebuild the agent using the session context, including its original working directory.
+## Scheduler outcomes and host integration
 
-## Completion checklist
+`test_scheduler.py` is the narrow route for lifecycle behavior. Its injected clock and recording delivery callback prove that a due job is claimed, produces an `ok` outcome, and delivers to the origin conversation. Assert that `[SILENT]` at either end suppresses delivery while still recording success; empty output is also not delivered. A runner exception records `error` and leaves a recurring job on its advanced schedule, while a delivery exception replaces the success outcome with a `delivery failed:` error.
 
-1. Sync the changed package and run its focused test file first.
-2. Use fake models, fake clients, in-memory stores/checkpointers, temporary files, and canned transport responses to exercise the real graph or protocol boundary.
-3. Preserve socket blocking and warnings-as-errors in unit tests; do not add live provider dependencies to recover determinism.
-4. Run `make test` and `make lint` in the changed package; run `make check` for a dcode review-ready change.
-5. Run dcode MCP, workspace, persistence, retry, and Textual tests at their distinct boundaries rather than folding them into a generic agent test.
-6. For Talon graph replacement or ACP session work, include the relevant concurrency, ownership, approval, and recovery failure path.
-7. Escalate to `make integration_test` only when the externally hosted contract changed.
+The ticker must survive an unexpected scan failure: it logs the failure, waits for the normal interval, and later scans again. Test start/stop separately with a short `tick_seconds`; cancellation must still clear the ticker task. Because jobs run serially within one tick, host-level scheduled execution has a timeout boundary so a stalled job becomes an error and later jobs can proceed.
+
+For host/runtime changes, retain the same isolation at the integration seam. `test_host.py` supplies a `BlockingAgent`, `RecordingScheduler`, and `RecordingChannel` to test lifecycle and scheduled-run behavior without a real channel. `test_runtime.py` uses recording and interrupting graphs, fake tools, temporary stores, and fake model seams. Scheduled invocations carry cron metadata and cannot ask an operator: a gated tool interrupt is resumed as a rejection and never executes. This is a safety invariant, not an optional UX path.
+
+## Command registry: advertise exactly what can run
+
+`deepagents_talon.commands` is the shared source for chat help and platform registration; the host dispatches the corresponding slash-command constants. Keep registry tests whenever a command changes:
+
+- Names are unique, lowercase/platform-valid, and their summaries are nonempty one-line strings within Discord's limit.
+- `/help` lists every visible registry entry with its exact summary and omits hidden entries. Hidden commands may still be typed, but must not appear in help or platform advertisements.
+- Every registry command has a host dispatch branch, and every host dispatch constant resolves to the registry. Otherwise a command can be advertised yet fall through to the agent as ordinary text.
+
+This route intentionally catches cross-module drift rather than merely checking that a registry entry exists.
+
+## Context doctor: read-only, scoped, and redacted
+
+`/context-doctor` reports estimated injected-context cost, not the source contents. The runtime reads the active graph checkpoint for the resolved conversation and its configured system prompt, memory, skills, and tool schemas; it renders aggregate labels and token counts. It does not invoke the agent or write graph state. The report uses the effective post-compaction conversation—summary plus messages after the cutoff—and can use the latest provider input-token metadata when available.
+
+The fixture in `test_context_doctor.py` builds a real `DeepAgentRuntime` over temporary `AGENTS.md`, memory, and skill files while monkeypatching model resolution to `_ToolBindingFakeModel`. Assertions must demonstrate both utility and privacy: configured-source categories, memory/skill counts, tool-schema totals, checkpoint-scoped token usage, and changed output after tool reload; never private instruction/memory text, schema description text, or filesystem paths. Snapshot values and configuration must be identical before and after the audit, and another conversation must not inherit the current thread's usage.
+
+At the host boundary, `/context-doctor` is dispatched without interrupting a currently running agent turn and follows the new thread created by `/new`. If the runtime lacks diagnostics or the audit fails, the user gets a safe generic message and the underlying private exception is not sent to the channel. Use a recording channel to assert that behavior.
+
+## Review checklist
+
+1. Start with the focused test file and a fixed clock or fake boundary; use `tmp_path` rather than a user cron directory.
+2. For time changes, add exact DST gap/fold and rare-calendar assertions, not just nearby ordinary dates.
+3. For persistence changes, prove the claim is written before `run_job`, prove `until` remains inclusive only within its grace, and cover failed/unfinished-job retention.
+4. For scheduler work, exercise success, silent output, runner failure, delivery failure, and a recoverable failed tick.
+5. For command work, update registry, help/advertisement, and host-dispatch alignment together.
+6. For diagnostics, assert both non-mutation and redaction with private fixture data and a checkpoint from the target conversation.
+7. Run `make test` and `make lint` before widening coverage; do not add a real provider or channel merely to test a deterministic Talon contract.

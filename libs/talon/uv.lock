@@ -1104,6 +1104,7 @@ name = "deepagents-talon"
 version = "0.0.8"
 source = { editable = "." }
 dependencies = [
+    { name = "aiohttp" },
     { name = "aiosqlite" },
     { name = "deepagents" },
     { name = "deepagents-code" },
@@ -1171,6 +1172,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "aiohttp", specifier = ">=3.14.3,<4.0.0" },
     { name = "aiosqlite", specifier = ">=0.22.1,<1.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-code", editable = "../code" },

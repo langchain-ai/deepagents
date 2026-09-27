@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, NoReturn, Protocol
 
+import aiohttp
 from slack_sdk.socket_mode.aiohttp import SocketModeClient
 from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
@@ -478,16 +479,44 @@ class _SlackSdkGateway:
         thread_ts: str | None,
         comment: str | None,
     ) -> str | None:
-        await self._client().files_upload_v2(
-            channel=channel_id,
-            file=str(file_path),
+        # Not `files_upload_v2`: it reads the whole file into memory, on the event
+        # loop, before its first await. The same three steps run here instead, with
+        # the body streamed from disk.
+        client = self._client()
+        stat = await asyncio.to_thread(file_path.stat)
+        ticket = await client.files_getUploadURLExternal(
             filename=file_path.name,
+            length=stat.st_size,
+        )
+        await self._stream_upload(str(ticket["upload_url"]), file_path)
+        await client.files_completeUploadExternal(
+            files=[{"id": str(ticket["file_id"]), "title": file_path.name}],
+            channel_id=channel_id,
             initial_comment=comment,
             thread_ts=thread_ts,
         )
-        # The upload completes asynchronously on Slack's side and does not report
-        # the timestamp of the message that will carry the file.
+        # The completed upload does not report the timestamp of the message that
+        # will carry the file.
         return None
+
+    async def _stream_upload(self, upload_url: str, file_path: Path) -> None:
+        if not _is_file_host_url(upload_url):
+            msg = "refusing to upload a Slack file to an unexpected host"
+            raise ChannelMediaError(msg)
+        # Only the idle timeouts are bounded: a large file may take longer in total.
+        timeout = aiohttp.ClientTimeout(
+            total=None,
+            sock_connect=self._timeout_seconds,
+            sock_read=self._timeout_seconds,
+        )
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            body = await asyncio.to_thread(file_path.open, "rb")
+            with body:
+                # aiohttp reads a file object in an executor, chunk by chunk.
+                async with session.post(upload_url, data=body) as response:
+                    if response.status != 200:  # noqa: PLR2004  # Slack's documented success
+                        msg = f"Slack file upload failed with HTTP {response.status}"
+                        raise ChannelMediaError(msg)
 
     async def update_message(self, channel_id: str, ts: str, text: str) -> None:
         await self._client().chat_update(channel=channel_id, ts=ts, text=text)
@@ -911,10 +940,10 @@ def download_slack_file(
         max_bytes: Maximum bytes to accept.
 
     Raises:
-        ChannelMediaError: If the URL is not a Slack file URL or the file is too large.
+        ChannelMediaError: If the URL is not a Slack file URL, or the file is too
+            large or arrives incomplete.
     """
-    parsed = urllib.parse.urlsplit(url)
-    if parsed.scheme != "https" or parsed.hostname != _FILE_HOST:
+    if not _is_file_host_url(url):
         msg = "refusing to download a Slack file from an unexpected host"
         raise ChannelMediaError(msg)
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})  # noqa: S310  # scheme checked above
@@ -924,27 +953,57 @@ def download_slack_file(
         if expected is not None and expected > max_bytes:
             msg = f"media file is too large: {expected} bytes exceeds {max_bytes}"
             raise ChannelMediaError(msg)
-        _write_capped(response, destination, max_bytes)
+        _write_capped(response, destination, max_bytes=max_bytes, expected=expected)
+
+
+def _is_file_host_url(url: str) -> bool:
+    parsed = urllib.parse.urlsplit(url)
+    return parsed.scheme == "https" and parsed.hostname == _FILE_HOST
 
 
 def _build_opener() -> urllib.request.OpenerDirector:
     return urllib.request.build_opener(_RefuseRedirects)
 
 
-def _write_capped(response: IO[bytes], destination: Path, max_bytes: int) -> None:
+def _write_capped(
+    response: IO[bytes],
+    destination: Path,
+    *,
+    max_bytes: int,
+    expected: int | None,
+) -> None:
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     # `O_NOFOLLOW` stops a planted symlink from redirecting the write elsewhere.
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
-    total = 0
-    with os.fdopen(os.open(destination, flags, 0o600), "wb") as file:
-        while chunk := response.read(64 * 1024):
-            total += len(chunk)
-            if total > max_bytes:
-                break
-            file.write(chunk)
-    if total > max_bytes:
+    descriptor = os.open(destination, flags, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as file:
+            _copy_capped(response, file, max_bytes=max_bytes, expected=expected)
+    except BaseException:
+        # Any failure, including a timeout or reset mid-body, must not leave a
+        # partial private file behind.
         destination.unlink(missing_ok=True)
-        msg = f"media file is too large: more than {max_bytes} bytes"
+        raise
+
+
+def _copy_capped(
+    response: IO[bytes],
+    file: IO[bytes],
+    *,
+    max_bytes: int,
+    expected: int | None,
+) -> None:
+    total = 0
+    while chunk := response.read(64 * 1024):
+        total += len(chunk)
+        if total > max_bytes:
+            msg = f"media file is too large: more than {max_bytes} bytes"
+            raise ChannelMediaError(msg)
+        file.write(chunk)
+    # `HTTPResponse.read(amt)` returns `b""` on a premature EOF rather than
+    # raising, so a cut-short body would otherwise pass as a whole file.
+    if expected is not None and total != expected:
+        msg = f"media download was incomplete: {total} of {expected} bytes"
         raise ChannelMediaError(msg)
 
 

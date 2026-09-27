@@ -22,6 +22,9 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
+    # The Slack adapter streams uploads with `aiohttp` directly. Arrives
+    # transitively via `discord.py`; declared because we import it.
+    "aiohttp>=3.14.3,<4.0.0",
     "aiosqlite>=0.22.1,<1.0.0",
     "deepagents>=0.7.0",
     "deepagents-code>=0.1.71,<1.0.0",
@@ -43,7 +46,6 @@ dependencies = [
     "mcp>=2.0.0,<3.0.0",
     "pydantic>=2.13.4,<3.0.0",
     "pyyaml>=6.0.3",
-    # Socket Mode rides on `aiohttp`, which `discord.py` already brings in.
     "slack-sdk>=3.44.1,<4.0.0",
     "tzdata>=2025.2",
 ]

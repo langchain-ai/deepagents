@@ -632,3 +632,91 @@ async def test_oversized_inbound_file_is_reported_not_downloaded(
     assert messages[0].metadata["has_media"] is False
     assert "too large" in str(messages[0].metadata["media_error"])
     assert opener.requests == []
+
+
+class _BrokenResponse(_FakeResponse):
+    def read(self, size=-1):
+        if self.tell() > 0:
+            msg = "connection reset"
+            raise ConnectionResetError(msg)
+        return super().read(size)
+
+
+def test_download_failure_mid_body_leaves_no_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _use_opener(monkeypatch, _BrokenResponse(b"x" * 70_000))
+    destination = tmp_path / "out.bin"
+    with pytest.raises(ConnectionResetError):
+        download_slack_file(
+            "https://files.slack.com/a",
+            destination,
+            token="xoxb-t",  # noqa: S106  # inert test token
+            timeout=1,
+            max_bytes=1_000_000,
+        )
+    assert not destination.exists()
+
+
+def test_truncated_download_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _use_opener(monkeypatch, _FakeResponse(b"abcd", {"content-length": "10"}))
+    destination = tmp_path / "out.bin"
+    with pytest.raises(ChannelMediaError, match="incomplete"):
+        download_slack_file(
+            "https://files.slack.com/a",
+            destination,
+            token="xoxb-t",  # noqa: S106  # inert test token
+            timeout=1,
+            max_bytes=100,
+        )
+    assert not destination.exists()
+
+
+class _FakeWebClient:
+    def __init__(self, upload_url: str) -> None:
+        self.upload_url = upload_url
+        self.completed: list[dict] = []
+
+    async def files_getUploadURLExternal(self, *, filename, length):  # noqa: N802  # Slack API name
+        del filename, length
+        return {"upload_url": self.upload_url, "file_id": "F1"}
+
+    async def files_completeUploadExternal(self, **kwargs: object):  # noqa: N802  # Slack API name
+        self.completed.append(kwargs)
+
+
+async def test_upload_streams_to_slack_and_completes_in_the_thread(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image = tmp_path / "chart.png"
+    image.write_bytes(b"\x89PNG")
+    gateway = slack_module._SlackSdkGateway(bot_token="b", app_token="a", timeout_seconds=1)  # noqa: S106  # inert test token
+    web = _FakeWebClient("https://files.slack.com/upload/v1/abc")
+    gateway._web = web  # type: ignore[assignment]
+    streamed: list[tuple[str, Path]] = []
+
+    async def fake_stream(upload_url, file_path):
+        streamed.append((upload_url, file_path))
+
+    monkeypatch.setattr(gateway, "_stream_upload", fake_stream)
+    await gateway.upload_file("C1", image, thread_ts="1.2", comment="hi")
+    assert streamed == [("https://files.slack.com/upload/v1/abc", image)]
+    assert web.completed == [
+        {
+            "files": [{"id": "F1", "title": "chart.png"}],
+            "channel_id": "C1",
+            "initial_comment": "hi",
+            "thread_ts": "1.2",
+        },
+    ]
+
+
+async def test_upload_refuses_a_foreign_upload_url(tmp_path: Path) -> None:
+    image = tmp_path / "chart.png"
+    image.write_bytes(b"\x89PNG")
+    gateway = slack_module._SlackSdkGateway(bot_token="b", app_token="a", timeout_seconds=1)  # noqa: S106  # inert test token
+    web = _FakeWebClient("https://evil.test/upload")
+    gateway._web = web  # type: ignore[assignment]
+    with pytest.raises(ChannelMediaError, match="unexpected host"):
+        await gateway.upload_file("C1", image, thread_ts=None, comment=None)
+    assert web.completed == []

@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { createLocalViewer } from './local-viewer.mjs';
 import { constants, openSync, fstatSync, readFileSync, closeSync } from 'node:fs';
 import { timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
@@ -178,7 +179,7 @@ function commandFields(envelope) {
       (envelope.session_id !== undefined && !text(envelope.session_id))) fail('invalid_request');
 }
 
-export function createBridge({ token, coordinator, WebSocket, discoverURL = discover,
+export function createBridge({ token, coordinator, WebSocket, discoverURL = discover, localViewer = null,
   healthy = async () => { await fixedJSON(`${STEEL}/v1/sessions`); return true; },
   controlHost = '127.0.0.1', controlPort = 8081, viewerHost = '127.0.0.1', viewerPort = 8080 }) {
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) fail('invalid_token_file');
@@ -194,11 +195,12 @@ export function createBridge({ token, coordinator, WebSocket, discoverURL = disc
   };
   const handler = (control) => async (request, response) => {
     try {
-      if (request.headers.host !== `127.0.0.1:${request.socket.localPort}` || request.headers.origin) return reply(response, 403, { error: 'local_browser_only' });
+      if (request.headers.host !== `127.0.0.1:${request.socket.localPort}` || (control && request.headers.origin)) return reply(response, 403, { error: 'local_browser_only' });
       if (request.method === 'GET' && request.url === '/health') {
         const ready = await healthy().catch(() => false);
         return reply(response, ready ? 200 : 503, { status: ready ? 'ready' : 'unavailable' });
       }
+      if (!control && localViewer) return await localViewer.handler(request, response);
       const release = request.method === 'POST' && request.url === '/internal/browser/release';
       const invoke = request.method === 'POST' && request.url === '/internal/browser/command';
       if (!control || !(release || invoke)) return reply(response, 404, { error: 'not_found' });
@@ -223,7 +225,11 @@ export function createBridge({ token, coordinator, WebSocket, discoverURL = disc
       socket.setTimeout(10000, () => socket.destroy());
     });
   }
-  viewer.on('upgrade', (_, socket) => reject(socket, 404, 'not_found'));
+  viewer.on('upgrade', (request, socket, head) => {
+    if (!localViewer) return reject(socket, 404, 'not_found');
+    socket.setTimeout(0);
+    localViewer.upgrade(request, socket, head);
+  });
   control.on('upgrade', (_, socket) => reject(socket, 404, 'not_found'));
   const listen = (server, host, port) => new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
   return { control, viewer, coordinator, command,
@@ -232,6 +238,7 @@ export function createBridge({ token, coordinator, WebSocket, discoverURL = disc
       catch (error) { control.close(); viewer.close(); throw error; }
     },
     async close() {
+      await localViewer?.close();
       coordinator.fail();
       await Promise.all([control, viewer].map((server) => new Promise((resolve) => { server.close(resolve); server.closeAllConnections(); })));
     },
@@ -246,8 +253,14 @@ export async function main(env = process.env) {
     addresses[`${name.toLowerCase()}Port`] = configuredPort;
   }
   const coordinator = new Coordinator({ ttl: Number(env.TALON_BROWSER_LEASE_TTL_SECONDS ?? 1800) * 1000 });
-  const { WebSocket } = createRequire(`${process.argv[2]}/package.json`)('ws');
-  const bridge = createBridge({ token: readToken(env.TALON_BROWSER_TOKEN_FILE), coordinator, WebSocket, ...addresses });
+  const { WebSocket, WebSocketServer } = createRequire(`${process.argv[2]}/package.json`)('ws');
+  if (!['false', 'true'].includes(env.TALON_BROWSER_LOCAL_VIEWER ?? 'true')) fail('invalid_config');
+  const localViewer = env.TALON_BROWSER_LOCAL_VIEWER !== 'false' ? createLocalViewer({
+    coordinator, WebSocket, WebSocketServer, origin: `http://127.0.0.1:${addresses.viewerPort}`,
+    token: env.TALON_BROWSER_VIEWER_TOKEN,
+    createInput: (allowed) => new Transport({ WebSocket, allowed, onFailure: () => coordinator.fail() }),
+  }) : null;
+  const bridge = createBridge({ token: readToken(env.TALON_BROWSER_TOKEN_FILE), coordinator, WebSocket, localViewer, ...addresses });
   await bridge.start();
   return bridge;
 }

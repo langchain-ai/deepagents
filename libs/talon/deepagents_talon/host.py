@@ -54,6 +54,7 @@ from deepagents_talon.interfaces import (
     ConversationHistoryRuntime,
     CronScheduler,
     MCPReloadableRuntime,
+    ModelSelectableRuntime,
     ProgressMessageHandler,
     ReactionChannelAdapter,
     SendResult,
@@ -96,6 +97,7 @@ _NEW_COMMAND = chat_commands.NEW
 _MCP_RELOAD_COMMAND = chat_commands.MCP_RELOAD
 _HELP_COMMAND = chat_commands.HELP
 _CONTEXT_DOCTOR_COMMAND = chat_commands.CONTEXT_DOCTOR
+_MODEL_COMMAND = chat_commands.MODEL
 _RESET_ALL_HISTORY_COMMAND = chat_commands.RESET_ALL_HISTORY
 _PAIR_COMMAND = chat_commands.PAIR
 _PAIR_OPERATOR_ONLY_MESSAGE = "Only an operator can manage sender pairing."
@@ -110,6 +112,13 @@ _HISTORY_RESET_FAILURE_MESSAGE = (
 _MCP_RELOAD_SUCCESS_MESSAGE = "Reloaded MCP configuration."
 _MCP_RELOAD_FAILURE_MESSAGE = "Could not reload MCP configuration. Check Talon logs."
 _MCP_RELOAD_UNAVAILABLE_MESSAGE = "MCP configuration reload is unavailable."
+_MODEL_DEFAULT_ARGUMENT = "default"
+_MODEL_UNAVAILABLE_MESSAGE = "Model switching is unavailable."
+_MODEL_OPERATOR_ONLY_MESSAGE = "Only an operator can change the model."
+_MODEL_UNKNOWN_MESSAGE = "Not an available model. Send /model to list them."
+_MODEL_LOAD_FAILURE_MESSAGE = "Could not load that model. Check Talon logs."
+_MODEL_SAVE_FAILURE_MESSAGE = "Could not save the model selection. Check Talon logs."
+_MODEL_LIST_FAILURE_MESSAGE = "Could not list available models. Check Talon logs."
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
@@ -269,6 +278,7 @@ class TalonHost:
         self._generations: defaultdict[str, int] = defaultdict(int)
         self._blocked: set[str] = set()
         self._conversation_resets = _load_conversation_resets(config.conversation_state_path)
+        self._model_selections = _load_model_selections(config.model_state_path)
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
@@ -528,6 +538,9 @@ class TalonHost:
         elif command == _PAIR_COMMAND:
             reply = await self._pair_command(channel, message, provider)
             await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
+        elif command == _MODEL_COMMAND:
+            reply = await self._model_command(channel, message, conversation_root)
+            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
         else:
             return False
         return True
@@ -619,6 +632,51 @@ class TalonHost:
                 logger.debug("Context diagnostics failed", exc_info=True)
                 report = "Could not build context diagnostics. Please try again."
         await send_with_retry(lambda: channel.send_message(chat, report))
+
+    async def _model_command(
+        self, channel: ChannelAdapter, message: ChannelMessage, conversation_root: str
+    ) -> str:
+        """Show, list, or switch the conversation's model and return the reply."""
+        if not isinstance(self.agent, ModelSelectableRuntime):
+            return _MODEL_UNAVAILABLE_MESSAGE
+        argument = _command_argument(message.text)
+        if not argument or (":" not in argument and argument != _MODEL_DEFAULT_ARGUMENT):
+            try:
+                catalog = await self.agent.model_catalog()
+            except Exception:  # noqa: BLE001  # Do not disclose provider discovery errors.
+                logger.warning("Could not discover available models", exc_info=True)
+                return _MODEL_LIST_FAILURE_MESSAGE
+            if argument:
+                return _format_provider_models(argument, catalog)
+            current = self._model_selections.get(conversation_root)
+            return _format_model_overview(current, self.agent.default_model, catalog)
+        if not _is_operator(channel, message):
+            return _MODEL_OPERATOR_ONLY_MESSAGE
+        spec = None if argument == _MODEL_DEFAULT_ARGUMENT else argument
+        return await self._switch_model(conversation_root, spec, self.agent)
+
+    async def _switch_model(
+        self, conversation_root: str, spec: str | None, agent: ModelSelectableRuntime
+    ) -> str:
+        if spec is not None and spec != agent.default_model:
+            try:
+                if not await agent.select_model(spec):
+                    return _MODEL_UNKNOWN_MESSAGE
+            except Exception:  # noqa: BLE001  # Do not disclose provider or credential errors.
+                logger.warning("Could not load the selected model", exc_info=True)
+                return _MODEL_LOAD_FAILURE_MESSAGE
+        selections = dict(self._model_selections)
+        if spec is None or spec == agent.default_model:
+            selections.pop(conversation_root, None)
+        else:
+            selections[conversation_root] = spec
+        try:
+            _write_json_state(self.config.model_state_path, selections)
+        except OSError:
+            logger.warning("Could not save the model selection", exc_info=True)
+            return _MODEL_SAVE_FAILURE_MESSAGE
+        self._model_selections = selections
+        return f"This chat now uses {spec or agent.default_model}."
 
     async def _reload_mcp_configuration(
         self,
@@ -807,20 +865,7 @@ class TalonHost:
         if content != message.text:
             metadata["model_content"] = content
 
-        exposure = getattr(getattr(channel, "config", None), "exposure", None)
-        operator = bool(
-            not unattended
-            and isinstance(exposure, ChannelExposure)
-            and exposure.mode in (ExposureMode.SELF, ExposureMode.ALLOWLIST, ExposureMode.OPEN)
-            and route.message.sender_id
-            and (
-                route.message.sender_id in exposure.operator_ids
-                or (
-                    exposure.mode == ExposureMode.SELF
-                    and route.message.metadata.get("from_self") is True
-                )
-            )
-        )
+        operator = not unattended and _is_operator(channel, route.message)
 
         typing_task = asyncio.create_task(
             _typing_refresh_loop(channel, message.conversation_id),
@@ -875,6 +920,7 @@ class TalonHost:
                 ),
                 tool_approval_operator=operator,
                 message_handler=message_handler,
+                model=self._model_selections.get(turn.conversation_root),
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
         except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
@@ -1080,6 +1126,7 @@ class TalonHost:
         authorization_handler: Callable[[AuthorizationEvent], Awaitable[str | None]] | None = None,
         tool_approval_operator: bool = False,
         message_handler: ProgressMessageHandler | None = None,
+        model: str | None = None,
     ) -> AgentResult:
         metadata = {
             **metadata,
@@ -1102,6 +1149,7 @@ class TalonHost:
                         approval_handler=approval_handler,
                         authorization_handler=authorization_handler,
                         message_handler=message_handler,
+                        model=model,
                     ),
                 )
         except asyncio.CancelledError:
@@ -1828,6 +1876,47 @@ def _command_name(text: str) -> str | None:
     return first.split("@", maxsplit=1)[0]
 
 
+def _command_argument(text: str) -> str:
+    parts = text.strip().split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
+def _is_operator(channel: ChannelAdapter, message: ChannelMessage) -> bool:
+    """Report whether `message` came from one of the channel's operators."""
+    exposure = getattr(getattr(channel, "config", None), "exposure", None)
+    return bool(
+        isinstance(exposure, ChannelExposure)
+        and exposure.mode in (ExposureMode.SELF, ExposureMode.ALLOWLIST, ExposureMode.OPEN)
+        and message.sender_id
+        and (
+            message.sender_id in exposure.operator_ids
+            or (exposure.mode == ExposureMode.SELF and message.metadata.get("from_self") is True)
+        )
+    )
+
+
+def _format_model_overview(
+    current: str | None, default: str, catalog: Mapping[str, Sequence[str]]
+) -> str:
+    active = current or f"{default} (default)"
+    providers = "\n".join(
+        f"{provider} — {len(models)} models" for provider, models in sorted(catalog.items())
+    )
+    return (
+        f"This chat uses {active}.\n\nAvailable providers:\n{providers}\n\n"
+        "Send /model <provider> to list its models, /model <provider:model> to switch, "
+        "or /model default to go back to the default."
+    )
+
+
+def _format_provider_models(provider: str, catalog: Mapping[str, Sequence[str]]) -> str:
+    models = catalog.get(provider.lower())
+    if not models:
+        return _MODEL_UNKNOWN_MESSAGE
+    listing = "\n".join(f"{provider.lower()}:{model}" for model in models)
+    return f"{listing}\n\nSend /model <provider:model> to switch."
+
+
 def _origin_conversation_id(message: ChannelMessage) -> str:
     origin = message.metadata.get("chat_id_from")
     if isinstance(origin, str) and origin:
@@ -1999,13 +2088,33 @@ def _load_conversation_resets(path: Path) -> dict[str, int]:
     return state
 
 
+def _load_model_selections(path: Path) -> dict[str, str]:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        msg = f"failed to load model selection state from {path}"
+        raise RuntimeError(msg) from exc
+    if not isinstance(state, dict) or any(
+        not isinstance(key, str) or not isinstance(spec, str) for key, spec in state.items()
+    ):
+        msg = f"invalid model selection state in {path}"
+        raise RuntimeError(msg)
+    return state
+
+
 def _save_conversation_resets(path: Path, resets: Mapping[str, int]) -> None:
+    _write_json_state(path, resets)
+
+
+def _write_json_state(path: Path, state: Mapping[str, object]) -> None:
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary_name)
     try:
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-            json.dump(resets, file, sort_keys=True)
+            json.dump(state, file, sort_keys=True)
             file.flush()
             os.fsync(file.fileno())
         temporary_path.replace(path)

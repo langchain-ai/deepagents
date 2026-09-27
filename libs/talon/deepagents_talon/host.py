@@ -37,6 +37,8 @@ from deepagents_talon.channels.base import (
     outbound_media_root_from_env,
     send_with_retry,
 )
+from deepagents_talon.cron.errors import CronJobError
+from deepagents_talon.cron.jobs import CronJobStore
 from deepagents_talon.cron.scheduler import is_silent
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -67,6 +69,15 @@ from deepagents_talon.media import (
     outbound_channel_media,
 )
 from deepagents_talon.observability import langsmith_trace_context, log_event, stable_log_ref
+from deepagents_talon.pairing import (
+    APPROVED_NOTICE,
+    PairedSender,
+    SenderPairing,
+    is_direct_message,
+    origin_jobs,
+    pause_jobs,
+    run_pair_command,
+)
 from deepagents_talon.speech import transcribe_voice_message
 
 if TYPE_CHECKING:
@@ -86,6 +97,10 @@ _MCP_RELOAD_COMMAND = chat_commands.MCP_RELOAD
 _HELP_COMMAND = chat_commands.HELP
 _CONTEXT_DOCTOR_COMMAND = chat_commands.CONTEXT_DOCTOR
 _RESET_ALL_HISTORY_COMMAND = chat_commands.RESET_ALL_HISTORY
+_PAIR_COMMAND = chat_commands.PAIR
+_PAIR_OPERATOR_ONLY_MESSAGE = "Only an operator can manage sender pairing."
+_PAIR_DM_ONLY_MESSAGE = "Run /pair in a direct message with this assistant."
+_PAIR_DISABLED_MESSAGE = "Sender pairing is not enabled on this channel."
 _HELP_MESSAGE = chat_commands.build_help_message()
 _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
 _HISTORY_RESET_FAILURE_MESSAGE = (
@@ -124,6 +139,10 @@ _EMOJI_SKIN_TONES = frozenset(
         "\U0001f3ff",
     }
 )
+
+
+class ScheduledRunRevokedError(RuntimeError):
+    """Raised when revoking a paired sender stops a scheduled run from their DM."""
 
 
 class _CancelOutcome(StrEnum):
@@ -257,6 +276,8 @@ class TalonHost:
         self._background_loop: asyncio.Task[None] | None = None
         self._background_routes: dict[str, _BackgroundRoute] = {}
         self._background_retries: dict[str, _BackgroundRetry] = {}
+        self._scheduled_runs: dict[str, asyncio.Task[str]] = {}
+        self._revoked_runs: set[str] = set()
         self._stopped = asyncio.Event()
         self._running = False
 
@@ -504,9 +525,84 @@ class TalonHost:
             await self._reload_mcp_configuration(channel, message.conversation_id)
         elif command == _CONTEXT_DOCTOR_COMMAND:
             await self._context_doctor(channel, message.conversation_id, conversation_root)
+        elif command == _PAIR_COMMAND:
+            reply = await self._pair_command(channel, message, provider)
+            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
         else:
             return False
         return True
+
+    async def _pair_command(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        provider: str | None,
+    ) -> str:
+        """Run `/pair` for an operator; never reaches the model."""
+        config = getattr(channel, "config", None)
+        exposure = getattr(config, "exposure", None)
+        pairing = getattr(config, "pairing", None)
+        # Stricter than the tool-approval operator check: `from_self` never counts,
+        # only an operator id configured in env.
+        if (
+            not isinstance(exposure, ChannelExposure)
+            or message.sender_id not in exposure.operator_ids
+        ):
+            return _PAIR_OPERATOR_ONLY_MESSAGE
+        if not is_direct_message(message):
+            return _PAIR_DM_ONLY_MESSAGE
+        if not isinstance(pairing, SenderPairing):
+            return _PAIR_DISABLED_MESSAGE
+        result = await asyncio.to_thread(run_pair_command, pairing, message.text)
+        if (approved := result.approved) is not None:
+            await send_with_retry(
+                lambda: channel.send_message(approved.conversation_id, APPROVED_NOTICE)
+            )
+        if result.revoked is not None:
+            stopped = await self._stop_revoked_sender(
+                _channel_key(channel, provider), pairing.provider, result.revoked
+            )
+            return f"{result.reply} {stopped}".rstrip()
+        return result.reply
+
+    async def _stop_revoked_sender(
+        self, channel_key: str, provider: str, revoked: PairedSender
+    ) -> str:
+        """Cancel a revoked sender's active run and pause jobs created in their DM."""
+        conversation_root = self._conversation_root(channel_key, revoked.conversation_id)
+        outcome = await self._cancel_conversation_tasks(
+            self._agent_conversation_id(conversation_root)
+        )
+        notes = []
+        if outcome is _CancelOutcome.TIMEOUT:
+            notes.append("Could not stop their current run within 30 seconds; restart Talon.")
+        elif outcome is not _CancelOutcome.NONE:
+            notes.append("Stopped their current run.")
+        notes.extend(self._stop_conversation_jobs(provider, revoked.conversation_id))
+        return " ".join(notes)
+
+    def _stop_conversation_jobs(self, provider: str, conversation_id: str) -> list[str]:
+        """Pause a conversation's cron jobs and cancel any of their runs in flight."""
+        store = getattr(self.scheduler, "store", None)
+        if not isinstance(store, CronJobStore):
+            return []
+        try:
+            jobs = origin_jobs(store, provider, conversation_id)
+            paused = pause_jobs(store, jobs)
+        except (CronJobError, OSError):
+            logger.warning("Could not pause a revoked sender's cron jobs", exc_info=True)
+            return ["Could not pause their scheduled jobs. Check Talon logs."]
+        stopped = 0
+        for job in jobs:
+            run = self._scheduled_runs.get(job.id)
+            if run is not None and not run.done():
+                self._revoked_runs.add(job.id)
+                run.cancel()
+                stopped += 1
+        notes = [f"Paused {paused} scheduled job(s) created in their DM."] if paused else []
+        if stopped:
+            notes.append(f"Stopped {stopped} scheduled run(s) in progress.")
+        return notes
 
     async def _context_doctor(
         self, channel: ChannelAdapter, chat: str, conversation_root: str
@@ -877,34 +973,56 @@ class TalonHost:
 
         Raises:
             TimeoutError: If the run outlasts its bound, after the thread is repaired.
+            ScheduledRunRevokedError: If revoking the paired sender whose DM created
+                the job stopped the run, so the scheduler records it as failed
+                and delivers nothing.
         """
         conversation_id = f"{job.id}{_CRON_THREAD_SUFFIX}"
         # Held across the whole run, as the per-job lock it replaces was, so two fires
         # cannot share one graph thread. A scheduled run's delegations are inline, so it
         # now holds this for as long as its subagents take.
         async with self._conversation_lock(conversation_id):
+            # A separate task so revoking a paired sender can stop this run alone,
+            # without cancelling the scheduler that awaits it.
+            run = asyncio.create_task(self._bounded_scheduled_run(job, conversation_id))
+            self._scheduled_runs[job.id] = run
             try:
-                async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
-                    result = await self._invoke_agent(
-                        conversation_id=conversation_id,
-                        text=job.prompt,
-                        metadata=_scheduled_metadata(job),
-                    )
-            except TimeoutError:
-                # The graph was cancelled mid-node, so this thread can end on an assistant
-                # message whose tool calls have no results, which fails every later fire.
-                # The scheduler awaits this coroutine directly rather than through a task,
-                # so nothing else reaches the recovery that repairs it.
-                log_event(
-                    logger,
-                    "cron.run_timeout",
-                    job_id=job.id,
-                    job_name=job.name,
-                )
+                return await run
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if job.id not in self._revoked_runs or (current and current.cancelling()):
+                    raise
                 with contextlib.suppress(Exception):
                     await self.agent.recover_interrupted(conversation_id)
-                raise
-            return result.text
+                msg = "scheduled run stopped: its sender's pairing was revoked"
+                raise ScheduledRunRevokedError(msg) from None
+            finally:
+                self._scheduled_runs.pop(job.id, None)
+                self._revoked_runs.discard(job.id)
+
+    async def _bounded_scheduled_run(self, job: CronJob, conversation_id: str) -> str:
+        """Run one scheduled job under its timeout, repairing the thread on expiry."""
+        try:
+            async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
+                result = await self._invoke_agent(
+                    conversation_id=conversation_id,
+                    text=job.prompt,
+                    metadata=_scheduled_metadata(job),
+                )
+        except TimeoutError:
+            # The graph was cancelled mid-node, so this thread can end on an assistant
+            # message whose tool calls have no results, which fails every later fire.
+            # Nothing outside this run reaches the recovery that repairs it.
+            log_event(
+                logger,
+                "cron.run_timeout",
+                job_id=job.id,
+                job_name=job.name,
+            )
+            with contextlib.suppress(Exception):
+                await self.agent.recover_interrupted(conversation_id)
+            raise
+        return result.text
 
     async def origin_channel(self, origin: CronOrigin) -> ChannelAdapter | None:
         """Return the channel serving a scheduled job's origin conversation.

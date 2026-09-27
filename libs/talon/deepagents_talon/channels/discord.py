@@ -24,6 +24,7 @@ from deepagents_talon.channels.base import (
     ChannelExposure,
     ChannelExposureEnv,
     ChannelMediaError,
+    ExposureMode,
     channel_exposure_from_env,
     chunk_text,
     dispatch_message,
@@ -49,6 +50,7 @@ from deepagents_talon.interfaces import (
     SendResult,
 )
 from deepagents_talon.observability import log_debug_event
+from deepagents_talon.pairing import SenderPairing, pairing_from_env
 
 if TYPE_CHECKING:
     from deepagents_talon.config import TalonConfig
@@ -63,6 +65,7 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 35.0
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_DISCORD_OPEN_ACK"
 SLASH_COMMANDS_ENV = "DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS"
 COMMAND_GUILD_ID_ENV = "DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID"
+_ENV_PREFIX = "DEEPAGENTS_TALON_DISCORD"
 
 _COMMAND_UNAVAILABLE_MESSAGE = "That command is not available here."
 _UNAUTHORIZED_MESSAGE = "This assistant does not accept commands from you."
@@ -93,6 +96,8 @@ class DiscordChannelConfig:
         command_guild_id: Optional guild id to scope command registration to.
             A guild-scoped registration applies immediately, which is useful while
             developing, but by construction it never reaches direct messages.
+        pairing: Optional sender pairing policy that admits approved DM senders
+            and issues codes to unknown ones.
     """
 
     bot_token: str = field(repr=False)
@@ -104,6 +109,7 @@ class DiscordChannelConfig:
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     slash_commands_enabled: bool = True
     command_guild_id: str | None = None
+    pairing: SenderPairing | None = None
 
     @classmethod
     def from_talon_config(cls, config: TalonConfig) -> DiscordChannelConfig:
@@ -133,7 +139,7 @@ class DiscordChannelConfig:
             env,
             ChannelExposureEnv(
                 provider="Discord",
-                env_prefix="DEEPAGENTS_TALON_DISCORD",
+                env_prefix=_ENV_PREFIX,
                 open_ack=OPEN_EXPOSURE_ACK_ENV,
                 require_self_operator=True,
             ),
@@ -153,6 +159,13 @@ class DiscordChannelConfig:
             ),
             slash_commands_enabled=_parse_flag(env.get(SLASH_COMMANDS_ENV), default=True),
             command_guild_id=_parse_guild_id(env.get(COMMAND_GUILD_ID_ENV)),
+            pairing=pairing_from_env(
+                env,
+                provider="discord",
+                env_prefix=_ENV_PREFIX,
+                open_exposure=exposure.mode == ExposureMode.OPEN,
+                home=config.home,
+            ),
         )
 
 
@@ -820,7 +833,7 @@ class DiscordChannel:
                 "from_self": False,
             },
         )
-        if not _allows_discord_message(self._exposure, self.config.allowed_user_ids, message):
+        if not self._admits(message):
             log_debug_event(
                 logger,
                 "discord.inbound.interaction.rejected",
@@ -853,6 +866,11 @@ class DiscordChannel:
                 )
         log_debug_event(logger, "discord.inbound.interaction.dispatched", failed=failed)
 
+    def _admits(self, message: ChannelMessage) -> bool:
+        if _allows_discord_message(self._exposure, self.config.allowed_user_ids, message):
+            return True
+        return self.config.pairing is not None and self.config.pairing.admits(message)
+
     async def _process_message(self, inbound: _DiscordInboundMessage) -> None:
         if inbound.from_self:
             # Discord's Gateway re-delivers the bot's own outbound messages through
@@ -868,13 +886,15 @@ class DiscordChannel:
             message_id=inbound.message_id,
             metadata=_message_metadata(inbound),
         )
-        if not _allows_discord_message(self._exposure, self.config.allowed_user_ids, message):
+        if not self._admits(message):
             log_debug_event(
                 logger,
                 "discord.inbound.message.rejected",
                 exposure=self._exposure.mode.value,
                 has_media=bool(inbound.attachments),
             )
+            if self.config.pairing is not None:
+                await self.config.pairing.offer(message, self.send_message)
             return
         message = await self._prepare_inbound_media(message, inbound.attachments)
         log_debug_event(
@@ -893,7 +913,11 @@ class DiscordChannel:
             sender_id=inbound.sender_id,
             metadata={"provider": "discord"},
         )
-        if not _allows_discord_reaction(self._exposure, self.config.allowed_user_ids, reaction):
+        if not _allows_discord_reaction(
+            self._exposure, self.config.allowed_user_ids, reaction
+        ) and not (
+            self.config.pairing is not None and self.config.pairing.admits_reaction(reaction)
+        ):
             log_debug_event(
                 logger,
                 "discord.inbound.reaction.rejected",

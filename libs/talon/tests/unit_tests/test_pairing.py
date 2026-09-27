@@ -15,6 +15,7 @@ from deepagents_talon.channels.discord import (
     DiscordChannel,
     DiscordChannelConfig,
     _DiscordInboundMessage,
+    _DiscordInboundReaction,
 )
 from deepagents_talon.channels.telegram import (
     TelegramChannel,
@@ -23,8 +24,13 @@ from deepagents_talon.channels.telegram import (
 )
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
-from deepagents_talon.host import TalonHost
-from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage
+from deepagents_talon.host import ScheduledRunRevokedError, TalonHost
+from deepagents_talon.interfaces import (
+    AgentRequest,
+    AgentResult,
+    ChannelMessage,
+    ChannelReaction,
+)
 from deepagents_talon.pairing import (
     APPROVED_NOTICE,
     CODE_ALPHABET,
@@ -37,7 +43,11 @@ from deepagents_talon.pairing import (
     format_code,
 )
 from tests.channels.test_discord import RecordingGateway
-from tests.channels.test_telegram import RecordingTransport, _make_update
+from tests.channels.test_telegram import (
+    RecordingTransport,
+    _make_reaction_update,
+    _make_update,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -296,6 +306,29 @@ async def test_paired_sender_is_admitted_in_dms_only(tmp_path: Path) -> None:
     assert [message.text for message in received] == ["in dm"]
 
 
+async def test_paired_sender_reactions_count_only_in_their_dm(tmp_path: Path) -> None:
+    pairing = _pairing(tmp_path, Clock())
+    code = cast("str", pairing.store.request("discord", STRANGER, STRANGER_DM, now=0))
+    pairing.store.approve("discord", code, now=0)
+    channel, gateway = _discord(tmp_path, pairing)
+    reactions: list[ChannelReaction] = []
+
+    async def handler(reaction: ChannelReaction) -> None:
+        reactions.append(reaction)
+
+    channel.set_reaction_handler(handler)
+    await channel.start()
+
+    for channel_id in ("guild-chan", STRANGER_DM):
+        await gateway.deliver_reaction(
+            _DiscordInboundReaction(
+                channel_id=channel_id, message_id="m1", sender_id=STRANGER, emoji="👍"
+            )
+        )
+
+    assert [reaction.conversation_id for reaction in reactions] == [STRANGER_DM]
+
+
 def test_pairing_is_opt_in_and_refused_with_open_exposure(tmp_path: Path) -> None:
     base = {"AGENT_ASSISTANT_ID": "a", "DEEPAGENTS_TALON_DISCORD_BOT_TOKEN": "t"}
     self_env = {**base, "DEEPAGENTS_TALON_DISCORD_OPERATOR_ID": OPERATOR}
@@ -349,6 +382,19 @@ async def test_telegram_private_chat_gets_a_code_then_access(tmp_path: Path) -> 
     assert len(replies) == 1
     assert format_code(code) in str(replies[0]["text"])
     assert [message.text for message in received] == ["again"]
+
+    reactions: list[ChannelReaction] = []
+
+    async def on_reaction(reaction: ChannelReaction) -> None:
+        reactions.append(reaction)
+
+    channel.set_reaction_handler(on_reaction)
+    for chat_id, chat_type in ((-100500, "supergroup"), (222, "private")):
+        await channel._process_update(
+            _make_reaction_update(sender_id=222, chat_id=chat_id, chat_type=chat_type)
+        )
+
+    assert [reaction.conversation_id for reaction in reactions] == ["222"]
 
 
 # --- Host: operator approval and revocation --------------------------------
@@ -459,6 +505,47 @@ async def test_revoke_stops_the_run_pauses_jobs_and_blocks_the_sender(tmp_path: 
     ]
 
 
+async def _approved_stranger_with_job(tmp_path: Path):
+    host, gateway, agent, cron = await _host(tmp_path, Clock())
+    await gateway.deliver_message(_dm(STRANGER, "let me in"))
+    await gateway.deliver_message(_dm(OPERATOR, f"/pair approve {_issued_code(gateway)}"))
+    job = cron.create_job(
+        prompt="block",
+        schedule=CronSchedule.parse("every 1h"),
+        origin=CronOrigin(conversation_id=STRANGER_DM, channel="discord"),
+    )
+    return host, gateway, agent, job
+
+
+async def test_revoke_stops_a_scheduled_run_in_progress(tmp_path: Path) -> None:
+    host, gateway, agent, job = await _approved_stranger_with_job(tmp_path)
+    run = asyncio.create_task(host.run_scheduled_job(job))
+    await _wait_for_request(agent)
+
+    await gateway.deliver_message(_dm(OPERATOR, f"/pair revoke {STRANGER}"))
+
+    with pytest.raises(ScheduledRunRevokedError):
+        await run
+    await host.stop()
+    assert (
+        OPERATOR_DM,
+        f"Revoked sender {STRANGER}. Paused 1 scheduled job(s) created in their DM. "
+        "Stopped 1 scheduled run(s) in progress.",
+    ) in gateway.sent_text
+
+
+async def test_shutdown_still_cancels_a_scheduled_run(tmp_path: Path) -> None:
+    host, _, agent, job = await _approved_stranger_with_job(tmp_path)
+    run = asyncio.create_task(host.run_scheduled_job(job))
+    await _wait_for_request(agent)
+
+    run.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await run
+    await host.stop()
+
+
 async def test_env_senders_cannot_be_revoked_through_pairing(tmp_path: Path) -> None:
     host, gateway, _, _ = await _host(tmp_path, Clock())
 
@@ -496,5 +583,17 @@ def test_cli_approves_lists_and_revokes(
     assert _cli(monkeypatch, tmp_path, "approve", "discord", code) == 1
     assert _cli(monkeypatch, tmp_path, "approve", "telegram", code) == 0
     assert store.is_paired("telegram", STRANGER)
+    cron = CronJobStore(assistant_id="test", cron_dir=tmp_path / "test" / "cron")
+    job = cron.create_job(
+        prompt="report",
+        schedule=CronSchedule.parse("every 1h"),
+        origin=CronOrigin(conversation_id=STRANGER_DM, channel="telegram"),
+    )
+    capsys.readouterr()
+
     assert _cli(monkeypatch, tmp_path, "revoke", "telegram", STRANGER) == 0
     assert not store.is_paired("telegram", STRANGER)
+    follow_up = f"deepagents-talon pairing pause-jobs telegram {STRANGER_DM}"
+    assert follow_up in capsys.readouterr().out
+    assert _cli(monkeypatch, tmp_path, *follow_up.split()[2:]) == 0
+    assert [(saved.id, saved.enabled) for saved in cron.list_jobs()] == [(job.id, False)]

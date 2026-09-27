@@ -915,8 +915,7 @@ class DiscordChannel:
         if not _allows_discord_reaction(
             self._exposure, self.config.allowed_user_ids, reaction
         ) and not (
-            self.config.pairing is not None
-            and self.config.pairing.admits_sender(reaction.sender_id)
+            self.config.pairing is not None and self.config.pairing.admits_reaction(reaction)
         ):
             log_debug_event(
                 logger,

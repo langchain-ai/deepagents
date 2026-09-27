@@ -36,6 +36,8 @@ from deepagents_talon.pairing import (
     approve_code,
     env_sender_ids,
     format_listing,
+    origin_jobs,
+    pause_jobs,
     revoke_sender,
 )
 from deepagents_talon.speech import build_voice_transcriber
@@ -174,25 +176,31 @@ def _add_pairing_parsers(
     revoke = pairing_sub.add_parser("revoke", help="Revoke a paired sender")
     revoke.add_argument("channel", choices=PAIRING_CHANNELS)
     revoke.add_argument("sender_id")
-    revoke.add_argument(
-        "--pause-jobs",
-        action="store_true",
-        help="Also pause cron jobs created in the sender's DM. Only while Talon is stopped: "
+    pause = pairing_sub.add_parser(
+        "pause-jobs",
+        help="Pause cron jobs created in a DM. Run only while Talon is stopped: "
         "the running host is the cron store's only writer.",
     )
+    pause.add_argument("channel", choices=PAIRING_CHANNELS)
+    pause.add_argument("conversation_id")
 
 
 def _run_pairing_command(args: argparse.Namespace, config: TalonConfig) -> int:
     channels = [args.channel] if args.channel else list(PAIRING_CHANNELS)
-    pairings = [_cli_pairing(config, channel) for channel in channels]
     if args.pairing_command == "list":
-        print("\n".join(format_listing(pairing) for pairing in pairings))  # noqa: T201
+        listings = (format_listing(_cli_pairing(config, channel)) for channel in channels)
+        print("\n".join(listings))  # noqa: T201
         return 0
+    if args.pairing_command == "pause-jobs":
+        paused = pause_jobs(_cron_store(config), _cli_jobs(config, args, args.conversation_id))
+        print(f"Paused {paused} scheduled job(s).")  # noqa: T201
+        return 0
+    pairing = _cli_pairing(config, args.channel)
     if args.pairing_command == "approve":
-        result = approve_code(pairings[0], args.code)
+        result = approve_code(pairing, args.code)
         print(result.reply)  # noqa: T201
         return 0 if result.approved is not None else 1
-    result = revoke_sender(pairings[0], args.sender_id)
+    result = revoke_sender(pairing, args.sender_id)
     print(result.reply)  # noqa: T201
     if result.revoked is None:
         return 1
@@ -209,27 +217,25 @@ def _cli_pairing(config: TalonConfig, channel: str) -> SenderPairing:
     )
 
 
+def _cron_store(config: TalonConfig) -> CronJobStore:
+    return CronJobStore(assistant_id=config.assistant_id, cron_dir=config.cron_dir)
+
+
+def _cli_jobs(config: TalonConfig, args: argparse.Namespace, conversation_id: str) -> list[CronJob]:
+    return origin_jobs(_cron_store(config), args.channel, conversation_id)
+
+
 def _report_revoked_jobs(
     config: TalonConfig, args: argparse.Namespace, conversation_id: str
 ) -> None:
-    store = CronJobStore(assistant_id=config.assistant_id, cron_dir=config.cron_dir)
-    jobs = [
-        job
-        for job in store.list_jobs()
-        if job.enabled
-        and (job.origin.channel, job.origin.conversation_id) == (args.channel, conversation_id)
-    ]
+    jobs = [job for job in _cli_jobs(config, args, conversation_id) if job.enabled]
     if not jobs:
-        return
-    if args.pause_jobs:
-        for job in jobs:
-            store.edit_job(job.id, origin=job.origin, enabled=False)
-        print(f"Paused {len(jobs)} scheduled job(s) created in their DM.")  # noqa: T201
         return
     names = ", ".join(f"{job.id} ({job.name})" for job in jobs)
     print(  # noqa: T201
         f"Still enabled, created in their DM: {names}. "
-        "Rerun with --pause-jobs while Talon is stopped, or revoke from chat with /pair revoke."
+        "Stop Talon and run: "
+        f"deepagents-talon pairing pause-jobs {args.channel} {conversation_id}"
     )
 
 

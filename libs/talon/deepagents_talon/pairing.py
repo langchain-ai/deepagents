@@ -36,7 +36,8 @@ from deepagents_talon.observability import log_debug_event
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
 
-    from deepagents_talon.interfaces import ChannelMessage, SendResult
+    from deepagents_talon.cron.jobs import CronJob, CronJobStore
+    from deepagents_talon.interfaces import ChannelMessage, ChannelReaction, SendResult
 
 logger = logging.getLogger(__name__)
 
@@ -202,8 +203,8 @@ class PairingStore:
             raise PairingStoreError(msg)
         return _decode(raw)
 
-    def is_paired(self, provider: str, sender_id: str) -> bool:
-        """Return whether `sender_id` is approved on `provider`.
+    def paired(self, provider: str, sender_id: str) -> PairedSender | None:
+        """Return the approved record for `sender_id` on `provider`, if any.
 
         Fails closed: an unreadable or invalid store admits nobody, so only
         env-configured senders keep access until the operator repairs it.
@@ -213,14 +214,26 @@ class PairingStore:
             sender_id: Channel-specific sender id.
 
         Returns:
-            `True` only when the store is readable and lists the sender.
+            The sender's record when the store is readable and lists them.
         """
         try:
             channels = self._cached_read()
         except (OSError, PairingStoreError):
             logger.warning("Cannot read sender pairing store %s", self._path, exc_info=True)
-            return False
-        return sender_id in channels.get(provider, _EMPTY).approved
+            return None
+        return channels.get(provider, _EMPTY).approved.get(sender_id)
+
+    def is_paired(self, provider: str, sender_id: str) -> bool:
+        """Return whether `sender_id` is approved on `provider`.
+
+        Args:
+            provider: Channel provider key.
+            sender_id: Channel-specific sender id.
+
+        Returns:
+            `True` only when the store is readable and lists the sender.
+        """
+        return self.paired(provider, sender_id) is not None
 
     def state(self, provider: str, *, now: int) -> _ChannelState:
         """Return the live pending requests and approved senders for one channel.
@@ -386,18 +399,22 @@ class SenderPairing:
             return False
         return sender_id in self.env_sender_ids or self.store.is_paired(self.provider, sender_id)
 
-    def admits_sender(self, sender_id: str | None) -> bool:
-        """Return whether a sender is env-listed or paired, regardless of chat.
+    def admits_reaction(self, reaction: ChannelReaction) -> bool:
+        """Return whether a reaction comes from a paired sender in their own DM.
+
+        Env-listed senders are left to the adapter's existing reaction policy;
+        pairing only ever extends access to the DM a sender paired from.
 
         Args:
-            sender_id: Channel-specific sender id, if known.
+            reaction: Inbound channel reaction.
 
         Returns:
-            `True` for an admitted sender.
+            `True` when the reactor is paired and reacted in their paired DM.
         """
-        if sender_id is None:
+        if reaction.sender_id is None:
             return False
-        return sender_id in self.env_sender_ids or self.store.is_paired(self.provider, sender_id)
+        paired = self.store.paired(self.provider, reaction.sender_id)
+        return paired is not None and paired.conversation_id == reaction.conversation_id
 
     async def offer(
         self,
@@ -540,6 +557,43 @@ def revoke_sender(pairing: SenderPairing, sender_id: str) -> PairCommandResult:
     if revoked is None:
         return PairCommandResult(f"Sender {sender_id} is not paired.")
     return PairCommandResult(f"Revoked sender {sender_id}.", revoked=revoked)
+
+
+def origin_jobs(store: CronJobStore, provider: str, conversation_id: str) -> list[CronJob]:
+    """Return cron jobs created in one channel conversation.
+
+    A paired sender can only reach the agent from their own DM, so jobs whose
+    origin is that DM are the ones they created.
+
+    Args:
+        store: Cron job store.
+        provider: Channel provider key the jobs were created on.
+        conversation_id: Origin conversation id.
+
+    Returns:
+        Every job, enabled or not, whose origin is that conversation.
+    """
+    return [
+        job
+        for job in store.list_jobs()
+        if (job.origin.channel, job.origin.conversation_id) == (provider, conversation_id)
+    ]
+
+
+def pause_jobs(store: CronJobStore, jobs: list[CronJob]) -> int:
+    """Disable every enabled job in `jobs`.
+
+    Args:
+        store: Cron job store that holds the jobs.
+        jobs: Jobs to pause.
+
+    Returns:
+        How many jobs this call paused.
+    """
+    enabled = [job for job in jobs if job.enabled]
+    for job in enabled:
+        store.edit_job(job.id, origin=job.origin, enabled=False)
+    return len(enabled)
 
 
 def request_reply(code: str) -> str:

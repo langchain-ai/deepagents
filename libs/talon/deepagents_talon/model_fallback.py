@@ -41,7 +41,8 @@ logger = logging.getLogger(__name__)
 FALLBACKS_ENV_KEY = "DEEPAGENTS_TALON_MODEL_FALLBACKS"
 
 _BAD_REQUEST_STATUS_CODE = 400
-_RETRYABLE_STATUS_CODES = frozenset({408, 409, 413, 429, 500, 502, 503, 504})
+# 529 is Anthropic's "Overloaded", whose message carries no retry wording.
+_RETRYABLE_STATUS_CODES = frozenset({408, 409, 413, 429, 500, 502, 503, 504, 529})
 _CONTEXT_MARKERS = (
     "context length",
     "context window",
@@ -68,6 +69,7 @@ _RETRYABLE_MESSAGE_MARKERS = (
     "read timeout",
     "timed out",
     "timeout limit",
+    "overloaded",
     "temporarily unavailable",
     "temporary failure",
     "try again later",

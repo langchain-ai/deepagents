@@ -1272,6 +1272,7 @@ def test_is_retryable_matches_known_transient_errors() -> None:
         StatusError(408),
         StatusError(429),
         StatusError(503),
+        StatusError(529, "Overloaded"),
         StatusError(400, "maximum context length exceeded"),
         RuntimeError("failed to parse model response"),
         RuntimeError("invalid tool_call payload"),
@@ -1300,6 +1301,7 @@ def test_is_retryable_matches_statusless_provider_overload_errors() -> None:
             }
         ),
         RuntimeError("The server is overloaded. Please try again later."),
+        RuntimeError("Overloaded"),
     ]
 
     for error in errors:
@@ -1311,6 +1313,7 @@ def test_is_retryable_rejects_unrelated_context_and_client_errors() -> None:
     errors = [
         StatusError(400, "invalid request: unknown field"),
         StatusError(404, "not found"),
+        StatusError(501, "not implemented"),
         RuntimeError("invalid context manager"),
         RuntimeError("missing context variable"),
         RuntimeError("invalid connection setting"),

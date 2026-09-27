@@ -23,6 +23,13 @@ if TYPE_CHECKING:
     from langchain_core.outputs import ChatResult
 
 
+_ANTHROPIC_OVERLOADED = (
+    "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', "
+    "'message': 'Overloaded'}}"
+)
+"""What `anthropic.OverloadedError` stringifies to; it carries no retry wording."""
+
+
 class StatusError(Exception):
     def __init__(self, status_code: int, message: str = "request failed") -> None:
         super().__init__(message)
@@ -63,7 +70,7 @@ class FlakyAnthropic(ChatAnthropic):
         self, messages: list[BaseMessage], *_args: Any, **_kwargs: Any
     ) -> ChatResult:
         self.seen.append(list(messages))
-        raise StatusError(529, "overloaded, try again later")
+        raise StatusError(529, _ANTHROPIC_OVERLOADED)
 
 
 def answer(name: str, *texts: str) -> FlakyModel:
@@ -136,10 +143,15 @@ async def ask(runtime: DeepAgentRuntime, text: str = "hi", **kwargs: Any) -> str
     return (await runtime.invoke(AgentRequest(conversation_id="chat", text=text, **kwargs))).text
 
 
+@pytest.mark.parametrize(
+    "error",
+    [StatusError(503), StatusError(529, _ANTHROPIC_OVERLOADED), RuntimeError("Overloaded")],
+    ids=["503", "anthropic-529", "statusless-overloaded"],
+)
 async def test_retryable_error_falls_back_after_retries(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
-    primary = failing("primary", StatusError(503))
+    primary = failing("primary", error)
     backup = answer("backup", "from backup")
     runtime = make_runtime(tmp_path, monkeypatch, {"test:primary": primary, "test:backup": backup})
     await runtime.start()

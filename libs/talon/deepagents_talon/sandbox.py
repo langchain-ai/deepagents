@@ -43,12 +43,15 @@ class SandboxSettings:
         sandbox_id: Existing sandbox to attach to. Talon never deletes it.
         snapshot: Snapshot or blueprint for providers that support one.
         setup_script: Host path to a script run once after the sandbox starts.
+        default_snapshot: Snapshot to use when neither `snapshot` nor the
+            provider's own snapshot-name environment variable is set.
     """
 
     provider: str
     sandbox_id: str | None = None
     snapshot: str | None = None
     setup_script: str | None = None
+    default_snapshot: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,7 +166,7 @@ def _enter_sandbox(
             create_sandbox(
                 settings.provider,
                 sandbox_id=settings.sandbox_id,
-                snapshot_name=settings.snapshot,
+                snapshot_name=_snapshot_name(settings),
                 setup_script_path=settings.setup_script,
             )
         )
@@ -175,6 +178,19 @@ def _enter_sandbox(
         raise SandboxStartupError(msg) from exc
     handoff.deliver()
     return sandbox, working_dir
+
+
+def _snapshot_name(settings: SandboxSettings) -> str | None:
+    if settings.snapshot is not None or settings.default_snapshot is None:
+        return settings.snapshot
+    from deepagents_code.model_config import (  # noqa: PLC0415  # same lookup the provider uses
+        resolve_env_var,
+    )
+
+    # Defer to the provider's own override, including its `DEEPAGENTS_CODE_` prefix.
+    if resolve_env_var("LANGSMITH_SANDBOX_SNAPSHOT_NAME"):
+        return None
+    return settings.default_snapshot
 
 
 def _warn_host_paths(env: Mapping[str, str]) -> None:

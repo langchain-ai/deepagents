@@ -66,25 +66,45 @@ def test_sandbox_settings_from_env(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("env", "expected"),
+    ("talon_env", "process_env", "expected"),
     [
-        ({"DEEPAGENTS_TALON_SANDBOX": "langsmith"}, "talon-bot"),
-        (
-            {"DEEPAGENTS_TALON_SANDBOX": "langsmith", "DEEPAGENTS_TALON_SANDBOX_SNAPSHOT": "mine"},
-            "mine",
-        ),
-        ({"DEEPAGENTS_TALON_SANDBOX": "langsmith", "LANGSMITH_SANDBOX_SNAPSHOT_NAME": "x"}, None),
-        ({"DEEPAGENTS_TALON_SANDBOX": "langsmith", "DEEPAGENTS_TALON_SANDBOX_ID": "sbx"}, None),
-        ({"DEEPAGENTS_TALON_SANDBOX": "daytona"}, None),
+        ({}, {}, "talon-bot"),
+        ({"DEEPAGENTS_TALON_SANDBOX_SNAPSHOT": "mine"}, {}, "mine"),
+        ({}, {"LANGSMITH_SANDBOX_SNAPSHOT_NAME": "shared"}, None),
+        ({}, {"DEEPAGENTS_CODE_LANGSMITH_SANDBOX_SNAPSHOT_NAME": "shared"}, None),
+        ({"DEEPAGENTS_TALON_SANDBOX_ID": "sbx"}, {}, None),
+        ({"DEEPAGENTS_TALON_SANDBOX": "daytona"}, {}, None),
     ],
 )
-def test_langsmith_snapshot_defaults_to_assistant_name(
-    tmp_path: Path, env: dict[str, str], expected: str | None
+async def test_langsmith_snapshot_defaults_to_assistant_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    talon_env: dict[str, str],
+    process_env: dict[str, str],
+    expected: str | None,
 ) -> None:
-    settings = _config(tmp_path, DEEPAGENTS_TALON_ASSISTANT_ID="bot", **env).sandbox
+    for key in (
+        "LANGSMITH_SANDBOX_SNAPSHOT_NAME",
+        "DEEPAGENTS_CODE_LANGSMITH_SANDBOX_SNAPSHOT_NAME",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in process_env.items():
+        monkeypatch.setenv(key, value)
+    requested: list[object] = []
 
-    assert settings is not None
-    assert settings.snapshot == expected
+    @contextmanager
+    def create_sandbox(_provider: str, **kwargs: object) -> Iterator[_FakeSandbox]:
+        requested.append(kwargs["snapshot_name"])
+        yield _FakeSandbox()
+
+    _patch_factory(monkeypatch, create_sandbox)
+    env = {"DEEPAGENTS_TALON_SANDBOX": "langsmith", **talon_env, **process_env}
+    config = _config(tmp_path, DEEPAGENTS_TALON_ASSISTANT_ID="bot", **env)
+
+    async with open_sandbox(config):
+        pass
+
+    assert requested == [expected]
 
 
 def test_backend_keeps_approvals_out_of_host_routes(tmp_path: Path) -> None:

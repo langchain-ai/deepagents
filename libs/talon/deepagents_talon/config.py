@@ -168,8 +168,8 @@ class TalonConfig:
         return SandboxSettings(
             provider=provider,
             sandbox_id=sandbox_id,
-            snapshot=_env_value(self.env, "DEEPAGENTS_TALON_SANDBOX_SNAPSHOT")
-            or self._default_snapshot(provider, sandbox_id),
+            snapshot=_env_value(self.env, "DEEPAGENTS_TALON_SANDBOX_SNAPSHOT"),
+            default_snapshot=self._default_snapshot(provider, sandbox_id),
             setup_script=_env_value(self.env, "DEEPAGENTS_TALON_SANDBOX_SETUP"),
         )
 
@@ -177,8 +177,6 @@ class TalonConfig:
         # LangSmith snapshot names are shared across a workspace, so the
         # provider's `deepagents-code` default can belong to another user.
         if provider != "langsmith" or sandbox_id is not None:
-            return None
-        if _env_value(self.env, "LANGSMITH_SANDBOX_SNAPSHOT_NAME"):
             return None
         return f"talon-{self.assistant_id}"
 

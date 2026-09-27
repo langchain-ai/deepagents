@@ -7,6 +7,12 @@ it into a chat model the first time any chat picks it, keeps that model for
 later turns, and binds it for the turn; `ModelSelectionMiddleware` then swaps it
 into every main-agent model call, so switching never recompiles the graph.
 
+Swapping the model is not enough on its own. Deep Agents runs its summarizer
+ahead of custom middleware, so it would size the context against the startup
+model. `SelectedModelSummarization` takes over the summarizer's slot, the way
+`deepagents-code` does for its `/model`, so a switch brings the selected model's
+context budget and compaction thresholds with it.
+
 Which models may be chosen is discovered rather than configured: the tool-calling
 models that installed LangChain provider packages advertise, limited to
 providers whose credentials are set in Talon's own environment. Chat input is
@@ -20,14 +26,25 @@ import contextvars
 import threading
 from typing import TYPE_CHECKING, Any
 
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    SummarizationState,
+    create_summarization_middleware,
+)
 from langchain.agents.middleware.types import AgentMiddleware
 
 from deepagents_code.model_config import get_available_models, get_credential_env_var
+from deepagents_talon.background import _IN_SUBAGENT
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
 
-    from langchain.agents.middleware.types import ModelRequest, ModelResponse
+    from deepagents.backends.protocol import BackendProtocol
+    from langchain.agents.middleware.types import (
+        ExtendedModelResponse,
+        ModelRequest,
+        ModelResponse,
+    )
     from langchain_core.language_models import BaseChatModel
 
 ACTIVE_MODEL: contextvars.ContextVar[BaseChatModel | None] = contextvars.ContextVar(
@@ -176,3 +193,85 @@ class ModelSelectionMiddleware(AgentMiddleware[Any, Any, Any]):
 def _selected(request: ModelRequest[Any]) -> ModelRequest[Any]:
     model = ACTIVE_MODEL.get()
     return request if model is None else request.override(model=model)
+
+
+class SelectedModelSummarization(AgentMiddleware[Any, Any, Any]):
+    """Summarize against the turn's selected model rather than the startup model.
+
+    It reports the Deep Agents summarizer's name, so `create_deep_agent` puts it
+    in that summarizer's slot, ahead of custom middleware. Each selected model
+    gets its own summarizer, built the first time it is needed, whose trigger
+    thresholds follow that model's profile. The request's model is swapped before
+    delegating, because the summarizer checks the input budget against
+    `request.model`.
+
+    Delegated subagents keep the startup summarizer: Deep Agents hands this
+    middleware to its general-purpose subagent too, and that subagent still calls
+    the startup model.
+
+    Args:
+        startup: Returns the startup model the default summarizer sizes against.
+            Called on first use, so building the graph builds no model.
+        backend: Backend the summarizer offloads evicted history to.
+    """
+
+    state_schema = SummarizationState
+    trace_policy = SummarizationMiddleware.trace_policy
+
+    def __init__(self, startup: Callable[[], BaseChatModel], backend: BackendProtocol) -> None:
+        """Keep what summarizers need; each is built the first time a turn needs it."""
+        self._startup = startup
+        self._backend = backend
+        self._default: SummarizationMiddleware | None = None
+        self._summarizers: dict[int, tuple[BaseChatModel, SummarizationMiddleware]] = {}
+        self._lock = threading.Lock()
+
+    @property
+    def name(self) -> str:
+        """Take over the Deep Agents summarizer's slot by sharing its name."""
+        return SummarizationMiddleware.serialized_name
+
+    def wrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], ModelResponse[Any]],
+    ) -> ModelResponse[Any] | ExtendedModelResponse[Any]:
+        """Summarize, if needed, against the selected model's context budget.
+
+        Returns:
+            The handler's response.
+        """
+        summarizer, request = self._for_turn(request)
+        return summarizer.wrap_model_call(request, handler)
+
+    async def awrap_model_call(
+        self,
+        request: ModelRequest[Any],
+        handler: Callable[[ModelRequest[Any]], Awaitable[ModelResponse[Any]]],
+    ) -> ModelResponse[Any] | ExtendedModelResponse[Any]:
+        """Summarize, if needed, against the selected model's context budget.
+
+        Returns:
+            The handler's response.
+        """
+        summarizer, request = self._for_turn(request)
+        return await summarizer.awrap_model_call(request, handler)
+
+    def _for_turn(
+        self, request: ModelRequest[Any]
+    ) -> tuple[SummarizationMiddleware, ModelRequest[Any]]:
+        model = ACTIVE_MODEL.get()
+        if model is None or _IN_SUBAGENT.get():
+            return self._startup_summarizer(), request
+        with self._lock:
+            cached = self._summarizers.get(id(model))
+            if cached is None or cached[0] is not model:
+                cached = (model, create_summarization_middleware(model, self._backend))
+                self._summarizers[id(model)] = cached
+        return cached[1], request.override(model=model)
+
+    def _startup_summarizer(self) -> SummarizationMiddleware:
+        with self._lock:
+            if self._default is None:
+                self._default = create_summarization_middleware(self._startup(), self._backend)
+            return self._default

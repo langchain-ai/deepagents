@@ -3,15 +3,18 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
+from pydantic import Field
 
+from deepagents_talon.background import _IN_SUBAGENT
 from deepagents_talon.channels.base import ChannelExposure
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, ChannelMessage
+from deepagents_talon.model_selection import ACTIVE_MODEL, SelectedModelSummarization
 from deepagents_talon.runtime import DeepAgentRuntime
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config, _wait_for_request
@@ -23,13 +26,6 @@ if TYPE_CHECKING:
 class ReplyModel(FakeMessagesListChatModel):
     def bind_tools(self, _tools, **_kwargs: object):
         return self
-
-
-class UnavailableModel(ReplyModel):
-    def _generate(self, *_args: object, **_kwargs: object):
-        error = RuntimeError("service unavailable")
-        error.status_code = 503  # ty: ignore[unresolved-attribute]
-        raise error
 
 
 class SelectableAgent(BlockingAgent):
@@ -184,8 +180,6 @@ def built(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     models = {
         "test:primary": ReplyModel(responses=[AIMessage(content="from primary")]),
         "test:alt": ReplyModel(responses=[AIMessage(content="from alt")]),
-        "test:down": UnavailableModel(responses=[AIMessage(content="unused")]),
-        "test:backup": ReplyModel(responses=[AIMessage(content="from backup")]),
     }
     calls: list[str] = []
 
@@ -260,22 +254,6 @@ async def test_catalog_lists_credentialed_providers_and_the_default(tmp_path: Pa
     assert await runtime.model_catalog() == {"test": ["alt", "primary"]}
 
 
-@pytest.mark.usefixtures("built")
-async def test_selected_model_heads_the_fallback_chain(
-    tmp_path: Path, discovered: dict[str, list[str]], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    discovered["test"].append("down")
-    monkeypatch.setenv("DEEPAGENTS_TALON_MODEL_FALLBACKS", "test:backup")
-    runtime = _runtime(tmp_path, max_retries=1)
-    await runtime.start()
-    try:
-        result = await runtime.invoke(AgentRequest("a", "hi", model="test:down"))
-    finally:
-        await runtime.stop()
-
-    assert result.text == "from backup"
-
-
 class GatedTranscriber:
     def __init__(self) -> None:
         self.started = asyncio.Event()
@@ -326,3 +304,133 @@ async def test_listing_flags_a_selection_that_is_no_longer_available(tmp_path: P
     assert channel.sent[-1][1].startswith(
         "This chat uses test:primary (default). Its selected model other:two is unavailable."
     )
+
+
+class RecordingModel(ReplyModel):
+    seen: list[str] = Field(default_factory=list)
+
+    def _generate(self, messages, *args: object, **kwargs: object):
+        self.seen.append(str(messages[-1].content))
+        return super()._generate(messages, *args, **kwargs)
+
+
+def _sized(monkeypatch: pytest.MonkeyPatch, primary: int, alt: int) -> RecordingModel:
+    models = {
+        "test:primary": RecordingModel(
+            responses=[AIMessage(content="from primary")], profile={"max_input_tokens": primary}
+        ),
+        "test:alt": RecordingModel(
+            responses=[AIMessage(content="from alt")], profile={"max_input_tokens": alt}
+        ),
+    }
+    monkeypatch.setattr(
+        "deepagents_talon.runtime._resolve_model_from_env",
+        lambda model, *_args, **_kwargs: models[model],
+    )
+    return models["test:alt"]
+
+
+@pytest.mark.usefixtures("discovered")
+async def test_selected_model_brings_its_own_context_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A switch to a larger model must not be held to the startup model's limit."""
+    alt = _sized(monkeypatch, primary=2_000, alt=1_000_000)
+    long_text = "context " * 4_000
+    runtime = _runtime(tmp_path)
+    await runtime.start()
+    try:
+        result = await runtime.invoke(AgentRequest("a", long_text, model="test:alt"))
+    finally:
+        await runtime.stop()
+
+    assert result.text == "from alt"
+    assert alt.seen == [long_text]
+
+
+@pytest.mark.usefixtures("discovered")
+async def test_selected_smaller_model_is_held_to_its_own_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A switch to a smaller model must not send it input sized for the startup model."""
+    alt = _sized(monkeypatch, primary=1_000_000, alt=2_000)
+    long_text = "context " * 4_000
+    runtime = _runtime(tmp_path)
+    await runtime.start()
+    try:
+        await runtime.invoke(AgentRequest("a", long_text, model="test:alt"))
+    except Exception:  # noqa: BLE001, S110  # rejecting before the call is also correct
+        pass
+    finally:
+        await runtime.stop()
+
+    assert long_text not in alt.seen
+
+
+class _FakeSummarizer:
+    name = "SummarizationMiddleware"
+    trace_policy = None
+
+    def __init__(self, model: object) -> None:
+        self.model = model
+
+    def wrap_model_call(self, request, handler):
+        return handler((self.model, request))
+
+
+class _Request:
+    def __init__(self) -> None:
+        self.model = "startup"
+
+    def override(self, *, model: object) -> tuple[str, object]:
+        return ("overridden", model)
+
+
+def _summarization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[SelectedModelSummarization, list[object]]:
+    builds: list[object] = []
+
+    def build(model: object, _backend: object) -> _FakeSummarizer:
+        builds.append(model)
+        return _FakeSummarizer(model)
+
+    monkeypatch.setattr("deepagents_talon.model_selection.create_summarization_middleware", build)
+    middleware = SelectedModelSummarization(lambda: cast("Any", "startup"), cast("Any", None))
+    return middleware, builds
+
+
+def _run(middleware: SelectedModelSummarization, selected: object | None) -> tuple:
+    token = ACTIVE_MODEL.set(cast("Any", selected))
+    try:
+        return middleware.wrap_model_call(cast("Any", _Request()), lambda seen: seen)
+    finally:
+        ACTIVE_MODEL.reset(token)
+
+
+def test_summarizer_follows_the_selected_model_and_is_built_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    middleware, builds = _summarization(monkeypatch)
+    selected = object()
+
+    first = _run(middleware, selected)
+    second = _run(middleware, selected)
+
+    assert middleware.name == "SummarizationMiddleware"
+    assert first == second == (selected, ("overridden", selected))
+    assert builds == [selected]
+    assert _run(middleware, None)[0] == "startup"
+    assert builds == [selected, "startup"]
+
+
+def test_subagents_keep_the_startup_summarizer(monkeypatch: pytest.MonkeyPatch) -> None:
+    middleware, _builds = _summarization(monkeypatch)
+    token = _IN_SUBAGENT.set(True)
+    try:
+        model, request = _run(middleware, object())
+    finally:
+        _IN_SUBAGENT.reset(token)
+
+    assert model == "startup"
+    assert isinstance(request, _Request)

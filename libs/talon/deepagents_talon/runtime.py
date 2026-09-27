@@ -14,6 +14,7 @@ import os
 import re
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
@@ -63,6 +64,7 @@ from deepagents_talon.model_selection import (
     ACTIVE_MODEL,
     ModelSelection,
     ModelSelectionMiddleware,
+    SelectedModelSummarization,
     discover_models,
 )
 from deepagents_talon.observability import (
@@ -430,8 +432,16 @@ class DeepAgentRuntime:
             _resolve_local_tools(cast("LocalSubAgent", spec), catalog, web_tools)
         resolved, attachments = prepare_subagents(resolved, model, interrupt_on)
         tools.append(self._attachment_tool(attachments))
-        # Ahead of Talon's other middleware, so every later one sees the chat's model.
-        middleware = [ModelSelectionMiddleware(), *self.middleware]
+        # The summarizer replacement lands in the Deep Agents summarizer's slot; the
+        # selection middleware still swaps the model for everything after it.
+        middleware = [
+            SelectedModelSummarization(
+                partial(self._build_model, model) if isinstance(model, str) else lambda: model,
+                self.backend,
+            ),
+            ModelSelectionMiddleware(),
+            *self.middleware,
+        ]
         task_tools = TaskTools(
             model,
             interrupt_on,

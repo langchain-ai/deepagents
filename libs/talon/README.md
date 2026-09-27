@@ -503,9 +503,10 @@ is set in Talon's environment. `AGENT_MODEL` (the default) is always available.
 An operator can send `/model <provider:model>` to switch the chat to one of those
 models, or `/model default` to switch back. The switch applies from the chat's
 next turn, lasts across `/new` and restarts, and does not affect other chats.
-Scheduled jobs and subagents keep their own models. The model is built the first
-time a chat selects it, so a model that cannot be loaded is reported when you
-switch to it.
+The chat's context is sized for the selected model, so switching to a model with a
+larger or smaller context window changes when history is compacted. Scheduled jobs
+and subagents keep their own models. The model is built the first time a chat
+selects it, so a model that cannot be loaded is reported when you switch to it.
 
 Commands work as ordinary message text on every channel, and are case-insensitive
 with an optional `@bot` suffix. On Discord they are additionally registered as

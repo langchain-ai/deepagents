@@ -76,6 +76,12 @@ CHAT_COMMANDS: tuple[ChatCommand, ...] = (
         hidden=True,
     ),
     ChatCommand("context-doctor", "Audit injected context and its estimated token cost."),
+    ChatCommand(
+        "pair",
+        "Operator only: list, approve, or revoke paired DM senders.",
+        # Takes arguments, which a bare platform registration cannot carry.
+        hidden=True,
+    ),
 )
 """Every command the host dispatches, in the order `/help` lists them."""
 
@@ -85,6 +91,7 @@ STOP = CHAT_COMMANDS[2].text
 MCP_RELOAD = CHAT_COMMANDS[3].text
 RESET_ALL_HISTORY = CHAT_COMMANDS[4].text
 CONTEXT_DOCTOR = CHAT_COMMANDS[5].text
+PAIR = CHAT_COMMANDS[6].text
 
 COMMANDS_BY_NAME: Mapping[str, ChatCommand] = MappingProxyType(
     {command.name: command for command in CHAT_COMMANDS},

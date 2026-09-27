@@ -367,6 +367,24 @@ Registration needs the **`applications.commands`** scope alongside `bot` in the 
 
 `conversation_id` is the Discord channel ID, which works uniformly for DM channels and guild text channels. In `allowlist` mode, `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS` allows DMs from specific Discord user IDs regardless of channel, while `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS` allows messages from specific channel IDs (DM or guild). `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure, the default mode, which only accepts DMs from those operators. Outbound text over Discord's 2000-character message limit is split into multiple separate messages sent in order; outbound media is sent as a file attachment with the caption as the message content when it fits, or as a preceding separate message otherwise. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB). If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
 
+## Sender pairing
+
+Sender pairing lets the operator admit a new person to a Discord or Telegram DM without editing env and restarting. It is off by default. It is unrelated to WhatsApp's QR pairing, and WhatsApp does not support it: the bridge runs on the operator's own account, so it would answer everyone who texts them.
+
+Set `DEEPAGENTS_TALON_DISCORD_PAIRING=enabled` or `DEEPAGENTS_TALON_TELEGRAM_PAIRING=enabled`. Pairing works with `self` and `allowlist` exposure and is refused with `open`.
+
+1. An unknown sender DMs the bot. Their message is dropped before it reaches the host or the model, and the bot replies once with a code such as `K7QM-3XRD`. The code is bound to that sender on that channel, expires after 1 hour, and works once.
+2. The sender passes the code to the operator by any other means.
+3. The operator approves it with `/pair approve K7QM-3XRD` in their own DM with the bot, or with `deepagents-talon pairing approve discord K7QM-3XRD`. The sender is told they were approved, and their next DM reaches the agent.
+
+`/pair list` shows pending codes and paired senders. `/pair revoke <sender-id>` removes a sender, cancels their in-flight run, and pauses cron jobs created in their DM. Paused jobs stay paused if the sender is approved again. The CLI has matching `list`, `approve`, and `revoke` subcommands. A CLI revoke takes effect on the sender's next message but cannot cancel a run in progress, and it only lists their cron jobs unless you pass `--pause-jobs`, which is safe only while Talon is stopped, because the running host is the cron store's only writer.
+
+Only an operator id from `DEEPAGENTS_TALON_<CHANNEL>_OPERATOR_ID` can run `/pair`, and only in a DM. A paired sender cannot approve anyone, and the model has no pairing tool. Codes are accepted only on those operator surfaces, so strangers have nowhere to guess them. Each sender holds at most one live code, and a channel holds at most 16; further requests are dropped silently. Set `DEEPAGENTS_TALON_<CHANNEL>_PAIRING_REPLY=false` to keep the bot silent and read pending codes from `/pair list` instead.
+
+A paired sender is admitted in DMs only; pairing grants nothing in Discord guild channels. With pairing enabled, `DEEPAGENTS_TALON_<CHANNEL>_ALLOWLIST_USERS` also admits DMs in `self` mode. Env stays authoritative: env operators and allowlisted users never receive codes and cannot be revoked with `/pair`. Paired senders are stored in `pairing.json` in the assistant home. If that file is unreadable or invalid, only env senders are admitted.
+
+A paired sender has the same access to the agent as the operator: model credentials, MCP tools, and the local host. Pair only people you would hand your terminal to.
+
 ## Tracing
 
 LangSmith tracing is opt-in. Set both values before starting the host:
@@ -668,7 +686,9 @@ These logs complement the persisted `last_status` and `last_error` fields.
 
 ## Security and Data Lifecycle
 
-Talon is single-operator by design. It does not provide multi-tenant isolation, sandbox-backed execution isolation, production-grade HITL policy enforcement, or channel administrator boundaries. Any tool approval prompt surfaced through a channel is an experimental convenience feature, not a complete security boundary. Channel exposure should be treated as direct access to the operator's agent, model credentials, MCP tools, and local host resources.
+Talon is single-operator by design. It does not provide multi-tenant isolation, sandbox-backed execution isolation, production-grade HITL policy enforcement, or channel administrator boundaries. Any tool approval prompt surfaced through a channel is an experimental convenience feature, not a complete security boundary. Channel exposure should be treated as direct access to the operator's agent, model credentials, MCP tools, and local host resources. That includes senders admitted through [sender pairing](#sender-pairing).
+
+`*_MENTION_PATTERNS` in `allowlist` mode admits any sender, in any chat, whose message text matches a pattern. Text says nothing about who sent it, so treat a mention pattern as opening that channel to anyone who can post there.
 
 Do not file security vulnerability reports for the absence of these known, unimplemented hardening features in Talon while it remains experimental. Reports about missing enterprise controls, channel admin gates, sandbox integrations, or production HITL policy are considered feature requests for a future production-ready runtime.
 

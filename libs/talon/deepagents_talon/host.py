@@ -37,6 +37,7 @@ from deepagents_talon.channels.base import (
     outbound_media_root_from_env,
     send_with_retry,
 )
+from deepagents_talon.cron.jobs import CronJobStore
 from deepagents_talon.cron.scheduler import is_silent
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -67,6 +68,13 @@ from deepagents_talon.media import (
     outbound_channel_media,
 )
 from deepagents_talon.observability import langsmith_trace_context, log_event, stable_log_ref
+from deepagents_talon.pairing import (
+    APPROVED_NOTICE,
+    PairedSender,
+    SenderPairing,
+    is_direct_message,
+    run_pair_command,
+)
 from deepagents_talon.speech import transcribe_voice_message
 
 if TYPE_CHECKING:
@@ -86,6 +94,10 @@ _MCP_RELOAD_COMMAND = chat_commands.MCP_RELOAD
 _HELP_COMMAND = chat_commands.HELP
 _CONTEXT_DOCTOR_COMMAND = chat_commands.CONTEXT_DOCTOR
 _RESET_ALL_HISTORY_COMMAND = chat_commands.RESET_ALL_HISTORY
+_PAIR_COMMAND = chat_commands.PAIR
+_PAIR_OPERATOR_ONLY_MESSAGE = "Only an operator can manage sender pairing."
+_PAIR_DM_ONLY_MESSAGE = "Run /pair in a direct message with this assistant."
+_PAIR_DISABLED_MESSAGE = "Sender pairing is not enabled on this channel."
 _HELP_MESSAGE = chat_commands.build_help_message()
 _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
 _HISTORY_RESET_FAILURE_MESSAGE = (
@@ -504,9 +516,78 @@ class TalonHost:
             await self._reload_mcp_configuration(channel, message.conversation_id)
         elif command == _CONTEXT_DOCTOR_COMMAND:
             await self._context_doctor(channel, message.conversation_id, conversation_root)
+        elif command == _PAIR_COMMAND:
+            reply = await self._pair_command(channel, message, provider)
+            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
         else:
             return False
         return True
+
+    async def _pair_command(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        provider: str | None,
+    ) -> str:
+        """Run `/pair` for an operator; never reaches the model."""
+        config = getattr(channel, "config", None)
+        exposure = getattr(config, "exposure", None)
+        pairing = getattr(config, "pairing", None)
+        # Stricter than the tool-approval operator check: `from_self` never counts,
+        # only an operator id configured in env.
+        if (
+            not isinstance(exposure, ChannelExposure)
+            or message.sender_id not in exposure.operator_ids
+        ):
+            return _PAIR_OPERATOR_ONLY_MESSAGE
+        if not is_direct_message(message):
+            return _PAIR_DM_ONLY_MESSAGE
+        if not isinstance(pairing, SenderPairing):
+            return _PAIR_DISABLED_MESSAGE
+        result = await asyncio.to_thread(run_pair_command, pairing, message.text)
+        if (approved := result.approved) is not None:
+            await send_with_retry(
+                lambda: channel.send_message(approved.conversation_id, APPROVED_NOTICE)
+            )
+        if result.revoked is not None:
+            stopped = await self._stop_revoked_sender(
+                _channel_key(channel, provider), pairing.provider, result.revoked
+            )
+            return f"{result.reply} {stopped}".rstrip()
+        return result.reply
+
+    async def _stop_revoked_sender(
+        self, channel_key: str, provider: str, revoked: PairedSender
+    ) -> str:
+        """Cancel a revoked sender's active run and pause jobs created in their DM."""
+        conversation_root = self._conversation_root(channel_key, revoked.conversation_id)
+        outcome = await self._cancel_conversation_tasks(
+            self._agent_conversation_id(conversation_root)
+        )
+        paused = self._pause_conversation_jobs(provider, revoked.conversation_id)
+        notes = []
+        if outcome is _CancelOutcome.TIMEOUT:
+            notes.append("Could not stop their current run within 30 seconds; restart Talon.")
+        elif outcome is not _CancelOutcome.NONE:
+            notes.append("Stopped their current run.")
+        if paused:
+            notes.append(f"Paused {paused} scheduled job(s) created in their DM.")
+        return " ".join(notes)
+
+    def _pause_conversation_jobs(self, provider: str, conversation_id: str) -> int:
+        store = getattr(self.scheduler, "store", None)
+        if not isinstance(store, CronJobStore):
+            return 0
+        paused = 0
+        for job in store.list_jobs():
+            origin = job.origin
+            if job.enabled and (origin.channel, origin.conversation_id) == (
+                provider,
+                conversation_id,
+            ):
+                store.edit_job(job.id, origin=origin, enabled=False)
+                paused += 1
+        return paused
 
     async def _context_doctor(
         self, channel: ChannelAdapter, chat: str, conversation_root: str

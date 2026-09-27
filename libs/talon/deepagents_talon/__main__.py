@@ -28,6 +28,16 @@ from deepagents_talon.fleet_import import (
 from deepagents_talon.host import TalonHost
 from deepagents_talon.mcp import MCPToolProvider, login_mcp_server, print_mcp_config_paths
 from deepagents_talon.mcp_middleware import talon_mcp_middleware
+from deepagents_talon.pairing import (
+    PAIRING_CHANNELS,
+    PAIRING_FILENAME,
+    PairingStore,
+    SenderPairing,
+    approve_code,
+    env_sender_ids,
+    format_listing,
+    revoke_sender,
+)
 from deepagents_talon.speech import build_voice_transcriber
 
 if TYPE_CHECKING:
@@ -79,6 +89,7 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command")
     _add_import_fleet_parser(subparsers)
     _add_mcp_parsers(subparsers)
+    _add_pairing_parsers(subparsers)
     args = parser.parse_args()
 
     _configure_logging(os.environ)
@@ -88,6 +99,9 @@ def main() -> None:
         sys.exit(_run_import_fleet_command(args, config))
     if args.command == "mcp":
         sys.exit(asyncio.run(_run_mcp_command(args, config)))
+    if args.command == "pairing":
+        config.ensure_home()
+        sys.exit(_run_pairing_command(args, config))
 
     cron_factory = CronJobStore
     cron_store = cron_factory(assistant_id=config.assistant_id, cron_dir=config.cron_dir)
@@ -145,6 +159,78 @@ def _add_mcp_parsers(
     login = mcp_sub.add_parser("login", help="Run OAuth login for an MCP server")
     login.add_argument("server", help="Server name from mcpServers")
     login.add_argument("--mcp-config", dest="config_path", default=None)
+
+
+def _add_pairing_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    pairing = subparsers.add_parser("pairing", help="Manage paired DM senders")
+    pairing_sub = pairing.add_subparsers(dest="pairing_command", required=True)
+    listing = pairing_sub.add_parser("list", help="Show pending requests and paired senders")
+    listing.add_argument("channel", nargs="?", choices=PAIRING_CHANNELS)
+    approve = pairing_sub.add_parser("approve", help="Approve a pending request by code")
+    approve.add_argument("channel", choices=PAIRING_CHANNELS)
+    approve.add_argument("code")
+    revoke = pairing_sub.add_parser("revoke", help="Revoke a paired sender")
+    revoke.add_argument("channel", choices=PAIRING_CHANNELS)
+    revoke.add_argument("sender_id")
+    revoke.add_argument(
+        "--pause-jobs",
+        action="store_true",
+        help="Also pause cron jobs created in the sender's DM. Only while Talon is stopped: "
+        "the running host is the cron store's only writer.",
+    )
+
+
+def _run_pairing_command(args: argparse.Namespace, config: TalonConfig) -> int:
+    channels = [args.channel] if args.channel else list(PAIRING_CHANNELS)
+    pairings = [_cli_pairing(config, channel) for channel in channels]
+    if args.pairing_command == "list":
+        print("\n".join(format_listing(pairing) for pairing in pairings))  # noqa: T201
+        return 0
+    if args.pairing_command == "approve":
+        result = approve_code(pairings[0], args.code)
+        print(result.reply)  # noqa: T201
+        return 0 if result.approved is not None else 1
+    result = revoke_sender(pairings[0], args.sender_id)
+    print(result.reply)  # noqa: T201
+    if result.revoked is None:
+        return 1
+    _report_revoked_jobs(config, args, result.revoked.conversation_id)
+    return 0
+
+
+def _cli_pairing(config: TalonConfig, channel: str) -> SenderPairing:
+    prefix = f"DEEPAGENTS_TALON_{channel.upper()}"
+    return SenderPairing(
+        store=PairingStore(config.home / PAIRING_FILENAME),
+        provider=channel,
+        env_sender_ids=env_sender_ids(config.env, prefix),
+    )
+
+
+def _report_revoked_jobs(
+    config: TalonConfig, args: argparse.Namespace, conversation_id: str
+) -> None:
+    store = CronJobStore(assistant_id=config.assistant_id, cron_dir=config.cron_dir)
+    jobs = [
+        job
+        for job in store.list_jobs()
+        if job.enabled
+        and (job.origin.channel, job.origin.conversation_id) == (args.channel, conversation_id)
+    ]
+    if not jobs:
+        return
+    if args.pause_jobs:
+        for job in jobs:
+            store.edit_job(job.id, origin=job.origin, enabled=False)
+        print(f"Paused {len(jobs)} scheduled job(s) created in their DM.")  # noqa: T201
+        return
+    names = ", ".join(f"{job.id} ({job.name})" for job in jobs)
+    print(  # noqa: T201
+        f"Still enabled, created in their DM: {names}. "
+        "Rerun with --pause-jobs while Talon is stopped, or revoke from chat with /pair revoke."
+    )
 
 
 def _run_import_fleet_command(args: argparse.Namespace, config: TalonConfig) -> int:

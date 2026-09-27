@@ -195,6 +195,15 @@ def _selected(request: ModelRequest[Any]) -> ModelRequest[Any]:
     return request if model is None else request.override(model=model)
 
 
+def _summary_trim_limit(model: BaseChatModel) -> int:
+    """Reserve 20% of the input window for the summary prompt and counting overhead."""
+    profile = getattr(model, "profile", None)
+    limit = profile.get("max_input_tokens") if isinstance(profile, dict) else None
+    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+        return 4_000
+    return max(1, limit * 4 // 5)
+
+
 class SelectedModelSummarization(AgentMiddleware[Any, Any, Any]):
     """Summarize against the turn's selected model rather than the startup model.
 
@@ -266,12 +275,20 @@ class SelectedModelSummarization(AgentMiddleware[Any, Any, Any]):
         with self._lock:
             cached = self._summarizers.get(id(model))
             if cached is None or cached[0] is not model:
-                cached = (model, create_summarization_middleware(model, self._backend))
+                cached = (
+                    model,
+                    create_summarization_middleware(
+                        model, self._backend, trim_tokens_to_summarize=_summary_trim_limit(model)
+                    ),
+                )
                 self._summarizers[id(model)] = cached
         return cached[1], request.override(model=model)
 
     def _startup_summarizer(self) -> SummarizationMiddleware:
         with self._lock:
             if self._default is None:
-                self._default = create_summarization_middleware(self._startup(), self._backend)
+                model = self._startup()
+                self._default = create_summarization_middleware(
+                    model, self._backend, trim_tokens_to_summarize=_summary_trim_limit(model)
+                )
             return self._default

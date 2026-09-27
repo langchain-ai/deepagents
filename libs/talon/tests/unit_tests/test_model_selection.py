@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from pydantic import Field
 
 from deepagents_talon.background import _IN_SUBAGENT
@@ -308,9 +309,11 @@ async def test_listing_flags_a_selection_that_is_no_longer_available(tmp_path: P
 
 class RecordingModel(ReplyModel):
     seen: list[str] = Field(default_factory=list)
+    input_sizes: list[int] = Field(default_factory=list)
 
     def _generate(self, messages, *args: object, **kwargs: object):
         self.seen.append(str(messages[-1].content))
+        self.input_sizes.append(count_tokens_approximately(messages))
         return super()._generate(messages, *args, **kwargs)
 
 
@@ -367,6 +370,44 @@ async def test_selected_smaller_model_is_held_to_its_own_budget(
     assert long_text not in alt.seen
 
 
+@pytest.mark.usefixtures("discovered")
+@pytest.mark.parametrize("smaller_default", [False, True])
+async def test_long_conversation_can_switch_to_a_smaller_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, smaller_default: bool
+) -> None:
+    small = RecordingModel(
+        responses=[AIMessage(content="from small")], profile={"max_input_tokens": 16_000}
+    )
+    large = RecordingModel(
+        responses=[AIMessage(content="from large")], profile={"max_input_tokens": 1_000_000}
+    )
+    models = {
+        "test:primary": small if smaller_default else large,
+        "test:alt": large if smaller_default else small,
+    }
+    monkeypatch.setattr(
+        "deepagents_talon.runtime._resolve_model_from_env",
+        lambda model, *_args, **_kwargs: models[model],
+    )
+    runtime = _runtime(tmp_path)
+    await runtime.start()
+    try:
+        for _ in range(8):
+            await runtime.invoke(
+                AgentRequest("a", "context " * 2_000, model="test:alt" if smaller_default else None)
+            )
+        result = await runtime.invoke(
+            AgentRequest("a", "Continue.", model=None if smaller_default else "test:alt")
+        )
+    finally:
+        await runtime.stop()
+
+    assert large.input_sizes[-1] > 16_000
+    assert result.text == "from small"
+    assert len(small.input_sizes) >= 2  # Summarization and the main reply both ran.
+    assert max(small.input_sizes) <= 16_000
+
+
 class _FakeSummarizer:
     name = "SummarizationMiddleware"
     trace_policy = None
@@ -391,7 +432,7 @@ def _summarization(
 ) -> tuple[SelectedModelSummarization, list[object]]:
     builds: list[object] = []
 
-    def build(model: object, _backend: object) -> _FakeSummarizer:
+    def build(model: object, _backend: object, **_kwargs: object) -> _FakeSummarizer:
         builds.append(model)
         return _FakeSummarizer(model)
 

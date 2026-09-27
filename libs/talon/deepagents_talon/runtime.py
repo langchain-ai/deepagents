@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
 import yaml
 from deepagents import create_deep_agent
+from deepagents._models import resolve_model
 from deepagents.backends import CompositeBackend, LocalShellBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -58,6 +59,13 @@ from deepagents_talon.interfaces import (
 )
 from deepagents_talon.mcp import _cancel_mcp_elicitation
 from deepagents_talon.messaging import MESSAGE_HANDLER, send_message
+from deepagents_talon.model_fallback import (
+    FALLBACK_TURN,
+    FallbackTurn,
+    TalonModelFallbackMiddleware,
+    fallback_specs_from_env,
+    is_retryable as _is_retryable,
+)
 from deepagents_talon.observability import (
     AgentActivityCallback,
     agent_activity_logging_enabled,
@@ -101,8 +109,6 @@ _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ModelContent = str | list[dict[str, object]]
 
-_BAD_REQUEST_STATUS_CODE = 400
-_RETRYABLE_STATUS_CODES = frozenset({408, 409, 413, 429, 500, 502, 503, 504})
 _BACKEND_ENV_ALLOWED_KEYS = frozenset(
     {
         "CI",
@@ -153,34 +159,6 @@ _BACKEND_ENV_SECRET_MARKERS = (
     "SECRET",
     "TOKEN",
 )
-_RETRYABLE_BAD_REQUEST_MARKERS = (
-    "failed to parse",
-    "tool_call",
-    "tool call",
-    "context length",
-    "context window",
-    "context limit",
-    "maximum context",
-    "max context",
-    "input too long",
-    "request too large",
-)
-_RETRYABLE_MESSAGE_MARKERS = (
-    *_RETRYABLE_BAD_REQUEST_MARKERS,
-    "connection aborted",
-    "connection closed",
-    "connection lost",
-    "connection refused",
-    "connection reset",
-    "connection timed out",
-    "read timeout",
-    "timed out",
-    "timeout limit",
-    "temporarily unavailable",
-    "temporary failure",
-    "try again later",
-)
-
 _CONTINUATION_NUDGE = (
     "Your action budget was exhausted mid-task. Continue working and complete the task. "
     "If you have already finished, provide your final answer now."
@@ -343,6 +321,12 @@ class DeepAgentRuntime:
         self.include_web_tools = include_web_tools
         self.recursion_limit = resolved_recursion_limit
         self.max_retries = max_retries
+        specs = fallback_specs_from_env(self.env)
+        self._fallback = (
+            TalonModelFallbackMiddleware(specs, self._build_fallback, max_retries=max_retries)
+            if specs
+            else None
+        )
         self.max_continuations = max_continuations
         self._graph: object | None = None
         self._context_diagnostics: ContextDoctor | None = None
@@ -404,12 +388,16 @@ class DeepAgentRuntime:
             web_tools["web_search"] = create_web_search_tool(tavily_key)
         for spec in local_subagents:
             _resolve_local_tools(cast("LocalSubAgent", spec), catalog, web_tools)
-        resolved, attachments = prepare_subagents(resolved, model, interrupt_on)
+        fallback = () if self._fallback is None else (self._fallback,)
+        resolved, attachments = prepare_subagents(
+            resolved, model, interrupt_on, middleware=fallback
+        )
         tools.append(self._attachment_tool(attachments))
-        middleware = list(self.middleware)
+        middleware = [*fallback, *self.middleware]
         task_tools = TaskTools(
             model,
             interrupt_on,
+            middleware=fallback,
             subagents=local_subagents,
             prepared=[
                 cast("CompiledSubAgent", spec) for spec in resolved if "graph_id" not in spec
@@ -577,6 +565,7 @@ class DeepAgentRuntime:
         session_token = _HISTORY_SESSION.set(request.conversation_id)
         authorization_token = set_authorization_handler(request.authorization_handler)
         message_token = MESSAGE_HANDLER.set(request.message_handler)
+        fallback_token = FALLBACK_TURN.set(FallbackTurn())
         try:
             text = await self._invoke_until_text(request, activity)
         except BaseException as error:
@@ -590,6 +579,7 @@ class DeepAgentRuntime:
             ACTIVE_APPROVALS.reset(policy_token)
             reset_authorization_handler(authorization_token)
             MESSAGE_HANDLER.reset(message_token)
+            FALLBACK_TURN.reset(fallback_token)
             _HISTORY_SCOPE.reset(history_token)
             _HISTORY_SESSION.reset(session_token)
             _SCHEDULED_TURN.reset(scheduled_token)
@@ -735,6 +725,9 @@ class DeepAgentRuntime:
             return {"status": "reloaded", "available": "next_turn"}
 
         return reload_subagent_configuration
+
+    def _build_fallback(self, spec: str) -> BaseChatModel:
+        return _build_chat_model(spec, self.env, context_size=_context_size_from_env(self.env))
 
     def _activity_callback(self, request: AgentRequest) -> AgentActivityCallback | None:
         if not agent_activity_logging_enabled(self.env):
@@ -1218,6 +1211,25 @@ def _resolve_model_from_env(
     return resolved
 
 
+def _build_chat_model(
+    spec: str,
+    env: Mapping[str, str],
+    *,
+    context_size: int | None,
+) -> BaseChatModel:
+    """Build a chat model object with the same settings as the primary model.
+
+    Args:
+        spec: `provider:model` identifier.
+        env: Process environment supplying the base URL override.
+        context_size: Operator input-token limit applied to the model profile.
+
+    Returns:
+        A chat model with Talon's provider profile, base URL, and context size.
+    """
+    return resolve_model(_resolve_model_from_env(spec, env, context_size=context_size))
+
+
 def _context_size_from_env(env: Mapping[str, str]) -> int | None:
     return _positive_int_from_env(env, CONTEXT_SIZE_ENV_KEY)
 
@@ -1487,39 +1499,6 @@ def _prepare_memory_path(raw: str) -> str | None:
     except OSError:
         logger.warning("Could not prepare Talon memory file %s", path, exc_info=True)
         return None
-
-
-def _status_code(exc: BaseException) -> int | None:
-    for source in (exc, getattr(exc, "response", None)):
-        if source is None:
-            continue
-        for attr in ("status_code", "status"):
-            value = getattr(source, attr, None)
-            if isinstance(value, int):
-                return value
-    if isinstance(exc, BaseExceptionGroup):
-        for item in exc.exceptions:
-            value = _status_code(item)
-            if value is not None:
-                return value
-    return None
-
-
-def _is_retryable(exc: Exception) -> bool:
-    if isinstance(exc, (ConnectionError, TimeoutError)):
-        return True
-
-    text = str(exc).lower()
-    status_code = _status_code(exc)
-    if status_code in _RETRYABLE_STATUS_CODES:
-        return True
-    if status_code == _BAD_REQUEST_STATUS_CODE:
-        return _contains_marker(text, _RETRYABLE_BAD_REQUEST_MARKERS)
-    return _contains_marker(text, _RETRYABLE_MESSAGE_MARKERS)
-
-
-def _contains_marker(text: str, markers: Sequence[str]) -> bool:
-    return any(marker in text for marker in markers)
 
 
 def _last_text(state: object) -> str:

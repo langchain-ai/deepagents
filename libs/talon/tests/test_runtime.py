@@ -21,11 +21,13 @@ from deepagents_talon.interfaces import (
     ToolApprovalDecision,
     ToolApprovalRequest,
 )
+from deepagents_talon.model_fallback import (
+    is_retryable as _is_retryable,
+    status_code_of as _status_code,
+)
 from deepagents_talon.runtime import (
     _SAFE_BACKEND_PATH,
     DeepAgentRuntime,
-    _is_retryable,
-    _status_code,
 )
 from deepagents_talon.tool_approvals import ToolApprovalStore
 

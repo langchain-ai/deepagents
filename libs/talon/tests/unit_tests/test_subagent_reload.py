@@ -16,7 +16,7 @@ from deepagents_talon.runtime import DeepAgentRuntime
 def stub_child_compilation(monkeypatch):
     monkeypatch.setattr(
         "deepagents_talon.subagents._compile_fresh",
-        lambda spec, *_args: {**spec, "runnable": RunnableLambda(lambda state: state)},
+        lambda spec, *_args, **_kwargs: {**spec, "runnable": RunnableLambda(lambda state: state)},
     )
 
 

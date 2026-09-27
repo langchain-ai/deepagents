@@ -27,6 +27,8 @@ AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-tal
 
 If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful for checking host lifecycle and channel wiring without provider credentials.
 
+Set `DEEPAGENTS_TALON_MODEL_FALLBACKS` to a comma-separated list of `provider:model` specs to fall back when a model stays unavailable. On a transient error (rate limit, overload, 5xx, timeout, or dropped connection), Talon retries the same model first, then tries each fallback in order. Local subagents follow the same chain after their own model. Errors that another model cannot fix, such as authentication failures or malformed requests, are raised without falling back, and context overflows are left to conversation summarization. A fallback model is built the first time it is needed, with the same provider profile, `OPENAI_BASE_URL`, and `DEEPAGENTS_TALON_CONTEXT_SIZE` settings as the primary. Once a fallback answers, the rest of that turn stays on it, and the chat gets one notice naming the model that answered. The next turn tries the primary again.
+
 Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. Offloaded conversation history and large tool results live in the assistant home’s `artifacts/` directory. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
 ## Conversation history

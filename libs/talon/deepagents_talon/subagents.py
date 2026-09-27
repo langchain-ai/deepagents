@@ -74,7 +74,7 @@ class TaskTools(AgentMiddleware):
 
     name = "SubAgentMiddleware"
 
-    def __init__(
+    def __init__(  # noqa: PLR0913  # mirrors the parent graph's delegation wiring
         self,
         model: str | BaseChatModel,
         interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
@@ -82,10 +82,12 @@ class TaskTools(AgentMiddleware):
         subagents: Sequence[SubAgent] = (),
         prepared: Sequence[CompiledSubAgent] = (),
         backend: BackendProtocol,
+        middleware: Sequence[AgentMiddleware] = (),
     ) -> None:
-        """Retain this graph's model and operator approval policy."""
+        """Retain this graph's model, operator approval policy, and model middleware."""
         self._model = model
         self._interrupt_on = dict(interrupt_on or {})
+        self._middleware = tuple(middleware)
         self.tools = (
             SubAgentMiddleware(
                 backend=backend,
@@ -145,7 +147,9 @@ class TaskTools(AgentMiddleware):
             spec["tools"] = list(configured.values()) + [
                 available[name] for name in tools if name not in configured
             ]
-            agent = _compile_fresh(spec, self._model, self._interrupt_on)["runnable"]
+            agent = _compile_fresh(
+                spec, self._model, self._interrupt_on, middleware=self._middleware
+            )["runnable"]
             result = await agent.ainvoke(
                 {"messages": [HumanMessage(description)]},
                 {"recursion_limit": _FRESH_AGENT_RECURSION_LIMIT},
@@ -196,19 +200,21 @@ def _compile_fresh(
     spec: LocalSubAgent,
     model: str | BaseChatModel,
     interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
+    *,
+    middleware: Sequence[AgentMiddleware] = (),
 ) -> CompiledSubAgent:
     available = _tool_map(spec.get("tools", []))
     approvals = {
         key: value for key, value in (interrupt_on or {}).items() if value and key in available
     }
-    middleware = [talon_mcp_middleware()]
+    stack = [*middleware, talon_mcp_middleware()]
     if approvals:
-        middleware.append(HumanInTheLoopMiddleware(interrupt_on=approvals))
+        stack.append(HumanInTheLoopMiddleware(interrupt_on=approvals))
     graph = create_agent(
         model=spec.get("model", model),
         tools=spec.get("tools", []),
         system_prompt=spec.get("system_prompt", ""),
-        middleware=middleware,
+        middleware=stack,
         checkpointer=False,
     )
     return {
@@ -222,6 +228,8 @@ def prepare_subagents(
     specs: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent],
     model: str | BaseChatModel,
     interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
+    *,
+    middleware: Sequence[AgentMiddleware] = (),
 ) -> tuple[list[SubAgent | CompiledSubAgent | AsyncSubAgent], list[Attachment]]:
     """Resolve exact attachments, compiling fresh roles without inherited middleware.
 
@@ -232,6 +240,8 @@ def prepare_subagents(
         specs: Loaded local, compiled, or remote definitions.
         model: Default model for fresh agents.
         interrupt_on: Operator approval policy retained by fresh agents.
+        middleware: Model-call middleware, such as the fallback chain, that fresh
+            agents run ahead of their own.
 
     Returns:
         SDK definitions and a safe inventory; opaque agents have unknown tools.
@@ -260,7 +270,11 @@ def prepare_subagents(
             compiled["runnable"] = RunnableLambda(_task_only) | compiled["runnable"]
             prepared.append(compiled)
         else:
-            prepared.append(original if opaque else _compile_fresh(spec, model, interrupt_on))
+            prepared.append(
+                original
+                if opaque
+                else _compile_fresh(spec, model, interrupt_on, middleware=middleware)
+            )
     return prepared, inventory
 
 

@@ -8,4 +8,5 @@
 - [Models and Harness Profiles](profiles-models.md) - Explains Deep Agents model resolution, provider-construction profiles, and harness profiles that overlay prompts, middleware, and request-time tool visibility. Also covers dcode model construction, runtime switching, and resume-safe per-call settings.
 - [State and Persistence](state-persistence.md) - Separates LangGraph thread checkpoints from backend file storage, dcode local session data, and Talon's durable conversation archive. Explains ownership, scope, recovery, and lifecycle boundaries.
 - [Subagents and Skills](subagents-skills.md) - Deep Agents delegates synchronous isolated or forked work through a task tool and can track remote Agent Protocol work asynchronously. Skills are a separate backend-discovery and prompt-index mechanism, with explicit state and propagation boundaries.
+- [Talon Scheduled Work and Cron Semantics](talon-scheduling.md)
 - [Filesystem and Tool Surface](tools-filesystem.md) - How Deep Agents and dcode compose model-visible tools, route filesystem operations through backends, and keep capabilities, permissions, HITL approval, and MCP access distinct.

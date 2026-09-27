@@ -4,7 +4,7 @@ Deep Agents Talon is the local runtime host for long-running Deep Agents. It own
 
 > **Experimental:** Talon is an experimental, alpha-status runtime and is subject to change or removal at any time. It is not intended for production or enterprise use.
 >
-> **Security support:** Talon does not yet implement production-grade security controls such as complete human-in-the-loop (HITL) approval policy, channel administrator controls, sandbox-backed execution isolation, or multi-tenant boundaries. Channel access should be treated as direct access to the operator's agent, model credentials, MCP tools, and local host resources. We do not accept security vulnerability reports for the absence of these known, unimplemented Talon hardening features while Talon remains experimental.
+> **Security support:** Talon does not yet implement production-grade security controls such as complete human-in-the-loop (HITL) approval policy, channel administrator controls, or multi-tenant boundaries. [Sandboxed execution](#sandboxed-execution) is opt-in and does not cover MCP tools. Channel access should be treated as direct access to the operator's agent, model credentials, MCP tools, and local host resources. We do not accept security vulnerability reports for the absence of these known, unimplemented Talon hardening features while Talon remains experimental.
 
 Talon currently includes:
 
@@ -28,6 +28,29 @@ AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-tal
 If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful for checking host lifecycle and channel wiring without provider credentials.
 
 Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. Offloaded conversation history and large tool results live in the assistant home’s `artifacts/` directory. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
+
+## Sandboxed execution
+
+By default the agent's shell and file tools run on the host. Set `DEEPAGENTS_TALON_SANDBOX` to a sandbox provider to run them in a remote sandbox instead:
+
+```bash
+DEEPAGENTS_TALON_SANDBOX=langsmith AGENT_MODEL=<provider>:<model-id> uv run deepagents-talon
+```
+
+Under systemd, put the variable in the service's environment file instead.
+
+Talon uses the `deepagents-code` sandbox providers: `langsmith` works out of the box, and `agentcore`, `daytona`, `modal`, `runloop`, and `vercel` need the matching extra, for example `uv run --with 'deepagents-code[daytona]' deepagents-talon`. Each provider reads its own credentials (such as `LANGSMITH_API_KEY` or `DAYTONA_API_KEY`) in the Talon process; they are not forwarded into the sandbox.
+
+| Variable | Purpose |
+| --- | --- |
+| `DEEPAGENTS_TALON_SANDBOX` | Provider name. Unset keeps host execution. |
+| `DEEPAGENTS_TALON_SANDBOX_ID` | Attach to an existing sandbox instead of creating one. Talon never deletes it. |
+| `DEEPAGENTS_TALON_SANDBOX_SNAPSHOT` | Snapshot or blueprint for providers that support one (`langsmith`, `runloop`). LangSmith defaults to `talon-<assistant_id>`, because snapshot names are shared across a workspace. |
+| `DEEPAGENTS_TALON_SANDBOX_SETUP` | Host path to a script run once after the sandbox starts. |
+
+Talon creates the sandbox at startup and deletes it on shutdown, so sandbox files do not survive a restart unless you set `DEEPAGENTS_TALON_SANDBOX_ID`. If the sandbox cannot start, Talon exits with an error rather than falling back to host execution. The first LangSmith start builds the snapshot and can outlast the provider's wait; Talon then exits, and the next start uses the snapshot once it is ready. Stopping Talon with SIGTERM while the sandbox is still starting can leave it running; attach with `DEEPAGENTS_TALON_SANDBOX_ID` if that matters.
+
+The assistant's `skills/` and `memory/` directories stay on the host so skills and memory keep working; every other path, including large tool results, lives in the sandbox. `tools.json` and other assistant state are not reachable from sandbox tools. Memory paths from `DEEPAGENTS_TALON_MEMORY_PATHS` or the manifest must sit inside the assistant's `memory/` directory; Talon ignores others with a warning. Extra `DEEPAGENTS_TALON_SKILLS_DIRS` resolve inside the sandbox. MCP tools, web tools, and channel media handling still run on the host, so the sandbox is not a multi-tenant boundary.
 
 ## Conversation history
 
@@ -725,7 +748,7 @@ These logs complement the persisted `last_status` and `last_error` fields.
 
 ## Security and Data Lifecycle
 
-Talon is single-operator by design. It does not provide multi-tenant isolation, sandbox-backed execution isolation, production-grade HITL policy enforcement, or channel administrator boundaries. Any tool approval prompt surfaced through a channel is an experimental convenience feature, not a complete security boundary. Channel exposure should be treated as direct access to the operator's agent, model credentials, MCP tools, and local host resources.
+Talon is single-operator by design. It does not provide multi-tenant isolation, production-grade HITL policy enforcement, or channel administrator boundaries. Any tool approval prompt surfaced through a channel is an experimental convenience feature, not a complete security boundary. Channel exposure should be treated as direct access to the operator's agent, model credentials, MCP tools, and local host resources.
 
 Do not file security vulnerability reports for the absence of these known, unimplemented hardening features in Talon while it remains experimental. Reports about missing enterprise controls, channel admin gates, sandbox integrations, or production HITL policy are considered feature requests for a future production-ready runtime.
 

@@ -98,6 +98,11 @@ CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 INLINE_SUBAGENT_TIMEOUT_ENV_KEY = "DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
+_SANDBOX_PROMPT = (
+    "## Sandbox\n\n"
+    "Your shell and file tools run in a remote Linux sandbox. Work under "
+    "`{working_dir}`; host paths other than your skills and memory files do not exist there."
+)
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ModelContent = str | list[dict[str, object]]
 
@@ -278,6 +283,10 @@ class DeepAgentRuntime:
         max_retries: Retries for transient provider, parse, context-limit, and
             transport errors.
         max_continuations: Number of continuation nudges after empty responses.
+        env: Environment values for model, path, and backend settings.
+            Defaults to `os.environ`.
+        sandbox_working_dir: Working directory inside a remote sandbox `backend`.
+            When set, the system prompt tells the agent its tools run there.
     """
 
     def __init__(  # noqa: PLR0913  # runtime construction mirrors graph wiring knobs
@@ -306,6 +315,7 @@ class DeepAgentRuntime:
         max_retries: int = DEFAULT_MAX_RETRIES,
         max_continuations: int = DEFAULT_MAX_CONTINUATIONS,
         env: Mapping[str, str] | None = None,
+        sandbox_working_dir: str | None = None,
     ) -> None:
         """Initialize without constructing the graph."""
         values = os.environ if env is None else env
@@ -332,6 +342,7 @@ class DeepAgentRuntime:
         self.cron_store = cron_store
         self.env = dict(os.environ if env is None else env)
         self.backend = backend if backend is not None else _default_backend(self.env, assistant_dir)
+        self.sandbox_working_dir = sandbox_working_dir
         self.skills = tuple(skills) if skills is not None else None
         self.middleware = tuple(middleware)
         self.approval_store = approval_store or ToolApprovalStore(
@@ -926,6 +937,13 @@ class DeepAgentRuntime:
         return Command(resume=payload)
 
     def _resolve_system_prompt(self) -> str | None:
+        prompt = self._base_system_prompt()
+        if self.sandbox_working_dir is None:
+            return prompt
+        note = _SANDBOX_PROMPT.format(working_dir=self.sandbox_working_dir)
+        return f"{prompt}\n\n{note}" if prompt else note
+
+    def _base_system_prompt(self) -> str | None:
         if self.system_prompt is not None:
             return self.system_prompt
         if self.assistant_dir is None:
@@ -982,15 +1000,51 @@ class DeepAgentRuntime:
     def _resolve_memory(self) -> list[str] | None:
         if self.memory is not None:
             return list(self.memory) or None
-        paths = _split_path_env(
-            self.env.get("DEEPAGENTS_TALON_MEMORY_PATHS") or self.env.get("AGENT_MEMORY_PATHS"),
+        paths = self._memory_candidates(
+            _split_path_env(
+                self.env.get("DEEPAGENTS_TALON_MEMORY_PATHS") or self.env.get("AGENT_MEMORY_PATHS"),
+            )
         )
         if not paths and self.assistant_dir is not None:
-            paths.extend(_manifest_memory_paths(self.assistant_dir))
+            paths.extend(self._memory_candidates(_manifest_memory_paths(self.assistant_dir)))
         if not paths and self.assistant_dir is not None:
             paths.append(str(self.assistant_dir / "memory" / "AGENTS.md"))
         prepared = [_prepare_memory_path(path) for path in paths]
         return [path for path in prepared if path is not None] or None
+
+    def _memory_candidates(self, paths: list[str]) -> list[str]:
+        """Drop memory paths a sandbox backend would read from the sandbox.
+
+        Sandbox mode only routes the assistant's `memory/` directory to the
+        host, so any other path would be created on the host but read from the
+        sandbox.
+        """
+        if self.sandbox_working_dir is None:
+            return paths
+        memory_dir = self.assistant_dir / "memory" if self.assistant_dir is not None else None
+        kept: list[str] = []
+        for path in paths:
+            routed = _routed_memory_path(path, memory_dir)
+            if routed is None:
+                logger.warning(
+                    "Ignoring memory path %s: sandbox mode reads memory only from %s",
+                    path,
+                    memory_dir,
+                )
+            else:
+                kept.append(routed)
+        return kept
+
+
+def _routed_memory_path(raw: str, memory_dir: Path | None) -> str | None:
+    """Return `raw` spelled under `memory_dir` if it resolves inside it."""
+    if memory_dir is None:
+        return None
+    root = memory_dir.resolve()
+    resolved = Path(raw).expanduser().resolve()
+    if resolved == root or not resolved.is_relative_to(root):
+        return None
+    return str(memory_dir / resolved.relative_to(root))
 
 
 def _interrupts_from_state(state: object) -> tuple[object, ...]:

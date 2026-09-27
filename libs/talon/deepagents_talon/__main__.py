@@ -29,6 +29,7 @@ from deepagents_talon.fleet_import import (
 from deepagents_talon.host import TalonHost
 from deepagents_talon.mcp import MCPToolProvider, login_mcp_server, print_mcp_config_paths
 from deepagents_talon.mcp_middleware import talon_mcp_middleware
+from deepagents_talon.sandbox import SandboxStartupError, open_sandbox
 from deepagents_talon.speech import build_voice_transcriber
 
 if TYPE_CHECKING:
@@ -38,6 +39,7 @@ if TYPE_CHECKING:
 
     from deepagents_talon.cron import CronJob
     from deepagents_talon.interfaces import AgentRuntime, ChannelAdapter
+    from deepagents_talon.sandbox import SandboxSession
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +109,11 @@ def main() -> None:
         discord=args.discord,
         slack=args.slack,
     )
-    asyncio.run(_run_host(args, config, cron_store, channels))
+    try:
+        asyncio.run(_run_host(args, config, cron_store, channels))
+    except SandboxStartupError as exc:
+        print(f"talon: {exc}", file=sys.stderr)  # noqa: T201
+        sys.exit(1)
 
 
 def _add_import_fleet_parser(
@@ -206,8 +212,25 @@ async def _run_host(
     if config.model is None:
         await _run_host_with_agent(args, config, cron_store, channels, await _agent_runtime(config))
         return
+    async with open_sandbox(config) as sandbox:
+        await _run_model_host(
+            args, config, cron_store, channels, checkpointer=checkpointer, sandbox=sandbox
+        )
+
+
+async def _run_model_host(  # noqa: PLR0913  # threads host wiring through unchanged
+    args: argparse.Namespace,
+    config: TalonConfig,
+    cron_store: CronJobStore,
+    channels: Sequence[ChannelAdapter],
+    *,
+    checkpointer: Checkpointer | None,
+    sandbox: SandboxSession | None,
+) -> None:
     if checkpointer is not None:
-        agent = await _agent_runtime(config, cron_store=cron_store, checkpointer=checkpointer)
+        agent = await _agent_runtime(
+            config, cron_store=cron_store, checkpointer=checkpointer, sandbox=sandbox
+        )
         await _run_host_with_agent(args, config, cron_store, channels, agent)
         return
 
@@ -225,6 +248,7 @@ async def _run_host(
             config,
             cron_store=cron_store,
             checkpointer=ConversationSaver(sqlite_checkpointer, archive=archive),
+            sandbox=sandbox,
         )
         await _run_host_with_agent(args, config, cron_store, channels, agent)
 
@@ -258,6 +282,7 @@ async def _agent_runtime(
     config: TalonConfig,
     cron_store: CronJobStore | None = None,
     checkpointer: Checkpointer | None = None,
+    sandbox: SandboxSession | None = None,
 ) -> AgentRuntime:
     from deepagents_talon.runtime import (  # noqa: PLC0415
         DeepAgentRuntime,
@@ -286,6 +311,8 @@ async def _agent_runtime(
         checkpointer=checkpointer,
         middleware=(talon_mcp_middleware(),),
         env=env,
+        backend=sandbox.backend if sandbox is not None else None,
+        sandbox_working_dir=sandbox.working_dir if sandbox is not None else None,
     )
 
 

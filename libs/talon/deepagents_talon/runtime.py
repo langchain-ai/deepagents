@@ -98,6 +98,11 @@ CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 INLINE_SUBAGENT_TIMEOUT_ENV_KEY = "DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
+_SANDBOX_PROMPT = (
+    "## Sandbox\n\n"
+    "Your shell and file tools run in a remote Linux sandbox. Work under "
+    "`{working_dir}`; host paths other than your skills and memory files do not exist there."
+)
 _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ModelContent = str | list[dict[str, object]]
 
@@ -278,6 +283,10 @@ class DeepAgentRuntime:
         max_retries: Retries for transient provider, parse, context-limit, and
             transport errors.
         max_continuations: Number of continuation nudges after empty responses.
+        env: Environment values for model, path, and backend settings.
+            Defaults to `os.environ`.
+        sandbox_working_dir: Working directory inside a remote sandbox `backend`.
+            When set, the system prompt tells the agent its tools run there.
     """
 
     def __init__(  # noqa: PLR0913  # runtime construction mirrors graph wiring knobs
@@ -306,6 +315,7 @@ class DeepAgentRuntime:
         max_retries: int = DEFAULT_MAX_RETRIES,
         max_continuations: int = DEFAULT_MAX_CONTINUATIONS,
         env: Mapping[str, str] | None = None,
+        sandbox_working_dir: str | None = None,
     ) -> None:
         """Initialize without constructing the graph."""
         values = os.environ if env is None else env
@@ -332,6 +342,7 @@ class DeepAgentRuntime:
         self.cron_store = cron_store
         self.env = dict(os.environ if env is None else env)
         self.backend = backend if backend is not None else _default_backend(self.env, assistant_dir)
+        self.sandbox_working_dir = sandbox_working_dir
         self.skills = tuple(skills) if skills is not None else None
         self.middleware = tuple(middleware)
         self.approval_store = approval_store or ToolApprovalStore(
@@ -926,6 +937,13 @@ class DeepAgentRuntime:
         return Command(resume=payload)
 
     def _resolve_system_prompt(self) -> str | None:
+        prompt = self._base_system_prompt()
+        if self.sandbox_working_dir is None:
+            return prompt
+        note = _SANDBOX_PROMPT.format(working_dir=self.sandbox_working_dir)
+        return f"{prompt}\n\n{note}" if prompt else note
+
+    def _base_system_prompt(self) -> str | None:
         if self.system_prompt is not None:
             return self.system_prompt
         if self.assistant_dir is None:

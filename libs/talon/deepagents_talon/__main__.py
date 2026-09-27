@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from deepagents_talon.async_subagents import load_async_subagents
 from deepagents_talon.channels.discord import DiscordChannel, DiscordChannelConfig
+from deepagents_talon.channels.slack import SlackChannel, SlackChannelConfig
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
 from deepagents_talon.config import TalonConfig
@@ -76,6 +77,11 @@ def main() -> None:
         action="store_true",
         help="Attach the Discord channel adapter.",
     )
+    parser.add_argument(
+        "--slack",
+        action="store_true",
+        help="Attach the Slack channel adapter.",
+    )
     subparsers = parser.add_subparsers(dest="command")
     _add_import_fleet_parser(subparsers)
     _add_mcp_parsers(subparsers)
@@ -99,6 +105,7 @@ def main() -> None:
         whatsapp=args.whatsapp,
         telegram=args.telegram,
         discord=args.discord,
+        slack=args.slack,
     )
     asyncio.run(_run_host(args, config, cron_store, channels))
 
@@ -303,6 +310,7 @@ def _channels(
     whatsapp: bool = False,
     telegram: bool = False,
     discord: bool = False,
+    slack: bool = False,
 ) -> tuple[ChannelAdapter, ...]:
     channels: list[ChannelAdapter] = []
     if whatsapp or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
@@ -311,6 +319,8 @@ def _channels(
         channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
     if discord or _env_enabled(config.env, "DEEPAGENTS_TALON_DISCORD_ENABLED"):
         channels.append(DiscordChannel(DiscordChannelConfig.from_talon_config(config)))
+    if slack or _env_enabled(config.env, "DEEPAGENTS_TALON_SLACK_ENABLED"):
+        channels.append(SlackChannel(SlackChannelConfig.from_talon_config(config)))
     return tuple(channels)
 
 

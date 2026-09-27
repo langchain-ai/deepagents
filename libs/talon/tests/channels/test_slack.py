@@ -25,6 +25,7 @@ from deepagents_talon.channels.slack import (
 )
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.interfaces import ChannelMedia
+from deepagents_talon.mcp_auth import extract_oauth_callback_url
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -720,3 +721,42 @@ async def test_upload_refuses_a_foreign_upload_url(tmp_path: Path) -> None:
     with pytest.raises(ChannelMediaError, match="unexpected host"):
         await gateway.upload_file("C1", image, thread_ts=None, comment=None)
     assert web.completed == []
+
+
+def test_reaction_thumbsup_all_approves() -> None:
+    assert slack_module._reaction_emoji("thumbsup_all") == "\U0001f44d"
+
+
+@pytest.mark.parametrize(
+    ("raw", "decoded"),
+    [
+        (
+            "<http://localhost:3000/callback?code=abc&amp;state=xyz>",
+            "http://localhost:3000/callback?code=abc&state=xyz",
+        ),
+        (
+            "<https://x.dev/a?b=1&amp;c=2|https://x.dev/a?b=1&amp;c=2>",
+            "https://x.dev/a?b=1&c=2",
+        ),
+        ("see <https://x.dev|the docs>", "see the docs (https://x.dev)"),
+        ("<mailto:a@b.dev|a@b.dev>", "mailto:a@b.dev"),
+        ("a &lt; b &amp;&amp; c &gt; d", "a < b && c > d"),
+        ("&amp;lt; stays literal", "&lt; stays literal"),
+        ("ping <@U999> in <#C1|general>", "ping <@U999> in <#C1|general>"),
+    ],
+)
+def test_inbound_slack_encoding_is_decoded(raw: str, decoded: str) -> None:
+    message = _convert_event(_event(text=raw), bot_id=BOT)
+    assert message is not None
+    assert message.text == decoded
+
+
+def test_pasted_oauth_callback_is_recognized() -> None:
+    message = _convert_event(
+        _event(text="<http://localhost:3000/callback?code=abc&amp;state=xyz>"),
+        bot_id=BOT,
+    )
+    assert message is not None
+    assert extract_oauth_callback_url(message.text) == (
+        "http://localhost:3000/callback?code=abc&state=xyz"
+    )

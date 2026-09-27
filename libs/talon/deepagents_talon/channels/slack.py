@@ -96,10 +96,12 @@ _CONVERSATION_PATTERN = re.compile(r"(?P<channel>[CDG][A-Z0-9]+)(?::(?P<thread>\
 _CODE_SPAN_PATTERN = re.compile(r"```.*?```|`[^`\n]+`", flags=re.DOTALL)
 _WEB_LINK_PATTERN = re.compile(r"\[([^\]\n]+)]\((https?://[^)\s|]+)\)")
 _SKIN_TONE_PATTERN = re.compile(r"::skin-tone-\d$")
+_INBOUND_LINK_PATTERN = re.compile(r"<((?:https?|mailto):[^<>|]+)(?:\|([^<>]*))?>")
 
 _REACTION_EMOJI = {
     "+1": "\U0001f44d",
     "thumbsup": "\U0001f44d",
+    "thumbsup_all": "\U0001f44d",
     "-1": "\U0001f44e",
     "thumbsdown": "\U0001f44e",
 }
@@ -1091,6 +1093,7 @@ def _convert_event(event: dict, *, bot_id: str | None) -> _SlackInboundMessage |
     text = str(event.get("text") or "")
     if bot_id is not None:
         text = text.replace(f"<@{bot_id}>", "")
+    text = _decode_mrkdwn(text)
     return _SlackInboundMessage(
         channel_id=channel,
         ts=ts,
@@ -1100,6 +1103,32 @@ def _convert_event(event: dict, *, bot_id: str | None) -> _SlackInboundMessage |
         is_dm=is_dm,
         files=_convert_files(event.get("files")),
     )
+
+
+def _decode_mrkdwn(text: str) -> str:
+    """Turn Slack's inbound message encoding back into the text the user typed.
+
+    Slack wraps a pasted URL as `<url>` or `<url|label>` and escapes `&`, `<`, and
+    `>`. Left encoded, a pasted OAuth callback reads as `...&amp;state=...` and is
+    not recognized. User, channel, and broadcast references such as `<@U123>` are
+    kept as Slack sent them.
+
+    Args:
+        text: Message text as delivered in the event.
+
+    Returns:
+        Text with links unwrapped and entities unescaped.
+    """
+
+    def unwrap(match: re.Match[str]) -> str:
+        url, label = match.group(1), match.group(2)
+        if not label or url in {label, f"mailto:{label}"}:
+            return url
+        return f"{label} ({url})"
+
+    unwrapped = _INBOUND_LINK_PATTERN.sub(unwrap, text)
+    # `&amp;` last, so an escaped `&lt;` stays the literal text `&lt;`.
+    return unwrapped.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 
 
 def _convert_files(value: object) -> tuple[_SlackFile, ...]:

@@ -240,6 +240,7 @@ class _DiscordInboundInteraction:
         interaction_id: Discord's id for this invocation.
         is_dm: Whether the command was invoked outside a guild.
         responder: Reply surface bound to this invocation.
+        argument: Text of the command's optional argument, when one was given.
     """
 
     command: str
@@ -248,6 +249,7 @@ class _DiscordInboundInteraction:
     interaction_id: str
     is_dm: bool
     responder: _InteractionResponder
+    argument: str | None = None
 
 
 @dataclass(slots=True)
@@ -823,7 +825,7 @@ class DiscordChannel:
             return
         message = ChannelMessage(
             conversation_id=inbound.channel_id,
-            text=command.text,
+            text=f"{command.text} {inbound.argument}" if inbound.argument else command.text,
             sender_id=inbound.sender_id,
             message_id=inbound.interaction_id,
             metadata={
@@ -1045,6 +1047,19 @@ def _build_app_command(
     async def callback(interaction: discord.Interaction) -> None:
         await handle_interaction(_convert_interaction(interaction, command.name))
 
+    # `discord.py` derives options from the callback's signature, so a command
+    # with an argument needs a callback that declares one.
+    async def callback_with_argument(
+        interaction: discord.Interaction, argument: str | None = None
+    ) -> None:
+        await handle_interaction(_convert_interaction(interaction, command.name, argument))
+
+    if command.argument is not None:
+        return app_commands.Command(
+            name=command.name,
+            description=command.summary,
+            callback=app_commands.describe(argument=command.argument)(callback_with_argument),
+        )
     return app_commands.Command(
         name=command.name,
         description=command.summary,
@@ -1055,12 +1070,14 @@ def _build_app_command(
 def _convert_interaction(
     interaction: discord.Interaction,
     command: str,
+    argument: str | None = None,
 ) -> _DiscordInboundInteraction:
     """Convert a `discord.py` interaction into a provider-neutral value.
 
     Args:
         interaction: Interaction reported by the Gateway.
         command: Bare name of the invoked command.
+        argument: Value of the command's optional argument, when given.
 
     Returns:
         Provider-neutral view of the invocation.
@@ -1072,6 +1089,7 @@ def _convert_interaction(
         interaction_id=str(interaction.id),
         is_dm=interaction.guild_id is None,
         responder=_DiscordPyResponder(interaction),
+        argument=argument,
     )
 
 

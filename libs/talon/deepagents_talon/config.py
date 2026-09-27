@@ -239,6 +239,11 @@ class TalonConfig:
         """JSON file used for active conversation generations."""
         return self._state_path("conversations.json", "conversation state")
 
+    @property
+    def model_state_path(self) -> Path:
+        """JSON file holding each conversation's `/model` selection."""
+        return self._state_path("models.json", "model selection state")
+
     def _state_path(self, name: str, description: str) -> Path:
         home = self.home.resolve()
         expected_home = self.home.parent.resolve() / self.home.name

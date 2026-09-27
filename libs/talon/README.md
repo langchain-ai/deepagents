@@ -383,7 +383,7 @@ AGENT_MODEL=<provider>:<model-id> \
 uv run --directory libs/talon deepagents-talon --discord
 ```
 
-Talon's commands are also registered as native Discord slash commands, so typing `/` in a chat with the bot offers `/help`, `/new`, `/stop`, `/mcp-reload`, and `/context-doctor` with autocomplete. The reply arrives as that command's own response rather than as a separate message. `/reset-all-history` is deliberately not registered, because it deletes stored history irreversibly and Talon has no confirmation step; it still works when typed in full.
+Talon's commands are also registered as native Discord slash commands, so typing `/` in a chat with the bot offers `/help`, `/new`, `/stop`, `/mcp-reload`, `/context-doctor`, and `/model` with autocomplete. The reply arrives as that command's own response rather than as a separate message. `/reset-all-history` is deliberately not registered, because it deletes stored history irreversibly and Talon has no confirmation step; it still works when typed in full.
 
 Registration needs the **`applications.commands`** scope alongside `bot` in the bot's invite URL. A bot invited with only `bot` still receives messages, but a guild-scoped registration is rejected. Registration runs once per process, the first time the Gateway reports ready; a failure is logged and leaves the channel connected and usable. Because Discord requires a response to every slash command, an invocation that the exposure policy refuses now receives a brief private refusal, where a typed command is silently ignored — slash commands are visible to anyone who can see the bot, so the exposure policy, not their visibility, is what restricts use.
 
@@ -485,7 +485,7 @@ normally. The destination is fixed by the host, and sending is disabled once the
 originating turn finishes or is superseded. Runs without a channel cannot send updates.
 
 Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
-`/mcp-reload`, and `/context-doctor`), and using MCP configuration and OAuth through chat. Help does
+`/mcp-reload`, `/context-doctor`, and `/model`), and using MCP configuration and OAuth through chat. Help does
 not interrupt current work or consume a pending approval or sign-in response.
 
 Send `/context-doctor` to estimate the token cost of the configured system prompt,
@@ -494,6 +494,19 @@ the current conversation estimate and the last provider-reported input count,
 when available. Estimates exclude middleware additions and provider overhead.
 The command reads the current chat's checkpoint without calling the model,
 changing history, or interrupting active work. It reports counts, not contents.
+
+Send `/model` to see which model the current chat uses and which providers are
+available, and `/model <provider>` to list one provider's models. Talon discovers
+the models that support tool calling from the installed LangChain provider
+packages, using the same catalog as `dcode`. It lists only providers whose API key
+is set in Talon's environment. `AGENT_MODEL` (the default) is always available.
+An operator can send `/model <provider:model>` to switch the chat to one of those
+models, or `/model default` to switch back. The switch applies from the chat's
+next turn, lasts across `/new` and restarts, and does not affect other chats.
+The chat's context is sized for the selected model, so switching to a model with a
+larger or smaller context window changes when history is compacted. Scheduled jobs
+and subagents keep their own models. The model is built the first time a chat
+selects it, so a model that cannot be loaded is reported when you switch to it.
 
 Commands work as ordinary message text on every channel, and are case-insensitive
 with an optional `@bot` suffix. On Discord they are additionally registered as

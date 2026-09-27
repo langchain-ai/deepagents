@@ -6,13 +6,15 @@ Talon is an experimental runtime and is subject to change or removal at any time
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import json
 import logging
 import os
 import re
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
@@ -58,6 +60,13 @@ from deepagents_talon.interfaces import (
 )
 from deepagents_talon.mcp import _cancel_mcp_elicitation
 from deepagents_talon.messaging import MESSAGE_HANDLER, send_message
+from deepagents_talon.model_selection import (
+    ACTIVE_MODEL,
+    ModelSelection,
+    ModelSelectionMiddleware,
+    SelectedModelSummarization,
+    discover_models,
+)
 from deepagents_talon.observability import (
     AgentActivityCallback,
     agent_activity_logging_enabled,
@@ -370,6 +379,12 @@ class DeepAgentRuntime:
         self._pending_results: contextvars.ContextVar[dict[str, str] | None] = (
             contextvars.ContextVar("talon_subagent_results", default=None)
         )
+        self._unavailable_models: set[str] = set()
+        self.models = ModelSelection(
+            model,
+            build=self._build_model,
+            discover=lambda: discover_models(self.env),
+        )
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
@@ -417,7 +432,16 @@ class DeepAgentRuntime:
             _resolve_local_tools(cast("LocalSubAgent", spec), catalog, web_tools)
         resolved, attachments = prepare_subagents(resolved, model, interrupt_on)
         tools.append(self._attachment_tool(attachments))
-        middleware = list(self.middleware)
+        # The summarizer replacement lands in the Deep Agents summarizer's slot; the
+        # selection middleware still swaps the model for everything after it.
+        middleware = [
+            SelectedModelSummarization(
+                partial(self._build_model, model) if isinstance(model, str) else lambda: model,
+                self.backend,
+            ),
+            ModelSelectionMiddleware(),
+            *self.middleware,
+        ]
         task_tools = TaskTools(
             model,
             interrupt_on,
@@ -492,6 +516,65 @@ class DeepAgentRuntime:
             msg = "DeepAgentRuntime must be started before context diagnostics"
             raise RuntimeError(msg)
         return await diagnostics.render(graph, conversation_id)
+
+    @property
+    def default_model(self) -> str:
+        """Model spec every chat uses until it selects another."""
+        return self.models.default
+
+    async def model_catalog(self) -> dict[str, list[str]]:
+        """Return the models a chat may select, keyed by provider.
+
+        Returns:
+            Discovered models for credentialed providers, plus the default.
+        """
+        return await asyncio.to_thread(self.models.catalog)
+
+    async def select_model(self, spec: str) -> bool:
+        """Validate `spec` and build its model so the next turn can use it.
+
+        Building here, rather than on the next turn, reports a model that cannot
+        be constructed to the operator who asked for it.
+
+        Args:
+            spec: Requested `provider:model` spec.
+
+        Returns:
+            Whether `spec` is a selectable model.
+        """
+        return await asyncio.to_thread(self._prepare_model, spec)
+
+    def _prepare_model(self, spec: str) -> bool:
+        if not self.models.allows(spec):
+            return False
+        self.models.resolve(spec)
+        return True
+
+    @contextlib.asynccontextmanager
+    async def _turn_models(self, request: AgentRequest) -> AsyncIterator[None]:
+        """Bind the chat's selected model for one turn."""
+        model_token = ACTIVE_MODEL.set(await self._turn_model(request))
+        try:
+            yield
+        finally:
+            ACTIVE_MODEL.reset(model_token)
+
+    async def _turn_model(self, request: AgentRequest) -> BaseChatModel | None:
+        if request.model is None:
+            return None
+        try:
+            return await asyncio.to_thread(self.models.resolve, request.model)
+        except Exception:  # noqa: BLE001  # a stale selection must not fail the turn
+            # Warn once per model: every later turn of that chat would repeat it.
+            warn = request.model not in self._unavailable_models
+            self._unavailable_models.add(request.model)
+            logger.log(
+                logging.WARNING if warn else logging.DEBUG,
+                "Selected model %s is unavailable; using the default",
+                request.model,
+                exc_info=warn,
+            )
+            return None
 
     def _approval_snapshot(self, snapshot: ApprovalSnapshot | None) -> ApprovalSnapshot:
         resolved = snapshot or self._active_approvals
@@ -589,7 +672,8 @@ class DeepAgentRuntime:
         authorization_token = set_authorization_handler(request.authorization_handler)
         message_token = MESSAGE_HANDLER.set(request.message_handler)
         try:
-            text = await self._invoke_until_text(request, activity)
+            async with self._turn_models(request):
+                text = await self._invoke_until_text(request, activity)
         except BaseException as error:
             if activity is not None:
                 activity.run_failed(error)
@@ -746,6 +830,14 @@ class DeepAgentRuntime:
             return {"status": "reloaded", "available": "next_turn"}
 
         return reload_subagent_configuration
+
+    def _build_model(self, spec: str) -> BaseChatModel:
+        resolved = _resolve_model_from_env(
+            spec, self.env, context_size=_context_size_from_env(self.env)
+        )
+        if isinstance(resolved, str):
+            return init_chat_model(resolved, **apply_provider_profile(resolved))
+        return resolved
 
     def _activity_callback(self, request: AgentRequest) -> AgentActivityCallback | None:
         if not agent_activity_logging_enabled(self.env):

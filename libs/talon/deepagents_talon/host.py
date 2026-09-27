@@ -47,6 +47,7 @@ from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
     ChannelReaction,
+    ContextDoctorRuntime,
     ConversationDeliveryRuntime,
     ConversationHistoryRuntime,
     CronScheduler,
@@ -83,6 +84,7 @@ _STOP_COMMAND = chat_commands.STOP
 _NEW_COMMAND = chat_commands.NEW
 _MCP_RELOAD_COMMAND = chat_commands.MCP_RELOAD
 _HELP_COMMAND = chat_commands.HELP
+_CONTEXT_DOCTOR_COMMAND = chat_commands.CONTEXT_DOCTOR
 _RESET_ALL_HISTORY_COMMAND = chat_commands.RESET_ALL_HISTORY
 _HELP_MESSAGE = chat_commands.build_help_message()
 _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
@@ -500,9 +502,27 @@ class TalonHost:
             )
         elif command == _MCP_RELOAD_COMMAND:
             await self._reload_mcp_configuration(channel, message.conversation_id)
+        elif command == _CONTEXT_DOCTOR_COMMAND:
+            await self._context_doctor(channel, message.conversation_id, conversation_root)
         else:
             return False
         return True
+
+    async def _context_doctor(
+        self, channel: ChannelAdapter, chat: str, conversation_root: str
+    ) -> None:
+        if not isinstance(self.agent, ContextDoctorRuntime):
+            report = "Context diagnostics are unavailable for this runtime."
+        else:
+            try:
+                async with asyncio.timeout(10):
+                    report = await self.agent.context_doctor(
+                        self._agent_conversation_id(conversation_root)
+                    )
+            except Exception:  # noqa: BLE001  # Diagnostics must not disclose runtime errors.
+                logger.debug("Context diagnostics failed", exc_info=True)
+                report = "Could not build context diagnostics. Please try again."
+        await send_with_retry(lambda: channel.send_message(chat, report))
 
     async def _reload_mcp_configuration(
         self,

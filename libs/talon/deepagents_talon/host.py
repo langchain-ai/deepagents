@@ -168,6 +168,8 @@ class _Turn:
     provider: str | None
     generation: int
     recovery_degraded: bool
+    model: str | None = None
+    """`/model` selection captured when the turn started, so a later switch cannot reach it."""
 
 
 @dataclass(slots=True)
@@ -758,6 +760,7 @@ class TalonHost:
                     route.provider,
                     generation,
                     recovery_degraded,
+                    model=self._model_selections.get(route.conversation_root),
                 ),
             ),
             name=f"talon:{conversation_id}",
@@ -920,7 +923,7 @@ class TalonHost:
                 ),
                 tool_approval_operator=operator,
                 message_handler=message_handler,
-                model=self._model_selections.get(turn.conversation_root),
+                model=turn.model,
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
         except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
@@ -1898,7 +1901,10 @@ def _is_operator(channel: ChannelAdapter, message: ChannelMessage) -> bool:
 def _format_model_overview(
     current: str | None, default: str, catalog: Mapping[str, Sequence[str]]
 ) -> str:
-    active = current or f"{default} (default)"
+    if current is not None and not _in_catalog(current, catalog):
+        active = f"{default} (default). Its selected model {current} is unavailable"
+    else:
+        active = current or f"{default} (default)"
     providers = "\n".join(
         f"{provider} — {len(models)} models" for provider, models in sorted(catalog.items())
     )
@@ -1907,6 +1913,11 @@ def _format_model_overview(
         "Send /model <provider> to list its models, /model <provider:model> to switch, "
         "or /model default to go back to the default."
     )
+
+
+def _in_catalog(spec: str, catalog: Mapping[str, Sequence[str]]) -> bool:
+    provider, _, name = spec.partition(":")
+    return name in catalog.get(provider, ())
 
 
 def _format_provider_models(provider: str, catalog: Mapping[str, Sequence[str]]) -> str:

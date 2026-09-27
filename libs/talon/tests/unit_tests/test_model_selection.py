@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
@@ -273,3 +274,55 @@ async def test_selected_model_heads_the_fallback_chain(
         await runtime.stop()
 
     assert result.text == "from backup"
+
+
+class GatedTranscriber:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def transcribe(self, _message: ChannelMessage) -> str:
+        self.started.set()
+        await self.release.wait()
+        return "hello voice"
+
+
+async def test_switch_during_a_started_turn_waits_for_the_next_turn(tmp_path: Path) -> None:
+    agent, channel, transcriber = SelectableAgent(), _operator_channel(), GatedTranscriber()
+    host = TalonHost(
+        config=_config(tmp_path), agent=agent, channels=[channel], voice_transcriber=transcriber
+    )
+    await host.start()
+    try:
+        voice = ChannelMessage(
+            conversation_id="chat",
+            text="",
+            sender_id="op",
+            metadata={"media_type": "voice", "voice_path": "voice.ogg"},
+        )
+        await host.receive_message(channel, voice)
+        await asyncio.wait_for(transcriber.started.wait(), timeout=1)
+        await host.receive_message(channel, _from("op", "/model other:two"))
+        transcriber.release.set()
+        await _wait_for_request(agent, "hello voice")
+    finally:
+        await host.stop()
+
+    assert channel.sent[0] == ("chat", "This chat now uses other:two.")
+    assert agent.requests[0].model is None
+
+
+async def test_listing_flags_a_selection_that_is_no_longer_available(tmp_path: Path) -> None:
+    agent, channel = SelectableAgent(), _operator_channel()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(channel, _from("op", "/model other:two"))
+        agent.catalog = {"test": ["primary"]}
+        await host.receive_message(channel, _from("op", "/model"))
+    finally:
+        await host.stop()
+
+    assert channel.sent[-1][1].startswith(
+        "This chat uses test:primary (default). Its selected model other:two is unavailable."
+    )

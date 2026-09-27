@@ -377,6 +377,7 @@ class DeepAgentRuntime:
         self._pending_results: contextvars.ContextVar[dict[str, str] | None] = (
             contextvars.ContextVar("talon_subagent_results", default=None)
         )
+        self._unavailable_models: set[str] = set()
         self.models = ModelSelection(
             model,
             build=self._build_model,
@@ -554,10 +555,14 @@ class DeepAgentRuntime:
         try:
             return await asyncio.to_thread(self.models.resolve, request.model)
         except Exception:  # noqa: BLE001  # a stale selection must not fail the turn
-            logger.warning(
-                "Selected model is unavailable for conversation %s; using the default",
-                request.conversation_id,
-                exc_info=True,
+            # Warn once per model: every later turn of that chat would repeat it.
+            warn = request.model not in self._unavailable_models
+            self._unavailable_models.add(request.model)
+            logger.log(
+                logging.WARNING if warn else logging.DEBUG,
+                "Selected model %s is unavailable; using the default",
+                request.model,
+                exc_info=warn,
             )
             return None
 

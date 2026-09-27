@@ -9,7 +9,7 @@ Deep Agents Talon is the local runtime host for long-running Deep Agents. It own
 Talon currently includes:
 
 - A host process with graceful shutdown, per-conversation interrupt-and-continue, and `/stop` cancellation.
-- A generic channel protocol plus WhatsApp, Telegram, and Discord adapters (WhatsApp is backed by a loopback Node bridge).
+- A generic channel protocol plus WhatsApp, Telegram, Discord, and Slack adapters (WhatsApp is backed by a loopback Node bridge).
 - A persistent cron scheduler with agent-facing cron tool helpers.
 - MCP tool loading from explicit config paths or `~/.deepagents/.mcp.json`.
 - Optional LangSmith tracing for each channel or cron-triggered run.
@@ -42,7 +42,8 @@ text, tool-call arguments, and distinct message revisions are retained.
   timeouts leave history intact; deletion failures may leave a partial reset that
   you can retry. Because the deletion cannot be undone and Talon does not ask for
   confirmation, this command is deliberately left out of `/help` and is not
-  registered as a Discord slash command: type it in full to use it.
+  registered as a Discord slash command: type it in full to use it (on Slack,
+  `@Talon /reset-all-history` in a thread, or `/talon reset-all-history` in a DM).
 
 Reset does not remove cron jobs, memory files, downloaded media, traces, or backups.
 Attachment binaries and archive-tool results are not indexed. Scheduled runs do not
@@ -242,8 +243,8 @@ edit. An operator is required even when its prompt is `false`. In `self` exposur
 messages identified as `from_self` qualify without an extra operator list;
 otherwise only the configured channel operator IDs qualify, not chat/user
 allowlists or mention matches. Configure `DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID`,
-`DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID`, or `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID`
-for the applicable channel. Unidentified senders, scheduled runs, detached workers,
+`DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID`, `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID`, or
+`DEEPAGENTS_TALON_SLACK_OPERATOR_ID` for the applicable channel. Unidentified senders, scheduled runs, detached workers,
 and background-result follow-ups cannot edit policy. Unattended follow-ups cannot
 start interactive approvals or authorization flows.
 
@@ -366,6 +367,62 @@ Registration needs the **`applications.commands`** scope alongside `bot` in the 
 `DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID` scopes registration to one guild, which applies immediately and is useful while developing; global registration can take several minutes to propagate but is the only kind that reaches DMs, so leave this unset for an operator-DM deployment. `DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS=false` disables registration entirely, leaving commands available as typed text.
 
 `conversation_id` is the Discord channel ID, which works uniformly for DM channels and guild text channels. In `allowlist` mode, `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS` allows DMs from specific Discord user IDs regardless of channel, while `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS` allows messages from specific channel IDs (DM or guild). `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure, the default mode, which only accepts DMs from those operators. Outbound text over Discord's 2000-character message limit is split into multiple separate messages sent in order; outbound media is sent as a file attachment with the caption as the message content when it fits, or as a preceding separate message otherwise. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB). If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
+
+## Slack
+
+The Slack channel uses [`slack_sdk`](https://docs.slack.dev/tools/python-slack-sdk/) Socket Mode, so Talon opens an outbound WebSocket and needs no public HTTP endpoint. Create an app at [api.slack.com/apps](https://api.slack.com/apps) with **From a manifest**, using this manifest as a starting point:
+
+```yaml
+display_information:
+  name: Talon
+features:
+  bot_user:
+    display_name: Talon
+    always_online: true
+  app_home:
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  slash_commands:
+    - command: /talon
+      description: Run a Talon command
+      usage_hint: "[help | new | stop | mcp-reload | context-doctor]"
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - chat:write
+      - commands
+      - files:read
+      - files:write
+      - im:history
+      - reactions:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.im
+      - reaction_added
+  socket_mode_enabled: true
+```
+
+Install the app to the workspace, copy the **Bot User OAuth Token** (`xoxb-`), and under **Basic Information → App-Level Tokens** create a token with the `connections:write` scope (`xapp-`):
+
+```bash
+DEEPAGENTS_TALON_SLACK_ENABLED=true \
+DEEPAGENTS_TALON_SLACK_BOT_TOKEN=xoxb-... \
+DEEPAGENTS_TALON_SLACK_APP_TOKEN=xapp-... \
+DEEPAGENTS_TALON_SLACK_OPERATOR_ID=U0123456789 \
+AGENT_ASSISTANT_ID=slack-local \
+uv run --directory libs/talon deepagents-talon --slack
+```
+
+A direct message with the bot is one conversation. In channels the bot answers only when mentioned, and it replies in a thread under the mentioning message. Each thread is its own conversation, identified as `<channel id>:<thread ts>`, so mention the bot again in the thread to continue. Invite the bot to a channel with `/invite @Talon` before mentioning it there.
+
+Slack treats any message that starts with `/` as a slash command, so Talon's commands are reached through the single `/talon` command: `/talon new`, `/talon stop`, `/talon mcp-reload`, `/talon context-doctor`, and `/talon help` (the default when no argument is given). A slash command carries no thread, so `/talon` works only in a direct message with the bot. In a channel thread, mention the bot followed by the command instead, for example `@Talon /new`. Refusals from `/talon`, including one from the exposure policy, are shown only to the invoking user.
+
+`DEEPAGENTS_TALON_SLACK_OPERATOR_ID` accepts one or more comma-separated Slack user IDs (member IDs starting with `U`) for `self` exposure, the default mode. In `allowlist` mode, `DEEPAGENTS_TALON_SLACK_ALLOWLIST_USERS` allows DMs from specific user IDs, and `DEEPAGENTS_TALON_SLACK_ALLOWLIST_CHATS` allows mentions in specific channel IDs, covering every thread in them. `open` mode also requires `DEEPAGENTS_TALON_SLACK_OPEN_ACK=allow-arbitrary-senders`. Reactions are accepted only from operators and allowlisted users; a 👍 or 👎 reaction on an approval prompt approves or rejects it, as on other channels.
+
+Outbound Markdown is converted to Slack `mrkdwn`, and `&`, `<`, and `>` are always escaped, so agent output cannot mention users or notify `@channel`. Text over 4000 characters is split across posts. Media is uploaded as a file with the caption as its comment. Inbound files are downloaded with the bot token, which is sent only to `https://files.slack.com`, and redirects are refused. `DEEPAGENTS_TALON_SLACK_MEDIA_DIR` overrides the download directory, and `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` applies here as on other channels. Slack has no bot typing indicator, so none is shown while the agent works.
 
 ## Tracing
 

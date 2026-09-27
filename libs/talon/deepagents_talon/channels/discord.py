@@ -9,12 +9,11 @@ import asyncio
 import contextlib
 import logging
 import mimetypes
-import re
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -31,9 +30,13 @@ from deepagents_talon.channels.base import (
     max_media_bytes_from_env,
     message_with_media_paths,
     outbound_media_root_from_env,
+    parse_content_length,
     parse_float,
+    safe_filename_part,
+    safe_suffix,
     split_csv,
     validate_media,
+    with_media_error,
 )
 from deepagents_talon.commands import COMMANDS_BY_NAME, ChatCommand, visible_commands
 from deepagents_talon.interfaces import (
@@ -67,8 +70,6 @@ _COMMAND_NO_REPLY_MESSAGE = "Done."
 _COMMAND_FAILED_MESSAGE = "Something went wrong running that command. Check Talon logs."
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_ENV_VALUES = frozenset({"0", "false", "no", "off"})
-
-_SAFE_SUFFIX_PATTERN = re.compile(r"\.[a-z0-9]{1,16}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -935,7 +936,7 @@ class DiscordChannel:
         attachment = attachments[0]
         if attachment.size > self.config.max_media_bytes:
             logger.warning("Skipping Discord inbound media because it exceeds the size cap")
-            return _with_media_error(
+            return with_media_error(
                 message,
                 f"media file is too large: {attachment.size} bytes "
                 f"exceeds {self.config.max_media_bytes}",
@@ -944,7 +945,7 @@ class DiscordChannel:
             destination = await self._download_attachment(attachment, message_id=message.message_id)
         except (ChannelMediaError, OSError, urllib.error.URLError, TimeoutError) as error:
             logger.warning("Skipping Discord inbound media after download failure")
-            return _with_media_error(message, str(error))
+            return with_media_error(message, str(error))
         mime_type = attachment.content_type or mimetypes.guess_type(destination.name)[0]
         return message_with_media_paths(
             message,
@@ -961,7 +962,7 @@ class DiscordChannel:
         if self.config.inbound_media_dir is None:
             msg = "Discord inbound media directory is not configured"
             raise ChannelMediaError(msg)
-        suffix = _safe_suffix(attachment.filename, attachment.content_type)
+        suffix = safe_suffix(attachment.filename, attachment.content_type)
         destination = self.config.inbound_media_dir / _inbound_media_filename(
             message_id=message_id,
             attachment_url=attachment.url,
@@ -975,13 +976,6 @@ class DiscordChannel:
             self.config.max_media_bytes,
         )
         return destination
-
-
-def _with_media_error(message: ChannelMessage, error: str) -> ChannelMessage:
-    metadata = dict(message.metadata)
-    metadata["has_media"] = False
-    metadata["media_error"] = error
-    return replace(message, metadata=metadata)
 
 
 def _convert_message(message: discord.Message, *, bot_id: str | None) -> _DiscordInboundMessage:
@@ -1199,25 +1193,10 @@ def _allows_discord_reaction(
     return reaction.sender_id in exposure.operator_ids or reaction.sender_id in allowed_user_ids
 
 
-def _safe_suffix(filename: str, content_type: str | None) -> str:
-    suffix = Path(filename).suffix.lower()
-    if _SAFE_SUFFIX_PATTERN.fullmatch(suffix):
-        return suffix
-    if content_type:
-        guessed = mimetypes.guess_extension(content_type)
-        if guessed:
-            return guessed
-    return ".bin"
-
-
 def _inbound_media_filename(*, message_id: str | None, attachment_url: str, suffix: str) -> str:
-    message = _safe_filename_part(message_id or "message")
-    token = _safe_filename_part(attachment_url)[-24:] or "file"
+    message = safe_filename_part(message_id or "message")
+    token = safe_filename_part(attachment_url)[-24:] or "file"
     return f"{message}_{token}{suffix}"
-
-
-def _safe_filename_part(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "file"
 
 
 def _download_attachment_file(url: str, destination: Path, timeout: float, max_bytes: int) -> None:
@@ -1226,7 +1205,7 @@ def _download_attachment_file(url: str, destination: Path, timeout: float, max_b
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
         length = response.headers.get("content-length")
         if length is not None:
-            expected = _parse_content_length(length)
+            expected = parse_content_length(length)
             if expected is not None and expected > max_bytes:
                 msg = f"media file is too large: {expected} bytes exceeds {max_bytes}"
                 raise ChannelMediaError(msg)
@@ -1241,10 +1220,3 @@ def _download_attachment_file(url: str, destination: Path, timeout: float, max_b
                     raise ChannelMediaError(msg)
                 file.write(chunk)
     destination.chmod(0o600)
-
-
-def _parse_content_length(value: str) -> int | None:
-    try:
-        return int(value)
-    except ValueError:
-        return None

@@ -43,6 +43,8 @@ dependencies = [
     "mcp>=2.0.0,<3.0.0",
     "pydantic>=2.13.4,<3.0.0",
     "pyyaml>=6.0.3",
+    # Socket Mode rides on `aiohttp`, which `discord.py` already brings in.
+    "slack-sdk>=3.44.1,<4.0.0",
     "tzdata>=2025.2",
 ]
 

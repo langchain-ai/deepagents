@@ -411,13 +411,14 @@ async def test_composite_async_merge_propagates_truncated_and_error(monkeypatch:
     assert glob_result.error == "sandbox RPC failed"
 
 
-def test_composite_ls_root_propagates_default_error(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("error", ["Error: connection to sandbox lost", "Path '/': path_not_found"])
+def test_composite_ls_root_propagates_default_error(monkeypatch: pytest.MonkeyPatch, error: str) -> None:
     comp, default, _routed = _merge_composite()
-    monkeypatch.setattr(default, "ls", lambda _path: LsResult(error="Error: connection to sandbox lost"))
+    monkeypatch.setattr(default, "ls", lambda _path: LsResult(error=error))
 
     result = comp.ls("/")
 
-    assert result.error == "Error: connection to sandbox lost"
+    assert result.error == error
     assert result.entries is None
 
 
@@ -481,17 +482,18 @@ def test_composite_ls_nested_route_preserves_backend_error(monkeypatch: pytest.M
     assert result.entries is None
 
 
-async def test_composite_als_root_propagates_default_error(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("error", ["Error: connection to sandbox lost", "Path '/': path_not_found"])
+async def test_composite_als_root_propagates_default_error(monkeypatch: pytest.MonkeyPatch, error: str) -> None:
     comp, default, _routed = _merge_composite()
 
     async def _als_error(_path: str) -> LsResult:
-        return LsResult(error="Error: connection to sandbox lost")
+        return LsResult(error=error)
 
     monkeypatch.setattr(default, "als", _als_error)
 
     result = await comp.als("/")
 
-    assert result.error == "Error: connection to sandbox lost"
+    assert result.error == error
     assert result.entries is None
 
 

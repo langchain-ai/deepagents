@@ -306,7 +306,7 @@ class CompositeBackend(BackendProtocol):
             if route.startswith(parent) and route != parent:
                 children.add(parent + route[len(parent) :].split("/", 1)[0] + "/")
 
-        if not children or (result.error and result.error != f"Path '{source_path}': path_not_found"):
+        if not children or (result.error and (path == "/" or result.error != f"Path '{source_path}': path_not_found")):
             return result
 
         entries = list(result.entries or [])

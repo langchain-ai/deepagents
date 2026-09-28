@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
+import httpx
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage
@@ -15,8 +16,12 @@ from deepagents_talon.background import _IN_SUBAGENT
 from deepagents_talon.channels.base import ChannelExposure
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, ChannelMessage
-from deepagents_talon.model_selection import ACTIVE_MODEL, SelectedModelSummarization
-from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.model_selection import (
+    ACTIVE_MODEL,
+    SelectedModelSummarization,
+    discover_models,
+)
+from deepagents_talon.runtime import DeepAgentRuntime, _resolve_model_from_env
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config, _wait_for_request
 
@@ -253,6 +258,124 @@ async def test_catalog_lists_credentialed_providers_and_the_default(tmp_path: Pa
     runtime = _runtime(tmp_path)
 
     assert await runtime.model_catalog() == {"test": ["alt", "primary"]}
+
+
+def test_gateway_catalog_lists_models_beyond_installed_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [
+                    {"id": "openai/gpt-6-luna", "object": "model"},
+                    {"id": "openai/gpt-6-astra", "object": "model"},
+                    {"id": "anthropic/claude-test", "object": "model"},
+                    {"id": "openai/gpt-6-astra", "object": "model"},
+                    {"id": "invalid id with spaces", "object": "model"},
+                    {"id": "openai/non-chat", "supported_endpoints": ["/v1/systemone"]},
+                ],
+            },
+        )
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr("deepagents_talon.model_selection.httpx.Client", lambda **_kwargs: client)
+    monkeypatch.setattr(
+        "deepagents_talon.model_selection.get_available_models",
+        lambda: {"openai": ["gpt-6-luna"]},
+    )
+    catalog = discover_models(
+        {
+            "OPENAI_API_KEY": "test-key",
+            "OPENAI_BASE_URL": "https://gateway.smith.langchain.com/v1",
+        }
+    )
+    assert catalog == {
+        "openai": ["gpt-6-luna", "openai/gpt-6-luna", "openai/gpt-6-astra", "anthropic/claude-test"]
+    }
+    assert len(requests) == 1
+    assert str(requests[0].url) == "https://gateway.smith.langchain.com/v1/models"
+    assert requests[0].headers["Authorization"] == "Bearer test-key"
+
+
+def test_gateway_flag_uses_langsmith_key_and_unified_model_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url == "https://gateway.smith.langchain.com/v1/models"
+        assert request.headers["Authorization"] == "Bearer gateway-key"
+        return httpx.Response(200, json={"object": "list", "data": [{"id": "openai/gpt-6-terra"}]})
+
+    client = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr("deepagents_talon.model_selection.httpx.Client", lambda **_kwargs: client)
+    monkeypatch.setattr("deepagents_talon.model_selection.get_available_models", dict)
+    assert discover_models(
+        {"LANGSMITH_GATEWAY": "true", "LANGSMITH_GATEWAY_API_KEY": "gateway-key"}
+    ) == {"openai": ["openai/gpt-6-terra"]}
+
+
+def test_gateway_model_build_uses_unified_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    built: list[tuple[str, dict[str, object]]] = []
+    model = ReplyModel(responses=[AIMessage(content="ok")])
+
+    def build(spec: str, **kwargs: object) -> ReplyModel:
+        built.append((spec, kwargs))
+        return model
+
+    monkeypatch.setattr("deepagents_talon.runtime.init_chat_model", build)
+    env = {"LANGSMITH_GATEWAY": "true", "LANGSMITH_GATEWAY_API_KEY": "gateway-key"}
+    assert _resolve_model_from_env("openai:openai/gpt-6-terra", env) is model
+    assert len(built) == 1
+    assert built[0][0] == "openai:openai/gpt-6-terra"
+    assert built[0][1]["base_url"] == "https://gateway.smith.langchain.com/v1"
+    assert built[0][1]["api_key"] == "gateway-key"
+    assert built[0][1]["use_responses_api"] is False
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "https://gateway.smith.langchain.com.evil.test/v1",
+        "http://gateway.smith.langchain.com/v1",
+        "https://gateway.smith.langchain.com:444/v1",
+        "https://gateway.smith.langchain.com/v1/other",
+        "https://gateway.smith.langchain.com/v1?redirect=evil",
+        "https://attacker@gateway.smith.langchain.com/v1",
+    ],
+)
+def test_gateway_catalog_refuses_untrusted_urls(
+    monkeypatch: pytest.MonkeyPatch, base_url: str
+) -> None:
+    def unexpected_client(**_kwargs: object) -> None:
+        pytest.fail("unexpected gateway request")
+
+    monkeypatch.setattr("deepagents_talon.model_selection.httpx.Client", unexpected_client)
+    monkeypatch.setattr("deepagents_talon.model_selection.get_available_models", dict)
+    assert discover_models({"OPENAI_BASE_URL": base_url, "OPENAI_API_KEY": "test-key"}) == {}
+
+
+def test_gateway_catalog_requires_matching_model_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_client(**_kwargs: object) -> None:
+        pytest.fail("unexpected gateway request")
+
+    monkeypatch.setattr("deepagents_talon.model_selection.httpx.Client", unexpected_client)
+    monkeypatch.setattr("deepagents_talon.model_selection.get_available_models", dict)
+    assert discover_models({"OPENAI_BASE_URL": "https://gateway.smith.langchain.com/v1"}) == {}
+    assert (
+        discover_models(
+            {
+                "OPENAI_BASE_URL": "https://gateway.smith.langchain.com/v1",
+                "LANGSMITH_GATEWAY_API_KEY": "test-key",
+            }
+        )
+        == {}
+    )
 
 
 class GatedTranscriber:

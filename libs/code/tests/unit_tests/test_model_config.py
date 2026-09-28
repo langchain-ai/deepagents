@@ -4723,6 +4723,96 @@ class TestAddEnabledProjectMcpServers:
         assert list(tmp_path.glob("*.tmp")) == []
 
 
+class TestAddDisabledProjectMcpServers:
+    @pytest.mark.parametrize("existing", ['["old", "docs"]', '"old, docs"'])
+    def test_merges_denials_and_preserves_other_config(
+        self, tmp_path: Path, existing: str
+    ) -> None:
+        import tomllib
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\ndefault = "openai:example"\n'
+            f"[mcp]\ndisabled_project_servers = {existing}\n"
+            'disabled_servers = ["other"]\n'
+        )
+        server = {"command": "echo"}
+        assert model_config.add_enabled_project_mcp_servers(
+            ["docs"],
+            config_path,
+            project_root=tmp_path,
+            server_configs={"docs": server},
+        )
+        original = tomllib.loads(config_path.read_text())
+
+        assert model_config.add_disabled_project_mcp_servers(
+            ["docs", " new ", "new", "", " "], config_path
+        )
+        saved = tomllib.loads(config_path.read_text())
+        assert saved["mcp"].pop("disabled_project_servers") == ["docs", "new", "old"]
+        original["mcp"].pop("disabled_project_servers")
+        assert saved == original
+        lists = load_mcp_server_trust_lists(config_path)
+        assert lists.disabled == frozenset({"docs", "new", "old"})
+        assert not lists.is_enabled("docs", project_root=tmp_path, server=server)
+
+        contents = config_path.read_bytes()
+        assert model_config.add_disabled_project_mcp_servers(["docs"], config_path)
+        assert config_path.read_bytes() == contents
+
+    def test_creates_default_config_and_refreshes_trust(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = tmp_path / "user" / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        assert not load_mcp_server_trust_lists().disabled
+        assert model_config.add_disabled_project_mcp_servers(["docs"])
+        assert load_mcp_server_trust_lists().disabled == frozenset({"docs"})
+
+    def test_empty_names_do_not_create_config(self, tmp_path: Path) -> None:
+        config_path = tmp_path / "config.toml"
+        assert model_config.add_disabled_project_mcp_servers(["", " "], config_path)
+        assert not config_path.exists()
+
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            "[invalid",
+            'mcp = "invalid"\n',
+            "[mcp]\ndisabled_project_servers = 42\n",
+            "[mcp.disabled_project_servers]\ninvalid = true\n",
+        ],
+    )
+    def test_refuses_malformed_policy(self, tmp_path: Path, contents: str) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(contents)
+        assert not model_config.add_disabled_project_mcp_servers(["docs"], config_path)
+        assert config_path.read_text() == contents
+
+    def test_parent_io_failure(self, tmp_path: Path) -> None:
+        blocker = tmp_path / "file"
+        blocker.write_text("")
+        assert not model_config.add_disabled_project_mcp_servers(
+            ["docs"], blocker / "config.toml"
+        )
+
+    def test_failed_replace_preserves_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path = tmp_path / "config.toml"
+        original = '[mcp]\ndisabled_project_servers = ["existing"]\n'
+        config_path.write_text(original)
+
+        def fail_replace(*_args: object, **_kwargs: object) -> None:
+            msg = "read-only filesystem"
+            raise OSError(msg)
+
+        monkeypatch.setattr(Path, "replace", fail_replace)
+        assert not model_config.add_disabled_project_mcp_servers(["docs"], config_path)
+        assert config_path.read_text() == original
+        assert not list(tmp_path.glob("*.tmp"))
+
+
 class TestLoadStartupMode:
     """Tests for the `[startup]` approval-mode read and its recent-mode write.
 

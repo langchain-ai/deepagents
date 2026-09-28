@@ -3131,6 +3131,138 @@ class TestCheckMcpProjectTrustPrompt:
         assert '"repaired"' in err
         assert "echo higher" in err
 
+    @pytest.mark.parametrize(
+        ("selection", "expected"),
+        [("2", {"reference"}), ("all", {"docs", "reference"}), ("0", set())],
+    )
+    def test_always_deny_selected_names(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        selection: str,
+        expected: set[str],
+    ) -> None:
+        import json
+
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project = tmp_path / "project"
+        project.mkdir()
+        config = project / ".mcp.json"
+        config.write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "docs": {"command": "echo"},
+                        "reference": {"command": "echo"},
+                    }
+                }
+            )
+        )
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        monkeypatch.chdir(project)
+        with (
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(config, project)],
+            ),
+            patch(
+                "deepagents_code.main._trust_picker_has_terminal", return_value=False
+            ),
+            patch("builtins.input", side_effect=["d", selection]),
+        ):
+            assert _check_mcp_project_trust() is False
+        lists = model_config.load_mcp_server_trust_lists(user_config)
+        assert lists.disabled == expected
+        assert not lists.approvals
+        assert "across all projects" in capsys.readouterr().err
+
+        config.write_text(
+            json.dumps(
+                {"mcpServers": {name: {"command": "changed"} for name in expected}}
+            )
+        )
+        with (
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(config, project)],
+            ),
+            patch("builtins.input", side_effect=AssertionError("must not prompt")),
+        ):
+            assert _check_mcp_project_trust() is None
+
+    def test_always_deny_inline_selection(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from prompt_toolkit.application import create_app_session
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        config = tmp_path / ".mcp.json"
+        config.write_text(
+            '{"mcpServers": {"docs": {"command": "echo"},'
+            ' "other": {"command": "echo"}}}'
+        )
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        with (
+            create_pipe_input() as keys,
+            create_app_session(input=keys),
+            patch(
+                "prompt_toolkit.output.defaults.create_output",
+                return_value=DummyOutput(),
+            ),
+            patch("deepagents_code.main._trust_picker_has_terminal", return_value=True),
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(config, tmp_path)],
+            ),
+        ):
+            keys.send_text("\x1b[B\r\x1b[B \r")
+            assert _check_mcp_project_trust() is False
+        assert model_config.load_mcp_server_trust_lists(user_config).disabled == {
+            "other"
+        }
+
+    def test_always_deny_write_failure_is_session_only(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        config = tmp_path / ".mcp.json"
+        config.write_text('{"mcpServers": {"docs": {"command": "echo"}}}')
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        with (
+            patch(
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[_project_mcp_source(config, tmp_path)],
+            ),
+            patch(
+                "deepagents_code.main._trust_picker_has_terminal", return_value=False
+            ),
+            patch(
+                "deepagents_code.model_config.add_disabled_project_mcp_servers",
+                return_value=False,
+            ),
+            patch("builtins.input", return_value="d"),
+        ):
+            assert _check_mcp_project_trust() is False
+        assert not user_config.exists()
+        assert "could not be remembered" in capsys.readouterr().err.replace("\n", "")
+
     def test_always_allow_persists_names_to_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3370,11 +3502,13 @@ class TestCheckMcpProjectTrustPrompt:
             in capsys.readouterr().err
         )
 
+    @pytest.mark.parametrize("action", ["a", "d"])
     def test_always_allow_picker_cancel_aborts_launch(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
+        action: str,
     ) -> None:
         """Backing out of the server picker returns a launch cancellation.
 
@@ -3423,7 +3557,7 @@ class TestCheckMcpProjectTrustPrompt:
                     ("reference", "stdio", "echo reference"),
                 ],
             ),
-            patch("builtins.input", return_value="a"),
+            patch("builtins.input", return_value=action),
             patch(
                 "deepagents_code.main._run_project_mcp_server_checkbox_picker",
                 return_value=_TrustPromptOutcome.CANCELLED,
@@ -4007,9 +4141,11 @@ class TestSelectProjectServersToPersist:
         assert names == ["fs"]
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")
+    @pytest.mark.parametrize("deny_label", [None, "Always deny across all projects"])
     def test_action_picker_is_inline_and_defaults_to_deny(
         self,
         monkeypatch: pytest.MonkeyPatch,
+        deny_label: str | None,
     ) -> None:
         """The unified selector is inline and requires navigation to grant trust."""
         from rich.console import Console
@@ -4045,7 +4181,9 @@ class TestSelectProjectServersToPersist:
                 return holder["value"]
 
         monkeypatch.setattr("prompt_toolkit.Application", _FakeApplication)
-        result = _run_trust_action_picker(Console(stderr=True))
+        result = _run_trust_action_picker(
+            Console(stderr=True), always_deny_label=deny_label
+        )
 
         assert result is _TrustAction.DENY
         assert captured["full_screen"] is False
@@ -4055,6 +4193,9 @@ class TestSelectProjectServersToPersist:
         assert "Allow once" in rendered
         assert "Allow for this project — until changed" in rendered
         assert "Deny" in rendered
+        assert ("Always deny across all projects" in rendered) == (
+            deny_label is not None
+        )
         assert "Choose how to continue" not in rendered
 
     @pytest.mark.usefixtures("_interactive_picker_terminal")

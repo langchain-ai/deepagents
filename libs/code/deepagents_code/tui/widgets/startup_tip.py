@@ -33,6 +33,7 @@ _TIPS: dict[str, int] = {
     "Use /tools to list the tools available to the agent": 1,
     "Use /plugins to inspect a plugin's contents before installing": 1,
     "Open /mcp and press Enter on a remote server to sign in again": 1,
+    "Choose Always deny at MCP startup to block server names across all projects": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
     "Use /summarization-model to choose a model for compaction summaries": 1,

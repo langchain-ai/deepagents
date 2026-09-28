@@ -64,6 +64,7 @@ async def test_short_terminal_keeps_handoff_actions_visible(
         reason="idle",
     )
     app = DeepAgentsApp()
+    app._cold_cache_warning_threshold_usd = 0.10
     monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=warning))
     process = AsyncMock()
     handoff = AsyncMock()
@@ -644,6 +645,67 @@ async def test_send_timing_restores_draft_without_spending(
         assert not isinstance(app.screen, ColdCacheWarningScreen)
         await app._dispatch_queued_message(QueuedMessage("keep my request", "normal"))
         process.assert_awaited_once_with("keep my request", "normal")
+
+
+@pytest.mark.parametrize("mode", ["expiry", "send"])
+@pytest.mark.parametrize(
+    ("delta", "debug_forced", "expect_prompt"),
+    [
+        (0.01, False, False),
+        (10.0, False, True),
+        (12.0, False, True),
+        (0.01, True, True),
+    ],
+)
+async def test_send_handoff_honors_cost_threshold(
+    mode: str,
+    delta: float,
+    debug_forced: bool,
+    expect_prompt: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.cold_cache import (
+        ColdCacheWarning,
+        PromptCachePolicy,
+        RewarmEstimate,
+    )
+
+    warning = ColdCacheWarning(
+        policy=PromptCachePolicy(
+            provider_name="OpenAI",
+            window_seconds=1800,
+            confidence="may_be_cold",
+            minimum_tokens=1024,
+            write_bucket="generic",
+        ),
+        estimate=RewarmEstimate(cold_cost_usd=25.0, incremental_cost_usd=delta),
+        context_tokens=84_000,
+        age_seconds=11_520,
+        reason="idle",
+    )
+    app = DeepAgentsApp()
+    app._cold_cache_warning_threshold_usd = 10.0
+    monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_COLD_CACHE", str(int(debug_forced)))
+    process = AsyncMock()
+    monkeypatch.setattr(app, "_process_message", process)
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=warning))
+    monkeypatch.setattr("deepagents_code.app._load_cache_prompt_mode", lambda: mode)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        assert app._chat_input is not None
+        app._chat_input.value = "send this request"
+        await pilot.press("enter")
+        await pilot.pause()
+        if expect_prompt:
+            assert isinstance(app.screen, ColdCacheWarningScreen)
+            process.assert_not_awaited()
+            await pilot.press("tab", "enter")
+            await pilot.pause()
+        else:
+            assert not isinstance(app.screen, ColdCacheWarningScreen)
+            assert not app._cache_expiry_seen
+        process.assert_awaited_once_with("send this request", "normal")
 
 
 def _record_errors(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> list[str]:

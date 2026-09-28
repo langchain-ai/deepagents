@@ -9808,6 +9808,29 @@ class DeepAgentsApp(App):
 
         return await asyncio.to_thread(is_warning_suppressed, COLD_CACHE_WARNING_KEY)
 
+    async def _should_offer_send_handoff(self) -> bool:
+        """Honor opt-outs and the minimum cost before intercepting a send.
+
+        Returns:
+            Whether to offer a handoff. Unavailable estimates still allow the
+                prompt to offer a choice without quoting a cost.
+        """
+        from deepagents_code._env_vars import DEBUG_COLD_CACHE, is_env_truthy
+
+        if await self._cold_cache_opted_out():
+            return False
+        try:
+            warning = await self._cold_cache_estimate()
+        except Exception:
+            logger.warning("Could not estimate cache re-warm cost", exc_info=True)
+            return True
+        return (
+            warning is None
+            or is_env_truthy(DEBUG_COLD_CACHE)
+            or warning.estimate.incremental_cost_usd
+            >= self._cold_cache_warning_threshold_usd
+        )
+
     async def _ask_cache_handoff(
         self, thread_id: str, *, allow_send: bool = False
     ) -> ColdCacheChoice | None:
@@ -13269,7 +13292,7 @@ class DeepAgentsApp(App):
             and expires_at is not None
             and datetime.now(UTC) >= expires_at
             and self._cache_expiry_seen.get(thread_id) != expires_at
-            and not await self._cold_cache_opted_out()
+            and await self._should_offer_send_handoff()
         ):
             task = self._schedule_off_message_pump(
                 self._confirm_cache_expiry(thread_id, expires_at, message=message),

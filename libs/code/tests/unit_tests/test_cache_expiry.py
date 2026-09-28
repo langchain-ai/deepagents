@@ -846,47 +846,6 @@ async def test_expiry_send_action_dispatches_once_in_current_thread(
                 assert not errors
 
 
-@pytest.mark.parametrize("failure", [False, True])
-async def test_handoff_keeps_submitted_draft_without_sending(
-    failure: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    app = DeepAgentsApp()
-    process = AsyncMock()
-
-    async def handoff(_thread_id: str) -> str:  # noqa: RUF029  # mock contract
-        if failure:
-            msg = "summary failed"
-            raise RuntimeError(msg)
-        # Switching the transcript keeps the editable composer intact.
-        app._lc_thread_id = "child"
-        assert app._chat_input is not None
-        assert app._chat_input.value == "retain this request"
-        return "child"
-
-    monkeypatch.setattr(app, "_process_message", process)
-    monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        _prepare(app, monkeypatch)
-        errors = _record_errors(app, monkeypatch)
-        await app._dispatch_queued_message(
-            QueuedMessage("retain this request", "normal")
-        )
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        assert app._chat_input is not None
-        assert app._chat_input.value == "retain this request"
-        process.assert_not_awaited()
-        assert app._lc_thread_id == ("source" if failure else "child")
-        if failure:
-            assert len(errors) == 1
-            assert "summary failed" in errors[0]
-            assert "original thread is unchanged" in errors[0]
-        else:
-            assert errors == []
-
-
 @pytest.mark.parametrize("outcome", ["success", "failure", "cancel"])
 @pytest.mark.parametrize("submitted", [False, True])
 async def test_handoff_pauses_submission_but_keeps_draft_editable(
@@ -913,6 +872,7 @@ async def test_handoff_pauses_submission_but_keeps_draft_editable(
     async with app.run_test() as pilot:
         await pilot.pause()
         _prepare(app, monkeypatch)
+        errors = _record_errors(app, monkeypatch)
         assert app._chat_input is not None
         app._chat_input.value = "draft"
         if submitted:
@@ -945,6 +905,12 @@ async def test_handoff_pauses_submission_but_keeps_draft_editable(
         assert app._lc_thread_id == ("child" if outcome == "success" else "source")
         assert not app._pending_messages
         process.assert_not_awaited()
+        if outcome == "failure":
+            assert len(errors) == 1
+            assert "summary failed" in errors[0]
+            assert "original thread is unchanged" in errors[0]
+        else:
+            assert errors == []
         await pilot.press("enter")
         await pilot.pause()
         process.assert_awaited_once_with("draft edit", "normal")

@@ -2216,8 +2216,11 @@ class TestRouteRegistration:
         # converter name and the key it indexes agree.
         assert calls == [("thread-42", "op-1")]
 
-    @pytest.mark.parametrize("handoff", [True, "true"])
-    def test_handoff_mode_validation(self, handoff: bool | str) -> None:
+    @pytest.mark.parametrize("route", ["offload", "handoff"])
+    @pytest.mark.parametrize("handoff", [None, False, True, "true"])
+    def test_handoff_mode_validation(
+        self, route: str, handoff: bool | str | None
+    ) -> None:
         from starlette.testclient import TestClient
 
         from deepagents_code import offload_api
@@ -2234,11 +2237,11 @@ class TestRouteRegistration:
             TestClient(offload_api.app) as client,
         ):
             response = client.post(
-                "/dcode/threads/thread-42/offload",
+                f"/dcode/threads/thread-42/{route}",
                 json={
                     "operation_id": "handoff",
                     "context": {},
-                    "handoff": handoff,
+                    **({"handoff": handoff} if handoff is not None else {}),
                 },
             )
         if isinstance(handoff, str):
@@ -2247,7 +2250,9 @@ class TestRouteRegistration:
         else:
             assert response.status_code == 200
             assert execute.await_args is not None
-            assert execute.await_args.kwargs["handoff"] is True
+            assert execute.await_args.kwargs.get("handoff", False) is (
+                route == "handoff" or handoff is True
+            )
 
     def test_cancel_path_is_registered(self) -> None:
         from starlette.testclient import TestClient

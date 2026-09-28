@@ -1233,6 +1233,25 @@ async def offload(request: Request) -> JSONResponse:
     Returns:
         JSON operation response.
 
+    """
+    return await _handle_offload(request)
+
+
+async def _handoff(request: Request) -> JSONResponse:
+    """Use a dedicated route so older servers reject handoffs safely.
+
+    Returns:
+        A summary or hook request, without compacting the source thread.
+    """
+    return await _handle_offload(request, handoff=True)
+
+
+async def _handle_offload(request: Request, *, handoff: bool = False) -> JSONResponse:
+    """Validate and execute an offload or handoff round.
+
+    Returns:
+        JSON operation response.
+
     Raises:
         asyncio.CancelledError: When the cancellation route stops this operation.
     """
@@ -1241,7 +1260,7 @@ async def offload(request: Request) -> JSONResponse:
     # misreported to the client as a 4xx and, worse, swallowed without a log.
     try:
         thread_id = request.path_params["thread_id"]
-        operation_id, context, hook_responses, handoff = _operation_payload(
+        operation_id, context, hook_responses, payload_handoff = _operation_payload(
             await request.json()
         )
     except (TypeError, ValueError) as exc:
@@ -1259,7 +1278,7 @@ async def offload(request: Request) -> JSONResponse:
                 operation_id=operation_id,
                 context=context,
                 hook_responses=hook_responses,
-                **({"handoff": True} if handoff else {}),
+                **({"handoff": True} if handoff or payload_handoff else {}),
             )
         except asyncio.CancelledError:
             outcome = "cancelled"
@@ -1324,6 +1343,11 @@ app = Starlette(
         Route(
             "/dcode/threads/{thread_id:str}/offload",
             offload,
+            methods=["POST"],
+        ),
+        Route(
+            "/dcode/threads/{thread_id:str}/handoff",
+            _handoff,
             methods=["POST"],
         ),
         Route(

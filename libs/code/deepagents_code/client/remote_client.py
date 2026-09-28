@@ -581,11 +581,14 @@ class RemoteAgent:
         operation_id = str(uuid4())
         hook_responses: dict[str, object] = {}
         graph = self._get_graph()
+        # Older servers ignore an unknown `handoff` body field and compact the
+        # source. A distinct route makes them reject the request before that.
+        operation = "handoff" if handoff else "offload"
         for round_index in range(_OFFLOAD_MAX_RESUME_ROUNDS + 1):
             try:
                 response = await _await_offload_step(
                     graph.client.http.post(
-                        f"/dcode/threads/{thread_id}/offload",
+                        f"/dcode/threads/{thread_id}/{operation}",
                         json={
                             "operation_id": operation_id,
                             "context": operation_context,
@@ -605,7 +608,7 @@ class RemoteAgent:
                 # and the SDK's bare "404 Not Found" names neither the cause nor
                 # a fix.
                 msg = (
-                    "This server does not provide dcode's /offload operation. "
+                    f"This server does not provide dcode's /{operation} operation. "
                     "Use the built-in dcode server, or upgrade the server to a "
                     "version that registers it."
                 )

@@ -894,7 +894,7 @@ class TestThreadSelectorLimit:
                     await pilot.pause(0.05)
 
                 mock_lt.assert_awaited_once_with(
-                    limit=20,
+                    limit=100,
                     include_message_count=False,
                     sort_by="updated",
                     cwd=None,

@@ -2324,7 +2324,7 @@ def parse_args() -> argparse.Namespace:
         "--limit",
         type=int,
         default=None,
-        help="Max number of threads to display (default: 20)",
+        help="Max number of threads to display (default: 100)",
     )
     threads_list.add_argument(
         "--sort",

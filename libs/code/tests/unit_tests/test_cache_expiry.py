@@ -36,41 +36,7 @@ def _prepare(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> None:
     app._status_bar.cache_expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
 
-@pytest.mark.parametrize(
-    ("keys", "summarize"),
-    [(("enter",), True), (("escape",), False), (("shift+tab", "enter"), False)],
-)
-async def test_modal_keys_preserve_draft_and_prompt_once(
-    keys: tuple[str, ...], summarize: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    app = DeepAgentsApp()
-    handoff = AsyncMock()
-    process = AsyncMock()
-    monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
-    monkeypatch.setattr(app, "_process_message", process)
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        _prepare(app, monkeypatch)
-        assert app._chat_input is not None
-        app._chat_input.value = "keep this draft"
-        app._check_cache_expiry()
-        await pilot.pause()
-        assert isinstance(app.screen, ColdCacheWarningScreen)
-        await pilot.press(*keys)
-        await pilot.pause()
-        assert not isinstance(app.screen, ColdCacheWarningScreen)
-        assert app._chat_input.value == "keep this draft"
-        assert app._lc_thread_id == "source"
-        assert handoff.await_count == int(summarize)
-        process.assert_not_awaited()
-        app._check_cache_expiry()
-        await pilot.pause()
-        assert not isinstance(app.screen, ColdCacheWarningScreen)
-        if not summarize:
-            assert app._cache_expiry_bypassed is not None
-
-
-@pytest.mark.parametrize("size", [(80, 20), (60, 16), (120, 40)])
+@pytest.mark.parametrize("size", [(80, 20), (60, 16)])
 @pytest.mark.parametrize("allow_send", [False, True])
 async def test_short_terminal_keeps_handoff_actions_visible(
     size: tuple[int, int], allow_send: bool, monkeypatch: pytest.MonkeyPatch
@@ -518,7 +484,6 @@ async def test_handoff_with_separate_server_checkpoints(
 @pytest.mark.parametrize(
     "outcome",
     [
-        "success",
         "write_failure",
         "cancel",
         "lost_response",

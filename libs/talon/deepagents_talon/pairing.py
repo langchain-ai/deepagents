@@ -49,9 +49,9 @@ CODE_LENGTH = 8
 CODE_TTL_SECONDS = 3600
 MAX_PENDING_PER_CHANNEL = 16
 MAX_APPROVED_PER_CHANNEL = 1024
-PAIRING_CHANNELS = ("discord", "telegram")
-"""Providers that support sender pairing. WhatsApp runs on the operator's own
-account, so replying to everyone who texts the operator would be wrong there."""
+PAIRING_CHANNELS = ("discord", "slack", "telegram")
+"""Providers that support sender pairing. WhatsApp is excluded because it runs on
+the operator's own account, so it would reply to everyone who texts the operator."""
 
 _VERSION = 1
 _MAX_BYTES = 1_048_576

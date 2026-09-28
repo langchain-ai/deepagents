@@ -441,7 +441,7 @@ uv run --directory libs/talon deepagents-talon --slack
 
 A direct message with the bot is one conversation. In channels the bot answers only when mentioned, and it replies in a thread under the mentioning message. Each thread is its own conversation, identified as `<channel id>:<thread ts>`, so mention the bot again in the thread to continue. Invite the bot to a channel with `/invite @Talon` before mentioning it there.
 
-Slack treats any message that starts with `/` as a slash command, so Talon's commands are reached through the single `/talon` command: `/talon new`, `/talon stop`, `/talon mcp-reload`, `/talon context-doctor`, and `/talon help` (the default when no argument is given). A slash command carries no thread, so `/talon` works only in a direct message with the bot. In a channel thread, mention the bot followed by the command instead, for example `@Talon /new`. Refusals from `/talon`, including one from the exposure policy, are shown only to the invoking user.
+Slack treats any message that starts with `/` as a slash command, so Talon's commands are reached through the single `/talon` command: `/talon new`, `/talon stop`, `/talon mcp-reload`, `/talon context-doctor`, and `/talon help` (the default when no argument is given). Anything after the command name is passed along as typed, so `/talon model <provider>:<model>` behaves like `/model <provider>:<model>`. A slash command carries no thread, so `/talon` works only in a direct message with the bot. In a channel thread, mention the bot followed by the command instead, for example `@Talon /new`. Refusals from `/talon`, including one from the exposure policy, are shown only to the invoking user.
 
 `DEEPAGENTS_TALON_SLACK_OPERATOR_ID` accepts one or more comma-separated Slack user IDs (member IDs starting with `U`) for `self` exposure, the default mode. In `allowlist` mode, `DEEPAGENTS_TALON_SLACK_ALLOWLIST_USERS` allows DMs from specific user IDs, and `DEEPAGENTS_TALON_SLACK_ALLOWLIST_CHATS` allows mentions in specific channel IDs, covering every thread in them. `open` mode also requires `DEEPAGENTS_TALON_SLACK_OPEN_ACK=allow-arbitrary-senders`. Reactions are accepted only from operators and allowlisted users; a 👍 (`:+1:`, `:thumbsup:`, or `:thumbsup_all:`) or 👎 reaction on an approval prompt approves or rejects it, as on other channels. To finish an MCP OAuth sign-in, paste the callback URL into the DM, or into the thread after mentioning the bot.
 
@@ -449,9 +449,11 @@ Outbound Markdown is converted to Slack `mrkdwn`, and `&`, `<`, and `>` are alwa
 
 ## Sender pairing
 
-Sender pairing lets the operator admit a new person to a Discord or Telegram DM without editing env and restarting. It is off by default. It is unrelated to WhatsApp's QR pairing. WhatsApp and Slack do not support it; WhatsApp's bridge runs on the operator's own account, so it would answer everyone who texts them.
+Sender pairing lets the operator admit a new person to a Discord, Telegram, or Slack DM without editing env and restarting. It is off by default. It is unrelated to WhatsApp's QR pairing. WhatsApp does not support it: its bridge runs on the operator's own account, so it would answer everyone who texts them.
 
-Set `DEEPAGENTS_TALON_DISCORD_PAIRING=enabled` or `DEEPAGENTS_TALON_TELEGRAM_PAIRING=enabled`. Pairing works with `self` and `allowlist` exposure and is refused with `open`.
+Set `DEEPAGENTS_TALON_DISCORD_PAIRING=enabled`, `DEEPAGENTS_TALON_TELEGRAM_PAIRING=enabled`, or `DEEPAGENTS_TALON_SLACK_PAIRING=enabled`. Pairing works with `self` and `allowlist` exposure and is refused with `open`.
+
+On Slack, the client treats a message starting with `/` as a slash command, so the operator reaches `/pair` through `/talon` in their DM with the bot: `/talon pair approve K7QM-3XRD`, `/talon pair list`, and `/talon pair revoke <member-id>`. Slack sender ids are member ids starting with `U`, and `/talon pair list` shows them. The requester only needs to DM the bot; the Slack app's Messages tab must be enabled, as it is in the manifest above.
 
 1. An unknown sender DMs the bot. Their message is dropped before it reaches the host or the model, and the bot replies once with a code such as `K7QM-3XRD`. The code is bound to that sender on that channel, expires after 1 hour, and works once.
 2. The sender passes the code to the operator by any other means.
@@ -461,7 +463,7 @@ Set `DEEPAGENTS_TALON_DISCORD_PAIRING=enabled` or `DEEPAGENTS_TALON_TELEGRAM_PAI
 
 Only an operator id from `DEEPAGENTS_TALON_<CHANNEL>_OPERATOR_ID` can run `/pair`, and only in a DM. A paired sender cannot approve anyone, and the model has no pairing tool. Codes are accepted only on those operator surfaces, so strangers have nowhere to guess them. Each sender holds at most one live code, and a channel holds at most 16; further requests are dropped silently. Set `DEEPAGENTS_TALON_<CHANNEL>_PAIRING_REPLY=false` to keep the bot silent and read pending codes from `/pair list` instead.
 
-A paired sender is admitted in DMs only; pairing grants nothing in Discord guild channels. With pairing enabled, `DEEPAGENTS_TALON_<CHANNEL>_ALLOWLIST_USERS` also admits DMs in `self` mode. Env stays authoritative: env operators and allowlisted users never receive codes and cannot be revoked with `/pair`. Paired senders are stored in `pairing.json` in the assistant home. If that file is unreadable or invalid, only env senders are admitted.
+A paired sender is admitted in DMs only; pairing grants nothing in Discord guild channels or Slack channels. With pairing enabled, `DEEPAGENTS_TALON_<CHANNEL>_ALLOWLIST_USERS` also admits DMs in `self` mode. Env stays authoritative: env operators and allowlisted users never receive codes and cannot be revoked with `/pair`. Paired senders are stored in `pairing.json` in the assistant home. If that file is unreadable or invalid, only env senders are admitted.
 
 A paired sender has the same access to the agent as the operator: model credentials, MCP tools, and the local host. Pair only people you would hand your terminal to.
 

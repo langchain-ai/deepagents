@@ -1251,6 +1251,7 @@ if TYPE_CHECKING:
     )
     from deepagents_code.hooks.presenter import HookNoticeSeverity
     from deepagents_code.hooks.trust import WorkspaceTrust
+    from deepagents_code.input import MediaTracker
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
     from deepagents_code.plugins.models import (
@@ -2290,6 +2291,8 @@ class QueuedMessage:
 
     origin: SubmissionOrigin = "interactive"
     """Submission source retained until dispatch for advisory warning policy."""
+
+    media_snapshot: MediaTracker | None = None
 
 
 class ExternalInput(Message):
@@ -4286,6 +4289,7 @@ class DeepAgentsApp(App):
         `False`, or `_recover_unstarted_agent_worker` will skip that worker and
         the wedge returns."""
 
+        self._steering_control = None
         self._agent_running = False
         """True while the agent worker is streaming a response."""
 
@@ -13111,13 +13115,17 @@ class DeepAgentsApp(App):
             markup=False,
         )
 
-    def _restore_cold_cache_draft(self, text: str) -> None:
+    def _restore_cold_cache_draft(
+        self, text: str, *, media_snapshot: MediaTracker | None = None
+    ) -> None:
         """Restore a canceled cold-cache submission to an empty chat input."""
         if (
             self._chat_input
             and not self._chat_input.value.strip()
             and self._chat_input.set_value_at_end(text)
         ):
+            if media_snapshot is not None:
+                self._image_tracker.restore(media_snapshot)
             self.call_after_refresh(self._chat_input.focus_input)
             return
         self.notify(
@@ -13262,9 +13270,16 @@ class DeepAgentsApp(App):
                     self._cold_cache_suppressed_for_session = True
                 elif choice is ColdCacheChoice.SEND_SUPPRESS_ALWAYS:
                     await self._suppress_cold_cache_warning()
-                await self._process_message(message.text, message.mode)
+                await self._process_queued_message(message)
             else:
-                self._restore_cold_cache_draft(message.text)
+                self._restore_cold_cache_draft(
+                    message.text,
+                    **(
+                        {"media_snapshot": message.media_snapshot}
+                        if message.media_snapshot is not None
+                        else {}
+                    ),
+                )
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -13315,6 +13330,15 @@ class DeepAgentsApp(App):
                 markup=False,
             )
 
+    async def _process_queued_message(self, message: QueuedMessage) -> None:
+        """Dispatch captured attachments without changing the composer draft."""
+        if message.mode == "normal" and message.media_snapshot is not None:
+            await self._handle_user_message(
+                message.text, media_snapshot=message.media_snapshot
+            )
+        else:
+            await self._process_message(message.text, message.mode)
+
     async def _dispatch_queued_message(self, message: QueuedMessage) -> None:
         """Dispatch one queue-head message, interposing a cache prompt if needed.
 
@@ -13350,7 +13374,7 @@ class DeepAgentsApp(App):
             return
         warning = await self._cold_cache_warning_for(message)
         if warning is None:
-            await self._process_message(message.text, message.mode)
+            await self._process_queued_message(message)
             return
         await self._emit_cold_cache_warning_hook(warning)
         task = self._schedule_off_message_pump(
@@ -13367,7 +13391,14 @@ class DeepAgentsApp(App):
             # to answer that prompt first. Sending anyway would bill the turn
             # the warning exists to gate while that toast claims the action was
             # blocked, so keep the draft and let them resend.
-            self._restore_cold_cache_draft(message.text)
+            self._restore_cold_cache_draft(
+                message.text,
+                **(
+                    {"media_snapshot": message.media_snapshot}
+                    if message.media_snapshot is not None
+                    else {}
+                ),
+            )
 
     async def _submit_input(
         self,
@@ -13376,6 +13407,7 @@ class DeepAgentsApp(App):
         *,
         force_bypass: bool = False,
         origin: SubmissionOrigin = "interactive",
+        media_snapshot: MediaTracker | None = None,
     ) -> None:
         """Submit input, fast-pathing always-immediate commands.
 
@@ -13391,6 +13423,7 @@ class DeepAgentsApp(App):
                 `ALWAYS_IMMEDIATE` fast path for commands they classify as
                 urgent.
             origin: Submission source used by advisory warning policy.
+            media_snapshot: Attachments captured independently at submission.
         """
         if self._exiting:
             return
@@ -13454,7 +13487,9 @@ class DeepAgentsApp(App):
                 await self._process_message(value, mode)
                 return
             self._pending_messages.append(
-                QueuedMessage(text=value, mode=mode, origin=origin)
+                QueuedMessage(
+                    text=value, mode=mode, origin=origin, media_snapshot=media_snapshot
+                )
             )
             queued_widget = QueuedUserMessage(value)
             self._queued_widgets.append(queued_widget)
@@ -13465,7 +13500,9 @@ class DeepAgentsApp(App):
             return
 
         await self._dispatch_queued_message(
-            QueuedMessage(text=value, mode=mode, origin=origin)
+            QueuedMessage(
+                text=value, mode=mode, origin=origin, media_snapshot=media_snapshot
+            )
         )
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
@@ -13486,6 +13523,14 @@ class DeepAgentsApp(App):
             self.exit()
             return
 
+        if event.steer and mode == "normal" and self._agent_running:
+            control = self._steering_control
+            if control is not None and control.submit(value, self._image_tracker):
+                return
+            self.notify(
+                "Steering unavailable during setup or approval; message queued.",
+                markup=False,
+            )
         await self._submit_input(value, mode)
 
     async def _restore_startup_tip_after_resume_fallback(self) -> None:
@@ -18992,20 +19037,28 @@ class DeepAgentsApp(App):
             markup=False,
         )
 
-    async def _handle_user_message(self, message: str) -> None:
+    async def _handle_user_message(
+        self, message: str, *, media_snapshot: MediaTracker | None = None
+    ) -> None:
         """Handle a user message to send to the agent.
 
         Args:
             message: The user's message
+            media_snapshot: Independently captured attachments, when provided.
         """
         # Mount the user message, tracking it so it can be dimmed on interrupt.
         # Everything routed here is literal agent text (slash/shell commands go
         # through `_handle_command`/`_handle_shell_command`), so disable mode
         # detection: a leading `/` (e.g. a file path from `-m`) must render as a
         # plain user message rather than a slash command.
-        media_snapshot = self._image_tracker.snapshot()
         user_message = UserMessage(
-            message, media_snapshot=media_snapshot, detect_mode=False
+            message,
+            media_snapshot=(
+                media_snapshot
+                if media_snapshot is not None
+                else self._image_tracker.snapshot()
+            ),
+            detect_mode=False,
         )
         await self._mount_message(user_message)
         self._active_user_message = user_message
@@ -19027,7 +19080,10 @@ class DeepAgentsApp(App):
                 markup=False,
                 timeout=8,
             )
-        await self._send_to_agent(message)
+        if media_snapshot is None:
+            await self._send_to_agent(message)
+        else:
+            await self._send_to_agent(message, media_snapshot=media_snapshot)
 
     async def _send_to_agent(
         self,
@@ -19035,6 +19091,7 @@ class DeepAgentsApp(App):
         *,
         message_kwargs: dict[str, Any] | None = None,
         skill_name: str | None = None,
+        media_snapshot: MediaTracker | None = None,
     ) -> None:
         """Send a message to the agent and start execution.
 
@@ -19047,6 +19104,7 @@ class DeepAgentsApp(App):
             message_kwargs: Extra fields merged into the stream input message
                 dict (e.g., `additional_kwargs` for skill metadata).
             skill_name: Invoked skill name for trace attribution, or `None`.
+            media_snapshot: Independently captured attachments, when provided.
         """
         # Anchor to bottom so streaming response stays visible
         with suppress(NoMatches, ScreenStackError):
@@ -19065,6 +19123,11 @@ class DeepAgentsApp(App):
             if not self._plugin_auto_update_started:
                 self._plugin_auto_update_started = True
                 self._start_plugin_auto_update()
+            from deepagents_code.client.remote_client import RemoteAgent
+            from deepagents_code.client.steering import SteeringControl
+
+            if isinstance(self._agent, RemoteAgent):
+                self._steering_control = SteeringControl()
             self._set_agent_running(True)
             # Fresh turn: no model text or tool call is visible yet, so an Esc
             # interrupt may still return this prompt to the input.
@@ -19121,6 +19184,7 @@ class DeepAgentsApp(App):
                     message_kwargs=message_kwargs,
                     skill_name=skill_name,
                     goal_notice_current=resuming_blocked,
+                    media_snapshot=media_snapshot,
                 )
                 # Cast because Textual's `WorkType` alias admits both a
                 # coroutine factory and a plain callable, so the result type
@@ -19531,6 +19595,7 @@ class DeepAgentsApp(App):
         skill_name: str | None = None,
         graph_input: dict[str, Any] | None = None,
         goal_notice_current: bool = False,
+        media_snapshot: MediaTracker | None = None,
     ) -> None:
         """Run the agent task in a background worker.
 
@@ -19543,6 +19608,7 @@ class DeepAgentsApp(App):
             skill_name: Invoked skill name for trace attribution, or `None`.
             graph_input: Prepared non-conversation input for a server operation.
             goal_notice_current: Whether the caller just persisted the current notice.
+            media_snapshot: Independently captured attachments, when provided.
         """
         # Set before anything can fail, so a cancel arriving later cannot leave
         # this `False` and be mistaken for a worker that never ran. See
@@ -19723,34 +19789,72 @@ class DeepAgentsApp(App):
                 )
                 return
             streaming_started = True
-            await execute_task_textual(
-                user_input=message,
-                agent=self._agent,
-                assistant_id=self._assistant_id,
-                session_state=self._session_state,
-                adapter=self._ui_adapter,
-                backend=self._backend,
-                show_reasoning=self._show_reasoning,
-                image_tracker=self._image_tracker,
-                sandbox_type=self._sandbox_type,
-                message_kwargs=message_kwargs,
-                skill_name=skill_name,
-                graph_input=graph_input,
-                rubric=rubric,
-                goal_active=goal_backed_grading,
-                on_rubric_evaluation_end=(
-                    _record_goal_grading_run if goal_backed_grading else None
-                ),
-                context=CLIContext(
-                    model=self._model_override,
-                    model_params=self._model_params_override or {},
-                    summarization_model=self._summarization_model_override,
-                    profile_overrides=self._profile_override or {},
-                    model_context_limit=runtime_state.model_context_limit,
-                    classifier_model=self._auto_classifier_context_value(),
-                ),
-                turn_stats=turn_stats,
+            from deepagents_code.client.remote_client import RemoteAgent
+            from deepagents_code.client.steering import SteeredError, SteeringControl
+
+            control = (
+                self._steering_control or SteeringControl()
+                if isinstance(self._agent, RemoteAgent) and graph_input is None
+                else None
             )
+            self._steering_control = control
+            steering_options: dict[str, Any] = {}
+            if control is not None:
+                steering_options["steering"] = control
+            while True:
+                try:
+                    await execute_task_textual(
+                        user_input=message,
+                        agent=self._agent,
+                        assistant_id=self._assistant_id,
+                        session_state=self._session_state,
+                        adapter=self._ui_adapter,
+                        backend=self._backend,
+                        show_reasoning=self._show_reasoning,
+                        image_tracker=(
+                            media_snapshot.snapshot()
+                            if media_snapshot is not None
+                            else self._image_tracker
+                        ),
+                        sandbox_type=self._sandbox_type,
+                        message_kwargs=message_kwargs,
+                        skill_name=skill_name,
+                        graph_input=graph_input,
+                        rubric=rubric,
+                        goal_active=goal_backed_grading,
+                        on_rubric_evaluation_end=(
+                            _record_goal_grading_run if goal_backed_grading else None
+                        ),
+                        context=CLIContext(
+                            model=self._model_override,
+                            model_params=self._model_params_override or {},
+                            summarization_model=self._summarization_model_override,
+                            profile_overrides=self._profile_override or {},
+                            model_context_limit=runtime_state.model_context_limit,
+                            classifier_model=self._auto_classifier_context_value(),
+                        ),
+                        turn_stats=turn_stats,
+                        **steering_options,
+                    )
+                    break
+                except SteeredError as steer:
+                    message = steer.request.text
+                    media_snapshot = steer.request.media
+                    steering_options["multitask_strategy"] = "interrupt"
+                    message_kwargs = None
+                    skill_name = None
+                    self._close_active_tool_group()
+                    panel = self._get_subagent_panel()
+                    if panel is not None:
+                        panel.finalize_running()
+                    user_message = UserMessage(
+                        message,
+                        media_snapshot=media_snapshot,
+                        detect_mode=False,
+                    )
+                    await self._mount_message(user_message)
+                    self._active_user_message = user_message
+                    self._active_turn_visible_output_started = False
             turn_completed = True
             # Close the final step's group once the turn ends with no trailing
             # assistant text to trigger the boundary path. Grouping is cosmetic,
@@ -19859,6 +19963,44 @@ class DeepAgentsApp(App):
                         exc_info=True,
                     )
         finally:
+            control = self._steering_control
+            if control is not None:
+                control.accepting = False
+                if control.detached:
+                    from deepagents_code.client.remote_client import RemoteAgent
+
+                    if isinstance(self._agent, RemoteAgent):
+                        try:
+                            await self._agent.acancel_active_runs(
+                                {"configurable": {"thread_id": self._lc_thread_id}}
+                            )
+                        except Exception:
+                            logger.warning("Could not stop detached run", exc_info=True)
+                if control.unsent is not None:
+                    request = control.unsent
+                    if (
+                        self._chat_input
+                        and not self._chat_input.value.strip()
+                        and self._chat_input.set_value_at_end(request.text)
+                    ):
+                        if request.media is not None:
+                            self._image_tracker.restore(request.media)
+                        notice = (
+                            "Steering was not sent; draft and attachments restored."
+                        )
+                    else:
+                        await self._submit_input(
+                            request.text, "normal", media_snapshot=request.media
+                        )
+                        notice = (
+                            "Steering was not sent; message queued with attachments."
+                        )
+                    await self._mount_message(AppMessage(notice))
+                if not control.pending.empty():
+                    pending_steer = control.pending.get_nowait()
+                    await self._submit_input(
+                        pending_steer.text, "normal", media_snapshot=pending_steer.media
+                    )
             # Merge turn stats before cleanup — _cleanup_agent_task may raise
             # during teardown (widget removal on a torn-down DOM), and stats
             # should ideally be captured regardless.
@@ -19995,6 +20137,13 @@ class DeepAgentsApp(App):
             goal_criteria_succeeded: Whether criteria generation completed without
                 failure or cancellation.
         """
+        control = self._steering_control
+        if control is not None and not control.pending.empty():
+            pending_steer = control.pending.get_nowait()
+            await self._submit_input(
+                pending_steer.text, "normal", media_snapshot=pending_steer.media
+            )
+        self._steering_control = None
         self._agent_quiescent.clear()
         self._agent_reconciling = True
         self._set_agent_running(False)
@@ -21867,6 +22016,8 @@ class DeepAgentsApp(App):
         if self._chat_input.value.strip():
             self.notify("Queued message discarded (input not empty)", timeout=3)
         elif self._chat_input.set_value_at_end(msg.text):
+            if msg.media_snapshot is not None:
+                self._image_tracker.restore(msg.media_snapshot)
             self.notify("Queued message moved to input", timeout=2)
         else:
             logger.warning(

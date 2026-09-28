@@ -248,6 +248,26 @@ class TestRemoteAgentReplicaForwarding:
 
 
 class TestRemoteAgentAstream:
+    async def test_native_steer_forwards_strategy_and_registration(self) -> None:
+        from deepagents_code.client.steering import SteeringControl, SteeringInput
+
+        agent, captured = _make_capturing_agent()
+        control = SteeringControl(detached=True, unsent=SteeringInput("new prompt"))
+        async for _ in agent.astream(
+            {"messages": []},
+            config=_config(),
+            steering=control,
+            multitask_strategy="interrupt",
+        ):
+            pass
+        assert captured["multitask_strategy"] == "interrupt"
+        assert captured["on_disconnect"] == "continue"
+        assert not control.registered.is_set()
+        captured["on_run_created"]({"run_id": "replacement"})
+        assert control.registered.is_set()
+        assert not control.detached
+        assert control.unsent is None
+
     async def test_updates_with_interrupt_converted(self) -> None:
         """Interrupt dicts in updates events are converted to Interrupt."""
         from langgraph.types import Interrupt

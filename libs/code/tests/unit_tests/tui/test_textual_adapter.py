@@ -1676,6 +1676,64 @@ class _FailingApprovalStoreAgent(_SequencedAgent):
 class TestExecuteTaskTextualStreamCompletion:
     """Report only clean stream endings to the app."""
 
+    async def test_steer_closes_stream_without_cancellation_state_writes(self) -> None:
+        from deepagents_code.client.steering import SteeredError, SteeringControl
+
+        control = SteeringControl()
+        closed = asyncio.Event()
+        inputs: list[dict] = []
+
+        class Agent(_FakeAgent):
+            async def astream(self, payload: dict, **kwargs: Any) -> AsyncIterator:
+                inputs.append(payload)
+                control.registered.set()
+                if len(inputs) == 1:
+                    assert control.submit("instead")
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        closed.set()
+                else:
+                    assert kwargs["multitask_strategy"] == "interrupt"
+                    yield ((), "updates", {})
+
+        agent = Agent([])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        state = _session_state(auto_approve=False)
+        with patch(
+            "deepagents_code.tui.textual_adapter._handle_interrupt_cleanup",
+            new_callable=AsyncMock,
+        ) as cleanup:
+            with pytest.raises(SteeredError, match="instead"):
+                await execute_task_textual(
+                    user_input="original",
+                    agent=agent,
+                    assistant_id="assistant",
+                    session_state=state,
+                    adapter=adapter,
+                    steering=control,
+                )
+            assert closed.is_set()
+            cleanup.assert_not_called()
+            await execute_task_textual(
+                user_input="instead",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=state,
+                adapter=adapter,
+                steering=control,
+                multitask_strategy="interrupt",
+            )
+        assert [message["content"] for message in inputs[1]["messages"]] == [
+            "original",
+            "instead",
+        ]
+        assert inputs[0]["messages"][0]["id"] == inputs[1]["messages"][0]["id"]
+
     async def test_retry_event_ignores_untrusted_status_markup(self) -> None:
         """Retry spinner text is rebuilt instead of parsing event-provided markup."""
         statuses: list[str | None] = []

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from pydantic import TypeAdapter
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code.client.steering import SteeringControl
     from deepagents_code.hooks.models.domain import ToolCallData
     from deepagents_code.resume_state import RubricResult
 
@@ -1704,6 +1705,8 @@ async def execute_task_textual(
     goal_active: bool = False,
     on_rubric_evaluation_end: Callable[[RubricEvaluationEnd], None] | None = None,
     turn_stats: _session_stats.SessionStats | None = None,
+    steering: SteeringControl | None = None,
+    multitask_strategy: str | None = None,
 ) -> _session_stats.SessionStats:
     """Execute a task with output directed to Textual UI.
 
@@ -1736,6 +1739,8 @@ async def execute_task_textual(
         on_rubric_evaluation_end: Optional callback receiving a validated
             `RubricEvaluationEnd` (grading run ID and verdict) for each
             main-agent `rubric_evaluation_end` event.
+        steering: Optional native interruption handoff for the terminal worker.
+        multitask_strategy: Server policy for the initial run, not HITL resumes.
         turn_stats: Pre-created `SessionStats` to accumulate into.
 
             When the caller holds a reference to the same object, stats are
@@ -1751,6 +1756,7 @@ async def execute_task_textual(
         ClientHookStopError: If a compact lifecycle hook stops processing.
         ValidationError: If HITL request validation fails (re-raised).
         RuntimeError: If Manual cannot be persisted before graph execution.
+        SteeredError: When a new prompt replaces the active remote run.
     """
     from langchain.agents.middleware.human_in_the_loop import (
         ApproveDecision,
@@ -1767,6 +1773,7 @@ async def execute_task_textual(
         USER_PROMPT_METADATA_KEY,
         user_prompt_metadata,
     )
+    from deepagents_code.client.steering import SteeredError
     from deepagents_code.hooks.client_lifecycle import ClientHookStopError
     from deepagents_code.hooks.models.domain import HookEvent
 
@@ -1986,6 +1993,14 @@ async def execute_task_textual(
             )
         if not prompt_outcome.suppress_original_prompt:
             messages.append(user_msg)
+        if steering is not None:
+            from uuid import uuid4
+
+            for message in messages:
+                message.setdefault("id", str(uuid4()))
+            if steering.messages:
+                messages = [*steering.messages, *messages]
+            steering.messages = messages
         stream_input: dict | Command = {
             "messages": messages,
             "goal_criteria_request": None,
@@ -2017,6 +2032,7 @@ async def execute_task_textual(
             )
 
     stream_completed = False
+    stream = None
     try:
         while True:
             interrupt_occurred = False
@@ -2103,6 +2119,14 @@ async def execute_task_textual(
             if adapter._set_spinner and not adapter._current_tool_messages:
                 await adapter._set_spinner("Thinking")
 
+            stream_options: dict[str, Any] = {}
+            if steering is not None:
+                steering.registered.clear()
+                steering.accepting = True
+                stream_options["steering"] = steering
+            if multitask_strategy is not None:
+                stream_options["multitask_strategy"] = multitask_strategy
+                multitask_strategy = None
             stream = agent.astream(
                 stream_input,
                 stream_mode=["messages", "updates", "custom"],
@@ -2110,7 +2134,12 @@ async def execute_task_textual(
                 config=stream_trace_config(config, stream_input),
                 context=context,
                 durability="exit",
+                **stream_options,
             )
+            if steering is not None:
+                from deepagents_code.client.steering import steerable_stream
+
+                stream = steerable_stream(stream, steering)
             async for chunk in _finalize_usage_round(
                 stream,
                 recorded_usage_requests,
@@ -2492,6 +2521,8 @@ async def execute_task_textual(
 
                     # Check for interrupts
                     if "__interrupt__" in data:
+                        if steering is not None:
+                            steering.accepting = False
                         interrupts: list[Interrupt] = data["__interrupt__"]
                         if interrupts:
                             for interrupt_obj in interrupts:
@@ -4097,6 +4128,10 @@ async def execute_task_textual(
                 stream_completed = True
                 break
 
+    except SteeredError:
+        adapter.finalize_pending_tools_with_error("Interrupted by steering")
+        await adapter._mount_message(AppMessage("Interrupted by steering"))
+        raise
     except ClientHookStopError:
         _reject_tracked_rows(adapter)
         raise
@@ -4140,6 +4175,8 @@ async def execute_task_textual(
                 )
         raise
     finally:
+        if steering is not None and stream is not None:
+            await stream.aclose()
         # A clean stream can leave its successful final attempt open when the
         # best-effort completion event was lost. Commit those scopes; only an
         # aborted stream owns incomplete records that must be discarded.

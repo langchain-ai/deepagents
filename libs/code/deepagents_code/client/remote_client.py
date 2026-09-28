@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
     from deepagents_code.client.session_cost import SessionCost
+    from deepagents_code.client.steering import SteeringControl
     from deepagents_code.cost_tracking import CostBreakdown
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import OffloadResult
@@ -673,6 +674,8 @@ class RemoteAgent:
         config: Mapping[str, Any] | None = None,
         context: Any | None = None,  # noqa: ANN401
         durability: str | None = None,  # noqa: ARG002
+        steering: SteeringControl | None = None,
+        multitask_strategy: str | None = None,
     ) -> AsyncIterator[tuple[tuple[str, ...], str, Any]]:
         """Stream agent execution, yielding tuples matching Pregel's format.
 
@@ -688,6 +691,8 @@ class RemoteAgent:
             context: Runtime context (e.g. `CLIContext`) forwarded to the
                 server via the SDK's `context=` parameter.
             durability: Ignored (server manages durability).
+            steering: Registration barrier for a locally requested steer.
+            multitask_strategy: Server policy for an existing active run.
 
         Yields:
             3-tuples of `(namespace, stream_mode, data)`.
@@ -717,6 +722,17 @@ class RemoteAgent:
         payload["workspace"] = await self._workspace_for_thread(config)
 
         extra_stream_kwargs: dict[str, Any] = {}
+        if steering is not None:
+
+            def registered(_: object) -> None:
+                steering.unsent = None
+                steering.detached = False
+                steering.registered.set()
+
+            extra_stream_kwargs["on_run_created"] = registered
+            extra_stream_kwargs["on_disconnect"] = "continue"
+        if multitask_strategy is not None:
+            extra_stream_kwargs["multitask_strategy"] = multitask_strategy
         replica_project = get_langsmith_replica_project()
         if replica_project:
             extra_stream_kwargs["langsmith_tracing"] = {"project_name": replica_project}

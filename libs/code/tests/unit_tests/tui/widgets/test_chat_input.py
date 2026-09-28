@@ -281,6 +281,33 @@ class TestChatInputScrollbar:
             assert text_area.scroll_y == text_area.max_scroll_y
 
 
+class TestSteeringSubmission:
+    async def test_alt_enter_and_enter_have_distinct_submission_intents(self) -> None:
+        submitted: list[ChatInput.Submitted] = []
+
+        class Host(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ChatInput()
+
+            def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
+                submitted.append(event)
+
+        app = Host()
+        async with app.run_test() as pilot:
+            widget = app.query_one(ChatInput)
+            widget.focus_input()
+            widget.set_value_at_end("steer now")
+            await pilot.press("alt+enter")
+            await pilot.pause()
+            widget.set_value_at_end("queue later")
+            await pilot.press("enter")
+            await pilot.pause()
+        assert [(event.value, event.steer) for event in submitted] == [
+            ("steer now", True),
+            ("queue later", False),
+        ]
+
+
 class TestChatTextAreaKeybindings:
     """Regression tests for terminal key aliases in the chat input."""
 

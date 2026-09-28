@@ -8,14 +8,15 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, assert_never
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, assert_never
 
 from rich.cells import cell_len
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
-from textual import work
+from textual import events, work
 from textual.app import NoScreen
+from textual.binding import Binding
 from textual.color import Color
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
@@ -203,7 +204,6 @@ A periodic refresh keeps `@` suggestions current; the walk runs off the event
 loop and swaps in atomically, so it never blocks typing."""
 
 if TYPE_CHECKING:
-    from textual import events
     from textual.app import ComposeResult
     from textual.events import Click
     from textual.screen import Screen
@@ -576,6 +576,14 @@ class ChatTextArea(PasteBurstTextArea):
     fallback are inherited from `PasteBurstTextArea`.
     """
 
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("alt+enter", "steer", "Steer", show=False, priority=True),
+    ]
+
+    async def action_steer(self) -> None:
+        """Submit the chat draft as a steer through normal input handling."""
+        await self._on_key(events.Key("alt+enter", None))
+
     _skip_history_change_events: int
     """Counter incremented before a history-driven text replacement so the
     resulting `TextArea.Changed` event (which fires on the next message-loop
@@ -586,8 +594,9 @@ class ChatTextArea(PasteBurstTextArea):
     class Submitted(Message):
         """Message sent when text is submitted."""
 
-        def __init__(self, value: str) -> None:
+        def __init__(self, value: str, *, steer: bool = False) -> None:
             """Initialize with submitted value."""
+            self.steer = steer
             self.value = value
             super().__init__()
 
@@ -1348,7 +1357,7 @@ class ChatTextArea(PasteBurstTextArea):
         self._track_backslash_pending(event, now)
 
         # Modifier+Enter inserts newline — keys derived from BINDINGS
-        if self._consume_modifier_newline(event):
+        if event.key != "alt+enter" and self._consume_modifier_newline(event):
             return
 
         if event.key == "backspace" and self._delete_placeholder_token(backwards=True):
@@ -1401,7 +1410,7 @@ class ChatTextArea(PasteBurstTextArea):
         # newline, and the window is kept alive so the rest of the paste stays
         # grouped instead of submitting mid-stream. The text reappears when the
         # burst flushes — possibly as a `[Pasted text #N]` placeholder.
-        if event.key == "enter":
+        if event.key in {"enter", "alt+enter"}:
             event.prevent_default()
             event.stop()
             if not prompt_search_active and self._consume_enter_as_burst_newline(now):
@@ -1413,7 +1422,7 @@ class ChatTextArea(PasteBurstTextArea):
                 return
             value = self.text.strip()
             if value:
-                self.post_message(self.Submitted(value))
+                self.post_message(self.Submitted(value, steer=event.key == "alt+enter"))
             return
 
         await super()._on_key(event)
@@ -2276,11 +2285,14 @@ class ChatInput(Vertical):
     class Submitted(Message):
         """Message sent when input is submitted."""
 
-        def __init__(self, value: str, mode: str = "normal") -> None:
+        def __init__(
+            self, value: str, mode: str = "normal", *, steer: bool = False
+        ) -> None:
             """Initialize with value and mode."""
             super().__init__()
             self.value = value
             self.mode = mode
+            self.steer = steer
 
     class ModeChanged(Message):
         """Message sent when input mode changes."""
@@ -3177,13 +3189,14 @@ class ChatInput(Vertical):
             value = prefix + value
         return value.lower() in ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
 
-    def _submit_value(self, value: str) -> None:
+    def _submit_value(self, value: str, *, steer: bool = False) -> None:
         """Prepend mode prefix, save to history, post message, and reset input.
 
         This is the single path for all submission flows so the prefix-prepend +
         history + post + clear + mode-reset logic stays in one place.
 
         Args:
+            steer: Request native interruption instead of normal queueing.
             value: The stripped text to submit (without mode prefix).
         """
         if not value:
@@ -3229,7 +3242,7 @@ class ChatInput(Vertical):
 
         self._history.add(value)
         self._warn_if_history_unwritable()
-        self.post_message(self.Submitted(value, mode))
+        self.post_message(self.Submitted(value, mode, steer=steer))
 
         if self._text_area:
             # Preserve submission-time attachments until adapter consumes them.
@@ -3286,7 +3299,7 @@ class ChatInput(Vertical):
         Unless submission is paused, the app layer decides whether to process
         immediately or queue based on agent status.
         """
-        self._submit_value(event.value)
+        self._submit_value(event.value, steer=event.steer)
 
     def on_chat_text_area_history_previous(
         self, event: ChatTextArea.HistoryPrevious

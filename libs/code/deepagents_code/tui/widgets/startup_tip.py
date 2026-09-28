@@ -21,6 +21,7 @@ _TIP_SHIFT_TAB_WITHOUT_YOLO = "Press Shift+Tab to toggle Manual and Auto modes"
 """Tip used when orgs/users disable YOLO entry via the approval switcher."""
 
 _TIPS: dict[str, int] = {
+    "While working: Alt+Enter interrupts with your message; Enter queues it": 3,
     "Use @ to reference files and / for commands": 3,
     "Use @@ to reference a recent conversation": 2,
     "Try /threads to resume a previous conversation or copy its ID": 2,

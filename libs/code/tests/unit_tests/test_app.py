@@ -2847,6 +2847,31 @@ class TestQueuedMessage:
 class TestMessageQueue:
     """Test message queue behavior in DeepAgentsApp."""
 
+    async def test_alt_enter_steers_without_consuming_normal_queue(self) -> None:
+        from deepagents_code.client.steering import SteeringControl
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_agent_running(True)
+            control = SteeringControl()
+            app._steering_control = control
+            await app.on_chat_input_submitted(ChatInput.Submitted("later"))
+            await app.on_chat_input_submitted(
+                ChatInput.Submitted("instead", steer=True)
+            )
+            assert [item.text for item in app._pending_messages] == ["later"]
+            assert control.pending.get_nowait().text == "instead"
+            control.accepting = False
+            await app.on_chat_input_submitted(
+                ChatInput.Submitted("after approval", steer=True)
+            )
+            assert [item.text for item in app._pending_messages] == [
+                "later",
+                "after approval",
+            ]
+            app._set_agent_running(False)
+
     async def test_startup_tip_mounts_above_input(self) -> None:
         """The startup tip appears in the bottom container above the input."""
         app = DeepAgentsApp()
@@ -6310,6 +6335,74 @@ class TestCacheTiming:
 
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
+
+    async def test_steer_replacement_uses_captured_media(self) -> None:
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.client.steering import SteeredError, SteeringControl
+        from deepagents_code.media_utils import ImageData
+
+        app = DeepAgentsApp(agent=MagicMock(spec=RemoteAgent))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            composer = app._image_tracker
+            composer.add_image(ImageData("original", "png", ""))
+            control = SteeringControl()
+            assert control.submit("instead [image 1]", composer)
+            request = control.pending.get_nowait()
+            composer.clear()
+            composer.add_image(ImageData("draft", "jpeg", ""))
+            calls = 0
+
+            async def execute(**kwargs: Any) -> None:
+                await asyncio.sleep(0)
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise SteeredError(request)
+                tracker = kwargs["image_tracker"]
+                assert tracker is not composer
+                assert tracker.get_images() == [
+                    ImageData("original", "png", "[image 1]")
+                ]
+                assert app._active_user_message is not None
+                assert app._active_user_message.media_snapshot is request.media
+                tracker.clear()
+
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual", execute
+            ):
+                await app._run_agent_task("original")
+            assert calls == 2
+            assert composer.get_images() == [ImageData("draft", "jpeg", "[image 1]")]
+            assert request.media is not None
+            assert request.media.get_images() == [
+                ImageData("original", "png", "[image 1]")
+            ]
+
+    async def test_queued_steer_restores_media_without_draft_cross_contamination(
+        self,
+    ) -> None:
+        from deepagents_code.input import MediaTracker
+        from deepagents_code.media_utils import ImageData
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            media = MediaTracker()
+            media.add_image(ImageData("original", "png", ""))
+            app._set_agent_running(True)
+            await app._submit_input("instead [image 1]", "normal", media_snapshot=media)
+            queued = app._pending_messages[0]
+            with patch.object(
+                app, "_handle_user_message", new_callable=AsyncMock
+            ) as send:
+                await app._process_queued_message(queued)
+            send.assert_awaited_once_with(queued.text, media_snapshot=media)
+            app._pop_last_queued_message()
+            assert app._chat_input is not None
+            assert app._chat_input.value == "instead [image 1]"
+            assert app._image_tracker.get_images() == media.get_images()
+            app._set_agent_running(False)
 
     async def test_goal_continuation_does_not_count_as_human_invocation(self) -> None:
         """Only the human-submitted turn increments the session invocation count."""

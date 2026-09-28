@@ -75,9 +75,9 @@ from deepagents_talon.pairing import (
     PairedSender,
     SenderPairing,
     is_direct_message,
-    origin_jobs,
     pause_jobs,
     run_pair_command,
+    sender_jobs,
 )
 from deepagents_talon.speech import transcribe_voice_message
 
@@ -290,6 +290,9 @@ class TalonHost:
         self._background_retries: dict[str, _BackgroundRetry] = {}
         self._scheduled_runs: dict[str, asyncio.Task[str]] = {}
         self._revoked_runs: set[str] = set()
+        # Who started each conversation's latest turn, so revoking a paired sender
+        # can stop their work in shared chats, not just their DM.
+        self._turn_senders: dict[str, tuple[str, str | None]] = {}
         self._stopped = asyncio.Event()
         self._running = False
 
@@ -337,6 +340,7 @@ class TalonHost:
             return
         self._tasks.pop(conversation_id, None)
         self._generations.pop(conversation_id, None)
+        self._turn_senders.pop(conversation_id, None)
 
     @property
     def running(self) -> bool:
@@ -583,26 +587,42 @@ class TalonHost:
     async def _stop_revoked_sender(
         self, channel_key: str, provider: str, revoked: PairedSender
     ) -> str:
-        """Cancel a revoked sender's active run and pause jobs created in their DM."""
-        conversation_root = self._conversation_root(channel_key, revoked.conversation_id)
-        outcome = await self._cancel_conversation_tasks(
-            self._agent_conversation_id(conversation_root)
-        )
+        """Stop a revoked sender's work in every chat and pause the jobs they created."""
+        outcomes = [
+            await self._cancel_conversation_tasks(conversation_id)
+            for conversation_id in self._conversations_of(channel_key, revoked)
+        ]
+        stopped = sum(outcome is not _CancelOutcome.NONE for outcome in outcomes)
         notes = []
-        if outcome is _CancelOutcome.TIMEOUT:
+        if _CancelOutcome.TIMEOUT in outcomes:
             notes.append("Could not stop their current run within 30 seconds; restart Talon.")
-        elif outcome is not _CancelOutcome.NONE:
+        elif stopped == 1:
             notes.append("Stopped their current run.")
-        notes.extend(self._stop_conversation_jobs(provider, revoked.conversation_id))
+        elif stopped:
+            notes.append(f"Stopped {stopped} of their runs.")
+        notes.extend(self._stop_sender_jobs(provider, revoked))
         return " ".join(notes)
 
-    def _stop_conversation_jobs(self, provider: str, conversation_id: str) -> list[str]:
-        """Pause a conversation's cron jobs and cancel any of their runs in flight."""
+    def _conversations_of(self, channel_key: str, revoked: PairedSender) -> list[str]:
+        """Return the sender's DM plus every conversation whose latest turn they started."""
+        dm = self._agent_conversation_id(
+            self._conversation_root(channel_key, revoked.conversation_id)
+        )
+        started = (channel_key, revoked.sender_id)
+        shared = [
+            conversation_id
+            for conversation_id, sender in self._turn_senders.items()
+            if sender == started and conversation_id != dm
+        ]
+        return [dm, *shared]
+
+    def _stop_sender_jobs(self, provider: str, revoked: PairedSender) -> list[str]:
+        """Pause the cron jobs a sender created and cancel any of their runs in flight."""
         store = getattr(self.scheduler, "store", None)
         if not isinstance(store, CronJobStore):
             return []
         try:
-            jobs = origin_jobs(store, provider, conversation_id)
+            jobs = sender_jobs(store, provider, revoked.sender_id, revoked.conversation_id)
             paused = pause_jobs(store, jobs)
         except (CronJobError, OSError):
             logger.warning("Could not pause a revoked sender's cron jobs", exc_info=True)
@@ -614,7 +634,7 @@ class TalonHost:
                 self._revoked_runs.add(job.id)
                 run.cancel()
                 stopped += 1
-        notes = [f"Paused {paused} scheduled job(s) created in their DM."] if paused else []
+        notes = [f"Paused {paused} scheduled job(s) they created."] if paused else []
         if stopped:
             notes.append(f"Stopped {stopped} scheduled run(s) in progress.")
         return notes
@@ -766,6 +786,10 @@ class TalonHost:
             name=f"talon:{conversation_id}",
         )
         self._tasks[conversation_id] = task
+        self._turn_senders[conversation_id] = (
+            _channel_key(channel, route.provider),
+            message.sender_id,
+        )
         self._track_conversation_task(conversation_id, task)
 
     async def _process_background_results(self) -> None:
@@ -1977,6 +2001,7 @@ def _scheduled_metadata(job: CronJob) -> dict[str, object]:
         "cron_job_name": job.name,
         "origin_conversation_id": job.origin.conversation_id,
         "cron_origin_message_id": job.origin.message_id,
+        "cron_origin_sender_id": job.origin.sender_id,
         "trigger": "cron",
     }
 

@@ -293,7 +293,7 @@ async def test_guild_messages_never_issue_codes(tmp_path: Path) -> None:
     assert pairing.store.state("discord", now=pairing.now()).pending == {}
 
 
-async def test_paired_sender_is_admitted_in_dms_only(tmp_path: Path) -> None:
+async def test_paired_sender_is_admitted_in_any_chat(tmp_path: Path) -> None:
     pairing = _pairing(tmp_path, Clock())
     channel, gateway = _discord(tmp_path, pairing, mode=ExposureMode.ALLOWLIST)
     received = await _collecting(channel)
@@ -303,10 +303,26 @@ async def test_paired_sender_is_admitted_in_dms_only(tmp_path: Path) -> None:
     await gateway.deliver_message(_dm(STRANGER, "in dm"))
     await gateway.deliver_message(_dm(STRANGER, "in guild", channel_id="guild", is_dm=False))
 
+    assert [message.text for message in received] == ["in dm", "in guild"]
+
+
+async def test_env_allowlisted_users_stay_dm_only_with_pairing(tmp_path: Path) -> None:
+    pairing = SenderPairing(
+        store=PairingStore(tmp_path / PAIRING_FILENAME),
+        provider="discord",
+        env_sender_ids=frozenset({OPERATOR, "allowed-1"}),
+    )
+    channel, gateway = _discord(tmp_path, pairing)
+    received = await _collecting(channel)
+
+    await gateway.deliver_message(_dm("allowed-1", "in dm", channel_id="dm-allowed"))
+    await gateway.deliver_message(_dm("allowed-1", "in guild", channel_id="guild", is_dm=False))
+
     assert [message.text for message in received] == ["in dm"]
+    assert gateway.sent_text == []
 
 
-async def test_paired_sender_reactions_count_only_in_their_dm(tmp_path: Path) -> None:
+async def test_paired_sender_reactions_count_in_any_chat(tmp_path: Path) -> None:
     pairing = _pairing(tmp_path, Clock())
     code = cast("str", pairing.store.request("discord", STRANGER, STRANGER_DM, now=0))
     pairing.store.approve("discord", code, now=0)
@@ -326,7 +342,7 @@ async def test_paired_sender_reactions_count_only_in_their_dm(tmp_path: Path) ->
             )
         )
 
-    assert [reaction.conversation_id for reaction in reactions] == [STRANGER_DM]
+    assert [reaction.conversation_id for reaction in reactions] == ["guild-chan", STRANGER_DM]
 
 
 def test_pairing_is_opt_in_and_refused_with_open_exposure(tmp_path: Path) -> None:
@@ -394,7 +410,7 @@ async def test_telegram_private_chat_gets_a_code_then_access(tmp_path: Path) -> 
             _make_reaction_update(sender_id=222, chat_id=chat_id, chat_type=chat_type)
         )
 
-    assert [reaction.conversation_id for reaction in reactions] == ["222"]
+    assert [reaction.conversation_id for reaction in reactions] == ["-100500", "222"]
 
 
 # --- Host: operator approval and revocation --------------------------------
@@ -472,35 +488,47 @@ async def test_pair_is_refused_outside_a_dm(tmp_path: Path) -> None:
     assert agent.requests == []
 
 
+def test_jobs_saved_without_a_creator_still_load() -> None:
+    origin = CronOrigin.from_dict(
+        {"conversation_id": "c", "channel": "discord", "message_id": None}
+    )
+
+    assert origin.sender_id is None
+    assert CronOrigin.from_dict(origin.to_dict()) == origin
+
+
+def _job(cron: CronJobStore, conversation_id: str, sender_id: str | None):
+    return cron.create_job(
+        prompt="report",
+        schedule=CronSchedule.parse("every 1h"),
+        origin=CronOrigin(conversation_id=conversation_id, channel="discord", sender_id=sender_id),
+    )
+
+
 async def test_revoke_stops_the_run_pauses_jobs_and_blocks_the_sender(tmp_path: Path) -> None:
     host, gateway, agent, cron = await _host(tmp_path, Clock())
     await gateway.deliver_message(_dm(STRANGER, "let me in"))
     await gateway.deliver_message(_dm(OPERATOR, f"/pair approve {_issued_code(gateway)}"))
-    job = cron.create_job(
-        prompt="report",
-        schedule=CronSchedule.parse("every 1h"),
-        origin=CronOrigin(conversation_id=STRANGER_DM, channel="discord"),
-    )
-    operator_job = cron.create_job(
-        prompt="mine",
-        schedule=CronSchedule.parse("every 1h"),
-        origin=CronOrigin(conversation_id=OPERATOR_DM, channel="discord"),
-    )
-    await gateway.deliver_message(_dm(STRANGER, "block"))
+    # Saved before creators were recorded: matched by the sender's DM.
+    legacy_job = _job(cron, STRANGER_DM, None)
+    shared_job = _job(cron, "guild", STRANGER)
+    operator_job = _job(cron, "guild", OPERATOR)
+    await gateway.deliver_message(_dm(STRANGER, "block", channel_id="guild", is_dm=False))
     await _wait_for_request(agent)
 
     await gateway.deliver_message(_dm(OPERATOR, f"/pair revoke {STRANGER}"))
-    await gateway.deliver_message(_dm(STRANGER, "still here?"))
+    await gateway.deliver_message(_dm(STRANGER, "still here?", channel_id="guild", is_dm=False))
     await host.stop()
 
     assert (
         OPERATOR_DM,
         f"Revoked sender {STRANGER}. Stopped their current run. "
-        "Paused 1 scheduled job(s) created in their DM.",
+        "Paused 2 scheduled job(s) they created.",
     ) in gateway.sent_text
     assert [request.text for request in agent.requests] == ["block"]
     assert [(saved.id, saved.enabled) for saved in cron.list_jobs()] == [
-        (job.id, False),
+        (legacy_job.id, False),
+        (shared_job.id, False),
         (operator_job.id, True),
     ]
 
@@ -529,9 +557,23 @@ async def test_revoke_stops_a_scheduled_run_in_progress(tmp_path: Path) -> None:
     await host.stop()
     assert (
         OPERATOR_DM,
-        f"Revoked sender {STRANGER}. Paused 1 scheduled job(s) created in their DM. "
+        f"Revoked sender {STRANGER}. Paused 1 scheduled job(s) they created. "
         "Stopped 1 scheduled run(s) in progress.",
     ) in gateway.sent_text
+
+
+async def test_scheduled_run_passes_its_creator_to_jobs_it_creates(tmp_path: Path) -> None:
+    host, _, agent, cron = await _host(tmp_path, Clock())
+    job = cron.create_job(
+        prompt="report",
+        schedule=CronSchedule.parse("every 1h"),
+        origin=CronOrigin(conversation_id="guild", channel="discord", sender_id=STRANGER),
+    )
+
+    await host.run_scheduled_job(job)
+    await host.stop()
+
+    assert agent.requests[0].metadata["cron_origin_sender_id"] == STRANGER
 
 
 async def test_shutdown_still_cancels_a_scheduled_run(tmp_path: Path) -> None:
@@ -593,7 +635,7 @@ def test_cli_approves_lists_and_revokes(
 
     assert _cli(monkeypatch, tmp_path, "revoke", "telegram", STRANGER) == 0
     assert not store.is_paired("telegram", STRANGER)
-    follow_up = f"deepagents-talon pairing pause-jobs telegram {STRANGER_DM}"
+    follow_up = f"deepagents-talon pairing pause-jobs telegram {STRANGER} --dm {STRANGER_DM}"
     assert follow_up in capsys.readouterr().out
     assert _cli(monkeypatch, tmp_path, *follow_up.split()[2:]) == 0
     assert [(saved.id, saved.enabled) for saved in cron.list_jobs()] == [(job.id, False)]

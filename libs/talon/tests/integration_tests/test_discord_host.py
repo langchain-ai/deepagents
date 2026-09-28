@@ -265,6 +265,77 @@ async def test_public_thread_reset_clears_parent_history(tmp_path: Path) -> None
         await host.stop()
 
 
+async def test_public_thread_reset_cancels_siblings_and_blocks_new_turns(tmp_path: Path) -> None:
+    class HistoryAgent(EchoAgent):
+        history_enabled = True
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.started = asyncio.Event()
+            self.clearing = asyncio.Event()
+            self.release = asyncio.Event()
+            self.cleared: list[tuple[str, str]] = []
+
+        async def invoke(self, request: AgentRequest) -> AgentResult:
+            self.requests.append(request)
+            if request.text == "blocked":
+                self.started.set()
+                await asyncio.Event().wait()
+            return AgentResult(text=f"echo:{request.text}")
+
+        async def clear_history(self, channel: str, chat: str) -> None:
+            self.clearing.set()
+            await self.release.wait()
+            self.cleared.append((channel, chat))
+
+    config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "assistant"}, base_home=tmp_path)
+    gateway = StubGateway()
+    channel = DiscordChannel(
+        DiscordChannelConfig(
+            bot_token="test-token",  # noqa: S106  # inert test token
+            exposure=ChannelExposure(mode=ExposureMode.OPEN),
+        ),
+        gateway=gateway,
+    )
+    agent = HistoryAgent()
+    host = TalonHost(config=config, agent=agent, channels=[channel])
+
+    async def send(chat: str, text: str, parent: str) -> None:
+        await gateway._handle_message(
+            _DiscordInboundMessage(
+                channel_id=chat,
+                message_id=text,
+                sender_id="op-1",
+                text=text,
+                is_dm=False,
+                from_self=False,
+                history_chat=parent,
+            )
+        )
+
+    await host.start()
+    try:
+        await send("thread-2", "blocked", "100")
+        await agent.started.wait()
+        reset = asyncio.create_task(send("thread-1", "/reset-all-history", "100"))
+        await agent.clearing.wait()
+        incoming = asyncio.create_task(send("thread-2", "after", "100"))
+        await asyncio.sleep(0)
+        assert not incoming.done()
+        assert [request.text for request in agent.requests] == ["blocked"]
+        agent.release.set()
+        await reset
+        await incoming
+        await asyncio.gather(*host._tasks.values())
+        assert agent.cleared == [("discord", "100")]
+        assert [request.text for request in agent.requests] == ["blocked", "after"]
+        assert agent.requests[-1].conversation_id != agent.requests[0].conversation_id
+        assert agent.requests[-1].metadata["history_chat"] == "100"
+    finally:
+        agent.release.set()
+        await host.stop()
+
+
 async def test_slash_command_runs_the_host_command_and_answers_the_interaction(
     tmp_path: Path,
 ) -> None:

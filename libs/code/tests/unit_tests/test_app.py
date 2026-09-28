@@ -6752,6 +6752,65 @@ class TestRunAgentTaskMediaTracker:
             assert app._image_tracker.get_images() == media.get_images()
             app._set_agent_running(False)
 
+    @pytest.mark.parametrize("goal_continuation", [False, True])
+    async def test_steering_counts_invocations_and_preserves_usage(
+        self, goal_continuation: bool
+    ) -> None:
+        """Each steering prompt counts, even when it interrupts an automatic turn."""
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.client.steering import SteeredError, SteeringInput
+
+        app = DeepAgentsApp(agent=MagicMock(spec=RemoteAgent))
+        prompts: list[str] = []
+
+        async def execute(
+            *, user_input: str, turn_stats: SessionStats, **_: object
+        ) -> None:
+            await asyncio.sleep(0)
+            prompts.append(user_input)
+            turn_stats.record_request(
+                "test-model", 10, 5, "test-provider", cost_usd=0.1
+            )
+            turn_stats.wall_time_seconds += 2.5
+            if len(prompts) < 3:
+                raise SteeredError(SteeringInput(f"steer {len(prompts)}"))
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(runtime_state, "model_name", "test-model"),
+                patch.object(runtime_state, "model_provider", "test-provider"),
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual", execute
+                ),
+            ):
+                await app._run_agent_task(
+                    "original",
+                    message_kwargs=(
+                        {
+                            "additional_kwargs": {
+                                "lc_source": GOAL_CONTROL_MESSAGE_SOURCE
+                            }
+                        }
+                        if goal_continuation
+                        else None
+                    ),
+                )
+
+            assert prompts == ["original", "steer 1", "steer 2"]
+            stats = app._session_stats
+            expected_invocations = 2 if goal_continuation else 3
+            assert stats.invocation_count == expected_invocations
+            assert (
+                stats.per_model["test-provider", "test-model"].invocation_count
+                == expected_invocations
+            )
+            assert stats.request_count == 3
+            assert stats.input_tokens == 30
+            assert stats.output_tokens == 15
+            assert stats.total_cost_usd == pytest.approx(0.3)
+            assert stats.wall_time_seconds == pytest.approx(7.5)
+
     async def test_goal_continuation_does_not_count_as_human_invocation(self) -> None:
         """Only the human-submitted turn increments the session invocation count."""
         app = DeepAgentsApp(agent=MagicMock())

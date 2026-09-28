@@ -19888,6 +19888,10 @@ class DeepAgentsApp(App):
                     await self._mount_message(user_message)
                     self._active_user_message = user_message
                     self._active_turn_visible_output_started = False
+                    turn_stats.record_invocation(
+                        runtime_state.model_name or "",
+                        runtime_state.model_provider or "",
+                    )
             turn_completed = True
             # Close the final step's group once the turn ends with no trailing
             # assistant text to trigger the boundary path. Grouping is cosmetic,

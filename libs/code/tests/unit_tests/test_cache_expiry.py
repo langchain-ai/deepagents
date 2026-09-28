@@ -407,8 +407,10 @@ async def test_handoff_child_is_discoverable_and_resumable(
 
 
 @pytest.mark.parametrize("local_database_initialized", [False, True])
+@pytest.mark.parametrize("resume_via", ["automatic", "picker", "id"])
 async def test_handoff_with_separate_server_checkpoints(
     local_database_initialized: bool,
+    resume_via: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A remote-only child must be registered, exposed, and opened successfully."""
@@ -419,6 +421,7 @@ async def test_handoff_with_separate_server_checkpoints(
     from deepagents_code import sessions
     from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.resume_state import ResumeStateMiddleware
+    from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
     if local_database_initialized:
         async with sessions.get_checkpointer() as checkpointer:
@@ -442,44 +445,83 @@ async def test_handoff_with_separate_server_checkpoints(
 
     transport = MagicMock()
     transport.aupdate_state = AsyncMock(side_effect=update_state)
+    transport.aget_state = graph.aget_state
     registered = AsyncMock()
     transport._validate_client.return_value.threads.create = registered
     monkeypatch.setattr(remote, "_get_graph", lambda: transport)
     monkeypatch.setattr(remote, "abind_workspace", AsyncMock())
-    monkeypatch.setattr(
-        remote,
-        "aoffload",
-        AsyncMock(
-            return_value={
-                "status": "summarized",
-                "summary": "Remote conversation summary",
-                "archive_path": "/conversation_history/source.md",
-            }
-        ),
-    )
+
+    def summarize(**_kwargs: object) -> dict[str, str]:
+        if resume_via != "automatic":
+            # Shell activity arriving during the summary still needs recovery.
+            app._buffer_shell_for_model_context("echo later", "later result", 0)
+        return {
+            "status": "summarized",
+            "summary": "Remote conversation summary",
+            "archive_path": "/conversation_history/source.md",
+        }
+
+    monkeypatch.setattr(remote, "aoffload", AsyncMock(side_effect=summarize))
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)
-    monkeypatch.setattr(app, "_set_spinner", AsyncMock())
     monkeypatch.setattr(app, "_sync_session_cost_from_checkpoint", AsyncMock())
-    mounted = AsyncMock()
-    monkeypatch.setattr(app, "_mount_message", mounted)
-    resume = AsyncMock()
-    monkeypatch.setattr(app, "_resume_thread", resume)
+    monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+    monkeypatch.setattr(app, "_run_session_start_hook", AsyncMock(return_value=False))
+    monkeypatch.setattr(type(app._hooks), "on_session_end", AsyncMock())
+    monkeypatch.setattr(
+        DeepAgentsApp,
+        "_resume_cutoff",
+        lambda: (datetime.now(UTC) - timedelta(days=7), "user config", True),
+    )
 
-    child_id = await app._run_cache_handoff("source")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        monkeypatch.setattr(app, "_agent", remote)
+        assert app._chat_input is not None
+        app._chat_input.value = "keep this edited draft"
+        child_id = await app._run_cache_handoff("source")
+        assert child_id is not None
+        threads = await sessions.list_threads(agent_name="researcher", cwd=app._cwd)
+        assert [thread["thread_id"] for thread in threads] == [child_id]
+        assert await app._thread_resume_block(child_id) is None
+        assert await sessions.get_thread_cwd(child_id) == app._cwd
 
-    assert child_id is not None
-    assert not await sessions.thread_exists(child_id)
-    state = await graph.aget_state({"configurable": {"thread_id": child_id}})
-    assert "Remote conversation summary" in state.values["messages"][0].text
-    assert not state.next
-    assert registered.await_args is not None
-    assert registered.await_args.kwargs["thread_id"] == child_id
-    metadata = registered.await_args.kwargs["metadata"]
-    assert metadata["agent_name"] == "researcher"
-    assert metadata["cwd"] == app._cwd
-    assert datetime.fromisoformat(metadata["updated_at"]).tzinfo is not None
-    assert any(child_id in call.args[0]._content for call in mounted.await_args_list)
-    resume.assert_awaited_once_with(child_id)
+        if resume_via != "automatic":
+            assert app._lc_thread_id == "source"
+            # Verify resume fetches current server history, not the local seed.
+            await graph.aupdate_state(
+                {"configurable": {"thread_id": child_id}},
+                {"messages": [HumanMessage("Added on the server")]},
+                as_node="model",
+            )
+            await graph.aupdate_state(
+                {"configurable": {"thread_id": child_id}}, None, as_node="__end__"
+            )
+            if resume_via == "picker":
+                await app._handle_threads_command("/threads")
+                await pilot.pause()
+                assert isinstance(app.screen, ThreadSelectorScreen)
+                async with asyncio.timeout(5):
+                    while not app.screen._disk_load_complete:
+                        await pilot.pause()
+                assert [t["thread_id"] for t in app.screen._threads] == [child_id]
+                await pilot.press("enter")
+            else:
+                await app._handle_threads_command(f"/threads -r {child_id}")
+            async with asyncio.timeout(5):
+                while app._lc_thread_id != child_id or app._thread_switching:
+                    await pilot.pause()
+
+        assert app._lc_thread_id == child_id
+        assert app._session_state is not None
+        assert app._session_state.thread_id == child_id
+        assert app._chat_input.value == "keep this edited draft"
+        displayed = [m.content for m in app._message_store.get_all_messages()]
+        assert any("Remote conversation summary" in content for content in displayed)
+        if resume_via != "automatic":
+            assert "Added on the server" in displayed
+        state = await graph.aget_state({"configurable": {"thread_id": child_id}})
+        assert not state.next
 
 
 @pytest.mark.parametrize(
@@ -815,10 +857,10 @@ async def test_handoff_keeps_submitted_draft_without_sending(
         if failure:
             msg = "summary failed"
             raise RuntimeError(msg)
-        # A real handoff resumes the child thread, which clears the composer.
+        # Switching the transcript keeps the editable composer intact.
         app._lc_thread_id = "child"
         assert app._chat_input is not None
-        app._chat_input.value = ""
+        assert app._chat_input.value == "retain this request"
         return "child"
 
     monkeypatch.setattr(app, "_process_message", process)
@@ -843,6 +885,69 @@ async def test_handoff_keeps_submitted_draft_without_sending(
             assert "original thread is unchanged" in errors[0]
         else:
             assert errors == []
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancel"])
+@pytest.mark.parametrize("submitted", [False, True])
+async def test_handoff_pauses_submission_but_keeps_draft_editable(
+    outcome: str, submitted: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handoff(_thread_id: str) -> str:
+        started.set()
+        await release.wait()
+        if outcome == "failure":
+            msg = "summary failed"
+            raise RuntimeError(msg)
+        app._lc_thread_id = "child"
+        assert app._status_bar is not None
+        app._status_bar.cache_expires_at = None
+        return "child"
+
+    process = AsyncMock()
+    monkeypatch.setattr(app, "_process_message", process)
+    monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        assert app._chat_input is not None
+        app._chat_input.value = "draft"
+        if submitted:
+            await pilot.press("enter")
+        else:
+            app._check_cache_expiry()
+        await pilot.pause()
+        assert isinstance(app.screen, ColdCacheWarningScreen)
+        await pilot.press("enter")
+        await asyncio.wait_for(started.wait(), timeout=5)
+        await pilot.pause()
+        assert app._chat_input.value == "draft"
+        app._chat_input.focus_input()
+        await pilot.press("end", "space", "e", "d", "i", "t")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app._chat_input.value == "draft edit"
+        assert not app._pending_messages
+        process.assert_not_awaited()
+
+        if outcome == "cancel":
+            await pilot.press("escape")
+        else:
+            release.set()
+        async with asyncio.timeout(5):
+            while app._modal_command_running():
+                await pilot.pause()
+        assert app._chat_input.value == "draft edit"
+        assert app._lc_thread_id == ("child" if outcome == "success" else "source")
+        assert not app._pending_messages
+        process.assert_not_awaited()
+        await pilot.press("enter")
+        await pilot.pause()
+        process.assert_awaited_once_with("draft edit", "normal")
 
 
 @pytest.mark.parametrize("other_draft", ["", "unrelated draft"])

@@ -2325,6 +2325,8 @@ class ChatInput(Vertical):
         self._completion_view: _CompletionViewAdapter | None = None
         self._slash_controller: SlashCommandController | None = None
         self._thread_controller: ThreadCompletionController | None = None
+        self.submission_block_reason: str | None = None
+        """Temporary submission pause that leaves draft editing available."""
 
         # Collapsed paste storage: paste_id → full content.  When a large paste
         # arrives, the full text is stored here and a compact
@@ -3163,6 +3165,10 @@ class ChatInput(Vertical):
         if not value:
             return
 
+        if self.submission_block_reason:
+            self.notify(self.submission_block_reason, timeout=3, markup=False)
+            return
+
         if self._completion_manager:
             self._completion_manager.reset()
 
@@ -3251,8 +3257,8 @@ class ChatInput(Vertical):
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
         """Handle text submission.
 
-        Always posts the Submitted event - the app layer decides whether to
-        process immediately or queue based on agent status.
+        Unless submission is paused, the app layer decides whether to process
+        immediately or queue based on agent status.
         """
         self._submit_value(event.value)
 

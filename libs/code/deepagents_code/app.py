@@ -9769,8 +9769,10 @@ class DeepAgentsApp(App):
                 thread_id, allow_send=message is not None
             )
             if choice is ColdCacheChoice.HANDOFF:
-                if draft is None and self._chat_input:
-                    draft = self._chat_input.value
+                # Return an already submitted prompt before summarizing so edits
+                # made during the handoff remain the user's current draft.
+                self._restore_handoff_draft(draft, thread_id, child_id=None)
+                draft = None
                 child_id = await self._run_cache_handoff(thread_id)
             elif choice is ColdCacheChoice.SEND and message is not None:
                 await self._process_message(message.text, message.mode)
@@ -9884,7 +9886,7 @@ class DeepAgentsApp(App):
         return choice
 
     async def _run_cache_handoff(self, thread_id: str) -> str | None:
-        """Run the handoff and report a failure to the user.
+        """Run the handoff with submission paused and report failures to the user.
 
         Returns:
             The summarized child thread ID, or `None` if handoff failed.
@@ -9892,6 +9894,13 @@ class DeepAgentsApp(App):
         Raises:
             asyncio.CancelledError: If the task is cancelled, such as on exit.
         """
+        chat_input = self._chat_input
+        previous_block = chat_input.submission_block_reason if chat_input else None
+        if chat_input:
+            chat_input.submission_block_reason = (
+                "Summarizing for a new thread. You can keep editing your draft; "
+                "wait for the handoff to finish before sending, or press Esc to cancel."
+            )
         try:
             return await self._handoff_expired_cache(thread_id)
         except asyncio.CancelledError:
@@ -9905,6 +9914,9 @@ class DeepAgentsApp(App):
                 )
             )
             return None
+        finally:
+            if chat_input:
+                chat_input.submission_block_reason = previous_block
 
     def _restore_handoff_draft(
         self, draft: str | None, thread_id: str, *, child_id: str | None
@@ -10001,7 +10013,11 @@ class DeepAgentsApp(App):
 
         from langchain_core.messages import HumanMessage
 
-        from deepagents_code.sessions import set_thread_metadata, thread_exists
+        from deepagents_code.sessions import (
+            save_thread_seed,
+            set_thread_metadata,
+            thread_exists,
+        )
 
         child_id = str(uuid4())
         config = {
@@ -10014,22 +10030,22 @@ class DeepAgentsApp(App):
         }
         await remote.aensure_thread(config)
         await remote.abind_workspace(config, cwd)
-        await remote.aupdate_state(
-            config,
-            {
-                "messages": [HumanMessage(content=text)],
-                "_model_spec": context.get("model"),
-                "_model_params": context.get("model_params", {}),
-            },
-            as_node="model",
-        )
+        values = {
+            "messages": [HumanMessage(content=text)],
+            "_model_spec": context.get("model"),
+            "_model_params": context.get("model_params", {}),
+        }
+        await remote.aupdate_state(config, values, as_node="model")
         # Seeding as model schedules after-model middleware. Mark that work
         # complete without running it so the child is immediately offloadable.
         await remote.aupdate_state(config, None, as_node="__end__")
         # The HTTP state API drops config metadata, so mirror the server's
         # registration metadata into checkpoints when storage is shared.
-        # External servers may keep the child entirely outside sessions.db.
-        if await thread_exists(child_id):
+        # With separate server storage, keep a local seed so the picker, resume
+        # policy, and explicit /threads -r lookup can still find this summary.
+        if not await thread_exists(child_id):
+            await save_thread_seed(child_id, values, agent_name=agent_name, cwd=cwd)
+        else:
             await set_thread_metadata(child_id, agent_name=agent_name, cwd=cwd)
         return child_id
 

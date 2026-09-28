@@ -334,6 +334,36 @@ class _ImagePasteRecordingApp(App[None]):
         self.submitted.append(event)
 
 
+async def test_submission_pause_preserves_pastes_and_images(tmp_path: Path) -> None:
+    """Blocked Enter must keep attachment payloads usable on a later send."""
+    from PIL import Image
+
+    image_path = tmp_path / "draft.png"
+    Image.new("RGB", (4, 4), color="yellow").save(image_path)
+    pasted_text = "p" * 900
+    app = _ImagePasteRecordingApp()
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatInput)
+        chat.handle_external_paste(str(image_path))
+        chat.handle_external_paste(pasted_text)
+        await pilot.pause()
+        draft = chat.value
+        assert "[image 1]" in draft
+        assert "[Pasted text #1]" in draft
+        chat.submission_block_reason = "Wait for the handoff to finish."
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not app.submitted
+        assert chat.value == draft
+        assert len(app.tracker.get_images()) == 1
+        chat.submission_block_reason = None
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(app.submitted) == 1
+        assert app.submitted[0].value == f"[image 1] {pasted_text}"
+        assert len(app.tracker.get_images()) == 1
+
+
 async def _pause_for_strip(pilot: Pilot[None]) -> None:
     """Wait two frames so the prefix-strip text-change event propagates."""
     await pilot.pause()

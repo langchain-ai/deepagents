@@ -16,9 +16,10 @@ from deepagents_code._paths import harden_state_dir
 from deepagents_code.goal_state_notice import is_internal_message
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
 
     import aiosqlite
+    from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
@@ -1658,6 +1659,46 @@ async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
             yield AsyncSqliteSaver(opened)
     finally:
         await _drain_aiosqlite_worker(conn)
+
+
+async def save_thread_seed(
+    thread_id: str, values: Mapping[str, object], *, agent_name: str, cwd: str
+) -> None:
+    """Index a remote handoff locally with its initial summary and resume metadata.
+
+    Only seed an absent thread; never replace shared server checkpoints. Thread
+    history still loads from the connected agent, so subsequent remote turns
+    take precedence over this discovery snapshot.
+
+    Args:
+        thread_id: Newly seeded remote thread identifier.
+        values: Initial message and model state saved on the server.
+        agent_name: Agent that owns the new thread.
+        cwd: Workspace directory used for thread discovery.
+    """
+    from langgraph.checkpoint.base import empty_checkpoint
+
+    checkpoint = empty_checkpoint()
+    config: RunnableConfig = {
+        "configurable": {"thread_id": thread_id, "checkpoint_ns": ""},
+        "metadata": {
+            "agent_name": agent_name,
+            "cwd": cwd,
+            "updated_at": checkpoint["ts"],
+        },
+    }
+    async with get_checkpointer() as checkpointer:
+        if await checkpointer.aget_tuple(config) is not None:
+            return
+        checkpoint["channel_values"] = dict(values)
+        version = checkpointer.get_next_version(None, None)
+        checkpoint["channel_versions"] = dict.fromkeys(values, version)
+        await checkpointer.aput(
+            config,
+            checkpoint,
+            {"source": "update", "step": 0, "parents": {}},
+            checkpoint["channel_versions"],
+        )
 
 
 async def set_thread_metadata(thread_id: str, *, agent_name: str, cwd: str) -> None:

@@ -16,6 +16,45 @@ from deepagents_code.app import TextualSessionState
 
 if TYPE_CHECKING:
     import aiosqlite
+    from langchain_core.runnables import RunnableConfig
+
+
+async def test_thread_seed_is_resumable_and_preserves_later_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recovery seed supports preview and continuation without replacing work."""
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+    from langchain_core.messages import HumanMessage
+
+    monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+    values = {"messages": [HumanMessage("Saved summary")]}
+    await sessions.save_thread_seed(
+        "child", values, agent_name="agent", cwd=str(tmp_path)
+    )
+    threads = await sessions.list_threads(agent_name="agent", cwd=str(tmp_path))
+    await sessions.populate_thread_checkpoint_details(threads)
+    assert len(threads) == 1
+    assert threads[0]["initial_prompt"] == "Saved summary"
+    assert threads[0]["message_count"] == 1
+
+    async with sessions.get_checkpointer() as checkpointer:
+        graph = create_agent(
+            FakeListChatModel(responses=["Continued reply"]), checkpointer=checkpointer
+        )
+        config: RunnableConfig = {"configurable": {"thread_id": "child"}}
+        state = await graph.aget_state(config)
+        assert not state.next
+        await graph.ainvoke({"messages": [HumanMessage("Continue")]}, config)
+        await sessions.save_thread_seed(
+            "child", values, agent_name="agent", cwd=str(tmp_path)
+        )
+        state = await graph.aget_state(config)
+        assert [message.text for message in state.values["messages"]] == [
+            "Saved summary",
+            "Continue",
+            "Continued reply",
+        ]
 
 
 class TestGenerateThreadId:

@@ -598,6 +598,11 @@ uses existing confirmation controls, and verifies active attachments after reloa
 Sensitive-action and access reviews are advisory: it never edits HITL/Ask controls.
 Existing customized main instructions need a reviewed update to add this trigger.
 
+Talon also installs a `safety` skill under `skills/`, preserving existing customizations.
+Ask for a safety preflight, or use it when committing, pushing, building/publishing images,
+or adding dependencies. It provides contextual guidance, not enforced tool restrictions or
+automatic approvals; optional scanning tools are not installed automatically.
+
 On startup, homes receive any missing `AGENTS.md` files for main, `internal-research`, and
 `external-research`, with defensive prompts. External research declares `web: true` in its
 frontmatter, which is what attaches `fetch_url` and Tavily-backed `web_search` at

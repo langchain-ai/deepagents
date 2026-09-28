@@ -6,6 +6,7 @@ import base64
 import concurrent.futures
 import contextlib
 import contextvars
+import hashlib
 import mimetypes
 import threading
 import uuid
@@ -52,6 +53,7 @@ from deepagents.backends.protocol import (
     ExecuteResponse,
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
+    FileUploadResponse,
     GlobResult,
     GlobTruncationReason,
     GrepMatch,
@@ -85,9 +87,11 @@ from deepagents.backends.utils import (
 )
 from deepagents.middleware._blob_offload import (
     _BLOB_PAYLOADS_KEY,
+    _BLOB_REF_KEY,
     _ahydrate_messages,
     _aoffload_human_messages,
     _aoffload_tool_result,
+    _blob_path,
     _hydrate_messages,
     _offload_human_messages,
     _offload_tool_result,
@@ -1215,6 +1219,66 @@ def _with_update(command: Command | None, updates: dict[str, Any]) -> Command | 
     return replace(command, update=update) if command is not None else Command(update=update)
 
 
+_BLOB_BLOCK_TYPES: Final = {"image": "image", "audio": "audio", "video": "video"}
+"""Content block type per MIME main type; anything else becomes a `file` block."""
+
+
+def _blob_prefix_for(backend: BackendProtocol) -> str:
+    """Return the path prefix under which `FilesystemMiddleware` stores blobs for `backend`."""
+    root = backend.artifacts_root if isinstance(backend, CompositeBackend) else "/"
+    return f"{root.rstrip('/')}/blobs"
+
+
+def _prepare_blob_upload(backend: BackendProtocol, data: bytes, mime_type: str) -> tuple[str, ContentBlock]:
+    """Return the blob path for `data` and the content block referencing it."""
+    prefix = _blob_prefix_for(backend)
+    if _routes_to_state_backend(backend, f"{prefix}/"):
+        msg = "Blob storage is unavailable when blobs route to `StateBackend`."
+        raise ValueError(msg)
+    digest = hashlib.sha256(data).hexdigest()
+    block = {"type": _BLOB_BLOCK_TYPES.get(mime_type.partition("/")[0], "file"), "mime_type": mime_type, _BLOB_REF_KEY: digest}
+    return _blob_path(prefix, digest), cast("ContentBlock", block)
+
+
+def _raise_for_upload_error(responses: list[FileUploadResponse], path: str) -> None:
+    error = responses[0].error if responses else "missing_upload_response"
+    if error is not None:
+        msg = f"Failed to upload blob to {path}: {error}"
+        raise RuntimeError(msg)
+
+
+async def aupload_blob(backend: BackendProtocol, data: bytes, *, mime_type: str) -> ContentBlock:
+    """Store binary content where `FilesystemMiddleware` offloads blobs and return a reference to it.
+
+    Put the returned block in a message instead of inline base64, so the payload
+    never enters message state. A `FilesystemMiddleware` created with
+    `offload_binary_content=True` on the same backend rehydrates it for model
+    requests.
+
+    Args:
+        backend: Backend the agent's `FilesystemMiddleware` uses.
+        data: Raw bytes to store.
+        mime_type: MIME type of `data`, such as `"image/png"`.
+
+    Returns:
+        A content block referencing the stored blob.
+
+    Raises:
+        ValueError: If blobs would be stored in a `StateBackend`, where offload
+            is disabled.
+        RuntimeError: If the upload fails.
+
+    Example:
+        ```python
+        block = await aupload_blob(backend, png_bytes, mime_type="image/png")
+        await agent.ainvoke({"messages": [HumanMessage(content=[{"type": "text", "text": "Describe this."}, block])]})
+        ```
+    """
+    path, block = _prepare_blob_upload(backend, data, mime_type)
+    _raise_for_upload_error(await backend.aupload_files([(path, data)]), path)
+    return block
+
+
 GREP_GLOB_DESCRIPTION = (
     "Glob pattern (NOT regex) limiting which files are searched (e.g. '*.py', "
     "'*.ts'). A pattern without '/' matches the file name at any depth; a pattern "
@@ -1858,10 +1922,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         _root = artifacts_root.rstrip("/")
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
-        self._blobs_prefix = f"{_root}/blobs"
+        self._blobs_prefix = _blob_prefix_for(self.backend)
         self._offload_binary_content = offload_binary_content and not _routes_to_state_backend(self.backend, f"{self._blobs_prefix}/")
         if self._offload_binary_content:
-            self.state_schema = cast("type[FilesystemState]", _FilesystemBlobPayloadState if self.state_schema is FilesystemState else _BlobPayloadState)
+            self.state_schema = cast(
+                "type[FilesystemState]", _FilesystemBlobPayloadState if self.state_schema is FilesystemState else _BlobPayloadState
+            )
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt

@@ -39,7 +39,7 @@ from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
 from deepagents.graph import create_deep_agent
-from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware, FilesystemPermission, aupload_blob
 from deepagents.middleware.rubric import RUBRIC_GRADER_MESSAGE_SOURCE, RubricMiddleware
 from deepagents.middleware.subagents import SubAgent, create_sub_agent
 from deepagents.middleware.summarization import create_summarization_tool_middleware
@@ -1707,6 +1707,24 @@ class TestBinaryContentOffload:
         checkpointed = next(m for m in agent.get_state(config).values["messages"] if m.type == "human")
         assert checkpointed.additional_kwargs.get("lc_evicted_to")
         assert checkpointed.content[1] == {"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}
+
+    async def test_uploaded_blob_reference_never_enters_state(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        block = await aupload_blob(backend, _OFFLOAD_PNG, mime_type="image/png")
+        model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="A picture.")]))
+        checkpointer = InMemorySaver()
+        agent = self._agent(backend, model, checkpointer)
+        config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
+
+        agent.invoke({"messages": [HumanMessage(content=[{"type": "text", "text": "What is this?"}, block])]}, config)
+
+        assert block == {"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}
+        assert self._sent_human_image(model, 0)["base64"] == _OFFLOAD_PNG_B64
+        assert _OFFLOAD_PNG_B64 not in repr((checkpointer.storage, checkpointer.writes, checkpointer.blobs))
+
+    async def test_upload_blob_rejects_state_backend(self) -> None:
+        with pytest.raises(ValueError, match="StateBackend"):
+            await aupload_blob(StateBackend(), _OFFLOAD_PNG, mime_type="image/png")
 
     def test_resumed_thread_with_missing_blob_sends_notice(self, tmp_path: Path) -> None:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)

@@ -48,7 +48,7 @@ Use a **plain tool** when:
 """
 
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
-from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission, aupload_blob
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import (
     GRADER_SYSTEM_PROMPT,
@@ -104,5 +104,6 @@ __all__ = [
     "SummarizationMiddleware",
     "SummarizationToolMiddleware",
     "UnsupportedContentMiddleware",
+    "aupload_blob",
     "create_summarization_tool_middleware",
 ]

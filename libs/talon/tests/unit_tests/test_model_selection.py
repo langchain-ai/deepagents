@@ -34,6 +34,20 @@ class ReplyModel(FakeMessagesListChatModel):
         return self
 
 
+class SmartAgent(BlockingAgent):
+    def __init__(self, smart_model: str | None = None) -> None:
+        super().__init__()
+        self.smart_model = smart_model
+        self.prepared: list[str | None] = []
+
+    async def select_smart_model(self, spec: str | None) -> bool:
+        if spec is not None and spec not in {"test:helper", "test:alt"}:
+            return False
+        self.prepared.append(spec)
+        self.smart_model = spec
+        return True
+
+
 class SelectableAgent(BlockingAgent):
     default_model = "test:primary"
 
@@ -67,6 +81,150 @@ async def _turn_model(host: TalonHost, agent: BlockingAgent, channel, chat: str)
     await host.receive_message(channel, _from("op", f"hello {chat}", chat))
     await _wait_for_request(agent, f"hello {chat}")
     return next(r.model for r in agent.requests if r.text == f"hello {chat}")
+
+
+async def test_smart_model_command_persists_across_chats_and_restart(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    agent, channel = SmartAgent(), _operator_channel()
+    host = TalonHost(config=config, agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(channel, _from("op", "/smart-model test:helper"))
+        assert channel.sent[-1] == ("chat", "Smart model now uses test:helper across chats.")
+        await host.receive_message(channel, _from("op", "/smart-model", "elsewhere"))
+        assert "Smart model: test:helper" in channel.sent[-1][1]
+        assert config.smart_model_state_path.stat().st_mode & 0o777 == 0o600
+        assert json.loads(config.smart_model_state_path.read_text()) == {"model": "test:helper"}
+        await host.receive_message(channel, _from("op", "/smart-model off"))
+        assert agent.smart_model is None
+        assert json.loads(config.smart_model_state_path.read_text()) == {"model": None}
+    finally:
+        await host.stop()
+
+    restarted = SmartAgent("test:alt")
+    host = TalonHost(config=config, agent=restarted, channels=[channel])
+    await host.start()
+    try:
+        assert restarted.smart_model is None
+        await host.receive_message(channel, _from("op", "/smart-model default"))
+        assert json.loads(config.smart_model_state_path.read_text()) == {}
+        assert restarted.smart_model is None
+    finally:
+        await host.stop()
+
+
+async def test_smart_model_override_survives_restart(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    agent, channel = SmartAgent(), _operator_channel()
+    host = TalonHost(config=config, agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(channel, _from("op", "/smart-model test:helper"))
+    finally:
+        await host.stop()
+    restarted = SmartAgent()
+    host = TalonHost(config=config, agent=restarted, channels=[channel])
+    await host.start()
+    try:
+        assert restarted.smart_model == "test:helper"
+        await host.receive_message(channel, _from("op", "/smart-model default"))
+        assert restarted.smart_model is None
+        assert json.loads(config.smart_model_state_path.read_text()) == {}
+    finally:
+        await host.stop()
+
+
+async def test_smart_model_default_uses_configured_model(tmp_path: Path) -> None:
+    config = _config(tmp_path, {"DEEPAGENTS_TALON_HELP_MODEL": "test:alt"})
+    agent, channel = SmartAgent("test:alt"), _operator_channel()
+    host = TalonHost(config=config, agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(channel, _from("op", "/smart-model test:helper"))
+        await host.receive_message(channel, _from("op", "/smart-model default"))
+        assert agent.smart_model == "test:alt"
+        assert json.loads(config.smart_model_state_path.read_text()) == {}
+    finally:
+        await host.stop()
+
+
+async def test_smart_model_default_uses_process_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DEEPAGENTS_TALON_HELP_MODEL", "test:alt")
+    config = _config(tmp_path)
+    agent, channel = SmartAgent("test:alt"), _operator_channel()
+    host = TalonHost(config=config, agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(channel, _from("op", "/smart-model off"))
+        await host.receive_message(channel, _from("op", "/smart-model default"))
+        assert agent.smart_model == "test:alt"
+        assert json.loads(config.smart_model_state_path.read_text()) == {}
+    finally:
+        await host.stop()
+
+
+async def test_smart_model_save_failure_restores_previous_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    agent, channel = SmartAgent("test:alt"), _operator_channel()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+
+        def fail_save(_path: Path, _state: object) -> None:
+            message = "not writable"
+            raise OSError(message)
+
+        monkeypatch.setattr("deepagents_talon.host._write_json_state", fail_save)
+        await host.receive_message(channel, _from("op", "/smart-model test:helper"))
+        assert channel.sent[-1][1] == "Could not save the smart model selection. Check Talon logs."
+        assert agent.smart_model == "test:alt"
+    finally:
+        await host.stop()
+
+
+async def test_smart_model_save_failure_reports_failed_rollback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class UnavailablePreviousAgent(SmartAgent):
+        async def select_smart_model(self, spec: str | None) -> bool:
+            if spec == "test:alt":
+                return False
+            return await super().select_smart_model(spec)
+
+    agent, channel = UnavailablePreviousAgent("test:alt"), _operator_channel()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+
+        def fail_save(_path: Path, _state: object) -> None:
+            msg = "not writable"
+            raise OSError(msg)
+
+        monkeypatch.setattr("deepagents_talon.host._write_json_state", fail_save)
+        await host.receive_message(channel, _from("op", "/smart-model test:helper"))
+        assert channel.sent[-1][1] == (
+            "Could not save or restore the smart model selection. Check Talon logs."
+        )
+        assert agent.smart_model == "test:helper"
+    finally:
+        await host.stop()
+
+
+async def test_smart_model_command_rejects_nonoperator_and_unknown_model(tmp_path: Path) -> None:
+    agent, channel = SmartAgent(), _operator_channel()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(channel, _from("stranger", "/smart-model test:helper"))
+        assert channel.sent[-1][1] == "Only an operator can change the smart model."
+        await host.receive_message(channel, _from("op", "/smart-model test:unknown"))
+        assert channel.sent[-1][1] == "Not an available model. Send /model to list them."
+        assert agent.prepared == []
+    finally:
+        await host.stop()
 
 
 async def test_switch_applies_to_new_conversations(tmp_path: Path) -> None:

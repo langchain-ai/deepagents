@@ -91,6 +91,11 @@ CHAT_COMMANDS: tuple[ChatCommand, ...] = (
         "Show this chat's model, list available models, or switch models.",
         argument="A provider to list, a provider:model to switch to, or default.",
     ),
+    ChatCommand(
+        "smart-model",
+        "Show or set the model used by ask_for_help across all chats.",
+        argument="A provider:model, off, or default to restore the configured model.",
+    ),
 )
 """Every command the host dispatches, in the order `/help` lists them."""
 
@@ -102,6 +107,7 @@ RESET_ALL_HISTORY = CHAT_COMMANDS[4].text
 CONTEXT_DOCTOR = CHAT_COMMANDS[5].text
 PAIR = CHAT_COMMANDS[6].text
 MODEL = CHAT_COMMANDS[7].text
+SMART_MODEL = CHAT_COMMANDS[8].text
 
 COMMANDS_BY_NAME: Mapping[str, ChatCommand] = MappingProxyType(
     {command.name: command for command in CHAT_COMMANDS},

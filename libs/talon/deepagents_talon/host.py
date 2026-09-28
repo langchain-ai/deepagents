@@ -59,6 +59,7 @@ from deepagents_talon.interfaces import (
     ProgressMessageHandler,
     ReactionChannelAdapter,
     SendResult,
+    SmartModelRuntime,
     ToolApprovalDecision,
     ToolApprovalRequest,
 )
@@ -99,6 +100,7 @@ _MCP_RELOAD_COMMAND = chat_commands.MCP_RELOAD
 _HELP_COMMAND = chat_commands.HELP
 _CONTEXT_DOCTOR_COMMAND = chat_commands.CONTEXT_DOCTOR
 _MODEL_COMMAND = chat_commands.MODEL
+_SMART_MODEL_COMMAND = chat_commands.SMART_MODEL
 _RESET_ALL_HISTORY_COMMAND = chat_commands.RESET_ALL_HISTORY
 _PAIR_COMMAND = chat_commands.PAIR
 _PAIR_OPERATOR_ONLY_MESSAGE = "Only an operator can manage sender pairing."
@@ -121,6 +123,17 @@ _MODEL_UNKNOWN_MESSAGE = "Not an available model. Send /model to list them."
 _MODEL_LOAD_FAILURE_MESSAGE = "Could not load that model. Check Talon logs."
 _MODEL_SAVE_FAILURE_MESSAGE = "Could not save the model selection. Check Talon logs."
 _MODEL_LIST_FAILURE_MESSAGE = "Could not list available models. Check Talon logs."
+_SMART_MODEL_UNAVAILABLE_MESSAGE = "Smart model switching is unavailable."
+_SMART_MODEL_OPERATOR_ONLY_MESSAGE = "Only an operator can change the smart model."
+_SMART_MODEL_UNKNOWN_MESSAGE = "Not an available model. Send /model to list them."
+_SMART_MODEL_LOAD_FAILURE_MESSAGE = "Could not load that model. Check Talon logs."
+_SMART_MODEL_SAVE_FAILURE_MESSAGE = "Could not save the smart model selection. Check Talon logs."
+_SMART_MODEL_ROLLBACK_FAILURE_MESSAGE = (
+    "Could not save or restore the smart model selection. Check Talon logs."
+)
+_SMART_MODEL_HELP_MESSAGE = (
+    "Send /smart-model <provider:model>, /smart-model off, or /smart-model default."
+)
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
@@ -283,6 +296,8 @@ class TalonHost:
         self._blocked: set[str] = set()
         self._conversation_resets = _load_conversation_resets(config.conversation_state_path)
         self._model_selections = _load_model_selections(config.model_state_path)
+        self._smart_model_override = _load_smart_model_override(config.smart_model_state_path)
+        self._smart_model_lock = asyncio.Lock()
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
@@ -362,6 +377,13 @@ class TalonHost:
             return
 
         self.config.ensure_home()
+        if self._smart_model_override is not None and isinstance(self.agent, SmartModelRuntime):
+            spec = self._smart_model_override.get("model")
+            try:
+                if not await self.agent.select_smart_model(spec):
+                    logger.warning("Saved smart model is unavailable; retaining runtime default")
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not restore saved smart model", exc_info=True)
         await self.agent.start()
         started: list[ChannelAdapter] = []
         scheduler: CronScheduler | None = None
@@ -550,6 +572,9 @@ class TalonHost:
         elif command == _MODEL_COMMAND:
             reply = await self._model_command(channel, message)
             await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
+        elif command == _SMART_MODEL_COMMAND:
+            reply = await self._smart_model_command(channel, message)
+            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
         else:
             return False
         return True
@@ -696,6 +721,64 @@ class TalonHost:
             return _MODEL_SAVE_FAILURE_MESSAGE
         self._model_selections = selections
         return f"All chats now use {spec or agent.default_model}."
+
+    async def _smart_model_command(self, channel: ChannelAdapter, message: ChannelMessage) -> str:
+        """Show or switch the assistant's one-off help model."""
+        if not isinstance(self.agent, SmartModelRuntime):
+            return _SMART_MODEL_UNAVAILABLE_MESSAGE
+        argument = _command_argument(message.text)
+        if not argument:
+            current = self.agent.smart_model or "off"
+            return f"Smart model: {current}. {_SMART_MODEL_HELP_MESSAGE}"
+        if not _is_operator(channel, message):
+            return _SMART_MODEL_OPERATOR_ONLY_MESSAGE
+        if argument not in {"default", "off"} and (
+            ":" not in argument or any(char.isspace() for char in argument)
+        ):
+            return _SMART_MODEL_UNKNOWN_MESSAGE
+        spec = (
+            self.config.env.get(
+                "DEEPAGENTS_TALON_HELP_MODEL",
+                os.environ.get("DEEPAGENTS_TALON_HELP_MODEL", ""),
+            ).strip()
+            or None
+            if argument == "default"
+            else None
+            if argument == "off"
+            else argument
+        )
+        return await self._switch_smart_model(
+            spec, None if argument == "default" else {"model": spec}
+        )
+
+    async def _switch_smart_model(
+        self, spec: str | None, override: dict[str, str | None] | None
+    ) -> str:
+        async with self._smart_model_lock:
+            agent = cast("SmartModelRuntime", self.agent)
+            previous = agent.smart_model
+            try:
+                if not await agent.select_smart_model(spec):
+                    return _SMART_MODEL_UNKNOWN_MESSAGE
+            except Exception:  # noqa: BLE001
+                logger.warning("Could not load smart model", exc_info=True)
+                return _SMART_MODEL_LOAD_FAILURE_MESSAGE
+            try:
+                _write_json_state(self.config.smart_model_state_path, override or {})
+            except OSError:
+                logger.warning("Could not save smart model selection", exc_info=True)
+                try:
+                    if await agent.select_smart_model(previous):
+                        return _SMART_MODEL_SAVE_FAILURE_MESSAGE
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "Could not restore smart model after save failure", exc_info=True
+                    )
+                else:
+                    logger.warning("Previous smart model is unavailable after save failure")
+                return _SMART_MODEL_ROLLBACK_FAILURE_MESSAGE
+            self._smart_model_override = override
+            return f"Smart model now uses {spec or 'off'} across chats."
 
     async def _reload_mcp_configuration(
         self,
@@ -2154,6 +2237,33 @@ def _load_conversation_resets(path: Path) -> dict[str, int]:
         msg = f"invalid conversation state in {path}"
         raise RuntimeError(msg)
     return state
+
+
+def _load_smart_model_override(path: Path) -> dict[str, str | None] | None:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        msg = f"failed to load smart model selection from {path}"
+        raise RuntimeError(msg) from exc
+    if state == {}:
+        return None
+    if (
+        not isinstance(state, dict)
+        or set(state) != {"model"}
+        or (
+            state["model"] is not None
+            and (
+                not isinstance(state["model"], str)
+                or ":" not in state["model"]
+                or any(char.isspace() for char in state["model"])
+            )
+        )
+    ):
+        msg = f"invalid smart model selection in {path}"
+        raise RuntimeError(msg)
+    return {"model": state["model"]}
 
 
 def _load_model_selections(path: Path) -> dict[str, str]:

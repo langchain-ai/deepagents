@@ -348,6 +348,7 @@ async def test_runtime_requires_approval_for_async_subagent_tools(
             "update_tool_approvals",
             "delete_conversations",
             "update_mcp_server",
+            "send_message",
         )
     }
     # The other async task tools never reach the model, so gating them could not fire.
@@ -598,6 +599,7 @@ async def test_runtime_uses_file_policy_and_ignores_obsolete_environment(
             "delete_conversations",
             "update_mcp_server",
             "start_async_task",
+            "send_message",
         )
     }
 

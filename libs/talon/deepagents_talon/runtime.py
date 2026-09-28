@@ -1451,7 +1451,6 @@ def _current_cron_origin() -> CronOrigin:
 def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:
     channel = request.metadata.get("channel")
     message_id = request.metadata.get("message_id")
-    history_chat = request.metadata.get("history_chat")
     origin_conversation_id = request.metadata.get("origin_conversation_id")
     return CronOrigin(
         conversation_id=(
@@ -1461,7 +1460,6 @@ def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:
         ),
         channel=channel if isinstance(channel, str) else None,
         message_id=message_id if isinstance(message_id, str) else None,
-        history_chat=history_chat if isinstance(history_chat, str) else None,
     )
 
 

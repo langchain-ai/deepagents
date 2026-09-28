@@ -11,7 +11,7 @@ import logging
 import os
 import tempfile
 import uuid
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
@@ -93,7 +93,6 @@ class CronOriginDict(TypedDict):
     conversation_id: str
     channel: str | None
     message_id: str | None
-    history_chat: NotRequired[str | None]
 
 
 class CronScheduleDict(TypedDict):
@@ -203,13 +202,11 @@ class CronOrigin:
         conversation_id: Channel-specific conversation identifier.
         channel: Optional channel provider name used by hosts with multiple channels.
         message_id: Optional source message id that created or edited the job.
-        history_chat: Source archive chat when it differs from the delivery address.
     """
 
     conversation_id: str
     channel: str | None = None
     message_id: str | None = None
-    history_chat: str | None = field(default=None, kw_only=True)
 
     def to_dict(self) -> CronOriginDict:
         """Serialize this origin for disk storage.
@@ -221,7 +218,6 @@ class CronOrigin:
             "conversation_id": self.conversation_id,
             "channel": self.channel,
             "message_id": self.message_id,
-            "history_chat": self.history_chat,
         }
 
     @classmethod
@@ -242,7 +238,6 @@ class CronOrigin:
             conversation_id=_str_field(record, "conversation_id"),
             channel=_optional_str_field(record, "channel"),
             message_id=_optional_str_field(record, "message_id"),
-            history_chat=_optional_str_field(record, "history_chat"),
         )
 
 

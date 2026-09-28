@@ -861,7 +861,7 @@ class TalonHost:
             metadata["history_chat"] = message.conversation_id
         if turn.recovery_degraded:
             metadata["interruption_recovery"] = "failed"
-        origin_conversation_id = _origin_conversation_id(message)
+        origin_conversation_id = message.conversation_id
         if origin_conversation_id != agent_conversation_id:
             metadata["origin_conversation_id"] = origin_conversation_id
         content = build_model_content(message.text, dict(message.metadata))
@@ -1081,7 +1081,7 @@ class TalonHost:
             return {}
         return {
             "history_channel": _channel_key(channel, job.origin.channel),
-            "history_chat": job.origin.history_chat or job.origin.conversation_id,
+            "history_chat": job.origin.conversation_id,
         }
 
     async def origin_channel(self, origin: CronOrigin) -> ChannelAdapter | None:
@@ -1118,7 +1118,7 @@ class TalonHost:
             await self._record_delivery(
                 f"{job.id}{_CRON_THREAD_SUFFIX}",
                 _channel_key(channel, job.origin.channel),
-                job.origin.history_chat or job.origin.conversation_id,
+                job.origin.conversation_id,
                 text,
             )
 
@@ -1937,13 +1937,6 @@ def _format_provider_models(provider: str, catalog: Mapping[str, Sequence[str]])
         return _MODEL_UNKNOWN_MESSAGE
     listing = "\n".join(f"{provider.lower()}:{model}" for model in models)
     return f"{listing}\n\nSend /model <provider:model> to switch."
-
-
-def _origin_conversation_id(message: ChannelMessage) -> str:
-    origin = message.metadata.get("chat_id_from")
-    if isinstance(origin, str) and origin:
-        return origin
-    return message.conversation_id
 
 
 def _outbound_media_from_refs(

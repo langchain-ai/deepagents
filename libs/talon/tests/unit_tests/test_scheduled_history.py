@@ -156,20 +156,14 @@ async def test_scheduled_history_preserves_whatsapp_archive_address(tmp_path, mo
             )
             job = store.get_job(job.id)
             assert job is not None
-            assert job.origin.history_chat == "chat@lid"
-            assert job.origin.conversation_id == "123@s.whatsapp.net"
+            assert job.origin.conversation_id == "chat@lid"
             result = await host.run_scheduled_job(job)
             assert result == "recalled"
-            assert origins[-1].history_chat == "chat@lid"
+            assert origins[-1].conversation_id == "chat@lid"
             await host.deliver_scheduled_result(channel, job, result)
             scope = {**WHATSAPP, "talon_history_chat": "chat@lid"}
             entries = await saver.archive.entries(scope, session_id=f"{job.id}:talon-cron")
             assert [entry["text"] for entry in entries] == ["recalled"]
-            assert channel.sent[-1] == ("123@s.whatsapp.net", "recalled")
+            assert channel.sent[-1] == ("chat@lid", "recalled")
         finally:
             await host.stop()
-
-
-def test_legacy_cron_origin_has_no_separate_history_address():
-    origin = CronOrigin.from_dict({"conversation_id": "chat", "channel": "whatsapp"})
-    assert origin.history_chat is None

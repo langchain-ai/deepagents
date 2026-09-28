@@ -42,28 +42,6 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
 
-## Steering a running agent
-
-Type a new instruction in the chat input, then press **Option+Return on macOS**
-or **Alt+Enter on Windows/Linux** to interrupt the current run and continue with
-your message. **Enter** queues a follow-up for after the current work. Messages
-sent during tool approval remain queued. Interruption does not undo completed
-tool actions.
-
-Use **Ctrl+J** to insert a newline. **Shift+Enter** and **Ctrl+Enter** also work
-when your terminal forwards those modifiers. Option+Return / Alt+Enter now
-submits a message instead of inserting a newline in the chat input.
-
-On macOS, Option is the Alt modifier. If Option+Return queues a message or
-inserts a newline, configure your terminal to forward Option as Alt/Meta, or
-bind Option+Return to send `\x1b\r` (Escape followed by carriage return). For
-example, Terminal.app offers **Use Option as Meta key** under
-**Settings → Profiles → Keyboard**; iTerm2 offers **Esc+** for the Option key
-under **Settings → Profiles → Keys**. A terminal shortcut that sends plain
-Return cannot be distinguished from Enter by the app. Custom Shift+Enter
-bindings that send `\x1b\r` also trigger steering; use Ctrl+J for newlines or
-change that terminal binding.
-
 ## 🔒 Security model
 
 By default, `dcode` trusts the directory you run it in. Human-in-the-loop approval gates model-requested tool calls, but project artifacts are read before any approval prompt.

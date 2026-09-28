@@ -77,8 +77,6 @@ DEFAULT_MAX_MEDIA_BYTES = 1024 * 1024 * 1024
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 35.0
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_SLACK_OPEN_ACK"
 _ENV_PREFIX = "DEEPAGENTS_TALON_SLACK"
-SLASH_COMMAND = "/talon"
-"""The one slash command Talon expects in the Slack app manifest."""
 
 _FILE_HOST = "files.slack.com"
 """The only host the bot token is ever sent to when downloading inbound files."""
@@ -88,7 +86,8 @@ _SENT_MESSAGE_LIMIT = 1024
 
 _COMMAND_UNAVAILABLE_MESSAGE = "That command is not available here."
 _COMMAND_DM_ONLY_MESSAGE = (
-    "Use /talon in a direct message with the bot. In a channel thread, mention the bot "
+    "Slash commands work only in a direct message with the bot. In a channel thread, "
+    "mention the bot "
     "followed by the command instead, for example `@Talon /new`."
 )
 _UNAUTHORIZED_MESSAGE = "This assistant does not accept commands from you."
@@ -1247,16 +1246,18 @@ def _convert_reaction(event: dict, *, bot_id: str | None) -> _SlackInboundReacti
 
 
 def _convert_command(payload: dict) -> _SlackInboundCommand | None:
-    """Convert a `/talon` slash command payload, or drop it.
+    """Convert a slash command payload, or drop it.
+
+    The command's own name is not checked. Socket Mode delivers only the slash
+    commands of the app that owns the connection, so any name the operator gives
+    it in the manifest, such as `/talon-dev`, reaches Talon the same way.
 
     Args:
         payload: The Socket Mode `slash_commands` payload.
 
     Returns:
-        The invocation, or `None` when it is not a well-formed `/talon` call.
+        The invocation, or `None` when the payload is malformed.
     """
-    if payload.get("command") != SLASH_COMMAND:
-        return None
     channel = optional_str(payload.get("channel_id"))
     sender = optional_str(payload.get("user_id"))
     response_url = optional_str(payload.get("response_url"))

@@ -9720,6 +9720,7 @@ class DeepAgentsApp(App):
             or self._startup_sequence_running
             or self._pending_goal_review_widget is not None
             or self._modal_command_running()
+            or self._is_user_typing()
             or self._connecting
             or self._restart_in_flight
             or self._reloading
@@ -9871,6 +9872,11 @@ class DeepAgentsApp(App):
                 return ColdCacheChoice.SEND if allow_send else None
             if warning is not None:
                 await self._emit_cold_cache_warning_hook(warning)
+            if not allow_send and self._is_user_typing():
+                # Estimation and hooks can yield while the user resumes typing.
+                # Release the busy slot and let the next idle timer tick retry.
+                self._cache_expiry_seen.pop(thread_id, None)
+                return None
             screen = ColdCacheWarningScreen(
                 warning, handoff=True, allow_send=allow_send
             )

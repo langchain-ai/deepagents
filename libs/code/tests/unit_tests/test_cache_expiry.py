@@ -153,6 +153,73 @@ async def test_defers_busy_and_disabled_then_rearms_new_window(
         await pilot.press("escape")
 
 
+@pytest.mark.parametrize("typing_during", ["timer", "estimate"])
+@pytest.mark.parametrize("submit", [False, True])
+async def test_expiry_defers_typing_without_consuming_submit(
+    typing_during: str, submit: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+    clock = MagicMock(return_value=100.0)
+    monkeypatch.setattr("deepagents_code.app._monotonic", clock)
+    estimating = asyncio.Event()
+    release = asyncio.Event()
+    estimates = 0
+
+    async def estimate() -> None:
+        nonlocal estimates
+        estimates += 1
+        # Pause the final estimate, after eligibility passed, to exercise
+        # typing that begins after the timer scheduled the prompt.
+        if typing_during == "estimate" and estimates == 2:
+            estimating.set()
+            await release.wait()
+
+    monkeypatch.setattr(app, "_cold_cache_estimate", estimate)
+    process = AsyncMock()
+    handoff = AsyncMock()
+    monkeypatch.setattr(app, "_process_message", process)
+    monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        if typing_during == "estimate":
+            app._check_cache_expiry()
+            await asyncio.wait_for(estimating.wait(), timeout=5)
+        assert app._chat_input is not None
+        app._chat_input.focus_input()
+        await pilot.press(*"draft")
+        if typing_during == "timer":
+            app._check_cache_expiry()
+        release.set()
+        await pilot.pause()
+        assert not isinstance(app.screen, ColdCacheWarningScreen)
+        assert app._chat_input.value == "draft"
+        assert not app._modal_command_running()
+
+        if submit:
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, ColdCacheWarningScreen)
+            handoff.assert_not_awaited()
+            process.assert_not_awaited()
+            assert app._lc_thread_id == "source"
+            # Sending requires a separate, explicit choice after submission.
+            await pilot.press("down", "enter")
+            await pilot.pause()
+            process.assert_awaited_once_with("draft", "normal")
+        else:
+            clock.return_value += 10
+            app._check_cache_expiry()
+            await pilot.pause()
+            assert isinstance(app.screen, ColdCacheWarningScreen)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app._chat_input.value == "draft"
+            process.assert_not_awaited()
+        handoff.assert_not_awaited()
+        assert app._lc_thread_id == "source"
+
+
 @pytest.mark.parametrize("failure", ["empty", "seed", "finish", "metadata"])
 async def test_handoff_failure_keeps_source_thread(
     failure: str, monkeypatch: pytest.MonkeyPatch

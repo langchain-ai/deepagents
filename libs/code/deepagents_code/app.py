@@ -19892,6 +19892,20 @@ class DeepAgentsApp(App):
                     # A grade from the interrupted turn cannot authorize the
                     # replacement's completion, even if it remains checkpointed.
                     latest_goal_grade = None
+                    self._close_active_tool_group()
+                    panel = self._get_subagent_panel()
+                    if panel is not None:
+                        panel.finalize_running()
+                    user_message = UserMessage(
+                        message,
+                        media_snapshot=media_snapshot,
+                        detect_mode=False,
+                    )
+                    # Esc must restore the replacement and its attachments,
+                    # even while mounting it or reconciling remote goal state.
+                    self._active_user_message = user_message
+                    self._active_turn_visible_output_started = False
+                    await self._mount_message(user_message)
                     if self._active_goal:
                         reset = await self._reconcile_goal_for_steered_turn()
                         if not reset.ready:
@@ -19923,18 +19937,6 @@ class DeepAgentsApp(App):
                     steering_options["multitask_strategy"] = "interrupt"
                     message_kwargs = None
                     skill_name = None
-                    self._close_active_tool_group()
-                    panel = self._get_subagent_panel()
-                    if panel is not None:
-                        panel.finalize_running()
-                    user_message = UserMessage(
-                        message,
-                        media_snapshot=media_snapshot,
-                        detect_mode=False,
-                    )
-                    await self._mount_message(user_message)
-                    self._active_user_message = user_message
-                    self._active_turn_visible_output_started = False
                     turn_stats.record_invocation(
                         runtime_state.model_name or "",
                         runtime_state.model_provider or "",

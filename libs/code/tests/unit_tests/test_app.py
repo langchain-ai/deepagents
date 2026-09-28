@@ -6601,8 +6601,11 @@ class TestRunAgentTaskMediaTracker:
 
     @pytest.mark.parametrize("key", ["escape", "ctrl+c"])
     @pytest.mark.parametrize("draft", ["", "another draft"])
+    @pytest.mark.parametrize(
+        "handoff", ["replacement", "goal_cancel", "goal_checkpoint"]
+    )
     async def test_cancel_during_steering_handoff_does_not_resubmit(
-        self, key: str, draft: str
+        self, key: str, draft: str, handoff: str
     ) -> None:
         from deepagents_code.client.remote_client import RemoteAgent
         from deepagents_code.client.steering import (
@@ -6613,30 +6616,59 @@ class TestRunAgentTaskMediaTracker:
         from deepagents_code.input import MediaTracker
         from deepagents_code.media_utils import ImageData
 
-        app = DeepAgentsApp(agent=MagicMock(spec=RemoteAgent))
-        replacement_started = asyncio.Event()
+        agent = MagicMock(spec=RemoteAgent)
+        app = DeepAgentsApp(agent=agent)
+        handoff_started = asyncio.Event()
         media = MediaTracker()
         media.add_image(ImageData("original", "png", ""))
-        request = SteeringInput("instead [image 1]", media)
+        media.add_video(VideoData("original", "mp4", ""))
+        request = SteeringInput("instead [image 1] [video 1]", media)
         media.sync_to_text(request.text)
         prompts: list[str] = []
+
+        async def wait_for_cancel() -> None:
+            if not handoff_started.is_set():
+                handoff_started.set()
+                await asyncio.Event().wait()
+
+        async def stop_original(_config: object) -> None:
+            if handoff == "goal_cancel":
+                await wait_for_cancel()
+
+        async def read_checkpoint(_thread_id: str) -> dict[str, object]:
+            if prompts and handoff == "goal_checkpoint":
+                await wait_for_cancel()
+            return app._goal_state_update()
+
+        agent.acancel_active_runs.side_effect = stop_original
 
         async def execute(
             *, user_input: str, steering: SteeringControl, **_: object
         ) -> None:
             prompts.append(user_input)
             if len(prompts) == 1:
+                app._on_user_visible_output_started()
                 steering.detached = True
                 steering.unsent = request
                 raise SteeredError(request)
-            replacement_started.set()
-            await asyncio.Event().wait()
+            await wait_for_cancel()
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            if handoff != "replacement":
+                app._lc_thread_id = "thread-1"
+                app._active_goal = "ship the fix"
+                app._goal_status = "active"
+                app._active_rubric = "tests pass"
+            original_message = UserMessage("original")
+            await app._mount_message(original_message)
+            app._active_user_message = original_message
             assert app._chat_input is not None
             app._chat_input.set_value_at_end(draft)
             with (
+                patch.object(
+                    app, "_get_thread_state_values", side_effect=read_checkpoint
+                ),
                 patch(
                     "deepagents_code.tui.textual_adapter.execute_task_textual", execute
                 ),
@@ -6646,13 +6678,15 @@ class TestRunAgentTaskMediaTracker:
             ):
                 app._set_agent_running(True)
                 app._agent_worker = app.run_worker(app._run_agent_task("original"))
-                await asyncio.wait_for(replacement_started.wait(), timeout=5)
+                await asyncio.wait_for(handoff_started.wait(), timeout=5)
                 await pilot.press(key)
                 await app.workers.wait_for_complete()
                 await pilot.pause()
 
             send.assert_not_awaited()
-            assert prompts == ["original", request.text]
+            assert prompts == (
+                ["original", request.text] if handoff == "replacement" else ["original"]
+            )
             assert not app._pending_messages
             assert not app._agent_running
             assert app._chat_input.value == (
@@ -6660,6 +6694,7 @@ class TestRunAgentTaskMediaTracker:
             )
             if key == "escape" and not draft:
                 assert app._image_tracker.get_images() == media.get_images()
+                assert app._image_tracker.get_videos() == media.get_videos()
 
     async def test_queued_steer_restores_media_without_draft_cross_contamination(
         self,

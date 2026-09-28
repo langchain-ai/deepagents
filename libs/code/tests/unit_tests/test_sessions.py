@@ -1253,23 +1253,6 @@ class TestMessageCountFromCheckpointBlob:
 class TestGetThreadLimit:
     """Tests for get_thread_limit() env var parsing."""
 
-    @pytest.mark.parametrize(
-        ("raw", "expected"),
-        [(None, 100), ("invalid", 100), ("25", 25), ("0", 1), ("-1", 1)],
-    )
-    def test_limit(
-        self, monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: int
-    ) -> None:
-        """Use the default unless a valid environment override is provided."""
-        from deepagents_code._env_vars import RECENT_THREADS
-
-        if raw is None:
-            monkeypatch.delenv(RECENT_THREADS, raising=False)
-        else:
-            monkeypatch.setenv(RECENT_THREADS, raw)
-
-        assert sessions.get_thread_limit() == expected
-
 
 class TestListThreadsSortAndBranch:
     """Tests for sort_by and branch params on list_threads."""

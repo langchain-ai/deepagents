@@ -48,6 +48,7 @@ from tests.channels.test_telegram import (
     _make_reaction_update,
     _make_update,
 )
+from tests.test_host import StubBackground
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -531,6 +532,64 @@ async def test_revoke_stops_the_run_pauses_jobs_and_blocks_the_sender(tmp_path: 
         (shared_job.id, False),
         (operator_job.id, True),
     ]
+
+
+async def _wait_for_reply(gateway: RecordingGateway, reply: tuple[str, str]) -> None:
+    # Waiting for the reply, not just the request, keeps the next message from
+    # landing while the turn is still settling.
+    for _ in range(200):
+        if reply in gateway.sent_text:
+            return
+        await asyncio.sleep(0)
+    msg = f"no reply {reply!r}"
+    raise AssertionError(msg)
+
+
+class RunningBackground(StubBackground):
+    """Background workers that are still running, so they have no results yet."""
+
+    def results(self, owner: str) -> dict[str, str]:  # noqa: ARG002  # test fake
+        return {}
+
+
+class BackgroundWorkAgent(BlockingAgent):
+    """Leaves a background worker running for any turn that asks for one."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.background = RunningBackground()
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        if request.text == "spawn":
+            self.background.pending.add(request.conversation_id)
+        return await super().invoke(request)
+
+
+async def test_revoke_stops_background_work_after_someone_else_speaks(tmp_path: Path) -> None:
+    config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
+    pairing = SenderPairing(
+        store=PairingStore(config.home / PAIRING_FILENAME),
+        provider="discord",
+        env_sender_ids=frozenset({OPERATOR}),
+    )
+    channel, gateway = _discord(tmp_path, pairing)
+    agent = BackgroundWorkAgent()
+    host = TalonHost(config=config, agent=agent, channels=[channel])
+    await host.start()
+    await gateway.deliver_message(_dm(STRANGER, "let me in"))
+    await gateway.deliver_message(_dm(OPERATOR, f"/pair approve {_issued_code(gateway)}"))
+    await gateway.deliver_message(_dm(STRANGER, "spawn", channel_id="guild", is_dm=False))
+    await _wait_for_reply(gateway, ("guild", "reply:spawn"))
+    await gateway.deliver_message(_dm(OPERATOR, "my turn", channel_id="guild", is_dm=False))
+    await _wait_for_reply(gateway, ("guild", "reply:my turn"))
+
+    await gateway.deliver_message(_dm(OPERATOR, f"/pair revoke {STRANGER}"))
+    await host.stop()
+
+    assert agent.background.pending == set()
+    assert (OPERATOR_DM, f"Revoked sender {STRANGER}. Stopped their current run.") in (
+        gateway.sent_text
+    )
 
 
 async def _approved_stranger_with_job(tmp_path: Path):

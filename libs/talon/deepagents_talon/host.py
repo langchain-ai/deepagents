@@ -290,9 +290,10 @@ class TalonHost:
         self._background_retries: dict[str, _BackgroundRetry] = {}
         self._scheduled_runs: dict[str, asyncio.Task[str]] = {}
         self._revoked_runs: set[str] = set()
-        # Who started each conversation's latest turn, so revoking a paired sender
-        # can stop their work in shared chats, not just their DM.
-        self._turn_senders: dict[str, tuple[str, str | None]] = {}
+        # Everyone who started a turn in a conversation since it was last idle.
+        # Background workers belong to a conversation, not a sender, so revoking a
+        # paired sender stops all work in every chat they have work pending in.
+        self._turn_senders: dict[str, set[tuple[str, str | None]]] = {}
         self._stopped = asyncio.Event()
         self._running = False
 
@@ -599,20 +600,20 @@ class TalonHost:
         elif stopped == 1:
             notes.append("Stopped their current run.")
         elif stopped:
-            notes.append(f"Stopped {stopped} of their runs.")
+            notes.append(f"Stopped in-flight work in {stopped} chats they used.")
         notes.extend(self._stop_sender_jobs(provider, revoked))
         return " ".join(notes)
 
     def _conversations_of(self, channel_key: str, revoked: PairedSender) -> list[str]:
-        """Return the sender's DM plus every conversation whose latest turn they started."""
+        """Return the sender's DM plus every conversation they started a turn in."""
         dm = self._agent_conversation_id(
             self._conversation_root(channel_key, revoked.conversation_id)
         )
         started = (channel_key, revoked.sender_id)
         shared = [
             conversation_id
-            for conversation_id, sender in self._turn_senders.items()
-            if sender == started and conversation_id != dm
+            for conversation_id, senders in self._turn_senders.items()
+            if started in senders and conversation_id != dm
         ]
         return [dm, *shared]
 
@@ -786,9 +787,8 @@ class TalonHost:
             name=f"talon:{conversation_id}",
         )
         self._tasks[conversation_id] = task
-        self._turn_senders[conversation_id] = (
-            _channel_key(channel, route.provider),
-            message.sender_id,
+        self._turn_senders.setdefault(conversation_id, set()).add(
+            (_channel_key(channel, route.provider), message.sender_id)
         )
         self._track_conversation_task(conversation_id, task)
 

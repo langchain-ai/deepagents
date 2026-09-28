@@ -7,6 +7,7 @@ import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+import httpx
 import pytest
 from deepagents.backends import CompositeBackend
 from langchain.agents.middleware.types import AgentMiddleware
@@ -1074,6 +1075,38 @@ async def test_cron_tools_use_current_request_origin(
     assert any(_tool_name(tool) == "create_job" for tool in captured["tools"])
 
 
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"channel": "slack", "sender_id": "U1"},
+        # A scheduled run has no sender; jobs it creates inherit its job's creator.
+        {"channel": "slack", "trigger": "cron", "cron_origin_sender_id": "U1"},
+    ],
+)
+async def test_cron_jobs_record_their_creator(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, metadata: dict[str, object]
+) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+
+    def fake_create_deep_agent(**kwargs: Any) -> CronCallingGraph:
+        tools = cast("list[object]", kwargs["tools"])
+        return CronCallingGraph(
+            cast("InvokableTool", next(tool for tool in tools if _tool_name(tool) == "create_job"))
+        )
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    runtime = DeepAgentRuntime(
+        model="test:model", cron_store=store, include_web_tools=False, skills=(), memory=()
+    )
+    await runtime.start()
+
+    await runtime.invoke(
+        AgentRequest(conversation_id="C1:1.1", text="schedule it", metadata=metadata)
+    )
+
+    assert store.list_jobs()[0].origin.sender_id == "U1"
+
+
 async def test_runtime_approves_tool_interrupt_with_channel_handler() -> None:
     graph = InterruptingGraph()
     approvals: list[ToolApprovalRequest] = []
@@ -1270,6 +1303,7 @@ def test_is_retryable_matches_known_transient_errors() -> None:
         StatusError(408),
         StatusError(429),
         StatusError(503),
+        StatusError(529, "Overloaded"),
         StatusError(400, "maximum context length exceeded"),
         RuntimeError("failed to parse model response"),
         RuntimeError("invalid tool_call payload"),
@@ -1298,6 +1332,7 @@ def test_is_retryable_matches_statusless_provider_overload_errors() -> None:
             }
         ),
         RuntimeError("The server is overloaded. Please try again later."),
+        RuntimeError("Overloaded"),
     ]
 
     for error in errors:
@@ -1305,10 +1340,36 @@ def test_is_retryable_matches_statusless_provider_overload_errors() -> None:
         assert _is_retryable(error)
 
 
+@pytest.mark.parametrize("sdk", ["anthropic", "openai"])
+def test_is_retryable_matches_provider_sdk_transport_errors(sdk: str) -> None:
+    """Provider SDKs raise their own transport errors, which are not `ConnectionError`s.
+
+    Their default message is just "Connection error.", so no text marker catches them.
+    """
+    module = pytest.importorskip(sdk)
+    request = httpx.Request("POST", "https://api.example.test")
+
+    assert _is_retryable(module.APIConnectionError(request=request))
+    assert _is_retryable(module.APITimeoutError(request=request))
+
+
+def test_is_retryable_matches_transport_errors_by_class_name() -> None:
+    """Detection must not depend on which provider packages are installed."""
+
+    class APIConnectionError(Exception):
+        pass
+
+    class APITimeoutError(APIConnectionError):
+        pass
+
+    assert _is_retryable(APITimeoutError("Connection error."))
+
+
 def test_is_retryable_rejects_unrelated_context_and_client_errors() -> None:
     errors = [
         StatusError(400, "invalid request: unknown field"),
         StatusError(404, "not found"),
+        StatusError(501, "not implemented"),
         RuntimeError("invalid context manager"),
         RuntimeError("missing context variable"),
         RuntimeError("invalid connection setting"),

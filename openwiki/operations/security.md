@@ -1,123 +1,121 @@
 ---
 type: security operations runbook
 title: Security Boundaries and Runbook
-description: Operational guidance for agent tool authority, filesystem and sandbox limits, dcode workspace and MCP credential handling, and Talon channel and runtime safeguards.
-tags: [security, operations, trust-boundaries, approvals, mcp, sandboxing, talon]
+description: Operational security guidance for running the experimental Talon runtime, including channel admission, assistant-home data, sandbox routing, MCP limits, history handling, and non-boundaries.
+tags: [security, operations, talon, trust-boundaries, channels, sandboxing, history]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-25T08:06:00.203Z
+    at: 2026-09-28T08:12:24.067Z
 sources:
-  - id: openwiki-source-074ce96a8baea27a6c43328b
-    resource: repo://libs/code/deepagents_code/client/launch/server.py
-  - id: openwiki-source-a97cce048cd7efd394ae7dca
-    resource: repo://libs/code/deepagents_code/mcp_auth.py
-  - id: openwiki-source-216ca680d81dc35eb4d3e76e
-    resource: repo://libs/code/deepagents_code/mcp_config.py
-  - id: openwiki-source-ea1089f0d7536fbc96c64866
-    resource: repo://libs/code/deepagents_code/offload_api.py
-  - id: openwiki-source-17253964e859bb0abf2094e8
-    resource: repo://libs/code/deepagents_code/workspace_diagnostics.py
-  - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
-    resource: repo://libs/code/deepagents_code/workspace.py
-  - id: openwiki-source-1d73b3e2b56b5f0d27273379
-    resource: repo://libs/code/README.md
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
+  - id: openwiki-source-6a038e6e1a11f450bcafce54
+    resource: repo://libs/talon/deepagents_talon/__main__.py
+  - id: openwiki-source-ae8b659dd414ac3fe7570666
+    resource: repo://libs/talon/deepagents_talon/archive.py
+  - id: openwiki-source-0ad7ce4799b63dc215741642
+    resource: repo://libs/talon/deepagents_talon/channels/base.py
+  - id: openwiki-source-a8e2e928218febcb386206bf
+    resource: repo://libs/talon/deepagents_talon/channels/discord.py
+  - id: openwiki-source-553e668943289ec108603518
+    resource: repo://libs/talon/deepagents_talon/channels/slack.py
   - id: openwiki-source-3d157a5857f325aceaade7f1
     resource: repo://libs/talon/deepagents_talon/channels/whatsapp.py
+  - id: openwiki-source-81698d033a5726401d48b135
+    resource: repo://libs/talon/deepagents_talon/config.py
+  - id: openwiki-source-470e982344d3fb19aa4cd0a7
+    resource: repo://libs/talon/deepagents_talon/history_backends.py
   - id: openwiki-source-31e40ff79779f51cafd03f01
     resource: repo://libs/talon/deepagents_talon/mcp_auth.py
   - id: openwiki-source-111101dcd1462ff54277b1fc
     resource: repo://libs/talon/deepagents_talon/mcp_config.py
+  - id: openwiki-source-26b7e102f81f5c7bcfdc2424
+    resource: repo://libs/talon/deepagents_talon/pairing.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-580d91c607e0a09e0659e565
+    resource: repo://libs/talon/deepagents_talon/sandbox.py
   - id: openwiki-source-267468fe937003d4716fe6c2
     resource: repo://libs/talon/deepagents_talon/tool_approvals.py
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
+  - id: openwiki-source-57a0613315e23277d358df76
+    resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-28T08:12:24.067Z" }
 ---
 
 # Security Boundaries and Runbook
 
-## Start with the execution boundary
+## Security posture and threat model
 
-Deep Agents follows a **trust the LLM** model: an agent can exercise the authority of the tools and backend exposed to it. Prompts, model choice, tool descriptions, redaction, and a request for approval are not host isolation. The deployer owns service authentication, network exposure, OS identity, persistence, credential storage, and the security of external integrations.
+**Talon is experimental alpha software, not a production or enterprise security boundary.** It lacks production-grade complete HITL policy, channel administrator controls, and multi-tenant boundaries. Channel access is therefore operator-level authority: a sender who can trigger a run can influence an agent that has the operator's model credentials, configured MCP tools, channel credentials, and—without a sandbox—local-host access. Do not deploy it as a shared tenant service or accept exposure, pairing, allowlists, or approvals as substitutes for OS, network, credential, or tenant isolation.
 
 ```mermaid
 flowchart TD
-    Input["User input or tool result"] --> Model["Model selects a tool call"]
-    Model --> Gate{"Policy or approval"}
-    Gate -->|"Deny"| Stop["Do not dispatch"]
-    Gate -->|"Allow"| Tool["Exposed tool"]
-    Tool --> Backend["Configured backend"]
-    Backend --> Host["Host process"]
-    Backend --> Sandbox["Remote sandbox"]
+    Sender["Channel sender"] --> Admission{"Exposure or pairing"}
+    Admission -->|"Rejected"| Drop["Do not dispatch"]
+    Admission -->|"Admitted"| Host["Talon host and agent runtime"]
+    Host --> Approval{"Tool approval policy"}
+    Approval -->|"Rejected"| Stop["Do not dispatch tool"]
+    Approval -->|"Allowed"| Route{"Configured execution route"}
+    Route -->|"Default"| Local["Local host shell and files"]
+    Route -->|"Sandbox enabled"| Remote["Remote sandbox tools"]
+    Host --> MCP["MCP tools on host"]
+    Host --> Web["Web and channel media on host"]
+    Host --> Memory["Host skills and memory routes"]
 ```
 
-*Approval mediates dispatch; the selected backend and host policy determine where an allowed action can run.*
+*Conceptual authority path, not a proof of containment: admission and approval mediate selected actions, while the configured process, credentials, network, and execution routes determine actual authority.*
 
-For untrusted repositories, prompts, MCP responses, or channel participants, use a remote sandbox, VM/container, or dedicated low-privilege OS identity. The dcode CLI trusts its current directory and reads project artifacts before approval; do not treat a checkout as inert input. See [Sandbox Partners](../integrations/sandbox-partners.md) and [Permissions and HITL](../concepts/permissions-hitl.md).
+## Channel admission is not isolation
 
-## Filesystem policy is not containment
+All channel adapters use the same exposure model:
 
-`FilesystemPermission` is an ordered first-match policy for filesystem tools. Rules classify read and write operations as `allow`, `deny`, or `interrupt`; `interrupt` delegates the tool call to `HumanInTheLoopMiddleware`. Patterns must be absolute and cannot contain `..` or `~`.
+- `self` is the default. It admits self-originated messages where that has meaning, or configured operator IDs for providers that require them.
+- `allowlist` admits configured conversation IDs or matching mention patterns. Discord and Slack separately accept configured allowlisted user IDs for DMs.
+- `open` admits every sender, but startup requires the channel-specific `*_OPEN_ACK=allow-arbitrary-senders` acknowledgement and logs the resulting risk.
 
-This is **tool mediation**, not a shell or host confidentiality boundary. `FilesystemMiddleware` refuses to combine filesystem permissions with an execution-capable backend unless the paths are scoped to backend routes, because it has no execute-tool permission enforcement. An allowed `execute` capability can read arbitrary paths available to the process. Use filesystem permissions to reduce accidental or model-driven file-tool access; use OS permissions and a sandbox to keep secrets and the host out of reach.
+These are **admission controls**. They restrict which inbound message reaches the host; they neither constrain what an admitted prompt can cause the agent to attempt nor isolate that sender from the operator's authority. Configure provider tokens and IDs as secrets, use the smallest practical allowlist, and keep `open` exceptional.
 
-## dcode: local server and workspace integrity
+WhatsApp defaults to `self` exposure for the paired account; `allowlist` can restrict triggering chats or mentions, while `open` permits arbitrary senders only after the explicit `DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK` acknowledgement and gives them the operator's model, channel, MCP, and local-host authority.
 
-The dcode local server binds loopback and configures `LANGGRAPH_AUTH_TYPE=noop`. It is an ephemeral local IPC endpoint, not an authenticated service: any process able to reach its port is within the trust boundary. Keep it away from untrusted local peers and rely on host-process isolation in addition to the loopback bind.
+### Pairing
 
-A server thread has a durable, server-authoritative workspace binding. dcode canonicalizes an existing absolute working directory, resolves policy on the server, and records workspace identity with durable-policy and runtime fingerprints in one SQLite transaction. Later attempts to move the thread or change durable policy are refused. Compatible runtime-only changes can refresh the runtime fingerprint, but later execution must still supply matching binding context and fingerprint.
+Discord, Slack, and Telegram can optionally admit a new **DM** sender by pairing. Pairing is unavailable for `open` exposure and does not apply to WhatsApp. An unadmitted sender is rejected before dispatch; when pairing is enabled, the adapter can offer a short code. The operator must approve that code from an operator surface. The code is bound to its provider and sender, expires after one hour, and is single-use. The pairing store is held in the assistant home; it serializes updates and uses atomic replacement. If it is unreadable or invalid, pairing fails closed and only environment-configured senders remain admitted.
 
-### Redacted workspace diagnostics
+Pairing grants the same DM admission as an allowlisted user, **not** operator control of Talon administration. A paired sender nevertheless obtains access to the same agent authority, so pair only a person who may use that authority. Revoking a paired sender does not remove an environment-configured sender; remove that ID from configuration and restart. Pairing, like an allowlist, is not authentication for a multi-tenant service.
 
-A refusal can carry structured diagnostics to the HTTP route and TUI, but diagnostics deliberately report only a small allowlisted snapshot of policy fields: booleans, integers, tool/command allowlists, and short identifiers. The snapshot excludes paths, prompts, model specifications and parameters, profile overrides, environment values, and credentials; it neither stores nor hashes excluded values for reporting. Logs summarize changed field names rather than values. Treat a 409 diagnostic as an explanation of an already-enforced binding decision, not as a source of configuration data.
+## Assistant home, state, and history data
 
-### Offload is server-owned
+Talon derives a per-assistant home from `DEEPAGENTS_TALON_HOME` or `~/.deepagents`, appending a validated assistant ID. It creates the home and state subdirectories with mode `0700`, and default materialized files with mode `0600`. State-path checks require checkpoint, model, conversation, and vector-index files to resolve inside that home. This is useful local filesystem hardening, not a defense against another process with the same effective user or broader host access.
 
-`/dcode/threads/{thread_id}/offload` accepts a narrow operation request and does not let the caller choose the model that will make credentialed compaction calls. It strips client transport-routing parameters such as endpoints, proxies, injected HTTP clients, and custom headers, then removes client model, model parameters, and summarization model selection. The operation restores model identity and parameters from the server-read checkpoint, or falls back to server launch configuration for summarization.
+The default archive uses SQLite alongside the local checkpoint database; `DEEPAGENTS_TALON_HISTORY_URI` can select SQLite, MongoDB, PostgreSQL, or exactly one operator-installed history-backend entry point. The archive is namespaced by assistant ID. History URIs and backend/plugin startup errors are deliberately replaced with generic operator-facing errors because connection strings can contain credentials. Treat a remote history URI as a data egress and credential boundary: provide TLS/network controls and database authorization outside Talon.
 
-This prevents a loopback caller from redirecting server credentials or selecting another provider during offload; it does not authenticate the loopback interface. Preserve both the server-side request filtering and the local-host boundary.
+Conversation-history tools are host-scoped to the current channel and chat, rather than taking their scope from model arguments. They can list, search, and read retained transcript content; history is data and may contain hostile instructions. Retention is not automatic expiry. Plan retention, backups, database access, and deletion procedures before enabling external history or semantic search; a remote embedding adapter additionally sends archived text and queries to its provider.
 
-## MCP: trust configuration and protect OAuth state
+## Host execution and remote sandbox routing
 
-MCP configuration is an authority boundary: a stdio entry can launch a process and a remote entry can receive headers and agent data. dcode resolves `${VAR}` and `${VAR:-default}` references in MCP commands, URLs, arguments, environment mappings, and headers. Malformed braced references, or a required variable that is unset, fail resolution. Interpolation is not secret mediation: it can intentionally place a credential in a process environment or HTTP header. Use trusted configuration sources, least-privilege credentials, and per-server approval/trust policy described in [MCP](../integrations/mcp.md).
+Without `DEEPAGENTS_TALON_SANDBOX`, Talon uses an unsandboxed `LocalShellBackend` with `virtual_mode=False`. It launches shell children without inheriting the process environment and supplies only an allowlisted session environment plus a fixed safe `PATH`, scrubbing credential-like values and known loader, interpreter, and shell-startup hooks. This reduces accidental secret inheritance and environment-based hijacking, but commands can still read any filesystem location available to the Talon process.
 
-### dcode OAuth token lifecycle
+Set `DEEPAGENTS_TALON_SANDBOX` to select a `deepagents-code` remote sandbox provider. Talon creates an owned sandbox for the host lifetime and closes it at shutdown; `DEEPAGENTS_TALON_SANDBOX_ID` attaches to an existing sandbox that Talon does not delete. A configured sandbox that cannot start raises an error—Talon does not silently fall back to local execution. Test that failure behavior in the deployment environment and explicitly manage the lifetime of attached sandboxes.
 
-`FileTokenStorage` stores each MCP server's OAuth envelope under the selected profile state directory. Its server-name validation and URL hash keep the token filename inside the token-store directory. The envelope can contain bearer/refresh tokens, client registration, metadata, and an absolute expiry; tokens must never be rendered through `repr`, string interpolation, exception logging, prompts, or diagnostics.
+The sandbox is **routing for agent backend tools, not isolation for all Talon capabilities**. In sandbox mode, execution and default filesystem routes go to the remote sandbox, but host-side `skills/` and `memory/` remain explicit filesystem routes. Other assistant-state paths such as `tools.json` are not routed to the host. Talon accepts memory paths only when they resolve under the assistant `memory/` directory in sandbox mode. MCP tools, web operations, and channel-media handling still run on the host; provider credentials are read in the Talon process and are not forwarded into the sandbox. Use separate OS identities, network policy, and provider credential scoping for those host-held capabilities.
 
-Writes create a private token directory where supported, create a `0600` temporary file exclusively, atomically replace the destination, and reapply private file mode. A process-local mutation lock and a cross-process refresh lock avoid concurrent refresh-token rotation; readers see an entire old or new file because publication uses replace. A refresh-lock timeout reloads rather than attempting an unlocked refresh, avoiding reuse of a potentially rotated token. If the token file is corrupt or has an unsupported schema, the operator must remove it and log in again.
+## MCP and approval limits
 
-On startup the OAuth provider restores the persisted expiry and refreshes a token inside a 30-second safety margin before sending a stale bearer token. Missing/expired tokens in non-interactive server mode raise `MCPReauthRequiredError` instead of waiting for terminal input. Interactive login uses a single-use callback server bound to `127.0.0.1`; it validates a callback code and falls back to a pasted callback URL when browser or callback setup fails. These measures protect OAuth state handling, not secrets readable by the agent process.
+MCP configuration is privileged: stdio servers can start local processes and remote servers can receive headers and agent data. Tool approvals are dispatch mediation, not a general authorization layer. Talon's approval store validates exact-name boolean policies, uses revision compare-and-swap under a lock, and binds each invocation to an immutable snapshot so a successfully saved policy applies only on the next invocation. Talon requires a trusted operator marker and active approval snapshot before its tool can modify the persisted approval policy; a false policy value disables prompting rather than establishing authorization.
 
-## Talon: channel authority, approvals, and environment guards
-
-Talon is experimental alpha software, without production-grade complete HITL, channel administrator controls, sandbox execution isolation, or multi-tenant boundaries. Treat anyone who can trigger the agent as potentially exercising the operator's model, MCP, channel, and local-host authority.
-
-WhatsApp defaults to `self` exposure for the paired account. `allowlist` restricts eligible chats or mentions. `open` accepts arbitrary senders only after `DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK`; use it only where granting that effective operator authority is intentional.
-
-### Approval state is per invocation
-
-Talon starts with a validated immutable `ApprovalSnapshot`. Only exact tool names with a `true` policy value produce approve/reject interrupts; `false` disables prompting and is not authorization. The approval store uses locked revision compare-and-swap updates, and a successful update applies to the next invocation because the running graph keeps its existing snapshot. The `update_tool_approvals` tool additionally requires both an active snapshot and a trusted operator marker; cron and background delivery cannot supply that operator marker.
-
-The runtime serializes graph replacement under a tool lock, rebuilds the graph when it observes a changed approval snapshot, and binds the selected graph and snapshot into context for the invocation. It bounds approval-resume rounds and fails if the agent returns too many interrupt cycles. Thus policy changes can be activated safely between turns, but do not revoke capabilities from a running invocation or task.
-
-### Default shell environment and secret limits
-
-Talon's default backend is `LocalShellBackend` in a `CompositeBackend`, with `virtual_mode=False`; even a configured workspace does not itself contain absolute-path shell access. The runtime does set `inherit_env=False` and passes child processes a fixed safe `PATH`, an allowlist of ordinary locale/session variables, and no variables that look like credentials, OAuth tokens, provider tracing settings, or known dynamic-loader/interpreter/shell startup hooks. This reduces accidental inheritance of host secrets and environment injection into shell tools, but it does not sandbox the commands or prevent them reading files the Talon process can read.
-
-Talon's MCP configuration redaction, locking, revision checks, and placement warnings similarly mediate its configuration tools rather than create secrecy. A default shell can bypass those tools and read an absolute config or token path. Talon OAuth storage uses cleartext bearer and refresh tokens with owner-only file hardening and atomic writes, but that filesystem hardening cannot protect them from the shell backend. Prefer `${ENV_VAR}` references to literals, keep secrets in a keyring or location inaccessible to the agent process, and use a sandboxed backend or separate OS identity when that is not possible.
+Do not mistake configuration protections for confidentiality. Talon explicitly classifies MCP configuration redaction and placement warnings as non-confidentiality controls because its default local shell can access readable absolute paths outside the mediated configuration tools. Talon stores MCP OAuth credentials as cleartext tokens with owner-only file-system hardening and atomic writes, while warning that this hardening does not protect them from the default shell backend. Keep the assistant home and MCP configuration outside an untrusted workspace, use credentials with narrow scope, and arrange OS/sandbox separation so the agent process cannot read secrets it must not disclose.
 
 ## Operational runbook
 
-1. **Classify the input and principal.** Treat repositories, fetched content, MCP output, and channel messages as untrusted influence. Restrict exposed tools before relying on approval.
-2. **Choose real containment.** For untrusted work, use a remote sandbox or dedicated OS identity. Do not claim that `FilesystemPermission`, a workspace root, redaction, or HITL contains a shell.
-3. **Protect dcode local IPC.** Run the loopback server only on a trusted host; do not expose its port or treat `noop` authentication as access control.
-4. **Investigate workspace conflict safely.** Restore the bound workspace/policy context. Use the allowlisted diagnostic fields to identify drift; do not add paths, model configuration, prompts, or credentials to errors to improve debugging.
-5. **Operate MCP as privileged integration.** Review commands, URLs, headers, and environment interpolation before trust. Keep token files private, do not log token-bearing objects, and repair corrupt OAuth state by removing the file and re-authenticating.
-6. **Harden Talon exposure.** Prefer WhatsApp `self` or a restrictive allowlist. Treat `open` as a deliberate delegation of local-agent authority.
-7. **Change Talon approvals deliberately.** Obtain the persisted revision, update exact tool-name booleans as a trusted operator, then begin a new invocation. Cancel/restart active work when prompt policy changes need immediate effect.
-8. **Audit the process boundary.** Keep secrets out of paths readable by Talon's agent process; environment scrubbing is defense in depth, not a replacement for sandboxing or OS access control.
+1. **Decide whether Talon is appropriate.** Do not use it to provide production-grade security or tenant separation. Identify every principal able to send a message, react to an approval, access the host, access history, or modify configuration.
+2. **Use restrictive admission.** Start with `self`; use explicit operator IDs and narrow allowlists. Do not enable `open` merely because the acknowledgement permits it. Review platform bot permissions independently of Talon's exposure mode.
+3. **Pair deliberately.** Enable pairing only for Discord, Slack, or Telegram DM admission. Approve codes only after out-of-band identity verification; revoke paired IDs when access ends, and remove environment-configured IDs separately.
+4. **Protect the assistant home.** Place it outside the workspace, keep it on a filesystem with appropriate ownership and backups, and protect `tools.json`, pairing state, checkpoints, archives, manifests, skills, memory, artifacts, and MCP OAuth state as sensitive local data.
+5. **Choose a real execution boundary.** For untrusted repositories or prompts, enable a remote sandbox and verify it starts. Still isolate the Talon host process: sandbox mode does not cover MCP, web/media work, skills, memory, or host-held credentials.
+6. **Treat MCP as code and data egress.** Review server commands, URLs, headers, OAuth scopes, and who can modify configuration. Keep secrets out of readable host paths; redaction and owner-only modes do not protect against a same-UID host shell.
+7. **Manage history as retained sensitive data.** Select and secure the storage backend, database identity, network path, retention period, backups, and deletion process. Assume content can include prompt injection and that remote embedding sends data to its configured provider.
+8. **Use approvals as a second control.** Maintain exact tool policies and revisions, make sensitive changes as a trusted operator, and start a new invocation for saved policy changes to apply. Do not rely on a prompt as an authorization grant or on an approval policy as containment.
+
+## Focused verification
+
+When changing this area, exercise at least these behavior classes: invalid/open exposure configuration; a rejected channel message being dropped before dispatch; pairing disabled, code expiry, approval, and fail-closed store behavior; assistant-home path traversal and permissions; sandbox startup failure without host fallback; sandbox routing of `execute`, `memory/`, and `tools.json`; and history-backend URI/plugin failure paths that do not expose connection credentials. The sandbox unit tests specifically demonstrate that `memory/` remains host-routed, `tools.json` is sent to the sandbox route rather than written on the host, and a sandbox-start failure prevents opening a session.

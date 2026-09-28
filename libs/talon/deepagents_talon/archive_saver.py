@@ -172,9 +172,11 @@ class ConversationSaver(BaseCheckpointSaver[V]):
             parent_id = str(config["configurable"].get("checkpoint_id", ""))
             acknowledged = await self.archive.checkpoint_acknowledged(session, parent_id)
             changed = "messages" in new_versions or "messages" not in checkpoint["channel_versions"]
+            # Keep ownership for erasure without archiving a scheduled run's transcript.
+            read_only = config.get("metadata", {}).get("talon_history_read_only") is True
             messages = (
                 await self._messages(config, checkpoint, acknowledged=acknowledged)
-                if changed or not acknowledged
+                if not read_only and (changed or not acknowledged)
                 else []
             )
         result = await self.checkpointer.aput(config, checkpoint, metadata, new_versions)

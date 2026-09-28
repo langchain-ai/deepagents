@@ -577,6 +577,7 @@ async def _make_graphs_in_environment(
             environ=workspace_env,
             credentials_snapshot=workspace_credentials,
             model_result=result,
+            profile_overrides=config.profile_overrides,
         )
         from deepagents_code.offload_middleware import offload_operation_from
 

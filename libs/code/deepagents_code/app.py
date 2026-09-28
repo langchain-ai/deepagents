@@ -30708,11 +30708,15 @@ class DeepAgentsApp(App):
 
         if self._session_state.thread_id == thread_id:
             prev_cwd = Path(self._cwd)
-            cwd_choice = await self._offer_thread_cwd_switch(
-                thread_id,
-                restart_server=True,
-                abort="thread_switch",
-            )
+            try:
+                await self._set_spinner("Loading thread")
+                cwd_choice = await self._offer_thread_cwd_switch(
+                    thread_id,
+                    restart_server=True,
+                    abort="thread_switch",
+                )
+            finally:
+                await self._set_spinner(None)
             if cwd_choice == "abort":
                 return
             if await asyncio.to_thread(self._cwd_paths_equal, self._cwd, prev_cwd):
@@ -30748,6 +30752,8 @@ class DeepAgentsApp(App):
 
         self._thread_switching = True
         try:
+            self._update_status(f"Loading thread: {thread_id}")
+            await self._set_spinner("Loading thread")
             blocked = await self._thread_resume_block(thread_id)
             if blocked:
                 await self._mount_message(AppMessage(blocked))
@@ -30778,8 +30784,6 @@ class DeepAgentsApp(App):
             prefetched_payload: _ThreadHistoryPayload | None = None
             outgoing_ended = False
             try:
-                self._update_status(f"Loading thread: {thread_id}")
-                await self._set_spinner("Loading thread")
                 prefetched_payload = await self._fetch_thread_history_data(thread_id)
                 from deepagents_code.hooks.models.domain import (
                     SessionEndCause,
@@ -30932,12 +30936,12 @@ class DeepAgentsApp(App):
                 error_message += " Use /threads to try again."
                 await self._mount_message(AppMessage(error_message))
             finally:
-                await self._set_spinner(None)
-                self._update_status("")
                 if self._chat_input:
                     self._chat_input.set_cursor_active(active=not self._agent_running)
         finally:
             self._thread_switching = False
+            await self._set_spinner(None)
+            self._update_status("")
 
     async def _mount_resume_adoption_failure(
         self, desired: str, reason: str, *, hint: str = ""

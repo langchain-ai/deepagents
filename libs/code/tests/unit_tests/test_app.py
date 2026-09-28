@@ -6457,6 +6457,68 @@ class TestCacheTiming:
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
 
+    @pytest.mark.parametrize("key", ["escape", "ctrl+c"])
+    @pytest.mark.parametrize("draft", ["", "another draft"])
+    async def test_cancel_during_steering_handoff_does_not_resubmit(
+        self, key: str, draft: str
+    ) -> None:
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.client.steering import (
+            SteeredError,
+            SteeringControl,
+            SteeringInput,
+        )
+        from deepagents_code.input import MediaTracker
+        from deepagents_code.media_utils import ImageData
+
+        app = DeepAgentsApp(agent=MagicMock(spec=RemoteAgent))
+        replacement_started = asyncio.Event()
+        media = MediaTracker()
+        media.add_image(ImageData("original", "png", ""))
+        request = SteeringInput("instead [image 1]", media)
+        media.sync_to_text(request.text)
+        prompts: list[str] = []
+
+        async def execute(
+            *, user_input: str, steering: SteeringControl, **_: object
+        ) -> None:
+            prompts.append(user_input)
+            if len(prompts) == 1:
+                steering.detached = True
+                steering.unsent = request
+                raise SteeredError(request)
+            replacement_started.set()
+            await asyncio.Event().wait()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            app._chat_input.set_value_at_end(draft)
+            with (
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual", execute
+                ),
+                patch.object(
+                    app, "_handle_user_message", new_callable=AsyncMock
+                ) as send,
+            ):
+                app._set_agent_running(True)
+                app._agent_worker = app.run_worker(app._run_agent_task("original"))
+                await asyncio.wait_for(replacement_started.wait(), timeout=5)
+                await pilot.press(key)
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+
+            send.assert_not_awaited()
+            assert prompts == ["original", request.text]
+            assert not app._pending_messages
+            assert not app._agent_running
+            assert app._chat_input.value == (
+                request.text if key == "escape" and not draft else draft
+            )
+            if key == "escape" and not draft:
+                assert app._image_tracker.get_images() == media.get_images()
+
     async def test_steer_replacement_uses_captured_media(self) -> None:
         from deepagents_code.client.remote_client import RemoteAgent
         from deepagents_code.client.steering import SteeredError, SteeringControl

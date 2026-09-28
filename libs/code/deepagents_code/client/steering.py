@@ -32,10 +32,11 @@ class SteeringControl:
     accepting: bool = True
     messages: list[dict[str, Any]] = field(default_factory=list)
     unsent: SteeringInput | None = None
+    cancelled: bool = field(default=False, init=False)
 
     def submit(self, text: str, media: MediaTracker | None = None) -> bool:
         """Return whether one steer was accepted without blocking the UI."""
-        if not self.accepting or self.pending.full():
+        if self.cancelled or not self.accepting or self.pending.full():
             return False
         self.pending.put_nowait(
             SteeringInput(text, media.snapshot() if media is not None else None)

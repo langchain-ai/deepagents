@@ -19238,7 +19238,7 @@ class DeepAgentsApp(App):
         widget = None
         if control is not None:
             control.accepting = False
-            if not control.pending.empty():
+            if not control.cancelled and not control.pending.empty():
                 request = control.pending.get_nowait()
                 self._pending_messages.append(
                     QueuedMessage(
@@ -20007,7 +20007,10 @@ class DeepAgentsApp(App):
                             )
                         except Exception:
                             logger.warning("Could not stop detached run", exc_info=True)
-                if control.unsent is not None:
+                # Explicit cancellation owns prompt restoration (Esc only).
+                # Failure recovery must not resubmit a cancelled replacement,
+                # including one already restored to the chat input.
+                if control.unsent is not None and not control.cancelled:
                     request = control.unsent
                     if (
                         self._chat_input
@@ -20027,7 +20030,7 @@ class DeepAgentsApp(App):
                             "Steering was not sent; message queued with attachments."
                         )
                     await self._mount_message(AppMessage(notice))
-                if not control.pending.empty():
+                if not control.cancelled and not control.pending.empty():
                     pending_steer = control.pending.get_nowait()
                     await self._submit_input(
                         pending_steer.text, "normal", media_snapshot=pending_steer.media
@@ -20169,7 +20172,11 @@ class DeepAgentsApp(App):
                 failure or cancellation.
         """
         control = self._steering_control
-        if control is not None and not control.pending.empty():
+        if (
+            control is not None
+            and not control.cancelled
+            and not control.pending.empty()
+        ):
             pending_steer = control.pending.get_nowait()
             await self._submit_input(
                 pending_steer.text, "normal", media_snapshot=pending_steer.media
@@ -22399,6 +22406,9 @@ class DeepAgentsApp(App):
             self._warn_dropped_mcp_reconnect()
         self._discard_queue()
         if worker is not None:
+            if worker is self._agent_worker and self._steering_control is not None:
+                self._steering_control.cancelled = True
+                self._steering_control.accepting = False
             worker.cancel()
             self._recover_unstarted_agent_worker(worker)
 

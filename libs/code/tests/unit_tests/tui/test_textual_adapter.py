@@ -1676,6 +1676,73 @@ class _FailingApprovalStoreAgent(_SequencedAgent):
 class TestExecuteTaskTextualStreamCompletion:
     """Report only clean stream endings to the app."""
 
+    @pytest.mark.parametrize("ending", ["complete", "cancel", "reject"])
+    async def test_elapsed_time_accumulates_across_steering_handoffs(
+        self, ending: str
+    ) -> None:
+        from deepagents_code.client.steering import SteeredError, SteeringControl
+
+        control = SteeringControl()
+        elapsed = 0.0
+        durations = iter([2.0, 3.0, 5.0])
+        attempts = 0
+
+        class Agent(_FakeAgent):
+            async def astream(
+                self, *_: object, **__: object
+            ) -> AsyncIterator[tuple[object, ...]]:
+                nonlocal elapsed, attempts
+                attempts += 1
+                elapsed += next(durations)
+                control.registered.set()
+                if attempts < 3:
+                    assert control.submit(f"steer {attempts}")
+                    await asyncio.Event().wait()
+                if ending == "cancel":
+                    raise asyncio.CancelledError
+                if ending == "reject":
+                    yield _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [{"name": "execute", "args": {}}],
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve", "reject"],
+                                }
+                            ],
+                        }
+                    )
+
+        rejection: asyncio.Future[object] = asyncio.Future()
+        rejection.set_result({"type": "reject"})
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=AsyncMock(return_value=rejection),
+        )
+        stats = SessionStats()
+        agent = Agent([])
+        with patch(
+            "deepagents_code.tui.textual_adapter.time",
+            SimpleNamespace(monotonic=lambda: elapsed),
+        ):
+            for attempt, expected in enumerate([2.0, 5.0, 10.0]):
+                invocation = execute_task_textual(
+                    user_input=f"prompt {attempt}",
+                    agent=agent,
+                    assistant_id="assistant",
+                    session_state=_session_state(auto_approve=False),
+                    adapter=adapter,
+                    steering=control,
+                    turn_stats=stats,
+                )
+                if attempt < 2:
+                    with pytest.raises(SteeredError):
+                        await invocation
+                else:
+                    await invocation
+                assert stats.wall_time_seconds == expected
+
     async def test_steer_closes_stream_without_cancellation_state_writes(self) -> None:
         from deepagents_code.client.steering import SteeredError, SteeringControl
 

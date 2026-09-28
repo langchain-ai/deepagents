@@ -4029,7 +4029,7 @@ async def execute_task_textual(
                             "instead."
                         )
                     await adapter._mount_message(AppMessage(message))
-                    turn_stats.wall_time_seconds = time.monotonic() - start_time
+                    turn_stats.wall_time_seconds += time.monotonic() - start_time
                     # Model call already completed (HITL interrupt fires after
                     # the model node); `ResumeStateMiddleware.after_model`
                     # persisted the count, so only refresh UI here.
@@ -4129,6 +4129,8 @@ async def execute_task_textual(
                 break
 
     except SteeredError:
+        # Replacement attempts share these stats with the interrupted run.
+        turn_stats.wall_time_seconds += time.monotonic() - start_time
         adapter.finalize_pending_tools_with_error("Interrupted by steering")
         await adapter._mount_message(AppMessage("Interrupted by steering"))
         raise
@@ -4285,7 +4287,7 @@ async def execute_task_textual(
 
     # Update token count and return stats. Persistence is handled inside the
     # graph by `ResumeStateMiddleware.after_model`, so this only refreshes UI.
-    turn_stats.wall_time_seconds = time.monotonic() - start_time
+    turn_stats.wall_time_seconds += time.monotonic() - start_time
     _report_tokens(
         adapter,
         captured_input_tokens,
@@ -4533,7 +4535,7 @@ async def _handle_interrupt_cleanup(
     # including tool-only turns after assistant text was already flushed.
     approximate = interrupted_msg is not None
 
-    turn_stats.wall_time_seconds = time.monotonic() - start_time
+    turn_stats.wall_time_seconds += time.monotonic() - start_time
     _report_tokens(
         adapter,
         captured_input_tokens,

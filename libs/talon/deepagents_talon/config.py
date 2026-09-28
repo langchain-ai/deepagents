@@ -241,7 +241,7 @@ class TalonConfig:
 
     @property
     def model_state_path(self) -> Path:
-        """JSON file holding each conversation's `/model` selection."""
+        """JSON file holding the assistant-wide `/model` selection."""
         return self._state_path("models.json", "model selection state")
 
     def _state_path(self, name: str, description: str) -> Path:

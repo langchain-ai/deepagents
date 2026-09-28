@@ -69,16 +69,18 @@ async def _turn_model(host: TalonHost, agent: BlockingAgent, channel, chat: str)
     return next(r.model for r in agent.requests if r.text == f"hello {chat}")
 
 
-async def test_switch_applies_to_the_next_turn_of_that_chat_only(tmp_path: Path) -> None:
+async def test_switch_applies_to_new_conversations(tmp_path: Path) -> None:
     agent, channel = SelectableAgent(), _operator_channel()
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
     await host.start()
     try:
         await host.receive_message(channel, _from("op", "/model other:two"))
 
-        assert channel.sent[-1] == ("chat", "This chat now uses other:two.")
+        assert channel.sent[-1] == ("chat", "All chats now use other:two.")
         assert await _turn_model(host, agent, channel, "chat") == "other:two"
-        assert await _turn_model(host, agent, channel, "elsewhere") is None
+        assert await _turn_model(host, agent, channel, "elsewhere") == "other:two"
+        await host.receive_message(channel, _from("op", "/model other:one", "elsewhere"))
+        assert await _turn_model(host, agent, channel, "third-thread") == "other:one"
     finally:
         await host.stop()
 
@@ -129,7 +131,7 @@ async def test_selection_survives_new_and_restart(tmp_path: Path) -> None:
     agent = restarted.agent
     await restarted.start()
     try:
-        assert await _turn_model(restarted, agent, channel, "chat") == "other:one"
+        assert await _turn_model(restarted, agent, channel, "new-thread") == "other:one"
     finally:
         await restarted.stop()
 
@@ -143,9 +145,9 @@ async def test_default_clears_the_selection(tmp_path: Path) -> None:
         await host.receive_message(channel, _from("op", "/model other:one"))
         await host.receive_message(channel, _from("op", "/model default"))
 
-        assert channel.sent[-1] == ("chat", "This chat now uses test:primary.")
+        assert channel.sent[-1] == ("chat", "All chats now use test:primary.")
         assert json.loads(config.model_state_path.read_text()) == {}
-        assert await _turn_model(host, agent, channel, "chat") is None
+        assert await _turn_model(host, agent, channel, "new-thread") is None
     finally:
         await host.stop()
 
@@ -162,7 +164,7 @@ async def test_listing_shows_current_model_and_providers_to_anyone(tmp_path: Pat
     finally:
         await host.stop()
 
-    assert overview.startswith("This chat uses test:primary (default).")
+    assert overview.startswith("All chats use test:primary (default).")
     assert "other — 2 models" in overview
     assert "test — 2 models" in overview
     assert listing.splitlines()[:2] == ["other:one", "other:two"]
@@ -410,7 +412,7 @@ async def test_switch_during_a_started_turn_waits_for_the_next_turn(tmp_path: Pa
     finally:
         await host.stop()
 
-    assert channel.sent[0] == ("chat", "This chat now uses other:two.")
+    assert channel.sent[0] == ("chat", "All chats now use other:two.")
     assert agent.requests[0].model is None
 
 
@@ -426,7 +428,7 @@ async def test_listing_flags_a_selection_that_is_no_longer_available(tmp_path: P
         await host.stop()
 
     assert channel.sent[-1][1].startswith(
-        "This chat uses test:primary (default). Its selected model other:two is unavailable."
+        "All chats use test:primary (default). Its selected model other:two is unavailable."
     )
 
 

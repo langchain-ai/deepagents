@@ -520,6 +520,7 @@ jobs:
         run: echo "HARBOR_LANGSMITH_DATASET_NAME=drbench-app" >> "$GITHUB_ENV"
 
       - name: "✂️ Prune agent provider deps to selected model"
+        if: ${{ matrix.agent_impl != 'codex' && matrix.agent_impl != 'claude-code' && inputs.agent_impl != 'codex' && inputs.agent_impl != 'claude-code' }}
         # The agent loads its model via init_chat_model, which lazily imports
         # only the provider matching HARBOR_MODEL. langgraph.json ships every
         # provider (for local `langgraph dev`); a single job needs just one, so
@@ -875,13 +876,29 @@ jobs:
           fi
 
           env_flag="--env $HARBOR_SANDBOX_ENV"
-          # agent_impl IS the graph key in langgraph.json (the single registry).
-          # Validate membership before it reaches `harbor run --agent-kwarg
-          # graph=...`. Callers already validate, so this is defense-in-depth;
-          # AGENT_IMPL is passed via env, never interpolated into the validator.
-          AGENT_IMPL="$HARBOR_AGENT_IMPL" python3 \
-            "$GITHUB_WORKSPACE/.github/scripts/evals/validate_agent_graph.py" \
-            "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
+          agent_args=()
+          case "$HARBOR_AGENT_IMPL" in
+            codex|claude-code)
+              if [ "$HARBOR_CATEGORY" != autonomous ] || [ "$HARBOR_BRANCH" != current ]; then
+                echo "::error::$HARBOR_AGENT_IMPL only supports autonomous tasks on the current ref"; exit 1
+              fi
+              expected_provider=openai
+              [ "$HARBOR_AGENT_IMPL" = claude-code ] && expected_provider=anthropic
+              if [ "${HARBOR_MODEL%%:*}" != "$expected_provider" ]; then
+                echo "::error::$HARBOR_AGENT_IMPL requires a $expected_provider model"; exit 1
+              fi
+              agent_args=(--agent "$HARBOR_AGENT_IMPL")
+              ;;
+            *)
+              AGENT_IMPL="$HARBOR_AGENT_IMPL" python3 \
+                "$GITHUB_WORKSPACE/.github/scripts/evals/validate_agent_graph.py" \
+                "$GITHUB_WORKSPACE/libs/evals/deepagents_harbor/langgraph_project/langgraph.json"
+              agent_args=(--agent langgraph
+                --agent-kwarg project_path=deepagents_harbor/langgraph_project
+                --agent-kwarg config=langgraph.json
+                --agent-kwarg "graph=$HARBOR_AGENT_IMPL")
+              ;;
+          esac
           HARBOR_AGENT_GRAPH="$HARBOR_AGENT_IMPL"
           # Precedence: explicit override > tau3-subset name hook > the value
           # resolved above (local-path-aware `local/...` or the registry ref).
@@ -959,12 +976,13 @@ jobs:
           echo "Agent implementation: $HARBOR_AGENT_GRAPH"
           echo ""
 
+          agent_model="$HARBOR_MODEL"
+          if [ "$HARBOR_AGENT_IMPL" = codex ] || [ "$HARBOR_AGENT_IMPL" = claude-code ]; then
+            agent_model="${HARBOR_MODEL%%:*}/${HARBOR_MODEL#*:}"
+          fi
           uv run harbor run \
             --yes \
-            --agent langgraph \
-            --agent-kwarg project_path=deepagents_harbor/langgraph_project \
-            --agent-kwarg config=langgraph.json \
-            --agent-kwarg graph="$HARBOR_AGENT_GRAPH" \
+            "${agent_args[@]}" \
             "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \
@@ -980,7 +998,7 @@ jobs:
             "${verifier_env_args[@]}" \
             --jobs-dir "$HARBOR_JOBS_DIR" \
             $env_flag \
-            --model "$HARBOR_MODEL" \
+            --model "$agent_model" \
             --plugin langsmith \
             --plugin-kwarg dataset_name="$HARBOR_LANGSMITH_DATASET" \
             --plugin-kwarg experiment_name="$HARBOR_LANGSMITH_EXPERIMENT"

@@ -151,6 +151,9 @@ def _validate_category_map_keys(category_map: dict[str, dict]) -> None:
 _validate_category_map_keys(CATEGORY_MAP)
 ALL_GRAPHS = _load_registry_graphs(_LANGGRAPH_JSON)
 KNOWN_AGENT_IMPLS, CODE_AGENT_IMPLS = derive_impl_sets(ALL_GRAPHS, CATEGORY_MAP)
+HARBOR_AGENT_PROVIDERS = {"codex": "openai", "claude-code": "anthropic"}
+CODE_AGENT_IMPLS |= HARBOR_AGENT_PROVIDERS.keys()
+KNOWN_AGENT_IMPLS |= HARBOR_AGENT_PROVIDERS.keys()
 
 # A CATEGORY_MAP agent_impl that is not a registered graph would route a category
 # to a nonexistent harness. Validate at import; raise (not assert) so `python -O`
@@ -588,6 +591,17 @@ def main(argv: list[str] | None = None) -> int:
         model_specs = models._resolve_models("harbor", selection)
     except ValueError as exc:
         raise SystemExit(str(exc))
+
+    native_impls = set(code_impls) & HARBOR_AGENT_PROVIDERS.keys()
+    if native_impls and (set(categories) != {"autonomous"} or branches != ["current"]):
+        raise SystemExit(
+            "Harbor codex/claude-code agents require autonomous-only categories "
+            "and no branches_to_compare"
+        )
+    for model in model_specs:
+        for impl in native_impls:
+            if provider_of(model) != HARBOR_AGENT_PROVIDERS[impl]:
+                raise SystemExit(f"{impl} requires a {HARBOR_AGENT_PROVIDERS[impl]}: model, got {model}")
 
     # Resolve the per-category task lists.
     if profile == "lite":

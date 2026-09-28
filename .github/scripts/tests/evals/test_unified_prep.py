@@ -128,9 +128,33 @@ def test_derive_impl_sets_new_graph_is_selectable():
     assert "foo" in code
     assert "tau3" not in code
 
+def test_native_harbor_impls_are_autonomous_and_provider_scoped(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("UNIFIED_PROFILE", "lite")
+    monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out"))
+    for impl, model in (("codex", "openai:gpt-5.6-sol"), ("claude-code", "anthropic:claude-sonnet-5")):
+        monkeypatch.setenv("UNIFIED_AGENT_IMPLS", impl)
+        monkeypatch.setenv("UNIFIED_MODELS", model)
+        assert up.main() == 0
+        monkeypatch.setenv("UNIFIED_MODELS", "anthropic:claude-sonnet-5" if impl == "codex" else "openai:gpt-5.6-sol")
+        with pytest.raises(SystemExit, match="requires a .* model"):
+            up.main()
+        monkeypatch.setenv("UNIFIED_MODELS", model)
+        monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,context")
+        with pytest.raises(SystemExit, match="autonomous-only"):
+            up.main()
+        monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
+        monkeypatch.setenv("UNIFIED_BRANCHES", "feature/branch")
+        with pytest.raises(SystemExit, match="no branches_to_compare"):
+            up.main()
+        monkeypatch.delenv("UNIFIED_BRANCHES")
+
+
 def test_module_impl_sets_match_registry():
-    assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "tau3"}
-    assert up.CODE_AGENT_IMPLS == {"bare", "dcode"}
+    assert up.KNOWN_AGENT_IMPLS == {"bare", "dcode", "tau3", "codex", "claude-code"}
+    assert up.CODE_AGENT_IMPLS == {"bare", "dcode", "codex", "claude-code"}
 
 def test_main_rejects_invalid_profile(tmp_path, monkeypatch):
     import pytest

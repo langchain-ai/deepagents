@@ -290,6 +290,7 @@ class TestRemoteAgentAstream:
 async def test_accounting_failure_preserves_main_stream_and_state(
     error: Exception,
 ) -> None:
+    from deepagents_code.btw_cost import combine_session_cost
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
     side = _empty_cost_breakdown()
@@ -298,7 +299,7 @@ async def test_accounting_failure_preserves_main_stream_and_state(
     nested = {"type": "session_cost", "total": 0.2}
     agent = _make_agent([((), "custom", event), (("tools:child",), "custom", nested)])
     agent._graph.client.http.get.return_value = {
-        "cost": {"total": 1.5, "breakdown": side}
+        "cost": combine_session_cost(1.0, None, side)
     }
     saved_cost = await agent.aget_session_cost(_config())
     assert saved_cost is not None

@@ -885,12 +885,13 @@ async def test_cached_cost_without_checkpoint_preserves_provisional_spend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.btw_cost import combine_session_cost
 
     remote = RemoteAgent("http://test")
     graph = MagicMock()
     remote._graph = graph
     graph.client.http.get = AsyncMock(
-        return_value={"cost": {"total": 1.5, "breakdown": None}}
+        return_value={"cost": combine_session_cost(1.5, None, None)}
     )
     app = DeepAgentsApp(agent=MagicMock(), thread_id="reconcile")
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)

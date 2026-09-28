@@ -44,14 +44,13 @@ class SessionCost(TypedDict):
     """Server-owned presentation total, separate from graph checkpoint values.
 
     Components let clients refresh side spend while preserving live graph costs.
-    They are optional for compatibility with older servers' combined totals.
     """
 
     total: float
     breakdown: CostBreakdown | None
-    graph_total: NotRequired[float]
-    graph_breakdown: NotRequired[CostBreakdown | None]
-    side_breakdown: NotRequired[CostBreakdown | None]
+    graph_total: float
+    graph_breakdown: CostBreakdown | None
+    side_breakdown: CostBreakdown | None
     cached: NotRequired[bool]
     """Client fallback with no fresh accounting or checkpoint to settle usage."""
 

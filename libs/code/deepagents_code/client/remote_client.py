@@ -544,11 +544,7 @@ class RemoteAgent:
         thread_id = _require_thread_id(config)
         previous = self._session_costs.get(thread_id)
         try:
-            if (
-                isinstance(side_breakdown, dict)
-                and previous is not None
-                and "graph_total" in previous
-            ):
+            if isinstance(side_breakdown, dict) and previous is not None:
                 cost = combine_session_cost(
                     previous["graph_total"],
                     previous.get("graph_breakdown"),
@@ -564,19 +560,15 @@ class RemoteAgent:
             if (
                 not isinstance(cost, dict)
                 or not isinstance(cost.get("total"), int | float)
-                or "breakdown" not in cost
+                or not isinstance(cost.get("graph_total"), int | float)
+                or not {"breakdown", "graph_breakdown", "side_breakdown"} <= cost.keys()
             ):
                 logger.warning(
                     "Invalid session cost response; retaining the last total"
                 )
                 return self._fallback_session_cost(thread_id, checkpoint)
             latest = self._session_costs.get(thread_id)
-            if (
-                latest is not None
-                and "graph_total" in latest
-                and "graph_total" in cost
-                and "side_breakdown" in cost
-            ):
+            if latest is not None:
                 # Graph and side subtotals advance independently. A side
                 # refresh must not hide a newer graph checkpoint, and a newer
                 # streamed graph total must survive an older accounting read.
@@ -592,11 +584,7 @@ class RemoteAgent:
                     graph["graph_total"], graph.get("graph_breakdown"), side
                 )
                 return self._session_costs[thread_id]
-            if side_only and latest is not None:
-                return latest
-            # Older servers do not expose components that can be reconciled.
-            if latest is previous:
-                self._session_costs[thread_id] = cast("SessionCost", cost)
+            self._session_costs[thread_id] = cast("SessionCost", cost)
         except NotFoundError:
             # Older servers do not expose a combined accounting view.
             return self._fallback_session_cost(thread_id, checkpoint)
@@ -840,6 +828,9 @@ class RemoteAgent:
                 cost: SessionCost = {
                     "total": data["total"],
                     "breakdown": data.get("breakdown"),
+                    "graph_total": data["total"],
+                    "graph_breakdown": data.get("breakdown"),
+                    "side_breakdown": None,
                 }
                 if "graph_total" in data:
                     from deepagents_code.btw_cost import combine_session_cost

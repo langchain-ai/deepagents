@@ -1602,7 +1602,7 @@ async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
 
 
 async def delete_thread(thread_id: str) -> bool:
-    """Delete thread checkpoints and any offloaded conversation history.
+    """Delete thread checkpoints, side-question costs, and offloaded history.
 
     Removes the thread's checkpoint/write rows, then makes a best-effort attempt
     to remove the per-thread offloaded conversation-history archive under
@@ -1613,8 +1613,11 @@ async def delete_thread(thread_id: str) -> bool:
     Returns:
         True if thread checkpoints were deleted, False if not found.
     """
+    from deepagents_code.btw_cost import delete_cost
+
     deleted = False
     async with _connect() as conn:
+        await delete_cost(conn, thread_id)
         if await _table_exists(conn, "checkpoints"):
             cursor = await conn.execute(
                 "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
@@ -1624,12 +1627,12 @@ async def delete_thread(thread_id: str) -> bool:
                 await conn.execute(
                     "DELETE FROM writes WHERE thread_id = ?", (thread_id,)
                 )
-            await conn.commit()
             if deleted:
                 _message_count_cache.pop(thread_id, None)
                 for key, rows in list(_recent_threads_cache.items()):
                     filtered = [row for row in rows if row["thread_id"] != thread_id]
                     _recent_threads_cache[key] = filtered
+        await conn.commit()
 
     from deepagents_code.offload import delete_offloaded_history
 

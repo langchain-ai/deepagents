@@ -69,6 +69,7 @@ class _TrustAction(Enum):
     ALLOW_ONCE = "allow_once"
     REMEMBER = "remember"
     DENY = "deny"
+    ALWAYS_DENY = "always_deny"
     REFRESH = "refresh"
 
 
@@ -3949,13 +3950,14 @@ def _run_trust_action_picker(
     allow_label: str = "Allow once",
     deny_label: str = "Deny",
     refresh_label: str | None = None,
+    always_deny_label: str | None = None,
     deny_first: bool = False,
 ) -> _TrustAction | _TrustPromptOutcome | None:
     """Show the inline decision picker shared by pre-TUI prompts.
 
     Subject-agnostic: callers describe the decision before calling and supply
     labels that match what each action does. Trust prompts omit `refresh_label`
-    and keep their existing three choices.
+    and keep their existing choices unless persistent denial is offered.
 
     Args:
         console: Console to print fallback notices to (stderr).
@@ -3964,6 +3966,7 @@ def _run_trust_action_picker(
         allow_label: Label for the session-scoped allow option.
         deny_label: Label for the refuse option.
         refresh_label: Label for an explicit environment refresh, when offered.
+        always_deny_label: Label for persistent denial, when offered.
         deny_first: When `True`, list the deny option first; callers whose
             "deny" reads as a safe default (e.g. aborting a launch) put it in
             the leading position. When a refresh option is offered, the picker
@@ -4025,6 +4028,8 @@ def _run_trust_action_picker(
         )
     elif deny_first:
         actions.reverse()
+    if always_deny_label is not None:
+        actions.append((_TrustAction.ALWAYS_DENY, always_deny_label))
     # Highlight the default action by identity, not position: `deny_first`
     # moves the deny option to the front, so a positional index would silently
     # default to "allow" for exactly the callers that asked for a safer
@@ -4182,6 +4187,7 @@ def _select_trust_action(
     allow_label: str = "Allow once",
     deny_label: str = "Deny",
     refresh_label: str | None = None,
+    always_deny_label: str | None = None,
     deny_first: bool = False,
     abort_on_deny: bool = False,
 ) -> _TrustAction | _TrustPromptOutcome:
@@ -4200,6 +4206,7 @@ def _select_trust_action(
         allow_label: Label for the session-scoped allow option.
         deny_label: Label for the refuse option.
         refresh_label: Label for an explicit environment refresh, when offered.
+        always_deny_label: Label for persistent denial, when offered.
         deny_first: Forwarded to the picker to list the deny option first.
         abort_on_deny: When `True`, a deny answer is reported as `CANCELLED`
             on every input path (picker, typed answer, and EOF), so prompts
@@ -4220,6 +4227,7 @@ def _select_trust_action(
         allow_label=allow_label,
         deny_label=deny_label,
         refresh_label=refresh_label,
+        always_deny_label=always_deny_label,
         deny_first=deny_first,
     )
     if selected is not None:
@@ -4261,6 +4269,9 @@ def _select_trust_action(
             )
         )
         prompt = "Choose [y/r/u/N]: "
+    if always_deny_label is not None:
+        choices += f"{separator}{always_deny_label} [d]"
+        prompt = prompt.replace("]: ", "/d]: ")
     console.print(f"[dim]{choices}[/dim]", highlight=False)
     console.print(prompt, end="", highlight=False)
     try:
@@ -4269,6 +4280,8 @@ def _select_trust_action(
         return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
         return _TrustPromptOutcome.CANCELLED if abort_on_deny else _TrustAction.DENY
+    if always_deny_label is not None and answer in {"d", "always deny"}:
+        return _TrustAction.ALWAYS_DENY
     if answer in {"y", "yes"}:
         return _TrustAction.ALLOW_ONCE
     if answer in {"r", "remember", "a", "always"}:
@@ -4281,13 +4294,17 @@ def _select_trust_action(
 
 
 def _run_project_mcp_server_checkbox_picker(
-    prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
+    prompt_servers: Sequence["ProjectServerSummary"],
+    console: "Console",
+    *,
+    deny: bool = False,
 ) -> list[str] | _TrustPromptOutcome | None:
-    """Show an inline checkbox picker for project MCP servers to remember.
+    """Select project MCP servers for persistent approval or denial.
 
     Args:
         prompt_servers: The `(name, kind, summary)` rows being asked about.
         console: Console to print fallback notices to (stderr).
+        deny: Select names to deny across all projects rather than approve.
 
     Returns:
         Selected server names. Empty means the user confirmed no selections;
@@ -4318,6 +4335,15 @@ def _run_project_mcp_server_checkbox_picker(
 
     from deepagents_code.config import get_glyphs
 
+    scope = (
+        "Denied names are blocked across all projects, even with --trust-project-mcp.\n"
+        if deny
+        else "Remembered servers are trusted only for this project while "
+        "their definitions stay unchanged.\n"
+    )
+    title = (
+        "Choose server names to always deny" if deny else "Choose servers to remember"
+    )
     names = [name for name, _kind, _summary in prompt_servers]
     selected_names: set[str] = set()
     selected_index = 0
@@ -4330,13 +4356,12 @@ def _run_project_mcp_server_checkbox_picker(
     def _help_text() -> FormattedText:
         return FormattedText(
             [
-                ("class:prompt.title", "Choose servers to remember\n"),
+                ("class:prompt.title", f"{title}\n"),
                 (
                     "class:prompt.help",
                     (
-                        "Remembered servers are trusted only for this project while "
-                        "their definitions stay unchanged.\n"
-                        f"{selected_index + 1} of {len(names)} {glyphs.separator} "
+                        scope
+                        + f"{selected_index + 1} of {len(names)} {glyphs.separator} "
                         f"{len(selected_names)} selected\n"
                         f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move "
                         f"{glyphs.separator} "
@@ -4455,13 +4480,17 @@ def _run_project_mcp_server_checkbox_picker(
 
 
 def _select_project_servers_with_numbers(
-    prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
+    prompt_servers: Sequence["ProjectServerSummary"],
+    console: "Console",
+    *,
+    deny: bool = False,
 ) -> list[str] | _TrustPromptOutcome:
-    """Ask which prompted project MCP servers to remember with a text fallback.
+    """Select project MCP servers by number for persistent approval or denial.
 
     Args:
         prompt_servers: The `(name, kind, summary)` rows being asked about.
         console: Console to print the fallback selection UI to (stderr).
+        deny: Select names to deny across all projects rather than approve.
 
     Returns:
         The chosen server names. Empty when the user makes no valid selection;
@@ -4479,7 +4508,8 @@ def _select_project_servers_with_numbers(
             highlight=False,
         )
     try:
-        raw = input("Enter numbers to remember (e.g. 1,3), 'all', or blank to abort: ")
+        action = "always deny across all projects" if deny else "remember"
+        raw = input(f"Enter numbers to {action} (e.g. 1,3), 'all', or blank to abort: ")
     except KeyboardInterrupt:
         return _TrustPromptOutcome.INTERRUPTED
     except EOFError:
@@ -4494,9 +4524,12 @@ def _select_project_servers_with_numbers(
 
 
 def _select_project_servers_to_persist(
-    prompt_servers: Sequence["ProjectServerSummary"], console: "Console"
+    prompt_servers: Sequence["ProjectServerSummary"],
+    console: "Console",
+    *,
+    deny: bool = False,
 ) -> list[str] | _TrustPromptOutcome:
-    """Ask which prompted project MCP servers to remember for this project.
+    """Choose project MCP servers for persistent approval or denial.
 
     Multiple prompted servers use an arrow-key checkbox picker. A single
     prompted server skips the picker because there is nothing to choose between.
@@ -4504,6 +4537,7 @@ def _select_project_servers_to_persist(
     Args:
         prompt_servers: The `(name, kind, summary)` rows being asked about.
         console: Console to print the fallback selection UI to (stderr).
+        deny: Select names to deny across all projects rather than approve.
 
     Returns:
         The chosen server names. Empty when the user confirms no servers or
@@ -4515,10 +4549,12 @@ def _select_project_servers_to_persist(
     if len(names) <= 1:
         return names
 
-    selected = _run_project_mcp_server_checkbox_picker(prompt_servers, console)
+    selected = _run_project_mcp_server_checkbox_picker(
+        prompt_servers, console, deny=deny
+    )
     if selected is not None:
         return selected
-    return _select_project_servers_with_numbers(prompt_servers, console)
+    return _select_project_servers_with_numbers(prompt_servers, console, deny=deny)
 
 
 def _check_mcp_project_trust(
@@ -4541,7 +4577,8 @@ def _check_mcp_project_trust(
     When the project has no servers in project-level configs, returns
     `None` (no gate needed). When `--trust-project-mcp` was passed,
     returns `True`. Otherwise it shows an inline action selector for unresolved
-    servers: allow once, remember selected servers, or deny. Remembered approvals
+    servers: allow once, remember selected servers, deny for this session, or
+    always deny selected names across all projects. Remembered approvals
     are scoped to this project and each exact server definition. The remember
     picker starts with nothing selected; Esc or Ctrl+D in either picker aborts
     the launch, and no server loads without an explicit allow action.
@@ -4674,7 +4711,11 @@ def _check_mcp_project_trust(
 
     server_count = len(prompt_servers)
     noun = "server" if server_count == 1 else "servers"
-    action = _select_trust_action(prompt_console)
+    action = _select_trust_action(
+        prompt_console,
+        deny_label="Deny for this session",
+        always_deny_label="Always deny selected names — across all projects",
+    )
     if action is _TrustPromptOutcome.INTERRUPTED:
         return _TrustPromptOutcome.INTERRUPTED
     if action is _TrustPromptOutcome.CANCELLED:
@@ -4695,7 +4736,10 @@ def _check_mcp_project_trust(
 
     from deepagents_code.model_config import add_enabled_project_mcp_servers
 
-    names = _select_project_servers_to_persist(prompt_servers, prompt_console)
+    deny = action is _TrustAction.ALWAYS_DENY
+    names = _select_project_servers_to_persist(
+        prompt_servers, prompt_console, deny=deny
+    )
     if names is _TrustPromptOutcome.INTERRUPTED:
         return _TrustPromptOutcome.INTERRUPTED
     if names is _TrustPromptOutcome.CANCELLED:
@@ -4704,6 +4748,25 @@ def _check_mcp_project_trust(
         prompt_console.print(
             f"[dim]No servers selected; denied {server_count} project MCP "
             f"{noun}.[/dim]",
+            highlight=False,
+        )
+        return False
+
+    if deny:
+        from deepagents_code.model_config import add_disabled_project_mcp_servers
+
+        saved = debug_prompt or add_disabled_project_mcp_servers(names)
+        if not saved:
+            prompt_console.print(
+                "[yellow]Denied for this session, but the choice could not be "
+                "remembered — you'll be asked again next time.[/yellow]",
+                highlight=False,
+            )
+        prompt_console.print(
+            f"[dim]Denied {server_count} project MCP {noun} for this session; "
+            f"always denying {len(names) if saved else 0} selected names across "
+            "all projects. To undo, edit mcp.disabled_project_servers in "
+            "~/.deepagents/config.toml.[/dim]",
             highlight=False,
         )
         return False

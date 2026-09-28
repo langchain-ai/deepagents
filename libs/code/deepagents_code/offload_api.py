@@ -21,7 +21,9 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from deepagents_code._async import _join_task_deferring_cancellation
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code.btw_api import btw, btw_cost
 from deepagents_code.cost_tracking import prepare_operation_cost
 from deepagents_code.hooks.interrupt import build_hook_interrupt_payload
 from deepagents_code.hooks.server_middleware import (
@@ -956,23 +958,6 @@ async def _commit_deferred_archive(
         execution.result["archive_path"] = append.path
 
 
-async def _join_task_deferring_cancellation[T](
-    task: asyncio.Task[T],
-) -> asyncio.CancelledError | None:
-    """Join a settlement task while retaining the first cancellation edge.
-
-    Returns:
-        The cancellation to re-raise after settlement, or `None`.
-    """
-    cancellation: asyncio.CancelledError | None = None
-    while not task.done():
-        try:
-            await asyncio.wait((task,))
-        except asyncio.CancelledError as exc:
-            cancellation = cancellation or exc
-    return cancellation
-
-
 async def _execute_offload(
     thread_id: str,
     *,
@@ -1157,15 +1142,15 @@ async def offload(request: Request) -> JSONResponse:
     Status codes, and what each means for whether state committed:
 
     - 200 -- completed, or a resumable hook request; no state written in the
-      latter case.
+        latter case.
     - 422 -- malformed request, named by field. Nothing ran.
     - 409 -- thread conflict: active, interrupted, holding pending graph work,
-      unregistered, carrying no checkpoint to offload, or advanced past the
-      checkpoint read. Nothing committed.
+        unregistered, carrying no checkpoint to offload, or advanced past the
+        checkpoint read. Nothing committed.
     - 503 -- the server runtime could not be built. Nothing ran.
     - 500 -- either an indeterminate write (compaction happened and the commit
-      cannot be confirmed; the detail says so and is user-actionable) or an
-      unexpected server fault.
+        cannot be confirmed; the detail says so and is user-actionable) or an
+        unexpected server fault.
 
     Invariants this boundary owns: it reads and hydrates checkpoint state itself,
     it commits only the channels `OffloadStateUpdate` permits and refuses any
@@ -1253,6 +1238,8 @@ async def cancel_offload(request: Request) -> JSONResponse:
 app = Starlette(
     lifespan=_lifespan,
     routes=[
+        Route("/dcode/threads/{thread_id:str}/btw", btw, methods=["POST"]),
+        Route("/dcode/threads/{thread_id:str}/cost", btw_cost, methods=["GET"]),
         Route(
             "/dcode/threads/{thread_id:str}/workspace",
             workspace,

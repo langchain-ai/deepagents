@@ -5989,6 +5989,57 @@ def add_enabled_project_mcp_servers(
     return True
 
 
+def add_disabled_project_mcp_servers(
+    names: Iterable[str], config_path: Path | None = None
+) -> bool:
+    """Persist server-name denials across all projects in the user config.
+
+    Args:
+        names: Names to deny; blank names are ignored.
+        config_path: User config override, primarily for tests.
+
+    Returns:
+        Whether the update succeeded, including no-op updates.
+    """
+    from deepagents_code.configuration.writer import update_user_config
+
+    clean_names = {name.strip() for name in names if name.strip()}
+    if not clean_names:
+        return True
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    def mutate(data: dict[str, object]) -> bool:
+        raw_section = data.get("mcp", {})
+        if not isinstance(raw_section, dict):
+            msg = "Cannot update project MCP denials: [mcp] is not a table"
+            raise TypeError(msg)
+        section = dict(raw_section)
+        existing, malformed = _toml_str_list(
+            section.get("disabled_project_servers"),
+            key="disabled_project_servers",
+            config_path=config_path,
+        )
+        if malformed:
+            msg = "Cannot update malformed project MCP denials"
+            raise TypeError(msg)
+        merged = sorted(set(existing) | clean_names)
+        if section.get("disabled_project_servers") == merged:
+            return False
+        section["disabled_project_servers"] = merged
+        data["mcp"] = section
+        return True
+
+    try:
+        result = update_user_config(mutate, config_path=config_path)
+    except TypeError:
+        logger.exception("Could not save project MCP denials to %s", config_path)
+        return False
+    if not result.ok:
+        logger.warning("Could not save project MCP denials: %s", result.error)
+    return result.ok
+
+
 THREAD_COLUMN_DEFAULTS: dict[str, bool] = {
     "thread_id": False,
     "messages": True,

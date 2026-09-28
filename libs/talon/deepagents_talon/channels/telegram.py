@@ -46,6 +46,7 @@ from deepagents_talon.interfaces import (
     SendResult,
 )
 from deepagents_talon.observability import log_debug_event
+from deepagents_talon.pairing import SenderPairing, pairing_from_env
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -60,6 +61,7 @@ DEFAULT_POLL_INTERVAL_SECONDS = 1.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 35.0
 MAX_CAPTION_CHARS = 1024
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_TELEGRAM_OPEN_ACK"
+_ENV_PREFIX = "DEEPAGENTS_TALON_TELEGRAM"
 _OFFSET_FILENAME = "telegram_offset.json"
 _ALLOWED_UPDATES = ["message", "channel_post", "message_reaction"]
 
@@ -111,6 +113,8 @@ class TelegramChannelConfig:
             outbound local files before provider-specific limits are applied.
         allowed_user_ids: Telegram user IDs allowed to trigger private chats in
             allowlist exposure mode.
+        pairing: Optional sender pairing policy that admits approved private-chat
+            senders and issues codes to unknown ones.
     """
 
     bot_token: str = field(repr=False)
@@ -124,6 +128,7 @@ class TelegramChannelConfig:
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES
     allowed_user_ids: frozenset[str] = field(default_factory=frozenset)
+    pairing: SenderPairing | None = None
 
     @classmethod
     def from_talon_config(cls, config: TalonConfig) -> TelegramChannelConfig:
@@ -160,7 +165,7 @@ class TelegramChannelConfig:
             env,
             ChannelExposureEnv(
                 provider="Telegram",
-                env_prefix="DEEPAGENTS_TALON_TELEGRAM",
+                env_prefix=_ENV_PREFIX,
                 open_ack=OPEN_EXPOSURE_ACK_ENV,
                 require_self_operator=True,
             ),
@@ -187,6 +192,13 @@ class TelegramChannelConfig:
             max_media_bytes=max_media_bytes_from_env(env),
             allowed_user_ids=frozenset(
                 split_csv(env.get("DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS", "")),
+            ),
+            pairing=pairing_from_env(
+                env,
+                provider="telegram",
+                env_prefix=_ENV_PREFIX,
+                open_exposure=exposure.mode == ExposureMode.OPEN,
+                home=config.home,
             ),
         )
 
@@ -678,11 +690,7 @@ class TelegramChannel:
         if message is None:
             return
         message = _with_from_self(message, self._bot_id)
-        if not _allows_telegram_message(
-            self._exposure,
-            self.config.allowed_user_ids,
-            message,
-        ):
+        if not self._admits(message):
             log_debug_event(
                 logger,
                 "telegram.inbound.message.rejected",
@@ -690,6 +698,8 @@ class TelegramChannel:
                 has_media=bool(message.metadata.get("has_media")),
                 text_chars=len(message.text),
             )
+            if self.config.pairing is not None:
+                await self.config.pairing.offer(message, self.send_message)
             return
         message = await self._prepare_inbound_media(message)
         log_debug_event(
@@ -702,11 +712,18 @@ class TelegramChannel:
         await dispatch_message(self._handler, message, provider="Telegram")
         log_debug_event(logger, "telegram.inbound.message.dispatched")
 
+    def _admits(self, message: ChannelMessage) -> bool:
+        if _allows_telegram_message(self._exposure, self.config.allowed_user_ids, message):
+            return True
+        return self.config.pairing is not None and self.config.pairing.admits(message)
+
     async def _process_reaction(self, reaction: ChannelReaction) -> None:
         if not _allows_telegram_reaction(
             self._exposure,
             self.config.allowed_user_ids,
             reaction,
+        ) and not (
+            self.config.pairing is not None and self.config.pairing.admits_reaction(reaction)
         ):
             log_debug_event(
                 logger,

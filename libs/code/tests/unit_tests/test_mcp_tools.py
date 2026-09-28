@@ -3461,6 +3461,42 @@ class TestSelectiveProjectMcpTrust:
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
 
+    async def test_prompt_denial_blocks_other_projects(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_code import model_config
+        from deepagents_code.main import _check_mcp_project_trust
+
+        project = tmp_path / "project"
+        project.mkdir()
+        self._write_project_config(project, {"blocked": self._stdio()})
+        user_config = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
+        monkeypatch.chdir(project)
+        monkeypatch.setattr("builtins.input", lambda: "d")
+        monkeypatch.setattr(
+            "deepagents_code.main._trust_picker_has_terminal", lambda: False
+        )
+        assert _check_mcp_project_trust() is False
+
+        other_project = tmp_path / "other"
+        other_project.mkdir()
+        self._write_project_config(other_project, {"blocked": self._stdio("changed")})
+        monkeypatch.chdir(other_project)
+        with patch("builtins.input", side_effect=AssertionError("must not prompt")):
+            assert _check_mcp_project_trust() is None
+        assert (
+            await self._resolve_merged(
+                other_project,
+                monkeypatch,
+                user_config=user_config,
+                trust_project_mcp=True,
+            )
+            is None
+        )
+
     async def test_disabled_dropped_even_when_trusted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

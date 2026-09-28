@@ -37,6 +37,8 @@ from deepagents_talon.channels.base import (
     outbound_media_root_from_env,
     send_with_retry,
 )
+from deepagents_talon.cron.errors import CronJobError
+from deepagents_talon.cron.jobs import CronJobStore
 from deepagents_talon.cron.scheduler import is_silent
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -52,6 +54,7 @@ from deepagents_talon.interfaces import (
     ConversationHistoryRuntime,
     CronScheduler,
     MCPReloadableRuntime,
+    ModelSelectableRuntime,
     ProgressMessageHandler,
     ReactionChannelAdapter,
     SendResult,
@@ -67,6 +70,15 @@ from deepagents_talon.media import (
     outbound_channel_media,
 )
 from deepagents_talon.observability import langsmith_trace_context, log_event, stable_log_ref
+from deepagents_talon.pairing import (
+    APPROVED_NOTICE,
+    PairedSender,
+    SenderPairing,
+    is_direct_message,
+    pause_jobs,
+    run_pair_command,
+    sender_jobs,
+)
 from deepagents_talon.speech import transcribe_voice_message
 
 if TYPE_CHECKING:
@@ -85,7 +97,12 @@ _NEW_COMMAND = chat_commands.NEW
 _MCP_RELOAD_COMMAND = chat_commands.MCP_RELOAD
 _HELP_COMMAND = chat_commands.HELP
 _CONTEXT_DOCTOR_COMMAND = chat_commands.CONTEXT_DOCTOR
+_MODEL_COMMAND = chat_commands.MODEL
 _RESET_ALL_HISTORY_COMMAND = chat_commands.RESET_ALL_HISTORY
+_PAIR_COMMAND = chat_commands.PAIR
+_PAIR_OPERATOR_ONLY_MESSAGE = "Only an operator can manage sender pairing."
+_PAIR_DM_ONLY_MESSAGE = "Run /pair in a direct message with this assistant."
+_PAIR_DISABLED_MESSAGE = "Sender pairing is not enabled on this channel."
 _HELP_MESSAGE = chat_commands.build_help_message()
 _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
 _HISTORY_RESET_FAILURE_MESSAGE = (
@@ -95,6 +112,13 @@ _HISTORY_RESET_FAILURE_MESSAGE = (
 _MCP_RELOAD_SUCCESS_MESSAGE = "Reloaded MCP configuration."
 _MCP_RELOAD_FAILURE_MESSAGE = "Could not reload MCP configuration. Check Talon logs."
 _MCP_RELOAD_UNAVAILABLE_MESSAGE = "MCP configuration reload is unavailable."
+_MODEL_DEFAULT_ARGUMENT = "default"
+_MODEL_UNAVAILABLE_MESSAGE = "Model switching is unavailable."
+_MODEL_OPERATOR_ONLY_MESSAGE = "Only an operator can change the model."
+_MODEL_UNKNOWN_MESSAGE = "Not an available model. Send /model to list them."
+_MODEL_LOAD_FAILURE_MESSAGE = "Could not load that model. Check Talon logs."
+_MODEL_SAVE_FAILURE_MESSAGE = "Could not save the model selection. Check Talon logs."
+_MODEL_LIST_FAILURE_MESSAGE = "Could not list available models. Check Talon logs."
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
@@ -126,6 +150,10 @@ _EMOJI_SKIN_TONES = frozenset(
 )
 
 
+class ScheduledRunRevokedError(RuntimeError):
+    """Raised when revoking a paired sender stops a scheduled run from their DM."""
+
+
 class _CancelOutcome(StrEnum):
     NONE = "none"
     SUCCESS = "success"
@@ -140,6 +168,8 @@ class _Turn:
     provider: str | None
     generation: int
     recovery_degraded: bool
+    model: str | None = None
+    """`/model` selection captured when the turn started, so a later switch cannot reach it."""
 
 
 @dataclass(slots=True)
@@ -250,6 +280,7 @@ class TalonHost:
         self._generations: defaultdict[str, int] = defaultdict(int)
         self._blocked: set[str] = set()
         self._conversation_resets = _load_conversation_resets(config.conversation_state_path)
+        self._model_selections = _load_model_selections(config.model_state_path)
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
@@ -257,6 +288,12 @@ class TalonHost:
         self._background_loop: asyncio.Task[None] | None = None
         self._background_routes: dict[str, _BackgroundRoute] = {}
         self._background_retries: dict[str, _BackgroundRetry] = {}
+        self._scheduled_runs: dict[str, asyncio.Task[str]] = {}
+        self._revoked_runs: set[str] = set()
+        # Everyone who started a turn in a conversation since it was last idle.
+        # Background workers belong to a conversation, not a sender, so revoking a
+        # paired sender stops all work in every chat they have work pending in.
+        self._turn_senders: dict[str, set[tuple[str, str | None]]] = {}
         self._stopped = asyncio.Event()
         self._running = False
 
@@ -304,6 +341,7 @@ class TalonHost:
             return
         self._tasks.pop(conversation_id, None)
         self._generations.pop(conversation_id, None)
+        self._turn_senders.pop(conversation_id, None)
 
     @property
     def running(self) -> bool:
@@ -504,9 +542,103 @@ class TalonHost:
             await self._reload_mcp_configuration(channel, message.conversation_id)
         elif command == _CONTEXT_DOCTOR_COMMAND:
             await self._context_doctor(channel, message.conversation_id, conversation_root)
+        elif command == _PAIR_COMMAND:
+            reply = await self._pair_command(channel, message, provider)
+            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
+        elif command == _MODEL_COMMAND:
+            reply = await self._model_command(channel, message, conversation_root)
+            await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
         else:
             return False
         return True
+
+    async def _pair_command(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        provider: str | None,
+    ) -> str:
+        """Run `/pair` for an operator; never reaches the model."""
+        config = getattr(channel, "config", None)
+        exposure = getattr(config, "exposure", None)
+        pairing = getattr(config, "pairing", None)
+        # Stricter than the tool-approval operator check: `from_self` never counts,
+        # only an operator id configured in env.
+        if (
+            not isinstance(exposure, ChannelExposure)
+            or message.sender_id not in exposure.operator_ids
+        ):
+            return _PAIR_OPERATOR_ONLY_MESSAGE
+        if not is_direct_message(message):
+            return _PAIR_DM_ONLY_MESSAGE
+        if not isinstance(pairing, SenderPairing):
+            return _PAIR_DISABLED_MESSAGE
+        result = await asyncio.to_thread(run_pair_command, pairing, message.text)
+        if (approved := result.approved) is not None:
+            await send_with_retry(
+                lambda: channel.send_message(approved.conversation_id, APPROVED_NOTICE)
+            )
+        if result.revoked is not None:
+            stopped = await self._stop_revoked_sender(
+                _channel_key(channel, provider), pairing.provider, result.revoked
+            )
+            return f"{result.reply} {stopped}".rstrip()
+        return result.reply
+
+    async def _stop_revoked_sender(
+        self, channel_key: str, provider: str, revoked: PairedSender
+    ) -> str:
+        """Stop a revoked sender's work in every chat and pause the jobs they created."""
+        outcomes = [
+            await self._cancel_conversation_tasks(conversation_id)
+            for conversation_id in self._conversations_of(channel_key, revoked)
+        ]
+        stopped = sum(outcome is not _CancelOutcome.NONE for outcome in outcomes)
+        notes = []
+        if _CancelOutcome.TIMEOUT in outcomes:
+            notes.append("Could not stop their current run within 30 seconds; restart Talon.")
+        elif stopped == 1:
+            notes.append("Stopped their current run.")
+        elif stopped:
+            notes.append(f"Stopped in-flight work in {stopped} chats they used.")
+        notes.extend(self._stop_sender_jobs(provider, revoked))
+        return " ".join(notes)
+
+    def _conversations_of(self, channel_key: str, revoked: PairedSender) -> list[str]:
+        """Return the sender's DM plus every conversation they started a turn in."""
+        dm = self._agent_conversation_id(
+            self._conversation_root(channel_key, revoked.conversation_id)
+        )
+        started = (channel_key, revoked.sender_id)
+        shared = [
+            conversation_id
+            for conversation_id, senders in self._turn_senders.items()
+            if started in senders and conversation_id != dm
+        ]
+        return [dm, *shared]
+
+    def _stop_sender_jobs(self, provider: str, revoked: PairedSender) -> list[str]:
+        """Pause the cron jobs a sender created and cancel any of their runs in flight."""
+        store = getattr(self.scheduler, "store", None)
+        if not isinstance(store, CronJobStore):
+            return []
+        try:
+            jobs = sender_jobs(store, provider, revoked.sender_id, revoked.conversation_id)
+            paused = pause_jobs(store, jobs)
+        except (CronJobError, OSError):
+            logger.warning("Could not pause a revoked sender's cron jobs", exc_info=True)
+            return ["Could not pause their scheduled jobs. Check Talon logs."]
+        stopped = 0
+        for job in jobs:
+            run = self._scheduled_runs.get(job.id)
+            if run is not None and not run.done():
+                self._revoked_runs.add(job.id)
+                run.cancel()
+                stopped += 1
+        notes = [f"Paused {paused} scheduled job(s) they created."] if paused else []
+        if stopped:
+            notes.append(f"Stopped {stopped} scheduled run(s) in progress.")
+        return notes
 
     async def _context_doctor(
         self, channel: ChannelAdapter, chat: str, conversation_root: str
@@ -523,6 +655,51 @@ class TalonHost:
                 logger.debug("Context diagnostics failed", exc_info=True)
                 report = "Could not build context diagnostics. Please try again."
         await send_with_retry(lambda: channel.send_message(chat, report))
+
+    async def _model_command(
+        self, channel: ChannelAdapter, message: ChannelMessage, conversation_root: str
+    ) -> str:
+        """Show, list, or switch the conversation's model and return the reply."""
+        if not isinstance(self.agent, ModelSelectableRuntime):
+            return _MODEL_UNAVAILABLE_MESSAGE
+        argument = _command_argument(message.text)
+        if not argument or (":" not in argument and argument != _MODEL_DEFAULT_ARGUMENT):
+            try:
+                catalog = await self.agent.model_catalog()
+            except Exception:  # noqa: BLE001  # Do not disclose provider discovery errors.
+                logger.warning("Could not discover available models", exc_info=True)
+                return _MODEL_LIST_FAILURE_MESSAGE
+            if argument:
+                return _format_provider_models(argument, catalog)
+            current = self._model_selections.get(conversation_root)
+            return _format_model_overview(current, self.agent.default_model, catalog)
+        if not _is_operator(channel, message):
+            return _MODEL_OPERATOR_ONLY_MESSAGE
+        spec = None if argument == _MODEL_DEFAULT_ARGUMENT else argument
+        return await self._switch_model(conversation_root, spec, self.agent)
+
+    async def _switch_model(
+        self, conversation_root: str, spec: str | None, agent: ModelSelectableRuntime
+    ) -> str:
+        if spec is not None and spec != agent.default_model:
+            try:
+                if not await agent.select_model(spec):
+                    return _MODEL_UNKNOWN_MESSAGE
+            except Exception:  # noqa: BLE001  # Do not disclose provider or credential errors.
+                logger.warning("Could not load the selected model", exc_info=True)
+                return _MODEL_LOAD_FAILURE_MESSAGE
+        selections = dict(self._model_selections)
+        if spec is None or spec == agent.default_model:
+            selections.pop(conversation_root, None)
+        else:
+            selections[conversation_root] = spec
+        try:
+            _write_json_state(self.config.model_state_path, selections)
+        except OSError:
+            logger.warning("Could not save the model selection", exc_info=True)
+            return _MODEL_SAVE_FAILURE_MESSAGE
+        self._model_selections = selections
+        return f"This chat now uses {spec or agent.default_model}."
 
     async def _reload_mcp_configuration(
         self,
@@ -604,11 +781,15 @@ class TalonHost:
                     route.provider,
                     generation,
                     recovery_degraded,
+                    model=self._model_selections.get(route.conversation_root),
                 ),
             ),
             name=f"talon:{conversation_id}",
         )
         self._tasks[conversation_id] = task
+        self._turn_senders.setdefault(conversation_id, set()).add(
+            (_channel_key(channel, route.provider), message.sender_id)
+        )
         self._track_conversation_task(conversation_id, task)
 
     async def _process_background_results(self) -> None:
@@ -704,27 +885,14 @@ class TalonHost:
             metadata["history_chat"] = message.conversation_id
         if turn.recovery_degraded:
             metadata["interruption_recovery"] = "failed"
-        origin_conversation_id = _origin_conversation_id(message)
+        origin_conversation_id = message.conversation_id
         if origin_conversation_id != agent_conversation_id:
             metadata["origin_conversation_id"] = origin_conversation_id
         content = build_model_content(message.text, dict(message.metadata))
         if content != message.text:
             metadata["model_content"] = content
 
-        exposure = getattr(getattr(channel, "config", None), "exposure", None)
-        operator = bool(
-            not unattended
-            and isinstance(exposure, ChannelExposure)
-            and exposure.mode in (ExposureMode.SELF, ExposureMode.ALLOWLIST, ExposureMode.OPEN)
-            and route.message.sender_id
-            and (
-                route.message.sender_id in exposure.operator_ids
-                or (
-                    exposure.mode == ExposureMode.SELF
-                    and route.message.metadata.get("from_self") is True
-                )
-            )
-        )
+        operator = not unattended and _is_operator(channel, route.message)
 
         typing_task = asyncio.create_task(
             _typing_refresh_loop(channel, message.conversation_id),
@@ -779,6 +947,7 @@ class TalonHost:
                 ),
                 tool_approval_operator=operator,
                 message_handler=message_handler,
+                model=turn.model,
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
         except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
@@ -877,34 +1046,67 @@ class TalonHost:
 
         Raises:
             TimeoutError: If the run outlasts its bound, after the thread is repaired.
+            ScheduledRunRevokedError: If revoking the paired sender whose DM created
+                the job stopped the run, so the scheduler records it as failed
+                and delivers nothing.
         """
         conversation_id = f"{job.id}{_CRON_THREAD_SUFFIX}"
         # Held across the whole run, as the per-job lock it replaces was, so two fires
         # cannot share one graph thread. A scheduled run's delegations are inline, so it
         # now holds this for as long as its subagents take.
         async with self._conversation_lock(conversation_id):
+            # A separate task so revoking a paired sender can stop this run alone,
+            # without cancelling the scheduler that awaits it.
+            run = asyncio.create_task(self._bounded_scheduled_run(job, conversation_id))
+            self._scheduled_runs[job.id] = run
             try:
-                async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
-                    result = await self._invoke_agent(
-                        conversation_id=conversation_id,
-                        text=job.prompt,
-                        metadata=_scheduled_metadata(job),
-                    )
-            except TimeoutError:
-                # The graph was cancelled mid-node, so this thread can end on an assistant
-                # message whose tool calls have no results, which fails every later fire.
-                # The scheduler awaits this coroutine directly rather than through a task,
-                # so nothing else reaches the recovery that repairs it.
-                log_event(
-                    logger,
-                    "cron.run_timeout",
-                    job_id=job.id,
-                    job_name=job.name,
-                )
+                return await run
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if job.id not in self._revoked_runs or (current and current.cancelling()):
+                    raise
                 with contextlib.suppress(Exception):
                     await self.agent.recover_interrupted(conversation_id)
-                raise
-            return result.text
+                msg = "scheduled run stopped: its sender's pairing was revoked"
+                raise ScheduledRunRevokedError(msg) from None
+            finally:
+                self._scheduled_runs.pop(job.id, None)
+                self._revoked_runs.discard(job.id)
+
+    async def _bounded_scheduled_run(self, job: CronJob, conversation_id: str) -> str:
+        """Run one scheduled job under its timeout, repairing the thread on expiry."""
+        try:
+            async with asyncio.timeout(_SCHEDULED_RUN_TIMEOUT_SECONDS):
+                result = await self._invoke_agent(
+                    conversation_id=conversation_id,
+                    text=job.prompt,
+                    metadata={**_scheduled_metadata(job), **await self._scheduled_history(job)},
+                )
+        except TimeoutError:
+            # The graph was cancelled mid-node, so this thread can end on an assistant
+            # message whose tool calls have no results, which fails every later fire.
+            # Nothing outside this run reaches the recovery that repairs it.
+            log_event(
+                logger,
+                "cron.run_timeout",
+                job_id=job.id,
+                job_name=job.name,
+            )
+            with contextlib.suppress(Exception):
+                await self.agent.recover_interrupted(conversation_id)
+            raise
+        return result.text
+
+    async def _scheduled_history(self, job: CronJob) -> dict[str, str]:
+        """Return the origin chat's read-only history scope, or none when ambiguous."""
+        if not isinstance(self.agent, ConversationHistoryRuntime) or not self.agent.history_enabled:
+            return {}
+        if job.origin.channel is None or (channel := await self.origin_channel(job.origin)) is None:
+            return {}
+        return {
+            "history_channel": _channel_key(channel, job.origin.channel),
+            "history_chat": job.origin.conversation_id,
+        }
 
     async def origin_channel(self, origin: CronOrigin) -> ChannelAdapter | None:
         """Return the channel serving a scheduled job's origin conversation.
@@ -962,6 +1164,7 @@ class TalonHost:
         authorization_handler: Callable[[AuthorizationEvent], Awaitable[str | None]] | None = None,
         tool_approval_operator: bool = False,
         message_handler: ProgressMessageHandler | None = None,
+        model: str | None = None,
     ) -> AgentResult:
         metadata = {
             **metadata,
@@ -984,6 +1187,7 @@ class TalonHost:
                         approval_handler=approval_handler,
                         authorization_handler=authorization_handler,
                         message_handler=message_handler,
+                        model=model,
                     ),
                 )
         except asyncio.CancelledError:
@@ -1710,11 +1914,53 @@ def _command_name(text: str) -> str | None:
     return first.split("@", maxsplit=1)[0]
 
 
-def _origin_conversation_id(message: ChannelMessage) -> str:
-    origin = message.metadata.get("chat_id_from")
-    if isinstance(origin, str) and origin:
-        return origin
-    return message.conversation_id
+def _command_argument(text: str) -> str:
+    parts = text.strip().split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
+def _is_operator(channel: ChannelAdapter, message: ChannelMessage) -> bool:
+    """Report whether `message` came from one of the channel's operators."""
+    exposure = getattr(getattr(channel, "config", None), "exposure", None)
+    return bool(
+        isinstance(exposure, ChannelExposure)
+        and exposure.mode in (ExposureMode.SELF, ExposureMode.ALLOWLIST, ExposureMode.OPEN)
+        and message.sender_id
+        and (
+            message.sender_id in exposure.operator_ids
+            or (exposure.mode == ExposureMode.SELF and message.metadata.get("from_self") is True)
+        )
+    )
+
+
+def _format_model_overview(
+    current: str | None, default: str, catalog: Mapping[str, Sequence[str]]
+) -> str:
+    if current is not None and not _in_catalog(current, catalog):
+        active = f"{default} (default). Its selected model {current} is unavailable"
+    else:
+        active = current or f"{default} (default)"
+    providers = "\n".join(
+        f"{provider} — {len(models)} models" for provider, models in sorted(catalog.items())
+    )
+    return (
+        f"This chat uses {active}.\n\nAvailable providers:\n{providers}\n\n"
+        "Send /model <provider> to list its models, /model <provider:model> to switch, "
+        "or /model default to go back to the default."
+    )
+
+
+def _in_catalog(spec: str, catalog: Mapping[str, Sequence[str]]) -> bool:
+    provider, _, name = spec.partition(":")
+    return name in catalog.get(provider, ())
+
+
+def _format_provider_models(provider: str, catalog: Mapping[str, Sequence[str]]) -> str:
+    models = catalog.get(provider.lower())
+    if not models:
+        return _MODEL_UNKNOWN_MESSAGE
+    listing = "\n".join(f"{provider.lower()}:{model}" for model in models)
+    return f"{listing}\n\nSend /model <provider:model> to switch."
 
 
 def _outbound_media_from_refs(
@@ -1738,10 +1984,10 @@ def _outbound_media_from_refs(
 def _scheduled_metadata(job: CronJob) -> dict[str, object]:
     """Return the turn metadata identifying one scheduled job's thread.
 
-    One source for both a job's own run and any later background follow-up turn on
-    the same thread, so the two agree on every field the runtime reads from them --
-    `trigger`, which auto-denies tool approvals a scheduled turn has no operator to
-    answer, and `channel`, which the cron tools scope a job's own edits by.
+    Carries `trigger`, which auto-denies tool approvals a scheduled turn has no
+    operator to answer and keeps the run's checkpoints out of the chat archive, and
+    `channel`, which the cron tools scope a job's own edits by. The origin chat's
+    history scope is added separately by `_scheduled_history`, for reading only.
 
     Args:
         job: Cron job whose thread the turn runs on.
@@ -1755,6 +2001,7 @@ def _scheduled_metadata(job: CronJob) -> dict[str, object]:
         "cron_job_name": job.name,
         "origin_conversation_id": job.origin.conversation_id,
         "cron_origin_message_id": job.origin.message_id,
+        "cron_origin_sender_id": job.origin.sender_id,
         "trigger": "cron",
     }
 
@@ -1881,13 +2128,33 @@ def _load_conversation_resets(path: Path) -> dict[str, int]:
     return state
 
 
+def _load_model_selections(path: Path) -> dict[str, str]:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        msg = f"failed to load model selection state from {path}"
+        raise RuntimeError(msg) from exc
+    if not isinstance(state, dict) or any(
+        not isinstance(key, str) or not isinstance(spec, str) for key, spec in state.items()
+    ):
+        msg = f"invalid model selection state in {path}"
+        raise RuntimeError(msg)
+    return state
+
+
 def _save_conversation_resets(path: Path, resets: Mapping[str, int]) -> None:
+    _write_json_state(path, resets)
+
+
+def _write_json_state(path: Path, state: Mapping[str, object]) -> None:
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary_name)
     try:
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as file:
-            json.dump(resets, file, sort_keys=True)
+            json.dump(state, file, sort_keys=True)
             file.flush()
             os.fsync(file.fileno())
         temporary_path.replace(path)

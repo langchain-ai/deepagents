@@ -9,7 +9,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.host import TalonHost
-from deepagents_talon.interfaces import AgentRequest, ChannelMessage
+from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage
 from deepagents_talon.runtime import _current_cron_origin
 from tests.archive_helpers import make_runtime, make_saver
 from tests.conftest import RecordingChannel
@@ -110,6 +110,51 @@ async def test_scheduled_job_receives_origin_history_scope(
     metadata = agent.requests[0].metadata
     scope = {key: metadata[key] for key in ("history_channel", "history_chat") if key in metadata}
     assert scope == ({"history_channel": "test", "history_chat": "chat"} if expected else {})
+
+
+async def test_scheduled_job_does_not_block_sibling_thread(tmp_path: Path) -> None:
+    class SlowHistoryAgent(BlockingAgent):
+        history_enabled = True
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.cron_started = asyncio.Event()
+
+        async def invoke(self, request: AgentRequest) -> AgentResult:
+            if request.text == "review":
+                self.cron_started.set()
+                await self.released.wait()
+            return await super().invoke(request)
+
+        async def clear_history(self, channel: str, chat: str) -> None:
+            del channel, chat
+
+    agent = SlowHistoryAgent()
+    channel = RecordingChannel("discord")
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+    job = store.create_job(
+        prompt="review",
+        schedule=CronSchedule.parse("in 5m"),
+        origin=CronOrigin(conversation_id="thread-1", channel="discord", history_chat="100"),
+    )
+    await host.start()
+    run = asyncio.create_task(host.run_scheduled_job(job))
+    try:
+        await asyncio.wait_for(agent.cron_started.wait(), timeout=2)
+        await asyncio.wait_for(
+            host.receive_message(
+                channel, ChannelMessage("thread-2", "hello", metadata={"history_chat": "100"})
+            ),
+            timeout=2,
+        )
+        await asyncio.wait_for(asyncio.gather(*host._tasks.values()), timeout=2)
+        assert agent.requests[-1].text == "hello"
+        assert not run.done()
+    finally:
+        agent.released.set()
+        await run
+        await host.stop()
 
 
 async def test_scheduled_history_uses_discord_parent_and_replies_in_thread(tmp_path, monkeypatch):

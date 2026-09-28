@@ -1164,12 +1164,7 @@ class TalonHost:
         # Held across the whole run, as the per-job lock it replaces was, so two fires
         # cannot share one graph thread. A scheduled run's delegations are inline, so it
         # now holds this for as long as its subagents take.
-        history = await self._scheduled_history(job)
-        scope = (history["history_channel"], history["history_chat"]) if history else None
-        async with (
-            self._history_lock(scope) if scope else contextlib.nullcontext(),
-            self._conversation_lock(conversation_id),
-        ):
+        async with self._conversation_lock(conversation_id):
             # A separate task so revoking a paired sender can stop this run alone,
             # without cancelling the scheduler that awaits it.
             run = asyncio.create_task(self._bounded_scheduled_run(job, conversation_id))

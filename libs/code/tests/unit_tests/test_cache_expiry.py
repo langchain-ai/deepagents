@@ -1098,6 +1098,66 @@ async def test_handoff_pauses_submission_but_keeps_draft_editable(
         process.assert_awaited_once_with("draft edit", "normal")
 
 
+@pytest.mark.parametrize("cancel", ["escape", "force-clear"])
+@pytest.mark.parametrize("submitted", [False, True])
+async def test_cancel_handoff_restores_submission(
+    cancel: str, submitted: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handoff(_thread_id: str) -> str:
+        await app._set_spinner("Summarizing")
+        started.set()
+        await release.wait()
+        return "child"
+
+    monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
+    monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+    monkeypatch.setattr(app, "_run_session_start_hook", AsyncMock(return_value=True))
+    monkeypatch.setattr(type(app._hooks), "on_session_end", AsyncMock())
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        assert app._chat_input is not None
+        if submitted:
+            await pilot.press(*"draft", "enter")
+        else:
+            app._check_cache_expiry()
+        await pilot.pause()
+        assert isinstance(app.screen, ColdCacheWarningScreen)
+        await pilot.press("enter")
+        await asyncio.wait_for(started.wait(), timeout=5)
+        await pilot.pause()
+        task = app._modal_command_tasks["cache-expiry"]
+        assert app._chat_input.submission_block_reason
+        app._chat_input.focus_input()
+        if cancel == "force-clear":
+            await pilot.press(
+                "home", "shift+end", "backspace", *"/force-clear", "enter"
+            )
+        else:
+            await pilot.press("escape")
+        await pilot.pause()
+        assert app._session_state is not None
+        thread_id = app._lc_thread_id
+        assert thread_id == app._session_state.thread_id
+        assert (thread_id != "source") == (cancel == "force-clear")
+        assert app._chat_input.submission_block_reason is None
+        assert task.cancelled()
+        assert not app._modal_command_running()
+        assert app._loading_widget is None
+
+        process = AsyncMock()
+        monkeypatch.setattr(app, "_process_message", process)
+        await pilot.press("home", "shift+end", "backspace", *"next", "enter")
+        await pilot.pause()
+        process.assert_awaited_once_with("next", "normal")
+        assert not app._pending_messages
+        assert app._lc_thread_id == thread_id
+
+
 @pytest.mark.parametrize("other_draft", ["", "unrelated draft"])
 async def test_handoff_does_not_restore_draft_into_unrelated_thread(
     other_draft: str, monkeypatch: pytest.MonkeyPatch
@@ -1143,7 +1203,7 @@ async def test_handoff_does_not_restore_draft_into_unrelated_thread(
         assert not app._modal_command_running()
 
 
-@pytest.mark.parametrize("cancel", ["escape", "shutdown"])
+@pytest.mark.parametrize("cancel", ["escape", "shutdown", "force-clear"])
 @pytest.mark.parametrize("pause_at", ["prefetch", "history"])
 async def test_handoff_switch_cancellation_preserves_conversation(
     cancel: str, pause_at: str, monkeypatch: pytest.MonkeyPatch
@@ -1203,6 +1263,20 @@ async def test_handoff_switch_cancellation_preserves_conversation(
         )
         assert task is not None
         await asyncio.wait_for(paused.wait(), timeout=5)
+        if cancel == "force-clear":
+            assert app._chat_input is not None
+            app._chat_input.focus_input()
+            await pilot.press(*"/force-clear", "enter")
+            await pilot.pause()
+            assert task.cancelled()
+            assert app._lc_thread_id == app._session_state.thread_id
+            assert app._lc_thread_id not in {"source", "child"}
+            assert app._message_store.get_message(source.id) is None
+            assert app._message_store.get_message(child.id) is None
+            assert app._session_cost_usd == pytest.approx(0.0)
+            assert not app._thread_switching
+            assert not app._modal_command_running()
+            return
         if cancel == "escape":
             await pilot.press("escape", "escape")
             release.set()

@@ -17564,6 +17564,11 @@ class DeepAgentsApp(App):
 
             if cmd == "/force-clear":
                 self._force_interrupt_active_work()
+                handoff = self._modal_command_tasks.get("cache-expiry")
+                if handoff is not None:
+                    # Finish cancellation (including thread-switch rollback)
+                    # before clearing the transcript and starting a new thread.
+                    await asyncio.gather(handoff, return_exceptions=True)
             # Sample before `_clear_messages` below empties the store: this
             # describes the thread being left, not the fresh one. See
             # `_store_has_server_output`.
@@ -22095,9 +22100,9 @@ class DeepAgentsApp(App):
         """Cancel in-flight work before the standard `/clear` path runs.
 
         Rejects pending approvals, cancels pending ask-user prompts, kills
-        the shell worker, kills the agent worker, and drops the queued
-        message backlog. UI clearing itself happens in the calling
-        `/clear` handler. Each widget interaction is best-effort: a torn-
+        the shell worker, kills the agent worker, cancels cache handoffs, and
+        drops the queued message backlog. UI clearing itself happens in the
+        calling `/clear` handler. Each widget interaction is best-effort: a torn-
         down widget should not abort the interrupt sequence, but the
         underlying error is logged so regressions are visible.
         """
@@ -22125,6 +22130,10 @@ class DeepAgentsApp(App):
             self._recover_unstarted_agent_worker(agent_worker)
         self._warn_dropped_mcp_reconnect()
         self._discard_queue()
+
+        handoff = self._modal_command_tasks.get("cache-expiry")
+        if handoff is not None and not handoff.done():
+            handoff.cancel()
 
     def _defer_action(self, action: DeferredAction) -> None:
         """Queue a deferred action, replacing any existing action of the same kind.

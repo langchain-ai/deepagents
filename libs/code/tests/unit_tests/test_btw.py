@@ -873,7 +873,7 @@ async def test_checkpoint_reconciles_cost_when_accounting_fails(
     assert app._session_cost_breakdown["request_count"] == 3
     # A later side refresh must retain the graph total recovered from state.
     graph.client.http.get.side_effect = None
-    refreshed = await remote.arefresh_side_cost(config)
+    refreshed = await remote.aget_session_cost(config, checkpoint=state)
     assert refreshed is not None
     assert refreshed["total"] == pytest.approx(main_total + 0.5)
 

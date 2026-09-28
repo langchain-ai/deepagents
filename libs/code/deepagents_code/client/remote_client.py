@@ -443,18 +443,6 @@ class RemoteAgent:
         """
         return self._cost_tracker(_require_thread_id(config)).snapshot()
 
-    async def arefresh_side_cost(self, config: Mapping[str, Any]) -> SessionCost | None:
-        """Refresh side spend while retaining the latest main-task usage.
-
-        Args:
-            config: Config with `configurable.thread_id`.
-
-        Returns:
-            Updated display total, or `None` when neither source is available.
-        """
-        await self._refresh_side_cost(_require_thread_id(config))
-        return self.get_cached_session_cost(config)
-
     async def aget_session_cost(
         self,
         config: Mapping[str, Any],

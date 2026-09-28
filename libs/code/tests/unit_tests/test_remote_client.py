@@ -361,7 +361,7 @@ async def test_accounting_failure_preserves_main_stream_and_state(
 
 @pytest.mark.parametrize("concurrent_stream", [False, True])
 @pytest.mark.parametrize("saved_side_total", [0.25, 0.75])
-async def test_side_refresh_preserves_streamed_graph_cost(
+async def test_accounting_refresh_preserves_streamed_graph_cost(
     *, concurrent_stream: bool, saved_side_total: float
 ) -> None:
     from deepagents_code.cost_tracking import _empty_cost_breakdown
@@ -392,7 +392,9 @@ async def test_side_refresh_preserves_streamed_graph_cost(
 
     agent._graph.client.http.get = read
     for _ in range(2):
-        cost = await agent.arefresh_side_cost(_config())
+        cost = await agent.aget_session_cost(
+            _config(), checkpoint={"_session_cost_usd": 1.0}
+        )
         assert cost is not None
         expected = 2.0 + max(0.5, saved_side_total)
         assert cost["total"] == pytest.approx(expected)
@@ -448,7 +450,7 @@ async def test_accounting_read_merges_concurrent_graph_and_side_updates(
         if concurrent_graph_total > 1.0:
             async for _event in agent.astream({}, config=_config()):
                 pass
-        await agent.arefresh_side_cost(_config())
+        await agent.aget_session_cost(_config(), checkpoint={})
         release.set()
         cost = await asyncio.wait_for(pending, 2)
     finally:
@@ -482,7 +484,7 @@ async def test_delayed_stream_preserves_refreshed_side_cost(graph_total: float) 
     stream = agent.astream({}, config=_config())
     await anext(stream)
     agent._graph.client.http.get.return_value = {"cost": side}
-    refreshed = await agent.arefresh_side_cost(_config())
+    refreshed = await agent.aget_session_cost(_config(), checkpoint={})
     assert refreshed is not None
     assert refreshed["total"] == pytest.approx(2.5)
 
@@ -502,7 +504,7 @@ async def test_delayed_stream_preserves_refreshed_side_cost(graph_total: float) 
     assert cached["breakdown"] == event["breakdown"]
 
 
-@pytest.mark.parametrize("source", ["http", "side_refresh", "btw"])
+@pytest.mark.parametrize("source", ["http", "btw"])
 @pytest.mark.parametrize("incoming_is_newer", [False, True])
 @pytest.mark.parametrize("priced", [False, True], ids=["unpriced", "free"])
 async def test_equal_dollar_snapshots_keep_latest_side_usage(
@@ -545,7 +547,7 @@ async def test_equal_dollar_snapshots_keep_latest_side_usage(
 
     if source == "http":
         result = await agent.aget_session_cost(_config())
-    elif source == "btw":
+    else:
         monkeypatch.setattr(agent, "aensure_thread", AsyncMock())
         monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
         agent._graph.client.http.post = AsyncMock(
@@ -555,8 +557,6 @@ async def test_equal_dollar_snapshots_keep_latest_side_usage(
         assert await agent.abtw("why?", config=_config()) == "answer"
         agent._graph.client.http.get.assert_not_awaited()
         result = agent.get_cached_session_cost(_config())
-    else:
-        result = await agent.arefresh_side_cost(_config())
 
     assert result is not None
     assert result["total"] == pytest.approx(2.5)

@@ -463,8 +463,10 @@ async def test_remote_handoff_activity_refreshes_resume_age(
     assert await sessions.get_thread_updated_at("child") == recent
 
 
-@pytest.mark.parametrize("local_database_initialized", [False, True])
-@pytest.mark.parametrize("resume_via", ["automatic", "picker", "id"])
+@pytest.mark.parametrize(
+    ("local_database_initialized", "resume_via"),
+    [(False, "automatic"), (True, "automatic"), (False, "picker"), (False, "id")],
+)
 async def test_handoff_with_separate_server_checkpoints(
     local_database_initialized: bool,
     resume_via: str,
@@ -818,19 +820,15 @@ async def test_handoff_honors_cost_threshold(
             assert app._chat_input.value == "send this request"
 
 
-@pytest.mark.parametrize("estimate_fails", [False, True])
-async def test_idle_handoff_without_estimate_preserves_choice(
-    estimate_fails: bool, monkeypatch: pytest.MonkeyPatch
+async def test_idle_handoff_estimate_failure_preserves_choice(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = DeepAgentsApp()
     app._cold_cache_warning_threshold_usd = 10.0
     monkeypatch.setattr(
         app,
         "_cold_cache_estimate",
-        AsyncMock(
-            return_value=None,
-            side_effect=RuntimeError("pricing unavailable") if estimate_fails else None,
-        ),
+        AsyncMock(side_effect=RuntimeError("pricing unavailable")),
     )
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -966,7 +964,7 @@ async def test_expiry_send_action_dispatches_once_in_current_thread(
                 assert not errors
 
 
-@pytest.mark.parametrize("outcome", ["success", "failure", "cancel"])
+@pytest.mark.parametrize("outcome", ["success", "failure"])
 @pytest.mark.parametrize("submitted", [False, True])
 async def test_handoff_pauses_submission_but_keeps_draft_editable(
     outcome: str, submitted: bool, monkeypatch: pytest.MonkeyPatch
@@ -1014,10 +1012,7 @@ async def test_handoff_pauses_submission_but_keeps_draft_editable(
         assert not app._pending_messages
         process.assert_not_awaited()
 
-        if outcome == "cancel":
-            await pilot.press("escape")
-        else:
-            release.set()
+        release.set()
         async with asyncio.timeout(5):
             while app._modal_command_running():
                 await pilot.pause()

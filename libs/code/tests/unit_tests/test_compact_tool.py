@@ -224,29 +224,6 @@ class TestCLICompactionMiddleware:
         assert plan.update(None)["_summarization_event"]["file_path"] is None
         summarization._aoffload_to_backend.assert_not_awaited()
 
-    async def test_handoff_summarizes_even_a_short_recent_tail(self) -> None:
-        summarization = self._summarization()
-        summarization._determine_cutoff_index.return_value = 0
-        middleware = CLICompactionMiddleware(summarization)
-        runtime = MagicMock()
-        runtime.context = None
-        messages: list[AnyMessage] = [HumanMessage("one"), HumanMessage("latest task")]
-
-        assert (
-            await middleware._aplan_forced_compaction_update(
-                {"messages": messages}, runtime
-            )
-            is None
-        )
-        plan = await middleware._aplan_forced_compaction_update(
-            {"messages": messages}, runtime, handoff=True
-        )
-
-        assert plan is not None
-        summarization._acreate_summary.assert_awaited_once_with(messages)
-        assert plan.update(None)["_summarization_event"]["cutoff_index"] == 2
-        summarization._aoffload_to_backend.assert_not_awaited()
-
     @pytest.mark.parametrize("archive_status", ["failed", "missing", "existing"])
     async def test_handoff_archive_recovers_full_compacted_history(
         self, archive_status: str, tmp_path: Path

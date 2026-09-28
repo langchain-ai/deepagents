@@ -2874,6 +2874,8 @@ class TestMessageQueue:
             app._image_tracker.add_image(ImageData("next draft", "jpeg", ""))
             queued = app._pending_messages[0]
             assert queued.text == "look [image 1]"
+            if control_state == "pending":
+                assert control.pending.get_nowait().text == "first steer"
             assert queued.media_snapshot is not None
             assert queued.media_snapshot.get_images() == [
                 ImageData("submitted", "png", "[image 1]")
@@ -6591,6 +6593,9 @@ class TestRunAgentTaskMediaTracker:
                 ),
                 ("follow-up", [], []),
             ]
+            media = app.query(UserMessage)[1].media_snapshot
+            assert media is not None
+            assert media.get_images() == [ImageData("submitted", "png", "[image 1]")]
             assert not app._pending_messages
             assert not app._agent_running
 
@@ -6655,52 +6660,6 @@ class TestRunAgentTaskMediaTracker:
             )
             if key == "escape" and not draft:
                 assert app._image_tracker.get_images() == media.get_images()
-
-    async def test_steer_replacement_uses_captured_media(self) -> None:
-        from deepagents_code.client.remote_client import RemoteAgent
-        from deepagents_code.client.steering import SteeredError, SteeringControl
-        from deepagents_code.media_utils import ImageData
-
-        app = DeepAgentsApp(agent=MagicMock(spec=RemoteAgent))
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            composer = app._image_tracker
-            composer.add_image(ImageData("original", "png", ""))
-            control = SteeringControl()
-            app._steering_control = control
-            app._set_agent_running(True)
-            await app.on_chat_input_submitted(
-                ChatInput.Submitted("instead [image 1]", steer=True)
-            )
-            request = control.pending.get_nowait()
-            composer.add_image(ImageData("draft", "jpeg", ""))
-            calls = 0
-
-            async def execute(**kwargs: Any) -> None:
-                await asyncio.sleep(0)
-                nonlocal calls
-                calls += 1
-                if calls == 1:
-                    raise SteeredError(request)
-                tracker = kwargs["image_tracker"]
-                assert tracker is not composer
-                assert tracker.get_images() == [
-                    ImageData("original", "png", "[image 1]")
-                ]
-                assert app._active_user_message is not None
-                assert app._active_user_message.media_snapshot is request.media
-                tracker.clear()
-
-            with patch(
-                "deepagents_code.tui.textual_adapter.execute_task_textual", execute
-            ):
-                await app._run_agent_task("original")
-            assert calls == 2
-            assert composer.get_images() == [ImageData("draft", "jpeg", "[image 1]")]
-            assert request.media is not None
-            assert request.media.get_images() == [
-                ImageData("original", "png", "[image 1]")
-            ]
 
     async def test_queued_steer_restores_media_without_draft_cross_contamination(
         self,

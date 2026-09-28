@@ -162,13 +162,6 @@ async def test_cancel_closes_stream_and_keeps_accepted_prompt() -> None:
     assert control.unsent == SteeringInput("keep this")
 
 
-def test_second_pending_steer_is_not_silently_accepted() -> None:
-    control = SteeringControl()
-    assert control.submit("first")
-    assert not control.submit("second")
-    assert control.pending.get_nowait() == SteeringInput("first")
-
-
 async def test_delayed_registration_keeps_submitted_media_isolated() -> None:
     from deepagents_code.input import MediaTracker
     from deepagents_code.media_utils import ImageData

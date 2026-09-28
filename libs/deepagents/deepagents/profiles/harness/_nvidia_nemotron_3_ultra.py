@@ -1846,12 +1846,17 @@ def _build_extra_middleware() -> list[AgentMiddleware]:
     ]
 
 
-def register() -> None:
-    """Register the built-in Nemotron 3 Ultra harness profile."""
-    profile = HarnessProfile(
+def build_nemotron_profile() -> HarnessProfile:
+    """Build the shared Nemotron agent profile for registered model IDs."""
+    return HarnessProfile(
         system_prompt_suffix=_SYSTEM_PROMPT_SUFFIX,
         tool_description_overrides={"read_file": _READ_FILE_DESCRIPTION_OVERRIDE},
         extra_middleware=_build_extra_middleware,
     )
+
+
+def register() -> None:
+    """Register the built-in Nemotron 3 Ultra harness profile."""
+    profile = build_nemotron_profile()
     for spec in _NEMOTRON_ULTRA_MODEL_SPECS:
         _register_harness_profile_impl(spec, profile)

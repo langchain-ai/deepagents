@@ -8,6 +8,7 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal, TypedDict, assert_never
 from urllib.parse import urlparse
 
@@ -15,6 +16,13 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Set as AbstractSet
 
 logger = logging.getLogger(__name__)
+
+
+class ColdCacheSkip(Enum):
+    """A known reason to skip a cache prompt, distinct from missing pricing."""
+
+    WARM = "warm"
+    BELOW_MINIMUM = "below_minimum"
 
 
 class CacheActivity(TypedDict):

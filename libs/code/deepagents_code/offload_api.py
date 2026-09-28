@@ -30,6 +30,7 @@ from deepagents_code.hooks.server_middleware import (
     HookTransportInterruptError,
     operation_hook_responses,
 )
+from deepagents_code.offload import _handoff_archive_prefix
 from deepagents_code.offload_middleware import (
     OffloadStateUpdate,
     _archive_lock,
@@ -44,6 +45,8 @@ from deepagents_code.workspace import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
     from langchain_core.runnables import RunnableConfig
     from starlette.requests import Request
 
@@ -627,14 +630,15 @@ def _checkpoint_id(state: Mapping[str, object]) -> str:
 
 def _operation_payload(
     payload: object,
-) -> tuple[str, dict[str, Any], dict[str, object]]:
+) -> tuple[str, dict[str, Any], dict[str, object], bool]:
     """Validate the narrow client-to-operation request shape.
 
     Args:
         payload: Decoded request JSON.
 
     Returns:
-        Operation id, runtime context, and accumulated hook responses.
+        Operation id, runtime context, accumulated hook responses, and whether
+            this is a handoff that must leave the source thread uncompacted.
 
     Raises:
         TypeError: If the payload or a structured field has the wrong shape.
@@ -654,12 +658,17 @@ def _operation_payload(
     if not isinstance(responses, dict):
         msg = "hook_responses must be a JSON object."
         raise TypeError(msg)
+    handoff = payload.get("handoff", False)
+    if not isinstance(handoff, bool):
+        msg = "handoff must be a boolean."
+        raise TypeError(msg)
     validated_context = {str(key): value for key, value in context.items()}
     _validate_context(validated_context)
     return (
         operation_id,
         _strip_transport_model_params(validated_context),
         {str(key): value for key, value in responses.items()},
+        handoff,
     )
 
 
@@ -958,12 +967,56 @@ async def _commit_deferred_archive(
         execution.result["archive_path"] = append.path
 
 
+async def _commit_handoff(
+    client: Any,  # noqa: ANN401  # untyped LangGraph SDK client
+    thread_id: str,
+    checkpoint_id: str,
+    execution: OffloadExecution,
+    prepared: PreparedOperationCost,
+) -> None:
+    """Save the summarizer's cost and transcript without compacting the source.
+
+    A handoff seeds a new thread from the summary. The source thread keeps its
+    full context, so its checkpoint receives only the cost channels.
+    """
+    if prepared.update:
+        await _commit_state_update(
+            client, thread_id, checkpoint_id, prepared.update, prepared
+        )
+    else:
+        prepared.rollback()
+    archive = execution.archive
+    if archive is None:
+        return
+    # Bind the immutable recovery snapshot to its source before writing it.
+    # Cleanup can then find it even if child creation fails or the app restarts.
+    archive = archive._replace(
+        session_id=f"{_handoff_archive_prefix(thread_id)}{archive.session_id}"
+    )
+    append = None
+    async with _archive_lock(archive.session_id):
+        try:
+            append = await archive.write()
+        except Exception:
+            logger.exception("Cache handoff could not write its transcript")
+    result = execution.result
+    if append is None:
+        result.update(
+            status="failed",
+            error="The recovery transcript could not be saved.",
+        )
+        return
+    result["archive_path"] = append.path
+    result["summary"] = archive.summary
+
+
 async def _execute_offload(
     thread_id: str,
     *,
     operation_id: str,
     context: dict[str, Any],
     hook_responses: dict[str, object],
+    handoff: bool = False,
 ) -> OffloadResponse:
     """Execute and commit one server-owned offload attempt.
 
@@ -972,6 +1025,9 @@ async def _execute_offload(
         operation_id: Opaque client-generated attempt identity.
         context: Runtime model and hooks context.
         hook_responses: Accumulated hook replies keyed by invocation id.
+        handoff: Summarize every message for a new thread and return the
+            summary. Only cost and the transcript are saved; the source
+            thread's summary event is not written.
 
     Returns:
         A complete result or a hook request that must be answered.
@@ -1054,7 +1110,9 @@ async def _execute_offload(
         token = var_child_runnable_config.set(config)
         try:
             with operation_hook_responses(hook_responses):
-                execution = await server.offload.execute(state, runtime)
+                execution = await server.offload.execute(
+                    state, runtime, **({"handoff": True} if handoff else {})
+                )
         except HookTransportInterruptError as interrupt:
             return {
                 "status": "interrupt",
@@ -1083,6 +1141,11 @@ async def _execute_offload(
             raise _OffloadConflictError(msg)
 
         prepared = prepare_operation_cost(state, thread_id)
+        if handoff:
+            return await _settle(
+                _commit_handoff(client, thread_id, checkpoint_id, execution, prepared),
+                execution,
+            )
         update: dict[str, Any] = {**execution.update, **prepared.update}
         if forbidden := set(update) - _WRITABLE_STATE_CHANNELS:
             # A security boundary, not a defensive assertion: this route commits
@@ -1107,7 +1170,7 @@ async def _execute_offload(
             # spend from the thread's lifetime total (the drain is destructive).
             prepared.rollback()
             return {"status": "complete", "result": execution.result}
-        commit = asyncio.create_task(
+        return await _settle(
             _commit_deferred_archive(
                 client,
                 thread_id,
@@ -1115,13 +1178,27 @@ async def _execute_offload(
                 execution,
                 update,
                 prepared,
-            )
+            ),
+            execution,
         )
-        cancellation = await _join_task_deferring_cancellation(commit)
-        commit.result()
-        if cancellation is not None:
-            raise cancellation
-        return {"status": "complete", "result": execution.result}
+
+
+async def _settle(
+    commit: Coroutine[Any, Any, None], execution: OffloadExecution
+) -> OffloadResponse:
+    """Run a commit to completion even if the request is cancelled mid-write.
+
+    A cancellation that arrives mid-write is re-raised once the commit settles.
+
+    Returns:
+        The completed response carrying the execution result.
+    """
+    task = asyncio.create_task(commit)
+    cancellation = await _join_task_deferring_cancellation(task)
+    task.result()
+    if cancellation is not None:
+        raise cancellation
+    return {"status": "complete", "result": execution.result}
 
 
 async def offload(request: Request) -> JSONResponse:
@@ -1130,7 +1207,9 @@ async def offload(request: Request) -> JSONResponse:
     Request body: `operation_id` (non-empty string, stable across the rounds of
     one attempt), `context` (runtime model and Hooks v2 context), and
     `hook_responses` (replies accumulated so far, keyed by invocation id).
-    The thread comes from the path, never the body.
+    An optional boolean `handoff` summarizes every message and returns the
+    summary without writing a summary event to the source thread. The thread
+    comes from the path, never the body.
 
     A round either completes or returns a hook request to answer. There is no
     suspended coroutine server-side: a resume round **re-executes the operation
@@ -1160,6 +1239,25 @@ async def offload(request: Request) -> JSONResponse:
     Returns:
         JSON operation response.
 
+    """
+    return await _handle_offload(request)
+
+
+async def _handoff(request: Request) -> JSONResponse:
+    """Use a dedicated route so older servers reject handoffs safely.
+
+    Returns:
+        A summary or hook request, without compacting the source thread.
+    """
+    return await _handle_offload(request, handoff=True)
+
+
+async def _handle_offload(request: Request, *, handoff: bool = False) -> JSONResponse:
+    """Validate and execute an offload or handoff round.
+
+    Returns:
+        JSON operation response.
+
     Raises:
         asyncio.CancelledError: When the cancellation route stops this operation.
     """
@@ -1168,7 +1266,9 @@ async def offload(request: Request) -> JSONResponse:
     # misreported to the client as a 4xx and, worse, swallowed without a log.
     try:
         thread_id = request.path_params["thread_id"]
-        operation_id, context, hook_responses = _operation_payload(await request.json())
+        operation_id, context, hook_responses, payload_handoff = _operation_payload(
+            await request.json()
+        )
     except (TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)
 
@@ -1184,6 +1284,7 @@ async def offload(request: Request) -> JSONResponse:
                 operation_id=operation_id,
                 context=context,
                 hook_responses=hook_responses,
+                **({"handoff": True} if handoff or payload_handoff else {}),
             )
         except asyncio.CancelledError:
             outcome = "cancelled"
@@ -1248,6 +1349,11 @@ app = Starlette(
         Route(
             "/dcode/threads/{thread_id:str}/offload",
             offload,
+            methods=["POST"],
+        ),
+        Route(
+            "/dcode/threads/{thread_id:str}/handoff",
+            _handoff,
             methods=["POST"],
         ),
         Route(

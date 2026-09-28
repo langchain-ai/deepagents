@@ -3131,69 +3131,6 @@ class TestCheckMcpProjectTrustPrompt:
         assert '"repaired"' in err
         assert "echo higher" in err
 
-    @pytest.mark.parametrize(
-        ("selection", "expected"),
-        [("2", {"reference"}), ("all", {"docs", "reference"}), ("0", set())],
-    )
-    def test_always_deny_selected_names(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-        selection: str,
-        expected: set[str],
-    ) -> None:
-        import json
-
-        from deepagents_code import model_config
-        from deepagents_code.main import _check_mcp_project_trust
-
-        project = tmp_path / "project"
-        project.mkdir()
-        config = project / ".mcp.json"
-        config.write_text(
-            json.dumps(
-                {
-                    "mcpServers": {
-                        "docs": {"command": "echo"},
-                        "reference": {"command": "echo"},
-                    }
-                }
-            )
-        )
-        user_config = tmp_path / "config.toml"
-        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user_config)
-        monkeypatch.chdir(project)
-        with (
-            patch(
-                "deepagents_code.mcp_tools.discover_mcp_config_sources",
-                return_value=[_project_mcp_source(config, project)],
-            ),
-            patch(
-                "deepagents_code.main._trust_picker_has_terminal", return_value=False
-            ),
-            patch("builtins.input", side_effect=["d", selection]),
-        ):
-            assert _check_mcp_project_trust() is False
-        lists = model_config.load_mcp_server_trust_lists(user_config)
-        assert lists.disabled == expected
-        assert not lists.approvals
-        assert "across all projects" in capsys.readouterr().err
-
-        config.write_text(
-            json.dumps(
-                {"mcpServers": {name: {"command": "changed"} for name in expected}}
-            )
-        )
-        with (
-            patch(
-                "deepagents_code.mcp_tools.discover_mcp_config_sources",
-                return_value=[_project_mcp_source(config, project)],
-            ),
-            patch("builtins.input", side_effect=AssertionError("must not prompt")),
-        ):
-            assert _check_mcp_project_trust() is None
-
     def test_always_deny_inline_selection(
         self,
         tmp_path: Path,

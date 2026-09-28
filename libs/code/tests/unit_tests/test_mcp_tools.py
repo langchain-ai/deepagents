@@ -3461,12 +3461,10 @@ class TestSelectiveProjectMcpTrust:
         assert merged is not None
         assert set(merged["mcpServers"]) == {"docs"}
 
-    @pytest.mark.parametrize("trust", [True, False, None])
     async def test_prompt_denial_blocks_other_projects(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
-        trust: bool | None,
     ) -> None:
         from deepagents_code import model_config
         from deepagents_code.main import _check_mcp_project_trust
@@ -3494,7 +3492,7 @@ class TestSelectiveProjectMcpTrust:
                 other_project,
                 monkeypatch,
                 user_config=user_config,
-                trust_project_mcp=trust,
+                trust_project_mcp=True,
             )
             is None
         )

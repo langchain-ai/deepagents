@@ -2667,6 +2667,11 @@ exported in the shell while a gateway overrides the provider base URL, so the
 key is sent to the gateway, which rejects it.
 """
 
+_TRANSCRIPT_PROGRESS_INTERVAL_SECONDS = float(
+    os.getenv("DEEPAGENTS_TRANSCRIPT_PROGRESS_SECONDS", "60")
+)
+"""Seconds between transcript progress updates during a long turn."""
+
 _LANGSMITH_KEY_PREFIX = "lsv2_"
 """Prefix LangSmith API keys carry. Used as a heuristic to recognize when a
 provider key is *not* a LangSmith gateway key. Only the prefix is inspected —
@@ -4259,6 +4264,12 @@ class DeepAgentsApp(App):
         Gates Esc prompt restore without counting hidden agent activity.
         """
 
+        self._active_turn_started_at: float | None = None
+        self._active_model_step_count = 0
+        self._active_latest_tool_name: str | None = None
+        self._active_latest_tool_args: dict[str, Any] = {}
+        self._transcript_progress_task: asyncio.Task[None] | None = None
+
         self._active_tool_group: ToolGroupSummary | None = None
         """Open tool-group summary for the current step. Tools are folded into
         it as they stream and it is closed at the next step boundary."""
@@ -5378,6 +5389,8 @@ class DeepAgentsApp(App):
             sync_tool_message=self._sync_tool_message_state,
             request_ask_user=self._request_ask_user,
             on_tool_complete=self._schedule_git_branch_refresh,
+            on_model_step=self._on_model_step,
+            on_tool_started=self._on_tool_started,
             on_subagent_event=self._on_subagent_event,
             on_auto_mode_event=self._on_auto_mode_event,
             on_approval_mode_fallback=self._on_approval_mode_fallback,
@@ -12844,6 +12857,14 @@ class DeepAgentsApp(App):
             await self._process_message(value, mode)
             return
 
+        if (
+            mode == "command"
+            and self._agent_running
+            and self._is_active_side_question(value)
+        ):
+            await self._handle_active_side_question(value)
+            return
+
         # Prevent message handling while a thread switch is in-flight.
         if self._thread_switching:
             self.notify(
@@ -12887,6 +12908,42 @@ class DeepAgentsApp(App):
         await self._dispatch_queued_message(
             QueuedMessage(text=value, mode=mode, origin=origin)
         )
+
+    @staticmethod
+    def _is_active_side_question(value: str) -> bool:
+        """Return whether a submitted command is the side-question command."""
+        parts = value.strip().split(maxsplit=1)
+        return bool(parts) and parts[0].lower() == "/btw"
+
+    async def _handle_active_side_question(self, value: str) -> None:
+        """Answer `/btw` from a read-only snapshot of the active turn."""
+        parts = value.strip().split(maxsplit=1)
+        question = parts[1].strip() if len(parts) > 1 else ""
+        await self._mount_message(UserMessage(value))
+        elapsed = 0.0
+        if self._active_turn_started_at is not None:
+            elapsed = max(0.0, time.monotonic() - self._active_turn_started_at)
+        latest_tool = self._active_latest_tool_name or "none yet"
+        args = self._active_latest_tool_args
+        location = args.get("file_path") or args.get("path")
+        command = args.get("command")
+        details = [
+            f"elapsed {format_duration(elapsed)}",
+            f"model steps {self._active_model_step_count}",
+            f"latest tool {latest_tool}",
+        ]
+        if location:
+            details.append(f"file {location}")
+        if command:
+            details.append(f"command {command}")
+        if latest_tool == "write_todos":
+            todos = args.get("todos")
+            if isinstance(todos, list):
+                details.append(f"todo items {len(todos)}")
+        answer = "I can only report the current turn state: " + "; ".join(details) + "."
+        if question:
+            answer = f"{answer} The side question was not sent to the agent."
+        await self._mount_message(AppMessage(answer))
 
     async def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         """Handle submitted input from ChatInput widget."""
@@ -14161,6 +14218,58 @@ class DeepAgentsApp(App):
         self._agent_running = running
         if not running and not self._agent_reconciling:
             self._agent_quiescent.set()
+
+    def _on_model_step(self) -> None:
+        """Record a visible model step for the active turn snapshot."""
+        self._active_model_step_count += 1
+
+    def _on_tool_started(self, tool_name: str, args: dict[str, Any]) -> None:
+        """Record the latest tool for progress and side-question snapshots."""
+        self._active_latest_tool_name = tool_name
+        self._active_latest_tool_args = dict(args)
+
+    def _format_transcript_progress(self) -> str:
+        """Format a read-only progress snapshot for the transcript.
+
+        Returns:
+            The current progress line.
+        """
+        elapsed = 0.0
+        if self._active_turn_started_at is not None:
+            elapsed = max(0.0, time.monotonic() - self._active_turn_started_at)
+        latest_tool = self._active_latest_tool_name or "none yet"
+        return (
+            f"Still working — elapsed {format_duration(elapsed)}; "
+            f"model steps {self._active_model_step_count}; latest tool {latest_tool}."
+        )
+
+    async def _transcript_progress_loop(self) -> None:
+        """Mount periodic progress updates while the active turn is running."""
+        interval = max(0.01, _TRANSCRIPT_PROGRESS_INTERVAL_SECONDS)
+        await asyncio.sleep(interval)
+        while self._agent_running:
+            try:
+                await self._mount_message(
+                    AppMessage(self._format_transcript_progress())
+                )
+            except Exception:
+                logger.warning("Failed to mount transcript progress", exc_info=True)
+            await asyncio.sleep(interval)
+
+    def _start_transcript_progress(self) -> None:
+        """Start the active-turn transcript progress reporter."""
+        self._transcript_progress_task = asyncio.create_task(
+            self._transcript_progress_loop()
+        )
+
+    async def _stop_transcript_progress(self) -> None:
+        """Stop and await the active-turn transcript progress reporter."""
+        task = self._transcript_progress_task
+        self._transcript_progress_task = None
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     @asynccontextmanager
     async def _goal_state_mutation_boundary(self) -> AsyncIterator[None]:
@@ -18369,10 +18478,17 @@ class DeepAgentsApp(App):
         """
         if not reserved:
             self._set_agent_running(True)
+            self._active_turn_started_at = time.monotonic()
+            self._active_model_step_count = 0
+            self._active_latest_tool_name = None
+            self._active_latest_tool_args = {}
+            self._start_transcript_progress()
         try:
             await self._offload_impl()
         finally:
             self._set_agent_running(False)
+            await self._stop_transcript_progress()
+            self._active_turn_started_at = None
             try:
                 await self._set_spinner(None)
             except Exception:  # best-effort spinner cleanup
@@ -18499,6 +18615,11 @@ class DeepAgentsApp(App):
                 self._plugin_auto_update_started = True
                 self._start_plugin_auto_update()
             self._set_agent_running(True)
+            self._active_turn_started_at = time.monotonic()
+            self._active_model_step_count = 0
+            self._active_latest_tool_name = None
+            self._active_latest_tool_args = {}
+            self._start_transcript_progress()
             # Fresh turn: no model text or tool call is visible yet, so an Esc
             # interrupt may still return this prompt to the input.
             self._active_turn_visible_output_started = False
@@ -18592,6 +18713,8 @@ class DeepAgentsApp(App):
         replace the exception that abandoned the turn with a teardown error.
         """
         self._set_agent_running(False)
+        await self._stop_transcript_progress()
+        self._active_turn_started_at = None
         self._active_user_message = None
         self._active_turn_visible_output_started = False
         with suppress(Exception):
@@ -19431,6 +19554,8 @@ class DeepAgentsApp(App):
         self._agent_quiescent.clear()
         self._agent_reconciling = True
         self._set_agent_running(False)
+        await self._stop_transcript_progress()
+        self._active_turn_started_at = None
         self._agent_worker = None
         # Tie the flag's lifetime to the worker's: left `True` across turns it
         # would disable `_recover_unstarted_agent_worker` for every later turn.

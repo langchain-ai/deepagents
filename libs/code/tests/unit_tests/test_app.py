@@ -196,6 +196,57 @@ async def test_tokens_prompts_for_first_message_when_usage_is_empty(
     assert str(message._content) == "No token usage yet - send a message to get started"
 
 
+async def test_btw_during_turn_is_local_and_preserves_queue() -> None:
+    app = DeepAgentsApp()
+    app._agent_running = True
+    app._active_turn_started_at = time.monotonic() - 2
+    app._active_model_step_count = 3
+    app._active_latest_tool_name = "execute"
+    app._active_latest_tool_args = {"command": "git status"}
+    app._agent_worker = cast(Any, object())
+    app._pending_messages.append(QueuedMessage("next", "normal"))
+    mount_message = AsyncMock()
+    app._mount_message = mount_message
+    app._dismiss_startup_tip = AsyncMock()
+
+    await app._submit_input("/btw how long?", "command")
+
+    assert [message.text for message in app._pending_messages] == ["next"]
+    assert app._agent_worker is not None
+    assert [type(call.args[0]) for call in mount_message.await_args_list] == [
+        UserMessage,
+        AppMessage,
+    ]
+    assert "model steps 3" in str(mount_message.await_args_list[-1].args[0]._content)
+    assert "git status" in str(mount_message.await_args_list[-1].args[0]._content)
+
+
+async def test_transcript_progress_starts_after_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import deepagents_code.app as app_module
+
+    app = DeepAgentsApp()
+    app._agent_running = True
+    app._active_turn_started_at = time.monotonic()
+    mount_message = AsyncMock()
+    app._mount_message = mount_message
+    monkeypatch.setattr(app_module, "_TRANSCRIPT_PROGRESS_INTERVAL_SECONDS", 0.01)
+
+    app._start_transcript_progress()
+    await asyncio.sleep(0.03)
+    app._agent_running = False
+    await app._stop_transcript_progress()
+
+    progress = [
+        call.args[0]
+        for call in mount_message.await_args_list
+        if isinstance(call.args[0], AppMessage)
+    ]
+    assert progress
+    assert "Still working" in str(progress[0]._content)
+
+
 class TestWhatsNewMessage:
     """Tests for the post-upgrade banner content."""
 

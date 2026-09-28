@@ -832,6 +832,8 @@ class TextualUIAdapter:
             | None
         ) = None,
         on_tool_complete: Callable[[], None] | None = None,
+        on_model_step: Callable[[], None] | None = None,
+        on_tool_started: Callable[[str, dict[str, Any]], None] | None = None,
         on_subagent_event: Callable[[dict[str, Any]], None] | None = None,
         on_auto_mode_event: (
             Callable[[dict[str, Any]], Awaitable[None] | None] | None
@@ -888,6 +890,12 @@ class TextualUIAdapter:
         agent-executed tool (e.g. `git checkout`) returns, instead of waiting
         for the full turn to finish.
         """
+
+        self._on_model_step = on_model_step
+        """Callback fired when a main-agent model step starts."""
+
+        self._on_tool_started = on_tool_started
+        """Callback fired when a tool call is mounted."""
 
         self._on_subagent_event = on_subagent_event
         """Sync callback fired for each validated `subagent` custom-stream event."""
@@ -2200,6 +2208,8 @@ async def execute_task_textual(
                                 else transcript_agent_by_namespace.get(ns_key)
                             )
                             if attempt_event["phase"] == "start":
+                                if is_main_agent and adapter._on_model_step is not None:
+                                    adapter._on_model_step()
                                 # A duplicate start for the same scope is
                                 # idempotent. A different attempt for the same
                                 # call means `model_retry` was lost; a different
@@ -3286,6 +3296,8 @@ async def execute_task_textual(
                                     tool_msg.set_running()
                                     adapter._sync_tool_widget(tool_msg)
                                 adapter._current_tool_messages[buffer_id] = tool_msg
+                                if adapter._on_tool_started is not None:
+                                    adapter._on_tool_started(buffer_name, parsed_args)
 
                             if buffer_id is not None:
                                 tool_call_buffers.pop(buffer_key, None)

@@ -879,8 +879,8 @@ jobs:
           agent_args=()
           case "$HARBOR_AGENT_IMPL" in
             codex|claude-code)
-              if [ "$HARBOR_CATEGORY" != autonomous ] || [ "$HARBOR_BRANCH" != current ]; then
-                echo "::error::$HARBOR_AGENT_IMPL only supports autonomous tasks on the current ref"; exit 1
+              if [ "$HARBOR_BRANCH" != current ]; then
+                echo "::error::$HARBOR_AGENT_IMPL does not support branch overlays"; exit 1
               fi
               expected_provider=openai
               [ "$HARBOR_AGENT_IMPL" = claude-code ] && expected_provider=anthropic

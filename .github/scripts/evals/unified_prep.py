@@ -483,6 +483,9 @@ def build_flat_matrix(
                 groups.append((cat, impl, tasks))
         else:
             groups.append((cat, cm["agent_impl"], tasks))
+            for impl in code_impls:
+                if impl in HARBOR_AGENT_PROVIDERS:
+                    groups.append((cat, impl, tasks))
 
     counts = {(cat, impl): len(tasks) for cat, impl, tasks in groups}
     total = sum(counts.values())
@@ -593,11 +596,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(str(exc))
 
     native_impls = set(code_impls) & HARBOR_AGENT_PROVIDERS.keys()
-    if native_impls and (set(categories) != {"autonomous"} or branches != ["current"]):
-        raise SystemExit(
-            "Harbor codex/claude-code agents require autonomous-only categories "
-            "and no branches_to_compare"
-        )
+    if native_impls and branches != ["current"]:
+        raise SystemExit("Harbor codex/claude-code agents require no branches_to_compare")
     for model in model_specs:
         for impl in native_impls:
             if provider_of(model) != HARBOR_AGENT_PROVIDERS[impl]:

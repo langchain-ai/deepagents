@@ -128,7 +128,7 @@ def test_derive_impl_sets_new_graph_is_selectable():
     assert "foo" in code
     assert "tau3" not in code
 
-def test_native_harbor_impls_are_autonomous_and_provider_scoped(tmp_path, monkeypatch):
+def test_native_harbor_impls_accept_all_categories_and_match_provider(tmp_path, monkeypatch):
     import pytest
 
     monkeypatch.setenv("UNIFIED_PROFILE", "lite")
@@ -142,9 +142,8 @@ def test_native_harbor_impls_are_autonomous_and_provider_scoped(tmp_path, monkey
         with pytest.raises(SystemExit, match="requires a .* model"):
             up.main()
         monkeypatch.setenv("UNIFIED_MODELS", model)
-        monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,context")
-        with pytest.raises(SystemExit, match="autonomous-only"):
-            up.main()
+        monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous,conversation,context,research")
+        assert up.main() == 0
         monkeypatch.setenv("UNIFIED_CATEGORIES", "autonomous")
         monkeypatch.setenv("UNIFIED_BRANCHES", "feature/branch")
         with pytest.raises(SystemExit, match="no branches_to_compare"):
@@ -436,6 +435,13 @@ def test_build_flat_matrix_conversation_not_multiplied_by_configs():
     conv = [e for e in entries if e["category"] == "conversation"]
     assert {e["agent_impl"] for e in conv} == {"tau3"}
     assert len(conv) == 2  # two tasks, one config, one task per shard
+
+def test_build_flat_matrix_conversation_includes_native_harbor_agents():
+    tasks = {"conversation": ["t1", "t2"]}
+    entries = up.build_flat_matrix("openai:gpt", ["conversation"], tasks, code_impls=["bare", "codex"])
+    assert {e["agent_impl"] for e in entries} == {"tau3", "codex"}
+    assert len(entries) == 4
+
 
 def test_build_flat_matrix_defaults_to_bare_single_config():
     tasks = {"autonomous": ["a1"], "conversation": ["t1"]}

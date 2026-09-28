@@ -1861,7 +1861,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._blobs_prefix = f"{_root}/blobs"
         self._offload_binary_content = offload_binary_content and not _routes_to_state_backend(self.backend, f"{self._blobs_prefix}/")
         if self._offload_binary_content:
-            self.state_schema = cast("type[FilesystemState]", _FilesystemBlobPayloadState if self.state_schema is FilesystemState else _BlobPayloadState)
+            self.state_schema = cast(
+                "type[FilesystemState]", _FilesystemBlobPayloadState if self.state_schema is FilesystemState else _BlobPayloadState
+            )
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt

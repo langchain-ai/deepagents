@@ -234,13 +234,17 @@ not. There are no patterns or per-agent policy files. The defaults are:
   "update_tool_approvals": true,
   "delete_conversations": true,
   "update_mcp_server": true,
-  "start_async_task": true
+  "start_async_task": true,
+  "send_message": true
 }
 ```
 
 Native and container startup create these defaults when the file is missing and
-preserve existing configuration. Unspecified tools default to `false`; listing,
-searching, and reading conversation history do not prompt by default. A `false` value controls prompting, not tool
+preserve existing configuration. `send_message` prompts before an agent progress
+update, including one with Slack mentions. It does not gate the final reply or
+host-generated messages. Existing policy files retain their settings; add
+`"send_message": true` to an existing `tools.json` to opt in. Unspecified tools
+default to `false`; listing, searching, and reading conversation history do not prompt by default. A `false` value controls prompting, not tool
 availability or authorization. There is no migration from the old approval settings.
 
 Read `get_tool_approvals` before editing:

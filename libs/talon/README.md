@@ -418,6 +418,7 @@ oauth_config:
       - files:read
       - files:write
       - im:history
+      - im:write
       - reactions:read
 settings:
   event_subscriptions:
@@ -453,9 +454,9 @@ Sender pairing lets the operator admit a new person to a Discord, Telegram, or S
 
 Set `DEEPAGENTS_TALON_DISCORD_PAIRING=enabled`, `DEEPAGENTS_TALON_TELEGRAM_PAIRING=enabled`, or `DEEPAGENTS_TALON_SLACK_PAIRING=enabled`. Pairing works with `self` and `allowlist` exposure and is refused with `open`.
 
-On Slack, the client treats a message starting with `/` as a slash command, so the operator reaches `/pair` through `/talon` in their DM with the bot: `/talon pair approve K7QM-3XRD`, `/talon pair list`, and `/talon pair revoke <member-id>`. Slack sender ids are member ids starting with `U`, and `/talon pair list` shows them. The requester only needs to DM the bot; the Slack app's Messages tab must be enabled, as it is in the manifest above.
+On Slack, the client treats a message starting with `/` as a slash command, so the operator reaches `/pair` through `/talon` in their DM with the bot: `/talon pair approve K7QM-3XRD`, `/talon pair list`, and `/talon pair revoke <member-id>`. Slack sender ids are member ids starting with `U`, and `/talon pair list` shows them. The requester can DM the bot or mention it in a channel the app has joined. The Slack app's Messages tab must be enabled, as it is in the manifest above. The `im:write` scope lets Talon open a DM for a channel mention; existing installations must add that scope and reinstall the app.
 
-1. An unknown sender DMs the bot. Their message is dropped before it reaches the host or the model, and the bot replies once with a code such as `K7QM-3XRD`. The code is bound to that sender on that channel, expires after 1 hour, and works once.
+1. An unknown sender DMs or mentions the bot in a channel. Their message is dropped before it reaches the host or the model, and the bot sends a code such as `K7QM-3XRD` only in the sender's DM, never in the channel. If the bot cannot open the DM, no request is recorded. The code is bound to that sender on that channel, expires after 1 hour, and works once.
 2. The sender passes the code to the operator by any other means.
 3. The operator approves it with `/pair approve K7QM-3XRD` in their own DM with the bot, or with `deepagents-talon pairing approve <channel> K7QM-3XRD`, where `<channel>` is the requester's channel (`discord`, `slack`, or `telegram`); a code only approves on the channel it was issued on. The sender is told they were approved, and their next DM reaches the agent.
 

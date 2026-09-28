@@ -62,6 +62,9 @@ class RecordingGateway:
         self._next_ts += 1
         return f"1700000000.00000{self._next_ts}"
 
+    async def open_dm(self, user_id):
+        return f"D{user_id}"
+
     async def upload_file(self, channel_id, file_path, *, thread_ts, comment):
         self.uploads.append((channel_id, file_path, thread_ts, comment))
 

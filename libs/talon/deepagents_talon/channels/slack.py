@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import IO, TYPE_CHECKING, NoReturn, Protocol
 
 import aiohttp
+from slack_sdk.errors import SlackApiError
 from slack_sdk.socket_mode.aiohttp import SocketModeClient
 from slack_sdk.socket_mode.response import SocketModeResponse
 from slack_sdk.web.async_client import AsyncWebClient
@@ -358,6 +359,9 @@ class _SlackGateway(Protocol):
     async def post_message(self, channel_id: str, text: str, *, thread_ts: str | None) -> str:
         """Post a message and return its timestamp."""
 
+    async def open_dm(self, user_id: str) -> str:
+        """Open a DM with a user and return its channel id."""
+
     async def upload_file(
         self,
         channel_id: str,
@@ -486,6 +490,19 @@ class _SlackSdkGateway:
             thread_ts=thread_ts,
         )
         return str(response["ts"])
+
+    async def open_dm(self, user_id: str) -> str:
+        response = await self._client().conversations_open(users=user_id)
+        channel = response.get("channel")
+        channel_id = optional_str(channel.get("id")) if isinstance(channel, dict) else None
+        if (
+            channel_id is None
+            or not channel_id.startswith("D")
+            or not _CONVERSATION_PATTERN.fullmatch(channel_id)
+        ):
+            msg = "Slack did not return a DM channel"
+            raise ValueError(msg)
+        return channel_id
 
     async def upload_file(
         self,
@@ -820,7 +837,7 @@ class SlackChannel:
                 has_media=bool(inbound.files),
             )
             if self.config.pairing is not None:
-                await self.config.pairing.offer(message, self.send_message)
+                await self._offer_pairing(message, inbound)
             return
         message = await self._prepare_inbound_media(message, inbound.files)
         log_debug_event(
@@ -830,6 +847,28 @@ class SlackChannel:
         )
         await dispatch_message(self._handler, message, provider="Slack")
         log_debug_event(logger, "slack.inbound.message.dispatched")
+
+    async def _offer_pairing(self, message: ChannelMessage, inbound: _SlackInboundMessage) -> None:
+        pairing = self.config.pairing
+        if pairing is None:
+            return
+        if not inbound.is_dm:
+            if inbound.sender_id in pairing.env_sender_ids or pairing.store.is_paired(
+                pairing.provider, inbound.sender_id
+            ):
+                return
+            try:
+                dm_id = await self._gateway.open_dm(inbound.sender_id)
+            except (SlackApiError, OSError, TimeoutError, ValueError):
+                logger.warning("Could not open Slack DM for sender pairing", exc_info=True)
+                return
+            message = ChannelMessage(
+                conversation_id=dm_id,
+                text=inbound.text,
+                sender_id=inbound.sender_id,
+                metadata={"provider": "slack", "is_dm": True},
+            )
+        await pairing.offer(message, self.send_message)
 
     async def _process_reaction(self, inbound: _SlackInboundReaction) -> None:
         conversation_id = self._sent_threads.get(

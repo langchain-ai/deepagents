@@ -14,6 +14,7 @@ from deepagents_talon.channels.slack import (
     _SlackInboundCommand,
     _SlackInboundMessage,
     _SlackInboundReaction,
+    _SlackSdkGateway,
 )
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
@@ -101,6 +102,33 @@ async def _collecting(channel: SlackChannel) -> list[ChannelMessage]:
     return received
 
 
+async def test_open_dm_uses_slack_user_id_and_checks_channel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class WebClient:
+        def __init__(self, channel_id: str) -> None:
+            self.channel_id = channel_id
+            self.users: list[str] = []
+
+        async def conversations_open(self, *, users: str) -> dict:
+            self.users.append(users)
+            return {"channel": {"id": self.channel_id}}
+
+    gateway = _SlackSdkGateway(
+        bot_token="xoxb-test",  # noqa: S106  # inert test token
+        app_token="xapp-test",  # noqa: S106  # inert test token
+        timeout_seconds=10,
+    )
+    client = WebClient("D123")
+    monkeypatch.setattr(gateway, "_client", lambda: client)
+
+    assert await gateway.open_dm(COWORKER) == "D123"
+    assert client.users == [COWORKER]
+    client.channel_id = "C123"
+    with pytest.raises(ValueError, match="DM channel"):
+        await gateway.open_dm(COWORKER)
+
+
 def test_command_argument_is_passed_through() -> None:
     bare = _convert_command(_command_payload(text="new"))
     pair = _convert_command(_command_payload(text="pair approve  K7QM-3XRD "))
@@ -111,17 +139,82 @@ def test_command_argument_is_passed_through() -> None:
     assert (pair.command, pair.argument) == ("pair", "approve  K7QM-3XRD")
 
 
-async def test_unknown_dm_gets_one_code_and_mentions_get_none(tmp_path: Path) -> None:
+async def test_unknown_dm_gets_one_code(tmp_path: Path) -> None:
     channel, gateway = _slack(_pairing(tmp_path), tmp_path)
     received = await _collecting(channel)
 
     await gateway.handle_message(_message(COWORKER, "hi"))
     await gateway.handle_message(_message(COWORKER, "hi again"))
-    await gateway.handle_message(_message("USTRANGER", "hey", channel_id="C1", is_dm=False))
 
     assert received == []
     assert len(gateway.posts) == 1
     assert len(_issued_code(gateway)) == len("K7QM3XRD")
+
+
+async def test_channel_mention_sends_code_in_requesters_dm_only(tmp_path: Path) -> None:
+    pairing = _pairing(tmp_path)
+    channel, gateway = _slack(pairing, tmp_path)
+    received = await _collecting(channel)
+
+    mention = _message(COWORKER, "let me in", channel_id="C1", is_dm=False)
+    await gateway.handle_message(mention)
+    await gateway.handle_message(mention)
+
+    assert received == []
+    assert len(gateway.posts) == 1
+    dm_id, _, thread_ts = gateway.posts[0]
+    assert (dm_id, thread_ts) == (f"D{COWORKER}", None)
+    code = gateway.posts[0][1].split("code: ")[1].split(".")[0].replace("-", "")
+    paired = pairing.store.approve("slack", code, now=pairing.now())
+    assert paired is not None
+    assert paired.conversation_id == dm_id
+
+
+async def test_channel_mention_does_not_open_dm_for_known_sender(tmp_path: Path) -> None:
+    pairing = _pairing(tmp_path)
+    channel, gateway = _slack(pairing, tmp_path)
+    await _collecting(channel)
+    await gateway.handle_message(_message(COWORKER, "hi"))
+    pairing.store.approve("slack", _issued_code(gateway), now=pairing.now())
+    gateway.posts.clear()
+
+    async def unexpected_dm(user_id: str) -> str:
+        pytest.fail(f"DM opened for known sender {user_id}")
+
+    gateway.open_dm = unexpected_dm
+    for sender in (COWORKER, OPERATOR):
+        await gateway.handle_message(_message(sender, "hi", channel_id="C1", is_dm=False))
+
+    assert gateway.posts == []
+
+
+async def test_channel_mention_without_dm_access_does_not_create_request(tmp_path: Path) -> None:
+    pairing = _pairing(tmp_path)
+    channel, gateway = _slack(pairing, tmp_path)
+    received = await _collecting(channel)
+
+    async def unavailable(user_id: str) -> str:
+        msg = f"Cannot DM {user_id}"
+        raise ValueError(msg)
+
+    gateway.open_dm = unavailable
+    await gateway.handle_message(_message(COWORKER, "hi", channel_id="C1", is_dm=False))
+
+    assert received == []
+    assert gateway.posts == []
+    assert pairing.store.state("slack", now=pairing.now()).pending == {}
+
+
+async def test_channel_mention_respects_pairing_reply_flag(tmp_path: Path) -> None:
+    pairing = _pairing(tmp_path)
+    channel, gateway = _slack(SenderPairing(pairing.store, "slack", reply=False), tmp_path)
+    await _collecting(channel)
+
+    await gateway.handle_message(_message(COWORKER, "hi", channel_id="C1", is_dm=False))
+
+    assert gateway.posts == []
+    pending = pairing.store.state("slack", now=pairing.now()).pending[COWORKER]
+    assert pending.conversation_id == f"D{COWORKER}"
 
 
 async def test_paired_coworker_is_admitted_in_their_dm_only(tmp_path: Path) -> None:

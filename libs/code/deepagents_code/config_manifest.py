@@ -2382,6 +2382,16 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         cli_flag="--set-default-model",
     ),
     ConfigOption(
+        key="models.fallback",
+        group="Models",
+        summary=(
+            "Optional model spec used when the primary model exhausts its retry "
+            "delay budget."
+        ),
+        kind=OptionKind.STR,
+        toml_keys=("models", "fallback"),
+    ),
+    ConfigOption(
         key="models.recent",
         group="Models",
         summary="Most recently switched-to model (managed by the app).",

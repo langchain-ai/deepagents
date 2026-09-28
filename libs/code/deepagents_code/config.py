@@ -3255,6 +3255,14 @@ middleware and the config resolver never drift.
 """
 
 MODEL_RETRIES_ATTR = "_deepagents_model_retries"
+MODEL_FALLBACK_ATTR = "_deepagents_model_fallback"
+MODEL_FALLBACK_MODEL_ATTR = "_deepagents_fallback_model"
+
+
+class RetryDelayBudgetExceededError(Exception):
+    """Signal that a configured fallback should handle a delay-budget failure."""
+
+
 """Private model attribute carrying the budget resolved when it was built."""
 
 
@@ -6552,6 +6560,7 @@ def _apply_profile_overrides(
 def create_model(
     model_spec: str | None = None,
     *,
+    fallback_model_spec: str | None = None,
     extra_kwargs: dict[str, Any] | None = None,
     profile_overrides: dict[str, Any] | None = None,
     cli_max_retries: int | None = None,
@@ -6571,6 +6580,9 @@ def create_model(
             name for auto-detection (e.g., `'claude-sonnet-4-5'`).
 
                 If not provided, uses environment-based defaults.
+        fallback_model_spec: Optional model used when this model exhausts the
+            interactive retry delay budget. The configured `[models].fallback`
+            value is used when this is not provided.
         extra_kwargs: Additional kwargs to pass to the model constructor.
 
             These take highest priority, overriding values from the config file,
@@ -6631,6 +6643,9 @@ def create_model(
         warn_on_split_credential_source,
     )
 
+    config = ModelConfig.load()
+    if fallback_model_spec is None:
+        fallback_model_spec = config.fallback_model
     if not model_spec:
         model_spec = _get_default_model_spec()
 
@@ -6639,7 +6654,6 @@ def create_model(
     # parsed provider is explicitly configured.
     provider: str
     model_name: str
-    config = ModelConfig.load()
     inferred_provider = detect_provider(model_spec)
     parsed = ModelSpec.try_parse(model_spec)
     if parsed and parsed.provider in config.providers:
@@ -6898,6 +6912,19 @@ def create_model(
             "will use its startup budget instead",
             model_name,
         )
+
+    if fallback_model_spec and fallback_model_spec != resolved_spec:
+        fallback = create_model(
+            fallback_model_spec,
+            extra_kwargs=extra_kwargs,
+            profile_overrides=profile_overrides,
+            cli_max_retries=cli_max_retries,
+            bind_preserved_thinking=bind_preserved_thinking,
+            fallback_model_spec="",
+        )
+        setattr(model, MODEL_FALLBACK_MODEL_ATTR, fallback.model)
+        setattr(model, MODEL_RETRIES_ATTR, model_retries)
+        setattr(model, MODEL_FALLBACK_ATTR, True)
 
     # Extract context limit and modality support from model profile
     context_limit: int | None = None

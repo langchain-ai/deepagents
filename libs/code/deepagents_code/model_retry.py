@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import math
 import random
+import threading
 import time
 import uuid
 from contextlib import contextmanager
@@ -43,7 +44,10 @@ from langgraph.pregel._messages import (  # noqa: PLC2701  # not publicly re-exp
 
 from deepagents_code.config import (
     DEFAULT_MODEL_RETRIES,
+    MODEL_FALLBACK_ATTR,
+    MODEL_FALLBACK_MODEL_ATTR,
     MODEL_RETRIES_ATTR,
+    RetryDelayBudgetExceededError,
 )
 
 if TYPE_CHECKING:
@@ -108,11 +112,13 @@ _TRANSIENT_SDK_EXC_NAMES = frozenset(
 _HTTP_SERVER_ERROR_FLOOR = 500
 _HTTP_SERVER_ERROR_CEILING = 600
 _RETRY_STATUS_FALLBACK = "Retrying model request"
-# Total sleep the interactive model node may spend across one call's retries.
+# Total sleep the interactive model node may spend across one agent turn.
 # Per-delay caps bound nothing (see `_delay_budget_guard`): five honoured
 # `Retry-After` hints of `_MAX_RETRY_AFTER_SECONDS` each would stall a turn for
 # five minutes behind a spinner. One full honoured hint still fits.
 _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS = 60.0
+
+
 # What the product says when an attempt is superseded. Every surface renders
 # some part of this set, so the wording lives with the event builders rather
 # than being spelled once per client.
@@ -700,6 +706,7 @@ def _delay_budget_guard(
     max_total_delay: float | None,
     *,
     label: str = "Auxiliary model",
+    spent: list[float] | None = None,
 ) -> Callable[[Exception, int, float], bool]:
     """Build a guard that keeps total retry sleep within `max_total_delay`.
 
@@ -719,24 +726,24 @@ def _delay_budget_guard(
             policy.
         label: Sentence-leading subject for the refusal log, so an interactive
             stall reads differently from an auxiliary one.
+        spent: Shared mutable cumulative sleep total, when one spans calls.
 
     Returns:
         A `retry_guard` callable for the shared retry loops.
     """
-    spent = 0.0
+    total_spent = spent if spent is not None else [0.0]
 
     def guard(exc: Exception, attempt: int, delay: float) -> bool:  # noqa: ARG001
-        nonlocal spent
         if max_total_delay is None:
             return True
-        if spent + delay <= max_total_delay:
-            spent += delay
+        if total_spent[0] + delay <= max_total_delay:
+            total_spent[0] += delay
             return True
         logger.warning(
             "%s retries would wait %.1fs past the total delay budget of "
             "%.1fs; surfacing %s instead",
             label,
-            spent + delay - max_total_delay,
+            total_spent[0] + delay - max_total_delay,
             max_total_delay,
             type(exc).__name__,
         )
@@ -1089,6 +1096,44 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             raise TypeError(msg)
         self.max_retries = max_retries
         self.stream_output_is_visible = stream_output_is_visible
+        self._turn_delay_budgets: dict[object, list[float]] = {}
+        self._turn_delay_budgets_lock = threading.Lock()
+
+    @staticmethod
+    def _turn_key(request: ModelRequest) -> object:
+        runtime = getattr(request, "runtime", None)
+        execution_info = getattr(runtime, "execution_info", None)
+        for source in (execution_info, getattr(runtime, "config", None), runtime):
+            for name in ("turn_id", "run_id", "invocation_id"):
+                value = (
+                    source.get(name)
+                    if isinstance(source, dict)
+                    else getattr(source, name, None)
+                )
+                if value is not None:
+                    return (name, str(value))
+            if isinstance(source, dict):
+                configurable = source.get("configurable")
+                if isinstance(configurable, dict):
+                    for name in ("turn_id", "run_id", "invocation_id"):
+                        value = configurable.get(name)
+                        if value is not None:
+                            return (name, str(value))
+        return ("runtime", id(runtime))
+
+    def _turn_delay_budget(self, request: ModelRequest) -> list[float]:
+        key = self._turn_key(request)
+        with self._turn_delay_budgets_lock:
+            return self._turn_delay_budgets.setdefault(key, [0.0])
+
+    @staticmethod
+    def _model_lane(request: ModelRequest) -> str:
+        model = getattr(request, "model", None)
+        provider = getattr(model, "provider", None)
+        if isinstance(provider, str) and provider:
+            return provider
+        model_name = getattr(model, "model_name", None) or getattr(model, "model", None)
+        return str(model_name or type(model).__name__)
 
     @staticmethod
     def _emit_stream_event(request: ModelRequest, event: dict[str, object]) -> None:
@@ -1116,6 +1161,9 @@ class CodeModelRetryMiddleware(AgentMiddleware):
         exc: Exception,
         call_id: str,
         has_streamed: bool,
+        *,
+        cumulative_delay: float | None = None,
+        attempted_delay: float | None = None,
     ) -> None:
         event = build_retry_event(
             attempt,
@@ -1124,6 +1172,14 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             failed_attempt=attempt - 1,
             output_may_have_started=has_streamed and self.stream_output_is_visible,
         )
+        if cumulative_delay is not None and attempted_delay is not None:
+            event["message"] = (
+                f"Retrying {self._model_lane(request)} after "
+                f"{cumulative_delay:.1f}s total; next wait {attempted_delay:.1f}s"
+            )
+            event["provider"] = self._model_lane(request)
+            event["cumulative_delay"] = cumulative_delay
+            event["attempted_delay"] = attempted_delay
         # The user-facing event stays deliberately vague, but the log must name
         # the cause: only the last exception is re-raised, so an attempt logged
         # without its type and status leaves no way to tell a run of rate
@@ -1153,6 +1209,7 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             The successful model response.
         """
         max_retries = self._request_max_retries(request)
+        turn_spent = self._turn_delay_budget(request)
         stream_tracker = _MessageStreamTracker()
         call_id = uuid.uuid4().hex
         current_attempt = 0
@@ -1178,14 +1235,39 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             )
             current_attempt = attempt
 
-        return _retry_call(
-            call,
-            max_retries=max_retries,
-            on_retry=on_retry,
-            retry_guard=_delay_budget_guard(
-                _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS, label="Interactive model"
-            ),
-        )
+        def retry_guard(exc: Exception, attempt: int, delay: float) -> bool:
+            with self._turn_delay_budgets_lock:
+                allowed = _delay_budget_guard(
+                    _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS,
+                    label="Interactive model",
+                    spent=turn_spent,
+                )(exc, attempt, delay)
+            if not allowed:
+                self._emit_retry_status(
+                    request,
+                    attempt,
+                    max_retries,
+                    exc,
+                    call_id,
+                    stream_tracker.has_streamed,
+                    cumulative_delay=turn_spent[0],
+                    attempted_delay=delay,
+                )
+                if getattr(request.model, MODEL_FALLBACK_ATTR, False):
+                    raise RetryDelayBudgetExceededError from exc
+            return allowed
+
+        try:
+            return _retry_call(
+                call,
+                max_retries=max_retries,
+                on_retry=on_retry,
+                retry_guard=retry_guard,
+            )
+        except RetryDelayBudgetExceededError:
+            fallback = getattr(request.model, MODEL_FALLBACK_MODEL_ATTR)
+            request.model = fallback
+            return handler(request)
 
     async def awrap_model_call(
         self,
@@ -1198,6 +1280,7 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             The successful model response.
         """
         max_retries = self._request_max_retries(request)
+        turn_spent = self._turn_delay_budget(request)
         stream_tracker = _MessageStreamTracker()
         call_id = uuid.uuid4().hex
         current_attempt = 0
@@ -1223,11 +1306,36 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             )
             current_attempt = attempt
 
-        return await _aretry_call(
-            call,
-            max_retries=max_retries,
-            on_retry=on_retry,
-            retry_guard=_delay_budget_guard(
-                _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS, label="Interactive model"
-            ),
-        )
+        def retry_guard(exc: Exception, attempt: int, delay: float) -> bool:
+            with self._turn_delay_budgets_lock:
+                allowed = _delay_budget_guard(
+                    _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS,
+                    label="Interactive model",
+                    spent=turn_spent,
+                )(exc, attempt, delay)
+            if not allowed:
+                self._emit_retry_status(
+                    request,
+                    attempt,
+                    max_retries,
+                    exc,
+                    call_id,
+                    stream_tracker.has_streamed,
+                    cumulative_delay=turn_spent[0],
+                    attempted_delay=delay,
+                )
+                if getattr(request.model, MODEL_FALLBACK_ATTR, False):
+                    raise RetryDelayBudgetExceededError from exc
+            return allowed
+
+        try:
+            return await _aretry_call(
+                call,
+                max_retries=max_retries,
+                on_retry=on_retry,
+                retry_guard=retry_guard,
+            )
+        except RetryDelayBudgetExceededError:
+            fallback = getattr(request.model, MODEL_FALLBACK_MODEL_ATTR)
+            request.model = fallback
+            return await handler(request)

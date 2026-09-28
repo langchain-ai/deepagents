@@ -3223,6 +3223,9 @@ class ModelConfig:
     default_model: str | None = None
     """The user's intentional default model (from config file `[models].default`)."""
 
+    fallback_model: str | None = None
+    """Optional model used when the primary model exhausts its retry delay budget."""
+
     recent_model: str | None = None
     """The most recently switched-to model (from config file `[models].recent`)."""
 
@@ -3436,6 +3439,7 @@ class ModelConfig:
 
             option_keys = (
                 "models.default",
+                "models.fallback",
                 "models.recent",
                 "models.summarization_default",
                 "models.auto_classifier",
@@ -3476,6 +3480,12 @@ class ModelConfig:
                 default_model=_toml_model_spec(
                     resolved["models.default"],
                     key="default",
+                    path=config_path,
+                    source_label=source_label,
+                ),
+                fallback_model=_toml_model_spec(
+                    resolved["models.fallback"],
+                    key="fallback",
                     path=config_path,
                     source_label=source_label,
                 ),
@@ -3536,6 +3546,7 @@ class ModelConfig:
         # Warn if a model field is set but doesn't use provider:model format
         model_fields = (
             ("default_model", self.default_model, "anthropic:claude-sonnet-4-5"),
+            ("fallback_model", self.fallback_model, "openai:gpt-5.4-mini"),
             ("recent_model", self.recent_model, "anthropic:claude-sonnet-4-5"),
             (
                 "summarization_default_model",

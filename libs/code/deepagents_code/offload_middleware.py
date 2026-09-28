@@ -494,7 +494,10 @@ type OffloadStatus = Literal[
 
 
 class OffloadResult(TypedDict):
-    """Typed result emitted by the server-owned offload operation."""
+    """Typed result emitted by the server-owned offload operation.
+
+    Handoff message and token counts describe the unchanged source thread.
+    """
 
     status: OffloadStatus
     messages_offloaded: int
@@ -1867,6 +1870,17 @@ class OffloadOperation:
             )
             return OffloadExecution({}, result)
 
+        from deepagents_code.offload import offload_storage_is_ephemeral
+
+        if handoff:
+            result = self._result(
+                "summarized",
+                messages=max(0, len(messages) - _event_cutoff(event)),
+                tokens=tokens_before,
+            )
+            result["archive_ephemeral"] = offload_storage_is_ephemeral()
+            return OffloadExecution({}, result, plan.archive)
+
         update = plan.update(None)
         new_event = update["_summarization_event"]
         new_cutoff = _event_cutoff(new_event)
@@ -1875,8 +1889,6 @@ class OffloadOperation:
             messages, new_event
         )
         file_path = new_event.get("file_path")
-        from deepagents_code.offload import offload_storage_is_ephemeral
-
         result: OffloadResult = {
             "status": "compacted",
             "messages_offloaded": max(0, new_cutoff - prior_cutoff),

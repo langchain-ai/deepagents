@@ -917,34 +917,39 @@ class TestExecuteOffload:
 
     @pytest.mark.parametrize("archived", [True, False])
     async def test_handoff_leaves_source_context_uncompacted(
-        self, archived: bool
+        self, archived: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A handoff saves cost and the transcript but never a summary event.
+        """Run the real summary operation and commit only cost to the source."""
+        from deepagents.backends import FilesystemBackend
+        from deepagents.middleware.summarization import SummarizationMiddleware
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
-        The summary seeds a new thread. Writing the event would replace the
-        source thread's context with that summary.
-        """
         from deepagents_code import offload_api
-
-        append = SimpleNamespace(path="/conversation_history/archive-1.md")
-        archive = SimpleNamespace(
-            session_id="archive-1",
-            summary="LLM summary",
-            write=AsyncMock(return_value=append if archived else None),
+        from deepagents_code.hooks.server_middleware import _PRE_TOOL_STATE_KEY
+        from deepagents_code.offload_middleware import (
+            CLICompactionMiddleware,
+            OffloadOperation,
         )
+
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        summarization = SummarizationMiddleware(
+            FakeListChatModel(responses=["LLM summary"]), backend=backend
+        )
+        compaction = CLICompactionMiddleware(summarization)
+        monkeypatch.setattr(
+            compaction, "_summarization_for_runtime", lambda _runtime: summarization
+        )
+        if not archived:
+            monkeypatch.setattr(
+                summarization, "_aoffload_to_backend", AsyncMock(return_value=None)
+            )
+        hooks = MagicMock()
+        hooks.aafter_model = AsyncMock(return_value={_PRE_TOOL_STATE_KEY: {}})
+        operation = SimpleNamespace(execute=OffloadOperation(compaction, hooks).execute)
         threads = SimpleNamespace(
             get=AsyncMock(return_value={"status": "idle"}),
             get_state=AsyncMock(return_value=_thread_state()),
             update_state=AsyncMock(),
-        )
-        operation = SimpleNamespace(
-            execute=AsyncMock(
-                return_value=OffloadExecution(
-                    {"_summarization_event": {"cutoff_index": 1, "file_path": None}},
-                    _result(archive_path=None),
-                    cast("_PendingArchive", archive),
-                )
-            )
         )
         prepared = SimpleNamespace(
             update={"_session_cost_usd": 0.25},
@@ -961,19 +966,23 @@ class TestExecuteOffload:
                 handoff=True,
             )
 
-        assert operation.execute.await_args.kwargs == {"handoff": True}
-        threads.update_state.assert_awaited_once()
-        assert threads.update_state.await_args.args == (
-            "thread-1",
-            {"_session_cost_usd": 0.25},
+        threads.update_state.assert_awaited_once_with(
+            "thread-1", {"_session_cost_usd": 0.25}
         )
         prepared.commit.assert_called_once()
         assert response["status"] == "complete"
         result = response["result"]
+        assert result["messages_offloaded"] == 0
+        assert result["messages_kept"] == 1
+        assert result["tokens_after"] == result["tokens_before"] > 0
         if archived:
             assert result["status"] == "summarized"
             assert result["summary"] == "LLM summary"
-            assert result["archive_path"] == append.path
+            archive_path = result["archive_path"]
+            assert archive_path is not None
+            transcript = (await backend.adownload_files([archive_path]))[0].content
+            assert transcript is not None
+            assert "hello" in transcript.decode("utf-8")
         else:
             assert result["status"] == "failed"
             assert result["error"]

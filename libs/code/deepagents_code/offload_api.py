@@ -1000,7 +1000,7 @@ async def _commit_handoff(
             error="The recovery transcript could not be saved.",
         )
         return
-    result.update(status="summarized", archive_path=append.path)
+    result["archive_path"] = append.path
     result["summary"] = archive.summary
 
 

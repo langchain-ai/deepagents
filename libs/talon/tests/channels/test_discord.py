@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -1420,6 +1421,42 @@ async def test_gateway_command_callback_marks_a_guild_interaction(
     await gateway.stop()
 
     assert received[0].is_dm is False
+
+
+async def test_gateway_registers_an_optional_option_for_a_command_argument(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = _install_fake_client(monkeypatch)
+    received, handler = _collector()
+
+    gateway = await _start_fake_gateway(lambda _: asyncio.sleep(0), handle_interaction=handler)
+    tree = created[0].tree
+    assert tree is not None
+    command = tree.commands["model"]
+    await command.callback(
+        FakeInteraction(channel_id=42, guild_id=None, user_id=7, interaction_id=99),
+        "other:two",
+    )
+    await gateway.stop()
+
+    [option] = command.parameters
+    assert option.required is False
+    assert option.description == COMMANDS_BY_NAME["model"].argument
+    assert received[0].argument == "other:two"
+    assert tree.commands["new"].parameters == []
+
+
+async def test_slash_command_argument_is_appended_to_its_text(tmp_path):
+    gateway = RecordingGateway()
+    channel = _operator_channel(tmp_path, gateway)
+    received, handler = _collector()
+    channel.set_message_handler(handler)
+    await channel.start()
+    inbound = _interaction("model")
+
+    await gateway.deliver_interaction(replace(inbound, argument="other:two"))
+
+    assert [message.text for message in received] == ["/model other:two"]
 
 
 def test_from_talon_config_reads_command_registration_settings(tmp_path):

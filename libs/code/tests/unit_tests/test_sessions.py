@@ -16,6 +16,74 @@ from deepagents_code.app import TextualSessionState
 
 if TYPE_CHECKING:
     import aiosqlite
+    from langchain_core.runnables import RunnableConfig
+
+
+async def test_thread_seed_is_resumable_and_preserves_later_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recovery seed supports preview and continuation without replacing work."""
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+    from langchain_core.messages import HumanMessage
+
+    monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+    values = {"messages": [HumanMessage("Saved summary")]}
+    await sessions.save_thread_seed(
+        "child", values, agent_name="agent", cwd=str(tmp_path)
+    )
+    threads = await sessions.list_threads(agent_name="agent", cwd=str(tmp_path))
+    await sessions.populate_thread_checkpoint_details(threads)
+    assert len(threads) == 1
+    assert threads[0]["initial_prompt"] == "Saved summary"
+    assert threads[0]["message_count"] == 1
+
+    async with sessions.get_checkpointer() as checkpointer:
+        graph = create_agent(
+            FakeListChatModel(responses=["Continued reply"]), checkpointer=checkpointer
+        )
+        config: RunnableConfig = {"configurable": {"thread_id": "child"}}
+        state = await graph.aget_state(config)
+        assert not state.next
+        await graph.ainvoke({"messages": [HumanMessage("Continue")]}, config)
+        await sessions.save_thread_seed(
+            "child", values, agent_name="agent", cwd=str(tmp_path)
+        )
+        state = await graph.aget_state(config)
+        assert [message.text for message in state.values["messages"]] == [
+            "Saved summary",
+            "Continue",
+            "Continued reply",
+        ]
+
+
+async def test_activity_refresh_preserves_seed_creation_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated remote activity changes recency without changing creation order."""
+    monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+    created = datetime(2025, 1, 1, tzinfo=UTC)
+    for offset, thread_id in enumerate(("older", "newer")):
+        await sessions.save_thread_seed(
+            thread_id, {"messages": []}, agent_name="agent", cwd=str(tmp_path)
+        )
+        async with sessions._connect() as conn:
+            await conn.execute(
+                "UPDATE checkpoints SET metadata = json_set(metadata, "
+                "'$.updated_at', ?) WHERE thread_id = ?",
+                ((created + timedelta(days=offset)).isoformat(), thread_id),
+            )
+            await conn.commit()
+
+    for days in (2, 3):
+        updated = created + timedelta(days=days)
+        await sessions.refresh_thread_activity("older", updated)
+        by_creation = await sessions.list_threads(sort_by="created")
+        assert [thread["thread_id"] for thread in by_creation] == ["newer", "older"]
+        assert by_creation[1]["created_at"] == created.isoformat()
+        assert by_creation[1]["updated_at"] == updated.isoformat()
+        by_activity = await sessions.list_threads(sort_by="updated")
+        assert [thread["thread_id"] for thread in by_activity] == ["older", "newer"]
 
 
 class TestGenerateThreadId:

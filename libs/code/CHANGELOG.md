@@ -2,6 +2,20 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.78](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.77...deepagents-code==0.1.78) (2026-09-28)
+
+### Features
+
+- Ask isolated side questions with `/btw` ([#6434](https://github.com/langchain-ai/deepagents/pull/6434)).
+- Offer to summarize threads and switch when the cache expires ([#6477](https://github.com/langchain-ai/deepagents/pull/6477)).
+- Persist project MCP startup denials ([#6597](https://github.com/langchain-ai/deepagents/pull/6597)).
+
+### Bug Fixes
+
+- Show 100 recent threads by default ([#6604](https://github.com/langchain-ai/deepagents/pull/6604)).
+- Restore console input after piped prompts on Windows ([#6572](https://github.com/langchain-ai/deepagents/pull/6572)).
+- Load resumed conversation history on demand ([#6342](https://github.com/langchain-ai/deepagents/pull/6342)).
+
 ## [0.1.77](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.76...deepagents-code==0.1.77) (2026-09-24)
 
 ### Bug Fixes

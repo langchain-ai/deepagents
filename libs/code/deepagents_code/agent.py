@@ -2560,6 +2560,7 @@ def create_cli_agent(
     environ: Mapping[str, str] | None = None,
     credentials_snapshot: CredentialsSnapshot | None = None,
     model_result: ModelResult | None = None,
+    profile_overrides: dict[str, object] | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -2733,6 +2734,8 @@ def create_cli_agent(
         environ: Environment snapshot frozen into local shell execution.
         credentials_snapshot: Credentials resolved from `environ` for this runtime.
         model_result: Workspace model metadata used in the generated prompt.
+        profile_overrides: Session profile fields retained when side questions
+            reconstruct the selected model without a live snapshot.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -3037,6 +3040,8 @@ def create_cli_agent(
         agent_middleware.append(ask_user_middleware)
         trusted_ask_user_tool = ask_user_middleware.tools[0]
 
+    instruction_middleware: list[MemoryMiddleware | PluginSkillsMiddleware] = []
+
     # Add memory middleware
     if enable_memory:
         memory_sources = [str(get_user_agent_md_path(assistant_id))]
@@ -3065,6 +3070,7 @@ def create_cli_agent(
                 ),
             )
         agent_middleware.append(memory_middleware)
+        instruction_middleware.append(memory_middleware)
 
         # Protect the machine-managed onboarding-name block in the user
         # AGENTS.md from being rewritten by agent file edits. The block's
@@ -3082,12 +3088,12 @@ def create_cli_agent(
             assistant_id=assistant_id,
             project_context=project_context,
         )
-        agent_middleware.append(
-            PluginSkillsMiddleware(
-                backend=FilesystemBackend(virtual_mode=False),
-                sources=sources,
-            )
+        skills_middleware = PluginSkillsMiddleware(
+            backend=FilesystemBackend(virtual_mode=False),
+            sources=sources,
         )
+        agent_middleware.append(skills_middleware)
+        instruction_middleware.append(skills_middleware)
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     artifact_routes: dict[str, BackendProtocol] = {}
@@ -3596,6 +3602,24 @@ def create_cli_agent(
         from deepagents_code.extensions.hosting import ExtensionRuntimeMiddleware
 
         agent_middleware.append(ExtensionRuntimeMiddleware(extension_registry))
+    if interactive:
+        from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
+
+        btw = BtwOperation(
+            model,
+            system_prompt,
+            environment,
+            profile_overrides=profile_overrides,
+            instruction_middleware=[
+                item
+                for item in instruction_middleware
+                if any(item is active for active in agent_middleware)
+            ],
+        )
+        # Keep capture after prompt/settings middleware, including extensions;
+        # see BtwOperation for why model selection alone cannot supply it.
+        agent_middleware.append(btw)
+        setattr(composite_backend, BTW_OPERATION_ATTR, btw)
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",

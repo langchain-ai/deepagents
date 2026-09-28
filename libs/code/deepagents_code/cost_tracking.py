@@ -10,6 +10,11 @@ checkpoint.
 The client is a reader: it renders the streamed total and never maintains its own
 lifetime figure.
 
+Side questions use an isolated recorder and persist their subtotal in the sessions
+database (see `btw_cost`). They can finish after the graph stops, so their spend
+cannot depend on a later checkpoint. The client combines the independently
+reported subtotals only for presentation.
+
 Coverage is not limited to the agent's own model node. Offload/summarization and
 the Auto mode classifier invoke a model directly, outside `after_model`, and
 subagents run their own graph. `_SessionCostRecorder` — a callback handler
@@ -2664,6 +2669,40 @@ def _has_legacy_cost_history(
     )
 
 
+def _price_operation_records(
+    records: Sequence[_ModelCallRecord],
+    *,
+    fallback: tuple[str, str],
+    historical_complete: bool,
+) -> tuple[float, CostBreakdown]:
+    """Price owned usage records without retaining or modifying conversation state.
+
+    Returns:
+        The charge and its structured usage; ownership remains with the caller.
+    """
+    delta_usd = 0.0
+    breakdown = _empty_cost_breakdown(historical_complete=historical_complete)
+    for record in records:
+        model, provider = _pricing_target(record.model_name, record.provider, fallback)
+        estimate = _request_estimate(record.usage_metadata, model, provider)
+        breakdown = _merge_cost_breakdowns(
+            breakdown,
+            _breakdown_for_estimate(
+                estimate, usage_metadata=record.usage_metadata, provider=provider
+            ),
+        )
+        if estimate is None:
+            logger.warning(
+                "No pricing for operation model call %r (provider %r); "
+                "its cost is omitted from the thread total",
+                record.model_name,
+                record.provider,
+            )
+        else:
+            delta_usd += estimate.total_cost_usd
+    return delta_usd, breakdown
+
+
 def prepare_operation_cost(
     state: CostState,
     thread_id: str,
@@ -2684,39 +2723,12 @@ def prepare_operation_cost(
 
     """
     records = _drain_recorded_costs(thread_id)
-    fallback = _checkpointed_model_spec(state)
-    delta_usd = 0.0
-    breakdown = _empty_cost_breakdown(
-        historical_complete=not _has_legacy_cost_history(state)
-    )
     try:
-        for record in records:
-            estimate = _request_estimate(
-                record.usage_metadata,
-                *_pricing_target(record.model_name, record.provider, fallback),
-            )
-            breakdown = _merge_cost_breakdowns(
-                breakdown,
-                _breakdown_for_estimate(
-                    estimate,
-                    usage_metadata=record.usage_metadata,
-                    provider=_pricing_target(
-                        record.model_name, record.provider, fallback
-                    )[1],
-                ),
-            )
-            if estimate is None:
-                # Matches `CostTrackingMiddleware`: silently omitting an
-                # unpriceable call leaves the total quietly short, so name what
-                # could not be priced.
-                logger.warning(
-                    "No pricing for operation model call %r (provider %r); "
-                    "its cost is omitted from the thread total",
-                    record.model_name,
-                    record.provider,
-                )
-                continue
-            delta_usd += estimate.total_cost_usd
+        delta_usd, breakdown = _price_operation_records(
+            records,
+            fallback=_checkpointed_model_spec(state),
+            historical_complete=not _has_legacy_cost_history(state),
+        )
     except BaseException:
         if not _restore_recorded_costs(thread_id, records):
             # `_restore_recorded_costs` returns `bool` so callers can report a
@@ -3259,8 +3271,8 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                     "type": SESSION_COST_EVENT_TYPE,
                     "version": SESSION_COST_EVENT_VERSION,
                     "total": max(float(prior_usd), 0.0) + delta_usd,
-                    "thread_id": _thread_id(runtime) or "",
                     "breakdown": absolute_breakdown,
+                    "thread_id": _thread_id(runtime) or "",
                     # Pricing runs here, which in a remote deployment is not the
                     # client's process. Without this the client can only inspect
                     # its own install and would blame the user's model choice

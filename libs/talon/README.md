@@ -4,12 +4,12 @@ Deep Agents Talon is the local runtime host for long-running Deep Agents. It own
 
 > **Experimental:** Talon is an experimental, alpha-status runtime and is subject to change or removal at any time. It is not intended for production or enterprise use.
 >
-> **Security support:** Talon does not yet implement production-grade security controls such as complete human-in-the-loop (HITL) approval policy, channel administrator controls, sandbox-backed execution isolation, or multi-tenant boundaries. Channel access should be treated as direct access to the operator's agent, model credentials, MCP tools, and local host resources. We do not accept security vulnerability reports for the absence of these known, unimplemented Talon hardening features while Talon remains experimental.
+> **Security support:** Talon does not yet implement production-grade security controls such as complete human-in-the-loop (HITL) approval policy, channel administrator controls, or multi-tenant boundaries. [Sandboxed execution](#sandboxed-execution) is opt-in and does not cover MCP tools. Channel access should be treated as direct access to the operator's agent, model credentials, MCP tools, and local host resources. We do not accept security vulnerability reports for the absence of these known, unimplemented Talon hardening features while Talon remains experimental.
 
 Talon currently includes:
 
 - A host process with graceful shutdown, per-conversation interrupt-and-continue, and `/stop` cancellation.
-- A generic channel protocol plus WhatsApp, Telegram, and Discord adapters (WhatsApp is backed by a loopback Node bridge).
+- A generic channel protocol plus WhatsApp, Telegram, Discord, and Slack adapters (WhatsApp is backed by a loopback Node bridge).
 - A persistent cron scheduler with agent-facing cron tool helpers.
 - MCP tool loading from explicit config paths or `~/.deepagents/.mcp.json`.
 - Optional LangSmith tracing for each channel or cron-triggered run.
@@ -29,6 +29,29 @@ If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful fo
 
 Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. Offloaded conversation history and large tool results live in the assistant home’s `artifacts/` directory. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
+## Sandboxed execution
+
+By default the agent's shell and file tools run on the host. Set `DEEPAGENTS_TALON_SANDBOX` to a sandbox provider to run them in a remote sandbox instead:
+
+```bash
+DEEPAGENTS_TALON_SANDBOX=langsmith AGENT_MODEL=<provider>:<model-id> uv run deepagents-talon
+```
+
+Under systemd, put the variable in the service's environment file instead.
+
+Talon uses the `deepagents-code` sandbox providers: `langsmith` works out of the box, and `agentcore`, `daytona`, `modal`, `runloop`, and `vercel` need the matching extra, for example `uv run --with 'deepagents-code[daytona]' deepagents-talon`. Each provider reads its own credentials (such as `LANGSMITH_API_KEY` or `DAYTONA_API_KEY`) in the Talon process; they are not forwarded into the sandbox.
+
+| Variable | Purpose |
+| --- | --- |
+| `DEEPAGENTS_TALON_SANDBOX` | Provider name. Unset keeps host execution. |
+| `DEEPAGENTS_TALON_SANDBOX_ID` | Attach to an existing sandbox instead of creating one. Talon never deletes it. |
+| `DEEPAGENTS_TALON_SANDBOX_SNAPSHOT` | Snapshot or blueprint for providers that support one (`langsmith`, `runloop`). LangSmith defaults to `talon-<assistant_id>`, because snapshot names are shared across a workspace. |
+| `DEEPAGENTS_TALON_SANDBOX_SETUP` | Host path to a script run once after the sandbox starts. |
+
+Talon creates the sandbox at startup and deletes it on shutdown, so sandbox files do not survive a restart unless you set `DEEPAGENTS_TALON_SANDBOX_ID`. If the sandbox cannot start, Talon exits with an error rather than falling back to host execution. The first LangSmith start builds the snapshot and can outlast the provider's wait; Talon then exits, and the next start uses the snapshot once it is ready. Stopping Talon with SIGTERM while the sandbox is still starting can leave it running; attach with `DEEPAGENTS_TALON_SANDBOX_ID` if that matters.
+
+The assistant's `skills/` and `memory/` directories stay on the host so skills and memory keep working; every other path, including large tool results, lives in the sandbox. `tools.json` and other assistant state are not reachable from sandbox tools. Memory paths from `DEEPAGENTS_TALON_MEMORY_PATHS` or the manifest must sit inside the assistant's `memory/` directory; Talon ignores others with a warning. Extra `DEEPAGENTS_TALON_SKILLS_DIRS` resolve inside the sandbox. MCP tools, web tools, and channel media handling still run on the host, so the sandbox is not a multi-tenant boundary.
+
 ## Conversation history
 
 Talon archives channel conversations in `checkpoints.sqlite` without automatic
@@ -42,7 +65,8 @@ text, tool-call arguments, and distinct message revisions are retained.
   timeouts leave history intact; deletion failures may leave a partial reset that
   you can retry. Because the deletion cannot be undone and Talon does not ask for
   confirmation, this command is deliberately left out of `/help` and is not
-  registered as a Discord slash command: type it in full to use it.
+  registered as a Discord slash command: type it in full to use it (on Slack,
+  `@Talon /reset-all-history` in a thread, or `/talon reset-all-history` in a DM).
 
 Reset does not remove cron jobs, memory files, downloaded media, traces, or backups.
 Attachment binaries and archive-tool results are not indexed. Scheduled runs do not
@@ -242,8 +266,8 @@ edit. An operator is required even when its prompt is `false`. In `self` exposur
 messages identified as `from_self` qualify without an extra operator list;
 otherwise only the configured channel operator IDs qualify, not chat/user
 allowlists or mention matches. Configure `DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID`,
-`DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID`, or `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID`
-for the applicable channel. Unidentified senders, scheduled runs, detached workers,
+`DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID`, `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID`, or
+`DEEPAGENTS_TALON_SLACK_OPERATOR_ID` for the applicable channel. Unidentified senders, scheduled runs, detached workers,
 and background-result follow-ups cannot edit policy. Unattended follow-ups cannot
 start interactive approvals or authorization flows.
 
@@ -359,13 +383,90 @@ AGENT_MODEL=<provider>:<model-id> \
 uv run --directory libs/talon deepagents-talon --discord
 ```
 
-Talon's commands are also registered as native Discord slash commands, so typing `/` in a chat with the bot offers `/help`, `/new`, `/stop`, and `/mcp-reload` with autocomplete. The reply arrives as that command's own response rather than as a separate message. `/reset-all-history` is deliberately not registered, because it deletes stored history irreversibly and Talon has no confirmation step; it still works when typed in full.
+Talon's commands are also registered as native Discord slash commands, so typing `/` in a chat with the bot offers `/help`, `/new`, `/stop`, `/mcp-reload`, `/context-doctor`, and `/model` with autocomplete. The reply arrives as that command's own response rather than as a separate message. `/reset-all-history` is deliberately not registered, because it deletes stored history irreversibly and Talon has no confirmation step; it still works when typed in full.
 
 Registration needs the **`applications.commands`** scope alongside `bot` in the bot's invite URL. A bot invited with only `bot` still receives messages, but a guild-scoped registration is rejected. Registration runs once per process, the first time the Gateway reports ready; a failure is logged and leaves the channel connected and usable. Because Discord requires a response to every slash command, an invocation that the exposure policy refuses now receives a brief private refusal, where a typed command is silently ignored — slash commands are visible to anyone who can see the bot, so the exposure policy, not their visibility, is what restricts use.
 
 `DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID` scopes registration to one guild, which applies immediately and is useful while developing; global registration can take several minutes to propagate but is the only kind that reaches DMs, so leave this unset for an operator-DM deployment. `DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS=false` disables registration entirely, leaving commands available as typed text.
 
 `conversation_id` is the Discord channel ID, which works uniformly for DM channels and guild text channels. In `allowlist` mode, `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS` allows DMs from specific Discord user IDs regardless of channel, while `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS` allows messages from specific channel IDs (DM or guild). `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure, the default mode, which only accepts DMs from those operators. Outbound text over Discord's 2000-character message limit is split into multiple separate messages sent in order; outbound media is sent as a file attachment with the caption as the message content when it fits, or as a preceding separate message otherwise. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB). If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
+
+## Slack
+
+The Slack channel uses [`slack_sdk`](https://docs.slack.dev/tools/python-slack-sdk/) Socket Mode, so Talon opens an outbound WebSocket and needs no public HTTP endpoint. Create an app at [api.slack.com/apps](https://api.slack.com/apps) with **From a manifest**, using this manifest as a starting point:
+
+```yaml
+display_information:
+  name: Talon
+features:
+  bot_user:
+    display_name: Talon
+    always_online: true
+  app_home:
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  slash_commands:
+    - command: /talon
+      description: Run a Talon command
+      usage_hint: "[help | new | stop | mcp-reload | context-doctor]"
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - chat:write
+      - commands
+      - files:read
+      - files:write
+      - im:history
+      - im:write
+      - reactions:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.im
+      - reaction_added
+  socket_mode_enabled: true
+```
+
+Install the app to the workspace, copy the **Bot User OAuth Token** (`xoxb-`), and under **Basic Information → App-Level Tokens** create a token with the `connections:write` scope (`xapp-`):
+
+```bash
+DEEPAGENTS_TALON_SLACK_ENABLED=true \
+DEEPAGENTS_TALON_SLACK_BOT_TOKEN=xoxb-... \
+DEEPAGENTS_TALON_SLACK_APP_TOKEN=xapp-... \
+DEEPAGENTS_TALON_SLACK_OPERATOR_ID=U0123456789 \
+AGENT_ASSISTANT_ID=slack-local \
+uv run --directory libs/talon deepagents-talon --slack
+```
+
+A direct message with the bot is one conversation. In channels the bot answers only when mentioned, and it replies in a thread under the mentioning message. Each thread is its own conversation, identified as `<channel id>:<thread ts>`, so mention the bot again in the thread to continue. Invite the bot to a channel with `/invite @Talon` before mentioning it there.
+
+Slack treats any message that starts with `/` as a slash command, so Talon's commands are reached through the single `/talon` command: `/talon new`, `/talon stop`, `/talon mcp-reload`, `/talon context-doctor`, and `/talon help` (the default when no argument is given). The command can have any name: an app that names it `/talon-dev` in its manifest uses `/talon-dev new`, and so on. Anything after the command name is passed along as typed, so `/talon model <provider>:<model>` behaves like `/model <provider>:<model>`. A slash command carries no thread, so `/talon` works only in a direct message with the bot. In a channel thread, mention the bot followed by the command instead, for example `@Talon /new`. Refusals from `/talon`, including one from the exposure policy, are shown only to the invoking user.
+
+`DEEPAGENTS_TALON_SLACK_OPERATOR_ID` accepts one or more comma-separated Slack user IDs (member IDs starting with `U`) for `self` exposure, the default mode. In `allowlist` mode, `DEEPAGENTS_TALON_SLACK_ALLOWLIST_USERS` allows DMs from specific user IDs, and `DEEPAGENTS_TALON_SLACK_ALLOWLIST_CHATS` allows mentions in specific channel IDs, covering every thread in them. `open` mode also requires `DEEPAGENTS_TALON_SLACK_OPEN_ACK=allow-arbitrary-senders`. Reactions are accepted only from operators and allowlisted users; a 👍 (`:+1:`, `:thumbsup:`, or `:thumbsup_all:`) or 👎 reaction on an approval prompt approves or rejects it, as on other channels. To finish an MCP OAuth sign-in, paste the callback URL into the DM, or into the thread after mentioning the bot.
+
+Outbound Markdown is converted to Slack `mrkdwn`, and `&`, `<`, and `>` are always escaped, so agent output cannot mention users or notify `@channel`. Text over 4000 characters is split across posts. Media is uploaded as a file with the caption as its comment. Inbound files are downloaded with the bot token, which is sent only to `https://files.slack.com`, and redirects are refused. `DEEPAGENTS_TALON_SLACK_MEDIA_DIR` overrides the download directory, and `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` applies here as on other channels. Slack has no bot typing indicator, so none is shown while the agent works.
+
+## Sender pairing
+
+Sender pairing lets the operator admit a new person on Discord, Telegram, or Slack without editing env and restarting. It is off by default. It is unrelated to WhatsApp's QR pairing. WhatsApp does not support it: its bridge runs on the operator's own account, so it would answer everyone who texts them.
+
+Set `DEEPAGENTS_TALON_DISCORD_PAIRING=enabled`, `DEEPAGENTS_TALON_TELEGRAM_PAIRING=enabled`, or `DEEPAGENTS_TALON_SLACK_PAIRING=enabled`. Pairing works with `self` and `allowlist` exposure and is refused with `open`.
+
+On Slack, the client treats a message starting with `/` as a slash command, so the operator reaches `/pair` through `/talon` in their DM with the bot: `/talon pair approve K7QM-3XRD`, `/talon pair list`, and `/talon pair revoke <member-id>`. Slack sender ids are member ids starting with `U`, and `/talon pair list` shows them. The requester can DM the bot or mention it in a channel the app has joined. The Slack app's Messages tab must be enabled, as it is in the manifest above. The `im:write` scope lets Talon open a DM for a channel mention; existing installations must add that scope and reinstall the app.
+
+1. An unknown sender DMs or mentions the bot in a channel. Their message is dropped before it reaches the host or the model, and the bot sends a code such as `K7QM-3XRD` only in the sender's DM, never in the channel. If the bot cannot open the DM, no request is recorded. The code is bound to that sender on that channel, expires after 1 hour, and works once.
+2. The sender passes the code to the operator by any other means.
+3. The operator approves it with `/pair approve K7QM-3XRD` in their own DM with the bot, or with `deepagents-talon pairing approve <channel> K7QM-3XRD`, where `<channel>` is the requester's channel (`discord`, `slack`, or `telegram`); a code only approves on the channel it was issued on. The sender is told they were approved. From then on they reach the agent wherever the bot is, the way an env operator does: in their DM, by mentioning the bot in any Slack channel it has joined, and in any Discord server channel it can read.
+
+`/pair list` shows pending codes and paired senders. `/pair revoke <sender-id>` removes a sender, stops all in-flight work, including background workers, in every chat they have used since that chat was last idle, pauses the cron jobs they created in any chat, and stops any of those jobs' runs in progress so their results are not delivered. Paused jobs stay paused if the sender is approved again. The CLI has matching `list`, `approve`, and `revoke` subcommands. A CLI revoke takes effect on the sender's next message but cannot cancel a run in progress. It lists their enabled cron jobs and prints a `deepagents-talon pairing pause-jobs <channel> <sender-id> --dm <conversation-id>` command to pause them. Run that only while Talon is stopped, because the running host is the cron store's only writer.
+
+Only an operator id from `DEEPAGENTS_TALON_<CHANNEL>_OPERATOR_ID` can run `/pair`, and only in a DM. A paired sender cannot approve anyone, and the model has no pairing tool. Codes are accepted only on those operator surfaces, so strangers have nowhere to guess them. Each sender holds at most one live code, and a channel holds at most 16; further requests are dropped silently. Set `DEEPAGENTS_TALON_<CHANNEL>_PAIRING_REPLY=false` to keep the bot silent and read pending codes from `/pair list` instead.
+
+A paired sender is admitted in every chat the bot can see, like an env operator, but never gains operator controls: they cannot run `/pair` or change tool approval policy, and tool approval prompts for their runs go to them. On Discord, where the bot reads every message in the channels it can see, any message a paired sender posts in those channels starts a run. Telegram group chats stay ignored for everyone. With pairing enabled, `DEEPAGENTS_TALON_<CHANNEL>_ALLOWLIST_USERS` also admits DMs in `self` mode; allowlisted users stay DM-only. Env stays authoritative: env operators and allowlisted users never receive codes and cannot be revoked with `/pair`. Paired senders are stored in `pairing.json` in the assistant home. If that file is unreadable or invalid, only env senders are admitted.
+
+A paired sender has the same access to the agent as the operator: model credentials, MCP tools, and the local host. The agent's replies to a paired sender in a shared channel are visible to everyone in that channel, including members of other organizations in a Slack Connect channel. Because background work belongs to a chat rather than a person, revoking a sender also stops other people's in-flight work in chats the sender shared with them. Anyone admitted in a thread can edit that thread's scheduled jobs, and revocation pauses only the jobs the revoked sender created. Pair only people you would hand your terminal to.
 
 ## Tracing
 
@@ -387,8 +488,28 @@ normally. The destination is fixed by the host, and sending is disabled once the
 originating turn finishes or is superseded. Runs without a channel cannot send updates.
 
 Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
-and `/mcp-reload`), and using MCP configuration and OAuth through chat. Help does
+`/mcp-reload`, `/context-doctor`, and `/model`), and using MCP configuration and OAuth through chat. Help does
 not interrupt current work or consume a pending approval or sign-in response.
+
+Send `/context-doctor` to estimate the token cost of the configured system prompt,
+memory, skill index, and all active tool schemas (including MCP). It also shows
+the current conversation estimate and the last provider-reported input count,
+when available. Estimates exclude middleware additions and provider overhead.
+The command reads the current chat's checkpoint without calling the model,
+changing history, or interrupting active work. It reports counts, not contents.
+
+Send `/model` to see which model the current chat uses and which providers are
+available, and `/model <provider>` to list one provider's models. Talon discovers
+the models that support tool calling from the installed LangChain provider
+packages, using the same catalog as `dcode`. It lists only providers whose API key
+is set in Talon's environment. `AGENT_MODEL` (the default) is always available.
+An operator can send `/model <provider:model>` to switch the chat to one of those
+models, or `/model default` to switch back. The switch applies from the chat's
+next turn, lasts across `/new` and restarts, and does not affect other chats.
+The chat's context is sized for the selected model, so switching to a model with a
+larger or smaller context window changes when history is compacted. Scheduled jobs
+and subagents keep their own models. The model is built the first time a chat
+selects it, so a model that cannot be loaded is reported when you switch to it.
 
 Commands work as ordinary message text on every channel, and are case-insensitive
 with an optional `@bot` suffix. On Discord they are additionally registered as
@@ -478,6 +599,11 @@ uses existing confirmation controls, and verifies active attachments after reloa
 Sensitive-action and access reviews are advisory: it never edits HITL/Ask controls.
 Existing customized main instructions need a reviewed update to add this trigger.
 
+Talon also installs a `safety` skill under `skills/`, preserving existing customizations.
+Ask for a safety preflight, or use it when committing, pushing, building/publishing images,
+or adding dependencies. It provides contextual guidance, not enforced tool restrictions or
+automatic approvals; optional scanning tools are not installed automatically.
+
 On startup, homes receive any missing `AGENTS.md` files for main, `internal-research`, and
 `external-research`, with defensive prompts. External research declares `web: true` in its
 frontmatter, which is what attaches `fetch_url` and Tavily-backed `web_search` at
@@ -560,7 +686,7 @@ at 30 minutes, after which its thread is repaired and the job is recorded as fai
 
 ## Cron Schedules
 
-`create_job` and `edit_job` accept four schedule forms:
+`create_job` and `edit_job` accept five schedule forms:
 
 | Form | Kind | Example |
 | --- | --- | --- |
@@ -568,8 +694,48 @@ at 30 minutes, after which its thread is repaired and the job is recorded as fai
 | `every <N>{m,h}` | recurring | `every 6h` |
 | `at <YYYY-MM-DD> <HH:MM> <tz>` | one-shot | `at 2026-09-04 13:30 America/New_York` |
 | `daily at <HH:MM> <tz>` | recurring | `daily at 08:00 America/New_York` |
+| `cron <min> <hour> <dom> <month> <dow> <tz>` | recurring | `cron */15 * * jun mon-fri America/New_York` |
 
-The wall-clock forms require an explicit IANA timezone name; there is no default
+The `cron` form is a standard five-field crontab expression evaluated in the
+given timezone's local time:
+
+| Field | Values | Extensions |
+| --- | --- | --- |
+| minute | `0-59` | |
+| hour | `0-23` | |
+| day of month | `1-31` | `L` last day, `LW` last weekday, `15W` weekday nearest the 15th |
+| month | `1-12`, `jan`-`dec` | |
+| day of week | `0-7` (0 and 7 are Sunday), `sun`-`sat` | `5L` last Friday, `2#1` first Tuesday |
+
+Each field accepts `*`, a value, a range (`1-5`), a step (`*/15`, `9-17/2`, or
+`5/10` meaning 5 through the field maximum), and comma lists of those. `L`, `W`,
+and `#` terms stand alone in their field. `@hourly`, `@daily`/`@midnight`,
+`@weekly`, `@monthly`, and `@yearly`/`@annually` may replace the five fields, as
+in `cron @daily UTC`; `@reboot` is not supported. As in Vixie cron, when both day
+fields are restricted, a day matches if either one does; when either starts with
+`*`, both must match. So `0 0 13 * 5` fires on the 13th and on every Friday,
+while `0 0 */2 * 5` fires only on odd-numbered Fridays. An expression that can
+never fire, such as `0 0 31 2 *`, is rejected at create time.
+
+`create_job` and `edit_job` return an `upcoming` list with the next three run
+times, so the agent can check a schedule against what the user asked for.
+
+Recurring jobs accept an optional `until`, written `YYYY-MM-DD HH:MM <tz>`: the
+last local time the job may run, inclusive. "Weekends at noon for the next three
+months" is `cron 0 12 * * sat,sun <tz>` with `until` set three months out. A
+`until` that falls before the first run is rejected. A run due inside the window
+may start up to five minutes late to absorb scheduler latency; a run missed for
+longer, such as across host downtime that spans `until`, is dropped rather than
+delivered after the window closed. Pass `until=""` to `edit_job` to remove the
+bound.
+
+Jobs clean up after themselves. A job that will never run again (a one-shot that
+ran, a recurring job whose `repeat_times` cap is used up, or one whose `until`
+has passed) is deleted at the start of the next scheduler tick, whether or not
+it ever ran. A job whose last run failed is kept, so `list_jobs` still shows the
+error, until the retention window below removes it.
+
+The wall-clock and cron forms require an explicit IANA timezone name; there is no default
 zone, and legacy POSIX aliases (`EST5EDT`) and bare UTC offsets (`+02:00`) are
 rejected because they cannot express a region's future daylight-saving rules.
 
@@ -593,6 +759,10 @@ resolve deterministically:
 - An ambiguous local time repeated by a fall-back transition resolves to its
   earlier occurrence, so the job fires once.
 
+`cron` schedules follow the same two rules. Every minute of a spring-forward gap
+snaps to the same first valid minute, so `*/15 * * * *` fires once at 03:00
+rather than four times. In a repeated fall-back hour, only the first pass fires.
+
 Interval schedules stay phase-locked to their previous run, so a late scheduler
 tick does not shift an `every 15m` job off its cadence. A one-shot `at` schedule
 that has already passed is rejected at create and edit time with the resolved
@@ -611,12 +781,15 @@ Cron jobs are persisted in `cron/jobs.json` under the assistant state directory.
 - `cron.delivery_suppressed`
 - `cron.delivery_failure`
 - `cron.run_timeout`
+- `cron.job_removed`
 
 These logs complement the persisted `last_status` and `last_error` fields.
 
 ## Security and Data Lifecycle
 
-Talon is single-operator by design. It does not provide multi-tenant isolation, sandbox-backed execution isolation, production-grade HITL policy enforcement, or channel administrator boundaries. Any tool approval prompt surfaced through a channel is an experimental convenience feature, not a complete security boundary. Channel exposure should be treated as direct access to the operator's agent, model credentials, MCP tools, and local host resources.
+Talon is single-operator by design. It does not provide multi-tenant isolation, production-grade HITL policy enforcement, or channel administrator boundaries. Any tool approval prompt surfaced through a channel is an experimental convenience feature, not a complete security boundary. Channel exposure should be treated as direct access to the operator's agent, model credentials, MCP tools, and local host resources. That includes senders admitted through [sender pairing](#sender-pairing).
+
+`*_MENTION_PATTERNS` in `allowlist` mode admits any sender, in any chat, whose message text matches a pattern. Text says nothing about who sent it, so treat a mention pattern as opening that channel to anyone who can post there.
 
 Do not file security vulnerability reports for the absence of these known, unimplemented hardening features in Talon while it remains experimental. Reports about missing enterprise controls, channel admin gates, sandbox integrations, or production HITL policy are considered feature requests for a future production-ready runtime.
 
@@ -633,7 +806,7 @@ Outbound data leaves Talon through these integrations:
 Sensitive local state is stored under `~/.deepagents/<assistant_id>/` by default with `0700` directories and `0600` cron files:
 
 - `AGENTS.md`, `skills/`, and `agents/` store the materialized assistant instructions, skills, and subagent definitions.
-- `cron/jobs.json` stores cron prompts, origin conversation ids, message ids, run status, and errors. Active jobs are retained while enabled. Completed jobs are deleted on startup after `DEEPAGENTS_TALON_CRON_RETENTION_DAYS`, default `30`.
+- `cron/jobs.json` stores cron prompts, origin conversation ids, message ids, run status, and errors. Active jobs are retained while enabled. Jobs that finish successfully or pass their `until` are deleted on the next scheduler tick. Jobs whose final run failed are deleted on startup after `DEEPAGENTS_TALON_CRON_RETENTION_DAYS`, default `30`.
 - `channels/whatsapp/` stores WhatsApp `LocalAuth` credentials and Chromium profile state. These credentials are retained until the operator deletes the directory, because automatic deletion would silently unpair the channel.
 - `media/inbound/` is reserved for downloaded inbound media. Files older than `DEEPAGENTS_TALON_INBOUND_MEDIA_RETENTION_HOURS`, default `24`, are deleted on startup. Inbound and outbound channel media are capped by `DEEPAGENTS_TALON_MAX_MEDIA_BYTES`, default `1073741824` (1 GiB); WhatsApp is further clamped to `67108864` (64 MiB). The WhatsApp bridge stores downloaded inbound media under the assistant's inbound media directory and passes local paths plus MIME metadata to the host.
 

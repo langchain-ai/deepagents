@@ -117,6 +117,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         aliases=("/connect",),
     ),
     SlashCommand(
+        name="/btw",
+        description="Ask a side question without changing the conversation",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="aside question background",
+        argument_hint="[question]",
+    ),
+    SlashCommand(
         name="/clear",
         description="Start a fresh thread",
         bypass_tier=BypassTier.QUEUED,

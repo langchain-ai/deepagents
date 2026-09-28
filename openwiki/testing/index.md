@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Package-local commands and deterministic boundary tests for the Deep Agents SDK, dcode, Talon, and ACP. Use focused fake-model, in-memory, and temporary-storage tests before expanding to package or integration suites.
+- [Testing Guide](testing-guide.md) - Focused Talon verification routes for CLI bootstrap, host and runtime lifecycle, channel adapters, admission and pairing, model selection, history, sandboxes, and scheduled work. It explains deterministic seams, observable invariants, and the exact repository test commands.

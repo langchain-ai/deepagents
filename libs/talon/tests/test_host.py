@@ -7,6 +7,7 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.background import BackgroundSubagents
+from deepagents_talon.channels.slack import _convert_event
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.host import (
@@ -404,6 +405,49 @@ async def test_channel_authorization_intercepts_bound_callback_outside_model(
     assert channel.sent[-2:] == [
         ("chat", "MCP server `notion` is authorized."),
         ("chat", "authorization:completed"),
+    ]
+
+
+async def test_slack_labeled_callback_completes_authorization(tmp_path: Path) -> None:
+    channel = RecordingChannel(provider="slack")
+    agent = AuthorizationAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    conversation_id = "C1:1700000000.000100"
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id=conversation_id, text="login", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    inbound = _convert_event(
+        {
+            "type": "app_mention",
+            "channel": "C1",
+            "ts": "1700000000.000200",
+            "thread_ts": "1700000000.000100",
+            "user": "operator",
+            "text": "<http://localhost:3000/callback?code=example&amp;state=state|localhost/callback?code=…&amp;state=…>",
+        },
+        bot_id="bot",
+    )
+    assert inbound is not None
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id=inbound.conversation_id,
+            text=inbound.text,
+            sender_id=inbound.sender_id,
+        ),
+    )
+    await _wait_for_sent_count(channel, 3)
+    await host.stop()
+
+    assert agent.callbacks == ["http://localhost:3000/callback?code=example&state=state"]
+    assert [request.text for request in agent.requests] == ["login"]
+    assert channel.sent[-2:] == [
+        (conversation_id, "MCP server `notion` is authorized."),
+        (conversation_id, "authorization:completed"),
     ]
 
 

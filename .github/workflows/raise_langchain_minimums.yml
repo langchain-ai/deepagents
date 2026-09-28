@@ -323,10 +323,10 @@ jobs:
           git config --local user.name "github-actions[bot]"
           git config --local user.email "$BOT_EMAIL"
           git add -- "${files[@]}"
-          if ! git diff --cached --quiet; then
-            git commit -m "$TITLE"
-            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
-          fi
+          tree=$(git write-tree)
+          commit=$(git commit-tree "$tree" -p HEAD -p "$base_commit" -m "$TITLE")
+          git update-ref "refs/heads/$BRANCH" "$commit" HEAD
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
 
           gh pr edit "$PR_NUMBER" --body-file .minimums-pr-body
           echo "Refreshed dependency minimums PR: $PR_URL"

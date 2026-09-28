@@ -692,6 +692,82 @@ def _bind(config: ServerConfig, cwd: Any) -> Any:  # noqa: ANN401
 class TestWorkspaceRuntime:
     """Workspace runtimes retain trusted server-only configuration."""
 
+    async def test_validation_does_not_build_or_reserve_resources(
+        self, tmp_path
+    ) -> None:
+        module = _import_fresh_server_graph()
+        config = ServerConfig(sandbox_type="daytona")
+        first = _bind(config, tmp_path / "first")
+        second = _bind(config, tmp_path / "second")
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(module, "_make_graphs", new=AsyncMock()) as make,
+            blockbuster_ctx(scanned_modules=module),
+        ):
+            await module._validate_workspace_runtime(first)
+            await module._validate_workspace_runtime(second)
+
+        make.assert_not_awaited()
+        assert module._sandbox_workspace_id is None
+        assert module._server_tracing_settings is None
+        assert module._server_tracing_initialized is False
+        assert not module._workspace_runtimes
+
+    async def test_validation_refuses_owned_sandbox(self, tmp_path) -> None:
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        config = ServerConfig(sandbox_type="daytona")
+        first = _bind(config, tmp_path / "first")
+        second = _bind(config, tmp_path / "second")
+        module._claim_sandbox_workspace(config.sandbox_type, first)
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            pytest.raises(WorkspaceConflictError, match="another workspace"),
+        ):
+            await module._validate_workspace_runtime(second)
+        assert module._sandbox_workspace_id == first.workspace_id
+
+    @pytest.mark.parametrize(
+        "setting",
+        ["DEEPAGENTS_CODE_LANGSMITH_PROJECT", "DEEPAGENTS_CODE_LANGSMITH_REDACT"],
+    )
+    async def test_validation_refuses_tracing_mismatch(
+        self, tmp_path, setting: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.config import (
+            _preview_dotenv_environ,
+            _tracing_environment_values,
+            is_langsmith_redaction_enabled,
+            use_environment,
+        )
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        config = ServerConfig()
+        binding = _bind(config, tmp_path)
+        environ = _preview_dotenv_environ(start_path=tmp_path)
+        with use_environment(environ):
+            redact = is_langsmith_redaction_enabled()
+        original = (_tracing_environment_values(environ), redact)
+        monkeypatch.setattr(module, "_server_tracing_settings", original)
+        changed = dict(environ)
+        changed[setting] = (
+            "another-project"
+            if setting == "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
+            else str(not redact).lower()
+        )
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch(
+                "deepagents_code.config._preview_dotenv_environ", return_value=changed
+            ),
+            pytest.raises(WorkspaceConflictError, match="tracing settings differ"),
+        ):
+            await module._validate_workspace_runtime(binding)
+        assert module._server_tracing_settings == original
+        assert module._server_tracing_initialized is False
+
     async def test_cached_runtime_resolves_policy_off_event_loop(
         self, tmp_path
     ) -> None:
@@ -834,7 +910,10 @@ class TestWorkspaceRuntime:
 
         assert make.await_count == 2
 
-    async def test_rejects_resolved_project_policy_divergence(self, tmp_path) -> None:
+    @pytest.mark.parametrize("validate_only", [False, True])
+    async def test_rejects_resolved_project_policy_divergence(
+        self, tmp_path, validate_only: bool
+    ) -> None:
         from deepagents_code.workspace import WorkspaceConflictError
 
         module = _import_fresh_server_graph()
@@ -850,12 +929,17 @@ class TestWorkspaceRuntime:
             project_root=str(project),
             trust_project_mcp=True,
         )
+        operation = (
+            module._validate_workspace_runtime
+            if validate_only
+            else module._workspace_runtime
+        )
         with (
             patch.object(ServerConfig, "from_env", return_value=changed),
             patch.object(module, "_make_graphs", new=AsyncMock()) as make,
             pytest.raises(WorkspaceConflictError, match="project's resolved policy"),
         ):
-            await module._workspace_runtime(binding)
+            await operation(binding)
 
         make.assert_not_awaited()
 

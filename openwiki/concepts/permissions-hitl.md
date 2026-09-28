@@ -1,11 +1,8 @@
 ---
 type: security-control concept
 title: Permissions and Human Approval
-description: Explains the distinct enforcement, interruption, and approval layers for Deep Agents filesystem access, dcode interaction, and Talon tool and MCP workflows. Covers fail-closed unattended execution and the limits of human approval as a security boundary.
+description: Explains the distinct availability, approval, authorization, and containment layers across Deep Agents, dcode, and Talon. Details Talon's exact-name approval snapshots, trusted operator authority, host-mediated decisions, model switching, and fail-closed unattended work.
 tags: [permissions, human-in-the-loop, talon, security, mcp]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-25T08:06:00.203Z
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -51,6 +48,8 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_background.py
   - id: openwiki-source-d5fcb1eee6234fc8886b27c3
     resource: repo://libs/talon/tests/unit_tests/test_mcp_callbacks.py
+  - id: openwiki-source-817808ec0e85107297729a56
+    resource: repo://libs/talon/tests/unit_tests/test_model_selection.py
   - id: openwiki-source-8de0ff38635f214c7268d8e7
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_authorization.py
   - id: openwiki-source-6cf260dd7a6018657221ec15
@@ -59,7 +58,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
   - id: openwiki-source-d4964daa078854bf4438d764
     resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-28T08:12:24.067Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-28T08:12:24.067Z" }
 ---
 
 # Permissions and Human Approval
@@ -102,66 +104,53 @@ flowchart TD
 
 Caption: Filesystem denial is tool enforcement, while filesystem `interrupt` is pre-execution graph routing.
 
-## Talon policy and approval interface
+## Talon approval policy, authority, and containment
 
-Talon's `ToolApprovalStore` is a persisted exact-tool-name boolean policy, not an authorization credential. It validates a bounded JSON file that must be regular and non-symlinked. An enabled name produces approve/reject graph-interrupt configuration; an absent or disabled name does not. Updates are locked, revision compare-and-swap operations. Each invocation captures a policy snapshot, so a successful save affects a later invocation rather than changing the graph currently running.
+Talon keeps one assistant-local `tools.json` policy. It is a flat JSON mapping of **exact tool names** to booleans: `true` adds an approve/reject graph interruption, while an absent or `false` entry adds no prompt. The default policy covers `update_tool_approvals`, `delete_conversations`, `update_mcp_server`, and `start_async_task`. This is approval-routing policy—not an access-control list: a `false` entry is not an authorization grant, does not make a tool available, and does not provide sandbox or OS containment.
 
-`ToolApprovalRequest` is the boundary between runtime and channel host. It carries the conversation ID, the **first** LangGraph interrupt ID in the ordinary-action batch, and the complete sequence of action requests. The handler returns one `approve` or `reject`, not per-action edits. The runtime expands that single outcome into the appropriate number of decisions for every ordinary interrupt before issuing one explicit LangGraph `Command(resume=...)`.
+`ToolApprovalStore` validates a bounded regular, non-symlink JSON file and freezes each read as an `ApprovalSnapshot`. Updates merge a validated batch under a path lock and use the persisted byte revision as compare-and-swap input. `get_tool_approvals` reports both saved and active revisions; a successful update says it is available on the next invocation. The runtime reads a fresh snapshot before an invocation, rebuilds its graph if needed, and binds that snapshot to the invocation. Consequently, a policy edit cannot alter the graph or read/update tool closures already in flight; an invalid policy or failed replacement blocks the next invocation rather than silently retaining an older policy.
 
-Changing the policy is separately protected. `update_tool_approvals` requires both an active invocation snapshot and operator context. `TalonHost` derives that flag from trusted channel exposure; request or route metadata cannot create it. On an attended channel turn, the sender must be identified and either be configured as an operator or be a self-authored message on `self` exposure. This gate protects the policy-editing tool only: it neither authorizes arbitrary callers nor turns HITL into containment. External MCP authorization remains separate.
+Policy edits have two independent gates:
 
-The host keeps a pending future per approval conversation, sends one formatted prompt, and resolves it from an accepted reply or reaction. Text replies may only come from the initiating sender when known. Reactions must additionally match provider, conversation, prompt message, and sender. The channel supplies a decision to the runtime; it does not directly execute or authorize the underlying tool.
+1. The **pre-edit snapshot** routes `update_tool_approvals` through HITL when that exact name was enabled. Disabling that entry cannot make the same in-flight self-edit skip its already-built interruption.
+2. The tool itself also requires `APPROVAL_OPERATOR` and an active snapshot. Thus a disabled prompt still does not authorize an edit.
 
-## Interrupt batching and explicit resume
+The host, not inbound metadata, establishes that operator context. It derives identity from the channel's trusted `ChannelExposure`: an identified configured operator qualifies, and `self` exposure may qualify a self-authored message. Allowlisted conversations, mention matching, open exposure, and fields supplied in message or route metadata do not independently create policy-edit authority. This authorization is intentionally narrow: it protects policy changes, not arbitrary tool execution. Keep tool availability, an approval prompt, operator authorization, and sandbox/OS containment as separate controls.
 
-`DeepAgentRuntime` invokes the graph using the request's conversation ID as LangGraph's thread ID. Whenever the returned state contains `__interrupt__`, it validates the complete batch before prompting anyone:
+### Tool interruption and trusted host resumption
 
-1. Every interrupt must have a nonempty ID, and IDs must be unique across **both** ordinary tool-approval interrupts and MCP elicitation interrupts. An ID-less or duplicate batch fails; it is never implicitly resumed.
-2. An interrupt identified as MCP elicitation is validated and converted to its own cancellation response. It is not an ordinary approval action.
-3. Every other interrupt must contain a nonempty sequence of mapping-valued `action_requests`; a malformed member fails the whole batch without calling the approval handler.
-4. All ordinary actions across all ordinary interrupts are flattened into one `ToolApprovalRequest`. The first ordinary interrupt ID identifies that request to the handler.
-5. The one returned decision is fanned out by action count to each ordinary interrupt. Together with the elicitation cancellation entries, the runtime sends one `Command(resume=payload)` and invokes the same graph thread again.
-
-The runtime repeats this explicit cycle only while interrupts are returned and stops with an error after `DEFAULT_MAX_APPROVAL_ROUNDS` (50). This is a bounded interrupt/resume loop, not a default approval path.
+`ToolApprovalRequest` is the runtime-to-host boundary. It contains the agent conversation ID, the first ordinary LangGraph interrupt ID, and every ordinary action request in the batch. `ToolApprovalHandler` returns exactly one `approve` or `reject`; it cannot edit individual calls. The runtime validates nonempty, unique interrupt IDs and valid action lists before it calls the host, flattens ordinary actions into one request, fans the decision back out by action count, and resumes the same graph thread with one explicit `Command(resume=...)`. Missing or duplicate IDs, malformed actions, and more than 50 approval rounds fail rather than being implicitly resumed.
 
 ```mermaid
-flowchart TD
-    Returned["Graph returns interrupt batch"] --> IDs{"All IDs present and unique"}
-    IDs -->|No| Fail["Fail without prompt"]
-    IDs -->|Yes| Split{"Classify each interrupt"}
-    Split --> Elicit["MCP elicitation"]
-    Elicit --> ElicitValid{"Nonempty unique request keys"}
-    ElicitValid -->|No| Fail
-    ElicitValid -->|Yes| Cancel["Add cancel responses"]
-    Split --> Ordinary["Ordinary action request"]
-    Ordinary --> ActionValid{"Nonempty mapping actions"}
-    ActionValid -->|No| Fail
-    ActionValid -->|Yes| Aggregate["Flatten all ordinary actions"]
-    Aggregate --> Decide{"Unattended or no handler"}
-    Decide -->|Yes| Deny["One reject decision"]
-    Decide -->|No| Prompt["One channel decision"]
-    Prompt --> Fanout["Fan out decision per interrupt"]
-    Deny --> Fanout
-    Cancel --> Resume["Build one resume payload"]
-    Fanout --> Resume
-    Resume --> Invoke["Resume same graph thread"]
+sequenceDiagram
+    participant Graph as LangGraph tool interruption
+    participant Runtime as DeepAgentRuntime
+    participant Host as TalonHost
+    participant Channel as Origin channel
+    Graph->>Runtime: ordinary interrupt batch
+    Runtime->>Runtime: validate IDs and aggregate actions
+    Runtime->>Host: ToolApprovalRequest
+    Host->>Channel: send one approval prompt
+    Channel->>Host: accepted reply or reaction
+    Host->>Runtime: approve or reject
+    Runtime->>Graph: explicit resume for every interrupt
 ```
 
-Caption: Talon validates IDs before separating elicitation cancellation from one aggregated ordinary-action decision.
+Caption: A trusted host collects one channel decision for a validated ordinary tool-interruption batch, and the runtime alone resumes the graph.
 
-### MCP elicitation is cancelled, not approved
+The host maintains one pending approval future per agent conversation and removes it on resolution. Where a sender is known, a text reply must be from that initiating sender. A reaction must also match the provider, conversation, prompt message, and sender. These checks bind the decision to the channel interaction; the channel never executes the tool or confers general authorization.
 
-Talon recognizes MCP elicitation before ordinary approval handling. A valid elicitation value has type `mcp_elicitation`, a nonempty `requests` list, and nonempty unique string `key` values. Talon resumes each key with `{ "action": "cancel" }`. It does not call `ToolApprovalHandler` or show an approve/reject prompt; this is the temporary behavior until Talon provides an elicitation UI. A malformed elicitation request list fails rather than being confused with a tool-approval request.
+MCP elicitation is different from ordinary tool approval. After unique interrupt-key validation, Talon cancels valid `mcp_elicitation` requests with `{ "action": "cancel" }`; it does not send them to `ToolApprovalHandler`. A mixed batch combines those cancellation entries with the ordinary-action decision in the one resume payload.
 
-Mixed batches preserve both behaviors: valid elicitation requests are cancelled while all ordinary action requests receive the one aggregated approve or reject outcome. In particular, the result has a resume entry for every validated interrupt ID.
+### Scheduled, delivery, and detached execution fail closed
 
-### Unattended work fails closed
+Interactive approval and authorization require an attended host turn. On `trigger: "cron"`, `background_delivery: true`, or no approval handler, the runtime rejects protected ordinary actions without calling a handler. This includes a caller that injects an approval handler or operator-looking metadata. A scheduled job is invoked without handlers. A background-result delivery is a new unattended turn marked `background_delivery`; the host clears operator authority and withholds both approval and OAuth handlers. These flows reject protected actions instead of waiting for a person.
 
-Ordinary actions still use the single batch decision path when no person may safely decide. For `trigger: "cron"`, `background_delivery: true`, or a request without an approval handler, `_approval_decision` returns reject without calling the handler. That one rejection is then expanded to every action in every ordinary interrupt. This is an auto-denial of graph-gated work, not a tool authorization system or a sandbox.
+Detached background subagents similarly clear operator and authorization context. If their graph interrupts for approval, their result states that the protected action did not run. Cron-only inline delegation remains in the already unattended caller, prevents nested delegation, and cannot inherit interactive approval or authorization.
 
-The host reinforces this posture. Scheduled invocations do not receive approval or OAuth handlers. A background-result delivery is a new unattended turn: it is marked `background_delivery`, has operator context cleared, and receives neither handler. The runtime independently denies such a protected call even if a caller injects an approval handler or `tool_approval_operator: true` metadata.
+## Model selection is host authority, not a tool approval
 
-Detached background subagents also clear operator and authorization context and report an interrupted protected action as not run. Cron-only inline delegation runs in the caller's already-unattended context, disallows nested delegation, and cannot inherit an interactive approval or authorization path.
+`/model` without a selectable `provider:model` argument lists the current model or catalog, and catalog listing is available to non-operators. A change—including `/model default`—requires a trusted channel operator. The host validates and prepares a requested selectable model before persisting a selection per conversation root; the selected model applies to later turns of that chat and survives `/new` and restart. If a saved selection can no longer be resolved, the runtime falls back to its default for the turn. Model-switch authority is separate from `tools.json` and never comes from channel metadata.
 
 ## MCP calls and OAuth are not HITL approval
 
@@ -175,10 +164,12 @@ In dcode, approval mode is per thread and fails closed to Manual. Its HITL predi
 
 ## Operations and focused tests
 
-- Treat installed-tool visibility, `FilesystemPermission`, `interrupt_on`, Talon channel approval, OAuth, and backend/sandbox isolation as separate layers. Do not describe any one as a substitute for the others.
-- Treat `tools.json` and `interrupt_on` as selective graph-pausing policy, not sandboxing or tool-level authorization. Keep meaningful deny checks and backend containment at the tool/backend layer.
+- Treat installed-tool visibility, `FilesystemPermission`, `interrupt_on`, Talon channel approval, operator authorization, OAuth, and backend/sandbox isolation as separate layers. Do not describe any one as a substitute for the others.
+- Treat `tools.json` and `interrupt_on` as selective graph-pausing policy, not sandboxing or tool-level authorization. A `false` policy entry only disables a prompt; keep meaningful deny checks and backend containment at the tool/backend layer.
+- Protect `update_tool_approvals` with both the pre-edit approval snapshot and trusted host-derived operator identity. Never treat inbound metadata, allowlisting, or an earlier approval as a general authorization grant.
+- Permit catalog-only `/model` queries where desired, but preserve the operator check for a model switch and persist selection only after validation. This command authority is separate from tool approval policy.
 - Do not build an approval UI that assumes one prompt per interrupt. A handler sees one flattened ordinary-action batch, identified by its first ordinary interrupt ID, and its decision applies to the whole batch.
 - Preserve fail-closed validation when extending interrupt protocols: duplicate or missing interrupt IDs, malformed ordinary actions, and malformed elicitation keys must fail before a handler is called.
 - Do not route MCP elicitation to approval UI. Talon currently cancels valid requests. Keep elicitation payloads and resume entries distinct from ordinary action decisions.
 - Expect protected cron, background-delivery, and handler-less calls to be rejected. Do not rely on request metadata to grant operator authority or on a later approval prompt for detached work.
-- Focus tests on `test_tool_approval_batch.py` for mixed batches, one-decision fan-out, malformed inputs, and unattended rejection; `test_tool_approval_runtime.py` for multiple tool calls, policy snapshots, and injected-handler denial; and `test_host.py` for stripped handlers on background delivery. Keep filesystem permission/interrupt tests separate from Talon's channel and resume contract.
+- Focus tests on `test_tool_approval_batch.py` for mixed batches, one-decision fan-out, malformed inputs, and unattended rejection; `test_tool_approval_runtime.py` for multiple tool calls, policy snapshots, pre-edit self-disable, and injected-handler denial; `test_tool_approval_authorization.py` for trusted operator derivation; `test_model_selection.py` for operator-only switching and public catalog listing; and `test_host.py` for stripped handlers on background delivery. Keep filesystem permission/interrupt tests separate from Talon's channel and resume contract.

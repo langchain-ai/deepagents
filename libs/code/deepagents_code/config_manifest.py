@@ -2811,6 +2811,18 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
+        key="warnings.cache_prompt",
+        group="Warnings",
+        summary=(
+            "When to prompt about an expired prompt cache: 'expiry' offers a "
+            "summarized new thread when the window lapses, 'send' warns only "
+            "on submit, 'off' disables both."
+        ),
+        kind=OptionKind.STR,
+        default="expiry",
+        toml_keys=("warnings", "cache_prompt"),
+    ),
+    ConfigOption(
         key="warnings.cold_cache_min_delta_usd",
         group="Warnings",
         summary=(

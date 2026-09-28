@@ -37,6 +37,7 @@ from deepagents_talon.channels.base import (
     outbound_media_root_from_env,
     send_with_retry,
 )
+from deepagents_talon.channels.slack import SlackChannel
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore
 from deepagents_talon.cron.scheduler import is_silent
@@ -1731,8 +1732,13 @@ class TalonHost:
         channel: ChannelAdapter,
         pending: _PendingToolApproval,
     ) -> None:
+        send = (
+            channel.send_tool_approval_prompt
+            if isinstance(channel, SlackChannel)
+            else channel.send_message
+        )
         result = await send_with_retry(
-            lambda: channel.send_message(pending.channel_conversation_id, pending.prompt_text)
+            lambda: send(pending.channel_conversation_id, pending.prompt_text)
         )
         pending.prompt_message_id = result.message_id
 

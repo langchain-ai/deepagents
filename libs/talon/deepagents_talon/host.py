@@ -290,6 +290,8 @@ class TalonHost:
         self.scheduler = scheduler
         self.voice_transcriber = voice_transcriber
         self._locks: dict[str, _ConversationLock] = {}
+        self._history_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._history_roots: dict[str, tuple[str, str]] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
         self._generations: defaultdict[str, int] = defaultdict(int)
@@ -337,6 +339,12 @@ class TalonHost:
                     self._agent_conversation_id(conversation_root),
                 }:
                     self._forget_idle_conversation(conversation_id)
+
+    @asynccontextmanager
+    async def _history_lock(self, scope: tuple[str, str]) -> AsyncIterator[None]:
+        lock = self._history_locks.setdefault(scope, asyncio.Lock())
+        async with lock:
+            yield
 
     def _forget_idle_conversation(self, conversation_id: str) -> None:
         """Drop turn state for a conversation with nothing left in flight.
@@ -499,39 +507,42 @@ class TalonHost:
             provider or type(channel).__name__,
             channel_conversation_id,
         )
-        async with self._conversation_lock(conversation_root):
-            agent_conversation_id = self._agent_conversation_id(conversation_root)
+        scope = (_channel_key(channel, provider), _history_chat(message, provider))
+        async with self._history_lock(scope):
+            self._history_roots[conversation_root] = scope
+            async with self._conversation_lock(conversation_root):
+                agent_conversation_id = self._agent_conversation_id(conversation_root)
 
-            if await self._handle_conversation_command(
-                channel,
-                message,
-                conversation_root=conversation_root,
-                provider=provider,
-            ):
-                return
-
-            pending = self._pending_tool_approvals.get(agent_conversation_id)
-            if pending is not None:
-                await self._handle_tool_approval_reply(channel, message, pending)
-                return
-
-            if await self._intercept_authorization_message(
-                channel,
-                message,
-                provider=_channel_key(channel, provider),
-                agent_conversation_id=agent_conversation_id,
-            ):
-                return
-
-            await self._replace_agent_turn(
-                _BackgroundRoute(
-                    channel=channel,
-                    message=message,
+                if await self._handle_conversation_command(
+                    channel,
+                    message,
                     conversation_root=conversation_root,
-                    conversation_id=agent_conversation_id,
                     provider=provider,
-                ),
-            )
+                ):
+                    return
+
+                pending = self._pending_tool_approvals.get(agent_conversation_id)
+                if pending is not None:
+                    await self._handle_tool_approval_reply(channel, message, pending)
+                    return
+
+                if await self._intercept_authorization_message(
+                    channel,
+                    message,
+                    provider=_channel_key(channel, provider),
+                    agent_conversation_id=agent_conversation_id,
+                ):
+                    return
+
+                await self._replace_agent_turn(
+                    _BackgroundRoute(
+                        channel=channel,
+                        message=message,
+                        conversation_root=conversation_root,
+                        conversation_id=agent_conversation_id,
+                        provider=provider,
+                    ),
+                )
 
     async def _handle_conversation_command(
         self,
@@ -549,6 +560,7 @@ class TalonHost:
                 message.conversation_id,
                 channel_key=_channel_key(channel, provider),
                 conversation_root=conversation_root,
+                history_chat=_history_chat(message, provider),
             )
         elif command == _NEW_COMMAND:
             await self._start_new_conversation(
@@ -884,6 +896,9 @@ class TalonHost:
             return
         for owner, route in list(self._background_routes.items()):
             root = route.conversation_root
+            scope = self._history_roots.get(root)
+            if scope is not None and self._history_locks[scope].locked():
+                continue
             control = self._locks.get(root)
             # Nothing may await between this check and the acquire below. A scheduled
             # job holds its conversation lock for the whole of a run that can last
@@ -915,6 +930,7 @@ class TalonHost:
                                 route.message.conversation_id,
                                 _BACKGROUND_FOLLOW_UP,
                                 sender_id=route.message.sender_id,
+                                metadata=route.message.metadata,
                             ),
                         ),
                     )
@@ -961,7 +977,7 @@ class TalonHost:
         unattended = bool(route.metadata.get("background_delivery"))
         if isinstance(self.agent, ConversationHistoryRuntime) and self.agent.history_enabled:
             metadata["history_channel"] = _channel_key(channel, turn.provider)
-            metadata["history_chat"] = message.conversation_id
+            metadata["history_chat"] = _history_chat(message, turn.provider)
         if turn.recovery_degraded:
             metadata["interruption_recovery"] = "failed"
         origin_conversation_id = message.conversation_id
@@ -1043,6 +1059,7 @@ class TalonHost:
             result,
             channel=channel,
             reply_conversation_id=message.conversation_id,
+            history_chat=_history_chat(message, turn.provider),
             suppress_result=suppress_result,
         )
 
@@ -1057,13 +1074,14 @@ class TalonHost:
                 self._requeue_background_results(result)
             raise
 
-    async def _settle_agent_turn(
+    async def _settle_agent_turn(  # noqa: PLR0913  # Keep delivery scope separate from reply destination.
         self,
         turn: _Turn,
         result: AgentResult,
         *,
         channel: ChannelAdapter,
         reply_conversation_id: str,
+        history_chat: str,
         suppress_result: bool,
     ) -> None:
         """Send a finished turn's reply, or return the work behind it to the queue.
@@ -1073,6 +1091,7 @@ class TalonHost:
             result: Output that turn produced.
             channel: Channel that would carry the reply.
             reply_conversation_id: Chat the reply is addressed to.
+            history_chat: Archive scope for the originating chat.
             suppress_result: Whether the host is withholding this reply on purpose.
         """
         agent_conversation_id = turn.conversation_id
@@ -1098,7 +1117,7 @@ class TalonHost:
                     await self._record_delivery(
                         agent_conversation_id,
                         _channel_key(channel, turn.provider),
-                        reply_conversation_id,
+                        history_chat,
                         delivered,
                     )
         except asyncio.CancelledError:
@@ -1196,7 +1215,7 @@ class TalonHost:
             return {}
         return {
             "history_channel": _channel_key(channel, job.origin.channel),
-            "history_chat": job.origin.conversation_id,
+            "history_chat": job.origin.history_chat or job.origin.conversation_id,
         }
 
     async def origin_channel(self, origin: CronOrigin) -> ChannelAdapter | None:
@@ -1230,12 +1249,10 @@ class TalonHost:
             lambda: channel.send_message(job.origin.conversation_id, text)
         )
         if result.success and not is_silent(text):
-            await self._record_delivery(
-                f"{job.id}{_CRON_THREAD_SUFFIX}",
-                _channel_key(channel, job.origin.channel),
-                job.origin.conversation_id,
-                text,
-            )
+            provider = _channel_key(channel, job.origin.channel)
+            chat = job.origin.history_chat or job.origin.conversation_id
+            async with self._history_lock((provider, chat)):
+                await self._record_delivery(f"{job.id}{_CRON_THREAD_SUFFIX}", provider, chat, text)
 
     async def _record_delivery(self, session: str, provider: str, chat: str, text: str) -> None:
         if isinstance(self.agent, ConversationDeliveryRuntime):
@@ -1297,16 +1314,23 @@ class TalonHost:
         *,
         channel_key: str,
         conversation_root: str,
+        history_chat: str,
     ) -> None:
         if not isinstance(self.agent, ConversationHistoryRuntime) or not self.agent.history_enabled:
             await send_with_retry(
                 lambda: channel.send_message(chat, "History reset is unavailable.")
             )
             return
-        current = self._agent_conversation_id(conversation_root)
-        if await self._cancel_conversation_tasks(current) is _CancelOutcome.TIMEOUT:
-            await send_with_retry(lambda: channel.send_message(chat, _CANCEL_TIMEOUT_MESSAGE))
-            return
+        scope = (channel_key, history_chat)
+        roots = {
+            root for root, history_scope in self._history_roots.items() if history_scope == scope
+        }
+        roots.add(conversation_root)
+        for root in roots:
+            current = self._agent_conversation_id(root)
+            if await self._cancel_conversation_tasks(current) is _CancelOutcome.TIMEOUT:
+                await send_with_retry(lambda: channel.send_message(chat, _CANCEL_TIMEOUT_MESSAGE))
+                return
         previous_resets = self._conversation_resets
         bumped = False
         try:
@@ -1317,12 +1341,12 @@ class TalonHost:
             # would read as a completed reset to someone who asked for one.
             next_resets = {
                 **previous_resets,
-                conversation_root: previous_resets.get(conversation_root, 0) + 1,
+                **{root: previous_resets.get(root, 0) + 1 for root in roots},
             }
             _save_conversation_resets(self.config.conversation_state_path, next_resets)
             self._conversation_resets = next_resets
             bumped = True
-            await self.agent.clear_history(channel_key, chat)
+            await self.agent.clear_history(channel_key, history_chat)
         except Exception:  # noqa: BLE001  # Report failure without disclosing stored history.
             logger.warning("Conversation history reset failed", exc_info=True)
             if bumped:
@@ -1981,6 +2005,14 @@ class TalonHost:
                 signal.signal(signum, previous)
 
         return cleanup
+
+
+def _history_chat(message: ChannelMessage, provider: str | None) -> str:
+    """Use the parent channel for public Discord threads' archive scope."""
+    chat = message.metadata.get("history_chat")
+    if provider == "discord" and isinstance(chat, str) and chat.isdigit() and chat != "0":
+        return chat
+    return message.conversation_id
 
 
 def _prepare_inbound_message(message: ChannelMessage) -> ChannelMessage:

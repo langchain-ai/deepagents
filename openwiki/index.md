@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Repository Quickstart](quickstart.md) - Route a Deep Agents repository change to its owning package, related architecture or operations guidance, focused validation, and release unit. Includes the current deepagents-code source and release version and its SDK compatibility boundary.
+- [Repository Quickstart](quickstart.md) - Route a repository change to its owning package and quickly find the Talon architecture, channel, persistence, scheduling, security, integration, and focused-test guidance.
 
 # Directories
 

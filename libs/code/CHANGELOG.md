@@ -2,6 +2,16 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.77](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.76...deepagents-code==0.1.77) (2026-09-24)
+
+### Bug Fixes
+
+- Preview remote plugin contents before installation.
+- Report mis-encoded `config.toml` files created by older config writers.
+- Show how to cancel MCP browser login and handle Escape.
+- Make workspace configuration warnings actionable.
+- Hide prompt search hints when search is unavailable.
+
 ## [0.1.76](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.75...deepagents-code==0.1.76) (2026-09-24)
 
 ### Features

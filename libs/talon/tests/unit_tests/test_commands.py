@@ -66,20 +66,26 @@ def test_help_message_omits_hidden_commands():
 def test_host_dispatch_constants_match_the_registry():
     """The host dispatches on literals; drift here would silently break a command."""
     assert host._HELP_COMMAND == chat_commands.HELP
+    assert host._CONTEXT_DOCTOR_COMMAND == chat_commands.CONTEXT_DOCTOR
     assert host._NEW_COMMAND == chat_commands.NEW
     assert host._STOP_COMMAND == chat_commands.STOP
     assert host._MCP_RELOAD_COMMAND == chat_commands.MCP_RELOAD
     assert host._RESET_ALL_HISTORY_COMMAND == chat_commands.RESET_ALL_HISTORY
+    assert host._PAIR_COMMAND == chat_commands.PAIR
+    assert host._MODEL_COMMAND == chat_commands.MODEL
 
 
 def test_every_registry_command_is_dispatched_by_the_host():
     """A registered command with no host branch would silently reach the agent."""
     dispatched = {
         host._HELP_COMMAND,
+        host._CONTEXT_DOCTOR_COMMAND,
         host._NEW_COMMAND,
         host._STOP_COMMAND,
         host._MCP_RELOAD_COMMAND,
         host._RESET_ALL_HISTORY_COMMAND,
+        host._PAIR_COMMAND,
+        host._MODEL_COMMAND,
     }
 
     assert {command.text for command in CHAT_COMMANDS} == dispatched

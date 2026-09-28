@@ -74,8 +74,13 @@ class PersistentCronScheduler:
         self._task = None
 
     async def tick_once(self) -> None:
-        """Run all jobs due at the current clock value once."""
+        """Remove finished jobs, then run all jobs due at the current clock value once.
+
+        The sweep runs first and due jobs run one after another inside the
+        tick, so it never removes a job that is mid-run.
+        """
         current = self.now()
+        self._discard_finished(current)
         jobs = self.store.due_jobs(now=current)
         log_event(logger, "cron.tick", due_count=len(jobs), now=current.isoformat())
         for job in jobs:
@@ -110,6 +115,20 @@ class PersistentCronScheduler:
                 await asyncio.wait_for(self._stopped.wait(), timeout=self.tick_seconds)
             except TimeoutError:
                 continue
+
+    def _discard_finished(self, now: datetime) -> None:
+        # One event with the facts rather than a completed/expired split: a job
+        # can finish its last run and pass `until` in the same tick, and
+        # `last_run_at` already says whether it ever ran.
+        for job in self.store.discard_finished(now=now):
+            log_event(
+                logger,
+                "cron.job_removed",
+                job_id=job.id,
+                job_name=job.name,
+                last_run_at=None if job.last_run_at is None else job.last_run_at.isoformat(),
+                until=None if job.until is None else job.until.isoformat(),
+            )
 
     async def _run_due_job(self, job: CronJob, now: datetime) -> None:
         claimed = self.store.advance_next_run(job.id, now=now)

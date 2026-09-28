@@ -1,35 +1,7 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f4b25edf824d55a0e15574f056f5344e0f6e3a27853b3298046f98303cb36c8e",
+  "pageVersion": "sha256:d35b8f353cb6a525998ea77ca165024ef569f1a7c112950a2d3bd335f614641f",
   "claims": [
-    {
-      "id": "claim_1ccebbf030474db9a31785700d47a5d0",
-      "statement": "dcode debug logging is opt-in and per-thread: configured loggers attach a tagged file handler only after the debug directory and file are secured, and rebinding a thread replaces stale tagged handlers rather than stacking them.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/_debug.py",
-          "version": "repo-file-v1:sha256:829bab00fab5e7b70b19fe5d8733cc4d27131a4b7febbc7da380950bed75dfe5"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_debug.py",
-          "version": "repo-file-v1:sha256:64977874fabe2899e67757af4a692d1adeeb0b2bb2844391837fc2bebf66a43f"
-        }
-      ]
-    },
-    {
-      "id": "claim_42a3aa2d3c884cfcbfa81f8cc76c8251",
-      "statement": "dcode refuses unsafe debug-log destinations: POSIX debug directories must be current-user-owned real directories and files are opened without following symlinks and tightened to owner-only access; on hardening failure it removes debug handlers and warns rather than continuing to log.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/_debug.py",
-          "version": "repo-file-v1:sha256:829bab00fab5e7b70b19fe5d8733cc4d27131a4b7febbc7da380950bed75dfe5"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_debug.py",
-          "version": "repo-file-v1:sha256:64977874fabe2899e67757af4a692d1adeeb0b2bb2844391837fc2bebf66a43f"
-        }
-      ]
-    },
     {
       "id": "claim_3ff3a7f4932e49e0a21ef2208e6a78d7",
       "statement": "Talon's MCP provider loads each available server independently, prefixes and metadata-marks its tools, adds management capabilities, rejects tool-name conflicts, and serializes revision-gated refreshes so a configuration change is applied before a later agent turn.",
@@ -77,328 +49,188 @@
       ]
     },
     {
-      "id": "claim_eca731ecfcf94456a2a62bdea5a9beaa",
-      "statement": "The repository is a monorepo whose packages are independently versioned; its package map assigns reusable agent construction to the core deepagents SDK, terminal coding behavior to Code, editor integration to ACP, experimental local hosting to Talon, evaluations to evals, and provider integrations to partners.",
-      "evidence": [
-        {
-          "resource": "repo://libs/ARCHITECTURE.md",
-          "version": "repo-file-v1:sha256:a2657562c0c28a61c0b8c1ff335b29c714b31f601558d92abcfc8977a987bb2c"
-        },
-        {
-          "resource": "repo://libs/README.md",
-          "version": "repo-file-v1:sha256:e5d74e3f28cf605b59ca922d1e6195cbaa5237add9bd42e7b1cfa06b74210db9"
-        }
-      ]
-    },
-    {
-      "id": "claim_8e147f7db3fa466fac93518296cb4742",
-      "statement": "create_deep_agent is the SDK assembly seam: it accepts model, tools, middleware, subagents, backend, permissions, persistence, and response configuration, while shell execution requires a sandbox-capable backend.",
-      "evidence": [
-        {
-          "resource": "repo://libs/ARCHITECTURE.md",
-          "version": "repo-file-v1:sha256:a2657562c0c28a61c0b8c1ff335b29c714b31f601558d92abcfc8977a987bb2c"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:e6c57390b37a9fb54e9388e5b9d439d335eebd5fb69e271e10eef1b96defe57d"
-        }
-      ]
-    },
-    {
-      "id": "claim_36f7c4f1cfac4e3790854d5eedf4c1ab",
-      "statement": "Release Please manages nine separate Python release units with package-specific changelogs and version files; it creates separate draft release PRs, excludes package test paths from release analysis, and uses component-bearing tags separated by == without a v prefix.",
-      "evidence": [
-        {
-          "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:98947404a8fc954285982a611564c957ac77cd393f995aaf3aee7b19387ad672"
-        },
-        {
-          "resource": "repo://release-please-config.json",
-          "version": "repo-file-v1:sha256:c9c9e84b4d74a8842fe1f8e49cecea496d12f553fba792d382fdea6c3abaa99f"
-        }
-      ]
-    },
-    {
-      "id": "claim_b7d8cff022f4413e8badbab12c753210",
-      "statement": "The current release manifest baselines are deepagents 0.7.18, deepagents-acp 0.0.12, deepagents-code 0.1.75, deepagents-talon 0.0.8, and Daytona 0.0.8, Modal 0.0.6, Runloop 0.0.7, Vercel 0.0.2, and QuickJS 0.3.7.",
-      "evidence": [
-        {
-          "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:98947404a8fc954285982a611564c957ac77cd393f995aaf3aee7b19387ad672"
-        }
-      ]
-    },
-    {
-      "id": "claim_221b76acb3984fa5a1707e9df459d7fb",
-      "statement": "Code exposes both deepagents-code and dcode console scripts through deepagents_code:cli_main, pins deepagents exactly at 0.7.18, requires langchain-quickjs >=0.3.4,<0.4.0, and locally develops ACP and partner packages as editable sibling sources.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:a7d73920dae227cca0fdcd37cfa400febaac0d8cd35c25217c6e6401110816fc"
-        }
-      ]
-    },
-    {
       "id": "claim_4095677301664e8992141858fbe4a340",
       "statement": "Talon exposes deepagents-talon through deepagents_talon.__main__:main and is an experimental local runtime host; its package metadata depends on deepagents >=0.7.0 and deepagents-code >=0.1.71,<1.0.0.",
       "evidence": [
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:1968993918ba543591d6ab20003513ab748cc0011b94d7fdfeee3f8df3e51ba4"
+          "version": "repo-file-v1:sha256:46b8fca36a8b6f7376fcb6e43bb3326119ca676adcc2a1d1af8ec852dab300ca"
         }
       ]
     },
     {
-      "id": "claim_f3cee60669574dd89381f3b91680314f",
-      "statement": "QuickJS is an independently released partner package, langchain-quickjs, that provides JavaScript REPL middleware for Deep Agents and depends on deepagents >=0.7.0,<0.8.0.",
+      "id": "claim_27c2626b2ba5406995cf533fc1932e85",
+      "statement": "The deepagents_talon package root is Talon's public Python surface: it re-exports host and configuration types, channel and agent protocols, request/result data, cron, approval, and speech APIs, while loading DeepAgentRuntime and EchoAgentRuntime lazily on access.",
       "evidence": [
         {
-          "resource": "repo://libs/partners/quickjs/pyproject.toml",
-          "version": "repo-file-v1:sha256:f2329b814a5c1c9445c1d90034f383666b78b5bd503e40e26dc22c465d420ed9"
+          "resource": "repo://libs/talon/deepagents_talon/__init__.py",
+          "version": "repo-file-v1:sha256:292a4c65cc8e9256705bd734895f1f99b220ef0ca50c76caf29ea50cecd64e48"
+        }
+      ]
+    },
+    {
+      "id": "claim_0bfa29a8cffa467991697b67d29d77cf",
+      "statement": "Talon's CLI loads validated configuration, creates assistant state and cron storage, cleans sensitive state, selects requested or enabled channel adapters, dispatches non-host subcommands before startup, and wires modeled hosts through sandbox, checkpoint, history, MCP, and runtime construction.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py",
+          "version": "repo-file-v1:sha256:5e5df5eea88c9992f063613a3463ecf0645b1abbf6a0597fea5909dc4bb023b2"
         },
         {
-          "resource": "repo://release-please-config.json",
-          "version": "repo-file-v1:sha256:c9c9e84b4d74a8842fe1f8e49cecea496d12f553fba792d382fdea6c3abaa99f"
+          "resource": "repo://libs/talon/deepagents_talon/config.py",
+          "version": "repo-file-v1:sha256:9d155c6cea9573987edbc07614dcf4ddcd0db4e88244e9e82ae7f6677adc805a"
         }
       ]
     },
     {
-      "id": "claim_e9dfea67be5f4015b62a47a11a2ddfe5",
-      "statement": "dcode's server graph builds a workspace-scoped runtime from shared server configuration, credentials, model, tools, optional sandbox, and create_cli_agent; the cached runtime is shared so MCP discovery, sandbox setup, and cleanup registration happen only once.",
+      "id": "claim_fe2ab9251bc841bdba2fd9d35337e561",
+      "statement": "TalonConfig namespaces assistant state below a validated assistant-specific home, creates state directories with restrictive permissions, and rejects generated checkpoint, conversation, model, and vector paths that escape that home.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
+          "resource": "repo://libs/talon/deepagents_talon/config.py",
+          "version": "repo-file-v1:sha256:9d155c6cea9573987edbc07614dcf4ddcd0db4e88244e9e82ae7f6677adc805a"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_server_graph.py",
-          "version": "repo-file-v1:sha256:bb7797ad3449b44b8a3353d1f115e8b281416a225a703c53acb2d066a9954464"
-        }
-      ]
-    },
-    {
-      "id": "claim_c9b75a1bd80a4e68a39eebca50289b45",
-      "statement": "The dcode LangGraph server factory requires a thread id and valid workspace context for execution-scoped requests, binds that thread to a workspace before selecting its graph, and emits a machine-readable startup failure before exiting when runtime construction fails.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
+          "resource": "repo://libs/talon/tests/test_config.py",
+          "version": "repo-file-v1:sha256:6589236a212d04f1a72b74f042def37658e1c338e07e7670a1f24c4b4d970cc6"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_server_graph.py",
-          "version": "repo-file-v1:sha256:bb7797ad3449b44b8a3353d1f115e8b281416a225a703c53acb2d066a9954464"
+          "resource": "repo://libs/talon/tests/unit_tests/test_configuration_hardening.py",
+          "version": "repo-file-v1:sha256:ea7debb678f37268b8989fc43fab24deec63959028326f100e0315fd32caad22"
         }
       ]
     },
     {
-      "id": "claim_54c7b13311b44b40b1efc851a67eb1e2",
-      "statement": "dcode restricts goal-criteria and rubric external context to known read-only built-ins and MCP tools with unambiguous read-only, non-destructive annotations; name or unrelated metadata cannot grant a mutating tool access.",
+      "id": "claim_218b8ffe587f4e30b0f61486184e04f7",
+      "statement": "TalonHost serializes work by provider-scoped conversation roots, starts runtime then channels then scheduler with reverse-order unwind on partial startup, and on shutdown cancels active work while attempting every component stop.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:c905286d6ce800d598f501ef43a48f7b412c24a96ec8d2afe2ec82bebc2f7e2e"
+          "resource": "repo://libs/talon/deepagents_talon/host.py",
+          "version": "repo-file-v1:sha256:083256a4f08e6aa87a64e502d37e722c960a2a75e56b2deaceba250976daf8fe"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_server_graph.py",
-          "version": "repo-file-v1:sha256:bb7797ad3449b44b8a3353d1f115e8b281416a225a703c53acb2d066a9954464"
+          "resource": "repo://libs/talon/tests/test_host.py",
+          "version": "repo-file-v1:sha256:22835913c84889ad8f8c44cf309bee94b4ef6e234eab7946b5d2ea697ed0b306"
         }
       ]
     },
     {
-      "id": "claim_095cd97931964cfca255ca0fd70afcbb",
-      "statement": "create_cli_agent applies Code-specific runtime policy over the SDK, including filesystem allowlists propagated to synchronous subagents so delegation cannot bypass them; compiled subagents are rejected when that restriction cannot be enforced.",
+      "id": "claim_aa54d74497d44027a2a789ec5b6a127f",
+      "statement": "ChannelAdapter is the transport boundary between provider adapters and TalonHost; shared channel policy defaults to self exposure, requires an explicit acknowledgement for open exposure, and validates outbound media paths, type, and size before provider delivery.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:382336636929637ef6fdbb837ebcacb9709ef53de4c4c97b225137aafbd5c6a7"
-        }
-      ]
-    },
-    {
-      "id": "claim_c734181d4dc2474b9b16bef6616dfc32",
-      "statement": "dcode's QuickJS interpreter is local-only, and host-tool bridge calls bypass ordinary HITL approvals, so bridge capabilities must be controlled by explicit interpreter configuration.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:382336636929637ef6fdbb837ebcacb9709ef53de4c4c97b225137aafbd5c6a7"
-        }
-      ]
-    },
-    {
-      "id": "claim_04028bb4882245b88111df8a7c03bd0c",
-      "statement": "dcode checks dependency floors only for editable installs, comparing the checkout's live requirements against installed versions; released installs skip the check and inspection errors remain non-fatal.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/_dep_floor_check.py",
-          "version": "repo-file-v1:sha256:3dda855c5dffd78bbca26e7ed5803f1e66e4f43242421bf6195ca6aab6849973"
+          "resource": "repo://libs/talon/deepagents_talon/channels/base.py",
+          "version": "repo-file-v1:sha256:ac8dca69525b8f13fd1075cc384d50587f4ee42f9b42cbc3353fc3b14377bb1f"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_dep_floor_check.py",
-          "version": "repo-file-v1:sha256:2fb4fe0bbde821610eb3f6a8fa5f99428b3a00ae5a5b6f12df1f5fdd014ed06d"
+          "resource": "repo://libs/talon/deepagents_talon/interfaces.py",
+          "version": "repo-file-v1:sha256:abb008c005c15a59aed21070c3f851a1c997e63214cdf7444a6652620e4e6d62"
+        },
+        {
+          "resource": "repo://libs/talon/tests/channels/test_base.py",
+          "version": "repo-file-v1:sha256:9b42b98ff1e57a382eebdd0bedfe50093688536ce4fd0b5e4ff57d77b95ba947"
         }
       ]
     },
     {
-      "id": "claim_98905cccb5924e46a82ecf0ebcbf1c1f",
-      "statement": "For an editable dcode environment below declared dependency floors, interactive terminal launches offer refresh, continue, mute, or abort, while headless, subcommand, and piped launches warn on stderr without blocking; a persisted mismatch fingerprint re-arms when the mismatch changes.",
+      "id": "claim_b8b3ad1aefab406ba4fbc14a1c9d1687",
+      "statement": "Talon pairing fails closed when its persisted store is unreadable or invalid, limits pairing admission to the paired sender's originating DM while environment-listed senders remain authoritative, and uses locked atomic updates with inode-aware caching so revocations are observed.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/_dep_floor_check.py",
-          "version": "repo-file-v1:sha256:3dda855c5dffd78bbca26e7ed5803f1e66e4f43242421bf6195ca6aab6849973"
+          "resource": "repo://libs/talon/deepagents_talon/pairing.py",
+          "version": "repo-file-v1:sha256:52dcfec6b553178f50e623986ab58ade70172b97345fa16045d2b65ca38ced2a"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/main.py",
-          "version": "repo-file-v1:sha256:c1892aa6062f376a8a02c7829e1dd8ee2511a17705e25efb8a606014207a1e83"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_dep_floor_check.py",
-          "version": "repo-file-v1:sha256:2fb4fe0bbde821610eb3f6a8fa5f99428b3a00ae5a5b6f12df1f5fdd014ed06d"
+          "resource": "repo://libs/talon/tests/unit_tests/test_pairing.py",
+          "version": "repo-file-v1:sha256:52231b9336003defa5d06c0c8616a0096171af90bef842fa88c27ed02fe3f038"
         }
       ]
     },
     {
-      "id": "claim_616019261bb841519184e12053b1b0d5",
-      "statement": "dcode refreshes a user-approved stale editable environment with a fixed uv command that retains only sibling packages actually installed from matching editable paths, rechecks dependency floors, and re-execs on success to avoid retaining stale imported modules.",
+      "id": "claim_2a9cc1ec3ca64b87a27af788e8d45fdd",
+      "statement": "TalonHost permits /pair only from a configured operator in a direct message and, after a revocation, cancels that sender's active work and pauses or cancels cron work created in the revoked DM.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/_dep_floor_check.py",
-          "version": "repo-file-v1:sha256:3dda855c5dffd78bbca26e7ed5803f1e66e4f43242421bf6195ca6aab6849973"
+          "resource": "repo://libs/talon/deepagents_talon/host.py",
+          "version": "repo-file-v1:sha256:083256a4f08e6aa87a64e502d37e722c960a2a75e56b2deaceba250976daf8fe"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py",
+          "version": "repo-file-v1:sha256:22835913c84889ad8f8c44cf309bee94b4ef6e234eab7946b5d2ea697ed0b306"
         }
       ]
     },
     {
-      "id": "claim_74ca55bf310a4004ae46ab1d8539e4b8",
-      "statement": "The public deepagents package re-exports create_deep_agent, DeepAgentState, filesystem and subagent middleware types, and profile registration APIs, making the package root the supported SDK extension surface.",
+      "id": "claim_2160a03067f04b24acfa78a1fc7e805b",
+      "statement": "DeepAgentRuntime owns Talon's create_deep_agent graph composition: startup resolves subagents and approvals, combines runtime tools, model selection and summarization middleware, task and background middleware, backend, skills, memory, and a checkpointer.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/__init__.py",
-          "version": "repo-file-v1:sha256:b8473628ecfa213979f63abe8c4b6b82315368fd98f6e95180f6fe19dd86c7eb"
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
+          "version": "repo-file-v1:sha256:2aba1d2a5b961824815caaf81edb78e1b2c28fa9636d8c4758a2e4adb5ad03e2"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_runtime.py",
+          "version": "repo-file-v1:sha256:3b953839a4c6230fafd8414821b08352476ed0fabffdbf9999bf79b60b0f0889"
         }
       ]
     },
     {
-      "id": "claim_6cb44800de884c4fbfc75123e16a28ac",
-      "statement": "AgentServerACP creates session-scoped graph instances from the working directory, mode, and model when given a factory; changing a mode or model resets that session's agent, and durable loading validates the persisted ACP session marker and original working directory before replay.",
+      "id": "claim_4787cedd5c5243d4af4b1c97dbcecd4c",
+      "statement": "Talon model selection discovers only providers credentialed in Talon's environment, validates exact provider:model selections before constructing and caching them, and applies a selected model and matching summarization budget per main-agent turn without recompiling the graph.",
       "evidence": [
         {
-          "resource": "repo://libs/acp/deepagents_acp/server.py",
-          "version": "repo-file-v1:sha256:0fb5127f574feec00009b236b5963c819dc18658f2ef49b5a7d03738f195e0ae"
+          "resource": "repo://libs/talon/deepagents_talon/model_selection.py",
+          "version": "repo-file-v1:sha256:e9daca08c86844c54f80a1bdc6e275f4ecca47bff1a8805410081421abc05b48"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
+          "version": "repo-file-v1:sha256:2aba1d2a5b961824815caaf81edb78e1b2c28fa9636d8c4758a2e4adb5ad03e2"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_model_selection.py",
+          "version": "repo-file-v1:sha256:f079c9835cc9bf766fb2701bd122af6f1b35eaed6c582d4d254a85b1eb585eab"
         }
       ]
     },
     {
-      "id": "claim_b026f4527e2b4b5bb932985295ec8a91",
-      "statement": "ACP prompt handling converts multimodal ACP input to LangChain content, streams only top-level graph content to the client, and resumes supported human-in-the-loop interrupts until completion; it rejects free-form LangGraph interrupts because ACP cannot display them as permission requests.",
+      "id": "claim_76bed09eb5b34c718e6e25c7b327378b",
+      "statement": "Talon history defaults to local SQLite and otherwise selects a built-in or uniquely installed entry-point backend; it namespaces archives by assistant, bounds initialization, and replaces backend failures with configuration-safe errors.",
       "evidence": [
         {
-          "resource": "repo://libs/acp/deepagents_acp/server.py",
-          "version": "repo-file-v1:sha256:0fb5127f574feec00009b236b5963c819dc18658f2ef49b5a7d03738f195e0ae"
+          "resource": "repo://libs/talon/deepagents_talon/config.py",
+          "version": "repo-file-v1:sha256:9d155c6cea9573987edbc07614dcf4ddcd0db4e88244e9e82ae7f6677adc805a"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_backends.py",
+          "version": "repo-file-v1:sha256:69e84694df2dd4523ae15b525490702d0fb241e4d35fafca9292542d42ae31e8"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_history_backends.py",
+          "version": "repo-file-v1:sha256:514c58f1cef7b7b20f2aed079f19e4016c40045c17a1ef0bafc45957173a4ba2"
         }
       ]
     },
     {
-      "id": "claim_c4378b8c7dc246d1bfd3a5b336654c97",
-      "statement": "The dcode console scripts and module entrypoint converge on a lazy cli_main export, avoiding main.py startup imports for ordinary package imports and reporting an invalid Deep Agents home as a dcode error with exit status 2.",
+      "id": "claim_53bcb87e4a534aa9adb5d21ef7480c51",
+      "statement": "A configured Talon sandbox never falls back to host execution on startup failure; its host-lifetime session cleans up owned sandboxes but retains attached ones, and its backend exposes only assistant skills and memory on the host while routing other operations to the sandbox.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/__init__.py",
-          "version": "repo-file-v1:sha256:ef76bca1bbe058aa073a4bd5fa7a5fa6e2705504eae1fcb9e884dbf1992e4d5a"
+          "resource": "repo://libs/talon/deepagents_talon/config.py",
+          "version": "repo-file-v1:sha256:9d155c6cea9573987edbc07614dcf4ddcd0db4e88244e9e82ae7f6677adc805a"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/__main__.py",
-          "version": "repo-file-v1:sha256:e5ec376dd9c735fb7a3dbc7d4af7ecf2392f3f054e99106c63986e6cbd8e89c6"
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py",
+          "version": "repo-file-v1:sha256:7923185a6a27f5ea25719a8ea9edc9ab23daaa173f7503658d21aa3014d001be"
         },
         {
-          "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:a7d73920dae227cca0fdcd37cfa400febaac0d8cd35c25217c6e6401110816fc"
-        }
-      ]
-    },
-    {
-      "id": "claim_54f2734fe56d4f3bb0607709e7a69a6b",
-      "statement": "Code's MCP loader preserves user-versus-project configuration provenance, resolves precedence before trust, and prevents repository-controlled stdio and remote servers from activating unless whole-config trust or a root-and-fingerprint-scoped approval allows them; explicit user disables override either approval.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:08d5317c513c64129e81479a9490af7d5029dabb5c7339095cb1f76ed26cb742"
-        }
-      ]
-    },
-    {
-      "id": "claim_f54c33a5ef904d77b0c0b780f4878e9c",
-      "statement": "Code MCP loading isolates per-server setup, authentication, connection, schema, and filtering failures into status records while retaining healthy siblings, and redacts error details for configurations that interpolate environment variables.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:08d5317c513c64129e81479a9490af7d5029dabb5c7339095cb1f76ed26cb742"
-        }
-      ]
-    },
-    {
-      "id": "claim_74f5f7c094f549b7bd8aea43c67c8207",
-      "statement": "MCPSessionManager retains every adopted MCP router and backend connection until cleanup, rejects post-close adoption, bounds ordinary teardown failures without blocking shutdown, and supports stateless tools that open and close a fresh session per invocation.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/mcp_tools.py",
-          "version": "repo-file-v1:sha256:08d5317c513c64129e81479a9490af7d5029dabb5c7339095cb1f76ed26cb742"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_mcp_lifecycle.py",
-          "version": "repo-file-v1:sha256:29c2b16b91882bd551b2542f7a5bf9e1664a4989cc3056af6e67f52cf165a0a1"
-        }
-      ]
-    },
-    {
-      "id": "claim_69f467b67dd5429ea26fb2a7a1e76733",
-      "statement": "The read-only dcode Debug Console opens from Ctrl+\\ or /debug, refreshes a host snapshot and in-memory deepagents_code log tail on one timer, contains repeated snapshot-provider failures, and preserves a Ctrl+L clear cursor across reopen without deleting later shared-buffer records.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/deepagents_code/app.py",
-          "version": "repo-file-v1:sha256:373376fc39db928b6a6a924c5653d91a7fc28540286af85f52c7657d68588c15"
-        },
-        {
-          "resource": "repo://libs/code/deepagents_code/tui/widgets/debug_console.py",
-          "version": "repo-file-v1:sha256:7ec08edb831f680bf61236886c9f5c9c99086f96f76794151bfa65ee424ed68a"
-        },
-        {
-          "resource": "repo://libs/code/tests/unit_tests/test_debug_console.py",
-          "version": "repo-file-v1:sha256:46a27d1930adcc0f7a6bf58c93e3eed07df8800bfd0e628c9c908abb2346e8ff"
-        }
-      ]
-    },
-    {
-      "id": "claim_8ad40f3c9efd4303843ab780077d0011",
-      "statement": "CompositeBackend.artifacts_root controls where FilesystemMiddleware and summarization middleware place offloaded tool results and conversation history; tool-result eviction preserves message identity and non-text blocks, leaves the original message on write failure, and uses the same helper for generic overflow-tail clipping while read_file results point back to their existing source path.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/backends/composite.py",
-          "version": "repo-file-v1:sha256:7056af6b7afffe67f8a9cbc76b0afebe2a92ae0f2f1513e4246877f8d4f0e9dc"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/_message_eviction.py",
-          "version": "repo-file-v1:sha256:b32b8c26852fcca33f4c2732b1b77d78fdea615c6f9be1acdf76b770f5df051c"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/_overflow_clip.py",
-          "version": "repo-file-v1:sha256:92ae9a989dd92a560345dc0b34794c151b78e5ef83a430daad5788ad262139b0"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py",
-          "version": "repo-file-v1:sha256:83d9c96c5b10f93d1335c5663d729987a0ca794a84f9cadcc99947d765e12f5c"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
-          "version": "repo-file-v1:sha256:8741655f9da6be6714026d4ceb6a37903127ec0b5429f083f001d7c53374f53d"
-        },
-        {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_artifacts_root.py",
-          "version": "repo-file-v1:sha256:cfbd768f53b2c38d26f0e5d6b68906e930d3bb62ca08f42e57f7cb3eb3f27b6c"
+          "resource": "repo://libs/talon/tests/unit_tests/test_sandbox.py",
+          "version": "repo-file-v1:sha256:e936d771e899ddae3756178c33036ce51b21814adb2d00d407b5fd0dc02fee6e"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-24T08:06:01.996Z"
+    "at": "2026-09-28T08:12:24.067Z"
   }
 }

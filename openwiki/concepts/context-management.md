@@ -5,7 +5,7 @@ description: Deep Agents keeps model requests within usable context limits throu
 tags: [context-management, eviction, summarization, overflow-recovery, middleware, filesystem]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-24T08:06:01.996Z
+    at: 2026-09-25T08:06:00.203Z
 sources:
   - id: openwiki-source-a1549ea98d425efea270be93
     resource: repo://libs/deepagents/deepagents/backends/composite.py
@@ -17,13 +17,15 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
+  - id: openwiki-source-837c84a3f3120bc778033547
+    resource: repo://libs/deepagents/deepagents/middleware/unsupported_content.py
   - id: openwiki-source-6228ff9cf1d681a771797121
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compaction_recovery.py
   - id: openwiki-source-f445d59792df76394a37a768
     resource: repo://libs/deepagents/tests/unit_tests/test_artifacts_root.py
   - id: openwiki-source-10e4084b6aa57e5cc82620b3
     resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-24T08:06:01.996Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 ---
 
 # Context Management
@@ -45,15 +47,16 @@ flowchart TD
     StoreResult -->|Write succeeds| ResultStub["Pointer and line preview"]
     Request["Model request"] --> Effective["Apply prior summary event"]
     Effective --> Budget{"Trigger or input budget exceeded"}
-    Budget -->|No| Model["Call model"]
+    Budget -->|No| Filter["Filter unsupported media for active model"]
     Budget -->|Yes| Compact["Archive older messages and summarize"]
-    Compact --> Model
+    Compact --> Filter
+    Filter --> Model["Call model"]
     Model -->|Context overflow| Clip["Clip trailing tool-result batch"]
     Clip --> Retry["One smaller retry"]
     ResultStub --> Recover["read_file with offset and limit"]
 ```
 
-Caption: individual-result eviction creates a recoverable pointer, while compaction changes only the effective conversation sent to the model.
+Caption: individual-result eviction creates a recoverable pointer, while compaction changes only the effective conversation sent to the model and capability filtering is request-local.
 
 ## Artifact roots and recoverability
 
@@ -99,6 +102,16 @@ Before compaction, the middleware counts effective messages together with the sy
 For a positive cutoff, the older partition is prepared for both archival and summary generation. Inline `data:` media is uploaded once per content hash below `conversation_history/media` and rewritten to typed path references. Decode or upload failures become explicit failed-offload placeholders rather than silently disappearing. Older non-summary messages are rendered as XML and appended to a timestamped section in one per-session Markdown history file. The internally generated session id is persisted and reused on later turns; it is separate from a caller's thread id and avoids parent/subagent file collisions.
 
 Archiving is best effort. If history writing fails, the middleware logs and warns that older messages are not recoverable, uses `file_path=None`, and still creates an in-context summary. If the archive succeeds but media blocks failed to offload, the archive path is retained but the warning identifies those media as unrecoverable.
+
+## Capability filtering preserves the graph state
+
+`UnsupportedContentMiddleware` is a separate, request-time safeguard for images, audio, video, and files that the active model cannot accept. `create_deep_agent` installs it automatically; users assembling an agent with `create_agent` should place it last so it evaluates the final `ModelRequest.model`, including any model selected by other middleware.
+
+For each `HumanMessage` and `ToolMessage`, it reads the active model profile. An omitted capability is treated as supported because profiles are incomplete; only an explicit `False` rejects a block. Tool-message images and PDFs additionally observe their tool-message-specific profile flags. Inline non-PDF documents are accepted only for supported OpenAI Responses models. Unsupported blocks become text notices for that request, and a `read_file` media result names its source path in the notice. The original messages and their media remain in graph state, so a later request using a capable model can receive the original blocks again. This is deliberately different from filesystem eviction and summary events, both of which add recoverability state.
+
+## Manual compaction extension
+
+`SummarizationToolMiddleware` exposes `compact_conversation` for model- or user-initiated compaction. It composes with a particular `SummarizationMiddleware`, reuses its model, backend, and summarization machinery, and writes the same `_summarization_event` and session-id state keys as automatic compaction. The tool itself never compacts automatically; it is eligibility-gated to avoid early compaction. This makes it an extension point for human approval flows without introducing a second history representation.
 
 ## Overflow recovery: one useful retry
 

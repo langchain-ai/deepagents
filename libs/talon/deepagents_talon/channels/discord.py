@@ -9,12 +9,11 @@ import asyncio
 import contextlib
 import logging
 import mimetypes
-import re
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -25,15 +24,20 @@ from deepagents_talon.channels.base import (
     ChannelExposure,
     ChannelExposureEnv,
     ChannelMediaError,
+    ExposureMode,
     channel_exposure_from_env,
     chunk_text,
     dispatch_message,
     max_media_bytes_from_env,
     message_with_media_paths,
     outbound_media_root_from_env,
+    parse_content_length,
     parse_float,
+    safe_filename_part,
+    safe_suffix,
     split_csv,
     validate_media,
+    with_media_error,
 )
 from deepagents_talon.commands import COMMANDS_BY_NAME, ChatCommand, visible_commands
 from deepagents_talon.interfaces import (
@@ -46,6 +50,7 @@ from deepagents_talon.interfaces import (
     SendResult,
 )
 from deepagents_talon.observability import log_debug_event
+from deepagents_talon.pairing import SenderPairing, pairing_from_env
 
 if TYPE_CHECKING:
     from deepagents_talon.config import TalonConfig
@@ -60,6 +65,7 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 35.0
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_DISCORD_OPEN_ACK"
 SLASH_COMMANDS_ENV = "DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS"
 COMMAND_GUILD_ID_ENV = "DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID"
+_ENV_PREFIX = "DEEPAGENTS_TALON_DISCORD"
 
 _COMMAND_UNAVAILABLE_MESSAGE = "That command is not available here."
 _UNAUTHORIZED_MESSAGE = "This assistant does not accept commands from you."
@@ -67,8 +73,6 @@ _COMMAND_NO_REPLY_MESSAGE = "Done."
 _COMMAND_FAILED_MESSAGE = "Something went wrong running that command. Check Talon logs."
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_ENV_VALUES = frozenset({"0", "false", "no", "off"})
-
-_SAFE_SUFFIX_PATTERN = re.compile(r"\.[a-z0-9]{1,16}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +96,8 @@ class DiscordChannelConfig:
         command_guild_id: Optional guild id to scope command registration to.
             A guild-scoped registration applies immediately, which is useful while
             developing, but by construction it never reaches direct messages.
+        pairing: Optional sender pairing policy that admits approved DM senders
+            and issues codes to unknown ones.
     """
 
     bot_token: str = field(repr=False)
@@ -103,6 +109,7 @@ class DiscordChannelConfig:
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     slash_commands_enabled: bool = True
     command_guild_id: str | None = None
+    pairing: SenderPairing | None = None
 
     @classmethod
     def from_talon_config(cls, config: TalonConfig) -> DiscordChannelConfig:
@@ -132,7 +139,7 @@ class DiscordChannelConfig:
             env,
             ChannelExposureEnv(
                 provider="Discord",
-                env_prefix="DEEPAGENTS_TALON_DISCORD",
+                env_prefix=_ENV_PREFIX,
                 open_ack=OPEN_EXPOSURE_ACK_ENV,
                 require_self_operator=True,
             ),
@@ -152,6 +159,13 @@ class DiscordChannelConfig:
             ),
             slash_commands_enabled=_parse_flag(env.get(SLASH_COMMANDS_ENV), default=True),
             command_guild_id=_parse_guild_id(env.get(COMMAND_GUILD_ID_ENV)),
+            pairing=pairing_from_env(
+                env,
+                provider="discord",
+                env_prefix=_ENV_PREFIX,
+                open_exposure=exposure.mode == ExposureMode.OPEN,
+                home=config.home,
+            ),
         )
 
 
@@ -226,6 +240,7 @@ class _DiscordInboundInteraction:
         interaction_id: Discord's id for this invocation.
         is_dm: Whether the command was invoked outside a guild.
         responder: Reply surface bound to this invocation.
+        argument: Text of the command's optional argument, when one was given.
     """
 
     command: str
@@ -234,6 +249,7 @@ class _DiscordInboundInteraction:
     interaction_id: str
     is_dm: bool
     responder: _InteractionResponder
+    argument: str | None = None
 
 
 @dataclass(slots=True)
@@ -809,7 +825,7 @@ class DiscordChannel:
             return
         message = ChannelMessage(
             conversation_id=inbound.channel_id,
-            text=command.text,
+            text=f"{command.text} {inbound.argument}" if inbound.argument else command.text,
             sender_id=inbound.sender_id,
             message_id=inbound.interaction_id,
             metadata={
@@ -819,7 +835,7 @@ class DiscordChannel:
                 "from_self": False,
             },
         )
-        if not _allows_discord_message(self._exposure, self.config.allowed_user_ids, message):
+        if not self._admits(message):
             log_debug_event(
                 logger,
                 "discord.inbound.interaction.rejected",
@@ -852,6 +868,11 @@ class DiscordChannel:
                 )
         log_debug_event(logger, "discord.inbound.interaction.dispatched", failed=failed)
 
+    def _admits(self, message: ChannelMessage) -> bool:
+        if _allows_discord_message(self._exposure, self.config.allowed_user_ids, message):
+            return True
+        return self.config.pairing is not None and self.config.pairing.admits(message)
+
     async def _process_message(self, inbound: _DiscordInboundMessage) -> None:
         if inbound.from_self:
             # Discord's Gateway re-delivers the bot's own outbound messages through
@@ -867,13 +888,15 @@ class DiscordChannel:
             message_id=inbound.message_id,
             metadata=_message_metadata(inbound),
         )
-        if not _allows_discord_message(self._exposure, self.config.allowed_user_ids, message):
+        if not self._admits(message):
             log_debug_event(
                 logger,
                 "discord.inbound.message.rejected",
                 exposure=self._exposure.mode.value,
                 has_media=bool(inbound.attachments),
             )
+            if self.config.pairing is not None:
+                await self.config.pairing.offer(message, self.send_message)
             return
         message = await self._prepare_inbound_media(message, inbound.attachments)
         log_debug_event(
@@ -892,7 +915,11 @@ class DiscordChannel:
             sender_id=inbound.sender_id,
             metadata={"provider": "discord"},
         )
-        if not _allows_discord_reaction(self._exposure, self.config.allowed_user_ids, reaction):
+        if not _allows_discord_reaction(
+            self._exposure, self.config.allowed_user_ids, reaction
+        ) and not (
+            self.config.pairing is not None and self.config.pairing.admits_reaction(reaction)
+        ):
             log_debug_event(
                 logger,
                 "discord.inbound.reaction.rejected",
@@ -935,7 +962,7 @@ class DiscordChannel:
         attachment = attachments[0]
         if attachment.size > self.config.max_media_bytes:
             logger.warning("Skipping Discord inbound media because it exceeds the size cap")
-            return _with_media_error(
+            return with_media_error(
                 message,
                 f"media file is too large: {attachment.size} bytes "
                 f"exceeds {self.config.max_media_bytes}",
@@ -944,7 +971,7 @@ class DiscordChannel:
             destination = await self._download_attachment(attachment, message_id=message.message_id)
         except (ChannelMediaError, OSError, urllib.error.URLError, TimeoutError) as error:
             logger.warning("Skipping Discord inbound media after download failure")
-            return _with_media_error(message, str(error))
+            return with_media_error(message, str(error))
         mime_type = attachment.content_type or mimetypes.guess_type(destination.name)[0]
         return message_with_media_paths(
             message,
@@ -961,7 +988,7 @@ class DiscordChannel:
         if self.config.inbound_media_dir is None:
             msg = "Discord inbound media directory is not configured"
             raise ChannelMediaError(msg)
-        suffix = _safe_suffix(attachment.filename, attachment.content_type)
+        suffix = safe_suffix(attachment.filename, attachment.content_type)
         destination = self.config.inbound_media_dir / _inbound_media_filename(
             message_id=message_id,
             attachment_url=attachment.url,
@@ -975,13 +1002,6 @@ class DiscordChannel:
             self.config.max_media_bytes,
         )
         return destination
-
-
-def _with_media_error(message: ChannelMessage, error: str) -> ChannelMessage:
-    metadata = dict(message.metadata)
-    metadata["has_media"] = False
-    metadata["media_error"] = error
-    return replace(message, metadata=metadata)
 
 
 def _convert_message(message: discord.Message, *, bot_id: str | None) -> _DiscordInboundMessage:
@@ -1027,6 +1047,19 @@ def _build_app_command(
     async def callback(interaction: discord.Interaction) -> None:
         await handle_interaction(_convert_interaction(interaction, command.name))
 
+    # `discord.py` derives options from the callback's signature, so a command
+    # with an argument needs a callback that declares one.
+    async def callback_with_argument(
+        interaction: discord.Interaction, argument: str | None = None
+    ) -> None:
+        await handle_interaction(_convert_interaction(interaction, command.name, argument))
+
+    if command.argument is not None:
+        return app_commands.Command(
+            name=command.name,
+            description=command.summary,
+            callback=app_commands.describe(argument=command.argument)(callback_with_argument),
+        )
     return app_commands.Command(
         name=command.name,
         description=command.summary,
@@ -1037,12 +1070,14 @@ def _build_app_command(
 def _convert_interaction(
     interaction: discord.Interaction,
     command: str,
+    argument: str | None = None,
 ) -> _DiscordInboundInteraction:
     """Convert a `discord.py` interaction into a provider-neutral value.
 
     Args:
         interaction: Interaction reported by the Gateway.
         command: Bare name of the invoked command.
+        argument: Value of the command's optional argument, when given.
 
     Returns:
         Provider-neutral view of the invocation.
@@ -1054,6 +1089,7 @@ def _convert_interaction(
         interaction_id=str(interaction.id),
         is_dm=interaction.guild_id is None,
         responder=_DiscordPyResponder(interaction),
+        argument=argument,
     )
 
 
@@ -1199,25 +1235,10 @@ def _allows_discord_reaction(
     return reaction.sender_id in exposure.operator_ids or reaction.sender_id in allowed_user_ids
 
 
-def _safe_suffix(filename: str, content_type: str | None) -> str:
-    suffix = Path(filename).suffix.lower()
-    if _SAFE_SUFFIX_PATTERN.fullmatch(suffix):
-        return suffix
-    if content_type:
-        guessed = mimetypes.guess_extension(content_type)
-        if guessed:
-            return guessed
-    return ".bin"
-
-
 def _inbound_media_filename(*, message_id: str | None, attachment_url: str, suffix: str) -> str:
-    message = _safe_filename_part(message_id or "message")
-    token = _safe_filename_part(attachment_url)[-24:] or "file"
+    message = safe_filename_part(message_id or "message")
+    token = safe_filename_part(attachment_url)[-24:] or "file"
     return f"{message}_{token}{suffix}"
-
-
-def _safe_filename_part(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "file"
 
 
 def _download_attachment_file(url: str, destination: Path, timeout: float, max_bytes: int) -> None:
@@ -1226,7 +1247,7 @@ def _download_attachment_file(url: str, destination: Path, timeout: float, max_b
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
         length = response.headers.get("content-length")
         if length is not None:
-            expected = _parse_content_length(length)
+            expected = parse_content_length(length)
             if expected is not None and expected > max_bytes:
                 msg = f"media file is too large: {expected} bytes exceeds {max_bytes}"
                 raise ChannelMediaError(msg)
@@ -1241,10 +1262,3 @@ def _download_attachment_file(url: str, destination: Path, timeout: float, max_b
                     raise ChannelMediaError(msg)
                 file.write(chunk)
     destination.chmod(0o600)
-
-
-def _parse_content_length(value: str) -> int | None:
-    try:
-        return int(value)
-    except ValueError:
-        return None

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f9f1f15bf29a84d79f2d8a46348587f70bed677861c8a5e7e7f45aeeaf9105a8",
+  "pageVersion": "sha256:b5db2c950cd23c37a5932b06c334ed8a83ee8141709e55fea495917d0aec47b2",
   "claims": [
     {
       "id": "claim_477654aa6598456fa3add53b5c307cf3",
@@ -145,10 +145,44 @@
           "version": "repo-file-v1:sha256:592a14a312a1e1e759d689a2cb56d7a1784468313c9837c1a01033ad48f54aeb"
         }
       ]
+    },
+    {
+      "id": "claim_fc0d5f9fb5e94ef0807433d29ceae7a6",
+      "statement": "Interactive startup resolves a displayable model identity before provider construction, defers server startup when credentials are absent, and passes resolved model, policy, sandbox, and MCP options to the server-backed TUI session.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L3261-L3407",
+          "version": "repo-lines-v1:sha256:8c2c1ee988dbad33e86cce3ef42d48be43f7ad8e1dcf1ce95c2da767b9c0736a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQ3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzMzdjM2U3MTc0NDc0NTNlYmZjNGRmMDdjNWU1ZWFjNWNkZDhiMjEzZmRlZDEwM2NmOTZhYTMzZjUyNDM1ZmNlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjYjc1Zjg0MTIwMjUyYjUzMjk5YTEzODY5NzdjMzllZDM0NTdkMTcyNTM2ODE1MGY1YjI1Zjc1NjMwYjVlMjBjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxNDhkN2E3ZGRiNDkwMjYxYzM1MDE1ZGYzZTk3NWJmYTAxZWI0ZjVjNTcxMzZjMDQzZmQzMDMzMTFjNjg5YWYxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwMjM5ZDdiMTA0NjI0NmEwMWQ0NmNhMTEwOGMxYzJhY2E3NTZlMDA0NjI3NzNkNmM4MGUzNzUzMDM3MWVhYzk0In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_848c0a80622c43a59229e148ef4acd53",
+      "statement": "Workspace refusal diagnostics persist and report only an allowlisted bounded policy snapshot; they exclude paths, credentials, environment values, model details, prompts, and profile overrides.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace_diagnostics.py#L3-L14",
+          "version": "repo-lines-v1:sha256:03033c4d0939727db55da23de3dc47048dcf430b3d610a7b07942c621665a6d2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmNzA3NjNjOWIyYTJjYzYxY2M4NDBhZGJmMDNiODBhYWU4YjcwNDc5YWU1ZDViMjU2MGRhY2Y1YmRhMGNiZTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5MThjZTI4NjE5MDMzNGYyYmFjNDA0MDI1YWQ4NGI0MjJlYmJkZDBkM2JiZjAxMmJlNjUxMWM4MGU4ODYyNzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliZGNmOTk3ZjI2MWVkZTM3YmE2ZjE1Yjg2ODE2ZGRjMmQ5YjFhOGExNmUzNDBiYzQxODhjY2JlOTQ4NzRlMmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/workspace_diagnostics.py#L43-L115",
+          "version": "repo-lines-v1:sha256:8905ae3c28b5ebfcc440896ece2a3e99fca5426ae837a90f47a2d80f9c0dd30c:eyJzZWxlY3RlZExpbmVDb3VudCI6NzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4ZDQ1MWI2YTVmN2FjYWUyZDdkZTM3ZWRiNjExZWJjOWZjM2VjMGMwNjQ3NDgzMDhiYmU0ZjBiMjg5ZjQzNWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkZGY2MmYzYTkxMGViN2M2MjBlMjUzNDU5OTAzMTBkYzc2NWY1MjY4OThmZjI0YmEyYmZiODcwNjliZDNiMjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjViNTJhODc4N2E4OWEyZjIwYzE0ZjJlNTZiNTliMWU4MWQ5Njg1MDc4MDY5ZmNmMzU5MjQ3MGEwMzczOTk3ZDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwY2UzZjI0YWI0N2MyZjVhOWQzMzdmMzc3ZWQ4NTczZmE1NjU4NDA3NjQwMmYxYWYwNTRhM2RlZDYxOTQ2MmYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_133486bf0eb6435bb7e604ebbb794fb7",
+      "statement": "MCP login uses the same source discovery and trust filtering as runtime loading: explicit config is loaded directly, while discovered project servers require applicable trust and persisted approval policy.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_login_service.py#L197-L387",
+          "version": "repo-lines-v1:sha256:80eb419e676c73844053b1a9feb0ed0b6938d7d62e65b19e89a82cdafeffde85:eyJzZWxlY3RlZExpbmVDb3VudCI6MTkxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyOGU3MmFmYThlZDY0MGI2YTNjZTY5OTJmZDA2MjU1NGEyZWM2ZWQxM2NhMzQzZDBmMjQwZDQ3MDIwOWFlMWM5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMGMxZjE4OGYxNDJlZDdhODI0NjgwYjIwNzE3MmM1NTE5YmM2MTRhNDhmZGE3Y2YxNjdlZGI4ZGRmNzk5NTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3Y2RlMTgwYmFmZTA1MWY1MjBjMTBiYWQ3Zjg4NWMyMWYwODFiOThlNzYzMmFlNDgxMjVjOTkwODczZjkzYTEzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJhZjUwZjIxN2FlZmFhMGEwMzNhYTllOWZlN2VhNjA1OGNkY2FhZTU3MWUxNTc2Yzk0OTJmODg4ZGI2YTdhNDNjIn0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-23T08:05:59.666Z"
+    "at": "2026-09-25T08:06:00.203Z"
   }
 }

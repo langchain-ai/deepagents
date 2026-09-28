@@ -1,48 +1,22 @@
 ---
 type: concept
-title: Tools, Filesystem, and Shell Access
+title: Filesystem and Tool Surface
 description: How Deep Agents and dcode compose model-visible tools, route filesystem operations through backends, and keep capabilities, permissions, HITL approval, and MCP access distinct.
 tags: [tools, filesystem, shell, middleware, backends, permissions, mcp]
 sources:
-  - id: openwiki-source-44654f7b6bdd46e6f9dd122c
-    resource: repo://libs/code/deepagents_code/_constants.py
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
-  - id: openwiki-source-f6d553e7afdf54acac36e7d3
-    resource: repo://libs/code/deepagents_code/mcp_tools.py
-  - id: openwiki-source-3300d75e0c132882e2e3b4ce
-    resource: repo://libs/code/deepagents_code/tool_catalog.py
-  - id: openwiki-source-e7c7a0d6e6f2fa82362f1c56
-    resource: repo://libs/deepagents/deepagents/_tools.py
-  - id: openwiki-source-e483ff4cfd25918c8107d575
-    resource: repo://libs/deepagents/deepagents/backends/filesystem.py
-  - id: openwiki-source-f84c83d6fab6028c94be90bc
-    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
-  - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
-    resource: repo://libs/deepagents/deepagents/backends/protocol.py
-  - id: openwiki-source-c972622237a22631e36f3625
-    resource: repo://libs/deepagents/deepagents/backends/utils.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
-    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
-  - id: openwiki-source-8b1aaf77fc0430fd00711a73
-    resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-  - id: openwiki-source-7b8607fdda73d9d47ee17387
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
-  - id: openwiki-source-739ca0771331dc9b5a7d7fbc
-    resource: repo://libs/deepagents/tests/unit_tests/test_file_system_tools.py
-  - id: openwiki-source-851e3a9c96663d8db5ca3dec
-    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-21T08:06:25.442Z" }
+  - id: openwiki-source-837c84a3f3120bc778033547
+    resource: repo://libs/deepagents/deepagents/middleware/unsupported_content.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-21T08:06:25.442Z
+    at: 2026-09-25T08:06:00.203Z
 ---
 
-# Tools, Filesystem, and Shell Access
+# Filesystem and Tool Surface
 
 A tool name is not an authorization decision. The system separates **assembly and visibility** (the schemas bound for the model), **backend capability** (what the active backend can implement), and **per-call controls** (exclusion checks, filesystem policy, and human approval). Consequently, a tool can be visible yet fail at runtime, be denied, or pause for review.
 
@@ -98,6 +72,14 @@ Backends return structured results rather than model-formatted text. `ReadResult
 `FilesystemBackend` defaults to `virtual_mode=True`. In that mode incoming paths are a virtual tree rooted at `root_dir` (or the current directory), traversal using `..` or `~` is blocked, resolved paths must remain beneath the root, and displayed paths do not disclose the host root. With `virtual_mode=False`, absolute paths are used as-is and relative paths resolve under `root_dir`; it is deliberately unrestricted host filesystem access, not a security boundary. Tests cover both modes, root-relative defaults for `glob`, dotfile matching only when the pattern explicitly starts with `.`, and traversal rejection in virtual mode.
 
 The backend `read` contract tolerates degenerate windows: negative offsets begin at the first line, while non-positive limits return an empty text window. Binary reads are not line-paginated. A backend returns raw content and window metadata; the middleware is responsible for presentation.
+
+### Multimodal `read_file` compatibility
+
+`read_file` decides whether a successful result is text or media from the backend-declared encoding first. Base64 content is never line-numbered; known extensions select `image`, `audio`, `video`, or `file` blocks, while an unknown binary extension becomes a generic `file` block. The resulting `ToolMessage` records the source path and MIME type. Text continues through pagination, line-number formatting, and the read-specific truncation path.
+
+Media can require a second synthetic `HumanMessage`—notably sampled video frames. The filesystem middleware keeps every `ToolMessage` in an assistant tool-call batch ahead of those attachments, because providers require all results for the batch before a non-tool message. `create_deep_agent` puts `UnsupportedContentMiddleware` at the tail of its middleware stack. On each request, that middleware consults the *active request model* profile and replaces blocks it explicitly cannot accept with a text placeholder naming the original `read_file` path. It does not mutate persisted thread content, so changing to a compatible model can send the original media again. Inline non-PDF base64 documents are stricter: they are accepted only for `ChatOpenAI` or `AzureChatOpenAI` using the Responses API and an accepted MIME type.
+
+If a provider nevertheless rejects a request for its file content, `FilesystemMiddleware` retries once after replacing only the latest-turn multimodal `read_file` results with an unsupported-content notice. Other `ModelInvalidRequestError` cases propagate; the retry is a compatibility recovery, not a blanket model-error retry.
 
 ### Allowlist, capabilities, and result lifecycle
 

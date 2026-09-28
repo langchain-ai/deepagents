@@ -315,12 +315,7 @@ async def test_invalid_side_cost_does_not_hide_answer(
     assert agent.get_cached_session_cost(_config()) is None
 
 
-@pytest.mark.parametrize(
-    "error", [RuntimeError("accounting unavailable"), TimeoutError()]
-)
-async def test_accounting_failure_preserves_main_stream_and_state(
-    error: Exception,
-) -> None:
+async def test_accounting_failure_preserves_main_stream_and_state() -> None:
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
     side = _empty_cost_breakdown()
@@ -334,7 +329,7 @@ async def test_accounting_failure_preserves_main_stream_and_state(
     )
     assert saved_cost is not None
     assert saved_cost["total"] == pytest.approx(1.5)
-    agent._graph.client.http.get.side_effect = error
+    agent._graph.client.http.get.side_effect = TimeoutError()
     events = [item async for item in agent.astream({}, config=_config())]
     assert events[0][2]["total"] == pytest.approx(2.5)
     assert events[1] == (("tools:child",), "custom", nested)

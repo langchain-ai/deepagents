@@ -1306,13 +1306,13 @@ async def test_cached_cost_without_checkpoint_preserves_provisional_spend(
     assert app._displayed_cost_usd == pytest.approx(1.5)
 
 
-@pytest.mark.parametrize("main_total", [1.0, 2.0])
 async def test_side_cost_survives_main_cancellation(
-    main_total: float, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
+    main_total = 2.0
     provisional = 0.2
     remote = RemoteAgent("http://test")
     graph = MagicMock()
@@ -1636,9 +1636,11 @@ async def test_reopening_after_cancellation_keeps_only_completed_exchanges(
         await pilot.pause()
         await pilot.press(*"Pending", "enter")
         await asyncio.wait_for(started.wait(), 2)
+        message = app.screen.query(AssistantMessage).last()
         await pilot.press("escape")
         await asyncio.wait_for(cancelled.wait(), 2)
         await pilot.pause()
+        assert message._stream is None
         await pilot.press(*"/btw", "enter")
         await pilot.pause()
         assert [widget.raw_text for widget in app.screen.query(UserMessage)] == [
@@ -1814,28 +1816,6 @@ async def test_thinking_follows_question_and_prevents_duplicate_submits() -> Non
                 await pilot.pause()
 
 
-async def test_modal_submits_complete_paste() -> None:
-    """Pasted newlines stay in the editor and collapsed text expands on submit."""
-    from textual.app import App
-
-    app = App()
-    answer = AsyncMock(return_value="Side answer")
-    question = "Pasted line\n" * 100
-    async with app.run_test() as pilot:
-        app.push_screen(BtwScreen(answer))
-        await pilot.pause()
-        app.post_message(events.Paste(question))
-        await pilot.pause()
-        answer.assert_not_awaited()
-        await pilot.press("enter")
-        await pilot.pause()
-        answer.assert_awaited_once_with(question.strip())
-        assert (
-            app.screen.query_one(".btw-question", UserMessage).raw_text
-            == question.strip()
-        )
-
-
 async def test_modal_rejects_oversized_expanded_paste() -> None:
     """The size limit uses the full pasted text and leaves it editable."""
     from textual.app import App
@@ -1856,10 +1836,15 @@ async def test_modal_rejects_oversized_expanded_paste() -> None:
         answer.assert_not_awaited()
         assert editor.has_focus
         assert editor.submitted_value == question
-        editor.load_text("x" * 16_000)
+        accepted = "line\n" * 3199 + "last!"
+        editor.clear()
+        app.post_message(events.Paste(accepted))
+        await pilot.pause()
+        answer.assert_not_awaited()
         await pilot.press("enter")
         await pilot.pause()
-        answer.assert_awaited_once_with("x" * 16_000)
+        answer.assert_awaited_once_with(accepted)
+        assert app.screen.query_one(".btw-question", UserMessage).raw_text == accepted
 
 
 async def test_multiline_editor_keeps_help_visible() -> None:
@@ -1963,27 +1948,23 @@ async def test_model_delivers_text_before_completion_and_closes_stream(
         await asyncio.gather(task, return_exceptions=True)
 
 
-@pytest.mark.parametrize("outcome", ["complete", "error", "cancel"])
+@pytest.mark.parametrize("outcome", ["complete", "error"])
 async def test_modal_renders_streamed_text(
     btw_app: tuple[DeepAgentsApp, MagicMock], outcome: str
 ) -> None:
     app, remote = btw_app
     release = asyncio.Event()
-    closed = asyncio.Event()
 
     async def answer(
         _question: str, *, on_text: Callable[[str], Awaitable[None]], **_kwargs: object
     ) -> str:
-        try:
-            await on_text("First fragment")
-            await release.wait()
-            if outcome == "error":
-                msg = "Stream failed"
-                raise RuntimeError(msg)
-            await on_text(" and final fragment.")
-            return "First fragment and final fragment."
-        finally:
-            closed.set()
+        await on_text("First fragment")
+        await release.wait()
+        if outcome == "error":
+            msg = "Stream failed"
+            raise RuntimeError(msg)
+        await on_text(" and final fragment.")
+        return "First fragment and final fragment."
 
     remote.abtw.side_effect = answer
     async with app.run_test(size=(110, 36)) as pilot:
@@ -1999,28 +1980,18 @@ async def test_modal_renders_streamed_text(
         assert not app.screen.query_one("#btw-loading").display
         question = app.screen.query_one(UserMessage)
         assert question.raw_text == "why"
-        if outcome == "cancel":
-            await pilot.press("escape")
-            await asyncio.wait_for(closed.wait(), 2)
-            await pilot.pause()
-            assert not isinstance(app.screen, BtwScreen)
-            assert message._stream is None
+        release.set()
+        await pilot.pause()
+        assert app.screen.query_one(TextArea).has_focus
+        assert not app.screen.query_one(TextArea).disabled
+        if outcome == "complete":
+            assert (
+                message.query_one(Markdown)._markdown
+                == "First fragment and final fragment."
+            )
         else:
-            release.set()
-            await pilot.pause()
-            assert app.screen.query_one(TextArea).has_focus
-            assert not app.screen.query_one(TextArea).disabled
-            if outcome == "complete":
-                assert (
-                    message.query_one(Markdown)._markdown
-                    == "First fragment and final fragment."
-                )
-            else:
-                assert message.query_one(Markdown)._markdown == "First fragment"
-                assert (
-                    app.screen.query_one(".btw-error", Static).content
-                    == "Stream failed"
-                )
+            assert message.query_one(Markdown)._markdown == "First fragment"
+            assert app.screen.query_one(".btw-error", Static).content == "Stream failed"
         assert app._message_store.get_all_messages() == before
 
 

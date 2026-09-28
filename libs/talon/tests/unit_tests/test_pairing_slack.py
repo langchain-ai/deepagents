@@ -217,7 +217,7 @@ async def test_channel_mention_respects_pairing_reply_flag(tmp_path: Path) -> No
     assert pending.conversation_id == f"D{COWORKER}"
 
 
-async def test_paired_coworker_is_admitted_in_their_dm_only(tmp_path: Path) -> None:
+async def test_paired_coworker_is_admitted_in_any_chat(tmp_path: Path) -> None:
     pairing = _pairing(tmp_path)
     channel, gateway = _slack(pairing, tmp_path)
     received = await _collecting(channel)
@@ -239,8 +239,8 @@ async def test_paired_coworker_is_admitted_in_their_dm_only(tmp_path: Path) -> N
             )
         )
 
-    assert [message.text for message in received] == ["in dm"]
-    assert [reaction.conversation_id for reaction in reactions] == [COWORKER_DM]
+    assert [message.text for message in received] == ["in dm", "in channel"]
+    assert [reaction.conversation_id for reaction in reactions] == ["C1:1.1", COWORKER_DM]
 
 
 async def test_operator_pairs_a_coworker_with_talon_pair(tmp_path: Path) -> None:

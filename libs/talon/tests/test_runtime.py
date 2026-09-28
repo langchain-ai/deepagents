@@ -1074,6 +1074,38 @@ async def test_cron_tools_use_current_request_origin(
     assert any(_tool_name(tool) == "create_job" for tool in captured["tools"])
 
 
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"channel": "slack", "sender_id": "U1"},
+        # A scheduled run has no sender; jobs it creates inherit its job's creator.
+        {"channel": "slack", "trigger": "cron", "cron_origin_sender_id": "U1"},
+    ],
+)
+async def test_cron_jobs_record_their_creator(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, metadata: dict[str, object]
+) -> None:
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+
+    def fake_create_deep_agent(**kwargs: Any) -> CronCallingGraph:
+        tools = cast("list[object]", kwargs["tools"])
+        return CronCallingGraph(
+            cast("InvokableTool", next(tool for tool in tools if _tool_name(tool) == "create_job"))
+        )
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    runtime = DeepAgentRuntime(
+        model="test:model", cron_store=store, include_web_tools=False, skills=(), memory=()
+    )
+    await runtime.start()
+
+    await runtime.invoke(
+        AgentRequest(conversation_id="C1:1.1", text="schedule it", metadata=metadata)
+    )
+
+    assert store.list_jobs()[0].origin.sender_id == "U1"
+
+
 async def test_runtime_approves_tool_interrupt_with_channel_handler() -> None:
     graph = InterruptingGraph()
     approvals: list[ToolApprovalRequest] = []

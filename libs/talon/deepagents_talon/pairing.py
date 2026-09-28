@@ -1,4 +1,4 @@
-"""Sender pairing: let an operator admit a new DM sender without editing env.
+"""Sender pairing: let an operator admit a new sender without editing env.
 
 Talon is an experimental runtime and is subject to change or removal at any time.
 
@@ -9,9 +9,10 @@ are only ever accepted on those operator surfaces, so a stranger has nowhere to
 submit guesses; the code exists so the operator can tell that this sender id
 belongs to the person who contacted them out of band.
 
-A paired sender gains exactly what a `*_ALLOWLIST_USERS` entry grants: their
-DMs reach the agent with the operator's credentials and host access. Pairing
-never makes anyone an operator of Talon's own controls.
+A paired sender is admitted the way an env-configured operator is: in DMs and
+in every chat the bot can see, with the operator's credentials and host access.
+Pairing never makes anyone an operator of Talon's own controls, so a paired
+sender cannot run `/pair` or change tool approval policy.
 """
 
 from __future__ import annotations
@@ -386,35 +387,40 @@ class SenderPairing:
         return int(self.clock())
 
     def admits(self, message: ChannelMessage) -> bool:
-        """Return whether a DM comes from an env-listed or paired sender.
+        """Return whether a message comes from an admitted sender.
+
+        A paired sender is admitted in any chat, like an env operator. An
+        env-listed sender keeps their env semantics: allowlisted users only in
+        DMs, while operators are admitted by the exposure policy itself.
 
         Args:
             message: Inbound channel message.
 
         Returns:
-            `True` for a DM from an admitted sender; never for group messages.
+            `True` for a paired sender anywhere, or an env-listed sender in a DM.
         """
         sender_id = message.sender_id
-        if sender_id is None or not is_direct_message(message):
+        if sender_id is None:
             return False
-        return sender_id in self.env_sender_ids or self.store.is_paired(self.provider, sender_id)
+        if sender_id in self.env_sender_ids:
+            return is_direct_message(message)
+        return self.store.is_paired(self.provider, sender_id)
 
     def admits_reaction(self, reaction: ChannelReaction) -> bool:
-        """Return whether a reaction comes from a paired sender in their own DM.
+        """Return whether a reaction comes from a paired sender, in any chat.
 
-        Env-listed senders are left to the adapter's existing reaction policy;
-        pairing only ever extends access to the DM a sender paired from.
+        Env-listed senders are left to the adapter's existing reaction policy. The
+        host still only acts on a reaction to an approval prompt from the sender
+        who started that run.
 
         Args:
             reaction: Inbound channel reaction.
 
         Returns:
-            `True` when the reactor is paired and reacted in their paired DM.
+            `True` when the reactor is paired.
         """
-        if reaction.sender_id is None:
-            return False
-        paired = self.store.paired(self.provider, reaction.sender_id)
-        return paired is not None and paired.conversation_id == reaction.conversation_id
+        sender_id = reaction.sender_id
+        return sender_id is not None and self.store.is_paired(self.provider, sender_id)
 
     async def offer(
         self,
@@ -559,24 +565,36 @@ def revoke_sender(pairing: SenderPairing, sender_id: str) -> PairCommandResult:
     return PairCommandResult(f"Revoked sender {sender_id}.", revoked=revoked)
 
 
-def origin_jobs(store: CronJobStore, provider: str, conversation_id: str) -> list[CronJob]:
-    """Return cron jobs created in one channel conversation.
+def sender_jobs(
+    store: CronJobStore, provider: str, sender_id: str, dm_conversation_id: str | None
+) -> list[CronJob]:
+    """Return cron jobs a sender created on one channel, in any chat.
 
-    A paired sender can only reach the agent from their own DM, so jobs whose
-    origin is that DM are the ones they created.
+    Jobs record their creator in `origin.sender_id`. Jobs saved before that
+    field existed carry no creator; those are matched by the sender's DM, the
+    only place a paired sender could reach the agent at the time.
 
     Args:
         store: Cron job store.
         provider: Channel provider key the jobs were created on.
-        conversation_id: Origin conversation id.
+        sender_id: Sender whose jobs to find.
+        dm_conversation_id: The sender's DM, for jobs without a recorded creator.
 
     Returns:
-        Every job, enabled or not, whose origin is that conversation.
+        Every matching job, enabled or not.
     """
     return [
         job
         for job in store.list_jobs()
-        if (job.origin.channel, job.origin.conversation_id) == (provider, conversation_id)
+        if job.origin.channel == provider
+        and (
+            job.origin.sender_id == sender_id
+            or (
+                job.origin.sender_id is None
+                and dm_conversation_id is not None
+                and job.origin.conversation_id == dm_conversation_id
+            )
+        )
     ]
 
 

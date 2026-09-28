@@ -1452,6 +1452,8 @@ def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:
     channel = request.metadata.get("channel")
     message_id = request.metadata.get("message_id")
     origin_conversation_id = request.metadata.get("origin_conversation_id")
+    # A scheduled run has no sender of its own; jobs it creates inherit its creator.
+    sender_id = request.metadata.get("sender_id") or request.metadata.get("cron_origin_sender_id")
     return CronOrigin(
         conversation_id=(
             origin_conversation_id
@@ -1460,6 +1462,7 @@ def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:
         ),
         channel=channel if isinstance(channel, str) else None,
         message_id=message_id if isinstance(message_id, str) else None,
+        sender_id=sender_id if isinstance(sender_id, str) else None,
     )
 
 

@@ -7,13 +7,14 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.background import BackgroundSubagents
-from deepagents_talon.channels.slack import _convert_event
+from deepagents_talon.channels.slack import _convert_event, format_markdown_for_slack
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.host import (
     _BACKGROUND_FOLLOW_UP,
     TalonHost,
     _BackgroundRoute,
+    _format_tool_approval_prompt,
     _save_conversation_resets,
 )
 from deepagents_talon.interfaces import (
@@ -1256,6 +1257,18 @@ async def test_host_passes_inbound_video_path_in_text(tmp_path: Path) -> None:
     assert "unsupported" not in request.text
     assert request.metadata["media_type"] == "video"
     assert request.metadata["media_paths"] == [str(video)]
+
+
+def test_approval_prompt_cannot_notify_user_before_decision() -> None:
+    approval = ToolApprovalRequest(
+        conversation_id="chat",
+        interrupt_id="interrupt",
+        action_requests=[{"name": "send_message", "args": {"text": "` <@U123> `"}}],
+    )
+
+    prompt = format_markdown_for_slack(_format_tool_approval_prompt(approval))
+    assert "<@U123>" not in prompt
+    assert "&amp;lt;@U123&gt;" in prompt
 
 
 async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) -> None:

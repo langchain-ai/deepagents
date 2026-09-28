@@ -410,6 +410,8 @@ def test_markdown_mentions_only_valid_allowed_users_in_prose() -> None:
     assert format_markdown_for_slack("[<@U123>](https://example.com)") == (
         "<https://example.com|&lt;@U123&gt;>"
     )
+    assert "<@U123>" not in format_markdown_for_slack("[profile](<@U123>)")
+    assert format_markdown_for_slack("[profile](<@U123>) <@U456>").endswith("<@U456>")
 
 
 def test_code_is_escaped_but_not_reformatted() -> None:

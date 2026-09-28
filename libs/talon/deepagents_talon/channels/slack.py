@@ -99,6 +99,7 @@ _CONVERSATION_PATTERN = re.compile(r"(?P<channel>[CDG][A-Z0-9]+)(?::(?P<thread>\
 _CODE_SPAN_PATTERN = re.compile(r"```.*?```|`[^`\n]+`", flags=re.DOTALL)
 _ESCAPED_MENTION_PATTERN = re.compile(r"&lt;@([UW][A-Z0-9]+)&gt;")
 _WEB_LINK_PATTERN = re.compile(r"\[([^\]\n]+)]\((https?://[^)\s|]+)\)")
+_NON_WEB_LINK_PATTERN = re.compile(r"(\[[^\]\n]+]\()([^)]+)(\))")
 _SLACK_LINK_PATTERN = re.compile(r"<https?://[^>]+>")
 _SKIN_TONE_PATTERN = re.compile(r"::skin-tone-\d$")
 _INBOUND_LINK_PATTERN = re.compile(r"<((?:https?|mailto):[^<>|]+)(?:\|([^<>]*))?>")
@@ -1002,6 +1003,12 @@ def _format_prose(text: str, mention_allowlist: frozenset[str] | None) -> str:
     linked = _WEB_LINK_PATTERN.sub(
         lambda match: f"<{match.group(2)}|{match.group(1)}>",
         escaped,
+    )
+    linked = _NON_WEB_LINK_PATTERN.sub(
+        lambda match: (
+            f"{match.group(1)}{match.group(2).replace('&lt;@', '&amp;lt;@')}{match.group(3)}"
+        ),
+        linked,
     )
     formatted = format_markdown_for_channel(linked)
     parts: list[str] = []

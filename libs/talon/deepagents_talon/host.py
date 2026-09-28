@@ -2086,12 +2086,12 @@ def _format_tool_approval_prompt(approval: ToolApprovalRequest) -> str:
     for index, action in enumerate(approval.action_requests, start=1):
         name = action.get("name")
         tool_name = name if isinstance(name, str) and name else "unknown"
-        lines.append(f"{index}. `{tool_name}`")
+        lines.append(f"{index}. `{tool_name.replace('<', '&lt;')}`")
         args = action.get("args")
         if isinstance(args, dict) and args:
-            lines.append(f"Args: `{_json_preview(args)}`")
+            lines.append(f"Args: `{_json_preview(args).replace('<', '&lt;')}`")
         elif args not in (None, {}, []):
-            lines.append(f"Args: `{args}`")
+            lines.append(f"Args: `{str(args).replace('<', '&lt;')}`")
     if len(approval.action_requests) > 1:
         lines.append(
             "Reply `👍` / `approve` to run ALL actions or `👎` / `deny` to skip ALL actions."

@@ -43,7 +43,7 @@ def _capture_model_call(middleware: FilesystemMiddleware, messages: list[Any]) -
 
 
 def test_other_tools_are_not_offloaded(tmp_path: Path) -> None:
-    middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_reads=True)
+    middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_content=True)
 
     result = middleware.wrap_tool_call(_request("custom_tool"), lambda _: _media_message())
 
@@ -52,7 +52,7 @@ def test_other_tools_are_not_offloaded(tmp_path: Path) -> None:
 
 
 def test_command_results_offload_every_message(tmp_path: Path) -> None:
-    middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_reads=True)
+    middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_content=True)
     frames = HumanMessage(
         content=[
             {"type": "text", "text": "Frame at t=0"},
@@ -73,7 +73,7 @@ def test_command_results_offload_every_message(tmp_path: Path) -> None:
 def test_tampered_blob_is_rejected(tmp_path: Path) -> None:
     (tmp_path / "blobs").mkdir()
     (tmp_path / "blobs" / PNG_DIGEST).write_bytes(b"not the original bytes")
-    middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_reads=True)
+    middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_content=True)
     stubbed = ToolMessage(
         content=[{"type": "image", "mime_type": "image/png", _BLOB_REF_KEY: PNG_DIGEST}],
         name="read_file",
@@ -87,7 +87,7 @@ def test_tampered_blob_is_rejected(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("ref", ["../../etc/passwd", [], {}, 123, None])
 def test_malformed_ref_becomes_text_notice(tmp_path: Path, ref: object) -> None:
-    middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_reads=True)
+    middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_content=True)
     stubbed = ToolMessage(
         content=[{"type": "image", "mime_type": "image/png", _BLOB_REF_KEY: ref}],
         name="read_file",
@@ -107,7 +107,7 @@ def test_upload_failure_keeps_payload_inline(tmp_path: Path, monkeypatch: pytest
         raise RuntimeError(msg)
 
     monkeypatch.setattr(backend, "upload_files", fail)
-    middleware = FilesystemMiddleware(backend=backend, offload_binary_reads=True)
+    middleware = FilesystemMiddleware(backend=backend, offload_binary_content=True)
 
     result = middleware.wrap_tool_call(_request(), lambda _: _media_message())
 

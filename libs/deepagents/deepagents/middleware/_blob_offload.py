@@ -17,7 +17,7 @@ from collections import OrderedDict
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final
 
-from langchain_core.messages import AnyMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -167,6 +167,35 @@ async def _aoffload_tool_result(result: ToolMessage | Command, backend: BackendP
         messages = await _aoffload_messages(result.update["messages"], backend, prefix, cache)
         return replace(result, update={**result.update, "messages": messages})
     return result
+
+
+def _human_candidates(state_messages: Sequence[Any], pending: Sequence[Any]) -> list[HumanMessage]:
+    """Return `HumanMessage`s with ids after the last `AIMessage`, preferring versions already queued in `pending`."""
+    last_ai = max((i for i, m in enumerate(state_messages) if isinstance(m, AIMessage)), default=-1)
+    queued = {m.id: m for m in pending if isinstance(m, BaseMessage) and m.id is not None}
+    return [queued.get(m.id, m) for m in state_messages[last_ai + 1 :] if isinstance(m, HumanMessage) and m.id is not None]
+
+
+def _merge_replacements(pending: Sequence[Any], offloaded: Sequence[Any], candidates: Sequence[Any]) -> list[Any]:
+    replaced = [new for new, old in zip(offloaded, candidates, strict=True) if new is not old]
+    replaced_ids = {m.id for m in replaced}
+    return [*(m for m in pending if getattr(m, "id", None) not in replaced_ids), *replaced]
+
+
+def _offload_human_messages(
+    state_messages: Sequence[Any], pending: Sequence[Any], backend: BackendProtocol, prefix: str, cache: _BlobCache
+) -> list[Any]:
+    """Return `pending` plus stubbed replacements for `HumanMessage`s in state carrying inline payloads."""
+    candidates = _human_candidates(state_messages, pending)
+    return _merge_replacements(pending, _offload_messages(candidates, backend, prefix, cache), candidates)
+
+
+async def _aoffload_human_messages(
+    state_messages: Sequence[Any], pending: Sequence[Any], backend: BackendProtocol, prefix: str, cache: _BlobCache
+) -> list[Any]:
+    """Async version of `_offload_human_messages`."""
+    candidates = _human_candidates(state_messages, pending)
+    return _merge_replacements(pending, await _aoffload_messages(candidates, backend, prefix, cache), candidates)
 
 
 def _referenced_digests(messages: Sequence[BaseMessage]) -> list[str]:

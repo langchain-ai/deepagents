@@ -1931,7 +1931,7 @@ class TestExecuteCaptureOffload:
         assert "line 2500:" not in offload.response.output  # middle omitted -> it's a preview
 
 
-class TestBinaryReadOffload:
+class TestBinaryContentOffload:
     """End-to-end binary read offload through `create_deep_agent` on a real shell."""
 
     @pytest.fixture(autouse=True)
@@ -1958,7 +1958,7 @@ class TestBinaryReadOffload:
                 ]
             )
         )
-        agent = create_deep_agent(model=model, backend=backend, middleware=[FilesystemMiddleware(backend=backend, offload_binary_reads=True)])
+        agent = create_deep_agent(model=model, backend=backend, middleware=[FilesystemMiddleware(backend=backend, offload_binary_content=True)])
 
         result = agent.invoke({"messages": [HumanMessage(content="Read the image")]})
 

@@ -406,6 +406,7 @@ class DeepAgentRuntime:
             build=self._build_model,
             discover=lambda: discover_models(self.env),
         )
+        self._smart_model: str | None = self.env.get(_HELP_MODEL_ENV, "").strip() or None
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
@@ -444,8 +445,11 @@ class DeepAgentRuntime:
             spec for spec in resolved if "runnable" not in spec and "graph_id" not in spec
         ]
         attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
-        catalog = _tool_map(attachments_tools)
-        catalog.pop("ask_for_help", None)
+        catalog = {
+            name: tool
+            for name, tool in _tool_map(attachments_tools).items()
+            if name != "ask_for_help" or self._smart_model is None
+        }
         web_tools = _tool_map([fetch_url]) if self.include_web_tools else {}
         tavily_key = self.env.get("TAVILY_API_KEY", "").strip()
         if self.include_web_tools and tavily_key:
@@ -863,9 +867,34 @@ class DeepAgentRuntime:
             return None
         return AgentActivityCallback(logger, request.conversation_id)
 
+    @property
+    def smart_model(self) -> str | None:
+        """Current model for one-off help, or None when disabled."""
+        return self._smart_model
+
+    async def select_smart_model(self, spec: str | None) -> bool:
+        """Validate and activate the helper model for subsequent turns."""
+        if spec is not None:
+            configured = self.env.get(_HELP_MODEL_ENV, "").strip()
+            if spec == configured:
+                await asyncio.to_thread(self._build_model, spec)
+            elif not await asyncio.to_thread(self._prepare_model, spec):
+                return False
+        async with self._tools_lock:
+            previous = self._smart_model
+            self._smart_model = spec
+            if self._graph is not None:
+                try:
+                    graph = self._create_graph()
+                except Exception:
+                    self._smart_model = previous
+                    raise
+                self._graph = graph
+        return True
+
     def _interrupt_on(self, snapshot: ApprovalSnapshot) -> dict[str, bool | InterruptOnConfig]:
         policy = snapshot.interrupt_on
-        if self.env.get(_HELP_MODEL_ENV, "").strip():
+        if self._smart_model is not None:
             policy["ask_for_help"] = {"allowed_decisions": ["approve", "reject"]}
         return policy
 
@@ -898,8 +927,8 @@ class DeepAgentRuntime:
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
     ) -> list[BaseTool | Callable[..., object]]:
         tools: list[BaseTool | Callable[..., object]] = [current_time, send_message]
-        if spec := self.env.get(_HELP_MODEL_ENV, "").strip():
-            tools.append(self._help_tool(spec))
+        if self._smart_model is not None:
+            tools.append(self._help_tool(self._smart_model))
         if isinstance(self.checkpointer, ConversationSaver):
             tools.extend(conversation_tools(self.checkpointer.archive, _current_history_scope))
             tools.append(_delete_conversations_tool(self.checkpointer))

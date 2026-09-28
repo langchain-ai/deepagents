@@ -35,6 +35,26 @@ def _runtime(
     )
 
 
+async def test_smart_model_switch_updates_future_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parent = ToolModel(responses=[AIMessage(content="done")])
+    helper = ToolModel(responses=[AIMessage(content="Advice")])
+    runtime = _runtime(tmp_path, monkeypatch, parent, helper)
+    await runtime.start()
+    try:
+        assert await runtime.select_smart_model(None)
+        assert runtime.smart_model is None
+        assert "ask_for_help" not in (await _inventory(runtime))["agents"][0]["tools"]
+        assert await runtime.select_smart_model("test:parent")
+        assert runtime.smart_model == "test:parent"
+        assert "ask_for_help" in (await _inventory(runtime))["agents"][0]["tools"]
+        assert not await runtime.select_smart_model("unavailable:model")
+        assert runtime.smart_model == "test:parent"
+    finally:
+        await runtime.stop()
+
+
 async def test_help_tool_is_opt_in(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     model = ToolModel(responses=[AIMessage(content="done")])
     monkeypatch.setattr("deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_k: model)

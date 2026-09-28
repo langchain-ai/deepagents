@@ -73,6 +73,7 @@ def test_host_dispatch_constants_match_the_registry():
     assert host._RESET_ALL_HISTORY_COMMAND == chat_commands.RESET_ALL_HISTORY
     assert host._PAIR_COMMAND == chat_commands.PAIR
     assert host._MODEL_COMMAND == chat_commands.MODEL
+    assert host._SMART_MODEL_COMMAND == chat_commands.SMART_MODEL
 
 
 def test_every_registry_command_is_dispatched_by_the_host():
@@ -86,6 +87,7 @@ def test_every_registry_command_is_dispatched_by_the_host():
         host._RESET_ALL_HISTORY_COMMAND,
         host._PAIR_COMMAND,
         host._MODEL_COMMAND,
+        host._SMART_MODEL_COMMAND,
     }
 
     assert {command.text for command in CHAT_COMMANDS} == dispatched

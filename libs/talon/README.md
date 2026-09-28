@@ -491,7 +491,7 @@ normally. The destination is fixed by the host, and sending is disabled once the
 originating turn finishes or is superseded. Runs without a channel cannot send updates.
 
 Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
-`/mcp-reload`, `/context-doctor`, and `/model`), and using MCP configuration and OAuth through chat. Help does
+`/mcp-reload`, `/context-doctor`, `/model`, and `/smart-model`), and using MCP configuration and OAuth through chat. Help does
 not interrupt current work or consume a pending approval or sign-in response.
 
 Send `/context-doctor` to estimate the token cost of the configured system prompt,
@@ -515,17 +515,24 @@ and subagents keep their own models. The model is built the first time a chat
 selects it, so a model that cannot be loaded is reported when you switch to it.
 
 To let Talon ask a stronger model for one-off advice, set
-`DEEPAGENTS_TALON_HELP_MODEL=<provider>:<model-id>` alongside its provider credentials.
-This adds `ask_for_help(question)` to the main agent only; it does not switch the
-chat's model. The tool sends just the question and a fixed instruction to the
+`DEEPAGENTS_TALON_HELP_MODEL=<provider>:<model-id>` alongside its provider credentials,
+or send `/smart-model <provider:model>` as an operator. `/smart-model` shows the
+assistant-wide selection, `/smart-model off` disables consultations, and
+`/smart-model default` restores the environment default. The choice persists across
+chats and restarts; unlike `/model`, it does not change the conversation's model.
+The command selects from models Talon can discover using its configured credentials;
+it cannot change provider URLs or API keys. An operator who uses two OpenAI endpoints
+must configure routing in the inference proxy or provider environment directly.
+When enabled, this adds `ask_for_help(question)` to the main agent only. The tool sends just the question and a fixed instruction to the
 configured model, not the chat history, tools, or filesystem. Only an operator's
 main conversation can use it, and a channel approval prompt is always required
 before the question leaves Talon; channels without approval support and scheduled
 runs cannot use it. Inspect the exact question before approving: the agent can
 include private content in it, and the destination provider receives that content.
-The response is advice, not an instruction to run tools. Leave the variable unset
-to omit the tool altogether. The configured provider must be installed and
-credentialed; configuration and provider errors surface when the tool is called.
+The response is advice, not an instruction to run tools. With no environment
+default or saved selection, the tool is omitted. The configured provider must be
+installed and credentialed; configuration and provider errors surface when the tool
+is called.
 
 Commands work as ordinary message text on every channel, and are case-insensitive
 with an optional `@bot` suffix. On Discord they are additionally registered as

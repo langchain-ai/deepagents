@@ -10,7 +10,7 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage
-from deepagents_talon.runtime import _current_cron_origin
+from deepagents_talon.runtime import _cron_origin_from_request, _current_cron_origin
 from tests.archive_helpers import make_runtime, make_saver
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config
@@ -20,6 +20,33 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 CRON_THREAD = "job:talon-cron"
+
+
+@pytest.mark.parametrize(
+    ("channel", "alias", "allowed"),
+    [
+        ("whatsapp", "legacy", True),
+        ("telegram", "legacy", False),
+        ("whatsapp", None, False),
+        ("whatsapp", 17, False),
+    ],
+)
+def test_legacy_cron_scope_requires_whatsapp_alias(tmp_path, channel, alias, *, allowed):
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+    job = store.create_job(
+        prompt="legacy",
+        schedule=CronSchedule.parse("in 5m"),
+        origin=CronOrigin("legacy", channel),
+    )
+    request = AgentRequest(
+        "current",
+        "list jobs",
+        metadata={
+            "channel": channel,
+            "chat_id_from": alias,
+        },
+    )
+    assert (store.get_job(job.id, origin=_cron_origin_from_request(request)) is not None) == allowed
 
 
 async def test_scheduled_turn_reads_origin_chat_without_archiving_or_deleting(
@@ -211,6 +238,12 @@ async def test_scheduled_history_uses_discord_parent_and_replies_in_thread(tmp_p
 
 async def test_scheduled_history_preserves_whatsapp_archive_address(tmp_path, monkeypatch):
     origins = []
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+    legacy = store.create_job(
+        prompt="legacy",
+        schedule=CronSchedule.parse("every 5m"),
+        origin=CronOrigin("123@s.whatsapp.net", channel="whatsapp"),
+    )
 
     def factory(**kwargs: object):
         tools = {tool.name: tool for tool in kwargs["tools"]}
@@ -221,6 +254,12 @@ async def test_scheduled_history_preserves_whatsapp_archive_address(tmp_path, mo
                 hits = await tools["search_conversations"].ainvoke({"query": "orchard"})
                 found = any("remember orchard" in hit["text"] for hit in hits["results"])
                 return {"messages": [AIMessage("recalled" if found else "missing")]}
+            jobs = await tools["list_jobs"].ainvoke({})
+            assert [job["id"] for job in jobs] == [legacy.id]
+            edited = await tools["edit_job"].ainvoke({"job_id": legacy.id, "enabled": False})
+            assert edited["enabled"] is False
+            removed = await tools["remove_job"].ainvoke({"job_id": legacy.id})
+            assert removed["id"] == legacy.id
             return {"messages": [AIMessage("noted")]}
 
         graph = StateGraph(MessagesState)
@@ -233,6 +272,7 @@ async def test_scheduled_history_preserves_whatsapp_archive_address(tmp_path, mo
     channel = RecordingChannel("whatsapp")
     async with make_saver(tmp_path / "history.sqlite") as saver:
         runtime = make_runtime(saver, tmp_path)
+        runtime.cron_store = store
         host = TalonHost(config=_config(tmp_path), agent=runtime, channels=[channel])
         await host.start()
         try:
@@ -245,7 +285,7 @@ async def test_scheduled_history_preserves_whatsapp_archive_address(tmp_path, mo
                 ),
             )
             await asyncio.gather(*host._tasks.values())
-            store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+            assert store.get_job(legacy.id) is None
             job = store.create_job(
                 prompt="recall",
                 schedule=CronSchedule.parse("in 5m"),

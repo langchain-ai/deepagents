@@ -11,7 +11,7 @@ import logging
 import os
 import tempfile
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
@@ -207,6 +207,7 @@ class CronOrigin:
         sender_id: Optional channel sender id of whoever created the job, so
             revoking a paired sender can find jobs they made in shared chats.
         history_chat: Optional parent channel used for history in public Discord threads.
+        aliases: Trusted alternate chat IDs for scope checks; never serialized.
     """
 
     conversation_id: str
@@ -214,6 +215,7 @@ class CronOrigin:
     message_id: str | None = None
     sender_id: str | None = None
     history_chat: str | None = None
+    aliases: tuple[str, ...] = field(default=(), kw_only=True, compare=False)
 
     def to_dict(self) -> CronOriginDict:
         """Serialize this origin for disk storage.
@@ -1568,7 +1570,10 @@ def _positive_int(value: str) -> int:
 
 
 def _same_origin_scope(left: CronOrigin, right: CronOrigin) -> bool:
-    return left.conversation_id == right.conversation_id and left.channel == right.channel
+    return left.channel == right.channel and left.conversation_id in (
+        right.conversation_id,
+        *right.aliases,
+    )
 
 
 def _coerce_utc(value: datetime | None = None) -> datetime:

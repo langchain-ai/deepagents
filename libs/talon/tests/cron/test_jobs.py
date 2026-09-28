@@ -131,6 +131,32 @@ def test_tools_are_scoped_to_current_conversation(tmp_path) -> None:
 NEW_YORK = "America/New_York"
 
 
+def test_origin_aliases_are_transient_and_do_not_cross_scopes(tmp_path):
+    store = _store(tmp_path)
+    current = CronOrigin("current", "whatsapp", aliases=("legacy",))
+    tools = CronTools(store=store, origin=lambda: current)
+    created = tools.create_job(prompt="current", schedule="in 5m")
+    saved = _store(tmp_path).get_job(created["id"])
+    assert saved is not None
+    assert saved.origin.conversation_id == "current"
+    assert saved.origin.aliases == ()
+    assert "aliases" not in saved.origin.to_dict()
+    for origin in (
+        CronOrigin("legacy", "telegram"),
+        CronOrigin("other", "whatsapp", aliases=("current",)),
+    ):
+        foreign = store.create_job(
+            prompt="foreign",
+            schedule=CronSchedule.parse("in 5m"),
+            origin=origin,
+        )
+        with pytest.raises(CronJobError):
+            tools.edit_job(foreign.id, enabled=False)
+        with pytest.raises(CronJobError):
+            tools.remove_job(foreign.id)
+    assert [job["id"] for job in tools.list_jobs()] == [created["id"]]
+
+
 def _schedule_round_trip(text: str) -> CronSchedule:
     schedule = CronSchedule.parse(text)
     return CronSchedule.from_dict(schedule.to_dict())

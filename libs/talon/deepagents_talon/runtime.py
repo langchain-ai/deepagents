@@ -1543,6 +1543,7 @@ def _current_cron_origin() -> CronOrigin:
 def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:
     channel = request.metadata.get("channel")
     message_id = request.metadata.get("message_id")
+    alias = request.metadata.get("chat_id_from") if channel == "whatsapp" else None
     origin_conversation_id = request.metadata.get("origin_conversation_id")
     # A scheduled run has no sender of its own; jobs it creates inherit its creator.
     sender_id = request.metadata.get("sender_id") or request.metadata.get("cron_origin_sender_id")
@@ -1559,6 +1560,7 @@ def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:
         history_chat=(
             history_chat if channel == "discord" and isinstance(history_chat, str) else None
         ),
+        aliases=(alias,) if isinstance(alias, str) and alias else (),
     )
 
 

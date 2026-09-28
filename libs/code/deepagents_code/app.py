@@ -22294,6 +22294,9 @@ class DeepAgentsApp(App):
         down widget should not abort the interrupt sequence, but the
         underlying error is logged so regressions are visible.
         """
+        if self._steering_control is not None:
+            self._steering_control.cancelled = True
+            self._steering_control.accepting = False
         if self._pending_approval_widget:
             try:
                 self._pending_approval_widget.action_select_reject()

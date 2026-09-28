@@ -4439,6 +4439,53 @@ class TestTurnStateRelease:
 
             assert app._agent_running is False
 
+    @pytest.mark.parametrize("worker_started", [False, True])
+    async def test_force_clear_discards_pending_steer(
+        self, worker_started: bool
+    ) -> None:
+        """Force-clear must not dispatch a pending steer during worker cleanup."""
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        app = self._configured_app()
+        app._agent = MagicMock(spec=RemoteAgent)
+        setup_entered = asyncio.Event()
+
+        async def blocked_setup() -> bool:
+            setup_entered.set()
+            await asyncio.Event().wait()
+            return True
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch.object(app, "_ensure_goal_state_notice", blocked_setup),
+                patch.object(
+                    app, "_handle_user_message", new_callable=AsyncMock
+                ) as send,
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual",
+                    new_callable=AsyncMock,
+                ) as execute,
+            ):
+                await app._send_to_agent("original")
+                if worker_started:
+                    await asyncio.wait_for(setup_entered.wait(), timeout=5)
+                assert app._agent_turn_started is worker_started
+                await app.on_chat_input_submitted(
+                    ChatInput.Submitted("discard this steer", steer=True)
+                )
+                await app.on_chat_input_submitted(
+                    ChatInput.Submitted("/force-clear", "command")
+                )
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+
+            send.assert_not_awaited()
+            execute.assert_not_awaited()
+            assert not app._pending_messages
+            assert not app._agent_running
+            assert app._steering_control is None
+
     async def test_restart_releases_unstarted_turn(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

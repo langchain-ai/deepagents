@@ -1356,7 +1356,12 @@ def _resolve_model_from_env(
     context_size: int | None = None,
 ) -> str | BaseChatModel:
     base_url = env.get("OPENAI_BASE_URL")
-    unified_gateway = _is_openai_model(model) and "/" in model and gateway_connection(env)
+    unified_gateway = (
+        isinstance(model, str)
+        and _is_openai_model(model)
+        and "/" in model
+        and gateway_connection(env)
+    )
     if (
         context_size is None
         and (not base_url or not _is_openai_model(model))

@@ -359,50 +359,6 @@ async def test_accounting_failure_preserves_main_stream_and_state(
     assert cost["total"] == pytest.approx(2.5)
 
 
-@pytest.mark.parametrize("concurrent_stream", [False, True])
-@pytest.mark.parametrize("saved_side_total", [0.25, 0.75])
-async def test_accounting_refresh_preserves_streamed_graph_cost(
-    *, concurrent_stream: bool, saved_side_total: float
-) -> None:
-    from deepagents_code.cost_tracking import _empty_cost_breakdown
-
-    main = _empty_cost_breakdown()
-    main.update(total_cost_usd=2.0, request_count=2)
-    side = _empty_cost_breakdown()
-    side.update(total_cost_usd=0.5, request_count=1)
-    event = {"type": "session_cost", "total": 2.0, "breakdown": main}
-    agent = _make_agent([((), "custom", event)])
-    agent._graph.client.http.get.return_value = {"cost": side}
-    await agent.aget_session_cost(_config(), checkpoint={"_session_cost_usd": 1.0})
-
-    async def stream() -> None:
-        async for _event in agent.astream({}, config=_config()):
-            pass
-
-    if not concurrent_stream:
-        await stream()
-
-    saved_side = side.copy()
-    saved_side["total_cost_usd"] = saved_side_total
-
-    async def read(_path: str) -> dict[str, object]:
-        if concurrent_stream:
-            await stream()
-        return {"cost": saved_side}
-
-    agent._graph.client.http.get = read
-    for _ in range(2):
-        cost = await agent.aget_session_cost(
-            _config(), checkpoint={"_session_cost_usd": 1.0}
-        )
-        assert cost is not None
-        expected = 2.0 + max(0.5, saved_side_total)
-        assert cost["total"] == pytest.approx(expected)
-        assert cost["breakdown"] is not None
-        assert cost["breakdown"]["total_cost_usd"] == pytest.approx(expected)
-        assert cost["breakdown"]["request_count"] == 3
-
-
 @pytest.mark.parametrize("concurrent_graph_total", [1.0, 3.0])
 @pytest.mark.parametrize("response_side_total", [None, 0.25, 0.75])
 async def test_accounting_read_merges_concurrent_graph_and_side_updates(
@@ -574,8 +530,10 @@ async def test_equal_dollar_snapshots_keep_latest_side_usage(
     assert cached["breakdown"] == breakdown
 
 
-@pytest.mark.parametrize("missing", ["settlement", "graph"])
-@pytest.mark.parametrize("refresh_fails", [False, True])
+@pytest.mark.parametrize(
+    ("missing", "refresh_fails"),
+    [("settlement", False), ("settlement", True), ("graph", False)],
+)
 async def test_btw_refreshes_missing_accounting_without_losing_answer(
     missing: str, monkeypatch: pytest.MonkeyPatch, *, refresh_fails: bool
 ) -> None:

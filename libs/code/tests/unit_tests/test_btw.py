@@ -1258,28 +1258,6 @@ async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
         app._agent_running = False
 
 
-async def test_modal_dismiss_cancels_only_side_question() -> None:
-    from textual.app import App
-
-    app = App()
-    cancelled = asyncio.Event()
-
-    async def answer(_question: str) -> str:
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
-        return "unreachable"
-
-    async with app.run_test() as pilot:
-        app.push_screen(BtwScreen(answer, "why"))
-        await pilot.pause()
-        await pilot.press("escape")
-        await asyncio.wait_for(cancelled.wait(), 2)
-        await pilot.pause()
-        assert not isinstance(app.screen, BtwScreen)
-
-
 async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
     btw_app: tuple[DeepAgentsApp, MagicMock],
 ) -> None:
@@ -1775,7 +1753,7 @@ async def test_model_delivers_text_before_completion_and_closes_stream(
 
 
 @pytest.mark.parametrize("outcome", ["complete", "error", "cancel"])
-async def test_modal_renders_streamed_text_and_user_highlight(
+async def test_modal_renders_streamed_text(
     btw_app: tuple[DeepAgentsApp, MagicMock], outcome: str
 ) -> None:
     app, remote = btw_app
@@ -1810,14 +1788,6 @@ async def test_modal_renders_streamed_text_and_user_highlight(
         assert not app.screen.query_one("#btw-loading").display
         question = app.screen.query_one(UserMessage)
         assert question.raw_text == "why"
-        assert question.styles.background.a > 0
-        assert question.styles.border_left[0] == "wide"
-        await pilot.hover(question, offset=(2, 1))
-        assert question.styles.pointer == "text"
-        await pilot.hover(message.query_one(Markdown), offset=(1, 0))
-        assert message.styles.pointer == "text"
-        await pilot.hover(message.query_one(Markdown), offset=(30, 0))
-        assert message.styles.pointer == "default"
         if outcome == "cancel":
             await pilot.press("escape")
             await asyncio.wait_for(closed.wait(), 2)

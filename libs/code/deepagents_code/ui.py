@@ -1045,7 +1045,7 @@ def show_threads_list_help() -> None:
         "  --branch TEXT             Filter by git branch name",
         "  --cwd [PATH]              Filter by working directory (no value = current)",
         "  --sort {created,updated}  Sort order (default: from config, or updated)",
-        "  -n, --limit N             Maximum threads to display (default: 20)",
+        "  -n, --limit N             Maximum threads to display (default: 100)",
         "  -v, --verbose             Show all columns (branch, created, prompt)",
         "  -r, --relative/--no-relative"
         "  Show relative timestamps (default: from config)",

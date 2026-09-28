@@ -242,7 +242,7 @@ class TestSubcommandHelpFlags:
         """Running `deepagents threads list -h` should show threads list help."""
         self._run_help(
             ["deepagents", "threads", "list", "-h"],
-            must_contain="--limit",
+            must_contain="Maximum threads to display (default: 100)",
             must_not_contain="--sandbox",
         )
 

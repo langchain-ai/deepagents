@@ -53,7 +53,14 @@ _INSTRUCTIONS = (
 _MAX_SNAPSHOTS = 16
 BTW_OPERATION_ATTR = "_dcode_btw"
 _TOOL_OPTIONS = frozenset(
-    {"tools", "tool_choice", "functions", "function_call", "parallel_tool_calls"}
+    {
+        "tools",
+        "tool_choice",
+        "functions",
+        "function_call",
+        "parallel_tool_calls",
+        "mcp_servers",
+    }
 )
 _OPTION_CONTAINERS = ("model_kwargs", "extra_body")
 
@@ -122,13 +129,14 @@ def _tool_free_model(model: BaseChatModel) -> BaseChatModel:
     Returns:
         A model copy with tool-free provider defaults.
     """
-    return model.model_copy(
-        update={
-            key: _tool_free_options(value)
-            for key in _OPTION_CONTAINERS
-            if isinstance(value := getattr(model, key, None), Mapping)
-        }
-    )
+    updates: dict[str, object] = {
+        key: _tool_free_options(value)
+        for key in _OPTION_CONTAINERS
+        if isinstance(value := getattr(model, key, None), Mapping)
+    }
+    if hasattr(model, "mcp_servers"):
+        updates["mcp_servers"] = None
+    return model.model_copy(update=updates)
 
 
 def _conversation(state: Mapping[str, object]) -> list[AnyMessage]:

@@ -805,6 +805,91 @@ async def test_constructor_tools_are_absent_from_provider_request(
 
 
 @pytest.mark.parametrize(
+    "source", ["constructor", "binding", "snapshot", "checkpoint", "extra_body"]
+)
+async def test_native_anthropic_mcp_is_absent_from_provider_request(
+    source: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from anthropic import AsyncAnthropic
+    from langchain_anthropic import ChatAnthropic
+    from pydantic import SecretStr
+
+    servers = [{"type": "url", "url": "https://example.com/mcp", "name": "example"}]
+    tool_options = {
+        "tools": [{"type": "mcp_toolset", "mcp_server_name": "example"}],
+        "tool_choice": {"type": "auto"},
+    }
+    options = {"mcp_servers": servers, **tool_options}
+
+    def respond(request: Request) -> Response:
+        payload = json.loads(request.content)
+        assert not options.keys() & payload.keys()
+        assert payload["temperature"] == pytest.approx(0.2)
+        assert payload["max_tokens"] == 256
+        return Response(
+            200,
+            json={
+                "id": "side-answer",
+                "type": "message",
+                "role": "assistant",
+                "model": "test-model",
+                "content": [{"type": "text", "text": "answer"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 1},
+            },
+        )
+
+    async with AsyncAnthropic(
+        api_key="test",
+        http_client=AsyncClient(transport=MockTransport(respond)),
+        max_retries=0,
+    ) as client:
+        monkeypatch.setattr(
+            ChatAnthropic, "_async_client", property(lambda _self: client)
+        )
+        constructor = source in {"constructor", "checkpoint"}
+        model = ChatAnthropic(
+            model_name="test-model",
+            api_key=SecretStr("test"),
+            temperature=0.2,
+            max_tokens_to_sample=256,
+            mcp_servers=servers if constructor else None,
+            model_kwargs=(
+                tool_options
+                if constructor
+                else {"extra_body": options}
+                if source == "extra_body"
+                else {}
+            ),
+        )
+        settings = options if source in {"binding", "snapshot"} else {}
+        original = deepcopy(
+            model._get_request_payload([HumanMessage("main")], stop=None, **settings)
+        )
+        operation = BtwOperation(
+            cast("BaseChatModel", model.bind(**settings))
+            if source == "binding"
+            else model,
+            "system",
+            None,
+        )
+        state: dict[str, object] = {}
+        if source == "snapshot":
+            operation._snapshots["thread"] = (model, SystemMessage("system"), settings)
+        elif source == "checkpoint":
+            state = {"_model_spec": "anthropic:test-model", "_model_params": options}
+            monkeypatch.setattr(
+                "deepagents_code.config.create_model",
+                lambda *_args, **_kwargs: SimpleNamespace(model=model),
+            )
+        assert await operation.answer("thread", state, "why") == "answer"
+        assert (
+            model._get_request_payload([HumanMessage("main")], stop=None, **settings)
+            == original
+        )
+
+
+@pytest.mark.parametrize(
     "payload",
     [
         None,

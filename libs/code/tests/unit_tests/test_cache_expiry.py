@@ -647,7 +647,9 @@ async def test_send_timing_restores_draft_without_spending(
         process.assert_awaited_once_with("keep my request", "normal")
 
 
-@pytest.mark.parametrize("mode", ["expiry", "send"])
+@pytest.mark.parametrize(
+    ("mode", "submit"), [("expiry", False), ("expiry", True), ("send", True)]
+)
 @pytest.mark.parametrize(
     ("delta", "debug_forced", "expect_prompt"),
     [
@@ -657,8 +659,9 @@ async def test_send_timing_restores_draft_without_spending(
         (0.01, True, True),
     ],
 )
-async def test_send_handoff_honors_cost_threshold(
+async def test_handoff_honors_cost_threshold(
     mode: str,
+    submit: bool,
     delta: float,
     debug_forced: bool,
     expect_prompt: bool,
@@ -695,7 +698,10 @@ async def test_send_handoff_honors_cost_threshold(
         _prepare(app, monkeypatch)
         assert app._chat_input is not None
         app._chat_input.value = "send this request"
-        await pilot.press("enter")
+        if submit:
+            await pilot.press("enter")
+        else:
+            app._check_cache_expiry()
         await pilot.pause()
         if expect_prompt:
             assert isinstance(app.screen, ColdCacheWarningScreen)
@@ -704,8 +710,37 @@ async def test_send_handoff_honors_cost_threshold(
             await pilot.pause()
         else:
             assert not isinstance(app.screen, ColdCacheWarningScreen)
-            assert not app._cache_expiry_seen
-        process.assert_awaited_once_with("send this request", "normal")
+            if submit:
+                assert not app._cache_expiry_seen
+        if submit:
+            process.assert_awaited_once_with("send this request", "normal")
+        else:
+            process.assert_not_awaited()
+            assert app._chat_input.value == "send this request"
+
+
+@pytest.mark.parametrize("estimate_fails", [False, True])
+async def test_idle_handoff_without_estimate_preserves_choice(
+    estimate_fails: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+    app._cold_cache_warning_threshold_usd = 10.0
+    monkeypatch.setattr(
+        app,
+        "_cold_cache_estimate",
+        AsyncMock(
+            return_value=None,
+            side_effect=RuntimeError("pricing unavailable") if estimate_fails else None,
+        ),
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        app._check_cache_expiry()
+        await pilot.pause()
+        assert isinstance(app.screen, ColdCacheWarningScreen)
+        assert "estimate is unavailable" in app.screen._body()
+        await pilot.press("escape")
 
 
 def _record_errors(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> list[str]:

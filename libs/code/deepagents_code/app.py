@@ -9758,7 +9758,7 @@ class DeepAgentsApp(App):
         """
         from deepagents_code.tui.modals.cold_cache import ColdCacheChoice
 
-        if message is None and await self._cold_cache_opted_out():
+        if message is None and not await self._should_offer_cache_handoff():
             return
         draft = message.text if message else None
         request_at = self._last_model_request_at
@@ -9808,8 +9808,8 @@ class DeepAgentsApp(App):
 
         return await asyncio.to_thread(is_warning_suppressed, COLD_CACHE_WARNING_KEY)
 
-    async def _should_offer_send_handoff(self) -> bool:
-        """Honor opt-outs and the minimum cost before intercepting a send.
+    async def _should_offer_cache_handoff(self) -> bool:
+        """Honor opt-outs and the minimum cost for idle and send-time prompts.
 
         Returns:
             Whether to offer a handoff. Unavailable estimates still allow the
@@ -13292,7 +13292,7 @@ class DeepAgentsApp(App):
             and expires_at is not None
             and datetime.now(UTC) >= expires_at
             and self._cache_expiry_seen.get(thread_id) != expires_at
-            and await self._should_offer_send_handoff()
+            and await self._should_offer_cache_handoff()
         ):
             task = self._schedule_off_message_pump(
                 self._confirm_cache_expiry(thread_id, expires_at, message=message),

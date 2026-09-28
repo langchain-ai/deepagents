@@ -25,8 +25,6 @@ _TIPS: dict[str, int] = {
     "Use @@ to reference a recent conversation": 2,
     "Try /threads to resume a previous conversation or copy its ID": 2,
     "Ask /btw side questions and follow-ups while the agent keeps working": 2,
-    "Reopen /btw to continue your side conversation; Ctrl+X starts fresh": 1,
-    "Press Ctrl+X to clear /btw or the debug console": 1,
     "Use /offload to summarize older messages and free up the context window": 2,
     "Use /context to see context window usage and remaining space": 1,
     "Use /context-doctor to audit the token cost of injected context": 1,

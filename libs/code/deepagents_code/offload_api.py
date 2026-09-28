@@ -1142,15 +1142,15 @@ async def offload(request: Request) -> JSONResponse:
     Status codes, and what each means for whether state committed:
 
     - 200 -- completed, or a resumable hook request; no state written in the
-      latter case.
+        latter case.
     - 422 -- malformed request, named by field. Nothing ran.
     - 409 -- thread conflict: active, interrupted, holding pending graph work,
-      unregistered, carrying no checkpoint to offload, or advanced past the
-      checkpoint read. Nothing committed.
+        unregistered, carrying no checkpoint to offload, or advanced past the
+        checkpoint read. Nothing committed.
     - 503 -- the server runtime could not be built. Nothing ran.
     - 500 -- either an indeterminate write (compaction happened and the commit
-      cannot be confirmed; the detail says so and is user-actionable) or an
-      unexpected server fault.
+        cannot be confirmed; the detail says so and is user-actionable) or an
+        unexpected server fault.
 
     Invariants this boundary owns: it reads and hydrates checkpoint state itself,
     it commits only the channels `OffloadStateUpdate` permits and refuses any

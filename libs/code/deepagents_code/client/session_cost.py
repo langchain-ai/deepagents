@@ -15,7 +15,11 @@ class SessionCost(TypedDict):
     """Presentation total derived from the latest independent subtotals."""
 
     total: float
+    """Combined main-task and side-question spend in USD."""
+
     breakdown: CostBreakdown | None
+    """Combined usage and costs from available source breakdowns, if any."""
+
     cached: NotRequired[bool]
     """No fresh graph checkpoint was available to settle provisional usage."""
 
@@ -25,8 +29,13 @@ class SessionCostTracker:
     """Retain each source independently so delayed updates cannot erase spend."""
 
     graph_total: float | None = None
+    """Highest accepted main-task spend in USD, or `None` before usage arrives."""
+
     graph_breakdown: CostBreakdown | None = None
+    """Usage and costs accompanying the retained main-task total, if supplied."""
+
     side_breakdown: CostBreakdown | None = None
+    """Newest cumulative side-question usage and costs, if reported."""
 
     def update_graph(self, total: object, breakdown: object) -> bool:
         """Adopt a main-task total without replacing newer streamed usage.

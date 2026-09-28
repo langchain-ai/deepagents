@@ -3642,6 +3642,9 @@ class DeepAgentsApp(App):
         Named `_lc_thread_id` to avoid collision with Textual's `App._thread_id`.
         """
 
+        self._btw_history: dict[str, list[tuple[str, str]]] = {}
+        """Completed side exchanges per thread, retained only for this app instance."""
+
         self._resume_thread_intent = resume_thread
         """Raw `-r` intent (`None`, `'__MOST_RECENT__'`, or a thread id).
 
@@ -16910,7 +16913,12 @@ class DeepAgentsApp(App):
             from deepagents_code.tui.modals.btw import BtwScreen
 
             remote = self._remote_agent()
-            if remote is None or self._connecting or self._thread_switching:
+            if (
+                remote is None
+                or not self._lc_thread_id
+                or self._connecting
+                or self._thread_switching
+            ):
                 self.notify("Connect to a dcode session before asking /btw.")
                 return
             if not await self._has_conversation_messages():
@@ -16920,7 +16928,7 @@ class DeepAgentsApp(App):
             question = parts[1].strip() if len(parts) > 1 else ""
             thread_id = self._lc_thread_id
 
-            history: list[tuple[str, str]] = []
+            history = self._btw_history.setdefault(thread_id, [])
 
             async def answer(
                 question: str,
@@ -16945,7 +16953,11 @@ class DeepAgentsApp(App):
 
             self.push_screen(
                 BtwScreen(
-                    answer, question, stream_answer=answer, on_clear=history.clear
+                    answer,
+                    question,
+                    history=history,
+                    stream_answer=answer,
+                    on_clear=history.clear,
                 ),
                 lambda _result: self._focus_chat_input_after_refresh(),
             )

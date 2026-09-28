@@ -52,7 +52,7 @@ def _parse_history(raw: object) -> list[tuple[str, str]]:
         sum(len(question) + len(answer) for question, answer in history)
         > _MAX_HISTORY_LENGTH
     ):
-        msg = "Side conversation is too long. Close /btw and start a new one."
+        msg = "Side conversation is too long. Press Ctrl+X in /btw to clear it."
         raise ValueError(msg)
     return history
 

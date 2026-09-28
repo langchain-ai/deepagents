@@ -1,4 +1,4 @@
-"""Ephemeral side conversation with follow-up questions."""
+"""Side conversation with follow-ups and app-owned history."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ from deepagents_code.tui.widgets.loading import Spinner
 from deepagents_code.tui.widgets.messages import AssistantMessage, UserMessage
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
 
     from textual.app import ComposeResult
     from textual.timer import Timer
@@ -43,7 +43,7 @@ class BtwTextArea(InlinePromptTextArea):
 
 
 class BtwScreen(ModalScreen[None]):
-    """Chat independently of the main run and discard exchanges on dismissal."""
+    """Chat independently of the main run with restorable side exchanges."""
 
     CSS_PATH = "btw.tcss"
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -56,6 +56,7 @@ class BtwScreen(ModalScreen[None]):
         answer: Callable[[str], Awaitable[str]],
         question: str = "",
         *,
+        history: Sequence[tuple[str, str]] = (),
         stream_answer: Callable[[str, Callable[[str], Awaitable[None]]], Awaitable[str]]
         | None = None,
         on_clear: Callable[[], None] | None = None,
@@ -65,6 +66,7 @@ class BtwScreen(ModalScreen[None]):
         Args:
             answer: Generate a complete side answer.
             question: Initial question, or empty to start with the editor.
+            history: Completed exchanges to restore when reopening the conversation.
             stream_answer: Optional generator that delivers fragments to its receiver.
             on_clear: Discard the caller's side-conversation history on reset.
         """
@@ -73,6 +75,7 @@ class BtwScreen(ModalScreen[None]):
         self._stream_answer = stream_answer
         self._on_clear = on_clear
         self._question = question
+        self._history = tuple(history)
         self._spinner = Spinner()
         self._spinner_timer: Timer | None = None
         self._pending = False
@@ -105,17 +108,36 @@ class BtwScreen(ModalScreen[None]):
         hints = ["Enter ask", newline_hint()]
         if self.has_class("has-history"):
             hints.append("Tab history/input")
-        hints.extend(("Ctrl+X clear", "Esc dismiss"))
+        hints.extend(("Ctrl+X clear", "Esc hide"))
         return f" {get_glyphs().bullet} ".join(hints)
 
     async def on_mount(self) -> None:
         """Start an independent worker only after the modal is mounted."""
         self.query_one("#btw-loading").display = False
         self.query_one("#btw-scroll").display = False
+        await self._restore_history()
         if self._question:
             await self._start(self._question)
         else:
-            self.query_one(BtwTextArea).focus()
+            self.query_one(BtwTextArea).focus(scroll_visible=False)
+
+    async def _restore_history(self) -> None:
+        if not self._history:
+            return
+        self.add_class("has-history")
+        self.query_one("#btw-help", Static).update(self._help_text())
+        scroll = self.query_one("#btw-scroll", VerticalScroll)
+        scroll.display = True
+        for question, text in self._history:
+            answer = AssistantMessage()
+            await scroll.mount(
+                UserMessage(question, classes="btw-question", detect_mode=False),
+                answer,
+                before="#btw-loading",
+            )
+            await answer.set_content(text)
+        self.query_one(BtwTextArea).placeholder = "Ask a follow-up"
+        self.call_after_refresh(scroll.scroll_end, animate=False)
 
     async def on_btw_text_area_submitted(self, event: BtwTextArea.Submitted) -> None:
         """Submit the expanded modal text without sending a chat message."""

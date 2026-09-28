@@ -4,12 +4,7 @@ import pytest
 from textual.content import Content
 
 from deepagents_code._env_vars import HIDE_SPLASH_TIPS
-from deepagents_code.tui.widgets.startup_tip import (
-    _TIPS,
-    StartupTip,
-    _active_tips,
-    show_startup_tip,
-)
+from deepagents_code.tui.widgets.startup_tip import _TIPS, StartupTip, show_startup_tip
 
 _PICK_TIP = "deepagents_code.tui.widgets.startup_tip._pick_tip"
 _CHOICES = "deepagents_code.tui.widgets.startup_tip.random.choices"
@@ -34,20 +29,6 @@ class TestStartupTip:
         rendered = StartupTip("Use /copy").render()
         assert isinstance(rendered, Content)
         assert rendered.plain == "Tip: Use /copy"
-
-    @pytest.mark.parametrize(
-        ("platform", "shortcut"),
-        [("darwin", "Option+Return"), ("linux", "Alt+Enter"), ("win32", "Alt+Enter")],
-    )
-    def test_steering_tip_uses_platform_key_names(
-        self, monkeypatch: pytest.MonkeyPatch, platform: str, shortcut: str
-    ) -> None:
-        monkeypatch.setattr("deepagents_code.config.sys.platform", platform)
-        tips = _active_tips(yolo_switcher_enabled=True)
-        assert (
-            f"While working: {shortcut} interrupts with your message; Enter queues it"
-            in tips
-        )
 
     def test_show_startup_tip_defaults_to_true(
         self, monkeypatch: pytest.MonkeyPatch

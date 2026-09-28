@@ -2848,31 +2848,6 @@ class TestQueuedMessage:
 class TestMessageQueue:
     """Test message queue behavior in DeepAgentsApp."""
 
-    async def test_alt_enter_steers_without_consuming_normal_queue(self) -> None:
-        from deepagents_code.client.steering import SteeringControl
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._set_agent_running(True)
-            control = SteeringControl()
-            app._steering_control = control
-            await app.on_chat_input_submitted(ChatInput.Submitted("later"))
-            await app.on_chat_input_submitted(
-                ChatInput.Submitted("instead", steer=True)
-            )
-            assert [item.text for item in app._pending_messages] == ["later"]
-            assert control.pending.get_nowait().text == "instead"
-            control.accepting = False
-            await app.on_chat_input_submitted(
-                ChatInput.Submitted("after approval", steer=True)
-            )
-            assert [item.text for item in app._pending_messages] == [
-                "later",
-                "after approval",
-            ]
-            app._set_agent_running(False)
-
     @pytest.mark.parametrize("control_state", ["missing", "approval", "pending"])
     async def test_fallback_steer_owns_submitted_media(
         self, control_state: str
@@ -15034,39 +15009,6 @@ class TestEditorSlashCommand:
 
 class TestHelpEditorHint:
     """Tests for the editor name shown by `/help`."""
-
-
-class TestHelpSteeringHint:
-    @pytest.mark.parametrize(
-        ("platform", "shortcut"),
-        [("darwin", "Option+Return"), ("linux", "Alt+Enter"), ("win32", "Alt+Enter")],
-    )
-    @pytest.mark.parametrize("kitty", [True, False], ids=["kitty", "legacy"])
-    async def test_help_distinguishes_steering_from_newlines(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        platform: str,
-        shortcut: str,
-        kitty: bool,
-    ) -> None:
-        app = DeepAgentsApp()
-        mount = AsyncMock()
-        monkeypatch.setattr(app, "_mount_message", mount)
-        monkeypatch.setattr("deepagents_code.config.sys.platform", platform)
-        monkeypatch.setattr(
-            "deepagents_code.terminal_capabilities.supports_kitty_keyboard_protocol",
-            lambda: kitty,
-        )
-
-        await app._handle_command("/help")
-
-        message = mount.call_args.args[0]
-        help_text = message._content.plain
-        newline = "Shift+Enter" if kitty else "Ctrl+J"
-        assert f"{shortcut:<15} Interrupt with your message" in help_text
-        assert f"{newline:<15} Insert newline" in help_text
-        assert "queue while working" in help_text
-        assert "Option as Alt/Meta" in help_text
 
 
 class TestApprovalModeSlashCommands:

@@ -53,6 +53,12 @@ defaults, operator authorization, and next-invocation activation, and
 [MCP configuration guidance](../../libs/talon/README.md#mcp-tools) for credential
 restrictions. Out-of-workspace placement is not a same-UID shell isolation boundary.
 
+## Optional local browser
+
+Follow [native Steel setup](../../libs/talon/README.md#local-steel-browser) once,
+then the existing Talon launch command also starts the configured browser.
+Steel runs locally with one persistent profile per assistant workspace.
+
 ## Local Run Without Docker
 
 ```bash

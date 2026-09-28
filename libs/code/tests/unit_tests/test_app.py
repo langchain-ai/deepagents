@@ -3815,6 +3815,67 @@ class TestMessageQueue:
             notices = [str(w._content) for w in app.query(AppMessage)]
             assert any("returned to the input" in n for n in notices)
 
+    @pytest.mark.parametrize("has_draft", [False, True])
+    @pytest.mark.parametrize("tracked_spans", [False, True])
+    async def test_queue_restore_preserves_media_and_remaps_placeholders(
+        self, has_draft: bool, tracked_spans: bool
+    ) -> None:
+        """Independent queued attachments survive merging with a live draft."""
+        from deepagents_code.input import MediaTracker
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._chat_input is not None
+            draft = "draft [image 1] [video 1]" if has_draft else ""
+            if has_draft:
+                app._image_tracker.add_image(ImageData("draft", "png", ""))
+                app._image_tracker.add_video(VideoData("draft", "mp4", ""))
+                app._image_tracker.sync_to_text(draft)
+                app._chat_input.set_value_at_end(draft)
+                await pilot.pause()
+
+            snapshots: list[MediaTracker] = []
+            for name in ("first", "second"):
+                media = MediaTracker()
+                media.add_image(ImageData(name, "png", ""))
+                media.add_video(VideoData(name, "mp4", ""))
+                text = f"{name} [image 1] [video 1] literal [image 1] [image 2]"
+                if tracked_spans:
+                    media.sync_to_text(text, cursor_offset=0)
+                snapshots.append(media)
+                app._pending_messages.append(
+                    QueuedMessage(text, "normal", media_snapshot=media)
+                )
+
+            await app._restore_queue_to_input(
+                "Prompts restored.", empty_notice="No prompts to restore."
+            )
+            await pilot.pause()
+
+            expected = "\n\n".join(
+                ([draft] if has_draft else [])
+                + [
+                    "first [image 3] [video 2] literal [image 1] [image 2]",
+                    "second [image 4] [video 3] literal [image 1] [image 2]",
+                ]
+            )
+            assert app._chat_input.value == expected
+            assert not app._pending_messages
+            assert not app._queued_widgets
+            names = (["draft"] if has_draft else []) + ["first", "second"]
+            assert [i.base64_data for i in app._image_tracker.get_images()] == names
+            assert [v.base64_data for v in app._image_tracker.get_videos()] == names
+            for item in (
+                *app._image_tracker.get_images(),
+                *app._image_tracker.get_videos(),
+            ):
+                start = expected.index(item.placeholder)
+                assert item.placeholder_span == (start, start + len(item.placeholder))
+            for media in snapshots:
+                assert media.get_images()[0].placeholder == "[image 1]"
+                assert media.get_videos()[0].placeholder == "[video 1]"
+
     async def test_queue_restore_reports_prompts_the_input_cannot_take(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -22166,6 +22166,59 @@ class DeepAgentsApp(App):
         self._deferred_actions.clear()
         self._sync_status_queued()
 
+    @staticmethod
+    def _append_queued_draft(
+        draft: str,
+        message: QueuedMessage,
+        tracker: MediaTracker,
+        reserved_text: str,
+    ) -> str:
+        """Append a prompt, assigning its captured media collision-free tokens.
+
+        Args:
+            draft: Already merged text, whose media is in `tracker`.
+            message: Queued prompt with its independent attachment snapshot.
+            tracker: Destination for copies of the queued media.
+            reserved_text: All original drafts, including literal placeholders
+                that must not become attached to another draft's media.
+
+        Returns:
+            Combined text with attachment spans aligned to the new placeholders.
+        """
+        from deepagents_code.media_utils import ImageData
+
+        prefix = f"{draft}\n\n" if draft else ""
+        text = message.text
+        if message.media_snapshot is None:
+            return prefix + text
+        media = message.media_snapshot.snapshot()
+        media.sync_to_text(text)
+        items = sorted(
+            (*media.get_images(), *media.get_videos()),
+            key=lambda item: item.placeholder_span or (text.find(item.placeholder), 0),
+        )
+        parts = [prefix]
+        cursor = 0
+        offset = len(prefix)
+        for item in items:
+            start, end = item.placeholder_span or (
+                text.index(item.placeholder),
+                text.index(item.placeholder) + len(item.placeholder),
+            )
+            parts.append(text[cursor:start])
+            offset += start - cursor
+            placeholder = tracker.add_media(
+                item,
+                "image" if isinstance(item, ImageData) else "video",
+                existing_text=reserved_text,
+            )
+            item.placeholder_span = (offset, offset + len(placeholder))
+            parts.append(placeholder)
+            offset += len(placeholder)
+            cursor = end
+        parts.append(text[cursor:])
+        return "".join(parts)
+
     async def _restore_queue_to_input(
         self,
         notice: str,
@@ -22179,13 +22232,14 @@ class DeepAgentsApp(App):
         still starting, or a failed respawn. Prompts queued while the restart
         task was live would otherwise sit in `_pending_messages` indefinitely:
         no `ServerReady` fires, and `_process_next_from_queue` cannot run
-        uninvited. Restoring the texts keeps them visible and editable instead
-        of silently stuck.
+        uninvited. Restoring the drafts keeps their text and attachments editable
+        instead of silently stuck.
 
         Texts join the input oldest-first, separated from each other (and from
         any existing draft) by blank lines so multi-line prompts stay
         unambiguous, and each queued placeholder is removed so the transcript
-        matches. Skips the queue-clearing work entirely when nothing is queued.
+        matches. Captured media receives unique placeholders when drafts merge.
+        Skips the queue-clearing work entirely when nothing is queued.
 
         Args:
             notice: User-facing explanation when prompts are queued.
@@ -22198,9 +22252,9 @@ class DeepAgentsApp(App):
         has_queued_prompts = bool(self._pending_messages or self._queued_widgets)
         message = notice if has_queued_prompts else empty_notice
         await self._mount_message(AppMessage(message))
-        texts: list[str] = []
+        messages: list[QueuedMessage] = []
         while self._pending_messages or self._queued_widgets:
-            texts.extend(msg.text for msg in self._pending_messages)
+            messages.extend(self._pending_messages)
             self._pending_messages.clear()
             # Snapshot before awaiting: `widget.remove()` yields, and a late
             # submission appends another widget. The loop takes another pass
@@ -22211,16 +22265,23 @@ class DeepAgentsApp(App):
                 with suppress(NoMatches, ScreenStackError):
                     await widget.remove()
         self._sync_status_queued()
-        if not texts:
+        if not messages:
             return
 
-        restored = "\n\n".join(texts)
+        texts = [message.text for message in messages]
         chat_input = self._chat_input
         if chat_input is not None:
             draft = chat_input.value
-            if draft.strip():
-                restored = f"{draft}\n\n{restored}"
-            if not chat_input.set_value_at_end(restored):
+            restored = draft if draft.strip() else ""
+            tracker = self._image_tracker.snapshot()
+            reserved_text = "\n\n".join([draft, *texts])
+            for message in messages:
+                restored = self._append_queued_draft(
+                    restored, message, tracker, reserved_text
+                )
+            if chat_input.set_value_at_end(restored):
+                self._image_tracker.restore(tracker)
+            else:
                 await self._report_dropped_prompts(texts, "The text area")
         else:
             await self._report_dropped_prompts(texts, "The chat input")

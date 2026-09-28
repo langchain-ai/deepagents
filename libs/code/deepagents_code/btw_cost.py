@@ -2,8 +2,9 @@
 
 The sessions database owns this subtotal. Readers add it to the graph's total;
 it is never fed back into the graph's cost recorder or checkpoint channels.
-Failed writes remain owned in memory until a later settlement or cost read
-retries them. Only successfully persisted charges survive a server restart.
+Failed charges retain only usage and pricing metadata, never the conversation.
+Once priced, a charge is retried without recalculating its price. Only
+successfully persisted charges survive a server restart.
 """
 
 from __future__ import annotations
@@ -15,15 +16,19 @@ import sqlite3
 import threading
 from collections import deque
 from contextlib import closing
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from deepagents_code.cost_tracking import (
     _RECORDER_VAR,
     CostBreakdown,
     CostState,
+    _checkpointed_model_spec,
+    _has_legacy_cost_history,
     _merge_cost_breakdowns,
+    _ModelCallRecord,
+    _price_operation_records,
     _SessionCostRecorder,
-    prepare_operation_cost,
 )
 from deepagents_code.workspace import _database_path
 
@@ -33,9 +38,18 @@ if TYPE_CHECKING:
     import aiosqlite
 
 
-_PENDING_COSTS: dict[str, deque[tuple[_SessionCostRecorder, CostState]]] = {}
+@dataclass(frozen=True, slots=True)
+class _UnpricedCost:
+    """Only usage and pricing metadata survive a failed pricing attempt."""
+
+    records: list[_ModelCallRecord]
+    fallback: tuple[str, str]
+    historical_complete: bool
+
+
+_PENDING_COSTS: dict[str, deque[_UnpricedCost | CostBreakdown]] = {}
 _SETTLEMENT_LOCK = threading.Lock()
-"""Serialize retries and retain failed recorders until their writes succeed."""
+"""Serialize retries and keep each charge owned until its write succeeds."""
 
 logger = logging.getLogger(__name__)
 
@@ -102,43 +116,31 @@ def _load_saved_cost(thread_id: str) -> CostBreakdown | None:
         return _read_cost(conn, thread_id)
 
 
-def _persist_cost(thread_id: str, state: CostState) -> CostBreakdown | None:
-    prepared = prepare_operation_cost(state, thread_id)
-    try:
-        if not prepared.breakdown["request_count"]:
-            prepared.commit()
+def _persist_cost(thread_id: str, charge: CostBreakdown) -> CostBreakdown | None:
+    if not charge["request_count"]:
+        return None
+    # A short transaction serializes completions across server processes.
+    # The queue retains the priced charge if this transaction rolls back.
+    with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS dcode_btw_costs "
+            "(thread_id TEXT PRIMARY KEY NOT NULL, breakdown TEXT NOT NULL)"
+        )
+        # A tombstone prevents late completions from resurrecting deleted spend.
+        deleted = conn.execute(
+            "SELECT 1 FROM dcode_btw_costs WHERE thread_id = ? AND breakdown = 'null'",
+            (thread_id,),
+        ).fetchone()
+        if deleted:
             return None
-        # A short SQLite transaction serializes side completions across server
-        # processes without changing checkpoints or cancelling the main run.
-        with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS dcode_btw_costs "
-                "(thread_id TEXT PRIMARY KEY NOT NULL, breakdown TEXT NOT NULL)"
-            )
-            # Deletion leaves only an ID tombstone. It prevents a late provider
-            # completion or an in-memory retry from resurrecting deleted spend.
-            deleted = conn.execute(
-                "SELECT 1 FROM dcode_btw_costs "
-                "WHERE thread_id = ? AND breakdown = 'null'",
-                (thread_id,),
-            ).fetchone()
-            if deleted:
-                prepared.commit()
-                return None
-            previous = _read_cost(conn, thread_id)
-            total = _merge_cost_breakdowns(previous, prepared.breakdown)
-            conn.execute(
-                "INSERT INTO dcode_btw_costs VALUES (?, ?) "
-                "ON CONFLICT(thread_id) DO UPDATE SET breakdown = excluded.breakdown",
-                (thread_id, json.dumps(total)),
-            )
-    except BaseException:
-        prepared.rollback()
-        raise
-    else:
-        prepared.commit()
-        return total
+        total = _merge_cost_breakdowns(_read_cost(conn, thread_id), charge)
+        conn.execute(
+            "INSERT INTO dcode_btw_costs VALUES (?, ?) "
+            "ON CONFLICT(thread_id) DO UPDATE SET breakdown = excluded.breakdown",
+            (thread_id, json.dumps(total)),
+        )
+    return total
 
 
 def _retry_pending_costs(thread_id: str) -> CostBreakdown | None:
@@ -150,12 +152,16 @@ def _retry_pending_costs(thread_id: str) -> CostBreakdown | None:
     pending = _PENDING_COSTS.get(thread_id)
     total = None
     while pending:
-        recorder, state = pending[0]
-        token = _RECORDER_VAR.set(recorder)
-        try:
-            persisted = _persist_cost(thread_id, state)
-        finally:
-            _RECORDER_VAR.reset(token)
+        charge = pending[0]
+        if isinstance(charge, _UnpricedCost):
+            _, charge = _price_operation_records(
+                charge.records,
+                fallback=charge.fallback,
+                historical_complete=charge.historical_complete,
+            )
+            # A database retry must not reprice a charge or retain raw records.
+            pending[0] = charge
+        persisted = _persist_cost(thread_id, charge)
         pending.popleft()
         if persisted is not None:
             total = persisted
@@ -164,7 +170,11 @@ def _retry_pending_costs(thread_id: str) -> CostBreakdown | None:
 
 
 def _settle_cost(
-    thread_id: str, state: CostState, recorder: _SessionCostRecorder
+    thread_id: str,
+    recorder: _SessionCostRecorder,
+    *,
+    fallback: tuple[str, str],
+    historical_complete: bool,
 ) -> CostBreakdown | None:
     """Transfer ownership before writing so a failed request remains retryable.
 
@@ -172,7 +182,9 @@ def _settle_cost(
         The latest persisted subtotal, or `None` when no usage was written.
     """
     with _SETTLEMENT_LOCK:
-        _PENDING_COSTS.setdefault(thread_id, deque()).append((recorder, state))
+        _PENDING_COSTS.setdefault(thread_id, deque()).append(
+            _UnpricedCost(recorder.drain(thread_id), fallback, historical_complete)
+        )
         return _retry_pending_costs(thread_id)
 
 
@@ -194,6 +206,9 @@ async def answer_with_cost(
     """
     from deepagents_code.offload_api import _join_task_deferring_cancellation
 
+    fallback = _checkpointed_model_spec(state)
+    historical_complete = not _has_legacy_cost_history(state)
+    del state  # Even a logged settlement traceback must not retain the transcript.
     recorder = _SessionCostRecorder()
     token = _RECORDER_VAR.set(recorder)
     try:
@@ -203,7 +218,13 @@ async def answer_with_cost(
             # A disconnect can arrive after the provider completed. Finish the
             # database write even then, but allow cancellation during generation.
             settlement = asyncio.create_task(
-                asyncio.to_thread(_settle_cost, thread_id, state, recorder)
+                asyncio.to_thread(
+                    _settle_cost,
+                    thread_id,
+                    recorder,
+                    fallback=fallback,
+                    historical_complete=historical_complete,
+                )
             )
             cancellation = await _join_task_deferring_cancellation(settlement)
             try:

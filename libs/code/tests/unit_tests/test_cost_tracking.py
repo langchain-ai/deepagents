@@ -8,6 +8,7 @@ import json
 import logging
 import sqlite3
 import threading
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import replace
@@ -2612,6 +2613,53 @@ async def test_failed_side_costs_remain_retryable(
     assert [record.message_id for record in recorder.drain(THREAD_ID)] == ["main"]
 
 
+@pytest.mark.parametrize("failure_stage", ["pricing", "persistence"])
+async def test_failed_side_costs_release_conversation(
+    side_cost_db: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    from deepagents_code import btw_cost
+    from deepagents_code.btw import BtwOperation
+
+    operation = BtwOperation(_fake_model(_message(_usage())), "system", None)
+    message = AIMessage("Earlier conversation with potentially large attachments")
+    reference = weakref.ref(message)
+    state: CostState = {"messages": [message]}
+    estimate = estimate_cost(_usage(), KNOWN_MODEL, provider=KNOWN_PROVIDER)
+    with monkeypatch.context() as failure:
+        failure.setattr(
+            btw_cost,
+            "_price_operation_records" if failure_stage == "pricing" else "_read_cost",
+            MagicMock(side_effect=OSError("temporarily unavailable")),
+        )
+        text, cost = await btw_cost.answer_with_cost(
+            operation.answer(THREAD_ID, {}, "aside"),
+            thread_id=THREAD_ID,
+            state=state,
+        )
+        assert text
+        assert cost is None
+
+    del state, message
+    gc.collect()
+    assert reference() is None
+    if failure_stage == "persistence":
+        # Saving an already priced charge must work even if pricing goes offline.
+        monkeypatch.setattr(
+            cost_tracking,
+            "_request_estimate",
+            MagicMock(side_effect=OSError("pricing unavailable")),
+        )
+    saved = await asyncio.to_thread(btw_cost.load_cost, THREAD_ID)
+    assert await asyncio.to_thread(side_cost_db.exists)
+    assert saved is not None
+    assert estimate is not None
+    assert saved["total_cost_usd"] == pytest.approx(estimate)
+    assert saved["request_count"] == 1
+    assert saved["historical_complete"] is False
+
+
 async def test_concurrent_side_costs_do_not_claim_main_run_usage(
     recorder: _SessionCostRecorder, side_cost_db: Path
 ) -> None:
@@ -2655,11 +2703,11 @@ async def test_cancelling_side_answer_finishes_started_cost_write(
     write = btw_cost._persist_cost
 
     def blocked_write(
-        thread_id: str, state: CostState
+        thread_id: str, charge: cost_tracking.CostBreakdown
     ) -> cost_tracking.CostBreakdown | None:
         started.set()
         assert release.wait(5)
-        return write(thread_id, state)
+        return write(thread_id, charge)
 
     monkeypatch.setattr(btw_cost, "_persist_cost", blocked_write)
     operation = BtwOperation(_fake_model(_message(_usage())), "system", None)

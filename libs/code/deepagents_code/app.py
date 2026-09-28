@@ -13531,6 +13531,10 @@ class DeepAgentsApp(App):
                 "Steering unavailable during setup or approval; message queued.",
                 markup=False,
             )
+            await self._submit_input(
+                value, mode, media_snapshot=self._image_tracker.snapshot()
+            )
+            return
         await self._submit_input(value, mode)
 
     async def _restore_startup_tip_after_resume_fallback(self) -> None:
@@ -19222,9 +19226,29 @@ class DeepAgentsApp(App):
         Runs from a `finally`, so every step is best-effort — raising here would
         replace the exception that abandoned the turn with a teardown error.
         """
+        control = self._steering_control
+        self._steering_control = None
+        widget = None
+        if control is not None:
+            control.accepting = False
+            if not control.pending.empty():
+                request = control.pending.get_nowait()
+                self._pending_messages.append(
+                    QueuedMessage(
+                        text=request.text, mode="normal", media_snapshot=request.media
+                    )
+                )
+                widget = QueuedUserMessage(request.text)
+                self._queued_widgets.append(widget)
         self._set_agent_running(False)
         self._active_user_message = None
         self._active_turn_visible_output_started = False
+        if widget is not None:
+            try:
+                await self._mount_message(widget)
+                self._sync_status_queued()
+            except Exception:
+                logger.debug("Could not display recovered steer", exc_info=True)
         with suppress(Exception):
             await self._set_spinner(None)
         if self._chat_input:

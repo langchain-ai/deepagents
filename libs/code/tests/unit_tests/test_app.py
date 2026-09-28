@@ -2872,6 +2872,48 @@ class TestMessageQueue:
             ]
             app._set_agent_running(False)
 
+    @pytest.mark.parametrize("control_state", ["missing", "approval", "pending"])
+    async def test_fallback_steer_owns_submitted_media(
+        self, control_state: str
+    ) -> None:
+        from deepagents_code.client.steering import SteeringControl
+        from deepagents_code.media_utils import ImageData
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._set_agent_running(True)
+            if control_state != "missing":
+                control = SteeringControl()
+                app._steering_control = control
+                if control_state == "pending":
+                    assert control.submit("first steer")
+                else:
+                    control.accepting = False
+            app._image_tracker.add_image(ImageData("submitted", "png", ""))
+            await app.on_chat_input_submitted(
+                ChatInput.Submitted("look [image 1]", steer=True)
+            )
+            app._image_tracker.clear()
+            app._image_tracker.add_image(ImageData("next draft", "jpeg", ""))
+            queued = app._pending_messages[0]
+            assert queued.text == "look [image 1]"
+            assert queued.media_snapshot is not None
+            assert queued.media_snapshot.get_images() == [
+                ImageData("submitted", "png", "[image 1]")
+            ]
+            with patch.object(
+                app, "_handle_user_message", new_callable=AsyncMock
+            ) as send:
+                app._set_agent_running(False)
+                await app._process_next_from_queue()
+            send.assert_awaited_once_with(
+                queued.text, media_snapshot=queued.media_snapshot
+            )
+            assert app._image_tracker.get_images() == [
+                ImageData("next draft", "jpeg", "[image 1]")
+            ]
+
     async def test_startup_tip_mounts_above_input(self) -> None:
         """The startup tip appears in the bottom container above the input."""
         app = DeepAgentsApp()
@@ -4470,6 +4512,85 @@ class TestTurnStateRelease:
             app.post_message(ChatInput.Submitted("next message", "normal"))
             await pilot.pause()
             assert not app._pending_messages
+
+    @pytest.mark.parametrize("setup_outcome", ["failure", "rejection"])
+    async def test_abandoned_setup_preserves_steer_and_queue_order(
+        self, setup_outcome: str
+    ) -> None:
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.media_utils import ImageData
+
+        app = self._configured_app()
+        app._agent = MagicMock(spec=RemoteAgent)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            setup_entered = asyncio.Event()
+            release_setup = asyncio.Event()
+
+            async def blocked_setup() -> SimpleNamespace:
+                setup_entered.set()
+                await release_setup.wait()
+                if setup_outcome == "failure":
+                    msg = "setup failed"
+                    raise RuntimeError(msg)
+                return SimpleNamespace(ready=False)
+
+            setup_method = (
+                "_flush_pending_shell_messages"
+                if setup_outcome == "failure"
+                else "_reset_blocked_goal_for_user_turn"
+            )
+            with (
+                patch.object(app, setup_method, blocked_setup),
+                patch.object(
+                    app, "_process_message", new_callable=AsyncMock
+                ) as process,
+                patch.object(
+                    app, "_handle_user_message", new_callable=AsyncMock
+                ) as send,
+            ):
+                delivery = MagicMock()
+                delivery.attach_mock(process, "process")
+                delivery.attach_mock(send, "send")
+                turn = asyncio.create_task(app._send_to_agent("original"))
+                await asyncio.wait_for(setup_entered.wait(), timeout=5)
+                await app.on_chat_input_submitted(ChatInput.Submitted("already queued"))
+                app._image_tracker.add_image(ImageData("submitted", "png", ""))
+                await app.on_chat_input_submitted(
+                    ChatInput.Submitted("steer [image 1]", steer=True)
+                )
+                control = app._steering_control
+                assert control is not None
+                assert not control.pending.empty()
+                app._image_tracker.clear()
+                app._image_tracker.add_image(ImageData("next draft", "jpeg", ""))
+                release_setup.set()
+                if setup_outcome == "failure":
+                    with pytest.raises(RuntimeError, match="setup failed"):
+                        await turn
+                else:
+                    await turn
+                process.assert_awaited_once_with("already queued", "normal")
+                assert app._steering_control is None
+                assert not control.accepting
+                assert control.pending.empty()
+                assert not app._agent_running
+                assert app._agent_worker is None
+                assert app._loading_widget is None
+                assert not app._pending_messages
+                send.assert_awaited_once()
+                assert send.await_args is not None
+                media = send.await_args.kwargs["media_snapshot"]
+                assert media.get_images() == [
+                    ImageData("submitted", "png", "[image 1]")
+                ]
+                assert delivery.mock_calls == [
+                    call.process("already queued", "normal"),
+                    call.send("steer [image 1]", media_snapshot=media),
+                ]
+                assert app._image_tracker.get_images() == [
+                    ImageData("next draft", "jpeg", "[image 1]")
+                ]
 
     async def test_failed_turn_setup_releases_turn(self) -> None:
         """A failure before the worker exists releases the running flag.

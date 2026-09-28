@@ -3040,6 +3040,8 @@ def create_cli_agent(
         agent_middleware.append(ask_user_middleware)
         trusted_ask_user_tool = ask_user_middleware.tools[0]
 
+    instruction_middleware: list[MemoryMiddleware | PluginSkillsMiddleware] = []
+
     # Add memory middleware
     if enable_memory:
         memory_sources = [str(get_user_agent_md_path(assistant_id))]
@@ -3068,6 +3070,7 @@ def create_cli_agent(
                 ),
             )
         agent_middleware.append(memory_middleware)
+        instruction_middleware.append(memory_middleware)
 
         # Protect the machine-managed onboarding-name block in the user
         # AGENTS.md from being rewritten by agent file edits. The block's
@@ -3085,12 +3088,12 @@ def create_cli_agent(
             assistant_id=assistant_id,
             project_context=project_context,
         )
-        agent_middleware.append(
-            PluginSkillsMiddleware(
-                backend=FilesystemBackend(virtual_mode=False),
-                sources=sources,
-            )
+        skills_middleware = PluginSkillsMiddleware(
+            backend=FilesystemBackend(virtual_mode=False),
+            sources=sources,
         )
+        agent_middleware.append(skills_middleware)
+        instruction_middleware.append(skills_middleware)
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
     artifact_routes: dict[str, BackendProtocol] = {}
@@ -3609,8 +3612,8 @@ def create_cli_agent(
             profile_overrides=profile_overrides,
             instruction_middleware=[
                 item
-                for item in agent_middleware
-                if isinstance(item, MemoryMiddleware | PluginSkillsMiddleware)
+                for item in instruction_middleware
+                if any(item is active for active in agent_middleware)
             ],
         )
         agent_middleware.append(btw)

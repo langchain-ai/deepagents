@@ -414,6 +414,18 @@ def test_markdown_mentions_only_valid_allowed_users_in_prose() -> None:
     assert format_markdown_for_slack("[profile](<@U123>) <@U456>").endswith("<@U456>")
 
 
+async def test_tool_approval_prompt_escapes_mentions_without_changing_regular_sends(
+    tmp_path: Path,
+) -> None:
+    channel, gateway, _, _ = _channel(tmp_path)
+    await channel.send_tool_approval_prompt("D1", 'Args: `{"text": "` <@U123> `"}`')
+    await channel.send_message("D1", "<@U123>")
+
+    assert "<@U123>" not in gateway.posts[0][1]
+    assert "&lt;@U123&gt;" in gateway.posts[0][1]
+    assert gateway.posts[1][1] == "<@U123>"
+
+
 def test_code_is_escaped_but_not_reformatted() -> None:
     assert format_markdown_for_slack("`**x** <y>`") == "`**x** &lt;y&gt;`"
     assert format_markdown_for_slack("```\n__init__\n```") == "```\n__init__\n```"

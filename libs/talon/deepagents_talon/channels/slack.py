@@ -328,6 +328,9 @@ _COMMAND_SINK: ContextVar[_CommandSink | None] = ContextVar(
     "talon_slack_command_sink",
     default=None,
 )
+_TOOL_APPROVAL_PROMPT: ContextVar[bool] = ContextVar(
+    "talon_slack_tool_approval_prompt", default=False
+)
 """Reply sink for the slash command being handled on this task, if any.
 
 `slack_sdk` runs each Socket Mode envelope in its own task, so each invocation
@@ -664,7 +667,12 @@ class SlackChannel:
         channel_id, thread_ts = _parse_conversation_id(conversation_id)
         chunks = chunk_text(
             format_markdown_for_slack(
-                text, mention_allowlist=self.config.mention_allowlist_user_ids
+                text,
+                mention_allowlist=(
+                    frozenset()
+                    if _TOOL_APPROVAL_PROMPT.get()
+                    else self.config.mention_allowlist_user_ids
+                ),
             ),
             limit=MAX_TEXT_CHARS,
         )
@@ -680,6 +688,14 @@ class SlackChannel:
             self._remember_sent(channel_id, message_id, conversation_id)
         log_debug_event(logger, "slack.outbound.text.completed", chunk_count=len(chunks))
         return SendResult(success=True, message_id=message_id)
+
+    async def send_tool_approval_prompt(self, conversation_id: str, text: str) -> SendResult:
+        """Send a tool approval preview without activating user mentions."""
+        token = _TOOL_APPROVAL_PROMPT.set(True)
+        try:
+            return await self.send_message(conversation_id, text)
+        finally:
+            _TOOL_APPROVAL_PROMPT.reset(token)
 
     async def send_media(self, conversation_id: str, media: ChannelMedia) -> SendResult:
         """Upload media as a file with an optional caption.
@@ -762,7 +778,12 @@ class SlackChannel:
     async def _send_command_reply(self, sink: _CommandSink, text: str) -> SendResult:
         chunks = chunk_text(
             format_markdown_for_slack(
-                text, mention_allowlist=self.config.mention_allowlist_user_ids
+                text,
+                mention_allowlist=(
+                    frozenset()
+                    if _TOOL_APPROVAL_PROMPT.get()
+                    else self.config.mention_allowlist_user_ids
+                ),
             ),
             limit=MAX_TEXT_CHARS,
         )

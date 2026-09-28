@@ -876,6 +876,7 @@ class TestThreadSelectorLimit:
                 new_callable=AsyncMock,
                 return_value=threads_without_details,
             ) as mock_lt,
+            patch("deepagents_code.sessions.get_thread_limit", return_value=20),
             _patch_columns(),
             patch(
                 "deepagents_code.sessions.populate_thread_checkpoint_details",

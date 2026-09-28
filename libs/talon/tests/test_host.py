@@ -726,6 +726,20 @@ async def test_new_command_accepts_telegram_bot_command_suffix(tmp_path: Path) -
     ]
 
 
+@pytest.mark.parametrize("command", ["/unknown", "/unknown@TestBot something"])
+async def test_unknown_command_replies_without_invoking_agent(tmp_path: Path, command: str) -> None:
+    channel = RecordingChannel()
+    agent = HistoryAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text=command))
+    await host.stop()
+
+    assert agent.requests == []
+    assert channel.sent == [("chat", "Unknown command. Send /help to see available commands.")]
+
+
 async def test_new_command_cancels_in_flight_conversation(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = BlockingAgent()

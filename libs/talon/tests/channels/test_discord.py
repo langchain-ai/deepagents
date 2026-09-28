@@ -1140,17 +1140,28 @@ async def test_slash_command_failure_answers_the_interaction(
     assert "Discord command new failed" in caplog.text
 
 
-async def test_slash_command_reply_after_a_partial_send_is_not_duplicated(tmp_path):
-    """A followup that fails mid-reply is still an answer; no fallback on top of it."""
+async def test_slash_command_without_handler_reports_failure(tmp_path):
+    gateway = RecordingGateway()
+    channel = _operator_channel(tmp_path, gateway)
+    await channel.start()
+    responder = RecordingResponder()
+
+    await gateway.deliver_interaction(_interaction(responder=responder))
+
+    assert responder.sends == ["Something went wrong running that command. Check Talon logs."]
+
+
+async def test_slash_command_reply_send_failure_reports_failure(tmp_path):
     gateway = RecordingGateway()
     channel = _operator_channel(tmp_path, gateway)
     await channel.start()
 
     class FailingResponder(RecordingResponder):
         async def send(self, text):
-            self.sends.append(text)
-            msg = "followup rejected"
-            raise RuntimeError(msg)
+            if text == "reply":
+                msg = "delivery failed"
+                raise RuntimeError(msg)
+            return await super().send(text)
 
     responder = FailingResponder()
 
@@ -1158,10 +1169,35 @@ async def test_slash_command_reply_after_a_partial_send_is_not_duplicated(tmp_pa
         await channel.send_message(message.conversation_id, "reply")
 
     channel.set_message_handler(handler)
+    await gateway.deliver_interaction(_interaction(responder=responder))
+
+    assert responder.sends == ["Something went wrong running that command. Check Talon logs."]
+
+
+async def test_slash_command_reply_after_a_partial_send_is_not_duplicated(tmp_path):
+    """A failed later chunk does not add a fallback after a delivered first chunk."""
+    gateway = RecordingGateway()
+    channel = _operator_channel(tmp_path, gateway)
+    await channel.start()
+
+    class FailingResponder(RecordingResponder):
+        async def send(self, text):
+            if self.sends:
+                msg = "followup rejected"
+                raise RuntimeError(msg)
+            return await super().send(text)
+
+    responder = FailingResponder()
+
+    async def handler(message):
+        await channel.send_message(message.conversation_id, "x" * 2500)
+
+    channel.set_message_handler(handler)
 
     await gateway.deliver_interaction(_interaction(responder=responder))
 
-    assert responder.sends == ["reply"]
+    assert len(responder.sends) == 1
+    assert responder.sends[0] == "x" * discord_module.MAX_TEXT_CHARS
 
 
 async def test_slash_command_does_not_capture_another_conversation(tmp_path):

@@ -443,6 +443,78 @@ async def test_command_dispatches_its_typed_equivalent(tmp_path: Path) -> None:
     assert responder.sends == ["Done."]
 
 
+async def test_command_without_handler_reports_failure(tmp_path: Path) -> None:
+    channel, gateway, _, _ = _channel(tmp_path)
+    channel.set_message_handler(None)
+    await channel.start()
+    command, responder = _command("new")
+
+    await gateway.handle_command(command)
+
+    assert responder.sends == ["Something went wrong running that command. Check Talon logs."]
+
+
+async def test_command_reply_send_failure_reports_failure(tmp_path: Path) -> None:
+    channel, gateway, _, _ = _channel(tmp_path)
+
+    async def reply(message):
+        await channel.send_message(message.conversation_id, "Started fresh.")
+
+    class FailingResponder(CapturingResponder):
+        async def send(self, text):
+            if text == "Started fresh.":
+                msg = "delivery failed"
+                raise RuntimeError(msg)
+            await super().send(text)
+
+    channel.set_message_handler(reply)
+    await channel.start()
+    responder = FailingResponder()
+
+    await gateway.handle_command(
+        _SlackInboundCommand(
+            command="new",
+            channel_id="D1",
+            sender_id=OPERATOR,
+            trigger_id="trig-1",
+            responder=responder,
+        )
+    )
+
+    assert responder.sends == ["Something went wrong running that command. Check Talon logs."]
+
+
+async def test_command_reply_partial_send_does_not_duplicate_reply(tmp_path: Path) -> None:
+    channel, gateway, _, _ = _channel(tmp_path)
+
+    async def reply(message):
+        await channel.send_message(message.conversation_id, "x" * (MAX_TEXT_CHARS + 100))
+
+    class FailingResponder(CapturingResponder):
+        async def send(self, text):
+            if self.sends:
+                msg = "delivery failed"
+                raise RuntimeError(msg)
+            await super().send(text)
+
+    channel.set_message_handler(reply)
+    await channel.start()
+    responder = FailingResponder()
+
+    await gateway.handle_command(
+        _SlackInboundCommand(
+            command="new",
+            channel_id="D1",
+            sender_id=OPERATOR,
+            trigger_id="trig-1",
+            responder=responder,
+        )
+    )
+
+    assert len(responder.sends) == 1
+    assert responder.sends[0] == "x" * MAX_TEXT_CHARS
+
+
 async def test_command_reply_goes_to_the_response_url(tmp_path: Path) -> None:
     channel, gateway, _, _ = _channel(tmp_path)
 

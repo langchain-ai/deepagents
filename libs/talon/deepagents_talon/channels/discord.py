@@ -259,13 +259,15 @@ class _InteractionSink:
     Args:
         conversation_id: Channel whose replies belong to this interaction.
         responder: Reply surface for the invocation.
-        used: Whether a reply has been routed, so the caller knows if it still
+        used: Whether a reply was delivered, so the caller knows if it still
             owes Discord a followup.
+        attempted: Whether delivery was attempted but may have failed.
     """
 
     conversation_id: str
     responder: _InteractionResponder
     used: bool = False
+    attempted: bool = False
 
 
 _INTERACTION_SINK: ContextVar[_InteractionSink | None] = ContextVar(
@@ -795,10 +797,9 @@ class DiscordChannel:
         )
         message_id: str | None = None
         for chunk in chunks:
-            # Marked before the send so a partial failure still counts as answered:
-            # the caller must not add a fallback followup on top of a real reply.
-            sink.used = True
+            sink.attempted = True
             message_id = await sink.responder.send(chunk)
+            sink.used = True
         log_debug_event(
             logger,
             "discord.outbound.interaction.completed",
@@ -849,9 +850,12 @@ class DiscordChannel:
         await inbound.responder.defer()
         sink = _InteractionSink(inbound.channel_id, inbound.responder)
         token = _INTERACTION_SINK.set(sink)
-        failed = False
+        failed = self._handler is None
         try:
-            await dispatch_message(self._handler, message, provider="Discord")
+            if failed:
+                logger.warning("Discord command %s has no message handler", inbound.command)
+            else:
+                await dispatch_message(self._handler, message, provider="Discord")
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001  # Report the failure through the interaction.
@@ -864,7 +868,9 @@ class DiscordChannel:
             # so answer even when the command produced no reply of its own.
             with contextlib.suppress(Exception):
                 await inbound.responder.send(
-                    _COMMAND_FAILED_MESSAGE if failed else _COMMAND_NO_REPLY_MESSAGE,
+                    _COMMAND_FAILED_MESSAGE
+                    if failed or sink.attempted
+                    else _COMMAND_NO_REPLY_MESSAGE,
                 )
         log_debug_event(logger, "discord.inbound.interaction.dispatched", failed=failed)
 

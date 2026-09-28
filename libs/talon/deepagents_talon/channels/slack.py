@@ -303,13 +303,15 @@ class _CommandSink:
     Args:
         conversation_id: Conversation whose replies belong to this invocation.
         responder: Reply surface for the invocation.
-        used: Whether a reply has been routed, so the caller knows if it still
+        used: Whether a reply was delivered, so the caller knows if it still
             owes the user an answer.
+        attempted: Whether delivery was attempted but may have failed.
     """
 
     conversation_id: str
     responder: _CommandResponder
     used: bool = False
+    attempted: bool = False
 
 
 _COMMAND_SINK: ContextVar[_CommandSink | None] = ContextVar(
@@ -726,10 +728,9 @@ class SlackChannel:
         chunks = chunk_text(format_markdown_for_slack(text), limit=MAX_TEXT_CHARS)
         message_id: str | None = None
         for chunk in chunks:
-            # Marked before the send so a partial failure still counts as answered:
-            # the caller must not add a fallback reply on top of a real one.
-            sink.used = True
+            sink.attempted = True
             message_id = await sink.responder.send(chunk)
+            sink.used = True
         log_debug_event(logger, "slack.outbound.command.completed", chunk_count=len(chunks))
         return SendResult(success=True, message_id=message_id)
 
@@ -782,9 +783,12 @@ class SlackChannel:
         log_debug_event(logger, "slack.inbound.command.dispatching")
         sink = _CommandSink(message.conversation_id, inbound.responder)
         token = _COMMAND_SINK.set(sink)
-        failed = False
+        failed = self._handler is None
         try:
-            await dispatch_message(self._handler, message, provider="Slack")
+            if failed:
+                logger.warning("Slack command %s has no message handler", inbound.command)
+            else:
+                await dispatch_message(self._handler, message, provider="Slack")
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001  # Report the failure through the command reply.
@@ -795,7 +799,9 @@ class SlackChannel:
         if not sink.used:
             with contextlib.suppress(Exception):
                 await inbound.responder.send(
-                    _COMMAND_FAILED_MESSAGE if failed else _COMMAND_NO_REPLY_MESSAGE,
+                    _COMMAND_FAILED_MESSAGE
+                    if failed or sink.attempted
+                    else _COMMAND_NO_REPLY_MESSAGE,
                 )
         log_debug_event(logger, "slack.inbound.command.dispatched", failed=failed)
 

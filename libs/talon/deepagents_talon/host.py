@@ -480,6 +480,14 @@ class TalonHost:
                 provider=provider,
             ):
                 return
+            if command is not None:
+                await send_with_retry(
+                    lambda: channel.send_message(
+                        channel_conversation_id,
+                        "Unknown command. Send /help to see available commands.",
+                    )
+                )
+                return
 
             pending = self._pending_tool_approvals.get(agent_conversation_id)
             if pending is not None:

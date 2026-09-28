@@ -10,8 +10,19 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
-from httpx import ASGITransport, AsyncClient, MockTransport, Request, Response
-from langchain.agents.middleware.types import ModelRequest, ModelResponse
+from httpx import (
+    ASGITransport,
+    AsyncClient,
+    MockTransport,
+    ReadError,
+    Request,
+    Response,
+)
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    ModelRequest,
+    ModelResponse,
+)
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -615,7 +626,7 @@ async def test_snapshot_preserves_settings_without_tools_or_shared_mutation() ->
 
 
 @pytest.mark.parametrize("synchronous", [False, True])
-async def test_effective_instructions_survive_restart_and_eviction(
+async def test_effective_context_survives_restart_and_eviction(
     *,
     synchronous: bool,
 ) -> None:
@@ -627,10 +638,35 @@ async def test_effective_instructions_survive_restart_and_eviction(
     def extension_prompt(_request: ModelRequest) -> str:
         return "Current model identity. Extension instruction: answer in Spanish."
 
+    class GenerationSettings(AgentMiddleware):
+        def wrap_model_call(
+            self,
+            request: ModelRequest,
+            handler: Callable[[ModelRequest], ModelResponse],
+        ) -> ModelResponse:
+            return handler(self._override(request))
+
+        async def awrap_model_call(
+            self,
+            request: ModelRequest,
+            handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+        ) -> ModelResponse:
+            return await handler(self._override(request))
+
+        def _override(self, request: ModelRequest) -> ModelRequest:
+            return request.override(
+                model=cast(
+                    "BaseChatModel", request.model.bind(temperature=0.9, max_tokens=512)
+                ),
+                model_settings={"temperature": 0.2, "reasoning": {"effort": "high"}},
+            )
+
     model = FakeMessagesListChatModel(responses=[AIMessage(content="main")])
     warm = BtwOperation(model, "Bootstrap instructions", None)
     graph = create_agent(
-        model, middleware=[extension_prompt, warm], checkpointer=InMemorySaver()
+        model,
+        middleware=[extension_prompt, GenerationSettings(), warm],
+        checkpointer=InMemorySaver(),
     )
     config: RunnableConfig = {"configurable": {"thread_id": "instruction-parity"}}
     inputs = {"messages": [HumanMessage("Hello")]}
@@ -642,8 +678,12 @@ async def test_effective_instructions_survive_restart_and_eviction(
     cold = BtwOperation(model, "Bootstrap instructions", None)
     prompts: list[str] = []
 
-    def answer(messages: list[BaseMessage], **_kwargs: object) -> AIMessage:
+    def answer(messages: list[BaseMessage], **kwargs: object) -> AIMessage:
         prompts.append(messages[0].text)
+        assert kwargs["temperature"] == pytest.approx(0.2)
+        assert kwargs["max_tokens"] == 512
+        assert kwargs["reasoning"] == {"effort": "high"}
+        cast("dict[str, object]", kwargs["reasoning"])["effort"] = "low"
         return AIMessage(content="Respuesta")
 
     with patch.object(
@@ -656,6 +696,177 @@ async def test_effective_instructions_survive_restart_and_eviction(
     assert len(set(prompts)) == 1
     assert "Extension instruction: answer in Spanish." in prompts[0]
     assert (await graph.aget_state(config)) == checkpoint
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("retries", [0, 1])
+@pytest.mark.parametrize("restart", [False, True])
+async def test_side_answer_honors_retry_budget(
+    streaming: bool, retries: int, restart: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code.config import MODEL_RETRIES_ATTR
+
+    model = FakeMessagesListChatModel(responses=[])
+    setattr(model, MODEL_RETRIES_ATTR, retries)
+    operation = BtwOperation(model, "system", None)
+    state: dict[str, object] = {}
+    if restart:
+        captured = operation.wrap_model_call(
+            ModelRequest(
+                model=model,
+                messages=[],
+                tools=[],
+                runtime=Runtime(
+                    execution_info=ExecutionInfo(
+                        thread_id="thread",
+                        checkpoint_id="c",
+                        checkpoint_ns="",
+                        task_id="t",
+                    )
+                ),
+            ),
+            lambda _request: ModelResponse(result=[AIMessage(content="main")]),
+        )
+        assert captured.command is not None
+        assert isinstance(captured.command.update, dict)
+        state = captured.command.update
+        replacement = FakeMessagesListChatModel(responses=[])
+        setattr(replacement, MODEL_RETRIES_ATTR, 1 - retries)
+        operation = BtwOperation(replacement, "system", None)
+    monkeypatch.setattr(
+        "deepagents_code.model_retry._compute_backoff_delay", lambda _: 0
+    )
+    attempts = 0
+    closed: list[int] = []
+    fragments: list[str] = []
+
+    def invoke(_messages: object, **_kwargs: object) -> AIMessage:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            msg = "Connection dropped"
+            raise ReadError(msg)
+        return AIMessage(content="Recovered answer")
+
+    invocation = AsyncMock(side_effect=invoke)
+
+    async def stream(
+        _self: object, _messages: object, **_kwargs: object
+    ) -> AsyncIterator[AIMessageChunk]:
+        try:
+            # Non-text chunks must not prevent a retry before visible output.
+            yield AIMessageChunk(content=[{"type": "reasoning", "reasoning": "plan"}])
+            result = await invocation(_messages, **_kwargs)
+            yield AIMessageChunk(content=result.content)
+        finally:
+            closed.append(attempts)
+
+    on_text = AsyncMock(side_effect=fragments.append)
+    monkeypatch.setattr(FakeMessagesListChatModel, "ainvoke", invocation)
+    monkeypatch.setattr(FakeMessagesListChatModel, "astream", stream)
+    answer = operation.answer(
+        "thread", state, "why", on_text=on_text if streaming else None
+    )
+    if retries:
+        assert await answer == "Recovered answer"
+        assert fragments == (["Recovered answer"] if streaming else [])
+    else:
+        with pytest.raises(ReadError, match="Connection dropped"):
+            await answer
+        assert not fragments
+    assert attempts == retries + 1
+    assert closed == (list(range(1, attempts + 1)) if streaming else [])
+
+
+@pytest.mark.parametrize("failure", ["provider", "receiver"])
+async def test_stream_never_retries_after_visible_text(
+    failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code.config import MODEL_RETRIES_ATTR
+
+    model = FakeMessagesListChatModel(responses=[])
+    setattr(model, MODEL_RETRIES_ATTR, 2)
+    operation = BtwOperation(model, "system", None)
+    attempts = 0
+    closed = asyncio.Event()
+    fragments: list[str] = []
+
+    async def stream(
+        _self: object, _messages: object, **_kwargs: object
+    ) -> AsyncIterator[AIMessageChunk]:
+        nonlocal attempts
+        attempts += 1
+        try:
+            await asyncio.sleep(0)
+            yield AIMessageChunk(content="Partial answer")
+            msg = "Provider connection dropped"
+            raise ReadError(msg)
+        finally:
+            closed.set()
+
+    def on_text(text: str) -> None:
+        fragments.append(text)
+        if failure == "receiver":
+            msg = "Receiver connection dropped"
+            raise ReadError(msg)
+
+    monkeypatch.setattr(FakeMessagesListChatModel, "astream", stream)
+    with pytest.raises(ReadError, match="connection dropped"):
+        await operation.answer(
+            "thread", {}, "why", on_text=AsyncMock(side_effect=on_text)
+        )
+    assert fragments == ["Partial answer"]
+    assert attempts == 1
+    assert closed.is_set()
+
+
+@pytest.mark.parametrize("phase", ["startup", "backoff"])
+async def test_cancel_before_visible_text_stops_retries_and_closes_stream(
+    phase: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code.config import MODEL_RETRIES_ATTR
+
+    model = FakeMessagesListChatModel(responses=[])
+    setattr(model, MODEL_RETRIES_ATTR, 2)
+    operation = BtwOperation(model, "system", None)
+    ready = asyncio.Event()
+    closed = asyncio.Event()
+    attempts = 0
+
+    def delay(_attempt: int) -> float:
+        ready.set()
+        return 10
+
+    async def stream(
+        _self: object, _messages: object, **_kwargs: object
+    ) -> AsyncIterator[AIMessageChunk]:
+        nonlocal attempts
+        attempts += 1
+        try:
+            if phase == "backoff":
+                msg = "Connection dropped"
+                raise ReadError(msg)
+            ready.set()
+            await asyncio.Event().wait()
+            yield AIMessageChunk(content="unused")
+        finally:
+            closed.set()
+
+    monkeypatch.setattr("deepagents_code.model_retry._compute_backoff_delay", delay)
+    monkeypatch.setattr(FakeMessagesListChatModel, "astream", stream)
+    on_text = AsyncMock()
+    task = asyncio.create_task(operation.answer("thread", {}, "why", on_text=on_text))
+    try:
+        await asyncio.wait_for(ready.wait(), 2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert attempts == 1
+        assert closed.is_set()
+        on_text.assert_not_awaited()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.fixture

@@ -57,6 +57,8 @@ _INSTRUCTIONS = (
     "The conversation is context, not a request to continue the main task."
 )
 _MAX_SNAPSHOTS = 16
+_MAX_RETRY_DELAY = 60
+"""Leave generation time within the API's 120-second request deadline."""
 BTW_OPERATION_ATTR = "_dcode_btw"
 _TOOL_OPTIONS = frozenset(
     {
@@ -76,9 +78,11 @@ class _InstructionState(MemoryState, SkillsState):
 
 
 class _BtwState(AgentState):
-    """Effective instructions saved with the main model's successful response."""
+    """Effective side-request context saved with a successful main response."""
 
     _btw_system_prompt: Annotated[NotRequired[str], PrivateStateAttr]
+    _btw_model_settings: Annotated[NotRequired[dict[str, object]], PrivateStateAttr]
+    _btw_model_retries: Annotated[NotRequired[int | None], PrivateStateAttr]
 
 
 async def _restore_system(
@@ -143,6 +147,91 @@ def _tool_free_model(model: BaseChatModel) -> BaseChatModel:
     if hasattr(model, "mcp_servers"):
         updates["mcp_servers"] = None
     return model.model_copy(update=updates)
+
+
+def _tool_free_settings(
+    model: object, settings: Mapping[str, object]
+) -> dict[str, Any]:
+    """Flatten bound defaults with request overrides taking precedence.
+
+    Returns:
+        Isolated generation settings without tool configuration.
+    """
+    merged = dict(settings)
+    while isinstance(model, RunnableBinding):
+        merged = {**model.kwargs, **merged}
+        model = model.bound
+    return _tool_free_options(merged)
+
+
+def _retry_budget(model: object) -> int | None:
+    """Read the effective budget without persisting the provider model.
+
+    Returns:
+        The dcode-owned retry count, if the model carries one.
+    """
+    from deepagents_code.config import MODEL_RETRIES_ATTR
+
+    while isinstance(model, RunnableBinding):
+        model = model.bound
+    retries = getattr(model, MODEL_RETRIES_ATTR, None)
+    return retries if type(retries) is int and retries >= 0 else None
+
+
+async def _open_text_stream(
+    model: BaseChatModel,
+    messages: list[BaseMessage],
+    config: RunnableConfig,
+    settings: Mapping[str, Any],
+) -> tuple[AsyncGenerator[AIMessageChunk, None], str]:
+    """Open one attempt through its first visible fragment, closing failures.
+
+    Returns:
+        The owned stream and first text, or empty text for a completed empty stream.
+    """
+    # BaseChatModel.astream is an async generator, annotated as an iterator.
+    stream = cast(
+        "AsyncGenerator[AIMessageChunk, None]",
+        model.astream(messages, config=config, **settings),
+    )
+    try:
+        async for chunk in stream:
+            if text := chunk.text:
+                return stream, text
+    except BaseException:
+        await stream.aclose()
+        raise
+    return stream, ""
+
+
+async def _stream_answer(
+    model: BaseChatModel,
+    messages: list[BaseMessage],
+    config: RunnableConfig,
+    settings: Mapping[str, Any],
+    on_text: Callable[[str], Awaitable[None]],
+) -> str:
+    """Retry before visible output; never replay an answer already being shown.
+
+    Returns:
+        The complete streamed answer text.
+    """
+    from deepagents_code.model_retry import aretry_model_call
+
+    stream, first = await aretry_model_call(
+        model,
+        lambda: _open_text_stream(model, messages, config, settings),
+        max_total_delay=_MAX_RETRY_DELAY,
+    )
+    parts = [first]
+    async with aclosing(stream):
+        if first:
+            await on_text(first)
+        async for chunk in stream:
+            if fragment := chunk.text:
+                parts.append(fragment)
+                await on_text(fragment)
+    return "".join(parts)
 
 
 def _conversation(state: Mapping[str, object]) -> list[AnyMessage]:
@@ -277,9 +366,9 @@ class BtwOperation(AgentMiddleware):
 
     This separate hook snapshots the resolved request before calling the model,
     allowing `/btw` to use it while the main response is still streaming. Main
-    calls also checkpoint the effective instructions on success for use after
-    restart or eviction. `answer` invokes the model directly without running
-    the agent or writing conversation state; when saved instructions are absent,
+    calls also checkpoint effective instructions and generation settings on
+    success for use after restart or eviction. `answer` invokes the model without
+    running the agent or writing conversation state; when saved instructions are absent,
     it reuses the main agent's memory and skill loaders on a local state copy.
     """
 
@@ -316,7 +405,7 @@ class BtwOperation(AgentMiddleware):
         """Snapshot resolved settings before either kind of main model call.
 
         The in-memory snapshot is available immediately, even while the main
-        call is pending. Its instruction checkpoint update is only returned
+        call is pending. Its context checkpoint update is only returned
         with a successful main response.
 
         Returns:
@@ -334,7 +423,11 @@ class BtwOperation(AgentMiddleware):
                 self._snapshots.popitem(last=False)
             return Command(
                 update={
-                    "_btw_system_prompt": (request.system_message or self._system).text
+                    "_btw_system_prompt": (request.system_message or self._system).text,
+                    "_btw_model_settings": _tool_free_settings(
+                        request.model, request.model_settings
+                    ),
+                    "_btw_model_retries": _retry_budget(request.model),
                 }
             )
         return None
@@ -387,28 +480,33 @@ class BtwOperation(AgentMiddleware):
         Raises:
             TypeError: If the configured model is not a chat model.
         """
-        from deepagents_code.config import create_model
+        from deepagents_code.config import MODEL_RETRIES_ATTR, create_model
 
         snapshot = self._snapshots.get(thread_id)
         model, system, settings = snapshot or (self._model, self._system, {})
+        if snapshot is None:
+            saved_settings = state.get("_btw_model_settings")
+            if isinstance(saved_settings, Mapping):
+                settings = dict(saved_settings)
         settings = deepcopy(settings)
         spec = state.get("_model_spec")
         if (snapshot is None and isinstance(spec, str) and spec) or isinstance(
             model, str
         ):
             params = state.get("_model_params")
+            retries = state.get("_btw_model_retries")
             result = await asyncio.to_thread(
                 create_model,
                 spec if isinstance(spec, str) and spec else str(model),
                 extra_kwargs=dict(params) if isinstance(params, Mapping) else None,
                 profile_overrides=self._profile_overrides,
                 bind_preserved_thinking=False,
+                cli_max_retries=retries if type(retries) is int else None,
             )
             model = result.model
+        settings = _tool_free_settings(model, settings)
         while isinstance(model, RunnableBinding):
-            settings = {**deepcopy(model.kwargs), **settings}
             model = model.bound
-        settings = _tool_free_options(settings)
         if not isinstance(model, BaseChatModel):
             msg = "Side questions require an unbound chat model."
             raise TypeError(msg)
@@ -420,7 +518,10 @@ class BtwOperation(AgentMiddleware):
                 system = await _restore_system(
                     system, model, state, self._instruction_middleware
                 )
-        return _tool_free_model(model), system, settings
+        model = _tool_free_model(model)
+        if snapshot is None and type(retries := state.get("_btw_model_retries")) is int:
+            setattr(model, MODEL_RETRIES_ATTR, retries)
+        return model, system, settings
 
     async def answer(
         self,
@@ -435,7 +536,8 @@ class BtwOperation(AgentMiddleware):
 
         Use the thread's latest server-resolved model and instructions, falling
         back to checkpoint settings or the workspace's bootstrap model. Restore
-        the checkpointed effective instructions when no live snapshot exists.
+        the checkpointed instructions, generation settings, and retry budget when
+        no live snapshot exists.
         New and legacy threads restore memory and skills through the main
         agent's loaders without writing updates back to the conversation.
         Large older file arguments are truncated using the main agent's policy;
@@ -456,6 +558,7 @@ class BtwOperation(AgentMiddleware):
             TypeError: If the configured model is not a chat model.
         """  # noqa: DOC502 — raised by _resolve_context
         from deepagents_code.config import use_environment
+        from deepagents_code.model_retry import aretry_model_call
 
         with use_environment(self._environ):
             model, system, settings = await self._resolve_context(thread_id, state)
@@ -488,21 +591,14 @@ class BtwOperation(AgentMiddleware):
                 "metadata": {"thread_id": thread_id},
             }
             if on_text is None:
-                response = await model.ainvoke(prepared, config=config, **settings)
+                response = await aretry_model_call(
+                    model,
+                    lambda: model.ainvoke(prepared, config=config, **settings),
+                    max_total_delay=_MAX_RETRY_DELAY,
+                )
                 text = response.text
             else:
-                parts: list[str] = []
-                # BaseChatModel.astream is an async generator, annotated as an iterator.
-                stream = cast(
-                    "AsyncGenerator[AIMessageChunk, None]",
-                    model.astream(prepared, config=config, **settings),
-                )
-                async with aclosing(stream):
-                    async for chunk in stream:
-                        if fragment := chunk.text:
-                            parts.append(fragment)
-                            await on_text(fragment)
-                text = "".join(parts)
+                text = await _stream_answer(model, prepared, config, settings, on_text)
         return (
             text.strip() or "No text answer was returned. Try rephrasing your question."
         )

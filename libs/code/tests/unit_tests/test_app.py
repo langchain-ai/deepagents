@@ -26052,6 +26052,7 @@ class TestScheduleOffMessagePump:
         app = DeepAgentsApp()
         started = asyncio.Event()
         release = asyncio.Event()
+        resumed = asyncio.Event()
         processed: list[str] = []
         continuation: asyncio.Task[None] | None = None
 
@@ -26066,6 +26067,8 @@ class TestScheduleOffMessagePump:
                 continuation = app._schedule_off_message_pump(
                     _mutation(), context="update"
                 )
+            elif value == "next agent turn":
+                resumed.set()
 
         app._process_message = _process  # ty: ignore
         app._pending_messages.extend(
@@ -26086,10 +26089,9 @@ class TestScheduleOffMessagePump:
         assert continuation is not None
         release.set()
         await asyncio.wait_for(continuation, timeout=2.0)
-        for _ in range(10):
-            if processed == ["update", "next agent turn"]:
-                break
-            await asyncio.sleep(0)
+        # Dispatch can read cache preferences in a worker thread, so wait for
+        # processing instead of assuming a fixed number of event-loop ticks.
+        await asyncio.wait_for(resumed.wait(), timeout=2.0)
 
         assert processed == ["update", "next agent turn"]
         assert not app._pending_messages

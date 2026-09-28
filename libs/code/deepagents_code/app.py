@@ -9911,8 +9911,8 @@ class DeepAgentsApp(App):
         previous_block = chat_input.submission_block_reason if chat_input else None
         if chat_input:
             chat_input.submission_block_reason = (
-                "Summarizing for a new thread. You can keep editing your draft; "
-                "wait for the handoff to finish before sending, or press Esc to cancel."
+                "Creating your summary. You can keep editing, then send when "
+                "it's ready. Esc to cancel."
             )
         try:
             return await self._handoff_expired_cache(thread_id)
@@ -9922,8 +9922,8 @@ class DeepAgentsApp(App):
             logger.exception("Cache handoff failed")
             await self._mount_message(
                 ErrorMessage(
-                    f"Could not start a summarized thread: {exc}. "
-                    "The original thread is unchanged."
+                    f"Couldn't create the new thread: {exc}. "
+                    "Your original conversation is still available."
                 )
             )
             return None
@@ -10071,9 +10071,8 @@ class DeepAgentsApp(App):
         ):
             await self._mount_message(
                 AppMessage(
-                    "New messages or shell activity arrived during summarization; "
-                    "staying on this thread so they are not discarded. "
-                    "Open the saved summary with /threads."
+                    "This thread has new activity, so you're staying here. "
+                    "Open your saved summary with /threads."
                 )
             )
         elif self._lc_thread_id == thread_id and not self._exiting:

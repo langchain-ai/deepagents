@@ -803,7 +803,7 @@ async def test_send_timing_restores_draft_without_spending(
             assert not isinstance(app.screen, ColdCacheWarningScreen)
             return
         assert isinstance(app.screen, ColdCacheWarningScreen)
-        assert "estimate is unavailable" in app.screen._body()
+        assert "estimate isn't available" in app.screen._body()
         await pilot.press(*keys)
         await pilot.pause()
         process.assert_not_awaited()
@@ -903,7 +903,7 @@ async def test_idle_handoff_estimate_failure_preserves_choice(
         app._check_cache_expiry()
         await pilot.pause()
         assert isinstance(app.screen, ColdCacheWarningScreen)
-        assert "estimate is unavailable" in app.screen._body()
+        assert "estimate isn't available" in app.screen._body()
         await pilot.press("escape")
 
 
@@ -959,7 +959,7 @@ async def test_handoff_distinguishes_cache_skips_from_missing_prices(
         await pilot.pause()
         if cache_state == "unpriced":
             assert isinstance(app.screen, ColdCacheWarningScreen)
-            assert "estimate is unavailable" in app.screen._body()
+            assert "estimate isn't available" in app.screen._body()
             process.assert_not_awaited()
             await pilot.press("escape")
         else:
@@ -1090,7 +1090,7 @@ async def test_handoff_pauses_submission_but_keeps_draft_editable(
         if outcome == "failure":
             assert len(errors) == 1
             assert "summary failed" in errors[0]
-            assert "original thread is unchanged" in errors[0]
+            assert "Your original conversation is still available." in errors[0]
         else:
             assert errors == []
         await pilot.press("enter")

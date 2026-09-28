@@ -8,7 +8,7 @@ BtwScreen #btw-dialog {
     height: auto;
     max-height: 85%;
     background: $surface;
-    border: round $primary;
+    border: solid $primary;
     padding: 1 2;
 }
 
@@ -27,6 +27,7 @@ BtwScreen .btw-question {
 }
 
 BtwScreen #btw-input {
+    margin-top: 1;
     height: auto;
     min-height: 3;
     max-height: 8;

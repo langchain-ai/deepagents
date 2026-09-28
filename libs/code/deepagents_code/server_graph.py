@@ -102,6 +102,27 @@ async def _open_sandbox(
         raise
 
 
+def _validate_server_tracing(
+    environ: Mapping[str, str], *, redact: bool
+) -> tuple[dict[str, str | None], bool]:
+    """Check tracing compatibility without reserving or configuring the process.
+
+    Returns:
+        Compatible tracing settings.
+    """
+    from deepagents_code.config import _tracing_environment_values
+
+    settings = (_tracing_environment_values(environ), redact)
+    if _server_tracing_settings is not None and settings != _server_tracing_settings:
+        reason = (
+            "its LangSmith tracing settings differ from this server's; "
+            "start a separate server for this workspace"
+        )
+        conflict = WorkspaceConflictError.from_reason(reason)
+        raise conflict
+    return settings
+
+
 def _configure_server_tracing(environ: Mapping[str, str], *, redact: bool) -> None:
     """Pin tracing for the server lifetime before any runtime can execute.
 
@@ -113,21 +134,12 @@ def _configure_server_tracing(environ: Mapping[str, str], *, redact: bool) -> No
     Called on the server loop with no suspension between claim and setup.
     """
     from deepagents_code.config import (
-        _tracing_environment_values,
         configure_langsmith_secret_redaction,
         reconcile_tracing_environment,
     )
 
     global _server_tracing_settings, _server_tracing_initialized  # noqa: PLW0603  # process-lifetime policy
-    settings = (_tracing_environment_values(environ), redact)
-    if _server_tracing_settings is not None and settings != _server_tracing_settings:
-        reason = (
-            "its LangSmith tracing settings differ from this server's; "
-            "start a separate server for this workspace"
-        )
-        conflict = WorkspaceConflictError.from_reason(reason)
-        raise conflict
-    _server_tracing_settings = settings
+    _server_tracing_settings = _validate_server_tracing(environ, redact=redact)
     if not _server_tracing_initialized:
         reconcile_tracing_environment(environ)
         # Keep redaction on the server task: its fail-closed disable must
@@ -777,12 +789,16 @@ def _claim_sandbox_workspace(
 ) -> None:
     """Reserve the process-wide sandbox for the first requesting workspace."""
     global _sandbox_workspace_id  # noqa: PLW0603  # process-lifetime ownership
-    if not sandbox_type:
-        return
-    if _sandbox_workspace_id is None:
+    _validate_sandbox_workspace(sandbox_type, binding)
+    if sandbox_type:
         _sandbox_workspace_id = binding.workspace_id
-        return
-    if _sandbox_workspace_id == binding.workspace_id:
+
+
+def _validate_sandbox_workspace(
+    sandbox_type: str | None, binding: WorkspaceBinding
+) -> None:
+    """Check sandbox ownership without reserving the process-wide sandbox."""
+    if not sandbox_type or _sandbox_workspace_id in {None, binding.workspace_id}:
         return
     reason = (
         "a runtime for another workspace already exists and the configured "
@@ -974,6 +990,25 @@ async def _resolve_bound_workspace_config(
             binding.cwd,
         )
     return current_config
+
+
+async def _validate_workspace_runtime(binding: WorkspaceBinding) -> None:
+    """Check workspace compatibility without constructing or reserving resources."""
+    config = await _resolve_bound_workspace_config(binding)
+    _validate_sandbox_workspace(config.sandbox_type, binding)
+
+    def validate_tracing() -> None:
+        from deepagents_code.config import (
+            _preview_dotenv_environ,
+            is_langsmith_redaction_enabled,
+            use_environment,
+        )
+
+        environ = _preview_dotenv_environ(start_path=Path(binding.cwd))
+        with use_environment(environ):
+            _validate_server_tracing(environ, redact=is_langsmith_redaction_enabled())
+
+    await asyncio.to_thread(validate_tracing)
 
 
 async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:

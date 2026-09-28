@@ -76,6 +76,11 @@ async def _workspace_route_client(
             "get_server_runtime",
             new=AsyncMock(side_effect=runtime_error),
         ),
+        patch.object(
+            offload_api,
+            "_validate_workspace_runtime",
+            new=AsyncMock(side_effect=runtime_error),
+        ),
         patch.object(offload_api, "_thread_client") as thread_client,
     ):
         async with AsyncClient(
@@ -278,8 +283,8 @@ class TestWorkspaceRoute:
         runtime.assert_awaited_once_with(binding)
 
     async def test_validation_does_not_bind_or_update_thread(self, tmp_path) -> None:
-        """A successful hostability check does not change durable thread state."""
-        from deepagents_code import offload_api
+        """A hostability check neither builds a runtime nor changes thread state."""
+        from deepagents_code import offload_api, server_graph
         from deepagents_code._server_config import ServerConfig
 
         threads = SimpleNamespace(create=AsyncMock(), update=AsyncMock())
@@ -288,6 +293,13 @@ class TestWorkspaceRoute:
             patch.object(ServerConfig, "from_env", return_value=ServerConfig()),
             patch.object(offload_api, "bind_thread_workspace", new=AsyncMock()) as bind,
             patch.object(offload_api, "get_server_runtime", new=runtime),
+            patch.object(server_graph, "_make_graphs", new=AsyncMock()) as make,
+            patch.object(server_graph, "_server_tracing_settings", None),
+            patch.object(
+                offload_api,
+                "_validate_workspace_runtime",
+                server_graph._validate_workspace_runtime,
+            ),
             patch.object(
                 offload_api,
                 "_thread_client",
@@ -308,12 +320,14 @@ class TestWorkspaceRoute:
 
         assert response.status_code == 200
         bind.assert_not_awaited()
-        runtime.assert_awaited_once()
+        runtime.assert_not_awaited()
+        make.assert_not_awaited()
         threads.create.assert_not_awaited()
         threads.update.assert_not_awaited()
 
+    @pytest.mark.parametrize("validate_only", [False, True])
     async def test_runtime_conflict_returns_409_before_thread_creation(
-        self, tmp_path
+        self, tmp_path, validate_only: bool
     ) -> None:
         """Workspace preflight reports a conflict before a streamed run starts."""
         from deepagents_code.workspace import WorkspaceConflictError
@@ -325,7 +339,7 @@ class TestWorkspaceRoute:
         ):
             response = await client.post(
                 "/dcode/threads/thread-1/workspace",
-                json={"cwd": str(tmp_path)},
+                json={"cwd": str(tmp_path), "validate_only": validate_only},
             )
 
         assert response.status_code == 409

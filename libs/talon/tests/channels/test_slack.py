@@ -416,7 +416,6 @@ def test_convert_command_defaults_to_help_and_rejects_foreign_response_urls() ->
     assert command.command == "help"
     assert _convert_command(_command_payload(response_url="https://evil.test/x")) is None
     assert _convert_command(_command_payload(response_url="http://hooks.slack.com/x")) is None
-    assert _convert_command(_command_payload(command="/other")) is None
 
 
 def _command(name: str, *, sender: str = OPERATOR, channel_id: str = "D1"):
@@ -760,3 +759,12 @@ def test_pasted_oauth_callback_is_recognized() -> None:
     assert extract_oauth_callback_url(message.text) == (
         "http://localhost:3000/callback?code=abc&state=xyz"
     )
+
+
+@pytest.mark.parametrize("name", ["/talon", "/talon-dev", "/assistant"])
+def test_any_slash_command_name_is_accepted(name: str) -> None:
+    # Socket Mode only delivers the owning app's commands, so an operator may
+    # name the command anything in the manifest.
+    command = _convert_command(_command_payload(command=name, text="new"))
+    assert command is not None
+    assert command.command == "new"

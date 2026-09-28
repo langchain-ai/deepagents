@@ -36,7 +36,10 @@ from deepagents_code.offload_middleware import (
     _archive_lock,
     unchanged_offload_result,
 )
-from deepagents_code.server_graph import _workspace_runtime as get_server_runtime
+from deepagents_code.server_graph import (
+    _validate_workspace_runtime,
+    _workspace_runtime as get_server_runtime,
+)
 from deepagents_code.workspace import (
     WorkspaceConflictError,
     bind_thread_workspace,
@@ -322,6 +325,11 @@ async def workspace(request: Request) -> JSONResponse:
     # `ValueError` to 422, but a `ValueError` out of the runtime build is server
     # misconfiguration, not a malformed request.
     try:
+        if validate_only:
+            await _validate_workspace_runtime(binding)
+            return JSONResponse(
+                {"workspace": binding.to_payload(), "mcp_server_info": None}
+            )
         runtime = await get_server_runtime(binding)
     except WorkspaceConflictError as exc:
         return _workspace_conflict_response(exc)

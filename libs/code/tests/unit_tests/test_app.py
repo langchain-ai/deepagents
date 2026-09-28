@@ -27353,6 +27353,7 @@ class TestResumeThreadCwdSwitch:
         """The `/threads` switcher offers abort; aborting keeps the current thread."""
         monkeypatch.chdir(tmp_path)
         app = DeepAgentsApp(thread_id="old-thread", cwd=tmp_path)
+        monkeypatch.setattr(app, "_set_spinner", AsyncMock())
         app._agent = MagicMock()
         app._session_state = TextualSessionState(thread_id="old-thread")
         app._lc_thread_id = "old-thread"
@@ -27382,6 +27383,7 @@ class TestResumeThreadCwdSwitch:
     ) -> None:
         """A failed or cancelled cwd lookup must not block subsequent switches."""
         app = DeepAgentsApp(thread_id="old-thread", cwd=tmp_path)
+        monkeypatch.setattr(app, "_set_spinner", AsyncMock())
         app._agent = MagicMock()
         app._session_state = TextualSessionState(thread_id="old-thread")
         mount = AsyncMock()
@@ -27403,6 +27405,64 @@ class TestResumeThreadCwdSwitch:
         mount.assert_not_awaited()
         assert app._thread_switching is False
 
+    @pytest.mark.parametrize("thread_id", ["old-thread", "new-thread"])
+    @pytest.mark.parametrize("outcome", ["abort", "blocked", "error", "cancel"])
+    async def test_thread_preflight_spinner_cleans_up(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        thread_id: str,
+        outcome: str,
+    ) -> None:
+        """Preflight shows progress without stranding it on an early exit."""
+        app = DeepAgentsApp(thread_id="old-thread", cwd=tmp_path)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def preflight(*_args: object, **_kwargs: object) -> str:
+            entered.set()
+            await release.wait()
+            if outcome == "error":
+                msg = "preflight failed"
+                raise RuntimeError(msg)
+            return "abort"
+
+        monkeypatch.setattr(app, "_offer_thread_cwd_switch", preflight)
+        monkeypatch.setattr(
+            app,
+            "_thread_resume_block",
+            preflight if outcome == "blocked" else AsyncMock(return_value=None),
+        )
+        async with app.run_test() as pilot:
+            app._agent = MagicMock()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            task = asyncio.create_task(app._resume_thread(thread_id))
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=5)
+                await pilot.pause()
+                assert app._loading_widget is not None
+                assert app._loading_widget.is_attached
+                if outcome == "cancel":
+                    task.cancel()
+                else:
+                    release.set()
+                if outcome in {"error", "cancel"}:
+                    error = (
+                        RuntimeError if outcome == "error" else asyncio.CancelledError
+                    )
+                    with pytest.raises(error):
+                        await task
+                else:
+                    await task
+                assert app._loading_widget is None
+                assert app._thread_switching is False
+                assert app._session_state.thread_id == "old-thread"
+            finally:
+                release.set()
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
     async def test_threads_reselect_offers_abort(
         self,
         tmp_path: Path,
@@ -27411,6 +27471,7 @@ class TestResumeThreadCwdSwitch:
         """Reselecting the current thread also offers abort and cancels silently."""
         monkeypatch.chdir(tmp_path)
         app = DeepAgentsApp(thread_id="thread-1", cwd=tmp_path)
+        monkeypatch.setattr(app, "_set_spinner", AsyncMock())
         app._agent = MagicMock()
         app._session_state = TextualSessionState(thread_id="thread-1")
         app._lc_thread_id = "thread-1"

@@ -52,12 +52,10 @@ REAL_CONFIG = (
 )
 
 # `langchain`-family deps in the real config that are deliberately NOT provider
-# integrations (core + MCP adapters), so they belong in neither
-# PROVIDER_TO_PACKAGE nor the pruned set. The reverse-drift guard allowlists
-# them; any *other* langchain package must be a mapped provider.
-NON_PROVIDER_LANGCHAIN_PACKAGES: frozenset[str] = frozenset(
-    {"langchain", "langchain-mcp-adapters"}
-)
+# integrations (core), so they belong in neither PROVIDER_TO_PACKAGE nor the
+# pruned set. The reverse-drift guard allowlists them; any *other* langchain
+# package must be a mapped provider.
+NON_PROVIDER_LANGCHAIN_PACKAGES: frozenset[str] = frozenset({"langchain"})
 
 
 def _real_dependencies() -> list[str]:

@@ -14,6 +14,7 @@ from deepagents_talon.host import (
     _BACKGROUND_FOLLOW_UP,
     TalonHost,
     _BackgroundRoute,
+    _format_tool_approval_prompt,
     _save_conversation_resets,
 )
 from deepagents_talon.interfaces import (
@@ -1256,6 +1257,16 @@ async def test_host_passes_inbound_video_path_in_text(tmp_path: Path) -> None:
     assert "unsupported" not in request.text
     assert request.metadata["media_type"] == "video"
     assert request.metadata["media_paths"] == [str(video)]
+
+
+def test_approval_prompt_preserves_angle_brackets_for_other_channels() -> None:
+    approval = ToolApprovalRequest(
+        conversation_id="chat",
+        interrupt_id="interrupt",
+        action_requests=[{"name": "execute", "args": {"command": "sort < input.txt"}}],
+    )
+
+    assert '"command": "sort < input.txt"' in _format_tool_approval_prompt(approval)
 
 
 async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) -> None:

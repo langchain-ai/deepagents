@@ -37,6 +37,7 @@ from deepagents_talon.channels.base import (
     outbound_media_root_from_env,
     send_with_retry,
 )
+from deepagents_talon.channels.slack import SlackChannel
 from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJobStore
 from deepagents_talon.cron.scheduler import is_silent
@@ -115,6 +116,7 @@ _MCP_RELOAD_SUCCESS_MESSAGE = "Reloaded MCP configuration."
 _MCP_RELOAD_FAILURE_MESSAGE = "Could not reload MCP configuration. Check Talon logs."
 _MCP_RELOAD_UNAVAILABLE_MESSAGE = "MCP configuration reload is unavailable."
 _MODEL_DEFAULT_ARGUMENT = "default"
+_GLOBAL_MODEL_KEY = "__default__"
 _MODEL_UNAVAILABLE_MESSAGE = "Model switching is unavailable."
 _MODEL_OPERATOR_ONLY_MESSAGE = "Only an operator can change the model."
 _MODEL_UNKNOWN_MESSAGE = "Not an available model. Send /model to list them."
@@ -568,7 +570,7 @@ class TalonHost:
             reply = await self._pair_command(channel, message, provider)
             await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
         elif command == _MODEL_COMMAND:
-            reply = await self._model_command(channel, message, conversation_root)
+            reply = await self._model_command(channel, message)
             await send_with_retry(lambda: channel.send_message(message.conversation_id, reply))
         elif command == _SMART_MODEL_COMMAND:
             reply = await self._smart_model_command(channel, message)
@@ -681,10 +683,8 @@ class TalonHost:
                 report = "Could not build context diagnostics. Please try again."
         await send_with_retry(lambda: channel.send_message(chat, report))
 
-    async def _model_command(
-        self, channel: ChannelAdapter, message: ChannelMessage, conversation_root: str
-    ) -> str:
-        """Show, list, or switch the conversation's model and return the reply."""
+    async def _model_command(self, channel: ChannelAdapter, message: ChannelMessage) -> str:
+        """Show, list, or switch the assistant's model and return the reply."""
         if not isinstance(self.agent, ModelSelectableRuntime):
             return _MODEL_UNAVAILABLE_MESSAGE
         argument = _command_argument(message.text)
@@ -696,16 +696,14 @@ class TalonHost:
                 return _MODEL_LIST_FAILURE_MESSAGE
             if argument:
                 return _format_provider_models(argument, catalog)
-            current = self._model_selections.get(conversation_root)
+            current = self._model_selections.get(_GLOBAL_MODEL_KEY)
             return _format_model_overview(current, self.agent.default_model, catalog)
         if not _is_operator(channel, message):
             return _MODEL_OPERATOR_ONLY_MESSAGE
         spec = None if argument == _MODEL_DEFAULT_ARGUMENT else argument
-        return await self._switch_model(conversation_root, spec, self.agent)
+        return await self._switch_model(spec, self.agent)
 
-    async def _switch_model(
-        self, conversation_root: str, spec: str | None, agent: ModelSelectableRuntime
-    ) -> str:
+    async def _switch_model(self, spec: str | None, agent: ModelSelectableRuntime) -> str:
         if spec is not None and spec != agent.default_model:
             try:
                 if not await agent.select_model(spec):
@@ -713,18 +711,16 @@ class TalonHost:
             except Exception:  # noqa: BLE001  # Do not disclose provider or credential errors.
                 logger.warning("Could not load the selected model", exc_info=True)
                 return _MODEL_LOAD_FAILURE_MESSAGE
-        selections = dict(self._model_selections)
-        if spec is None or spec == agent.default_model:
-            selections.pop(conversation_root, None)
-        else:
-            selections[conversation_root] = spec
+        selections = (
+            {} if spec is None or spec == agent.default_model else {_GLOBAL_MODEL_KEY: spec}
+        )
         try:
             _write_json_state(self.config.model_state_path, selections)
         except OSError:
             logger.warning("Could not save the model selection", exc_info=True)
             return _MODEL_SAVE_FAILURE_MESSAGE
         self._model_selections = selections
-        return f"This chat now uses {spec or agent.default_model}."
+        return f"All chats now use {spec or agent.default_model}."
 
     async def _smart_model_command(self, channel: ChannelAdapter, message: ChannelMessage) -> str:
         """Show or switch the assistant's one-off help model."""
@@ -864,7 +860,7 @@ class TalonHost:
                     route.provider,
                     generation,
                     recovery_degraded,
-                    model=self._model_selections.get(route.conversation_root),
+                    model=self._model_selections.get(_GLOBAL_MODEL_KEY),
                 ),
             ),
             name=f"talon:{conversation_id}",
@@ -1814,8 +1810,13 @@ class TalonHost:
         channel: ChannelAdapter,
         pending: _PendingToolApproval,
     ) -> None:
+        send = (
+            channel.send_tool_approval_prompt
+            if isinstance(channel, SlackChannel)
+            else channel.send_message
+        )
         result = await send_with_retry(
-            lambda: channel.send_message(pending.channel_conversation_id, pending.prompt_text)
+            lambda: send(pending.channel_conversation_id, pending.prompt_text)
         )
         pending.prompt_message_id = result.message_id
 
@@ -2027,7 +2028,7 @@ def _format_model_overview(
         f"{provider} — {len(models)} models" for provider, models in sorted(catalog.items())
     )
     return (
-        f"This chat uses {active}.\n\nAvailable providers:\n{providers}\n\n"
+        f"All chats use {active}.\n\nAvailable providers:\n{providers}\n\n"
         "Send /model <provider> to list its models, /model <provider:model> to switch, "
         "or /model default to go back to the default."
     )

@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import re
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -213,6 +213,10 @@ _INTERRUPTED_MESSAGE = "[SYSTEM] Task interrupted by user. Previous operation wa
 
 _HISTORY_SCOPE: contextvars.ContextVar[ArchiveScope | None] = contextvars.ContextVar(
     "talon_history_scope",
+    default=None,
+)
+_ARCHIVE_SCOPE: contextvars.ContextVar[ArchiveScope | None] = contextvars.ContextVar(
+    "talon_archive_scope",
     default=None,
 )
 _HISTORY_SESSION: contextvars.ContextVar[str] = contextvars.ContextVar(
@@ -667,13 +671,12 @@ class DeepAgentRuntime:
         # same scheduled metadata. A chat delivery turn is excluded: it has a user waiting,
         # so its delegations keep detaching.
         scheduled_token = _SCHEDULED_TURN.set(request.metadata.get("trigger") == "cron")
-        history_token = _HISTORY_SCOPE.set(_history_scope(request))
-        session_token = _HISTORY_SESSION.set(request.conversation_id)
         authorization_token = set_authorization_handler(request.authorization_handler)
         message_token = MESSAGE_HANDLER.set(request.message_handler)
         try:
-            async with self._turn_models(request):
-                text = await self._invoke_until_text(request, activity)
+            with _history_context(request):
+                async with self._turn_models(request):
+                    text = await self._invoke_until_text(request, activity)
         except BaseException as error:
             if activity is not None:
                 activity.run_failed(error)
@@ -685,8 +688,6 @@ class DeepAgentRuntime:
             ACTIVE_APPROVALS.reset(policy_token)
             reset_authorization_handler(authorization_token)
             MESSAGE_HANDLER.reset(message_token)
-            _HISTORY_SCOPE.reset(history_token)
-            _HISTORY_SESSION.reset(session_token)
             _SCHEDULED_TURN.reset(scheduled_token)
             _CRON_ORIGIN.reset(token)
             self._invocation_graph.reset(graph_token)
@@ -944,7 +945,10 @@ class DeepAgentRuntime:
             "configurable": {"thread_id": conversation_id},
         }
         if (scope := _HISTORY_SCOPE.get()) is not None:
-            config["metadata"] = scope
+            config["metadata"] = {
+                **scope,
+                "talon_history_read_only": _ARCHIVE_SCOPE.get() is None,
+            }
         if activity is not None:
             config["callbacks"] = [activity]
         last_exc: Exception | None = None
@@ -1698,6 +1702,21 @@ def _content_block_text(block: object) -> str:
     return ""
 
 
+@contextlib.contextmanager
+def _history_context(request: AgentRequest) -> Iterator[None]:
+    """Expose the host's history scope, archiving into it only on unscheduled turns."""
+    scope = _history_scope(request)
+    history = _HISTORY_SCOPE.set(scope)
+    archive = _ARCHIVE_SCOPE.set(None if request.metadata.get("trigger") == "cron" else scope)
+    session = _HISTORY_SESSION.set(request.conversation_id)
+    try:
+        yield
+    finally:
+        _HISTORY_SCOPE.reset(history)
+        _ARCHIVE_SCOPE.reset(archive)
+        _HISTORY_SESSION.reset(session)
+
+
 def _history_scope(request: AgentRequest) -> ArchiveScope | None:
     channel = request.metadata.get("history_channel")
     chat = request.metadata.get("history_chat")
@@ -1719,8 +1738,12 @@ def _delete_conversations_tool(saver: ConversationSaver) -> BaseTool:
         Args:
             session_ids: One session ID or a list from list_conversations or search_conversations.
         """
+        scope = _current_history_scope()
+        if _ARCHIVE_SCOPE.get() is None:
+            msg = "Scheduled runs cannot delete conversations"
+            raise RuntimeError(msg)
         return await saver.delete_conversations(
-            _current_history_scope(),
+            scope,
             [session_ids] if isinstance(session_ids, str) else session_ids,
             current_session=_HISTORY_SESSION.get(),
         )

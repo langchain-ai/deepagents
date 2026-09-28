@@ -9829,7 +9829,6 @@ class DeepAgentsApp(App):
             ColdCacheWarningScreen,
         )
 
-        screen = None
         try:
             try:
                 warning = await self._cold_cache_estimate()
@@ -9843,9 +9842,7 @@ class DeepAgentsApp(App):
             screen = ColdCacheWarningScreen(
                 warning, handoff=True, allow_send=allow_send
             )
-            choice = await asyncio.wait_for(
-                self._push_screen_wait(screen), timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS
-            )
+            choice = await self._wait_for_cache_choice(screen)
         except TimeoutError:
             # The idle prompt usually opens while the user is away. An
             # unanswered prompt means "stay", not a failure to report.
@@ -9859,9 +9856,6 @@ class DeepAgentsApp(App):
                 ErrorMessage(f"Could not show the cache handoff prompt: {exc}")
             )
             return None
-        finally:
-            if screen is not None:
-                self._dismiss_orphaned_screen(screen)
         if self._exiting or self._lc_thread_id != thread_id:
             return None
         return choice
@@ -13094,6 +13088,26 @@ class DeepAgentsApp(App):
         except ClientHookStopError:
             logger.info("Cold-cache warning notification was stopped by a hook")
 
+    async def _wait_for_cache_choice(
+        self, screen: ModalScreen[ColdCacheChoice | None]
+    ) -> ColdCacheChoice | None:
+        """Wait for a cache choice and clean up on every exit path.
+
+        Bound the wait so an unanswered prompt cannot hold the modal command
+        slot and block the message queue indefinitely. Callers decide how to
+        report a timeout or rendering failure.
+
+        Returns:
+            The selected action, or `None` after a programmatic dismissal.
+        """
+        try:
+            return await asyncio.wait_for(
+                self._push_screen_wait(screen),
+                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
+            )
+        finally:
+            self._dismiss_orphaned_screen(screen)
+
     async def _confirm_cold_cache_message(
         self,
         message: QueuedMessage,
@@ -13113,16 +13127,7 @@ class DeepAgentsApp(App):
 
         screen = ColdCacheWarningScreen(warning)
         try:
-            # Watchdog-bounded like every other confirmation modal: this
-            # continuation holds the single `_schedule_off_message_pump` slot,
-            # so an await that never resolves (compose crash, programmatic
-            # teardown that skips the dismiss callback) would leave
-            # `_modal_command_running()` true forever and stop the pending
-            # queue from draining for the rest of the session.
-            choice = await asyncio.wait_for(
-                self._push_screen_wait(screen),
-                timeout=_MODAL_WATCHDOG_TIMEOUT_SECONDS,
-            )
+            choice = await self._wait_for_cache_choice(screen)
         except asyncio.CancelledError:
             raise
         except TimeoutError:
@@ -13132,7 +13137,6 @@ class DeepAgentsApp(App):
             logger.warning(
                 "Cold prompt-cache confirmation timed out; treating as cancel",
             )
-            self._dismiss_orphaned_screen(screen)
             self.notify(
                 "The cold prompt-cache prompt timed out, so the message was "
                 "not sent. Press Up to recall it.",
@@ -13145,7 +13149,6 @@ class DeepAgentsApp(App):
             # Same fail-closed contract for a modal that could not be shown at
             # all. The draft is restored below, so nothing is dropped.
             logger.exception("Failed to show the cold prompt-cache warning")
-            self._dismiss_orphaned_screen(screen)
             self.notify(
                 "Could not show the cold prompt-cache warning, so the message "
                 "was not sent. Your draft has been restored.",

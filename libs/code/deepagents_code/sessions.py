@@ -387,7 +387,7 @@ async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
         return await cursor.fetchone() is not None
 
 
-_THREADS_LIST_INDEX = "idx_dcode_threads_list"
+_THREADS_LIST_INDEX = "idx_dcode_threads_list_v2"
 """Covering index that makes the `list_threads` GROUP BY an index-only scan.
 
 LangGraph's `SqliteSaver` stores each checkpoint's full state blob inline in the
@@ -422,11 +422,15 @@ async def _ensure_threads_list_index(conn: aiosqlite.Connection) -> None:
             f"CREATE INDEX IF NOT EXISTS {_THREADS_LIST_INDEX} ON checkpoints("
             "thread_id, "
             "json_extract(metadata, '$.updated_at'), "
+            "COALESCE(json_extract(metadata, '$.created_at'), "
+            "json_extract(metadata, '$.updated_at')), "
             "checkpoint_id, "
             "json_extract(metadata, '$.agent_name'), "
             "json_extract(metadata, '$.git_branch'), "
             "json_extract(metadata, '$.cwd'))"
         )
+        # Replace the older index, which did not cover the creation timestamp.
+        await conn.execute("DROP INDEX IF EXISTS idx_dcode_threads_list")
         await conn.commit()
     except Exception:
         logger.warning(
@@ -506,7 +510,8 @@ async def list_threads(
                    json_extract(metadata, '$.agent_name') as agent_name,
                    MAX(json_extract(metadata, '$.updated_at')) as updated_at,
                    MAX(checkpoint_id) as latest_checkpoint_id,
-                   MIN(json_extract(metadata, '$.updated_at')) as created_at,
+                   MIN(COALESCE(json_extract(metadata, '$.created_at'),
+                                json_extract(metadata, '$.updated_at'))) as created_at,
                    MAX(json_extract(metadata, '$.git_branch')) as git_branch,
                    MAX(json_extract(metadata, '$.cwd')) as cwd
             FROM checkpoints
@@ -1517,6 +1522,8 @@ async def refresh_thread_activity(thread_id: str, updated_at: datetime) -> None:
 
     Only the latest root checkpoint is updated, preserving historical metadata
     and any newer timestamp already written by a shared server checkpointer.
+    Preserve its original timestamp separately so a lone discovery seed keeps
+    its creation time as remote activity advances.
 
     Args:
         thread_id: Thread whose remote state was read.
@@ -1527,7 +1534,9 @@ async def refresh_thread_activity(thread_id: str, updated_at: datetime) -> None:
             return
         timestamp = updated_at.isoformat()
         await conn.execute(
-            "UPDATE checkpoints SET metadata = json_set(metadata, '$.updated_at', ?) "
+            "UPDATE checkpoints SET metadata = json_set(metadata, "
+            "'$.created_at', COALESCE(json_extract(metadata, '$.created_at'), "
+            "json_extract(metadata, '$.updated_at')), '$.updated_at', ?) "
             "WHERE thread_id = ? AND checkpoint_ns = '' AND checkpoint_id = "
             "(SELECT MAX(checkpoint_id) FROM checkpoints "
             "WHERE thread_id = ? AND checkpoint_ns = '') "

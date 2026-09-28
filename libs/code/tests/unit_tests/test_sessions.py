@@ -57,6 +57,35 @@ async def test_thread_seed_is_resumable_and_preserves_later_work(
         ]
 
 
+async def test_activity_refresh_preserves_seed_creation_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated remote activity changes recency without changing creation order."""
+    monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+    created = datetime(2025, 1, 1, tzinfo=UTC)
+    for offset, thread_id in enumerate(("older", "newer")):
+        await sessions.save_thread_seed(
+            thread_id, {"messages": []}, agent_name="agent", cwd=str(tmp_path)
+        )
+        async with sessions._connect() as conn:
+            await conn.execute(
+                "UPDATE checkpoints SET metadata = json_set(metadata, "
+                "'$.updated_at', ?) WHERE thread_id = ?",
+                ((created + timedelta(days=offset)).isoformat(), thread_id),
+            )
+            await conn.commit()
+
+    for days in (2, 3):
+        updated = created + timedelta(days=days)
+        await sessions.refresh_thread_activity("older", updated)
+        by_creation = await sessions.list_threads(sort_by="created")
+        assert [thread["thread_id"] for thread in by_creation] == ["newer", "older"]
+        assert by_creation[1]["created_at"] == created.isoformat()
+        assert by_creation[1]["updated_at"] == updated.isoformat()
+        by_activity = await sessions.list_threads(sort_by="updated")
+        assert [thread["thread_id"] for thread in by_activity] == ["older", "newer"]
+
+
 class TestGenerateThreadId:
     """Tests for generate_thread_id function."""
 

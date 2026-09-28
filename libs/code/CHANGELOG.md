@@ -4,19 +4,17 @@
 
 ## [0.1.78](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.77...deepagents-code==0.1.78) (2026-09-28)
 
-
 ### Features
 
-* **code:** add isolated `/btw` side questions ([#6434](https://github.com/langchain-ai/deepagents/issues/6434)) ([7ca901a](https://github.com/langchain-ai/deepagents/commit/7ca901ac4bf8fc1342ddca486c1bd4895a5a0f48))
-* **code:** offer summarized threads when cache expires ([#6477](https://github.com/langchain-ai/deepagents/issues/6477)) ([64dccb0](https://github.com/langchain-ai/deepagents/commit/64dccb0600486786bdcd1bcd45eb9514f2b23cd4))
-* **code:** persist project MCP startup denials ([#6597](https://github.com/langchain-ai/deepagents/issues/6597)) ([5c2533e](https://github.com/langchain-ai/deepagents/commit/5c2533e0972daf6478b02b0e2eb66e9e46c27d5c))
-
+- Ask isolated side questions with `/btw` ([#6434](https://github.com/langchain-ai/deepagents/pull/6434)).
+- Offer to summarize threads and switch when the cache expires ([#6477](https://github.com/langchain-ai/deepagents/pull/6477)).
+- Persist project MCP startup denials ([#6597](https://github.com/langchain-ai/deepagents/pull/6597)).
 
 ### Bug Fixes
 
-* **code:** hydrate resumed history on demand ([#6342](https://github.com/langchain-ai/deepagents/issues/6342)) ([8ea734a](https://github.com/langchain-ai/deepagents/commit/8ea734a809dd7d4e8c56ceeb286b5718ad1c7753))
-* **code:** restore console input after piped prompts on Windows ([#6572](https://github.com/langchain-ai/deepagents/issues/6572)) ([f2a98d2](https://github.com/langchain-ai/deepagents/commit/f2a98d2bb409496f9a49f59e883fc63dd082fca1))
-* **code:** show 100 recent threads by default ([#6604](https://github.com/langchain-ai/deepagents/issues/6604)) ([f0863be](https://github.com/langchain-ai/deepagents/commit/f0863be6661e5746edb4d7d9b0f7ed170bbc7a2d))
+- Show 100 recent threads by default ([#6604](https://github.com/langchain-ai/deepagents/pull/6604)).
+- Restore console input after piped prompts on Windows ([#6572](https://github.com/langchain-ai/deepagents/pull/6572)).
+- Load resumed conversation history on demand ([#6342](https://github.com/langchain-ai/deepagents/pull/6342)).
 
 ## [0.1.77](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.76...deepagents-code==0.1.77) (2026-09-24)
 

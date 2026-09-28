@@ -49,6 +49,7 @@ def test_ensure_home_materializes_usable_tool_approvals(tmp_path: Path) -> None:
         "delete_conversations": True,
         "update_mcp_server": True,
         "start_async_task": True,
+        "send_message": True,
     }
     assert snapshot.interrupt_on == {
         name: {"allowed_decisions": ["approve", "reject"]} for name in snapshot.approvals

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import io
+import logging
 import urllib.request
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -760,3 +762,30 @@ def test_pasted_oauth_callback_is_recognized() -> None:
     assert extract_oauth_callback_url(message.text) == (
         "http://localhost:3000/callback?code=abc&state=xyz"
     )
+
+
+def test_renamed_slash_command_is_reported(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.channels.slack"):
+        assert _convert_command(_command_payload(command="/talon-dev")) is None
+    assert "'/talon-dev'" in caplog.text
+    assert "/talon" in caplog.text
+
+
+class _RejectingWebhook:
+    def __init__(self, url: str) -> None:
+        del url
+
+    async def send(self, **kwargs: object):
+        del kwargs
+        return SimpleNamespace(status_code=404, body="invalid_url")
+
+
+async def test_rejected_command_reply_is_reported(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(slack_module, "AsyncWebhookClient", _RejectingWebhook)
+    responder = slack_module._WebhookResponder("https://hooks.slack.com/commands/x")
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.channels.slack"):
+        await responder.send("hello")
+    assert "HTTP 404" in caplog.text
+    assert "invalid_url" in caplog.text

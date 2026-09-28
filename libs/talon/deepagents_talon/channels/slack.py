@@ -421,6 +421,7 @@ class _SlackSdkGateway:
             await client.send_socket_mode_response(
                 SocketModeResponse(envelope_id=request.envelope_id),
             )
+            log_debug_event(logger, "slack.inbound.envelope", envelope_type=request.type)
             if request.type == "events_api":
                 await self._dispatch_event(request.payload, handle_message, handle_reaction)
             elif request.type == "slash_commands":
@@ -769,8 +770,15 @@ class SlackChannel:
             log_debug_event(logger, "slack.inbound.command.rejected", reason="exposure")
             return _UNAUTHORIZED_MESSAGE
         if not known:
+            log_debug_event(logger, "slack.inbound.command.rejected", reason="unknown_command")
             return _COMMAND_UNAVAILABLE_MESSAGE
         if not inbound.is_dm:
+            log_debug_event(
+                logger,
+                "slack.inbound.command.rejected",
+                reason="not_dm",
+                channel_kind=inbound.channel_id[:1],
+            )
             # A slash command carries no thread, so in a channel it would act on a
             # conversation that never holds an agent thread.
             return _COMMAND_DM_ONLY_MESSAGE
@@ -1216,12 +1224,21 @@ def _convert_command(payload: dict) -> _SlackInboundCommand | None:
     Returns:
         The invocation, or `None` when it is not a well-formed `/talon` call.
     """
-    if payload.get("command") != SLASH_COMMAND:
+    name = payload.get("command")
+    if name != SLASH_COMMAND:
+        # Almost always a manifest whose slash command was renamed: Talon only
+        # answers `/talon`, and Slack has already been acked, so say so loudly.
+        logger.warning(
+            "Dropping Slack slash command %r; Talon only handles %s",
+            name,
+            SLASH_COMMAND,
+        )
         return None
     channel = optional_str(payload.get("channel_id"))
     sender = optional_str(payload.get("user_id"))
     response_url = optional_str(payload.get("response_url"))
     if channel is None or sender is None or response_url is None:
+        logger.warning("Dropping Slack slash command with missing channel, user, or response URL")
         return None
     if not _is_slack_response_url(response_url):
         logger.warning("Dropping Slack command with an unexpected response URL")
@@ -1258,7 +1275,7 @@ class _WebhookResponder:
         Args:
             text: Refusal to show the invoking user.
         """
-        await AsyncWebhookClient(self.response_url).send(text=text, response_type="ephemeral")
+        await self._post(text, response_type="ephemeral")
 
     async def send(self, text: str) -> str | None:
         """Send a visible reply.
@@ -1269,8 +1286,22 @@ class _WebhookResponder:
         Returns:
             Always `None`: a `response_url` reply reports no message timestamp.
         """
-        await AsyncWebhookClient(self.response_url).send(text=text, response_type="in_channel")
+        await self._post(text, response_type="in_channel")
         return None
+
+    async def _post(self, text: str, *, response_type: str) -> None:
+        response = await AsyncWebhookClient(self.response_url).send(
+            text=text,
+            response_type=response_type,
+        )
+        if response.status_code != 200:  # noqa: PLR2004  # Slack's documented success
+            # The webhook client reports failure only through its status, so an
+            # expired or rejected `response_url` would otherwise vanish silently.
+            logger.warning(
+                "Slack rejected a slash command reply: HTTP %s %r",
+                response.status_code,
+                str(response.body)[:100],
+            )
 
 
 def _message_metadata(inbound: _SlackInboundMessage) -> dict[str, object]:

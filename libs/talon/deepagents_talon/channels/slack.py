@@ -59,6 +59,7 @@ from deepagents_talon.interfaces import (
     SendResult,
 )
 from deepagents_talon.observability import log_debug_event
+from deepagents_talon.pairing import SenderPairing, pairing_from_env
 
 if TYPE_CHECKING:
     from slack_sdk.socket_mode.async_client import AsyncBaseSocketModeClient
@@ -74,6 +75,7 @@ MAX_TEXT_CHARS = 4000
 DEFAULT_MAX_MEDIA_BYTES = 1024 * 1024 * 1024
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 35.0
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_SLACK_OPEN_ACK"
+_ENV_PREFIX = "DEEPAGENTS_TALON_SLACK"
 SLASH_COMMAND = "/talon"
 """The one slash command Talon expects in the Slack app manifest."""
 
@@ -125,6 +127,8 @@ class SlackChannelConfig:
         max_media_bytes: Maximum media bytes allowed for inbound downloads and
             outbound local files.
         request_timeout_seconds: Timeout for connecting and for file downloads.
+        pairing: Optional sender pairing policy that admits approved DM senders
+            and issues codes to unknown ones.
     """
 
     bot_token: str = field(repr=False)
@@ -135,6 +139,7 @@ class SlackChannelConfig:
     allowed_user_ids: frozenset[str] = field(default_factory=frozenset)
     max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    pairing: SenderPairing | None = None
 
     @classmethod
     def from_talon_config(cls, config: TalonConfig) -> SlackChannelConfig:
@@ -162,7 +167,7 @@ class SlackChannelConfig:
             env,
             ChannelExposureEnv(
                 provider="Slack",
-                env_prefix="DEEPAGENTS_TALON_SLACK",
+                env_prefix=_ENV_PREFIX,
                 open_ack=OPEN_EXPOSURE_ACK_ENV,
                 require_self_operator=True,
             ),
@@ -185,6 +190,13 @@ class SlackChannelConfig:
             request_timeout_seconds=parse_float(
                 env.get("DEEPAGENTS_TALON_SLACK_REQUEST_TIMEOUT_SECONDS"),
                 DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            ),
+            pairing=pairing_from_env(
+                env,
+                provider="slack",
+                env_prefix=_ENV_PREFIX,
+                open_exposure=exposure.mode == ExposureMode.OPEN,
+                home=config.home,
             ),
         )
 
@@ -268,6 +280,7 @@ class _SlackInboundCommand:
         sender_id: Slack user id that invoked the command.
         trigger_id: Slack's id for this invocation.
         responder: Reply surface bound to this invocation.
+        argument: Text after the command name, when any was given.
     """
 
     command: str
@@ -275,6 +288,7 @@ class _SlackInboundCommand:
     sender_id: str
     trigger_id: str
     responder: _CommandResponder
+    argument: str | None = None
 
     @property
     def is_dm(self) -> bool:
@@ -726,9 +740,12 @@ class SlackChannel:
             inbound: Provider-neutral view of the invocation.
         """
         command = COMMANDS_BY_NAME.get(inbound.command)
+        text = ""
+        if command is not None:
+            text = f"{command.text} {inbound.argument}" if inbound.argument else command.text
         message = ChannelMessage(
             conversation_id=inbound.channel_id,
-            text=command.text if command is not None else "",
+            text=text,
             sender_id=inbound.sender_id,
             message_id=inbound.trigger_id,
             metadata={"provider": "slack", "is_dm": inbound.is_dm, "from_self": False},
@@ -748,7 +765,7 @@ class SlackChannel:
     ) -> str | None:
         # Authorization first, so an unauthorized user learns nothing about which
         # commands exist or where they work.
-        if not _allows_slack_message(self._exposure, self.config.allowed_user_ids, message):
+        if not self._admits(message):
             log_debug_event(logger, "slack.inbound.command.rejected", reason="exposure")
             return _UNAUTHORIZED_MESSAGE
         if not known:
@@ -782,6 +799,11 @@ class SlackChannel:
                 )
         log_debug_event(logger, "slack.inbound.command.dispatched", failed=failed)
 
+    def _admits(self, message: ChannelMessage) -> bool:
+        if _allows_slack_message(self._exposure, self.config.allowed_user_ids, message):
+            return True
+        return self.config.pairing is not None and self.config.pairing.admits(message)
+
     async def _process_message(self, inbound: _SlackInboundMessage) -> None:
         message = ChannelMessage(
             conversation_id=inbound.conversation_id,
@@ -790,13 +812,15 @@ class SlackChannel:
             message_id=inbound.ts,
             metadata=_message_metadata(inbound),
         )
-        if not _allows_slack_message(self._exposure, self.config.allowed_user_ids, message):
+        if not self._admits(message):
             log_debug_event(
                 logger,
                 "slack.inbound.message.rejected",
                 exposure=self._exposure.mode.value,
                 has_media=bool(inbound.files),
             )
+            if self.config.pairing is not None:
+                await self.config.pairing.offer(message, self.send_message)
             return
         message = await self._prepare_inbound_media(message, inbound.files)
         log_debug_event(
@@ -819,7 +843,13 @@ class SlackChannel:
             metadata={"provider": "slack"},
         )
         sender = inbound.sender_id
-        if sender not in self._exposure.operator_ids and sender not in self.config.allowed_user_ids:
+        if (
+            sender not in self._exposure.operator_ids
+            and sender not in self.config.allowed_user_ids
+            and not (
+                self.config.pairing is not None and self.config.pairing.admits_reaction(reaction)
+            )
+        ):
             log_debug_event(logger, "slack.inbound.reaction.rejected")
             return
         if self._reaction_handler is None:
@@ -1196,7 +1226,7 @@ def _convert_command(payload: dict) -> _SlackInboundCommand | None:
     if not _is_slack_response_url(response_url):
         logger.warning("Dropping Slack command with an unexpected response URL")
         return None
-    words = str(payload.get("text") or "").split()
+    words = str(payload.get("text") or "").split(maxsplit=1)
     command = words[0].lower().removeprefix("/") if words else "help"
     return _SlackInboundCommand(
         command=command,
@@ -1204,6 +1234,9 @@ def _convert_command(payload: dict) -> _SlackInboundCommand | None:
         sender_id=sender,
         trigger_id=optional_str(payload.get("trigger_id")) or "",
         responder=_WebhookResponder(response_url),
+        # Passed through as typed, so `/talon pair approve <code>` reaches the host
+        # exactly as `/pair approve <code>` would.
+        argument=words[1].strip() if len(words) > 1 else None,
     )
 
 

@@ -2008,7 +2008,7 @@ async def test_one_locked_conversation_does_not_stall_delivery_for_others(
             agent.background.pending.add(owner)
             host._background_routes[owner] = _BackgroundRoute(
                 channel=channel,
-                message=ChannelMessage(owner, "research"),
+                message=ChannelMessage(owner, "research", metadata={"history_chat": "100"}),
                 conversation_root=owner,
                 conversation_id=owner,
                 provider="test",
@@ -2028,6 +2028,8 @@ async def test_one_locked_conversation_does_not_stall_delivery_for_others(
 
         assert "waiting" in host._tasks
         assert "stuck" not in host._tasks
+        await host._tasks["waiting"]
+        assert agent.requests[0].metadata["history_chat"] == "100"
     finally:
         release.set()
         await asyncio.gather(holder, return_exceptions=True)

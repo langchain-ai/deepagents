@@ -944,8 +944,11 @@ class DeepAgentRuntime:
             "recursion_limit": self.recursion_limit,
             "configurable": {"thread_id": conversation_id},
         }
-        if (scope := _ARCHIVE_SCOPE.get()) is not None:
-            config["metadata"] = scope
+        if (scope := _HISTORY_SCOPE.get()) is not None:
+            config["metadata"] = {
+                **scope,
+                "talon_history_read_only": _ARCHIVE_SCOPE.get() is None,
+            }
         if activity is not None:
             config["callbacks"] = [activity]
         last_exc: Exception | None = None

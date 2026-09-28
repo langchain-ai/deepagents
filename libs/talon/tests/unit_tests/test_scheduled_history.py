@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
@@ -30,9 +30,15 @@ async def test_scheduled_turn_reads_origin_chat_without_archiving_or_deleting(
 
         async def reply(_state):
             listed.extend(await tools["list_conversations"].ainvoke({"limit": 20}))
+            entries = await tools["read_conversation"].ainvoke({"session_id": "mine"})
             with pytest.raises(RuntimeError, match="Scheduled runs cannot delete"):
                 await tools["delete_conversations"].ainvoke({"session_ids": "mine"})
-            return {"messages": [AIMessage("Reviewed the chat.")]}
+            return {
+                "messages": [
+                    ToolMessage(entries[0]["text"], tool_call_id="read"),
+                    AIMessage("Reviewed the chat."),
+                ]
+            }
 
         graph = StateGraph(MessagesState)
         graph.add_node("reply", reply)
@@ -58,15 +64,21 @@ async def test_scheduled_turn_reads_origin_chat_without_archiving_or_deleting(
                     },
                 )
             )
-            assert await saver.archive.sessions(WHATSAPP) == ["mine"]
-            await runtime.clear_history("whatsapp", "chat")
+            assert set(await saver.archive.sessions(WHATSAPP)) == {"mine", CRON_THREAD}
+            assert await saver.archive.entries(WHATSAPP, session_id=CRON_THREAD) == []
+            checkpoint = await saver.aget({"configurable": {"thread_id": CRON_THREAD}})
+            assert "orchard" in str(checkpoint)
         finally:
             await runtime.stop()
 
         assert result.text == "Reviewed the chat."
         assert [item["session_id"] for item in listed] == ["mine"]
+
+    async with make_saver(tmp_path / "history.sqlite") as saver:
+        await make_runtime(saver, tmp_path).clear_history("whatsapp", "chat")
         assert await saver.aget(mine) is None
-        assert await saver.aget({"configurable": {"thread_id": CRON_THREAD}})
+        assert await saver.aget({"configurable": {"thread_id": CRON_THREAD}}) is None
+        assert await saver.archive.sessions(OTHER) == ["theirs"]
 
 
 @pytest.mark.parametrize(("origin_channel", "expected"), [("test", True), (None, False)])

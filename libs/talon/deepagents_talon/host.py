@@ -861,7 +861,7 @@ class TalonHost:
             metadata["history_chat"] = message.conversation_id
         if turn.recovery_degraded:
             metadata["interruption_recovery"] = "failed"
-        origin_conversation_id = _origin_conversation_id(message)
+        origin_conversation_id = message.conversation_id
         if origin_conversation_id != agent_conversation_id:
             metadata["origin_conversation_id"] = origin_conversation_id
         content = build_model_content(message.text, dict(message.metadata))
@@ -1056,7 +1056,7 @@ class TalonHost:
                 result = await self._invoke_agent(
                     conversation_id=conversation_id,
                     text=job.prompt,
-                    metadata=_scheduled_metadata(job),
+                    metadata={**_scheduled_metadata(job), **await self._scheduled_history(job)},
                 )
         except TimeoutError:
             # The graph was cancelled mid-node, so this thread can end on an assistant
@@ -1072,6 +1072,17 @@ class TalonHost:
                 await self.agent.recover_interrupted(conversation_id)
             raise
         return result.text
+
+    async def _scheduled_history(self, job: CronJob) -> dict[str, str]:
+        """Return the origin chat's read-only history scope, or none when ambiguous."""
+        if not isinstance(self.agent, ConversationHistoryRuntime) or not self.agent.history_enabled:
+            return {}
+        if job.origin.channel is None or (channel := await self.origin_channel(job.origin)) is None:
+            return {}
+        return {
+            "history_channel": _channel_key(channel, job.origin.channel),
+            "history_chat": job.origin.conversation_id,
+        }
 
     async def origin_channel(self, origin: CronOrigin) -> ChannelAdapter | None:
         """Return the channel serving a scheduled job's origin conversation.
@@ -1928,13 +1939,6 @@ def _format_provider_models(provider: str, catalog: Mapping[str, Sequence[str]])
     return f"{listing}\n\nSend /model <provider:model> to switch."
 
 
-def _origin_conversation_id(message: ChannelMessage) -> str:
-    origin = message.metadata.get("chat_id_from")
-    if isinstance(origin, str) and origin:
-        return origin
-    return message.conversation_id
-
-
 def _outbound_media_from_refs(
     refs: list[MarkdownMediaRef],
     cleaned_text: str,
@@ -1956,10 +1960,10 @@ def _outbound_media_from_refs(
 def _scheduled_metadata(job: CronJob) -> dict[str, object]:
     """Return the turn metadata identifying one scheduled job's thread.
 
-    One source for both a job's own run and any later background follow-up turn on
-    the same thread, so the two agree on every field the runtime reads from them --
-    `trigger`, which auto-denies tool approvals a scheduled turn has no operator to
-    answer, and `channel`, which the cron tools scope a job's own edits by.
+    Carries `trigger`, which auto-denies tool approvals a scheduled turn has no
+    operator to answer and keeps the run's checkpoints out of the chat archive, and
+    `channel`, which the cron tools scope a job's own edits by. The origin chat's
+    history scope is added separately by `_scheduled_history`, for reading only.
 
     Args:
         job: Cron job whose thread the turn runs on.

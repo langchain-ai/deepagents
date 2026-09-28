@@ -1,26 +1,28 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Deterministic Talon verification routes for persistent scheduling, chat-command consistency, and read-only context diagnostics. Use injected clocks, temporary stores, fake graphs and models, and recording channels to protect lifecycle and privacy invariants without external services.
-tags: [testing, talon, cron, scheduler, pytest, privacy]
+description: Focused Talon verification routes for CLI bootstrap, host and runtime lifecycle, channel adapters, admission and pairing, model selection, history, sandboxes, and scheduled work. It explains deterministic seams, observable invariants, and the exact repository test commands.
+tags: [testing, talon, pytest, channels, scheduling, security]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-27T08:05:28.881Z
+    at: 2026-09-28T08:12:24.067Z
 sources:
   - id: openwiki-source-80976c09402c30d4f886a2fa
     resource: repo://libs/talon/deepagents_talon/commands.py
-  - id: openwiki-source-4b1e381713dec742c675816b
-    resource: repo://libs/talon/deepagents_talon/context_doctor.py
   - id: openwiki-source-f55101eb12af3c6ae9b9d823
     resource: repo://libs/talon/deepagents_talon/cron/jobs.py
   - id: openwiki-source-363e56d368aecc6ab73d3e2f
     resource: repo://libs/talon/deepagents_talon/cron/scheduler.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-ba53b2ab73965694b2510a58
     resource: repo://libs/talon/Makefile
+  - id: openwiki-source-94758cb9b3302b8f80f516f9
+    resource: repo://libs/talon/tests/channels/test_discord.py
+  - id: openwiki-source-266f810628c26d9ced8dfceb
+    resource: repo://libs/talon/tests/channels/test_slack.py
+  - id: openwiki-source-7aca178f00238f277438cf18
+    resource: repo://libs/talon/tests/conftest.py
   - id: openwiki-source-75458be2d378c9102e37d6c4
     resource: repo://libs/talon/tests/cron/test_expression.py
   - id: openwiki-source-058eda257c62daed009e3f78
@@ -29,48 +31,115 @@ sources:
     resource: repo://libs/talon/tests/cron/test_scheduler.py
   - id: openwiki-source-3c0ee8cc5cf93b1411287e26
     resource: repo://libs/talon/tests/cron/test_until.py
+  - id: openwiki-source-581a0b1656cc4ab3f26c7a17
+    resource: repo://libs/talon/tests/integration_tests/test_slack_host.py
+  - id: openwiki-source-9167843cd56c271f674648a4
+    resource: repo://libs/talon/tests/test_main.py
   - id: openwiki-source-4d6726e17c8a0c78539a7d33
     resource: repo://libs/talon/tests/test_runtime.py
   - id: openwiki-source-18959cdb729a1a796d950993
     resource: repo://libs/talon/tests/unit_tests/test_commands.py
-  - id: openwiki-source-1e472b2d67bd29dc25c17e85
-    resource: repo://libs/talon/tests/unit_tests/test_context_doctor.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-27T08:05:28.881Z" }
+  - id: openwiki-source-1b21a0f324fcb4ecf060f5eb
+    resource: repo://libs/talon/tests/unit_tests/test_history_backends.py
+  - id: openwiki-source-817808ec0e85107297729a56
+    resource: repo://libs/talon/tests/unit_tests/test_model_selection.py
+  - id: openwiki-source-8614e79d8a8371505c879e50
+    resource: repo://libs/talon/tests/unit_tests/test_pairing.py
+  - id: openwiki-source-57a0613315e23277d358df76
+    resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
+  - id: openwiki-source-f2859f71853cf2cbdb40aaa3
+    resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-28T08:12:24.067Z" }
 ---
 
 # Testing Guide
 
-Talon changes should be proven at the boundary where persistence, time, channel delivery, or graph state becomes observable. The unit suite is designed for this: inject a UTC clock, create a `CronJobStore` below `tmp_path`, replace graph creation or model resolution with a fake, and use recording callbacks or `RecordingChannel`. Do not require a real channel, an MCP server, or a model provider for these routes.
+Test Talon at an observable boundary: persisted state, a delivered channel message, an agent request, a graph resume decision, or a cleaned-up resource. Most of these routes are **socket-blocked unit tests**. They use `tmp_path`, injected clocks, fake graphs/models, `RecordingChannel`, and fake Discord/Slack gateways or transports; they must not open a provider, gateway, or model socket. The Slack host file is an **integration test with an explicitly scoped external boundary**: it combines the real `SlackChannel` and `TalonHost`, but substitutes a Socket Mode gateway and an echo runtime, so it still makes no network connection.
 
 ```bash
 cd libs/talon
+make test TEST_FILE=tests/test_main.py
+make test TEST_FILE=tests/test_host.py
+make test TEST_FILE=tests/test_runtime.py
+make test TEST_FILE=tests/channels/test_discord.py
+make test TEST_FILE=tests/channels/test_slack.py
+make test TEST_FILE=tests/integration_tests/test_slack_host.py
+make test TEST_FILE=tests/unit_tests/test_commands.py
+make test TEST_FILE=tests/unit_tests/test_model_selection.py
+make test TEST_FILE=tests/unit_tests/test_pairing.py
+make test TEST_FILE=tests/unit_tests/test_history_backends.py
+make test TEST_FILE=tests/unit_tests/test_sandbox.py
+make test TEST_FILE=tests/unit_tests/test_scheduled_history.py
 make test TEST_FILE=tests/cron/test_expression.py
 make test TEST_FILE=tests/cron/test_jobs.py
 make test TEST_FILE=tests/cron/test_scheduler.py
 make test TEST_FILE=tests/cron/test_until.py
-make test TEST_FILE=tests/unit_tests/test_commands.py
-make test TEST_FILE=tests/unit_tests/test_context_doctor.py
-make test TEST_FILE=tests/test_host.py
-make test TEST_FILE=tests/test_runtime.py
 make lint
 ```
 
-`make test` runs the WhatsApp bridge Node tests first, then invokes pytest for `TEST_FILE` (default `tests/`) with non-Unix sockets disabled, Unix sockets allowed, a 10-second timeout, and coverage. Use `PYTEST_EXTRA` only when a focused pytest option is genuinely needed; keeping the socket block means an accidental provider or channel call fails as a unit-test defect rather than becoming flaky integration coverage.
+`make test` runs `node --test tests/channels/whatsapp_bridge/*.test.js` first, then runs `uv run --group test pytest --disable-socket --allow-unix-socket $(PYTEST_EXTRA) $(TEST_FILE) --timeout 10 $(COV_ARGS)`. Thus Internet/TCP sockets are blocked, Unix sockets are permitted, the timeout is 10 seconds, and coverage defaults to `--cov=deepagents_talon --cov-report=term-missing`. `make lint` runs Ruff checks and a formatting diff on `deepagents_talon/ tests/`, then `make type`; that target runs `uv run --group test ty check deepagents_talon`. Use `PYTEST_EXTRA` only for a truly focused pytest option, not to bypass the socket guard.
 
-## Select the smallest Talon route
+## Focused-test routing
 
-| Changed contract | Focused route | Test seam and assertion |
+| Changed seam | Start here | Boundary and observable invariant |
 | --- | --- | --- |
-| Cron grammar, calendar matching, time zones, or DST | `tests/cron/test_expression.py` and `tests/cron/test_jobs.py` | Explicit UTC/local datetimes and `ZoneInfo`; assert exact instants or local wall-clock results. |
-| Job claiming, JSON store state, completion, retention, or `until` | `tests/cron/test_jobs.py` and `tests/cron/test_until.py` | A fresh store at `tmp_path / "cron"`; pass `now` explicitly and reload the store when disk state matters. |
-| Dispatch, delivery, silent output, failure handling, or ticker survival | `tests/cron/test_scheduler.py` | `PersistentCronScheduler` with a fixed `now`, recording runner/delivery callback, and `tick_once()`. |
-| Scheduled agent invocation, timeout recovery, or no-interactive-approval behavior | `tests/test_host.py` and `tests/test_runtime.py` | A blocking or recording agent and fake graph; assert metadata, recovery, and resume decision rather than calling a provider. |
-| Adding, renaming, hiding, advertising, or dispatching a slash command | `tests/unit_tests/test_commands.py` | The shared registry plus host constants; validate platform-safe names, help text, and exact dispatch coverage. |
-| Context audit content, token accounting, reload behavior, or host command behavior | `tests/unit_tests/test_context_doctor.py` | A fake tool-binding model, temporary assistant files, graph checkpoint state, and recording channel. |
+| CLI bootstrap, sandbox handoff, SQLite checkpointer, or logging | `tests/test_main.py` | Monkeypatch the runtime/host and sandbox context. Assert the supplied sandbox reaches the runtime and closes afterward; a supplied saver is reused, while the default saver persists a checkpoint. Assert invalid log-level values are not echoed. |
+| Host startup/shutdown, command handling, cancellation, authorization, or scheduled invocation | `tests/test_host.py` | **Socket-blocked unit test** using `RecordingChannel`, blocking/recording agents, and recording scheduler. Assert component lifecycle, user-visible results, graph recovery, and authority boundaries—not private task-map call order. |
+| Graph construction, tools, retries, interruption recovery, or cron approvals | `tests/test_runtime.py` | **Socket-blocked unit test** with fake graph/model/tool factories. Assert graph input/output, persisted thread recovery, tool execution or rejection, and resource safety. |
+| Discord adapter, gateway lifecycle, interactions, media, or admission | `tests/channels/test_discord.py` | **Socket-blocked unit test** with `RecordingGateway` or fake `discord.Client`. Assert dispatched messages/reactions, status, bounded output, and safe attachment behavior. |
+| Slack adapter, Socket Mode conversion, slash commands, Markdown, or file transfer | `tests/channels/test_slack.py` | **Socket-blocked unit test** with a fake gateway/opener/Web client. Assert normalized conversations and posts, admission, private command responses, and URL/size/file safety. |
+| Slack channel-to-host composition | `tests/integration_tests/test_slack_host.py` | **Integration test with a fake Socket Mode gateway and echo agent.** Assert channel mentions and follow-ups stay in their Slack thread and `/talon help` responds through the command responder. |
+| Shared command registry, help, platform registration, or host dispatch | `tests/unit_tests/test_commands.py` | Assert valid unique names, summaries and help visibility, and exact registry-to-host dispatch coverage. |
+| Per-chat model selection or selected-model context budget | `tests/unit_tests/test_model_selection.py` | Fake catalog, credentials, and chat models. Assert selection scope/persistence and actual selected-model output/budget behavior. |
+| Sender pairing, host pairing commands, revocation, or pairing CLI | `tests/unit_tests/test_pairing.py` | Fake clock, gateway/transport, host, and cron store. Assert admission and revocation outcomes rather than store mutation sequence. |
+| History URI/startup, optional driver, backend cleanup, or secret redaction | `tests/unit_tests/test_history_backends.py` | Fake backend drivers/plugins and temporary SQLite files. Assert persistence/isolation, failed startup cleanup, and that credentials never escape configuration errors. |
+| Sandbox startup, host-path routing, or cancellation cleanup | `tests/unit_tests/test_sandbox.py` | Patch the sandbox factory with a synchronous fake. Assert yielded session/backend behavior and deletion after normal or cancelled startup. |
+| Scheduled history scope, recall, archive write, or deletion authority | `tests/unit_tests/test_scheduled_history.py` | Real temporary saver plus fake compiled graph. Assert the job sees only its origin scope, does not archive its prompt, and cannot delete history. |
+| Cron grammar, calendar matching, time zones, or DST | `tests/cron/test_expression.py`, `tests/cron/test_jobs.py` | Explicit UTC/local datetimes and `ZoneInfo`; assert exact next instants and local wall-clock results. |
+| Claiming, JSON records, `until`, retention, dispatch, or delivery | `tests/cron/test_jobs.py`, `tests/cron/test_until.py`, `tests/cron/test_scheduler.py` | Temporary store, fixed `now`, and recording runner/delivery callback; assert durable state and externally visible delivery/outcome. |
 
-## Persistent scheduling: test the temporal contract
+## Bootstrap, host, and runtime lifecycle
 
-Scheduling has two distinct boundaries. `CronSchedule` turns user text into a next UTC instant while preserving wall-clock semantics for IANA zones. `CronJobStore` owns the durable job record and advances a due job before the scheduler invokes it. `PersistentCronScheduler` scans, claims, runs, records an outcome, and optionally delivers output. Tests should preserve that division: expression tests do not need a scheduler, and scheduler tests should use simple callbacks rather than a runtime graph.
+`tests/conftest.py` isolates both `DEEPAGENTS_TALON_HOME` and `HOME` for every test. Its `RecordingChannel` is the common host seam: it records text/media/typing, exposes start/stop state, and injects inbound messages or reactions only after the host has registered handlers.
+
+For bootstrap changes, test `_run_host` with fake runtime and host entrypoints. The important result is ownership: a configured sandbox session is supplied to runtime construction and its context closes after the host returns; a caller-provided checkpointer is forwarded without creating the configured SQLite checkpoint, while the default path persists checkpoints that a new `AsyncSqliteSaver` can read. Logging tests should assert channel-only debug configuration and redact an invalid environment value.
+
+For host changes, use a blocking agent to make lifecycle visible. Assert that a replacement turn recovers the interrupted conversation and produces only the newer response; `/stop` acknowledges cancellation even if recovery itself fails; `/new` selects a fresh persisted conversation thread; and shutdown stops scheduler, channels, and agent. Runtime fake graphs should verify semantic effects: interrupted graph state gets dangling tool calls repaired before the interruption marker, an approval handler's decision determines whether the tool runs, and a cron-triggered gated tool is rejected without execution. If background workers cannot stop, runtime shutdown must leave graph/checkpointer resources open rather than close resources a worker might still write.
+
+## Channels: adapters, admission, and Slack host integration
+
+Channel tests are adapter tests, not live provider tests. Discord replaces either the adapter gateway or `discord.Client` and command tree; Slack replaces its gateway, URL opener, and SDK web client. This permits deterministic lifecycle and terminal-failure status tests without opening a socket.
+
+For **channel admission**, assert the observable security invariant: authorized input reaches the registered handler exactly once, and unauthorized/self-originated input reaches it zero times. Cover self and allowlist exposure, including Slack channel threads and user DMs. Interactions/slash commands must produce the same host-recognized text and authorization metadata as their typed counterpart. Do not assert the order of private adapter helpers.
+
+Adapter-specific boundary assertions include:
+
+- Discord splits text to the provider limit, confines outbound media to its configured root, marks transient reconnecting versus terminal-disconnected status, and skips oversize or failed inbound attachments while still delivering the message with media-error metadata.
+- Slack maps a channel mention and its replies to one thread conversation, posts replies back to that thread, and prevents ordinary channel `message` events from duplicating an `app_mention` turn. It escapes Slack control syntax so output cannot create `<!channel>` notifications.
+- Slack file tests must assert that download authorization is sent only to HTTPS `files.slack.com`, redirects and foreign upload URLs are refused, byte limits apply before and during transfer, partial downloads disappear, and destination files are private. These are security outcomes, not transport-call-order assertions.
+- Slash-command rejection remains private through its responder. The integration route then proves the composed result: mention replies and successive messages are threaded, while `/talon help` uses the command responder rather than a channel post.
+
+## Commands and model selection
+
+The shared registry is the contract used by help and platform adapters. Keep its tests when a command changes: each name must be unique and Discord-valid; each summary must be one line and fit the platform description limit; visible commands appear in help with their exact summary; hidden commands do not. Every registry text must have a host dispatch branch, and each host command constant must resolve to that registry. This prevents an advertised command from silently becoming agent text.
+
+For **model selection**, use a fake credentialed catalog and deterministic `FakeMessagesListChatModel` instances. Assert that only an operator may change a chat's model, an unknown request neither prepares a model nor echoes the untrusted spec, and listing does not invoke the agent. A valid choice applies on the next turn of that chat only, survives `/new` and restart, and `/model default` removes its persisted override. At runtime, assert selected model responses are actually used, are built once per model, unavailable selections fall back to default, and selected models enforce their own context budget—including summarization when switching from a large to a smaller model.
+
+## Pairing and revocation
+
+Pairing tests use a fixed clock and fake Discord/Telegram transports. Assert the admission invariants: an unknown DM sender does not reach the agent and receives at most one pending code; a successful, case/format-tolerant approval is single-use and admits only the sender and provider it was issued for; expiry, corrupt state, and a symlinked store fail closed. The pairing file is private, pending requests are bounded per provider, pairing is opt-in, and it is invalid with open exposure. Guild messages must never create pairing requests, and a paired sender is admitted only in their DM.
+
+At the host boundary, only an operator in a DM may administer `/pair`; approval makes the sender's later DM reach the agent. Revocation is an end-to-end authority test: it blocks future messages, cancels the sender's active work, disables only jobs whose origin is that sender's channel DM, and interrupts an in-progress scheduled run with `ScheduledRunRevokedError`. Environment-configured senders cannot be revoked through pairing. The CLI route separately checks provider-scoped list/approve/revoke results and the explicit `pause-jobs` follow-up required to disable the revoked sender's schedules.
+
+## History and sandbox startup
+
+History tests own startup and cleanup rather than real databases. Use temporary SQLite archives for URI persistence and fake MongoDB/PostgreSQL/plugin drivers for external schemes. Assert URI validation fails without echoing configuration, assistant namespaces stay isolated, configured URI options are retained, and plugins close their stores. On backend setup/write/cancellation failure, assert workers/dispatchers and clients are cleaned up only after in-flight startup finishes; startup errors and tracebacks must not disclose the URI password. Missing optional drivers should provide the matching extra-install guidance, while installed-but-broken drivers report their real import failure instead of being misdiagnosed as absent.
+
+Sandbox tests patch `sandbox_factory.create_sandbox`. Assert no configuration yields `None`; a configured session has the provider working directory and its backend executes remotely; exiting the context deletes the sandbox; and cancellation while creation is blocked still waits for deletion. The sandbox backend keeps allowed assistant memory paths on the host but routes approval/state files to the sandbox and rejects traversal. In sandbox mode, runtime must discard configured memory paths outside the permitted memory root rather than creating or reading them on the host.
+
+## Scheduled work and scheduled history
+
+Scheduling has three boundaries: `CronSchedule` resolves a user expression to an instant while preserving zone semantics; `CronJobStore` durably claims occurrences; and `PersistentCronScheduler` runs and delivers them. Keep expression tests separate from scheduler tests.
 
 ```mermaid
 flowchart TD
@@ -79,64 +148,26 @@ flowchart TD
     Due --> Claim["Persist claim and next run"]
     Claim --> Run["Run recording callback"]
     Run --> Outcome{"Run result"}
-    Outcome -->|"error"| Error["Persist error outcome"]
+    Outcome -->|"error"| Failure["Persist error outcome"]
     Outcome -->|"silent"| Quiet["Persist success without delivery"]
     Outcome -->|"text"| Deliver["Deliver through recording callback"]
-    Deliver --> Delivered{"Delivery result"}
-    Delivered -->|"error"| DeliveryError["Persist delivery error"]
-    Delivered -->|"success"| Done["Keep recorded success"]
+    Deliver --> Delivery{"Delivery result"}
+    Delivery -->|"error"| DeliveryFailure["Persist delivery error"]
+    Delivery -->|"success"| Done["Keep recorded success"]
 ```
 
-*The scheduler claims persistence before execution, then records the run and delivery outcome through explicit seams.*
+*Scheduler-only flow: a durable claim precedes execution, then the run and delivery outcome become observable.*
 
-### Calendar and DST regressions
+Cron grammar tests protect day-of-month/day-of-week behavior; `L`, `LW`, `W`, last-weekday, and nth-weekday extensions; leap years and rare future matches; and rejection of expressions that can never fire. DST tests must assert local semantics: spring gaps snap forward once without duplicates, fall-back ambiguous times fire once, and daily schedules retain their requested local hour, including sub-hour gaps.
 
-Use `test_expression.py` for parser acceptance/rejection, canonical display, macros, ranges, lists, step values, and calendar extensions such as `L`, `LW`, `W`, last weekday, and nth weekday. Pin the semantic distinction between restricted day-of-month/day-of-week fields that match either and starred fields that require both.
+A due job is advanced or disabled and persisted before `run_job` begins, so a one-shot cannot remain due while its callback is in progress. `until` applies only to recurring jobs, includes the due occurrence at the limit, and allows five minutes of scheduler latency; later missed runs are disabled. A subsequent sweep removes successful one-shots and clean expiry, but retains failed final runs and claimed jobs lacking an outcome for diagnosis until retention pruning; enabling a replacement schedule prevents deletion. Scheduler tests should observe success, runner failure, delivery failure, `[SILENT]`/empty suppression, and survival after an unexpected tick error.
 
-The high-value regression cases are intentionally distant from today: leap day must skip 2100, and a fifth Friday in February can require searching beyond a decade. A future optimization must still find a valid rare match and reject an impossible expression at job creation rather than looping or silently creating a job that never fires.
-
-Test zone behavior with named zones and exact expected local times. Daily and cron schedules retain their requested local hour through spring and fall transitions; nonexistent times snap forward once, including a sub-hour gap; and an ambiguous fall-back local time fires once rather than once per offset. In particular, a spring-forward cron whose several nominal times all resolve to 03:00 must dispatch only one 03:00 run.
-
-### Claim before run, bounded expiration, and retention
-
-A due job is atomically claimed by advancing or disabling its next occurrence and writing the record before execution. This is why scheduler callback tests inspect the stored record from inside `run_job`: a one-shot already has `next_run_at is None`, so a second tick cannot run the same occurrence after a crash or slow execution. Recurring intervals remain phase-locked to the previous occurrence, catch up after downtime, and respect a repeat cap.
-
-`until` only applies to recurring schedules and is interpreted as a local wall-clock timestamp. The occurrence exactly at `until` is included. A short five-minute grace admits a tick that arrives slightly late, but a job missed well beyond the window is disabled without a late delivery. Test both boundaries with explicit timestamps; do not depend on wall-clock sleeps. Also verify parsing rejects incomplete or out-of-range text, a limit before the first run, and `until` on a one-shot job.
-
-Completion is not synonymous with immediate deletion. On the next tick, successful one-shots and cleanly expired jobs can be removed. A failed final run, or a job claimed before a process interruption but never given an outcome, remains inspectable; retention pruning removes it only after the configured period. An edit that gives a just-finished job a new enabled schedule must prevent the sweep from deleting it. These cases protect operational diagnosis after a failure.
-
-## Scheduler outcomes and host integration
-
-`test_scheduler.py` is the narrow route for lifecycle behavior. Its injected clock and recording delivery callback prove that a due job is claimed, produces an `ok` outcome, and delivers to the origin conversation. Assert that `[SILENT]` at either end suppresses delivery while still recording success; empty output is also not delivered. A runner exception records `error` and leaves a recurring job on its advanced schedule, while a delivery exception replaces the success outcome with a `delivery failed:` error.
-
-The ticker must survive an unexpected scan failure: it logs the failure, waits for the normal interval, and later scans again. Test start/stop separately with a short `tick_seconds`; cancellation must still clear the ticker task. Because jobs run serially within one tick, host-level scheduled execution has a timeout boundary so a stalled job becomes an error and later jobs can proceed.
-
-For host/runtime changes, retain the same isolation at the integration seam. `test_host.py` supplies a `BlockingAgent`, `RecordingScheduler`, and `RecordingChannel` to test lifecycle and scheduled-run behavior without a real channel. `test_runtime.py` uses recording and interrupting graphs, fake tools, temporary stores, and fake model seams. Scheduled invocations carry cron metadata and cannot ask an operator: a gated tool interrupt is resumed as a rejection and never executes. This is a safety invariant, not an optional UX path.
-
-## Command registry: advertise exactly what can run
-
-`deepagents_talon.commands` is the shared source for chat help and platform registration; the host dispatches the corresponding slash-command constants. Keep registry tests whenever a command changes:
-
-- Names are unique, lowercase/platform-valid, and their summaries are nonempty one-line strings within Discord's limit.
-- `/help` lists every visible registry entry with its exact summary and omits hidden entries. Hidden commands may still be typed, but must not appear in help or platform advertisements.
-- Every registry command has a host dispatch branch, and every host dispatch constant resolves to the registry. Otherwise a command can be advertised yet fall through to the agent as ordinary text.
-
-This route intentionally catches cross-module drift rather than merely checking that a registry entry exists.
-
-## Context doctor: read-only, scoped, and redacted
-
-`/context-doctor` reports estimated injected-context cost, not the source contents. The runtime reads the active graph checkpoint for the resolved conversation and its configured system prompt, memory, skills, and tool schemas; it renders aggregate labels and token counts. It does not invoke the agent or write graph state. The report uses the effective post-compaction conversation—summary plus messages after the cutoff—and can use the latest provider input-token metadata when available.
-
-The fixture in `test_context_doctor.py` builds a real `DeepAgentRuntime` over temporary `AGENTS.md`, memory, and skill files while monkeypatching model resolution to `_ToolBindingFakeModel`. Assertions must demonstrate both utility and privacy: configured-source categories, memory/skill counts, tool-schema totals, checkpoint-scoped token usage, and changed output after tool reload; never private instruction/memory text, schema description text, or filesystem paths. Snapshot values and configuration must be identical before and after the audit, and another conversation must not inherit the current thread's usage.
-
-At the host boundary, `/context-doctor` is dispatched without interrupting a currently running agent turn and follows the new thread created by `/new`. If the runtime lacks diagnostics or the audit fails, the user gets a safe generic message and the underlying private exception is not sent to the channel. Use a recording channel to assert that behavior.
+Scheduled host execution serializes a job's conversation with a per-job lock and repairs an interrupted graph thread after timeout. A scheduled request carries cron metadata and has no interactive approval authority. Scheduled-history tests extend that contract: a job reads and searches only its origin channel/chat archive; its own cron prompt is not archived; it cannot delete conversation history; clearing the origin removes the associated cron thread; and a WhatsApp `@lid` origin is preserved for recall, archive writes, and delivery.
 
 ## Review checklist
 
-1. Start with the focused test file and a fixed clock or fake boundary; use `tmp_path` rather than a user cron directory.
-2. For time changes, add exact DST gap/fold and rare-calendar assertions, not just nearby ordinary dates.
-3. For persistence changes, prove the claim is written before `run_job`, prove `until` remains inclusive only within its grace, and cover failed/unfinished-job retention.
-4. For scheduler work, exercise success, silent output, runner failure, delivery failure, and a recoverable failed tick.
-5. For command work, update registry, help/advertisement, and host-dispatch alignment together.
-6. For diagnostics, assert both non-mutation and redaction with private fixture data and a checkpoint from the target conversation.
-7. Run `make test` and `make lint` before widening coverage; do not add a real provider or channel merely to test a deterministic Talon contract.
+1. Start at the changed seam's focused route; retain socket blocking unless the test explicitly scopes a fake transport/gateway integration boundary.
+2. Assert admissions, model choices, pairings, history, and sandbox behavior through delivered/withheld input, persisted result, resource cleanup, or redacted error—not internal call ordering.
+3. Use a fixed clock and temporary store for cron work; cover exact DST and rare-calendar cases plus claim-before-run and failure retention.
+4. Use fake graph/model/provider seams for host/runtime behavior; do not add a real model, MCP server, channel gateway, or database to prove deterministic behavior.
+5. Run `make test TEST_FILE=...` for the narrow route, then `make lint`; run broader tests only after the focused contract passes.

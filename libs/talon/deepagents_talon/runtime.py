@@ -116,7 +116,12 @@ _SAFE_BACKEND_PATH = "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/
 ModelContent = str | list[dict[str, object]]
 
 _BAD_REQUEST_STATUS_CODE = 400
-_RETRYABLE_STATUS_CODES = frozenset({408, 409, 413, 429, 500, 502, 503, 504})
+# 529 is Anthropic's "Overloaded", whose message carries no retry wording.
+_RETRYABLE_STATUS_CODES = frozenset({408, 409, 413, 429, 500, 502, 503, 504, 529})
+# Provider SDKs (`anthropic`, `openai`) raise these for dropped connections and
+# timeouts. They are not `ConnectionError`s and their message is only "Connection
+# error.", so they are matched by class name to avoid importing every provider.
+_TRANSPORT_ERROR_NAMES = frozenset({"APIConnectionError"})
 _BACKEND_ENV_ALLOWED_KEYS = frozenset(
     {
         "CI",
@@ -190,6 +195,7 @@ _RETRYABLE_MESSAGE_MARKERS = (
     "read timeout",
     "timed out",
     "timeout limit",
+    "overloaded",
     "temporarily unavailable",
     "temporary failure",
     "try again later",
@@ -1660,6 +1666,8 @@ def _status_code(exc: BaseException) -> int | None:
 
 def _is_retryable(exc: Exception) -> bool:
     if isinstance(exc, (ConnectionError, TimeoutError)):
+        return True
+    if any(cls.__name__ in _TRANSPORT_ERROR_NAMES for cls in type(exc).__mro__):
         return True
 
     text = str(exc).lower()

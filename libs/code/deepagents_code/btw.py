@@ -266,7 +266,22 @@ def _prepare_messages(request: ModelRequest) -> list[BaseMessage]:
 
 
 class BtwOperation(AgentMiddleware):
-    """Remember server-resolved models without running the agent for side answers."""
+    """Capture effective main-call context and answer tool-free side questions.
+
+    Register after middleware that modifies the model, prompt, or settings,
+    including extensions. `ConfigurableModelMiddleware` resolves the model
+    early, before memory, skills, and local context enrich the prompt. Those
+    downstream request overrides are not returned to it with the response.
+    Resume and cost hooks inspect state and responses rather than the complete
+    model request, so neither supplies this capture point.
+
+    This separate hook snapshots the resolved request before calling the model,
+    allowing `/btw` to use it while the main response is still streaming. Main
+    calls also checkpoint the effective instructions on success for use after
+    restart or eviction. `answer` invokes the model directly without running
+    the agent or writing conversation state; when saved instructions are absent,
+    it reuses the main agent's memory and skill loaders on a local state copy.
+    """
 
     state_schema = _BtwState
 
@@ -299,6 +314,10 @@ class BtwOperation(AgentMiddleware):
 
     def _remember_model(self, request: ModelRequest) -> Command | None:
         """Snapshot resolved settings before either kind of main model call.
+
+        The in-memory snapshot is available immediately, even while the main
+        call is pending. Its instruction checkpoint update is only returned
+        with a successful main response.
 
         Returns:
             Instructions to checkpoint on success, or `None` for nested calls.

@@ -3616,6 +3616,8 @@ def create_cli_agent(
                 if any(item is active for active in agent_middleware)
             ],
         )
+        # Keep capture after prompt/settings middleware, including extensions;
+        # see BtwOperation for why model selection alone cannot supply it.
         agent_middleware.append(btw)
         setattr(composite_backend, BTW_OPERATION_ATTR, btw)
     with warnings.catch_warnings():

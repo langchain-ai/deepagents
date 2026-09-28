@@ -406,6 +406,63 @@ async def test_handoff_child_is_discoverable_and_resumable(
         resume.assert_awaited_once_with(child_id)
 
 
+@pytest.mark.parametrize("switch_during_sync", [False, True])
+async def test_remote_handoff_activity_refreshes_resume_age(
+    switch_during_sync: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Later remote requests keep an old discovery seed resumable."""
+    from deepagents_code import sessions
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="child")
+    old = (datetime.now(UTC) - timedelta(days=10)).isoformat()
+    recent = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    for thread_id in ("child", "other"):
+        await sessions.save_thread_seed(
+            thread_id,
+            {"messages": [HumanMessage("Summary")]},
+            agent_name="researcher",
+            cwd=app._cwd,
+        )
+    async with sessions._connect() as conn:
+        await conn.execute(
+            "UPDATE checkpoints SET metadata = json_set(metadata, '$.updated_at', ?)",
+            (old,),
+        )
+        await conn.commit()
+    monkeypatch.setattr(
+        DeepAgentsApp,
+        "_resume_cutoff",
+        lambda: (datetime.now(UTC) - timedelta(days=7), "user config", True),
+    )
+    assert await app._thread_resume_block("child") is not None
+
+    def read_remote_state(thread_id: str) -> dict[str, object]:
+        assert thread_id == "child"
+        if switch_during_sync:
+            app._lc_thread_id = "other"
+        return {"_last_model_request_at": recent}
+
+    monkeypatch.setattr(
+        app, "_get_thread_state_values", AsyncMock(side_effect=read_remote_state)
+    )
+    await app._sync_session_cost_from_checkpoint()
+
+    assert await app._thread_resume_block("child") is None
+    assert await sessions.get_thread_updated_at("child") == recent
+    assert await sessions.get_thread_updated_at("other") == old
+    assert await sessions.get_thread_agent("child") == "researcher"
+    assert await sessions.get_thread_cwd("child") == app._cwd
+    # Reading an older checkpoint must never move discovery time backward.
+    app._lc_thread_id = "child"
+    monkeypatch.setattr(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value={"_last_model_request_at": old}),
+    )
+    await app._sync_session_cost_from_checkpoint()
+    assert await sessions.get_thread_updated_at("child") == recent
+
+
 @pytest.mark.parametrize("local_database_initialized", [False, True])
 @pytest.mark.parametrize("resume_via", ["automatic", "picker", "id"])
 async def test_handoff_with_separate_server_checkpoints(

@@ -1512,6 +1512,32 @@ async def get_thread_updated_at(thread_id: str) -> str | None:
             return value if isinstance(value, str) and value else None
 
 
+async def refresh_thread_activity(thread_id: str, updated_at: datetime) -> None:
+    """Advance local discovery metadata after reading remote model activity.
+
+    Only the latest root checkpoint is updated, preserving historical metadata
+    and any newer timestamp already written by a shared server checkpointer.
+
+    Args:
+        thread_id: Thread whose remote state was read.
+        updated_at: Verified model-request time from the remote checkpoint.
+    """
+    async with _connect() as conn:
+        if not await _table_exists(conn, "checkpoints"):
+            return
+        timestamp = updated_at.isoformat()
+        await conn.execute(
+            "UPDATE checkpoints SET metadata = json_set(metadata, '$.updated_at', ?) "
+            "WHERE thread_id = ? AND checkpoint_ns = '' AND checkpoint_id = "
+            "(SELECT MAX(checkpoint_id) FROM checkpoints "
+            "WHERE thread_id = ? AND checkpoint_ns = '') "
+            "AND COALESCE(julianday(json_extract(metadata, '$.updated_at')), 0) "
+            "< julianday(?)",
+            (timestamp, thread_id, thread_id, timestamp),
+        )
+        await conn.commit()
+
+
 async def get_thread_agent(thread_id: str) -> str | None:
     """Get agent_name for a thread.
 

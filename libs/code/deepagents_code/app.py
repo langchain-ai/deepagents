@@ -10151,6 +10151,9 @@ class DeepAgentsApp(App):
         display at the end of one, and covers a turn whose final events were
         missed (an aborted stream, say).
         """
+        from deepagents_code.cold_cache import parse_cache_timestamp
+        from deepagents_code.sessions import refresh_thread_activity
+
         thread_id = self._lc_thread_id
         if not self._agent or not thread_id:
             return
@@ -10162,6 +10165,15 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
             return
+        # Separate server storage leaves only a discovery seed locally. Keep
+        # resume policy tied to actual activity, even if the UI switched threads
+        # during the read. A stale checkpoint must not make a thread look fresh.
+        updated_at = parse_cache_timestamp(state_values.get("_last_model_request_at"))
+        if updated_at is not None:
+            try:
+                await refresh_thread_activity(thread_id, updated_at)
+            except Exception:
+                logger.warning("Could not refresh thread activity", exc_info=True)
         if self._lc_thread_id != thread_id:
             return
         remote = self._remote_agent()

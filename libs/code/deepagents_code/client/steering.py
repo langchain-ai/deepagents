@@ -62,8 +62,17 @@ async def steerable_stream[T](
     Raises:
         SteeredError: After the original run has been registered.
     """
+
+    async def next_steer() -> SteeringInput:
+        # Until the replacement registers, `unsent` still owns the previous
+        # handoff. Leave additional input queued so a failed registration can
+        # recover both requests and their attachments independently.
+        if control.detached:
+            await control.registered.wait()
+        return await control.pending.get()
+
     next_chunk: asyncio.Task[T] | None = None
-    steer = asyncio.create_task(control.pending.get())
+    steer = asyncio.create_task(next_steer())
     registered = asyncio.create_task(control.registered.wait())
     try:
         while True:

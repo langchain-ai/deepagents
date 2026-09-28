@@ -61,6 +61,54 @@ async def test_pending_steer_is_preserved_when_stream_fails() -> None:
     assert not control.accepting
 
 
+@pytest.mark.parametrize("register", [False, True])
+async def test_additional_steer_survives_replacement_registration(
+    *, register: bool
+) -> None:
+    from deepagents_code.input import MediaTracker
+    from deepagents_code.media_utils import ImageData
+
+    first_media = MediaTracker()
+    first_media.add_image(ImageData("first", "png", ""))
+    first = SteeringInput("first [image 1]", first_media)
+    control = SteeringControl(detached=True, unsent=first)
+    second_media = MediaTracker()
+    second_media.add_image(ImageData("second", "png", ""))
+    assert control.submit("second [image 1]", second_media)
+    second_media.clear()
+
+    async def replacement() -> AsyncGenerator[str, None]:
+        # Let the steering consumer run while the first handoff is still pending.
+        await asyncio.sleep(0)
+        if register:
+            control.unsent = None
+            control.detached = False
+            control.registered.set()
+            await asyncio.Event().wait()
+        msg = "replacement failed"
+        raise RuntimeError(msg)
+        yield "unreachable"
+
+    output = steerable_stream(replacement(), control)
+    if register:
+        with pytest.raises(SteeredError, match="second"):
+            await asyncio.wait_for(anext(output), 1)
+        second = control.unsent
+        assert control.pending.empty()
+    else:
+        with pytest.raises(RuntimeError, match="replacement failed"):
+            await anext(output)
+        assert control.unsent is first
+        assert first.media is not None
+        assert first.media.get_images() == [ImageData("first", "png", "[image 1]")]
+        assert not control.pending.empty()
+        second = control.pending.get_nowait()
+    assert second is not None
+    assert second.text == "second [image 1]"
+    assert second.media is not None
+    assert second.media.get_images() == [ImageData("second", "png", "[image 1]")]
+
+
 async def test_normal_stream_is_unchanged() -> None:
     control = SteeringControl()
 

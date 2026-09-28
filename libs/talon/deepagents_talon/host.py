@@ -894,6 +894,7 @@ class TalonHost:
             _typing_refresh_loop(channel, message.conversation_id),
         )
         suppress_result = False
+        result: AgentResult | None = None
         active = True
 
         async def send_progress(text: str) -> SendResult:
@@ -950,10 +951,10 @@ class TalonHost:
             result = AgentResult(text=_AGENT_FAILURE_MESSAGE)
         finally:
             active = False
-            typing_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await typing_task
             self._clear_authorization(agent_conversation_id)
+            await self._stop_typing_and_requeue(
+                typing_task, result, suppress_result=suppress_result
+            )
         await self._settle_agent_turn(
             turn,
             result,
@@ -961,6 +962,17 @@ class TalonHost:
             reply_conversation_id=message.conversation_id,
             suppress_result=suppress_result,
         )
+
+    async def _stop_typing_and_requeue(
+        self, task: asyncio.Task[None], result: AgentResult | None, *, suppress_result: bool
+    ) -> None:
+        """Return undelivered background results if typing cleanup is cancelled."""
+        try:
+            await _stop_task(task)
+        except asyncio.CancelledError:
+            if result is not None and not suppress_result:
+                self._requeue_background_results(result)
+            raise
 
     async def _settle_agent_turn(
         self,
@@ -2060,6 +2072,21 @@ async def _send_typing(channel: ChannelAdapter, conversation_id: str) -> None:
         await channel.send_typing(conversation_id)
     except Exception:  # noqa: BLE001  # typing indicators are best-effort adapter calls.
         logger.debug("Could not send typing indicator", exc_info=True)
+
+
+async def _stop_task(task: asyncio.Task[None]) -> None:
+    """Cancel a helper task and wait for it to finish.
+
+    Unlike awaiting the task under `suppress(CancelledError)`, this never swallows a
+    cancellation aimed at the caller. A new message interrupts a turn by cancelling
+    it, and that cancel can arrive while the turn is stopping its typing indicator;
+    swallowing it there left the turn waiting on the lock the new message held.
+
+    Args:
+        task: Task to stop.
+    """
+    task.cancel()
+    await asyncio.wait({task})
 
 
 async def _typing_refresh_loop(channel: ChannelAdapter, conversation_id: str) -> None:

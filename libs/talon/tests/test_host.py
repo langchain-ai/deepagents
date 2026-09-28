@@ -645,6 +645,49 @@ async def test_host_interrupts_active_turn_and_continues_same_conversation(tmp_p
     assert channel.sent == [("chat", "reply:second")]
 
 
+class SlowToStopTypingChannel(RecordingChannel):
+    """Typing indicator that takes a moment to stop once cancelled."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.typing_started = asyncio.Event()
+        self.typing_stopping = asyncio.Event()
+
+    async def send_typing(self, conversation_id: str) -> None:
+        await super().send_typing(conversation_id)
+        self.typing_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.typing_stopping.set()
+            await asyncio.sleep(0.05)
+            raise
+
+
+async def test_message_arriving_as_a_turn_finishes_starts_its_own_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Fail fast instead of waiting out the real 30 seconds if the cancel is lost.
+    monkeypatch.setattr("deepagents_talon.host._CANCEL_TIMEOUT_SECONDS", 1.0)
+    channel = SlowToStopTypingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await channel.typing_started.wait()
+    agent.released.set()
+    # The first turn's model call is done and it is stopping its typing indicator.
+    await channel.typing_stopping.wait()
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
+    await _wait_for_request(agent, "second")
+    await _wait_for_sent_count(channel, 1)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["block", "second"]
+    assert channel.sent == [("chat", "reply:second")]
+
+
 async def test_typing_indicator_refreshes_during_long_agent_turn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1072,6 +1115,32 @@ async def test_turn_cancelled_awaiting_delivery_requeues_its_background_results(
             await asyncio.wait_for(turn, 2)
 
         assert agent.background.requeued == ["subagent-1"]
+        assert channel.sent == []
+    finally:
+        await host.stop()
+
+
+@pytest.mark.parametrize("suppressed", [False, True])
+async def test_turn_cancelled_stopping_typing_requeues_unsuppressed_results(
+    tmp_path: Path, *, suppressed: bool
+) -> None:
+    channel = SlowToStopTypingChannel()
+    agent = BackgroundResultAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        if suppressed:
+            host._terminal_authorizations.add("test:chat")
+        await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+        await channel.typing_started.wait()
+        turn = host._tasks["test:chat"]
+        agent.released.set()
+        await channel.typing_stopping.wait()
+        turn.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(turn, 2)
+
+        assert agent.background.requeued == ([] if suppressed else ["subagent-1"])
         assert channel.sent == []
     finally:
         await host.stop()

@@ -897,6 +897,74 @@ def _make_args(
 class TestApplyStdinPipe:
     """Tests for apply_stdin_pipe — reading piped stdin into CLI args."""
 
+    @pytest.mark.parametrize(
+        ("platform", "terminal"),
+        [("win32", "CONIN$"), ("linux", "/dev/tty")],
+    )
+    def test_piped_prompt_restores_terminal_input(
+        self, platform: str, terminal: str
+    ) -> None:
+        """A seeded TUI reads the terminal after consuming piped context."""
+        args = _make_args(initial_prompt="explain this")
+        pipe = io.StringIO("context from pipe")
+        terminal_input = MagicMock()
+        terminal_input.isatty.return_value = True
+        with (
+            patch.object(sys, "platform", platform),
+            patch.object(sys, "stdin", pipe),
+            patch("deepagents_code.main.os.open", return_value=42) as open_terminal,
+            patch("deepagents_code.main.os.dup2") as duplicate,
+            patch("deepagents_code.main.os.close") as close_terminal,
+            patch("builtins.open", return_value=terminal_input) as reopen_stdin,
+        ):
+            apply_stdin_pipe(args)
+            assert sys.stdin is terminal_input
+
+        assert args.initial_prompt == "context from pipe\n\nexplain this"
+        assert args.non_interactive_message is None
+        open_terminal.assert_called_once_with(terminal, os.O_RDONLY)
+        duplicate.assert_called_once_with(42, 0)
+        close_terminal.assert_called_once_with(42)
+        reopen_stdin.assert_called_once_with(0, encoding="utf-8", closefd=False)
+
+    @pytest.mark.parametrize("platform", ["win32", "linux"])
+    def test_missing_terminal_keeps_headless_piped_input(self, platform: str) -> None:
+        """A pipeline without a console still routes its text to headless mode."""
+        args = _make_args()
+        pipe = io.StringIO("do the task")
+        with (
+            patch.object(sys, "platform", platform),
+            patch.object(sys, "stdin", pipe),
+            patch("deepagents_code.main.os.open", side_effect=OSError("no console")),
+            patch("deepagents_code.main.os.dup2") as duplicate,
+        ):
+            apply_stdin_pipe(args)
+            assert sys.stdin is pipe
+
+        assert args.non_interactive_message == "do the task"
+        duplicate.assert_not_called()
+
+    def test_failed_terminal_replacement_closes_handle(self) -> None:
+        """A failed Windows fd replacement warns and releases the opened handle."""
+        from deepagents_code.config import console
+
+        args = _make_args(initial_prompt="explain")
+        pipe = io.StringIO("context")
+        with (
+            patch.object(sys, "platform", "win32"),
+            patch.object(sys, "stdin", pipe),
+            patch("deepagents_code.main.os.open", return_value=42),
+            patch("deepagents_code.main.os.dup2", side_effect=OSError("bad fd")),
+            patch("deepagents_code.main.os.close") as close_terminal,
+            patch.object(console, "print") as warning,
+        ):
+            apply_stdin_pipe(args)
+            assert sys.stdin is pipe
+
+        assert args.initial_prompt == "context\n\nexplain"
+        close_terminal.assert_called_once_with(42)
+        assert "TTY restoration failed" in warning.call_args.args[0]
+
     def test_explicit_stdin_with_skill_runs_headless(self) -> None:
         """Explicit `--stdin` + `--skill` runs headless, not the seeded TUI."""
         args = _make_args(initial_skill="code-review", stdin=True)

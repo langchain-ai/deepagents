@@ -1119,6 +1119,32 @@ async def test_turn_cancelled_awaiting_delivery_requeues_its_background_results(
         await host.stop()
 
 
+@pytest.mark.parametrize("suppressed", [False, True])
+async def test_turn_cancelled_stopping_typing_requeues_unsuppressed_results(
+    tmp_path: Path, *, suppressed: bool
+) -> None:
+    channel = SlowToStopTypingChannel()
+    agent = BackgroundResultAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        if suppressed:
+            host._terminal_authorizations.add("test:chat")
+        await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+        await channel.typing_started.wait()
+        turn = host._tasks["test:chat"]
+        agent.released.set()
+        await channel.typing_stopping.wait()
+        turn.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(turn, 2)
+
+        assert agent.background.requeued == ([] if suppressed else ["subagent-1"])
+        assert channel.sent == []
+    finally:
+        await host.stop()
+
+
 async def test_delivered_turn_does_not_requeue_its_background_results(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = BackgroundResultAgent()

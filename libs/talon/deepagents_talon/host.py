@@ -898,6 +898,7 @@ class TalonHost:
             _typing_refresh_loop(channel, message.conversation_id),
         )
         suppress_result = False
+        result: AgentResult | None = None
         active = True
 
         async def send_progress(text: str) -> SendResult:
@@ -955,7 +956,9 @@ class TalonHost:
         finally:
             active = False
             self._clear_authorization(agent_conversation_id)
-            await _stop_task(typing_task)
+            await self._stop_typing_and_requeue(
+                typing_task, result, suppress_result=suppress_result
+            )
         await self._settle_agent_turn(
             turn,
             result,
@@ -963,6 +966,17 @@ class TalonHost:
             reply_conversation_id=message.conversation_id,
             suppress_result=suppress_result,
         )
+
+    async def _stop_typing_and_requeue(
+        self, task: asyncio.Task[None], result: AgentResult | None, *, suppress_result: bool
+    ) -> None:
+        """Return undelivered background results if typing cleanup is cancelled."""
+        try:
+            await _stop_task(task)
+        except asyncio.CancelledError:
+            if result is not None and not suppress_result:
+                self._requeue_background_results(result)
+            raise
 
     async def _settle_agent_turn(
         self,

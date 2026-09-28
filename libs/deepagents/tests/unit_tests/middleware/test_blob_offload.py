@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
 from deepagents.backends import FilesystemBackend
-from deepagents.middleware._blob_offload import _BLOB_REF_KEY, _MISSING_BLOB_TEXT, _BlobCache
+from deepagents.middleware._blob_offload import _BLOB_REF_KEY, _MISSING_BLOB_TEXT
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 PNG = b"\x89PNG\r\n\x1a\n fake image bytes"
@@ -113,16 +113,3 @@ def test_upload_failure_keeps_payload_inline(tmp_path: Path, monkeypatch: pytest
 
     assert isinstance(result, ToolMessage)
     assert result.content[0]["base64"] == PNG_B64
-
-
-def test_blob_cache_evicts_least_recently_used() -> None:
-    cache = _BlobCache(max_bytes=10)
-    cache.put("a", "12345")
-    cache.put("b", "12345")
-    assert cache.get("a") == "12345"
-
-    cache.put("c", "12345")
-
-    assert cache.get("b") is None
-    assert cache.get("a") == "12345"
-    assert cache.get("c") == "12345"

@@ -1506,17 +1506,16 @@ class TestBinaryContentOffload:
         config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
         payload = {"messages": [HumanMessage(content="Read the image")]}
 
-        if use_async:
-            await agent.ainvoke(payload, config)
-        else:
-            agent.invoke(payload, config)
+        result = await agent.ainvoke(payload, config) if use_async else agent.invoke(payload, config)
 
-        checkpointed = next(m for m in agent.get_state(config).values["messages"] if m.type == "tool")
+        values = agent.get_state(config).values
+        checkpointed = next(m for m in values["messages"] if m.type == "tool")
         assert checkpointed.content == [{"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}]
         assert (tmp_path / "blobs" / _OFFLOAD_PNG_DIGEST).read_bytes() == _OFFLOAD_PNG
         assert self._sent_tool_message(model, 1).content == [{"type": "image", "mime_type": "image/png", "base64": _OFFLOAD_PNG_B64}]
-        # The upload filled the cache, so the model call needed no download.
-        assert downloads == []
+        assert downloads == [[f"/blobs/{_OFFLOAD_PNG_DIGEST}"]]
+        assert "_blob_payloads" not in values
+        assert "_blob_payloads" not in result
 
     def test_resumed_thread_rehydrates_snapshot_after_source_changes(self, tmp_path: Path) -> None:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
@@ -1552,6 +1551,30 @@ class TestBinaryContentOffload:
 
         assert len(model.captured_messages) == 2
         assert all(self._sent_tool_message(model, call).content[0]["base64"] == _OFFLOAD_PNG_B64 for call in range(2))
+        assert downloads == [[f"/blobs/{_OFFLOAD_PNG_DIGEST}"]]
+
+    def test_cache_is_not_shared_across_threads(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
+        model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "call_img", "type": "tool_call"}],
+                    ),
+                    AIMessage(content="Here is the image."),
+                    AIMessage(content="Another thread."),
+                ]
+            )
+        )
+        agent = self._agent(backend, model, InMemorySaver())
+        agent.invoke({"messages": [HumanMessage(content="Read the image")]}, {"configurable": {"thread_id": "a"}})
+        downloads = self._record_downloads(backend, monkeypatch)
+        forged = HumanMessage(content=[{"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}])
+
+        agent.invoke({"messages": [forged]}, {"configurable": {"thread_id": "b"}})
+
         assert downloads == [[f"/blobs/{_OFFLOAD_PNG_DIGEST}"]]
 
     def test_resumed_thread_batches_downloads_for_multiple_blobs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1632,7 +1655,8 @@ class TestBinaryContentOffload:
         assert checkpointed.content[1] == {"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}
         assert (tmp_path / "blobs" / _OFFLOAD_PNG_DIGEST).read_bytes() == _OFFLOAD_PNG
         assert all(self._sent_human_image(model, call)["base64"] == _OFFLOAD_PNG_B64 for call in range(2))
-        assert downloads == []
+        # Payloads loaded in one run are not carried into the next.
+        assert downloads == [[f"/blobs/{_OFFLOAD_PNG_DIGEST}"]]
 
     def test_human_message_image_added_mid_thread(self, tmp_path: Path) -> None:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)

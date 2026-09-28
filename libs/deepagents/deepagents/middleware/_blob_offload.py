@@ -12,8 +12,6 @@ import binascii
 import hashlib
 import logging
 import re
-import threading
-from collections import OrderedDict
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final
 
@@ -33,42 +31,10 @@ _BLOB_REF_KEY: Final = "deepagents_blob"
 
 _MISSING_BLOB_TEXT: Final = "[Binary content from an earlier read_file call is no longer available. Re-read the file if you still need it.]"
 
-_DEFAULT_BLOB_CACHE_BYTES: Final = 256 * 1024 * 1024
+_BLOB_PAYLOADS_KEY: Final = "_blob_payloads"
+"""Private, untracked state key mapping digests to base64 payloads for the current run."""
 
 _DIGEST_RE: Final = re.compile(r"[0-9a-f]{64}")
-
-
-class _BlobCache:
-    """Thread-safe LRU of base64 payloads keyed by digest, bounded by total payload size."""
-
-    def __init__(self, max_bytes: int = _DEFAULT_BLOB_CACHE_BYTES) -> None:
-        """Initialize an empty cache holding at most `max_bytes` of base64 text."""
-        self._max_bytes = max_bytes
-        self._size = 0
-        self._entries: OrderedDict[str, str] = OrderedDict()
-        self._lock = threading.Lock()
-
-    def get(self, digest: str) -> str | None:
-        """Return the cached payload for `digest`, marking it most recently used."""
-        with self._lock:
-            payload = self._entries.get(digest)
-            if payload is not None:
-                self._entries.move_to_end(digest)
-            return payload
-
-    def put(self, digest: str, payload: str) -> None:
-        """Cache `payload`, evicting least recently used entries past the size bound."""
-        if len(payload) > self._max_bytes:
-            return
-        with self._lock:
-            previous = self._entries.pop(digest, None)
-            if previous is not None:
-                self._size -= len(previous)
-            self._entries[digest] = payload
-            self._size += len(payload)
-            while self._size > self._max_bytes:
-                _, evicted = self._entries.popitem(last=False)
-                self._size -= len(evicted)
 
 
 def _blob_path(prefix: str, digest: str) -> str:
@@ -112,16 +78,16 @@ def _stub_messages(messages: Sequence[Any], digests: dict[str, str]) -> list[Any
     return result
 
 
-def _stored_digests(pending: dict[str, tuple[str, bytes]], errors: Sequence[str | None], cache: _BlobCache) -> dict[str, str]:
+def _stored_digests(pending: dict[str, tuple[str, bytes]], errors: Sequence[str | None], cache: dict[str, str]) -> dict[str, str]:
     stored: dict[str, str] = {}
     for (payload, (digest, _)), error in zip(pending.items(), errors, strict=True):
         if error is None:
             stored[payload] = digest
-            cache.put(digest, payload)
+            cache[digest] = payload
     return stored
 
 
-def _offload_messages(messages: Sequence[Any], backend: BackendProtocol, prefix: str, cache: _BlobCache) -> list[Any]:
+def _offload_messages(messages: Sequence[Any], backend: BackendProtocol, prefix: str, cache: dict[str, str]) -> list[Any]:
     """Upload inline binary payloads and return messages carrying blob references.
 
     Payloads that fail to upload stay inline.
@@ -137,7 +103,7 @@ def _offload_messages(messages: Sequence[Any], backend: BackendProtocol, prefix:
     return _stub_messages(messages, _stored_digests(pending, [r.error for r in responses], cache))
 
 
-async def _aoffload_messages(messages: Sequence[Any], backend: BackendProtocol, prefix: str, cache: _BlobCache) -> list[Any]:
+async def _aoffload_messages(messages: Sequence[Any], backend: BackendProtocol, prefix: str, cache: dict[str, str]) -> list[Any]:
     """Async version of `_offload_messages`."""
     pending = _pending_blobs(messages)
     if not pending:
@@ -150,7 +116,7 @@ async def _aoffload_messages(messages: Sequence[Any], backend: BackendProtocol, 
     return _stub_messages(messages, _stored_digests(pending, [r.error for r in responses], cache))
 
 
-def _offload_tool_result(result: ToolMessage | Command, backend: BackendProtocol, prefix: str, cache: _BlobCache) -> ToolMessage | Command:
+def _offload_tool_result(result: ToolMessage | Command, backend: BackendProtocol, prefix: str, cache: dict[str, str]) -> ToolMessage | Command:
     """Apply `_offload_messages` to a `read_file` tool result."""
     if isinstance(result, ToolMessage):
         return _offload_messages([result], backend, prefix, cache)[0]
@@ -159,7 +125,7 @@ def _offload_tool_result(result: ToolMessage | Command, backend: BackendProtocol
     return result
 
 
-async def _aoffload_tool_result(result: ToolMessage | Command, backend: BackendProtocol, prefix: str, cache: _BlobCache) -> ToolMessage | Command:
+async def _aoffload_tool_result(result: ToolMessage | Command, backend: BackendProtocol, prefix: str, cache: dict[str, str]) -> ToolMessage | Command:
     """Async version of `_offload_tool_result`."""
     if isinstance(result, ToolMessage):
         return (await _aoffload_messages([result], backend, prefix, cache))[0]
@@ -183,7 +149,7 @@ def _merge_replacements(pending: Sequence[Any], offloaded: Sequence[Any], candid
 
 
 def _offload_human_messages(
-    state_messages: Sequence[Any], pending: Sequence[Any], backend: BackendProtocol, prefix: str, cache: _BlobCache
+    state_messages: Sequence[Any], pending: Sequence[Any], backend: BackendProtocol, prefix: str, cache: dict[str, str]
 ) -> list[Any]:
     """Return `pending` plus stubbed replacements for `HumanMessage`s in state carrying inline payloads."""
     candidates = _human_candidates(state_messages, pending)
@@ -191,7 +157,7 @@ def _offload_human_messages(
 
 
 async def _aoffload_human_messages(
-    state_messages: Sequence[Any], pending: Sequence[Any], backend: BackendProtocol, prefix: str, cache: _BlobCache
+    state_messages: Sequence[Any], pending: Sequence[Any], backend: BackendProtocol, prefix: str, cache: dict[str, str]
 ) -> list[Any]:
     """Async version of `_offload_human_messages`."""
     candidates = _human_candidates(state_messages, pending)
@@ -210,18 +176,18 @@ def _referenced_digests(messages: Sequence[BaseMessage]) -> list[str]:
     return list(digests)
 
 
-def _cached_payloads(digests: list[str], cache: _BlobCache) -> tuple[dict[str, str], list[str]]:
+def _cached_payloads(digests: list[str], cache: dict[str, str]) -> tuple[dict[str, str], list[str]]:
     payloads = {digest: payload for digest in digests if (payload := cache.get(digest)) is not None}
     return payloads, [digest for digest in digests if digest not in payloads]
 
 
-def _accept_downloads(missing: list[str], responses: Sequence[FileDownloadResponse], payloads: dict[str, str], cache: _BlobCache) -> None:
+def _accept_downloads(missing: list[str], responses: Sequence[FileDownloadResponse], payloads: dict[str, str], cache: dict[str, str]) -> None:
     for digest, response in zip(missing, responses, strict=False):
         # Blobs live on an agent-writable filesystem, so verify before trusting them.
         if response.error is not None or response.content is None or hashlib.sha256(response.content).hexdigest() != digest:
             continue
         payload = base64.b64encode(response.content).decode("ascii")
-        cache.put(digest, payload)
+        cache[digest] = payload
         payloads[digest] = payload
 
 
@@ -247,7 +213,7 @@ def _restore_payloads(messages: Sequence[AnyMessage], payloads: dict[str, str]) 
     return result
 
 
-def _hydrate_messages(messages: Sequence[AnyMessage], backend: BackendProtocol, prefix: str, cache: _BlobCache) -> list[AnyMessage]:
+def _hydrate_messages(messages: Sequence[AnyMessage], backend: BackendProtocol, prefix: str, cache: dict[str, str]) -> list[AnyMessage]:
     """Restore base64 payloads for blob references; unavailable blobs become a text notice."""
     if not any(_message_has_refs(message) for message in messages):
         return list(messages)
@@ -262,7 +228,7 @@ def _hydrate_messages(messages: Sequence[AnyMessage], backend: BackendProtocol, 
     return _restore_payloads(messages, payloads)
 
 
-async def _ahydrate_messages(messages: Sequence[AnyMessage], backend: BackendProtocol, prefix: str, cache: _BlobCache) -> list[AnyMessage]:
+async def _ahydrate_messages(messages: Sequence[AnyMessage], backend: BackendProtocol, prefix: str, cache: dict[str, str]) -> list[AnyMessage]:
     """Async version of `_hydrate_messages`."""
     if not any(_message_has_refs(message) for message in messages):
         return list(messages)

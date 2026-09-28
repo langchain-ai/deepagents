@@ -23,6 +23,7 @@ from langchain.agents.middleware.types import (
     ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
     ResponseT,
     TracePolicy,
     omit_payload,
@@ -34,6 +35,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveM
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
+from langgraph.channels.untracked_value import UntrackedValue
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from pydantic import BaseModel, Field
@@ -82,10 +84,10 @@ from deepagents.backends.utils import (
     validate_path,
 )
 from deepagents.middleware._blob_offload import (
+    _BLOB_PAYLOADS_KEY,
     _ahydrate_messages,
     _aoffload_human_messages,
     _aoffload_tool_result,
-    _BlobCache,
     _hydrate_messages,
     _offload_human_messages,
     _offload_tool_result,
@@ -1172,6 +1174,17 @@ class FilesystemState(AgentState):
     """Files in the filesystem. Uses DeltaChannel with snapshots every ~50 pregel steps to bound read depth."""
 
 
+class _BlobPayloadState(AgentState):
+    """State for `offload_binary_content`."""
+
+    _blob_payloads: NotRequired[Annotated[dict[str, str], UntrackedValue(dict, guard=False), PrivateStateAttr]]
+    """Payloads of offloaded blobs loaded in this run; never checkpointed."""
+
+
+class _FilesystemBlobPayloadState(FilesystemState, _BlobPayloadState):
+    """`FilesystemState` with `_BlobPayloadState`."""
+
+
 def _uses_state_backend(backend: BackendProtocol) -> bool:
     """Return whether a backend stores any files in agent state."""
     if isinstance(backend, StateBackend):
@@ -1194,11 +1207,11 @@ def _command_messages(command: Command | None) -> list[Any]:
     return list(update.get("messages", [])) if isinstance(update, dict) else []
 
 
-def _with_messages(command: Command | None, messages: list[Any]) -> Command | None:
-    """Return `command` with its `messages` update set to `messages`."""
-    if not messages:
+def _with_update(command: Command | None, updates: dict[str, Any]) -> Command | None:
+    """Return `command` with `updates` merged into its state update."""
+    if not updates:
         return command
-    update = {**cast("dict[str, Any]", command.update), "messages": messages} if command is not None else {"messages": messages}
+    update = {**cast("dict[str, Any]", command.update), **updates} if command is not None else updates
     return replace(command, update=update) if command is not None else Command(update=update)
 
 
@@ -1846,8 +1859,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
         self._blobs_prefix = f"{_root}/blobs"
-        offload = offload_binary_content and not _routes_to_state_backend(self.backend, f"{self._blobs_prefix}/")
-        self._blob_cache = _BlobCache() if offload else None
+        self._offload_binary_content = offload_binary_content and not _routes_to_state_backend(self.backend, f"{self._blobs_prefix}/")
+        if self._offload_binary_content:
+            self.state_schema = cast("type[FilesystemState]", _FilesystemBlobPayloadState if self.state_schema is FilesystemState else _BlobPayloadState)
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
@@ -3258,12 +3272,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if eviction_result is not None:
             messages, state_command = eviction_result
             request = request.override(messages=messages)
-        if self._blob_cache is not None:
+        if self._offload_binary_content:
+            cached = request.state.get(_BLOB_PAYLOADS_KEY) or {}
+            payloads = dict(cached)
             offloaded = _offload_human_messages(
-                request.state.get("messages", []), _command_messages(state_command), self.backend, self._blobs_prefix, self._blob_cache
+                request.state.get("messages", []), _command_messages(state_command), self.backend, self._blobs_prefix, payloads
             )
-            state_command = _with_messages(state_command, offloaded)
-            request = request.override(messages=_hydrate_messages(request.messages, self.backend, self._blobs_prefix, self._blob_cache))
+            request = request.override(messages=_hydrate_messages(request.messages, self.backend, self._blobs_prefix, payloads))
+            updates: dict[str, Any] = {"messages": offloaded} if offloaded else {}
+            if payloads.keys() != cached.keys():
+                updates[_BLOB_PAYLOADS_KEY] = payloads
+            state_command = _with_update(state_command, updates)
         try:
             response = handler(request)
         except ModelInvalidRequestError:
@@ -3308,12 +3327,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if eviction_result is not None:
             messages, state_command = eviction_result
             request = request.override(messages=messages)
-        if self._blob_cache is not None:
+        if self._offload_binary_content:
+            cached = request.state.get(_BLOB_PAYLOADS_KEY) or {}
+            payloads = dict(cached)
             offloaded = await _aoffload_human_messages(
-                request.state.get("messages", []), _command_messages(state_command), self.backend, self._blobs_prefix, self._blob_cache
+                request.state.get("messages", []), _command_messages(state_command), self.backend, self._blobs_prefix, payloads
             )
-            state_command = _with_messages(state_command, offloaded)
-            request = request.override(messages=await _ahydrate_messages(request.messages, self.backend, self._blobs_prefix, self._blob_cache))
+            request = request.override(messages=await _ahydrate_messages(request.messages, self.backend, self._blobs_prefix, payloads))
+            updates: dict[str, Any] = {"messages": offloaded} if offloaded else {}
+            if payloads.keys() != cached.keys():
+                updates[_BLOB_PAYLOADS_KEY] = payloads
+            state_command = _with_update(state_command, updates)
         try:
             response = await handler(request)
         except ModelInvalidRequestError:
@@ -3674,8 +3698,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if error := _parallel_file_mutation_error(request):
             return error
         tool_result = handler(request)
-        if self._blob_cache is not None and request.tool_call["name"] == "read_file":
-            tool_result = _offload_tool_result(tool_result, self.backend, self._blobs_prefix, self._blob_cache)
+        if self._offload_binary_content and request.tool_call["name"] == "read_file":
+            tool_result = _offload_tool_result(tool_result, self.backend, self._blobs_prefix, {})
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return tool_result
@@ -3703,8 +3727,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if error := _parallel_file_mutation_error(request):
             return error
         tool_result = await handler(request)
-        if self._blob_cache is not None and request.tool_call["name"] == "read_file":
-            tool_result = await _aoffload_tool_result(tool_result, self.backend, self._blobs_prefix, self._blob_cache)
+        if self._offload_binary_content and request.tool_call["name"] == "read_file":
+            tool_result = await _aoffload_tool_result(tool_result, self.backend, self._blobs_prefix, {})
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return tool_result

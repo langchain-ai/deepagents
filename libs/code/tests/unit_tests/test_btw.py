@@ -211,6 +211,105 @@ async def test_side_context_preserves_tool_attachments(
 
 
 @pytest.mark.parametrize(
+    ("attachment", "capability"),
+    [
+        (
+            {
+                "type": "image_url",
+                "image_url": {"url": "https://example.com/design.png"},
+            },
+            "image_inputs",
+        ),
+        (
+            {"type": "image", "base64": "aW1hZ2U=", "mime_type": "image/png"},
+            "image_inputs",
+        ),
+        (
+            {"type": "video", "base64": "dmlkZW8=", "mime_type": "video/mp4"},
+            "video_inputs",
+        ),
+        (
+            {"type": "audio", "base64": "YXVkaW8=", "mime_type": "audio/wav"},
+            "audio_inputs",
+        ),
+        (
+            {"type": "file", "base64": "cGRm", "mime_type": "application/pdf"},
+            "pdf_inputs",
+        ),
+    ],
+)
+@pytest.mark.parametrize("tool_result", [False, True])
+async def test_side_context_filters_unsupported_attachments_without_changing_state(
+    attachment: dict[str, object],
+    capability: str,
+    invoke: AsyncMock,
+    *,
+    tool_result: bool,
+) -> None:
+    model = FakeMessagesListChatModel(responses=[], profile={capability: False})
+    operation = BtwOperation(model, "Main instructions", None)
+    content: list[str | dict[str, object]] = [
+        {"type": "text", "text": "Review this design"},
+        attachment,
+    ]
+    message = (
+        ToolMessage(content=content, tool_call_id="read-design", name="read_file")
+        if tool_result
+        else HumanMessage(content=content)
+    )
+    state = {"messages": [message.model_dump()]}
+    before = deepcopy(state)
+    await operation.answer("thread", state, "What does the design show?")
+    context = invoke.call_args.args[0][1]
+    assert all(block["type"] == "text" for block in context.content_blocks)
+    assert "Review this design" in context.text
+    assert "was not attached because this model does not support" in context.text
+    assert state == before
+
+
+@pytest.mark.parametrize("source", ["bootstrap", "snapshot", "checkpoint"])
+async def test_side_context_filters_for_selected_model_before_budgeting(
+    source: str, invoke: AsyncMock
+) -> None:
+    old = FakeMessagesListChatModel(responses=[], profile={"image_inputs": True})
+    active = FakeMessagesListChatModel(
+        responses=[], profile={"max_input_tokens": 1600, "image_inputs": False}
+    )
+    operation = BtwOperation(active if source == "bootstrap" else old, "system", None)
+    state: dict[str, object] = {
+        "messages": [
+            HumanMessage(
+                content=[
+                    {"type": "text", "text": "Keep this context"},
+                    *[
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.com/design.png"},
+                        }
+                        for _ in range(20)
+                    ],
+                ]
+            )
+        ]
+    }
+    if source == "snapshot":
+        operation._snapshots["thread"] = (active, SystemMessage(content="system"), {})
+    elif source == "checkpoint":
+        state["_model_spec"] = "test:text-only"
+    before = deepcopy(state)
+    with patch(
+        "deepagents_code.config.create_model",
+        return_value=SimpleNamespace(model=active),
+    ):
+        await operation.answer("thread", state, "Why?")
+    messages = invoke.call_args.args[0]
+    assert "Keep this context" in messages[1].text
+    assert all(block["type"] == "text" for block in messages[1].content_blocks)
+    assert messages[-1].text.endswith("Why?")
+    assert state == before
+
+
+@pytest.mark.parametrize(
     ("tool", "summarized", "context_limit"),
     [
         ("write_file", False, 8000),

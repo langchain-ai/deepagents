@@ -13,6 +13,7 @@ from deepagents.backends import StateBackend
 from deepagents.middleware.memory import MemoryState
 from deepagents.middleware.skills import SkillsState
 from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -239,6 +240,7 @@ def _prepare_messages(request: ModelRequest) -> list[BaseMessage]:
     Returns:
         A tool-free transcript sized for the resolved model and output settings.
     """
+    request = UnsupportedContentMiddleware()._filter_request(request)
     compaction = create_summarization_middleware(request.model, StateBackend())
     messages, _ = compaction._truncate_args(
         request.messages,

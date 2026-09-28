@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Mapping
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any, cast
 
 from deepagents_code.client.session_cost import SessionCostTracker
@@ -392,6 +393,7 @@ class RemoteAgent:
         *,
         config: Mapping[str, Any],
         history: Sequence[tuple[str, str]] = (),
+        on_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """Ask without submitting a run or writing conversation state.
 
@@ -399,12 +401,13 @@ class RemoteAgent:
             question: Side question to answer.
             config: Configuration identifying the main conversation.
             history: Completed question/answer pairs from this side conversation.
+            on_text: Optional receiver for streamed answer text.
 
         Returns:
             The ephemeral answer.
 
         Raises:
-            RuntimeError: If the server does not support side questions.
+            RuntimeError: If the server cannot complete the side question.
             TypeError: If the response is malformed.
         """
         from langgraph_sdk.errors import NotFoundError
@@ -416,18 +419,54 @@ class RemoteAgent:
         if history:
             payload["history"] = list(history)
         try:
-            response = await self._get_graph().client.http.post(
-                f"/dcode/threads/{thread_id}/btw",
-                json=payload,
-            )
+            path = f"/dcode/threads/{thread_id}/btw"
+            if on_text is None:
+                response = await self._get_graph().client.http.post(path, json=payload)
+            else:
+                response = await self._stream_btw(path, payload, on_text)
         except NotFoundError as exc:
             msg = "This server does not support /btw. Update the built-in dcode server."
             raise RuntimeError(msg) from exc
-        if not isinstance(response, dict) or not isinstance(response.get("text"), str):
+        text = response.get("text") if isinstance(response, dict) else None
+        cost = response.get("cost") if isinstance(response, dict) else None
+        if not isinstance(text, str):
             msg = "Invalid side-question response from the server."
             raise TypeError(msg)
-        await self._refresh_side_cost(thread_id, breakdown=response.get("cost"))
-        return response["text"]
+        # Accounting is best-effort: _refresh_side_cost also handles malformed totals.
+        await self._refresh_side_cost(
+            thread_id,
+            breakdown=cast("CostBreakdown | None", cost),
+        )
+        return text
+
+    async def _stream_btw(
+        self,
+        path: str,
+        payload: dict[str, object],
+        on_text: Callable[[str], Awaitable[None]],
+    ) -> object:
+        async with aclosing(
+            self._get_graph().client.http.stream(path, "POST", json=payload)
+        ) as stream:
+            async for event in stream:
+                if event.event == "text" and isinstance(event.data, str):
+                    await on_text(event.data)
+                elif event.event == "complete":
+                    return event.data
+                elif event.event == "error":
+                    detail = (
+                        event.data.get("detail")
+                        if isinstance(event.data, dict)
+                        else None
+                    )
+                    msg = (
+                        detail
+                        if isinstance(detail, str)
+                        else "Side question failed on the server."
+                    )
+                    raise RuntimeError(msg)
+        msg = "Side-question stream ended before the answer was complete."
+        raise RuntimeError(msg)
 
     def _cost_tracker(self, thread_id: str) -> SessionCostTracker:
         return self._session_costs.setdefault(thread_id, SessionCostTracker())

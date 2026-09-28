@@ -2483,11 +2483,8 @@ class TestModalScreenShiftTabHandling:
             assert editor.text == "first!\nsecond"
             await pilot.press("enter")
             await pilot.pause()
-            answer.assert_awaited_once_with(
-                "first!\nsecond",
-                config={"configurable": {"thread_id": app._lc_thread_id}},
-                history=(),
-            )
+            assert answer.await_count == 1
+            assert answer.await_args.args == ("first!\nsecond",)
             assert app.screen.query_one(Markdown)._markdown == "Side answer"
             await pilot.press("shift+tab")
             assert editor.text == ""

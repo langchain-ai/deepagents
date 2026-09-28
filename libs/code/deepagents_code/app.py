@@ -16922,12 +16922,16 @@ class DeepAgentsApp(App):
 
             history: list[tuple[str, str]] = []
 
-            async def answer(question: str) -> str:
+            async def answer(
+                question: str,
+                on_text: Callable[[str], Awaitable[None]] | None = None,
+            ) -> str:
                 config = {"configurable": {"thread_id": thread_id}}
                 text = await remote.abtw(
                     question,
                     config=config,
                     history=tuple(history),
+                    on_text=on_text,
                 )
                 cost = remote.get_cached_session_cost(config)
                 if cost is not None and thread_id == self._lc_thread_id:
@@ -16940,7 +16944,7 @@ class DeepAgentsApp(App):
                 return text
 
             self.push_screen(
-                BtwScreen(answer, question),
+                BtwScreen(answer, question, stream_answer=answer),
                 lambda _result: self._focus_chat_input_after_refresh(),
             )
         elif cmd == "/agents":

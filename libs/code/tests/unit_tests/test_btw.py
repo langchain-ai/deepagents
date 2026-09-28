@@ -7,13 +7,19 @@ import json
 from copy import deepcopy
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient, MockTransport, Request, Response
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langgraph.runtime import ExecutionInfo, Runtime
 from textual import events
 from textual.containers import VerticalScroll
@@ -22,10 +28,10 @@ from textual.widgets import Markdown, Static, TextArea
 from deepagents_code.btw import BtwOperation
 from deepagents_code.client.remote_client import RemoteAgent
 from deepagents_code.tui.modals.btw import BtwScreen
-from deepagents_code.tui.widgets.messages import UserMessage
+from deepagents_code.tui.widgets.messages import AssistantMessage, UserMessage
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
     from pathlib import Path
 
     from langchain_core.language_models import BaseChatModel
@@ -1135,9 +1141,14 @@ async def test_side_cost_survives_main_cancellation(
         app._add_provisional_cost(provisional, request_id="unfinished")
         side = _empty_cost_breakdown()
         side.update(total_cost_usd=0.5, request_count=1)
-        graph.client.http.post = AsyncMock(
-            return_value={"text": "Side answer", "cost": side}
-        )
+
+        async def stream(*_args: object, **_kwargs: object) -> AsyncIterator[object]:
+            await asyncio.sleep(0)
+            yield SimpleNamespace(
+                event="complete", data={"text": "Side answer", "cost": side}
+            )
+
+        graph.client.http.stream = stream
         graph.client.http.get.return_value = {"cost": side}
         main = asyncio.create_task(app._run_agent_task("main"))
         try:
@@ -1220,6 +1231,7 @@ async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
             "why",
             config={"configurable": {"thread_id": app._lc_thread_id}},
             history=(),
+            on_text=ANY,
         )
         scroll = app.screen.query_one("#btw-scroll", VerticalScroll)
         assert scroll.max_scroll_y > 0
@@ -1297,17 +1309,15 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
         )
         await pilot.press(*"Why?", "enter")
         await pilot.pause()
-        assert [
-            widget.content
-            for widget in app.screen.query(Static)
-            if widget.has_class("btw-question")
-        ] == [
+        assert [widget.raw_text for widget in app.screen.query(UserMessage)] == [
             "Which option?",
             "Why?",
             "Why?",
         ]
         assert [
-            widget._markdown for widget in app.screen.query(Markdown) if widget.display
+            widget.query_one(Markdown)._markdown
+            for widget in app.screen.query(AssistantMessage)
+            if widget.display
         ] == [
             "Use a cache.",
             "It is faster.",
@@ -1343,8 +1353,8 @@ async def test_thinking_follows_question_and_prevents_duplicate_submits() -> Non
         for question in ("First question", "Follow-up question"):
             scroll = app.screen.query_one("#btw-scroll", VerticalScroll)
             loading = app.screen.query_one("#btw-loading", Static)
-            latest = app.screen.query(".btw-question").last(Static)
-            assert latest.content == question
+            latest = app.screen.query(".btw-question").last(UserMessage)
+            assert latest.raw_text == question
             assert loading.region.y >= latest.region.bottom
             assert loading.region in scroll.content_region
             editor = app.screen.query_one(TextArea)
@@ -1379,7 +1389,10 @@ async def test_modal_submits_complete_paste() -> None:
         await pilot.press("enter")
         await pilot.pause()
         answer.assert_awaited_once_with(question.strip())
-        assert app.screen.query_one(".btw-question", Static).content == question.strip()
+        assert (
+            app.screen.query_one(".btw-question", UserMessage).raw_text
+            == question.strip()
+        )
 
 
 async def test_modal_rejects_oversized_expanded_paste() -> None:
@@ -1451,11 +1464,162 @@ async def test_long_question_keeps_answer_and_dismissal_hint_visible() -> None:
         await pilot.press("tab", "home")
         await pilot.pause()
         assert scroll.scroll_y == 0
-        question_widget = app.screen.query_one(".btw-question", Static)
+        question_widget = app.screen.query_one(".btw-question", UserMessage)
         assert question_widget.region.y >= scroll.region.y
-        assert question_widget.content == question
+        assert question_widget.raw_text == question
         await pilot.press("end")
         await pilot.pause()
         assert answer.region in scroll.content_region
         await pilot.press("escape")
         assert not isinstance(app.screen, BtwScreen)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_model_delivers_text_before_completion_and_closes_stream(
+    cancel: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = asyncio.Event()
+    received = asyncio.Event()
+    closed = asyncio.Event()
+    fragments: list[str] = []
+
+    async def stream(
+        _self: object, _messages: object, **_kwargs: object
+    ) -> AsyncIterator[AIMessageChunk]:
+        try:
+            yield AIMessageChunk(
+                content=[{"type": "reasoning", "reasoning": "private"}]
+            )
+            yield AIMessageChunk(content="First ")
+            await release.wait()
+            yield AIMessageChunk(content="answer")
+        finally:
+            closed.set()
+
+    async def on_text(text: str) -> None:
+        fragments.append(text)
+        received.set()
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(FakeMessagesListChatModel, "astream", stream)
+    operation = BtwOperation(FakeMessagesListChatModel(responses=[]), "system", None)
+    task = asyncio.create_task(operation.answer("thread", {}, "why", on_text=on_text))
+    try:
+        await asyncio.wait_for(received.wait(), 2)
+        assert fragments == ["First "]
+        assert not task.done()
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            release.set()
+            assert await task == "First answer"
+            assert fragments == ["First ", "answer"]
+        assert closed.is_set()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("outcome", ["complete", "error", "cancel"])
+async def test_modal_renders_streamed_text_and_user_highlight(
+    btw_app: tuple[DeepAgentsApp, MagicMock], outcome: str
+) -> None:
+    app, remote = btw_app
+    release = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def answer(
+        _question: str, *, on_text: Callable[[str], Awaitable[None]], **_kwargs: object
+    ) -> str:
+        try:
+            await on_text("First fragment")
+            await release.wait()
+            if outcome == "error":
+                msg = "Stream failed"
+                raise RuntimeError(msg)
+            await on_text(" and final fragment.")
+            return "First fragment and final fragment."
+        finally:
+            closed.set()
+
+    remote.abtw.side_effect = answer
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        app._connecting = False
+        before = app._message_store.get_all_messages()
+        await pilot.press(*"/btw why", "enter")
+        await pilot.pause()
+        message = app.screen.query_one(AssistantMessage)
+        assert message.display
+        assert message.query_one(Markdown)._markdown == "First fragment"
+        assert app.screen.query_one(TextArea).disabled
+        assert not app.screen.query_one("#btw-loading").display
+        question = app.screen.query_one(UserMessage)
+        assert question.raw_text == "why"
+        assert question.styles.background.a > 0
+        assert question.styles.border_left[0] == "wide"
+        await pilot.hover(question, offset=(2, 1))
+        assert question.styles.pointer == "text"
+        await pilot.hover(message.query_one(Markdown), offset=(1, 0))
+        assert message.styles.pointer == "text"
+        await pilot.hover(message.query_one(Markdown), offset=(30, 0))
+        assert message.styles.pointer == "default"
+        if outcome == "cancel":
+            await pilot.press("escape")
+            await asyncio.wait_for(closed.wait(), 2)
+            await pilot.pause()
+            assert not isinstance(app.screen, BtwScreen)
+            assert message._stream is None
+        else:
+            release.set()
+            await pilot.pause()
+            assert app.screen.query_one(TextArea).has_focus
+            assert not app.screen.query_one(TextArea).disabled
+            if outcome == "complete":
+                assert (
+                    message.query_one(Markdown)._markdown
+                    == "First fragment and final fragment."
+                )
+            else:
+                assert message.query_one(Markdown)._markdown == "First fragment"
+                assert (
+                    app.screen.query_one(".btw-error", Static).content
+                    == "Stream failed"
+                )
+        assert app._message_store.get_all_messages() == before
+
+
+@pytest.mark.parametrize("read_history", [False, True])
+async def test_stream_follows_bottom_without_displacing_history_reader(
+    read_history: bool,
+) -> None:
+    from textual.app import App
+
+    release = asyncio.Event()
+    text = "\n\n".join(f"Paragraph {i}" for i in range(40))
+
+    async def stream(_question: str, on_text: Callable[[str], Awaitable[None]]) -> str:
+        await on_text(text)
+        await release.wait()
+        await on_text("\n\nFinal paragraph.")
+        return text + "\n\nFinal paragraph."
+
+    app = App()
+    async with app.run_test(size=(80, 24)) as pilot:
+        app.push_screen(BtwScreen(AsyncMock(), "why", stream_answer=stream))
+        await pilot.pause()
+        scroll = app.screen.query_one("#btw-scroll", VerticalScroll)
+        assert scroll.max_scroll_y > 0
+        assert scroll.is_vertical_scroll_end
+        if read_history:
+            await pilot.press("home")
+            await pilot.pause()
+            assert scroll.scroll_y == 0
+        release.set()
+        await pilot.pause()
+        if read_history:
+            assert scroll.scroll_y == 0
+        else:
+            assert scroll.is_vertical_scroll_end

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from functools import partial
 from typing import TYPE_CHECKING, ClassVar, override
 
 from textual import work
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Markdown, Static
+from textual.widgets import Static
 
 from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets._inline_prompt import (
@@ -18,6 +19,7 @@ from deepagents_code.tui.widgets._inline_prompt import (
     newline_hint,
 )
 from deepagents_code.tui.widgets.loading import Spinner
+from deepagents_code.tui.widgets.messages import AssistantMessage, UserMessage
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -47,15 +49,30 @@ class BtwScreen(ModalScreen[None]):
     ]
 
     def __init__(
-        self, answer: Callable[[str], Awaitable[str]], question: str = ""
+        self,
+        answer: Callable[[str], Awaitable[str]],
+        question: str = "",
+        *,
+        stream_answer: Callable[[str, Callable[[str], Awaitable[None]]], Awaitable[str]]
+        | None = None,
     ) -> None:
-        """Capture the answer callback and optional question."""
+        """Capture the answer callback and optional question.
+
+        Args:
+            answer: Generate a complete side answer.
+            question: Initial question, or empty to start with the editor.
+            stream_answer: Optional generator that delivers fragments to its receiver.
+        """
         super().__init__()
         self._answer = answer
+        self._stream_answer = stream_answer
         self._question = question
         self._spinner = Spinner()
         self._spinner_timer: Timer | None = None
         self._pending = False
+        # Content may grow before the deferred scroll runs; retain follow intent
+        # through that layout so stream completion cannot mistake it for a scroll up.
+        self._follow_pending = False
 
     @override
     def compose(self) -> ComposeResult:
@@ -119,11 +136,11 @@ class BtwScreen(ModalScreen[None]):
         scroll = self.query_one("#btw-scroll", VerticalScroll)
         scroll.display = True
         scroll.focus()
-        answer = Markdown("", open_links=False)
+        answer = AssistantMessage()
         error = Static("", classes="btw-error", markup=False)
         answer.display = error.display = False
         await scroll.mount(
-            Static(question, classes="btw-question", markup=False),
+            UserMessage(question, classes="btw-question", detect_mode=False),
             answer,
             error,
             before="#btw-loading",
@@ -152,20 +169,64 @@ class BtwScreen(ModalScreen[None]):
             self._spinner_timer.stop()
             self._spinner_timer = None
 
+    def _follow_answer(self) -> None:
+        self._follow_pending = True
+        self.call_after_refresh(self._scroll_to_latest)
+
+    def _scroll_to_latest(self) -> None:
+        self.query_one("#btw-scroll", VerticalScroll).scroll_end(
+            animate=False, immediate=True
+        )
+        self._follow_pending = False
+
+    async def _append_answer(self, answer: AssistantMessage, text: str) -> None:
+        if not text:
+            return
+        scroll = self.query_one("#btw-scroll", VerticalScroll)
+        follow = self._follow_pending or scroll.is_vertical_scroll_end
+        answer.display = True
+        self._stop_spinner()
+        self.query_one("#btw-loading").display = False
+        await answer.append_content(text)
+        if follow:
+            self._follow_answer()
+
+    async def _complete_answer(self, answer: AssistantMessage, text: str) -> None:
+        scroll = self.query_one("#btw-scroll", VerticalScroll)
+        follow = answer.display and (
+            self._follow_pending or scroll.is_vertical_scroll_end
+        )
+        await answer.set_content(text)
+        if follow:
+            self._follow_answer()
+
     @work(exclusive=True)
-    async def _generate(self, question: str, answer: Markdown, error: Static) -> None:
+    async def _generate(
+        self, question: str, answer: AssistantMessage, error: Static
+    ) -> None:
         target: Widget = answer
         try:
-            text = await self._answer(question)
-            await answer.update(text)
+            text = (
+                await self._stream_answer(
+                    question, partial(self._append_answer, answer)
+                )
+                if self._stream_answer is not None
+                else await self._answer(question)
+            )
+            await self._complete_answer(answer, text)
         except asyncio.CancelledError:
+            await answer.stop_stream()
             return
         except Exception as exc:
+            await answer.stop_stream()
             logger.debug("Side question failed", exc_info=True)
             from deepagents_code.client.remote_client import format_agent_exception
 
             target = error
             error.update(format_agent_exception(exc))
+        self._finish_answer(target, reveal=target is error or not answer.display)
+
+    def _finish_answer(self, target: Widget, *, reveal: bool) -> None:
         self._stop_spinner()
         if self.is_mounted:
             target.display = True
@@ -175,7 +236,8 @@ class BtwScreen(ModalScreen[None]):
             editor.disabled = False
             editor.placeholder = "Ask a follow-up"
             editor.focus(scroll_visible=False)
-            self.call_after_refresh(self._reveal_answer, target)
+            if reveal:
+                self.call_after_refresh(self._reveal_answer, target)
 
     def _reveal_answer(self, target: Widget) -> None:
         scroll = self.query_one("#btw-scroll", VerticalScroll)

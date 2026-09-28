@@ -6,6 +6,7 @@ import asyncio
 import json
 from collections import OrderedDict
 from collections.abc import Mapping
+from contextlib import aclosing
 from copy import deepcopy
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
@@ -37,12 +38,17 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
     from deepagents.middleware.memory import MemoryMiddleware
     from deepagents.middleware.skills import SkillsMiddleware
     from deepagents.middleware.summarization import SummarizationMiddleware
-    from langchain_core.messages import AnyMessage, MessageLikeRepresentation
+    from langchain_core.messages import (
+        AIMessageChunk,
+        AnyMessage,
+        MessageLikeRepresentation,
+    )
+    from langchain_core.runnables import RunnableConfig
 
 _INSTRUCTIONS = (
     "The user is asking a quick side question about the conversation so far. "
@@ -404,6 +410,7 @@ class BtwOperation(AgentMiddleware):
         question: str,
         *,
         history: Sequence[tuple[str, str]] = (),
+        on_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """Generate without tools or checkpoint writes.
 
@@ -421,6 +428,7 @@ class BtwOperation(AgentMiddleware):
             state: Read-only conversation snapshot.
             question: Side question to answer.
             history: Completed question/answer pairs from this side conversation.
+            on_text: Optional receiver for text fragments as the model produces them.
 
         Returns:
             The ephemeral answer text.
@@ -444,23 +452,38 @@ class BtwOperation(AgentMiddleware):
                 ),
                 HumanMessage(content=f"{_INSTRUCTIONS}\n\n{question}"),
             ]
-            response = await model.ainvoke(
-                _prepare_messages(
-                    ModelRequest(
-                        model=model,
-                        system_message=SystemMessage(
-                            content=f"{system.text}\n\n{_INSTRUCTIONS}"
-                        ),
-                        messages=messages,
-                        tools=[],
-                        model_settings=settings,
-                        runtime=Runtime(),
-                    )
-                ),
-                config={"callbacks": [], "metadata": {"thread_id": thread_id}},
-                **settings,
+            prepared = _prepare_messages(
+                ModelRequest(
+                    model=model,
+                    system_message=SystemMessage(
+                        content=f"{system.text}\n\n{_INSTRUCTIONS}"
+                    ),
+                    messages=messages,
+                    tools=[],
+                    model_settings=settings,
+                    runtime=Runtime(),
+                )
             )
+            config: RunnableConfig = {
+                "callbacks": [],
+                "metadata": {"thread_id": thread_id},
+            }
+            if on_text is None:
+                response = await model.ainvoke(prepared, config=config, **settings)
+                text = response.text
+            else:
+                parts: list[str] = []
+                # BaseChatModel.astream is an async generator, annotated as an iterator.
+                stream = cast(
+                    "AsyncGenerator[AIMessageChunk, None]",
+                    model.astream(prepared, config=config, **settings),
+                )
+                async with aclosing(stream):
+                    async for chunk in stream:
+                        if fragment := chunk.text:
+                            parts.append(fragment)
+                            await on_text(fragment)
+                text = "".join(parts)
         return (
-            response.text.strip()
-            or "No text answer was returned. Try rephrasing your question."
+            text.strip() or "No text answer was returned. Try rephrasing your question."
         )

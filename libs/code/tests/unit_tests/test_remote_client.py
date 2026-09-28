@@ -1641,3 +1641,85 @@ class TestServerOffload:
             )
 
         assert fulfill.await_count == _OFFLOAD_MAX_RESUME_ROUNDS
+
+
+@pytest.mark.parametrize("outcome", ["complete", "error", "truncated", "cancel"])
+async def test_btw_stream_delivers_fragments_and_closes_transport(
+    outcome: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from httpx import AsyncByteStream, AsyncClient, MockTransport, Request, Response
+    from langgraph_sdk.client import HttpClient
+
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    release = asyncio.Event()
+    received = asyncio.Event()
+    closed = asyncio.Event()
+    fragments: list[str] = []
+    cost = _empty_cost_breakdown()
+    cost.update(total_cost_usd=0.5, request_count=1)
+
+    class Body(AsyncByteStream):
+        async def __aiter__(self) -> AsyncGenerator[bytes, None]:
+            yield b'event: text\ndata: "First "\n\n'
+            await release.wait()
+            if outcome == "complete":
+                yield b'event: text\ndata: "answer"\n\n'
+                result = json.dumps({"text": "First answer", "cost": cost})
+                yield f"event: complete\ndata: {result}\n\n".encode()
+            elif outcome == "error":
+                yield b'event: error\ndata: {"detail": "Try again"}\n\n'
+
+        async def aclose(self) -> None:
+            closed.set()
+            await super().aclose()
+
+    def respond(request: Request) -> Response:
+        assert request.headers["accept"] == "text/event-stream"
+        assert json.loads(request.content)["history"] == [["prior", "reply"]]
+        return Response(
+            200, headers={"content-type": "text/event-stream"}, stream=Body()
+        )
+
+    async def on_text(text: str) -> None:
+        fragments.append(text)
+        received.set()
+        await asyncio.sleep(0)
+
+    agent = _make_agent([])
+    monkeypatch.setattr(agent, "aensure_thread", AsyncMock())
+    monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
+    async with AsyncClient(
+        transport=MockTransport(respond), base_url="http://test"
+    ) as http:
+        agent._graph.client.http = HttpClient(http)
+        task = asyncio.create_task(
+            agent.abtw(
+                "why", config=_config(), history=[("prior", "reply")], on_text=on_text
+            )
+        )
+        try:
+            await asyncio.wait_for(received.wait(), 2)
+            assert fragments == ["First "]
+            assert not task.done()
+            if outcome == "cancel":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                release.set()
+                if outcome == "complete":
+                    assert await task == "First answer"
+                    assert fragments == ["First ", "answer"]
+                    total = agent.get_cached_session_cost(_config())
+                    assert total is not None
+                    assert total["total"] == pytest.approx(0.5)
+                else:
+                    with pytest.raises(RuntimeError, match=r"Try again|ended before"):
+                        await task
+            assert closed.is_set()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

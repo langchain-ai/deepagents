@@ -17,6 +17,8 @@ from deepagents_code import btw_api, offload_api
 from deepagents_code.btw import BtwOperation
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from starlette.types import Message
 
 
@@ -53,16 +55,24 @@ async def test_invalid_history_rejected_before_workspace_access(
 @pytest.mark.parametrize(
     "outcome", ["disconnect", "cancel", "complete", "error", "timeout"]
 )
+@pytest.mark.parametrize("streaming", [False, True])
 async def test_side_request_cleans_up_generation_and_disconnect_listener(
-    outcome: str, monkeypatch: pytest.MonkeyPatch
+    outcome: str, streaming: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     started = asyncio.Event()
     stopped = asyncio.Event()
     listener_stopped = asyncio.Event()
     result: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-    deadline = asyncio.timeout(None)
+    deadlines: list[asyncio.Timeout] = []
     if outcome == "timeout":
-        monkeypatch.setattr(btw_api.asyncio, "timeout", lambda _seconds: deadline)
+        timeout = asyncio.timeout
+
+        def no_deadline(_seconds: float) -> asyncio.Timeout:
+            deadline = timeout(None)
+            deadlines.append(deadline)
+            return deadline
+
+        monkeypatch.setattr(btw_api.asyncio, "timeout", no_deadline)
     incoming: asyncio.Queue[Message] = asyncio.Queue()
     incoming.put_nowait(
         {
@@ -80,9 +90,16 @@ async def test_side_request_cleans_up_generation_and_disconnect_listener(
                 listener_stopped.set()
 
     async def answer(
-        _thread: str, _state: object, _question: str, *, history: object = ()
+        _thread: str,
+        _state: object,
+        _question: str,
+        *,
+        history: object = (),
+        on_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         assert not history
+        if on_text is not None:
+            await on_text("side ")
         started.set()
         try:
             return await result
@@ -108,10 +125,28 @@ async def test_side_request_cleans_up_generation_and_disconnect_listener(
             threads=SimpleNamespace(get_state=AsyncMock(return_value={"values": {}}))
         ),
     )
-    request = Request({"type": "http", "path_params": {"thread_id": "thread"}}, receive)
-    handler = asyncio.create_task(btw_api.btw(request))
+    request = Request(
+        {
+            "type": "http",
+            "headers": [(b"accept", b"text/event-stream")] if streaming else [],
+            "path_params": {"thread_id": "thread"},
+        },
+        receive,
+    )
+    sent: list[Message] = []
+
+    send = AsyncMock(side_effect=sent.append)
+
+    async def run() -> None:
+        response = await btw_api.btw(request)
+        await response(request.scope, receive, send)
+
+    handler = asyncio.create_task(run())
     try:
         await asyncio.wait_for(started.wait(), 2)
+        if streaming:
+            assert b'event: text\ndata: "side "\n\n' in sent[1]["body"]
+            assert not handler.done()
         if outcome == "disconnect":
             incoming.put_nowait({"type": "http.disconnect"})
         elif outcome == "cancel":
@@ -119,7 +154,7 @@ async def test_side_request_cleans_up_generation_and_disconnect_listener(
         elif outcome == "error":
             result.set_exception(ValueError("provider failed"))
         elif outcome == "timeout":
-            deadline.reschedule(asyncio.get_running_loop().time())
+            deadlines[-1].reschedule(asyncio.get_running_loop().time())
         else:
             result.set_result("side answer")
 
@@ -128,15 +163,27 @@ async def test_side_request_cleans_up_generation_and_disconnect_listener(
                 await handler
         else:
             # Shield so a test timeout cannot itself cancel generation and mask the bug.
-            response = await asyncio.wait_for(asyncio.shield(handler), 2)
-            assert (
-                response.status_code
-                == {"disconnect": 499, "complete": 200, "error": 500, "timeout": 504}[
-                    outcome
-                ]
-            )
-            if outcome == "complete":
-                assert json.loads(bytes(response.body)) == {"text": "side answer"}
+            await asyncio.wait_for(asyncio.shield(handler), 2)
+            body = b"".join(message.get("body", b"") for message in sent)
+            if streaming:
+                assert sent[0]["status"] == 200
+                if outcome == "complete":
+                    assert b'event: complete\ndata: {"text": "side answer"' in body
+                elif outcome in {"error", "timeout"}:
+                    assert b"event: error\n" in body
+                    assert b"provider failed" not in body
+            else:
+                assert (
+                    sent[0]["status"]
+                    == {
+                        "disconnect": 499,
+                        "complete": 200,
+                        "error": 500,
+                        "timeout": 504,
+                    }[outcome]
+                )
+                if outcome == "complete":
+                    assert json.loads(body) == {"text": "side answer"}
         assert stopped.is_set()
         assert listener_stopped.is_set()
     finally:

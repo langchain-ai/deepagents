@@ -2734,3 +2734,26 @@ async def test_cancelling_side_answer_finishes_started_cost_write(
     assert saved is not None
     assert saved["request_count"] == 1
     assert recorder.drain(THREAD_ID) == []
+
+
+@pytest.mark.usefixtures("side_cost_db")
+async def test_streamed_side_answer_persists_completed_usage(
+    recorder: _SessionCostRecorder,
+) -> None:
+    from deepagents_code.btw import BtwOperation
+    from deepagents_code.btw_cost import answer_with_cost, load_cost
+
+    operation = BtwOperation(_ResponsesStyleStreamingModel(), "system", None)
+    on_text = AsyncMock()
+    text, cost = await answer_with_cost(
+        operation.answer(THREAD_ID, {}, "why", on_text=on_text),
+        thread_id=THREAD_ID,
+        state={"messages": [], "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}"},
+    )
+    assert text == "done"
+    on_text.assert_awaited_once_with("done")
+    assert cost is not None
+    assert cost["request_count"] == 1
+    assert cost["total_cost_usd"] > 0
+    assert await asyncio.to_thread(load_cost, THREAD_ID) == cost
+    assert recorder.drain(THREAD_ID) == []

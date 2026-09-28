@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, cast, override
 
-from starlette.responses import JSONResponse
+from starlette.requests import ClientDisconnect
+from starlette.responses import JSONResponse, Response
 
 from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
 from deepagents_code.btw_cost import answer_with_cost, load_cost
 from deepagents_code.workspace import WorkspaceConflictError, require_thread_workspace
 
 if TYPE_CHECKING:
-    from collections.abc import Coroutine
+    from collections.abc import Awaitable, Callable, Coroutine
 
     from starlette.requests import Request
+    from starlette.types import Receive, Scope, Send
 
     from deepagents_code.cost_tracking import CostBreakdown, CostState
 
@@ -84,7 +87,64 @@ async def _answer_while_connected[T](
         await asyncio.gather(generation, disconnect, return_exceptions=True)
 
 
-async def btw(request: Request) -> JSONResponse:
+class _BtwStreamingResponse(Response):
+    """Send fragments directly, keeping generation scoped to the connection."""
+
+    def __init__(
+        self,
+        request: Request,
+        answer: Callable[
+            [Callable[[str], Awaitable[None]]],
+            Coroutine[object, object, tuple[str, CostBreakdown | None]],
+        ],
+    ) -> None:
+        super().__init__(
+            media_type="text/event-stream", headers={"Cache-Control": "no-store"}
+        )
+        del self.headers["content-length"]
+        self._request = request
+        self._answer = answer
+
+    @override
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        await send(
+            {"type": "http.response.start", "status": 200, "headers": self.raw_headers}
+        )
+        await _answer_while_connected(self._request, self._send_answer(send))
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    async def _send_answer(self, send: Send) -> bool:
+        async def emit(event: str, data: object) -> None:
+            body = f"event: {event}\ndata: {json.dumps(data)}\n\n".encode()
+            try:
+                await send(
+                    {"type": "http.response.body", "body": body, "more_body": True}
+                )
+            except OSError as exc:
+                raise ClientDisconnect from exc
+
+        async def on_text(text: str) -> None:
+            await emit("text", text)
+
+        try:
+            async with asyncio.timeout(120):
+                text, cost = await self._answer(on_text)
+        except TimeoutError:
+            await emit("error", {"detail": "Side question timed out. Try again."})
+        except ClientDisconnect:
+            raise  # A closed transport cannot receive an error event.
+        except (Exception, SystemExit):
+            logger.exception("Side question failed")
+            await emit(
+                "error",
+                {"detail": "Side question failed on the server; see the server log."},
+            )
+        else:
+            await emit("complete", {"text": text, "cost": cost})
+        return True
+
+
+async def btw(request: Request) -> Response:
     """Answer without starting or updating a graph run.
 
     Returns:
@@ -134,6 +194,21 @@ async def btw(request: Request) -> JSONResponse:
             # responses without saved costs. Keep the checkpoint untouched.
             state = dict(snapshot.get("values") or {})
             state["messages"] = convert_to_messages(state.get("messages", []))
+            if "text/event-stream" in request.headers.get("accept", ""):
+                return _BtwStreamingResponse(
+                    request,
+                    lambda on_text: answer_with_cost(
+                        operation.answer(
+                            thread_id,
+                            state,
+                            question.strip(),
+                            history=history,
+                            on_text=on_text,
+                        ),
+                        thread_id=thread_id,
+                        state=cast("CostState", state),
+                    ),
+                )
             result = await _answer_while_connected(
                 request,
                 answer_with_cost(

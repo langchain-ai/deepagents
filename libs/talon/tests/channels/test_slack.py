@@ -737,10 +737,22 @@ def test_reaction_thumbsup_all_approves() -> None:
             "http://localhost:3000/callback?code=abc&state=xyz",
         ),
         (
+            "<http://localhost:3000/callback?code=abc&amp;state=xyz|localhost/callback?code=…&amp;state=…>",
+            "http://localhost:3000/callback?code=abc&state=xyz",
+        ),
+        (
+            "<http://localhost:3118/callback?code=abc&amp;state=xyz|localhost/callback?code=…>",
+            "http://localhost:3118/callback?code=abc&state=xyz",
+        ),
+        (
             "<https://x.dev/a?b=1&amp;c=2|https://x.dev/a?b=1&amp;c=2>",
             "https://x.dev/a?b=1&c=2",
         ),
         ("see <https://x.dev|the docs>", "see the docs (https://x.dev)"),
+        (
+            "<http://localhost:3000/callback?code=abc|callback>",
+            "callback (http://localhost:3000/callback?code=abc)",
+        ),
         ("<mailto:a@b.dev|a@b.dev>", "mailto:a@b.dev"),
         ("a &lt; b &amp;&amp; c &gt; d", "a < b && c > d"),
         ("&amp;lt; stays literal", "&lt; stays literal"),

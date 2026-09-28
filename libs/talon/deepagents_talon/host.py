@@ -1081,7 +1081,7 @@ class TalonHost:
             return {}
         return {
             "history_channel": _channel_key(channel, job.origin.channel),
-            "history_chat": job.origin.conversation_id,
+            "history_chat": job.origin.history_chat or job.origin.conversation_id,
         }
 
     async def origin_channel(self, origin: CronOrigin) -> ChannelAdapter | None:
@@ -1118,7 +1118,7 @@ class TalonHost:
             await self._record_delivery(
                 f"{job.id}{_CRON_THREAD_SUFFIX}",
                 _channel_key(channel, job.origin.channel),
-                job.origin.conversation_id,
+                job.origin.history_chat or job.origin.conversation_id,
                 text,
             )
 

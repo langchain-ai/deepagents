@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
@@ -8,7 +9,8 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.host import TalonHost
-from deepagents_talon.interfaces import AgentRequest
+from deepagents_talon.interfaces import AgentRequest, ChannelMessage
+from deepagents_talon.runtime import _current_cron_origin
 from tests.archive_helpers import make_runtime, make_saver
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config
@@ -108,3 +110,66 @@ async def test_scheduled_job_receives_origin_history_scope(
     metadata = agent.requests[0].metadata
     scope = {key: metadata[key] for key in ("history_channel", "history_chat") if key in metadata}
     assert scope == ({"history_channel": "test", "history_chat": "chat"} if expected else {})
+
+
+async def test_scheduled_history_preserves_whatsapp_archive_address(tmp_path, monkeypatch):
+    origins = []
+
+    def factory(**kwargs: object):
+        tools = {tool.name: tool for tool in kwargs["tools"]}
+
+        async def reply(state):
+            origins.append(_current_cron_origin())
+            if state["messages"][-1].text == "recall":
+                hits = await tools["search_conversations"].ainvoke({"query": "orchard"})
+                found = any("remember orchard" in hit["text"] for hit in hits["results"])
+                return {"messages": [AIMessage("recalled" if found else "missing")]}
+            return {"messages": [AIMessage("noted")]}
+
+        graph = StateGraph(MessagesState)
+        graph.add_node("reply", reply)
+        graph.add_edge(START, "reply")
+        graph.add_edge("reply", END)
+        return graph.compile(checkpointer=kwargs["checkpointer"])
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", factory)
+    channel = RecordingChannel("whatsapp")
+    async with make_saver(tmp_path / "history.sqlite") as saver:
+        runtime = make_runtime(saver, tmp_path)
+        host = TalonHost(config=_config(tmp_path), agent=runtime, channels=[channel])
+        await host.start()
+        try:
+            await host.receive_message(
+                channel,
+                ChannelMessage(
+                    "chat@lid",
+                    "remember orchard",
+                    metadata={"chat_id_from": "123@s.whatsapp.net"},
+                ),
+            )
+            await asyncio.gather(*host._tasks.values())
+            store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+            job = store.create_job(
+                prompt="recall",
+                schedule=CronSchedule.parse("in 5m"),
+                origin=origins[0],
+            )
+            job = store.get_job(job.id)
+            assert job is not None
+            assert job.origin.history_chat == "chat@lid"
+            assert job.origin.conversation_id == "123@s.whatsapp.net"
+            result = await host.run_scheduled_job(job)
+            assert result == "recalled"
+            assert origins[-1].history_chat == "chat@lid"
+            await host.deliver_scheduled_result(channel, job, result)
+            scope = {**WHATSAPP, "talon_history_chat": "chat@lid"}
+            entries = await saver.archive.entries(scope, session_id=f"{job.id}:talon-cron")
+            assert [entry["text"] for entry in entries] == ["recalled"]
+            assert channel.sent[-1] == ("123@s.whatsapp.net", "recalled")
+        finally:
+            await host.stop()
+
+
+def test_legacy_cron_origin_has_no_separate_history_address():
+    origin = CronOrigin.from_dict({"conversation_id": "chat", "channel": "whatsapp"})
+    assert origin.history_chat is None

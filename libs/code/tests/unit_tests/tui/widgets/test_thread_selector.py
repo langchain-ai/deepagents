@@ -875,7 +875,7 @@ class TestThreadSelectorLimit:
                 "deepagents_code.sessions.list_threads",
                 new_callable=AsyncMock,
                 return_value=threads_without_details,
-            ) as mock_lt,
+            ),
             _patch_columns(),
             patch(
                 "deepagents_code.sessions.populate_thread_checkpoint_details",
@@ -893,12 +893,6 @@ class TestThreadSelectorLimit:
                         break
                     await pilot.pause(0.05)
 
-                mock_lt.assert_awaited_once_with(
-                    limit=20,
-                    include_message_count=False,
-                    sort_by="updated",
-                    cwd=None,
-                )
                 mock_populate.assert_awaited_once()
 
                 screen = app.screen

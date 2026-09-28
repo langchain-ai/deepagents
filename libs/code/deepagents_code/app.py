@@ -17486,7 +17486,12 @@ class DeepAgentsApp(App):
         Args:
             command: The slash command (including /)
         """
-        from deepagents_code.config import get_glyphs, newline_shortcut, runtime_state
+        from deepagents_code.config import (
+            get_glyphs,
+            newline_shortcut,
+            runtime_state,
+            steering_shortcut,
+        )
 
         cmd = command.lower().strip()
 
@@ -17510,7 +17515,9 @@ class DeepAgentsApp(App):
             help_body = (
                 f"Commands: {command_names}, /skill:<name>\n\n"
                 "Interactive Features:\n"
-                "  Enter           Submit your message\n"
+                "  Enter           Submit your message (queue while working)\n"
+                f"  {steering_shortcut():<15} Interrupt with your message\n"
+                "                  On macOS, configure Option as Alt/Meta if needed\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
                 f"  Ctrl+G          {editor_help}\n"
                 "  Ctrl+R          Search and reuse submitted prompts\n"

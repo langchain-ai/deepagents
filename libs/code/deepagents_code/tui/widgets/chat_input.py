@@ -572,8 +572,10 @@ class CompletionPopup(VerticalScroll):
 class ChatTextArea(PasteBurstTextArea):
     """TextArea subclass with custom key handling for chat input.
 
-    Modifier-Enter / Ctrl+J newline bindings and the VSCode backslash+enter
-    fallback are inherited from `PasteBurstTextArea`.
+    Shift+Enter, Ctrl+Enter, and Ctrl+J insert newlines, inherited from
+    `PasteBurstTextArea` along with the VSCode backslash+enter fallback.
+    Alt+Enter (Option+Return on macOS) overrides the shared newline binding
+    to submit a steering message.
     """
 
     BINDINGS: ClassVar[list[Binding]] = [

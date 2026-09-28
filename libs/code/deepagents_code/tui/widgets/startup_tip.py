@@ -20,8 +20,13 @@ _TIP_SHIFT_TAB_WITH_YOLO = "Press Shift+Tab to cycle Manual, Auto, and YOLO mode
 _TIP_SHIFT_TAB_WITHOUT_YOLO = "Press Shift+Tab to toggle Manual and Auto modes"
 """Tip used when orgs/users disable YOLO entry via the approval switcher."""
 
+_TIP_STEERING = (
+    "While working: {shortcut} interrupts with your message; Enter queues it"
+)
+"""Steering tip formatted with the platform's modifier-key name at pick time."""
+
 _TIPS: dict[str, int] = {
-    "While working: Alt+Enter interrupts with your message; Enter queues it": 3,
+    _TIP_STEERING: 3,
     "Use @ to reference files and / for commands": 3,
     "Use @@ to reference a recent conversation": 2,
     "Try /threads to resume a previous conversation or copy its ID": 2,
@@ -84,12 +89,13 @@ def _active_tips(*, yolo_switcher_enabled: bool | None = None) -> dict[str, int]
     Returns:
         Weighted tip map appropriate for the active YOLO switcher setting.
     """
-    if yolo_switcher_enabled is None:
-        from deepagents_code.config import is_yolo_switcher_enabled
+    from deepagents_code.config import is_yolo_switcher_enabled, steering_shortcut
 
+    if yolo_switcher_enabled is None:
         yolo_switcher_enabled = is_yolo_switcher_enabled()
 
     tips = dict(_TIPS)
+    tips[_TIP_STEERING.format(shortcut=steering_shortcut())] = tips.pop(_TIP_STEERING)
     editor = editor_display_name()
     if editor is not None:
         weight = tips.pop(_TIP_EXTERNAL_EDITOR)

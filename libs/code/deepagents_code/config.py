@@ -2386,18 +2386,31 @@ def newline_shortcut() -> str:
     Prefers `Shift+Enter` when the terminal is known to support the kitty
     keyboard protocol, either via conservative terminal-identity heuristics
     or the `DEEPAGENTS_CODE_KITTY_KEYBOARD` override. Falls back to
-    `Option+Enter` on macOS and `Ctrl+J` elsewhere — both survive legacy
-    terminals that strip the shift modifier from `Enter`.
+    `Ctrl+J` otherwise, including on macOS, where `Option+Return` steers
+    the running agent. `Ctrl+J` survives legacy terminals that strip the
+    shift modifier from `Enter`.
 
     Returns:
         A human-readable shortcut string,
-            e.g. `'Shift+Enter'`, `'Option+Enter'`, or `'Ctrl+J'`.
+            e.g. `'Shift+Enter'` or `'Ctrl+J'`.
     """
     from deepagents_code.terminal_capabilities import supports_kitty_keyboard_protocol
 
     if supports_kitty_keyboard_protocol():
         return "Shift+Enter"
-    return "Option+Enter" if sys.platform == "darwin" else "Ctrl+J"
+    return "Ctrl+J"
+
+
+def steering_shortcut() -> str:
+    """Return the platform-appropriate label for interrupting with a message.
+
+    macOS terminals report `Option+Return` as `alt+enter` when configured
+    to forward Option as Alt/Meta.
+
+    Returns:
+        `Option+Return` on macOS, `Alt+Enter` elsewhere.
+    """
+    return "Option+Return" if sys.platform == "darwin" else "Alt+Enter"
 
 
 _UNICODE_BANNER = f"""

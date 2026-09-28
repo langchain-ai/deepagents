@@ -113,7 +113,7 @@ class TestGoalReviewMenu:
         """Newline hints use the terminal-aware shortcut, not a hardcoded key.
 
         On terminals that cannot report Shift+Enter (e.g. macOS Terminal.app),
-        `newline_shortcut` returns `Ctrl+J`/`Option+Enter`; the goal editor must
+        `newline_shortcut` returns `Ctrl+J` on legacy terminals; the goal editor must
         advertise that key rather than a Shift+Enter that would submit instead.
         """
         from deepagents_code import config as config_module

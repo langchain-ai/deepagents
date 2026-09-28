@@ -282,7 +282,19 @@ class TestChatInputScrollbar:
 
 
 class TestSteeringSubmission:
-    async def test_alt_enter_and_enter_have_distinct_submission_intents(self) -> None:
+    @pytest.mark.parametrize(
+        "sequence",
+        ["\x1b\r", "\x1b[13;3u", "\x1b[27;3;13~"],
+        ids=["legacy-option-return", "kitty-alt-enter", "xterm-alt-enter"],
+    )
+    async def test_terminal_steering_and_enter_have_distinct_submission_intents(
+        self, sequence: str
+    ) -> None:
+        from textual._xterm_parser import XTermParser
+
+        # Apply the same parser fixes as the app.
+        from deepagents_code import _textual_patches
+
         submitted: list[ChatInput.Submitted] = []
 
         class Host(App[None]):
@@ -297,7 +309,9 @@ class TestSteeringSubmission:
             widget = app.query_one(ChatInput)
             widget.focus_input()
             widget.set_value_at_end("steer now")
-            await pilot.press("alt+enter")
+            parser = XTermParser()
+            for event in parser.feed(sequence):
+                app.post_message(event)
             await pilot.pause()
             widget.set_value_at_end("queue later")
             await pilot.press("enter")
@@ -306,6 +320,43 @@ class TestSteeringSubmission:
             ("steer now", True),
             ("queue later", False),
         ]
+
+    @pytest.mark.parametrize(
+        "sequence",
+        ["\n", "\x1b[13;2u", "\x1b[13;5u", "\x1b[27;2;13~", "\x1b[27;5;13~"],
+        ids=[
+            "ctrl-j",
+            "kitty-shift-enter",
+            "kitty-ctrl-enter",
+            "xterm-shift-enter",
+            "xterm-ctrl-enter",
+        ],
+    )
+    async def test_newline_shortcuts_preserve_the_chat_draft(
+        self, sequence: str
+    ) -> None:
+        from textual._xterm_parser import XTermParser
+
+        # Apply the same parser fixes as the app.
+        from deepagents_code import _textual_patches
+
+        class Host(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ChatInput()
+
+            def on_chat_input_submitted(self, _event: ChatInput.Submitted) -> None:
+                pytest.fail("Newline shortcut unexpectedly submitted the draft")
+
+        app = Host()
+        async with app.run_test() as pilot:
+            widget = app.query_one(ChatInput)
+            widget.focus_input()
+            widget.set_value_at_end("first line")
+            parser = XTermParser()
+            for event in parser.feed(sequence):
+                app.post_message(event)
+            await pilot.pause()
+            assert app.query_one(ChatTextArea).text == "first line\n"
 
 
 class TestChatTextAreaKeybindings:

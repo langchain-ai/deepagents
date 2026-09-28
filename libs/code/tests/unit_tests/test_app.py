@@ -14750,6 +14750,39 @@ class TestHelpEditorHint:
     """Tests for the editor name shown by `/help`."""
 
 
+class TestHelpSteeringHint:
+    @pytest.mark.parametrize(
+        ("platform", "shortcut"),
+        [("darwin", "Option+Return"), ("linux", "Alt+Enter"), ("win32", "Alt+Enter")],
+    )
+    @pytest.mark.parametrize("kitty", [True, False], ids=["kitty", "legacy"])
+    async def test_help_distinguishes_steering_from_newlines(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        platform: str,
+        shortcut: str,
+        kitty: bool,
+    ) -> None:
+        app = DeepAgentsApp()
+        mount = AsyncMock()
+        monkeypatch.setattr(app, "_mount_message", mount)
+        monkeypatch.setattr("deepagents_code.config.sys.platform", platform)
+        monkeypatch.setattr(
+            "deepagents_code.terminal_capabilities.supports_kitty_keyboard_protocol",
+            lambda: kitty,
+        )
+
+        await app._handle_command("/help")
+
+        message = mount.call_args.args[0]
+        help_text = message._content.plain
+        newline = "Shift+Enter" if kitty else "Ctrl+J"
+        assert f"{shortcut:<15} Interrupt with your message" in help_text
+        assert f"{newline:<15} Insert newline" in help_text
+        assert "queue while working" in help_text
+        assert "Option as Alt/Meta" in help_text
+
+
 class TestApprovalModeSlashCommands:
     """Tests for the `/manual`, `/auto`, and `/yolo` slash commands."""
 

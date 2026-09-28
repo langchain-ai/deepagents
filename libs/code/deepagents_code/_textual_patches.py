@@ -13,6 +13,10 @@ upstream.
     `alt+enter`. Tracked in Textualize/textual#6378. Remove this patch and
     the Textual pin comment in `pyproject.toml` when that lands.
 
+    The same patch also handles xterm `modifyOtherKeys` encodings of
+    Shift/Alt/Ctrl+Enter, which Textual 8.2.8 drops. Remove those mappings
+    when Textual decodes these modified Enter sequences natively.
+
 2. Kitty lock-key and unsupported sub-field handling. Two related problems
     remain with the pinned Textual parser:
 
@@ -147,6 +151,12 @@ try:
 except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
     logger.warning("Textual keyboard parser patch skipped: %s", exc)
 else:
+    _XTERM_MODIFIED_ENTER = {
+        "\x1b[27;2;13~": "shift+enter",
+        "\x1b[27;3;13~": "alt+enter",
+        "\x1b[27;5;13~": "ctrl+enter",
+    }
+
     # Kitty functional key codes for the lock keys (Caps Lock, Scroll Lock,
     # Num Lock). The kitty protocol assigns these Private Use Area codepoints;
     # they appear as the leading key-code field of a `CSI ... u` sequence.
@@ -249,6 +259,9 @@ else:
     def _sequence_to_key_events_with_alt(
         self: XTermParser, sequence: str, alt: bool = False
     ) -> Iterable[events.Key]:
+        if (key := _XTERM_MODIFIED_ENTER.get(sequence)) is not None:
+            yield events.Key(key, None)
+            return
         # Lock keys (Caps Lock / Num Lock / Scroll Lock) must never type. Emit
         # a single character-less event regardless of how the terminal encoded
         # the modifiers, associated text, or event-type sub-fields.

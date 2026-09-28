@@ -56,7 +56,7 @@ REAL_CONFIG = (
 # PROVIDER_TO_PACKAGE nor the pruned set. The reverse-drift guard allowlists
 # them; any *other* langchain package must be a mapped provider.
 NON_PROVIDER_LANGCHAIN_PACKAGES: frozenset[str] = frozenset(
-    {"langchain", "langchain-mcp-adapters"}
+    {"langchain", "langchain-mcp-adapters", "langchain-typesafe"}
 )
 
 

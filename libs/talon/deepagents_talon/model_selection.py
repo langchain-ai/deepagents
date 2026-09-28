@@ -23,9 +23,12 @@ is built from it.
 from __future__ import annotations
 
 import contextvars
+import re
 import threading
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
+import httpx
 from deepagents.middleware.summarization import (
     SummarizationMiddleware,
     SummarizationState,
@@ -33,7 +36,11 @@ from deepagents.middleware.summarization import (
 )
 from langchain.agents.middleware.types import AgentMiddleware
 
-from deepagents_code.model_config import get_available_models, get_credential_env_var
+from deepagents_code.model_config import (
+    get_available_models,
+    get_credential_env_var,
+    is_langsmith_gateway_host,
+)
 from deepagents_talon.background import _IN_SUBAGENT
 
 if TYPE_CHECKING:
@@ -58,13 +65,81 @@ class UnknownModelError(ValueError):
     """Requested model is not in the discovered catalog."""
 
 
+_GATEWAY_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]*\Z")
+
+
+def gateway_connection(env: Mapping[str, str]) -> tuple[str, str] | None:
+    """Return the authenticated unified gateway endpoint, if configured."""
+    gateway = env.get("LANGSMITH_GATEWAY", "")
+    if base_url := env.get("OPENAI_BASE_URL"):
+        key = env.get("OPENAI_API_KEY", "")
+        if not key and gateway and gateway.lower() not in {"false", "0", "no"}:
+            key = env.get("LANGSMITH_GATEWAY_API_KEY", "")
+    elif gateway and gateway.lower() not in {"false", "0", "no"}:
+        base = (
+            "https://gateway.smith.langchain.com"
+            if gateway.lower() in {"true", "1", "yes"}
+            else gateway.rstrip("/")
+        )
+        base_url = f"{base}/v1"
+        key = env.get("LANGSMITH_GATEWAY_API_KEY") or env.get("LANGSMITH_API_KEY", "")
+    else:
+        return None
+    try:
+        parsed = urlsplit(base_url.rstrip("/"))
+        if parsed.port not in (None, 443) or parsed.username or parsed.password:
+            return None
+    except ValueError:
+        return None
+    if (
+        parsed.scheme != "https"
+        or not is_langsmith_gateway_host(parsed.hostname)
+        or parsed.path != "/v1"
+        or parsed.query
+        or parsed.fragment
+        or not key.strip()
+    ):
+        return None
+    return f"https://{parsed.hostname}/v1", key
+
+
+def _gateway_models(env: Mapping[str, str]) -> list[str]:
+    if (connection := gateway_connection(env)) is None:
+        return []
+    base_url, key = connection
+    with httpx.Client(timeout=5.0, follow_redirects=False) as client:
+        response = client.get(
+            f"{base_url}/models",
+            headers={"Authorization": f"Bearer {key}"},
+        )
+        response.raise_for_status()
+        data = response.json()
+    if (
+        not isinstance(data, dict)
+        or data.get("object") != "list"
+        or not isinstance(data.get("data"), list)
+    ):
+        msg = "Invalid gateway model catalog"
+        raise ValueError(msg)
+    return [
+        identifier
+        for item in data["data"]
+        if isinstance(item, dict)
+        and isinstance(identifier := item.get("id"), str)
+        and _GATEWAY_MODEL_ID.fullmatch(identifier)
+        and (
+            "supported_endpoints" not in item
+            or "/v1/chat/completions" in item["supported_endpoints"]
+        )
+    ]
+
+
 def discover_models(env: Mapping[str, str]) -> dict[str, list[str]]:
     """List the models each credentialed provider offers.
 
-    Discovery reuses `deepagents-code`'s model catalog, so Talon and `dcode` agree
-    on what a provider offers. Credentials are checked against `env` alone: a key
-    that only `dcode`'s credential store holds never reaches Talon's models, so
-    counting it would list models that cannot be built.
+    Native models come from `deepagents-code`; configured gateway models come
+    from its unified endpoint. Credentials are checked against `env` alone: a
+    key only in `dcode`'s store cannot build Talon's models.
 
     Args:
         env: Environment Talon's models are built from.
@@ -77,6 +152,9 @@ def discover_models(env: Mapping[str, str]) -> dict[str, list[str]]:
         variable = get_credential_env_var(provider)
         if variable and env.get(variable, "").strip():
             catalog[provider] = list(models)
+    for identifier in _gateway_models(env):
+        if identifier not in catalog.setdefault("openai", []):
+            catalog["openai"].append(identifier)
     return catalog
 
 

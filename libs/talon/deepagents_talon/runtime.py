@@ -66,6 +66,7 @@ from deepagents_talon.model_selection import (
     ModelSelectionMiddleware,
     SelectedModelSummarization,
     discover_models,
+    gateway_connection,
 )
 from deepagents_talon.observability import (
     AgentActivityCallback,
@@ -1355,11 +1356,19 @@ def _resolve_model_from_env(
     context_size: int | None = None,
 ) -> str | BaseChatModel:
     base_url = env.get("OPENAI_BASE_URL")
-    if context_size is None and (not base_url or not _is_openai_model(model)):
+    unified_gateway = _is_openai_model(model) and "/" in model and gateway_connection(env)
+    if (
+        context_size is None
+        and (not base_url or not _is_openai_model(model))
+        and not unified_gateway
+    ):
         return model
 
     init_kwargs = apply_provider_profile(model)
-    if base_url and _is_openai_model(model):
+    if unified_gateway:
+        init_kwargs["base_url"], init_kwargs["api_key"] = unified_gateway
+        init_kwargs["use_responses_api"] = False
+    elif base_url and _is_openai_model(model):
         init_kwargs["base_url"] = base_url
 
     resolved = init_chat_model(model, **init_kwargs)

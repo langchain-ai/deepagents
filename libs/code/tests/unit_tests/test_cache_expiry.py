@@ -1189,8 +1189,10 @@ async def test_handoff_does_not_restore_draft_into_unrelated_thread(
         await pilot.pause()
         _prepare(app, monkeypatch)
         await app._dispatch_queued_message(QueuedMessage("source draft", "normal"))
+        task = app._modal_command_tasks["cache-expiry"]
         await pilot.pause()
         await pilot.press("enter")
+        await asyncio.wait_for(task, timeout=5)
         await pilot.pause()
 
         assert remote.aupdate_state.await_args is not None

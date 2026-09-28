@@ -3094,7 +3094,7 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         group="Debug",
         summary="Directory for per-thread debug log files.",
         kind=OptionKind.STR,
-        default="/tmp/deepagents_debug",  # noqa: S108  # documents the app default, not a write target
+        default=_env_vars.DEFAULT_DEBUG_DIRECTORY,
         env_var=_env_vars.DEBUG_DIRECTORY,
         toml_keys=("debug", "directory"),
     ),

@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NotRequired, TypedDict, cast
 
+from deepagents_code._constants import DEFAULT_THREAD_LIMIT
 from deepagents_code._paths import harden_state_dir
 from deepagents_code.goal_state_notice import is_internal_message
 
@@ -443,7 +444,7 @@ async def _ensure_threads_list_index(conn: aiosqlite.Connection) -> None:
 
 async def list_threads(
     agent_name: str | None = None,
-    limit: int = 20,
+    limit: int = DEFAULT_THREAD_LIMIT,
     include_message_count: bool = False,
     sort_by: str = "updated",
     branch: str | None = None,
@@ -1764,9 +1765,6 @@ async def set_thread_metadata(thread_id: str, *, agent_name: str, cwd: str) -> N
         await conn.commit()
 
 
-_DEFAULT_THREAD_LIMIT = 100
-
-
 def get_thread_limit() -> int:
     """Read the thread listing limit from the environment.
 
@@ -1779,7 +1777,7 @@ def get_thread_limit() -> int:
 
     raw = os.environ.get(RECENT_THREADS)
     if raw is None:
-        return _DEFAULT_THREAD_LIMIT
+        return DEFAULT_THREAD_LIMIT
     try:
         return max(1, int(raw))
     except ValueError:
@@ -1787,9 +1785,9 @@ def get_thread_limit() -> int:
             "Invalid %s value %r, using default %d",
             RECENT_THREADS,
             raw,
-            _DEFAULT_THREAD_LIMIT,
+            DEFAULT_THREAD_LIMIT,
         )
-        return _DEFAULT_THREAD_LIMIT
+        return DEFAULT_THREAD_LIMIT
 
 
 async def list_threads_command(

@@ -4723,6 +4723,52 @@ class TestAddEnabledProjectMcpServers:
         assert list(tmp_path.glob("*.tmp")) == []
 
 
+class TestAddDisabledProjectMcpServers:
+    @pytest.mark.parametrize("existing", ['["old", "docs"]', '"old, docs"'])
+    def test_merges_denials_and_preserves_other_config(
+        self, tmp_path: Path, existing: str
+    ) -> None:
+        import tomllib
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\ndefault = "openai:example"\n'
+            f"[mcp]\ndisabled_project_servers = {existing}\n"
+            'disabled_servers = ["other"]\n'
+        )
+        original = tomllib.loads(config_path.read_text())
+
+        assert model_config.add_disabled_project_mcp_servers(
+            ["docs", " new ", "new", "", " "], config_path
+        )
+        saved = tomllib.loads(config_path.read_text())
+        assert saved["mcp"].pop("disabled_project_servers") == ["docs", "new", "old"]
+        original["mcp"].pop("disabled_project_servers")
+        assert saved == original
+
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            "[invalid",
+            'mcp = "invalid"\n',
+            "[mcp]\ndisabled_project_servers = 42\n",
+            "[mcp.disabled_project_servers]\ninvalid = true\n",
+        ],
+    )
+    def test_refuses_malformed_policy(self, tmp_path: Path, contents: str) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(contents)
+        assert not model_config.add_disabled_project_mcp_servers(["docs"], config_path)
+        assert config_path.read_text() == contents
+
+    def test_parent_io_failure(self, tmp_path: Path) -> None:
+        blocker = tmp_path / "file"
+        blocker.write_text("")
+        assert not model_config.add_disabled_project_mcp_servers(
+            ["docs"], blocker / "config.toml"
+        )
+
+
 class TestLoadStartupMode:
     """Tests for the `[startup]` approval-mode read and its recent-mode write.
 

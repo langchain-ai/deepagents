@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 from starlette.responses import JSONResponse
 
 from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
-from deepagents_code.btw_cost import answer_with_cost, load_cost, session_cost
+from deepagents_code.btw_cost import answer_with_cost, load_cost
 from deepagents_code.workspace import WorkspaceConflictError, require_thread_workspace
 
 if TYPE_CHECKING:
@@ -164,17 +164,10 @@ async def btw(request: Request) -> JSONResponse:
 
 
 async def btw_cost(request: Request) -> JSONResponse:
-    """Read the combined display total without changing graph state.
+    """Read persisted side-question usage independently of main-task state.
 
     Returns:
-        Graph and side-question usage in a dedicated accounting response.
+        The cumulative side-question breakdown, or `None` before any usage.
     """
-    from deepagents_code.offload_api import _thread_client
-
-    thread_id = request.path_params["thread_id"]
-    await asyncio.to_thread(load_cost, thread_id)
-    snapshot = await _thread_client().threads.get_state(thread_id)
-    cost = await asyncio.to_thread(
-        session_cost, snapshot.get("values") or {}, thread_id
-    )
+    cost = await asyncio.to_thread(load_cost, request.path_params["thread_id"])
     return JSONResponse({"cost": cost})

@@ -843,7 +843,6 @@ async def test_checkpoint_reconciles_cost_when_accounting_fails(
     main_total: float, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from deepagents_code.app import DeepAgentsApp
-    from deepagents_code.btw_cost import combine_session_cost
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
     remote = RemoteAgent("http://test")
@@ -851,9 +850,7 @@ async def test_checkpoint_reconciles_cost_when_accounting_fails(
     remote._graph = graph
     side = _empty_cost_breakdown()
     side.update(total_cost_usd=0.5, request_count=1)
-    graph.client.http.get = AsyncMock(
-        return_value={"cost": combine_session_cost(1.0, None, side)}
-    )
+    graph.client.http.get = AsyncMock(return_value={"cost": side})
     app = DeepAgentsApp(agent=MagicMock(), thread_id="reconcile")
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     main = _empty_cost_breakdown()
@@ -861,7 +858,7 @@ async def test_checkpoint_reconciles_cost_when_accounting_fails(
     state = {"_session_cost_usd": main_total, "_session_cost_breakdown": main}
     monkeypatch.setattr(app, "_get_thread_state_values", AsyncMock(return_value=state))
     config = {"configurable": {"thread_id": app._lc_thread_id}}
-    await remote.aget_session_cost(config)
+    await remote.aget_session_cost(config, checkpoint={"_session_cost_usd": 1.0})
     app._set_session_cost(1.5)
     app._add_provisional_cost(1.0, request_id="missed-final-event")
     graph.client.http.get.side_effect = RuntimeError("unavailable")
@@ -885,18 +882,18 @@ async def test_cached_cost_without_checkpoint_preserves_provisional_spend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from deepagents_code.app import DeepAgentsApp
-    from deepagents_code.btw_cost import combine_session_cost
 
     remote = RemoteAgent("http://test")
     graph = MagicMock()
     remote._graph = graph
-    graph.client.http.get = AsyncMock(
-        return_value={"cost": combine_session_cost(1.5, None, None)}
-    )
+    graph.client.http.get = AsyncMock(return_value={"cost": None})
     app = DeepAgentsApp(agent=MagicMock(), thread_id="reconcile")
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     monkeypatch.setattr(app, "_get_thread_state_values", AsyncMock(return_value={}))
-    await remote.aget_session_cost({"configurable": {"thread_id": app._lc_thread_id}})
+    await remote.aget_session_cost(
+        {"configurable": {"thread_id": app._lc_thread_id}},
+        checkpoint={"_session_cost_usd": 1.5},
+    )
     app._set_session_cost(1.5)
     app._add_provisional_cost(1.0, request_id="unfinished")
     graph.client.http.get.side_effect = TimeoutError()
@@ -913,7 +910,6 @@ async def test_side_cost_survives_main_cancellation(
     main_total: float, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from deepagents_code.app import DeepAgentsApp
-    from deepagents_code.btw_cost import combine_session_cost
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
     provisional = 0.2
@@ -947,10 +943,10 @@ async def test_side_cost_survives_main_cancellation(
         app._lc_thread_id = "btw-cancellation"
         config = {"configurable": {"thread_id": app._lc_thread_id}}
         # The last observed main total may be ahead of its durable checkpoint.
-        graph.client.http.get = AsyncMock(
-            return_value={"cost": combine_session_cost(main_total, None, None)}
+        graph.client.http.get = AsyncMock(return_value={"cost": None})
+        await remote.aget_session_cost(
+            config, checkpoint={"_session_cost_usd": main_total}
         )
-        await remote.aget_session_cost(config)
         app._set_session_cost(main_total)
         app._add_provisional_cost(provisional, request_id="unfinished")
         side = _empty_cost_breakdown()
@@ -958,9 +954,7 @@ async def test_side_cost_survives_main_cancellation(
         graph.client.http.post = AsyncMock(
             return_value={"text": "Side answer", "cost": side}
         )
-        graph.client.http.get.return_value = {
-            "cost": combine_session_cost(1.0, None, side)
-        }
+        graph.client.http.get.return_value = {"cost": side}
         main = asyncio.create_task(app._run_agent_task("main"))
         try:
             await asyncio.wait_for(started.wait(), 2)

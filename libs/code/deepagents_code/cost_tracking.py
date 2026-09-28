@@ -12,8 +12,8 @@ lifetime figure.
 
 Side questions use an isolated recorder and persist their subtotal in the sessions
 database (see `btw_cost`). They can finish after the graph stops, so their spend
-cannot depend on a later checkpoint. Server cost reads and stream events combine
-the subtotals for presentation, without writing side spend into graph state.
+cannot depend on a later checkpoint. The client combines the independently
+reported subtotals only for presentation.
 
 Coverage is not limited to the agent's own model node. Offload/summarization and
 the Auto mode classifier invoke a model directly, outside `after_model`, and
@@ -3257,27 +3257,14 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         if not isinstance(prior_usd, int | float) or not math.isfinite(prior_usd):
             prior_usd = 0.0
         try:
-            from deepagents_code.btw_cost import combine_session_cost, session_cost
-
             prior_breakdown = state.get("_session_cost_breakdown")
             absolute_breakdown = _merge_cost_breakdowns(prior_breakdown, breakdown)
-            total = max(float(prior_usd), 0.0) + delta_usd
-            try:
-                cost = session_cost(
-                    {
-                        "_session_cost_usd": total,
-                        "_session_cost_breakdown": absolute_breakdown,
-                    },
-                    _thread_id(runtime) or "",
-                )
-            except Exception:
-                logger.debug("Could not read side-question costs", exc_info=True)
-                cost = combine_session_cost(total, absolute_breakdown, None)
             writer(
                 {
                     "type": SESSION_COST_EVENT_TYPE,
                     "version": SESSION_COST_EVENT_VERSION,
-                    **cost,
+                    "total": max(float(prior_usd), 0.0) + delta_usd,
+                    "breakdown": absolute_breakdown,
                     "thread_id": _thread_id(runtime) or "",
                     # Pricing runs here, which in a remote deployment is not the
                     # client's process. Without this the client can only inspect

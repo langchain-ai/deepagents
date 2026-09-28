@@ -284,13 +284,43 @@ class TestRemoteAgentAstream:
 # ---------------------------------------------------------------------------
 
 
+async def test_missing_side_accounting_endpoint_keeps_main_cost() -> None:
+    from httpx import Request, Response
+    from langgraph_sdk.errors import NotFoundError
+
+    agent = _make_agent([])
+    agent._graph.client.http.get.side_effect = NotFoundError(
+        "Not found",
+        response=Response(404, request=Request("GET", "http://test/cost")),
+        body=None,
+    )
+    cost = await agent.aget_session_cost(
+        _config(), checkpoint={"_session_cost_usd": 2.0}
+    )
+    assert cost is not None
+    assert cost["total"] == pytest.approx(2.0)
+    assert not cost["cached"]
+
+
+async def test_invalid_side_cost_does_not_hide_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _make_agent([])
+    monkeypatch.setattr(agent, "aensure_thread", AsyncMock())
+    monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
+    agent._graph.client.http.post = AsyncMock(
+        return_value={"text": "answer", "cost": {"invalid": True}}
+    )
+    assert await agent.abtw("why?", config=_config()) == "answer"
+    assert agent.get_cached_session_cost(_config()) is None
+
+
 @pytest.mark.parametrize(
     "error", [RuntimeError("accounting unavailable"), TimeoutError()]
 )
 async def test_accounting_failure_preserves_main_stream_and_state(
     error: Exception,
 ) -> None:
-    from deepagents_code.btw_cost import combine_session_cost
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
     side = _empty_cost_breakdown()
@@ -298,15 +328,16 @@ async def test_accounting_failure_preserves_main_stream_and_state(
     event = {"type": "session_cost", "total": 2.0}
     nested = {"type": "session_cost", "total": 0.2}
     agent = _make_agent([((), "custom", event), (("tools:child",), "custom", nested)])
-    agent._graph.client.http.get.return_value = {
-        "cost": combine_session_cost(1.0, None, side)
-    }
-    saved_cost = await agent.aget_session_cost(_config())
+    agent._graph.client.http.get.return_value = {"cost": side}
+    saved_cost = await agent.aget_session_cost(
+        _config(), checkpoint={"_session_cost_usd": 1.0}
+    )
     assert saved_cost is not None
     assert saved_cost["total"] == pytest.approx(1.5)
     agent._graph.client.http.get.side_effect = error
     events = [item async for item in agent.astream({}, config=_config())]
-    assert events == [((), "custom", event), (("tools:child",), "custom", nested)]
+    assert events[0][2]["total"] == pytest.approx(2.5)
+    assert events[1] == (("tools:child",), "custom", nested)
 
     from langgraph.types import StateSnapshot
 
@@ -325,7 +356,7 @@ async def test_accounting_failure_preserves_main_stream_and_state(
     assert state is snapshot
     cost = await agent.aget_session_cost(_config())
     assert cost is not None
-    assert cost["total"] == pytest.approx(2.0)
+    assert cost["total"] == pytest.approx(2.5)
 
 
 @pytest.mark.parametrize("concurrent_stream", [False, True])
@@ -333,15 +364,16 @@ async def test_accounting_failure_preserves_main_stream_and_state(
 async def test_side_refresh_preserves_streamed_graph_cost(
     *, concurrent_stream: bool, saved_side_total: float
 ) -> None:
-    from deepagents_code.btw_cost import combine_session_cost
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
     main = _empty_cost_breakdown()
     main.update(total_cost_usd=2.0, request_count=2)
     side = _empty_cost_breakdown()
     side.update(total_cost_usd=0.5, request_count=1)
-    event = {"type": "session_cost", **combine_session_cost(2.0, main, side)}
+    event = {"type": "session_cost", "total": 2.0, "breakdown": main}
     agent = _make_agent([((), "custom", event)])
+    agent._graph.client.http.get.return_value = {"cost": side}
+    await agent.aget_session_cost(_config(), checkpoint={"_session_cost_usd": 1.0})
 
     async def stream() -> None:
         async for _event in agent.astream({}, config=_config()):
@@ -356,7 +388,7 @@ async def test_side_refresh_preserves_streamed_graph_cost(
     async def read(_path: str) -> dict[str, object]:
         if concurrent_stream:
             await stream()
-        return {"cost": combine_session_cost(1.0, None, saved_side)}
+        return {"cost": saved_side}
 
     agent._graph.client.http.get = read
     for _ in range(2):
@@ -374,7 +406,6 @@ async def test_side_refresh_preserves_streamed_graph_cost(
 async def test_accounting_read_merges_concurrent_graph_and_side_updates(
     concurrent_graph_total: float, response_side_total: float | None
 ) -> None:
-    from deepagents_code.btw_cost import combine_session_cost
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
     main = _empty_cost_breakdown()
@@ -389,26 +420,28 @@ async def test_accounting_read_merges_concurrent_graph_and_side_updates(
     streamed_main["total_cost_usd"] = concurrent_graph_total
     event = {
         "type": "session_cost",
-        **combine_session_cost(concurrent_graph_total, streamed_main, None),
+        "total": concurrent_graph_total,
+        "breakdown": streamed_main,
     }
     agent = _make_agent([((), "custom", event)])
-    agent._graph.client.http.get.return_value = {
-        "cost": combine_session_cost(1.0, None, None)
-    }
-    await agent.aget_session_cost(_config())
+    agent._graph.client.http.get.return_value = {"cost": None}
+    await agent.aget_session_cost(_config(), checkpoint={"_session_cost_usd": 1.0})
     started = asyncio.Event()
     release = asyncio.Event()
 
     async def read(_path: str) -> dict[str, object]:
         if started.is_set():
-            return {"cost": combine_session_cost(1.0, None, side)}
+            return {"cost": side}
         started.set()
         await release.wait()
-        return {"cost": combine_session_cost(2.0, main, response_side)}
+        return {"cost": response_side}
 
     agent._graph.client.http.get = read
     pending = asyncio.create_task(
-        agent.aget_session_cost(_config(), checkpoint={"_session_cost_usd": 2.0})
+        agent.aget_session_cost(
+            _config(),
+            checkpoint={"_session_cost_usd": 2.0, "_session_cost_breakdown": main},
+        )
     )
     try:
         await asyncio.wait_for(started.wait(), 2)
@@ -430,34 +463,25 @@ async def test_accounting_read_merges_concurrent_graph_and_side_updates(
     assert cost["breakdown"]["request_count"] == 3
 
 
-@pytest.mark.parametrize("streamed_side_total", [None, 0.25, 0.75])
 @pytest.mark.parametrize("graph_total", [2.0, 3.0])
-async def test_delayed_stream_preserves_refreshed_side_cost(
-    streamed_side_total: float | None, graph_total: float
-) -> None:
-    from deepagents_code.btw_cost import combine_session_cost
+async def test_delayed_stream_preserves_refreshed_side_cost(graph_total: float) -> None:
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
     main = _empty_cost_breakdown()
     main.update(total_cost_usd=graph_total, request_count=2)
     side = _empty_cost_breakdown()
     side.update(total_cost_usd=0.5, request_count=1)
-    streamed_side = None
-    if streamed_side_total is not None:
-        streamed_side = side.copy()
-        streamed_side["total_cost_usd"] = streamed_side_total
-    initial = {"type": "session_cost", **combine_session_cost(2.0, None, None)}
+    initial = {"type": "session_cost", "total": 2.0}
     delayed = {
         "type": "session_cost",
         "thread_id": _TEST_THREAD_ID,
-        **combine_session_cost(graph_total, main, streamed_side),
+        "total": graph_total,
+        "breakdown": main,
     }
     agent = _make_agent([((), "custom", initial), ((), "custom", delayed)])
     stream = agent.astream({}, config=_config())
     await anext(stream)
-    agent._graph.client.http.get.return_value = {
-        "cost": combine_session_cost(1.0, None, side)
-    }
+    agent._graph.client.http.get.return_value = {"cost": side}
     refreshed = await agent.arefresh_side_cost(_config())
     assert refreshed is not None
     assert refreshed["total"] == pytest.approx(2.5)
@@ -465,7 +489,7 @@ async def test_delayed_stream_preserves_refreshed_side_cost(
     _, _, event = await anext(stream)
     assert isinstance(stream, AsyncGenerator)
     await stream.aclose()  # No completion reconciliation after cancellation.
-    expected = graph_total + max(0.5, streamed_side_total or 0)
+    expected = graph_total + 0.5
     assert event["type"] == "session_cost"
     assert event["thread_id"] == _TEST_THREAD_ID
     assert event["total"] == pytest.approx(expected)
@@ -478,7 +502,7 @@ async def test_delayed_stream_preserves_refreshed_side_cost(
     assert cached["breakdown"] == event["breakdown"]
 
 
-@pytest.mark.parametrize("source", ["stream", "http", "side_refresh", "btw"])
+@pytest.mark.parametrize("source", ["http", "side_refresh", "btw"])
 @pytest.mark.parametrize("incoming_is_newer", [False, True])
 @pytest.mark.parametrize("priced", [False, True], ids=["unpriced", "free"])
 async def test_equal_dollar_snapshots_keep_latest_side_usage(
@@ -489,7 +513,6 @@ async def test_equal_dollar_snapshots_keep_latest_side_usage(
     priced: bool,
 ) -> None:
     """Free and unpriced requests advance usage even when spend is unchanged."""
-    from deepagents_code.btw_cost import combine_session_cost
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
     main = _empty_cost_breakdown()
@@ -512,19 +535,15 @@ async def test_equal_dollar_snapshots_keep_latest_side_usage(
         output_cost_complete=priced,
     )
     initial, incoming = (older, newer) if incoming_is_newer else (newer, older)
-    incoming_cost = combine_session_cost(2.0, main, incoming)
-    event = {"type": "session_cost", **incoming_cost}
-    agent = _make_agent([((), "custom", event)])
-    agent._graph.client.http.get.return_value = {
-        "cost": combine_session_cost(2.0, main, initial)
-    }
-    await agent.aget_session_cost(_config())
-    agent._graph.client.http.get.return_value = {"cost": incoming_cost}
+    agent = _make_agent([])
+    agent._graph.client.http.get.return_value = {"cost": initial}
+    await agent.aget_session_cost(
+        _config(),
+        checkpoint={"_session_cost_usd": 2.0, "_session_cost_breakdown": main},
+    )
+    agent._graph.client.http.get.return_value = {"cost": incoming}
 
-    if source == "stream":
-        events = [event async for _, _, event in agent.astream({}, config=_config())]
-        result = events[0]
-    elif source == "http":
+    if source == "http":
         result = await agent.aget_session_cost(_config())
     elif source == "btw":
         monkeypatch.setattr(agent, "aensure_thread", AsyncMock())
@@ -541,7 +560,6 @@ async def test_equal_dollar_snapshots_keep_latest_side_usage(
 
     assert result is not None
     assert result["total"] == pytest.approx(2.5)
-    assert result["side_breakdown"] == newer
     breakdown = result["breakdown"]
     assert breakdown is not None
     assert breakdown["request_count"] == 3
@@ -561,7 +579,6 @@ async def test_equal_dollar_snapshots_keep_latest_side_usage(
 async def test_btw_refreshes_missing_accounting_without_losing_answer(
     missing: str, monkeypatch: pytest.MonkeyPatch, *, refresh_fails: bool
 ) -> None:
-    from deepagents_code.btw_cost import combine_session_cost
     from deepagents_code.cost_tracking import _empty_cost_breakdown
 
     agent = _make_agent([])
@@ -569,9 +586,11 @@ async def test_btw_refreshes_missing_accounting_without_losing_answer(
     monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
     http = agent._graph.client.http
     graph_total = 0.0 if missing == "graph" else 2.0
-    http.get.return_value = {"cost": combine_session_cost(graph_total, None, None)}
+    http.get.return_value = {"cost": None}
     if missing != "graph":
-        await agent.aget_session_cost(_config())
+        await agent.aget_session_cost(
+            _config(), checkpoint={"_session_cost_usd": graph_total}
+        )
     else:
         agent._graph.aget_state = AsyncMock(
             side_effect=TypeError("'NoneType' object is not subscriptable")
@@ -586,24 +605,22 @@ async def test_btw_refreshes_missing_accounting_without_losing_answer(
         }
     )
     http.get.reset_mock()
-    http.get.return_value = {"cost": combine_session_cost(graph_total, None, side)}
+    http.get.return_value = {"cost": side}
     if refresh_fails:
         http.get.side_effect = RuntimeError("accounting unavailable")
 
     assert await agent.abtw("why?", config=_config()) == "answer"
-    http.get.assert_awaited_once()
-    cost = agent.get_cached_session_cost(_config())
-    if refresh_fails and missing == "graph":
-        assert cost is None
+    if missing == "settlement":
+        http.get.assert_awaited_once()
     else:
-        assert cost is not None
-        assert cost["total"] == pytest.approx(
-            graph_total + (0.0 if refresh_fails else 0.5)
-        )
-        if not refresh_fails:
-            assert cost["side_breakdown"] == side
-            assert cost["breakdown"] is not None
-            assert cost["breakdown"]["request_count"] == 1
+        http.get.assert_not_awaited()
+    cost = agent.get_cached_session_cost(_config())
+    assert cost is not None
+    has_side = missing == "graph" or not refresh_fails
+    assert cost["total"] == pytest.approx(graph_total + (0.5 if has_side else 0.0))
+    if has_side:
+        assert cost["breakdown"] is not None
+        assert cost["breakdown"]["request_count"] == 1
 
 
 # ---------------------------------------------------------------------------

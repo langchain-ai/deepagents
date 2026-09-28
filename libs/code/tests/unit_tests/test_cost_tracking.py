@@ -2347,40 +2347,6 @@ class TestGraphCostOwnership:
         assert second_total_usd == pytest.approx(10 * self._one_call_usd())
 
 
-@pytest.mark.parametrize(
-    "error", [sqlite3.OperationalError("database is locked"), OSError("unavailable")]
-)
-def test_side_database_failure_preserves_main_cost_event(
-    error: Exception, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from deepagents_code import btw_cost
-
-    monkeypatch.setattr(btw_cost, "_load_saved_cost", MagicMock(side_effect=error))
-    prior = cost_tracking._empty_cost_breakdown()
-    prior.update(total_cost_usd=1.0, request_count=1)
-    delta = cost_tracking._empty_cost_breakdown()
-    delta.update(total_cost_usd=0.5, request_count=1)
-    events: list[dict[str, Any]] = []
-
-    CostTrackingMiddleware._emit_total(
-        {"messages": [], "_session_cost_usd": 1.0, "_session_cost_breakdown": prior},
-        _runtime(thread_id=THREAD_ID, events=events),
-        0.5,
-        delta,
-        pricing_ok=False,
-    )
-
-    assert len(events) == 1
-    event = events[0]
-    assert event["type"] == SESSION_COST_EVENT_TYPE
-    assert event["thread_id"] == THREAD_ID
-    assert event["total"] == event["graph_total"] == pytest.approx(1.5)
-    assert event["breakdown"] == event["graph_breakdown"]
-    assert event["breakdown"]["request_count"] == 2
-    assert event["side_breakdown"] is None
-    assert event["pricing_ok"] is False
-
-
 async def test_side_question_cost_is_durable_without_another_turn(
     recorder: _SessionCostRecorder,
     side_cost_db: Path,
@@ -2389,7 +2355,7 @@ async def test_side_question_cost_is_durable_without_another_turn(
 
     from deepagents_code import offload_api
     from deepagents_code.btw import BtwOperation
-    from deepagents_code.btw_cost import load_cost, session_cost
+    from deepagents_code.btw_cost import load_cost
     from deepagents_code.client.remote_client import RemoteAgent
 
     agent = create_agent(
@@ -2449,7 +2415,7 @@ async def test_side_question_cost_is_durable_without_another_turn(
             with patch.object(
                 offload_api,
                 "_thread_client",
-                return_value=SimpleNamespace(threads=threads),
+                side_effect=AssertionError("Side costs must not read graph state"),
             ):
                 response = await client.get(path)
         assert response.status_code == 200
@@ -2459,7 +2425,7 @@ async def test_side_question_cost_is_durable_without_another_turn(
     remote._graph = graph
     restored = await remote.aget_state(dict(config))
     assert restored is checkpoint
-    display_cost = await remote.aget_session_cost(dict(config))
+    display_cost = await remote.aget_session_cost(dict(config), checkpoint=before)
     assert display_cost is not None
     assert display_cost["total"] == pytest.approx(2 * one_call)
     assert display_cost["breakdown"] is not None
@@ -2472,9 +2438,10 @@ async def test_side_question_cost_is_durable_without_another_turn(
         )
     ]
     totals = [event["total"] for event in events if event.get("type") == "session_cost"]
-    assert totals[-1] == pytest.approx(3 * one_call)
+    assert totals[-1] == pytest.approx(2 * one_call)
     after = (await agent.aget_state(config)).values
-    display_cost = session_cost(after, THREAD_ID)
+    display_cost = await remote.aget_session_cost(dict(config), checkpoint=after)
+    assert display_cost is not None
     assert display_cost["total"] == pytest.approx(3 * one_call)
     assert display_cost["breakdown"] is not None
     assert display_cost["breakdown"]["request_count"] == 3
@@ -2527,9 +2494,7 @@ async def test_side_question_cost_completeness_from_serialized_history(
     assert cost["total_cost_usd"] > 0
     assert cost["request_count"] == 1
     assert cost["historical_complete"] is (history != "legacy")
-    assert display.json()["cost"]["breakdown"]["historical_complete"] is (
-        history != "legacy"
-    )
+    assert display.json()["cost"]["historical_complete"] is (history != "legacy")
     assert await asyncio.to_thread(load_cost, THREAD_ID) == cost
     assert values == before
 

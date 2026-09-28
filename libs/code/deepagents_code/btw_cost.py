@@ -15,7 +15,7 @@ import sqlite3
 import threading
 from collections import deque
 from contextlib import closing
-from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, cast
+from typing import TYPE_CHECKING, cast
 
 from deepagents_code.cost_tracking import (
     _RECORDER_VAR,
@@ -28,7 +28,7 @@ from deepagents_code.cost_tracking import (
 from deepagents_code.workspace import _database_path
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Mapping
+    from collections.abc import Awaitable
 
     import aiosqlite
 
@@ -38,50 +38,6 @@ _SETTLEMENT_LOCK = threading.Lock()
 """Serialize retries and retain failed recorders until their writes succeed."""
 
 logger = logging.getLogger(__name__)
-
-
-class SessionCost(TypedDict):
-    """Server-owned presentation total, separate from graph checkpoint values.
-
-    Components let clients refresh side spend while preserving live graph costs.
-    """
-
-    total: float
-    breakdown: CostBreakdown | None
-    graph_total: float
-    graph_breakdown: CostBreakdown | None
-    side_breakdown: CostBreakdown | None
-    cached: NotRequired[bool]
-    """Client fallback with no fresh accounting or checkpoint to settle usage."""
-
-
-def combine_session_cost(
-    graph_total: float,
-    graph_breakdown: CostBreakdown | None,
-    side_breakdown: CostBreakdown | None,
-) -> SessionCost:
-    """Combine independent spend while retaining its sources for live refreshes.
-
-    Args:
-        graph_total: Main graph's cumulative spend, possibly uncommitted.
-        graph_breakdown: Main graph's structured usage.
-        side_breakdown: Separately persisted side-question usage.
-
-    Returns:
-        Presentation total with the independent accounting components.
-    """
-    return {
-        "total": graph_total
-        + (side_breakdown["total_cost_usd"] if side_breakdown else 0),
-        "breakdown": (
-            _merge_cost_breakdowns(graph_breakdown, side_breakdown)
-            if side_breakdown is not None
-            else graph_breakdown
-        ),
-        "graph_total": graph_total,
-        "graph_breakdown": graph_breakdown,
-        "side_breakdown": side_breakdown,
-    }
 
 
 async def delete_cost(conn: aiosqlite.Connection, thread_id: str) -> None:
@@ -144,25 +100,6 @@ def _load_saved_cost(thread_id: str) -> CostBreakdown | None:
         sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=0.05)
     ) as conn:
         return _read_cost(conn, thread_id)
-
-
-def session_cost(values: Mapping[str, Any], thread_id: str) -> SessionCost:
-    """Read the combined total without modifying or settling graph state.
-
-    Live graph events use this read-only path so a pending side settlement
-    cannot delay a main turn. Explicit cost reads retry settlements separately.
-
-    Args:
-        values: Graph-owned cost values, optionally including an uncommitted delta.
-        thread_id: Thread that owns any separately persisted side spend.
-
-    Returns:
-        Combined cost and usage for presentation only.
-    """
-    cost = _load_saved_cost(thread_id) if thread_id else None
-    total = values.get("_session_cost_usd", 0.0)
-    breakdown = values.get("_session_cost_breakdown")
-    return combine_session_cost(total, breakdown, cost)
 
 
 def _persist_cost(thread_id: str, state: CostState) -> CostBreakdown | None:

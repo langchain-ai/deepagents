@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
+
+from deepagents_code.client.session_cost import SessionCostTracker
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
-    from deepagents_code.btw_cost import SessionCost
+    from deepagents_code.client.session_cost import SessionCost
     from deepagents_code.cost_tracking import CostBreakdown
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.offload_middleware import OffloadResult
@@ -53,26 +54,6 @@ _OFFLOAD_RESULT_INT_FIELDS = (
     "tokens_before",
     "tokens_after",
 )
-
-
-def _latest_side_breakdown(
-    current: CostBreakdown | None, incoming: CostBreakdown | None
-) -> CostBreakdown | None:
-    """Return the freshest cumulative side usage across HTTP and stream updates.
-
-    Request counts advance for free and unpriced requests too. Use spend only
-    to break count ties, retaining corrections for already counted requests.
-    """
-    if current is None:
-        return incoming
-    if incoming is None:
-        return current
-    if (current["request_count"], current["total_cost_usd"]) > (
-        incoming["request_count"],
-        incoming["total_cost_usd"],
-    ):
-        return current
-    return incoming
 
 
 async def _join_task_deferring_cancellation[T](task: asyncio.Task[T]) -> None:
@@ -386,7 +367,7 @@ class RemoteAgent:
         self._workspace_config: dict[str, Any] | None = None
         self._workspace_config_fingerprint: str | None = None
         self._workspace_cwd: str | None = None
-        self._session_costs: dict[str, SessionCost] = {}
+        self._session_costs: dict[str, SessionCostTracker] = {}
 
     def _get_graph(self) -> Any:  # noqa: ANN401
         """Lazily create the `RemoteGraph` instance.
@@ -445,13 +426,14 @@ class RemoteAgent:
         if not isinstance(response, dict) or not isinstance(response.get("text"), str):
             msg = "Invalid side-question response from the server."
             raise TypeError(msg)
-        await self._read_session_cost(
-            config, side_only=True, side_breakdown=response.get("cost")
-        )
+        await self._refresh_side_cost(thread_id, breakdown=response.get("cost"))
         return response["text"]
 
+    def _cost_tracker(self, thread_id: str) -> SessionCostTracker:
+        return self._session_costs.setdefault(thread_id, SessionCostTracker())
+
     def get_cached_session_cost(self, config: Mapping[str, Any]) -> SessionCost | None:
-        """Read the latest cost received from a stream or accounting response.
+        """Read the display total without fetching either accounting source.
 
         Args:
             config: Config with `configurable.thread_id`.
@@ -459,18 +441,19 @@ class RemoteAgent:
         Returns:
             Last known usage, or `None` when no accounting has been received.
         """
-        return self._session_costs.get(_require_thread_id(config))
+        return self._cost_tracker(_require_thread_id(config)).snapshot()
 
     async def arefresh_side_cost(self, config: Mapping[str, Any]) -> SessionCost | None:
-        """Refresh side spend without replacing potentially uncommitted graph usage.
+        """Refresh side spend while retaining the latest main-task usage.
 
         Args:
             config: Config with `configurable.thread_id`.
 
         Returns:
-            Updated presentation total, or `None` if accounting is unavailable.
+            Updated display total, or `None` when neither source is available.
         """
-        return await self._read_session_cost(config, side_only=True)
+        await self._refresh_side_cost(_require_thread_id(config))
+        return self.get_cached_session_cost(config)
 
     async def aget_session_cost(
         self,
@@ -478,123 +461,49 @@ class RemoteAgent:
         *,
         checkpoint: Mapping[str, object] | None = None,
     ) -> SessionCost | None:
-        """Read the server's display total separately from graph state.
+        """Reconcile main-task state and refresh separately persisted side spend.
 
         Args:
             config: Config with `configurable.thread_id`.
-            checkpoint: Fresh graph state to reconcile with cached side spend
-                when the accounting refresh fails.
+            checkpoint: Already fetched graph state, avoiding a second state read.
 
         Returns:
-            Combined usage, reconciling checkpoint and cached side spend on
-            failure. Without a usable checkpoint, a cached fallback is marked
-            `cached` so callers preserve provisional usage. `None` means no
-            accounting source is available.
+            Combined usage. Without valid graph state, `cached` tells callers
+            to preserve provisional main-task usage even if side spend refreshed.
         """
-        return await self._read_session_cost(
-            config, side_only=False, checkpoint=checkpoint
+        tracker = self._cost_tracker(_require_thread_id(config))
+        if checkpoint is None:
+            try:
+                state = await self.aget_state(dict(config))
+                checkpoint = state.values if state is not None else {}
+            except Exception:
+                logger.warning("Could not refresh main-task costs", exc_info=True)
+        settled = tracker.update_graph(
+            checkpoint.get("_session_cost_usd") if checkpoint else None,
+            checkpoint.get("_session_cost_breakdown") if checkpoint else None,
         )
+        await self._refresh_side_cost(_require_thread_id(config))
+        return tracker.snapshot(cached=not settled)
 
-    def _fallback_session_cost(
-        self, thread_id: str, checkpoint: Mapping[str, object] | None
-    ) -> SessionCost | None:
-        """Reconcile fresh graph state, or identify an entirely cached fallback.
-
-        Returns:
-            Checkpoint usage plus known side spend, or an unsettled cached total.
-        """
-        from deepagents_code.btw_cost import combine_session_cost
-
-        previous = self._session_costs.get(thread_id)
-        total = checkpoint.get("_session_cost_usd") if checkpoint else None
-        if not isinstance(total, int | float) or not math.isfinite(total):
-            return {**previous, "cached": True} if previous is not None else None
-        breakdown = checkpoint.get("_session_cost_breakdown") if checkpoint else None
-        graph_breakdown = (
-            cast("CostBreakdown", breakdown) if isinstance(breakdown, Mapping) else None
-        )
-        if previous is not None and previous.get("graph_total", 0.0) > total:
-            total = previous["graph_total"]
-            graph_breakdown = previous.get("graph_breakdown")
-        cost = combine_session_cost(
-            max(float(total), 0.0),
-            graph_breakdown,
-            previous.get("side_breakdown") if previous else None,
-        )
-        self._session_costs[thread_id] = cost
-        return cost
-
-    async def _read_session_cost(
-        self,
-        config: Mapping[str, Any],
-        *,
-        side_only: bool,
-        checkpoint: Mapping[str, object] | None = None,
-        side_breakdown: CostBreakdown | None = None,
-    ) -> SessionCost | None:
-        """Read accounting, optionally retaining the latest streamed graph usage.
-
-        Returns:
-            Refreshed usage, the last known total on failure, or `None`.
-        """
+    async def _refresh_side_cost(
+        self, thread_id: str, *, breakdown: CostBreakdown | None = None
+    ) -> None:
+        """Refresh one source without replacing concurrently updated graph usage."""
         from langgraph_sdk.errors import NotFoundError
 
-        from deepagents_code.btw_cost import combine_session_cost
-
-        thread_id = _require_thread_id(config)
-        previous = self._session_costs.get(thread_id)
         try:
-            if isinstance(side_breakdown, dict) and previous is not None:
-                cost = combine_session_cost(
-                    previous["graph_total"],
-                    previous.get("graph_breakdown"),
-                    side_breakdown,
-                )
-            else:
-                # Missing settlement or graph baseline still needs an accounting read.
+            if breakdown is None:
                 async with asyncio.timeout(2):
                     response = await self._get_graph().client.http.get(
                         f"/dcode/threads/{thread_id}/cost"
                     )
-                cost = response["cost"]
-            if (
-                not isinstance(cost, dict)
-                or not isinstance(cost.get("total"), int | float)
-                or not isinstance(cost.get("graph_total"), int | float)
-                or not {"breakdown", "graph_breakdown", "side_breakdown"} <= cost.keys()
-            ):
-                logger.warning(
-                    "Invalid session cost response; retaining the last total"
-                )
-                return self._fallback_session_cost(thread_id, checkpoint)
-            latest = self._session_costs.get(thread_id)
-            if latest is not None:
-                # Graph and side subtotals advance independently. A side
-                # refresh must not hide a newer graph checkpoint, and a newer
-                # streamed graph total must survive an older accounting read.
-                graph = (
-                    latest
-                    if side_only or latest["graph_total"] > cost["graph_total"]
-                    else cost
-                )
-                side = _latest_side_breakdown(
-                    latest.get("side_breakdown"), cost["side_breakdown"]
-                )
-                self._session_costs[thread_id] = combine_session_cost(
-                    graph["graph_total"], graph.get("graph_breakdown"), side
-                )
-                return self._session_costs[thread_id]
-            self._session_costs[thread_id] = cast("SessionCost", cost)
+                breakdown = response["cost"]
+            self._cost_tracker(thread_id).update_side(breakdown)
         except NotFoundError:
-            # Older servers do not expose a combined accounting view.
-            return self._fallback_session_cost(thread_id, checkpoint)
+            # Servers predating /btw have only graph-owned accounting.
+            pass
         except Exception:
-            logger.warning(
-                "Could not refresh session costs; retaining the last total",
-                exc_info=True,
-            )
-            return self._fallback_session_cost(thread_id, checkpoint)
-        return self._session_costs.get(thread_id)
+            logger.warning("Could not refresh side-question costs", exc_info=True)
 
     async def aoffload(
         self,
@@ -824,30 +733,9 @@ class RemoteAgent:
                 and data.get("type") == "session_cost"
                 and isinstance(data.get("total"), int | float)
             ):
-                cost_event = data
-                cost: SessionCost = {
-                    "total": data["total"],
-                    "breakdown": data.get("breakdown"),
-                    "graph_total": data["total"],
-                    "graph_breakdown": data.get("breakdown"),
-                    "side_breakdown": None,
-                }
-                if "graph_total" in data:
-                    from deepagents_code.btw_cost import combine_session_cost
-
-                    previous = self._session_costs.get(thread_id)
-                    # A side refresh can settle usage before an older graph
-                    # event arrives. Its cumulative side usage must survive.
-                    side = _latest_side_breakdown(
-                        previous.get("side_breakdown") if previous else None,
-                        data.get("side_breakdown"),
-                    )
-                    cost = combine_session_cost(
-                        data["graph_total"], data.get("graph_breakdown"), side
-                    )
-                    cost_event = {**data, **cost}
-                self._session_costs[thread_id] = cost
-                yield (ns, mode, cost_event)
+                tracker = self._cost_tracker(thread_id)
+                tracker.update_graph(data["total"], data.get("breakdown"))
+                yield (ns, mode, {**data, **(tracker.snapshot() or {})})
                 continue
             yield (ns, mode, data)
 

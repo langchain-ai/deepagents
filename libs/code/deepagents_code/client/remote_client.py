@@ -153,6 +153,11 @@ def _validated_offload_result(result: object) -> OffloadResult:
                     f"{type(value).__name__}."
                 )
                 raise RuntimeError(msg)  # noqa: TRY004  # protocol fault
+    if status == "summarized":
+        for field in ("summary", "archive_path"):
+            if not isinstance(result.get(field), str):
+                msg = f"Handoff result field {field!r} must be a string."
+                raise RuntimeError(msg)  # noqa: TRY004  # protocol fault
     return cast("OffloadResult", result)
 
 
@@ -532,6 +537,7 @@ class RemoteAgent:
         config: Mapping[str, Any],
         context: Mapping[str, Any],
         fulfill_hook: Callable[[object], Awaitable[dict[str, object]]],
+        handoff: bool = False,
     ) -> OffloadResult:
         """Request server-owned offload and fulfill its hook callbacks.
 
@@ -539,6 +545,8 @@ class RemoteAgent:
             config: Runnable config identifying the thread.
             context: Runtime model and Hooks v2 context.
             fulfill_hook: Client hook executor for server requests.
+            handoff: Summarize every message for a new thread without
+                compacting the source thread.
 
         Returns:
             Typed offload result from the server operation.
@@ -573,15 +581,19 @@ class RemoteAgent:
         operation_id = str(uuid4())
         hook_responses: dict[str, object] = {}
         graph = self._get_graph()
+        # Older servers ignore an unknown `handoff` body field and compact the
+        # source. A distinct route makes them reject the request before that.
+        operation = "handoff" if handoff else "offload"
         for round_index in range(_OFFLOAD_MAX_RESUME_ROUNDS + 1):
             try:
                 response = await _await_offload_step(
                     graph.client.http.post(
-                        f"/dcode/threads/{thread_id}/offload",
+                        f"/dcode/threads/{thread_id}/{operation}",
                         json={
                             "operation_id": operation_id,
                             "context": operation_context,
                             "hook_responses": hook_responses,
+                            **({"handoff": True} if handoff else {}),
                         },
                     ),
                     graph=graph,
@@ -596,7 +608,7 @@ class RemoteAgent:
                 # and the SDK's bare "404 Not Found" names neither the cause nor
                 # a fix.
                 msg = (
-                    "This server does not provide dcode's /offload operation. "
+                    f"This server does not provide dcode's /{operation} operation. "
                     "Use the built-in dcode server, or upgrade the server to a "
                     "version that registers it."
                 )

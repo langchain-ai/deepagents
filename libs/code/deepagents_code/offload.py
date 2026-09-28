@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import stat
@@ -362,13 +363,64 @@ def sweep_offloaded_history() -> int:
         return 0
 
 
+def _handoff_archive_prefix(thread_id: str) -> str:
+    """Persist source ownership in filenames without embedding paths or globs.
+
+    Returns:
+        The stable filename prefix for this source thread's handoffs.
+    """
+    owner = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()
+    return f"handoff_{owner}_"
+
+
+def _delete_archive(archive_path: Path) -> bool:
+    """Remove one archive, logging filesystem failures for best-effort cleanup.
+
+    Returns:
+        Whether the archive was removed.
+    """
+    try:
+        archive_path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        logger.warning(
+            "Failed to delete offloaded conversation history %s",
+            archive_path,
+            exc_info=True,
+        )
+        return False
+    logger.debug("Deleted offloaded conversation history %s", archive_path)
+    return True
+
+
+def _delete_handoff_archives(archive_dir: Path, thread_id: str) -> bool:
+    """Remove every recovery snapshot owned by the deleted source thread.
+
+    Returns:
+        Whether at least one snapshot was removed.
+    """
+    deleted = False
+    try:
+        for archive in archive_dir.glob(f"{_handoff_archive_prefix(thread_id)}*.md"):
+            deleted = _delete_archive(archive) or deleted
+    except OSError:
+        logger.warning(
+            "Could not list handoff archives for thread %s", thread_id, exc_info=True
+        )
+    return deleted
+
+
 def delete_offloaded_history(thread_id: str) -> bool:
-    """Remove a thread's offloaded conversation-history archive.
+    """Remove a thread's compaction archive and handoff recovery snapshots.
 
     Deletes the per-thread markdown file written by the local-mode
     `conversation_history` backend (`{root}/conversation_history/{thread_id}.md`),
     resolving `root` with `_offload_fallback_root` so the persistent
     `~/.deepagents` location and any temporary fallback are both covered.
+    Handoff snapshots encode their source thread's ownership in their filenames
+    and are removed with that source, including snapshots from failed handoffs.
+    A child summary's recovery link lasts only as long as its source archive.
 
     Best-effort: filesystem failures are logged and swallowed rather than
     raised, so a failed cleanup never blocks thread deletion. Resolving the
@@ -384,7 +436,7 @@ def delete_offloaded_history(thread_id: str) -> bool:
         thread_id: Thread whose offloaded history should be removed.
 
     Returns:
-        `True` only if an archive file was removed. `False` in every other case:
+        `True` if at least one archive file was removed. `False` otherwise:
         an empty or rejected `thread_id`, an unresolvable offload root, a missing
         archive, or an `unlink` failure.
     """
@@ -410,16 +462,5 @@ def delete_offloaded_history(thread_id: str) -> bool:
             thread_id,
         )
         return False
-    try:
-        archive_path.unlink()
-    except FileNotFoundError:
-        return False
-    except OSError:
-        logger.warning(
-            "Failed to delete offloaded conversation history for thread %s",
-            thread_id,
-            exc_info=True,
-        )
-        return False
-    logger.debug("Deleted offloaded conversation history for thread %s", thread_id)
-    return True
+    deleted = _delete_archive(archive_path)
+    return _delete_handoff_archives(archive_dir, thread_id) or deleted

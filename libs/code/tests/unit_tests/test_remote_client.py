@@ -1515,6 +1515,64 @@ class TestServerOffload:
 
         assert actual == result
 
+    @pytest.mark.parametrize("handoff", [False, True])
+    async def test_older_server_cannot_compact_a_handoff(self, handoff: bool) -> None:
+        """An old server ignores new body fields but rejects unknown routes."""
+        import httpx
+        from langgraph_sdk.client import LangGraphClient
+
+        compacted = False
+
+        def older_server(request: httpx.Request) -> httpx.Response:
+            nonlocal compacted
+            if request.url.path == "/dcode/threads/thread/offload":
+                compacted = True
+                return httpx.Response(
+                    200, json={"status": "complete", "result": _COMPACTED_RESULT}
+                )
+            return httpx.Response(404, json={"detail": "Not Found"})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(older_server), base_url="http://test"
+        ) as client:
+            http = SimpleNamespace(post=LangGraphClient(client).http.post)
+            agent = RemoteAgent("http://test")
+            with patch.object(agent, "_get_graph", return_value=_offload_graph(http)):
+                if handoff:
+                    with pytest.raises(RuntimeError, match=r"/handoff.*upgrade"):
+                        await agent.aoffload(
+                            config={"configurable": {"thread_id": "thread"}},
+                            context={},
+                            fulfill_hook=AsyncMock(),
+                            handoff=True,
+                        )
+                else:
+                    result = await agent.aoffload(
+                        config={"configurable": {"thread_id": "thread"}},
+                        context={},
+                        fulfill_hook=AsyncMock(),
+                    )
+                    assert result["status"] == "compacted"
+        assert compacted is not handoff
+
+    async def test_handoff_result_requires_summary_and_transcript(self) -> None:
+        agent = RemoteAgent("http://localhost:1234")
+        result = {"status": "summarized", "archive_path": "/t.md"}
+        http = SimpleNamespace(
+            post=AsyncMock(return_value={"status": "complete", "result": result})
+        )
+
+        with (
+            patch.object(agent, "_get_graph", return_value=_offload_graph(http)),
+            pytest.raises(RuntimeError, match="summary"),
+        ):
+            await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={},
+                fulfill_hook=AsyncMock(),
+                handoff=True,
+            )
+
     async def test_round_limit_logs_the_ids_it_saw(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:

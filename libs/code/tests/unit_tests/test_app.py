@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from langchain_core.messages import HumanMessage
     from textual.pilot import Pilot
 
+    from deepagents_code.input import MediaTracker
     from deepagents_code.mcp_auth import McpServerSpec
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.notifications import PendingNotification
@@ -2894,7 +2895,7 @@ class TestMessageQueue:
             await app.on_chat_input_submitted(
                 ChatInput.Submitted("look [image 1]", steer=True)
             )
-            app._image_tracker.clear()
+            assert app._image_tracker.get_images() == []
             app._image_tracker.add_image(ImageData("next draft", "jpeg", ""))
             queued = app._pending_messages[0]
             assert queued.text == "look [image 1]"
@@ -6504,6 +6505,59 @@ class TestCacheTiming:
 class TestRunAgentTaskMediaTracker:
     """Tests image tracker wiring from app into textual execution."""
 
+    async def test_steering_media_does_not_leak_into_older_queued_message(
+        self,
+    ) -> None:
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.client.steering import SteeredError, SteeringControl
+
+        app = DeepAgentsApp(agent=MagicMock(spec=RemoteAgent))
+        started = asyncio.Event()
+        sent: list[tuple[str, list[ImageData], list[VideoData]]] = []
+
+        async def execute(
+            *,
+            user_input: str,
+            steering: SteeringControl,
+            image_tracker: MediaTracker,
+            **_: object,
+        ) -> None:
+            sent.append(
+                (user_input, image_tracker.get_images(), image_tracker.get_videos())
+            )
+            image_tracker.clear()
+            if user_input == "original":
+                started.set()
+                raise SteeredError(await steering.pending.get())
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual", execute
+            ):
+                await app.on_chat_input_submitted(ChatInput.Submitted("original"))
+                await asyncio.wait_for(started.wait(), timeout=5)
+                await app.on_chat_input_submitted(ChatInput.Submitted("follow-up"))
+                app._image_tracker.add_image(ImageData("submitted", "png", ""))
+                app._image_tracker.add_video(VideoData("submitted", "mp4", ""))
+                await app.on_chat_input_submitted(
+                    ChatInput.Submitted("steer [image 1] [video 1]", steer=True)
+                )
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+
+            assert sent == [
+                ("original", [], []),
+                (
+                    "steer [image 1] [video 1]",
+                    [ImageData("submitted", "png", "[image 1]")],
+                    [VideoData("submitted", "mp4", "[video 1]")],
+                ),
+                ("follow-up", [], []),
+            ]
+            assert not app._pending_messages
+            assert not app._agent_running
+
     @pytest.mark.parametrize("key", ["escape", "ctrl+c"])
     @pytest.mark.parametrize("draft", ["", "another draft"])
     async def test_cancel_during_steering_handoff_does_not_resubmit(
@@ -6577,9 +6631,12 @@ class TestRunAgentTaskMediaTracker:
             composer = app._image_tracker
             composer.add_image(ImageData("original", "png", ""))
             control = SteeringControl()
-            assert control.submit("instead [image 1]", composer)
+            app._steering_control = control
+            app._set_agent_running(True)
+            await app.on_chat_input_submitted(
+                ChatInput.Submitted("instead [image 1]", steer=True)
+            )
             request = control.pending.get_nowait()
-            composer.clear()
             composer.add_image(ImageData("draft", "jpeg", ""))
             calls = 0
 

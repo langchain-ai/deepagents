@@ -13526,14 +13526,16 @@ class DeepAgentsApp(App):
         if event.steer and mode == "normal" and self._agent_running:
             control = self._steering_control
             if control is not None and control.submit(value, self._image_tracker):
+                self._image_tracker.clear()
                 return
+            media_snapshot = self._image_tracker.snapshot()
+            # Transfer ownership before yielding so later draft media survives.
+            self._image_tracker.clear()
             self.notify(
                 "Steering unavailable during setup or approval; message queued.",
                 markup=False,
             )
-            await self._submit_input(
-                value, mode, media_snapshot=self._image_tracker.snapshot()
-            )
+            await self._submit_input(value, mode, media_snapshot=media_snapshot)
             return
         await self._submit_input(value, mode)
 

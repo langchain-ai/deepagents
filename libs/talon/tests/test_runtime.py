@@ -7,6 +7,7 @@ import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+import httpx
 import pytest
 from deepagents.backends import CompositeBackend
 from langchain.agents.middleware.types import AgentMiddleware
@@ -1302,6 +1303,7 @@ def test_is_retryable_matches_known_transient_errors() -> None:
         StatusError(408),
         StatusError(429),
         StatusError(503),
+        StatusError(529, "Overloaded"),
         StatusError(400, "maximum context length exceeded"),
         RuntimeError("failed to parse model response"),
         RuntimeError("invalid tool_call payload"),
@@ -1330,6 +1332,7 @@ def test_is_retryable_matches_statusless_provider_overload_errors() -> None:
             }
         ),
         RuntimeError("The server is overloaded. Please try again later."),
+        RuntimeError("Overloaded"),
     ]
 
     for error in errors:
@@ -1337,10 +1340,36 @@ def test_is_retryable_matches_statusless_provider_overload_errors() -> None:
         assert _is_retryable(error)
 
 
+@pytest.mark.parametrize("sdk", ["anthropic", "openai"])
+def test_is_retryable_matches_provider_sdk_transport_errors(sdk: str) -> None:
+    """Provider SDKs raise their own transport errors, which are not `ConnectionError`s.
+
+    Their default message is just "Connection error.", so no text marker catches them.
+    """
+    module = pytest.importorskip(sdk)
+    request = httpx.Request("POST", "https://api.example.test")
+
+    assert _is_retryable(module.APIConnectionError(request=request))
+    assert _is_retryable(module.APITimeoutError(request=request))
+
+
+def test_is_retryable_matches_transport_errors_by_class_name() -> None:
+    """Detection must not depend on which provider packages are installed."""
+
+    class APIConnectionError(Exception):
+        pass
+
+    class APITimeoutError(APIConnectionError):
+        pass
+
+    assert _is_retryable(APITimeoutError("Connection error."))
+
+
 def test_is_retryable_rejects_unrelated_context_and_client_errors() -> None:
     errors = [
         StatusError(400, "invalid request: unknown field"),
         StatusError(404, "not found"),
+        StatusError(501, "not implemented"),
         RuntimeError("invalid context manager"),
         RuntimeError("missing context variable"),
         RuntimeError("invalid connection setting"),

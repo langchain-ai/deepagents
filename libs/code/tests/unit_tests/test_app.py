@@ -2149,9 +2149,6 @@ class TestCacheHandoffInterrupt:
         process = AsyncMock()
         monkeypatch.setattr(app, "_remote_agent", lambda: remote)
         monkeypatch.setattr(app, "_process_message", process)
-        monkeypatch.setattr(
-            app, "_cold_cache_warning_for", AsyncMock(return_value=None)
-        )
         monkeypatch.setattr(app, "_cold_cache_opted_out", AsyncMock(return_value=False))
         monkeypatch.setattr(
             "deepagents_code.app._load_cache_prompt_mode", lambda: "expiry"

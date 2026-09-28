@@ -9831,9 +9831,11 @@ class DeepAgentsApp(App):
 
         screen = None
         try:
-            warning = await self._cold_cache_warning_for(
-                QueuedMessage(text="", mode="normal"), advisory=True
-            )
+            try:
+                warning = await self._cold_cache_estimate()
+            except Exception:
+                logger.warning("Could not estimate cache re-warm cost", exc_info=True)
+                warning = None
             if self._exiting or self._lc_thread_id != thread_id:
                 return None
             if warning is not None:
@@ -12763,51 +12765,72 @@ class DeepAgentsApp(App):
         return cmd in SIDE_EFFECT_FREE
 
     async def _cold_cache_warning_for(
-        self,
-        message: QueuedMessage,
-        *,
-        advisory: bool = False,
+        self, message: QueuedMessage
     ) -> ColdCacheWarning | None:
-        """Build a warning when an interactive turn may miss a material cache.
-
-        Args:
-            message: The turn about to be sent.
-            advisory: Build an estimate for the handoff prompt, which never
-                sends. Ignores suppression and the cost threshold; the caller
-                checks opt-outs itself.
+        """Apply send-time warning preferences to a cache cost estimate.
 
         Returns:
-            Validated warning data, or `None` when there is nothing to warn
-                about (for a send, dispatch should proceed).
+            Warning data, or `None` when dispatch should proceed.
+        """
+        from deepagents_code._env_vars import DEBUG_COLD_CACHE, is_env_truthy
+
+        if message.mode != "normal" or message.origin != "interactive":
+            return None
+        debug_forced = is_env_truthy(DEBUG_COLD_CACHE)
+        try:
+            if not debug_forced and await self._cold_cache_opted_out():
+                return None
+            request_at = self._last_model_request_at
+            warning = await self._cold_cache_estimate()
+        except Exception:
+            logger.warning(
+                "Could not evaluate the cold prompt-cache warning; sending normally",
+                exc_info=True,
+            )
+            self._notify_cold_cache_degraded_once()
+            return None
+        if warning is None or debug_forced:
+            return warning
+        if (
+            warning.reason == "idle"
+            and self._status_bar is not None
+            and self._cache_expiry_bypassed
+            == (
+                self._lc_thread_id,
+                self._status_bar.cache_expires_at,
+                request_at,
+            )
+        ):
+            # A cold request can leave cache expiry unchanged. A later request
+            # must end the bypass even if it did not refresh the cache.
+            logger.debug(
+                "Skipping cold-cache warning: handoff declined for this window"
+            )
+            return None
+        threshold = self._cold_cache_warning_threshold_usd
+        if warning.estimate.incremental_cost_usd < threshold:
+            logger.debug(
+                "Skipping cold-cache warning: re-warm delta %.4f is below "
+                "the %.4f threshold",
+                warning.estimate.incremental_cost_usd,
+                threshold,
+            )
+            return None
+        return warning
+
+    async def _cold_cache_estimate(self) -> ColdCacheWarning | None:
+        """Estimate a cold cache independently of prompt timing and preferences.
+
+        Returns:
+            Cache policy, cause, and cost, or `None` when no estimate is available.
         """
         from deepagents_code._env_vars import DEBUG_COLD_CACHE, is_env_truthy
 
         debug_forced = is_env_truthy(DEBUG_COLD_CACHE)
-        threshold = self._cold_cache_warning_threshold_usd
         model_spec = self._effective_model_spec() or ""
         timestamp_value = self._last_model_request_at
         context_tokens = self._context_tokens
-        # Cheap structural skips first; these are the overwhelmingly common
-        # path (every slash command, every ACP prompt) and warrant no logging.
-        if (
-            message.mode != "normal"
-            or message.origin != "interactive"
-            or not model_spec
-            or (
-                self._cold_cache_suppressed_for_session
-                and not debug_forced
-                and not advisory
-            )
-        ):
-            return None
-        # Each remaining skip is a decision to spend without asking, so each
-        # says why. Silence here was previously indistinguishable from the
-        # feature working correctly.
-        if not debug_forced and not advisory and threshold <= 0:
-            logger.debug(
-                "Skipping cold-cache warning: threshold %.4f disables the warning",
-                threshold,
-            )
+        if not model_spec:
             return None
         if not debug_forced and context_tokens <= 0:
             logger.debug(
@@ -12823,7 +12846,6 @@ class DeepAgentsApp(App):
             from datetime import UTC, datetime
 
             from deepagents_code.cold_cache import (
-                COLD_CACHE_WARNING_KEY,
                 ColdCacheWarning,
                 RewarmEstimate,
                 cache_identity_params,
@@ -12835,10 +12857,7 @@ class DeepAgentsApp(App):
                 resolve_prompt_cache_policy,
             )
             from deepagents_code.config import _compose_openai_reasoning_effort
-            from deepagents_code.model_config import (
-                ModelConfig,
-                is_warning_suppressed,
-            )
+            from deepagents_code.model_config import ModelConfig
 
             # Normalized to match `resolve_prompt_cache_policy`, which lowers
             # the provider before matching. `get_base_url` does exact-key
@@ -12893,8 +12912,6 @@ class DeepAgentsApp(App):
                 # the common official-API path.
                 trusted_endpoints=load_trusted_cache_endpoints() if base_url else None,
             )
-            # Resolved before the suppression lookup so the common
-            # no-policy case skips re-reading and re-parsing config.toml.
             if policy is None and not debug_forced:
                 logger.debug(
                     "Skipping cold-cache warning: no documented cache policy "
@@ -12902,16 +12919,6 @@ class DeepAgentsApp(App):
                     model_spec,
                     base_url is not None,
                 )
-                return None
-            # `debug_forced` bypasses persistent suppression too, so the env
-            # var stays a true override rather than silently no-opping for
-            # anyone who once chose "Send and never warn again". `advisory`
-            # bypasses it because its caller has already checked opt-outs.
-            if (
-                not debug_forced
-                and not advisory
-                and is_warning_suppressed(COLD_CACHE_WARNING_KEY)
-            ):
                 return None
             if debug_forced:
                 if policy is None:
@@ -12999,23 +13006,6 @@ class DeepAgentsApp(App):
                     reason = "idle"
                 else:
                     return None
-            if (
-                reason == "idle"
-                and not advisory
-                and self._status_bar is not None
-                and self._cache_expiry_bypassed
-                == (
-                    self._lc_thread_id,
-                    self._status_bar.cache_expires_at,
-                    timestamp_value,
-                )
-            ):
-                # A cold request may leave cache activity (and its expiry)
-                # unchanged. Only bypass while the last request also matches.
-                logger.debug(
-                    "Skipping cold-cache warning: handoff declined for this window"
-                )
-                return None
             estimate = estimate_rewarm_cost(context_tokens, model_spec, policy)
             if estimate is None:
                 logger.debug(
@@ -13036,14 +13026,6 @@ class DeepAgentsApp(App):
                     model_spec,
                 )
                 return None
-            if not advisory and estimate.incremental_cost_usd < threshold:
-                logger.debug(
-                    "Skipping cold-cache warning: re-warm delta %.4f is below "
-                    "the %.4f threshold",
-                    estimate.incremental_cost_usd,
-                    threshold,
-                )
-                return None
             return ColdCacheWarning(
                 policy=policy,
                 estimate=estimate,
@@ -13052,20 +13034,7 @@ class DeepAgentsApp(App):
                 reason=reason,
             )
 
-        try:
-            return await asyncio.to_thread(_evaluate)
-        except Exception:
-            logger.warning(
-                "Could not evaluate the cold prompt-cache warning; sending normally",
-                exc_info=True,
-            )
-            # A failure here sends at full cold-cache price without asking, so
-            # it cannot stay in the log alone: the person paying is the one who
-            # needs to know the protection stopped working. Once per session,
-            # because a persistent cause (a corrupt config file, say) would
-            # otherwise toast on every single send.
-            self._notify_cold_cache_degraded_once()
-            return None
+        return await asyncio.to_thread(_evaluate)
 
     def _notify_cold_cache_degraded_once(self) -> None:
         """Warn once per session that cold-cache checks are failing open."""

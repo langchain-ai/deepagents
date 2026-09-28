@@ -64,7 +64,7 @@ async def test_short_terminal_keeps_handoff_actions_visible(
         reason="idle",
     )
     app = DeepAgentsApp()
-    monkeypatch.setattr(app, "_cold_cache_warning_for", AsyncMock(return_value=warning))
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=warning))
     process = AsyncMock()
     handoff = AsyncMock()
     monkeypatch.setattr(app, "_process_message", process)
@@ -910,7 +910,6 @@ async def test_cold_cache_opt_out_suppresses_handoff(
     app = DeepAgentsApp()
     process = AsyncMock()
     monkeypatch.setattr(app, "_process_message", process)
-    monkeypatch.setattr(app, "_cold_cache_warning_for", AsyncMock(return_value=None))
     if scope == "persistent":
         suppress_warning(COLD_CACHE_WARNING_KEY)
     async with app.run_test() as pilot:
@@ -1071,6 +1070,7 @@ async def test_expiry_acknowledgment_expires_after_a_cold_request(
         await pilot.pause()
         if dismissal == "stay":
             assert isinstance(app.screen, ColdCacheWarningScreen)
+            assert "~$1.0" in app.screen._body()
             await pilot.press("escape")
             await pilot.pause()
         assert not isinstance(app.screen, ColdCacheWarningScreen)
@@ -1079,9 +1079,6 @@ async def test_expiry_acknowledgment_expires_after_a_cold_request(
         app._sync_cache_state_from_state(state)
         message = QueuedMessage("next", "normal")
         assert await app._cold_cache_warning_for(message) is None
-        advisory = await app._cold_cache_warning_for(message, advisory=True)
-        assert advisory is not None
-        assert "~$1.0" in ColdCacheWarningScreen(advisory, handoff=True)._body()
 
         # A later successful cold request advances the request time but leaves
         # cache activity unchanged for providers that report only cache reads.

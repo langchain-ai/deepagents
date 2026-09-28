@@ -16915,6 +16915,22 @@ class DeepAgentsApp(App):
             return _BlockedGoalResetResult.failed()
         return _BlockedGoalResetResult.reset(note)
 
+    async def _reconcile_goal_for_steered_turn(self) -> _BlockedGoalResetResult:
+        """Refresh the stopped run's goal before treating a steer as user input.
+
+        Returns:
+            Whether the replacement may run and a blocked goal was resumed.
+        """
+        # Detaching the renderer leaves the server running. Settle its final
+        # checkpoint before reading or overwriting an agent-side blocker.
+        if (remote := self._remote_agent()) and self._lc_thread_id:
+            await remote.acancel_active_runs(
+                {"configurable": {"thread_id": self._lc_thread_id}}
+            )
+        if not await self._sync_goal_rubric_state_from_thread():
+            return _BlockedGoalResetResult.failed()
+        return await self._reset_blocked_goal_for_user_turn()
+
     @staticmethod
     def _rubric_command_remainder(command: str) -> str:
         """Return text after `/rubric` or `/criteria`."""
@@ -19873,6 +19889,37 @@ class DeepAgentsApp(App):
                 except SteeredError as steer:
                     message = steer.request.text
                     media_snapshot = steer.request.media
+                    # A grade from the interrupted turn cannot authorize the
+                    # replacement's completion, even if it remains checkpointed.
+                    latest_goal_grade = None
+                    if self._active_goal:
+                        reset = await self._reconcile_goal_for_steered_turn()
+                        if not reset.ready:
+                            await self._mount_message(
+                                ErrorMessage(
+                                    "Goal state could not be prepared, so this "
+                                    "steering message was not sent. Retry after "
+                                    "the thread state is available."
+                                )
+                            )
+                            return
+                        if reset.did_reset:
+                            await self._mount_message(
+                                AppMessage(
+                                    "Resuming previously blocked goal: "
+                                    f"{self._active_goal}"
+                                )
+                            )
+                        rubric = (
+                            None
+                            if self._goal_status in {"paused", "complete"}
+                            else self._active_rubric
+                        )
+                        goal_backed_grading = bool(
+                            rubric
+                            and self._active_goal
+                            and self._goal_status == "active"
+                        )
                     steering_options["multitask_strategy"] = "interrupt"
                     message_kwargs = None
                     skill_name = None

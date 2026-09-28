@@ -9353,6 +9353,157 @@ class TestGoalCommand:
             assert app._goal_status == "complete"
             assert app._goal_status_note == "Acceptance criteria satisfied."
 
+    @pytest.mark.parametrize("grade_source", ["original", "replacement"])
+    async def test_steered_reply_resumes_blocked_goal_before_grading(
+        self, grade_source: str
+    ) -> None:
+        """A steered reply can complete a blocker resolved by new user input."""
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.client.steering import (
+            SteeredError,
+            SteeringControl,
+            SteeringInput,
+        )
+
+        agent = MagicMock(spec=RemoteAgent)
+        app = DeepAgentsApp(agent=agent)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "ship the fix"
+            app._goal_status = "active"
+            app._active_rubric = "tests pass"
+            checkpoint = app._goal_state_update()
+            replacement_status: list[object] = []
+
+            def update(values: dict[str, object]) -> None:
+                checkpoint.update(values)
+
+            def stop_original(_config: object) -> None:
+                # The stopped run's final checkpoint may arrive after detaching.
+                checkpoint["_goal_status"] = "blocked"
+                checkpoint["_goal_status_note"] = "waiting for test results"
+
+            agent.acancel_active_runs.side_effect = stop_original
+
+            async def execute(
+                *,
+                user_input: str,
+                steering: SteeringControl,
+                goal_active: bool,
+                on_rubric_evaluation_end: Callable[[RubricEvaluationEnd], None],
+                **_: object,
+            ) -> None:
+                await asyncio.sleep(0)
+                if user_input == grade_source:
+                    checkpoint["_rubric_status"] = "satisfied"
+                    checkpoint["_current_grading_run_id"] = grade_source
+                    on_rubric_evaluation_end(
+                        RubricEvaluationEnd(grade_source, "satisfied")
+                    )
+                if user_input == "original":
+                    checkpoint["_goal_status"] = "blocked"
+                    checkpoint["_goal_status_note"] = "waiting for test results"
+                    steering.detached = True
+                    steering.unsent = SteeringInput("replacement")
+                    raise SteeredError(steering.unsent)
+                replacement_status.append(checkpoint["_goal_status"])
+                assert goal_active
+                steering.unsent = None
+                steering.detached = False
+
+            with (
+                patch.object(
+                    app, "_get_thread_state_values", AsyncMock(return_value=checkpoint)
+                ),
+                patch.object(app, "_aupdate_thread_state", side_effect=update),
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual", execute
+                ),
+            ):
+                await app._run_agent_task("original")
+
+            assert replacement_status == ["active"]
+            expected = "complete" if grade_source == "replacement" else "active"
+            assert app._goal_status == checkpoint["_goal_status"] == expected
+            assert any(
+                "Resuming previously blocked goal: ship the fix" in str(w._content)
+                for w in app.query(AppMessage)
+            )
+
+    @pytest.mark.parametrize("failure", ["read", "write"])
+    async def test_steered_reply_is_recovered_when_goal_reset_fails(
+        self, failure: str
+    ) -> None:
+        """A failed goal refresh/reset retains the reply and its attachments."""
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.client.steering import (
+            SteeredError,
+            SteeringControl,
+            SteeringInput,
+        )
+        from deepagents_code.input import MediaTracker
+
+        app = DeepAgentsApp(agent=MagicMock(spec=RemoteAgent))
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread-1"
+            app._active_goal = "ship the fix"
+            app._goal_status = "active"
+            app._active_rubric = "tests pass"
+            checkpoint = app._goal_state_update()
+            media = MediaTracker()
+            media.add_image(ImageData("test results", "png", ""))
+            request = SteeringInput("results [image 1]", media)
+            prompts: list[str] = []
+
+            def read(_thread_id: str) -> dict[str, object]:
+                if prompts and failure == "read":
+                    msg = "checkpoint unavailable"
+                    raise RuntimeError(msg)
+                return dict(checkpoint)
+
+            def update(values: dict[str, object]) -> None:
+                if prompts and values.get("_goal_status") == "active":
+                    msg = "reset write failed"
+                    raise RuntimeError(msg)
+                checkpoint.update(values)
+
+            async def execute(
+                *, user_input: str, steering: SteeringControl, **_: object
+            ) -> None:
+                await asyncio.sleep(0)
+                prompts.append(user_input)
+                if user_input == "original":
+                    checkpoint["_goal_status"] = "blocked"
+                    checkpoint["_goal_status_note"] = "waiting for test results"
+                    steering.detached = True
+                    steering.unsent = request
+                    raise SteeredError(request)
+                steering.unsent = None
+                steering.detached = False
+
+            with (
+                patch.object(app, "_get_thread_state_values", side_effect=read),
+                patch.object(app, "_aupdate_thread_state", side_effect=update),
+                patch(
+                    "deepagents_code.tui.textual_adapter.execute_task_textual", execute
+                ),
+            ):
+                app._set_agent_running(True)
+                await app._run_agent_task("original")
+
+            assert prompts == ["original"]
+            assert checkpoint["_goal_status"] == "blocked"
+            assert app._chat_input is not None
+            assert app._chat_input.value == request.text
+            assert app._image_tracker.get_images() == media.get_images()
+            assert not app._agent_running
+            assert any(
+                "steering message was not sent" in str(w._content)
+                for w in app.query(ErrorMessage)
+            )
+
     async def test_satisfied_grade_before_turn_error_keeps_goal_active(self) -> None:
         """A satisfied grade seen before the turn aborts must not complete a goal.
 

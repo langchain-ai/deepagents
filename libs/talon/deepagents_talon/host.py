@@ -126,6 +126,9 @@ _SMART_MODEL_OPERATOR_ONLY_MESSAGE = "Only an operator can change the smart mode
 _SMART_MODEL_UNKNOWN_MESSAGE = "Not an available model. Send /model to list them."
 _SMART_MODEL_LOAD_FAILURE_MESSAGE = "Could not load that model. Check Talon logs."
 _SMART_MODEL_SAVE_FAILURE_MESSAGE = "Could not save the smart model selection. Check Talon logs."
+_SMART_MODEL_ROLLBACK_FAILURE_MESSAGE = (
+    "Could not save or restore the smart model selection. Check Talon logs."
+)
 _SMART_MODEL_HELP_MESSAGE = (
     "Send /smart-model <provider:model>, /smart-model off, or /smart-model default."
 )
@@ -738,7 +741,11 @@ class TalonHost:
         ):
             return _SMART_MODEL_UNKNOWN_MESSAGE
         spec = (
-            self.config.env.get("DEEPAGENTS_TALON_HELP_MODEL", "").strip() or None
+            self.config.env.get(
+                "DEEPAGENTS_TALON_HELP_MODEL",
+                os.environ.get("DEEPAGENTS_TALON_HELP_MODEL", ""),
+            ).strip()
+            or None
             if argument == "default"
             else None
             if argument == "off"
@@ -765,12 +772,15 @@ class TalonHost:
             except OSError:
                 logger.warning("Could not save smart model selection", exc_info=True)
                 try:
-                    await agent.select_smart_model(previous)
+                    if await agent.select_smart_model(previous):
+                        return _SMART_MODEL_SAVE_FAILURE_MESSAGE
                 except Exception:  # noqa: BLE001
                     logger.warning(
                         "Could not restore smart model after save failure", exc_info=True
                     )
-                return _SMART_MODEL_SAVE_FAILURE_MESSAGE
+                else:
+                    logger.warning("Previous smart model is unavailable after save failure")
+                return _SMART_MODEL_ROLLBACK_FAILURE_MESSAGE
             self._smart_model_override = override
             return f"Smart model now uses {spec or 'off'} across chats."
 

@@ -76,12 +76,14 @@ class BtwScreen(ModalScreen[None]):
                 placeholder="Ask anything about this conversation",
                 id="btw-input",
             )
-            yield Static(
-                f" {get_glyphs().bullet} ".join(
-                    ("Enter ask", newline_hint(), "Tab history/input", "Esc dismiss")
-                ),
-                id="btw-help",
-            )
+            yield Static(self._help_text(), id="btw-help")
+
+    def _help_text(self) -> str:
+        hints = ["Enter ask", newline_hint()]
+        if self.has_class("has-history"):
+            hints.append("Tab history/input")
+        hints.append("Esc dismiss")
+        return f" {get_glyphs().bullet} ".join(hints)
 
     async def on_mount(self) -> None:
         """Start an independent worker only after the modal is mounted."""
@@ -113,6 +115,7 @@ class BtwScreen(ModalScreen[None]):
         editor.reset_paste_state()
         editor.clear()
         self.add_class("has-history")
+        self.query_one("#btw-help", Static).update(self._help_text())
         scroll = self.query_one("#btw-scroll", VerticalScroll)
         scroll.display = True
         scroll.focus()

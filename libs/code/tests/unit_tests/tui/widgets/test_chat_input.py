@@ -14,6 +14,7 @@ from textual.containers import Container
 from textual.widgets import Static
 from textual.widgets.text_area import Selection
 
+from deepagents_code.command_registry import ALWAYS_IMMEDIATE, HIDDEN_COMMANDS
 from deepagents_code.input import MediaTracker
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.tui.widgets import (
@@ -332,6 +333,49 @@ class _ImagePasteRecordingApp(App[None]):
 
     def on_chat_input_submitted(self, event: ChatInput.Submitted) -> None:
         self.submitted.append(event)
+
+
+@pytest.mark.parametrize(
+    "command", [*sorted(ALWAYS_IMMEDIATE | HIDDEN_COMMANDS), "/RESTART"]
+)
+async def test_submission_pause_allows_recovery_commands(command: str) -> None:
+    """Recovery commands must reach the app through the Enter-key path."""
+    app = _RecordingApp()
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatInput)
+        chat.submission_block_reason = "Wait for the handoff to finish."
+        # A trailing space submits the exact name, including hidden commands
+        # and aliases, without accepting a fuzzy autocomplete suggestion.
+        chat.set_value_at_end(f"{command} ")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert len(app.submitted) == 1
+        assert app.submitted[0].value == command
+        assert app.submitted[0].mode == "command"
+        assert chat.value == ""
+        assert chat.submission_block_reason is not None
+
+
+@pytest.mark.parametrize(
+    "draft",
+    ["keep working", "/help ", "/restart later", "/quitter ", "!quit", "!!quit"],
+)
+async def test_submission_pause_blocks_ordinary_input(draft: str) -> None:
+    """Normal messages, other commands, and shell input remain editable."""
+    app = _RecordingApp()
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatInput)
+        chat.submission_block_reason = "Wait for the handoff to finish."
+        chat.set_value_at_end(draft)
+        await pilot.pause()
+        original = chat.value
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert not app.submitted
+        assert chat.value == original
 
 
 async def test_submission_pause_preserves_pastes_and_images(tmp_path: Path) -> None:

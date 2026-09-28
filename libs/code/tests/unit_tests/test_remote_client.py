@@ -354,7 +354,7 @@ async def test_accounting_failure_preserves_main_stream_and_state(
     agent._graph.aget_state = AsyncMock(return_value=snapshot)
     state = await agent.aget_state(_config())
     assert state is snapshot
-    cost = await agent.aget_session_cost(_config())
+    cost = await agent.aget_session_cost(_config(), checkpoint=state.values)
     assert cost is not None
     assert cost["total"] == pytest.approx(2.5)
 
@@ -498,7 +498,7 @@ async def test_delayed_stream_preserves_refreshed_side_cost(graph_total: float) 
     assert event["breakdown"]["total_cost_usd"] == pytest.approx(expected)
     assert event["breakdown"]["request_count"] == 3
     agent._graph.client.http.get.side_effect = RuntimeError("accounting unavailable")
-    cached = await agent.aget_session_cost(_config())
+    cached = await agent.aget_session_cost(_config(), checkpoint={})
     assert cached is not None
     assert cached["total"] == pytest.approx(expected)
     assert cached["breakdown"] == event["breakdown"]
@@ -546,7 +546,7 @@ async def test_equal_dollar_snapshots_keep_latest_side_usage(
     agent._graph.client.http.get.return_value = {"cost": incoming}
 
     if source == "http":
-        result = await agent.aget_session_cost(_config())
+        result = await agent.aget_session_cost(_config(), checkpoint={})
     else:
         monkeypatch.setattr(agent, "aensure_thread", AsyncMock())
         monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
@@ -569,7 +569,7 @@ async def test_equal_dollar_snapshots_keep_latest_side_usage(
     assert breakdown["input_cost_complete"] is priced
     assert breakdown["output_cost_complete"] is priced
     agent._graph.client.http.get.side_effect = RuntimeError("accounting unavailable")
-    cached = await agent.aget_session_cost(_config())
+    cached = await agent.aget_session_cost(_config(), checkpoint={})
     assert cached is not None
     assert cached["breakdown"] == breakdown
 

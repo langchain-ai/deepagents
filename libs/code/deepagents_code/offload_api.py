@@ -21,6 +21,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from deepagents_code._async import _join_task_deferring_cancellation
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.btw_api import btw, btw_cost
 from deepagents_code.cost_tracking import prepare_operation_cost
@@ -955,23 +956,6 @@ async def _commit_deferred_archive(
             msg = "Offload wrote its archive but could not confirm the archive link."
             raise _OffloadIndeterminateError(msg) from None
         execution.result["archive_path"] = append.path
-
-
-async def _join_task_deferring_cancellation[T](
-    task: asyncio.Task[T],
-) -> asyncio.CancelledError | None:
-    """Join a settlement task while retaining the first cancellation edge.
-
-    Returns:
-        The cancellation to re-raise after settlement, or `None`.
-    """
-    cancellation: asyncio.CancelledError | None = None
-    while not task.done():
-        try:
-            await asyncio.wait((task,))
-        except asyncio.CancelledError as exc:
-            cancellation = cancellation or exc
-    return cancellation
 
 
 async def _execute_offload(

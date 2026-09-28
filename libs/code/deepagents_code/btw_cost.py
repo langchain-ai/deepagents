@@ -19,6 +19,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from deepagents_code._async import _join_task_deferring_cancellation
 from deepagents_code.cost_tracking import (
     _RECORDER_VAR,
     CostBreakdown,
@@ -204,8 +205,6 @@ async def answer_with_cost(
     Returns:
         Answer text and the persisted side-question subtotal, when available.
     """
-    from deepagents_code.offload_api import _join_task_deferring_cancellation
-
     fallback = _checkpointed_model_spec(state)
     historical_complete = not _has_legacy_cost_history(state)
     del state  # Even a logged settlement traceback must not retain the transcript.

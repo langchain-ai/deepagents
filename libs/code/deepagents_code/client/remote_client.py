@@ -447,28 +447,22 @@ class RemoteAgent:
         self,
         config: Mapping[str, Any],
         *,
-        checkpoint: Mapping[str, object] | None = None,
+        checkpoint: Mapping[str, object],
     ) -> SessionCost | None:
         """Reconcile main-task state and refresh separately persisted side spend.
 
         Args:
             config: Config with `configurable.thread_id`.
-            checkpoint: Already fetched graph state, avoiding a second state read.
+            checkpoint: Already fetched graph state, or empty if unavailable.
 
         Returns:
             Combined usage. Without valid graph state, `cached` tells callers
             to preserve provisional main-task usage even if side spend refreshed.
         """
         tracker = self._cost_tracker(_require_thread_id(config))
-        if checkpoint is None:
-            try:
-                state = await self.aget_state(dict(config))
-                checkpoint = state.values if state is not None else {}
-            except Exception:
-                logger.warning("Could not refresh main-task costs", exc_info=True)
         settled = tracker.update_graph(
-            checkpoint.get("_session_cost_usd") if checkpoint else None,
-            checkpoint.get("_session_cost_breakdown") if checkpoint else None,
+            checkpoint.get("_session_cost_usd"),
+            checkpoint.get("_session_cost_breakdown"),
         )
         await self._refresh_side_cost(_require_thread_id(config))
         return tracker.snapshot(cached=not settled)

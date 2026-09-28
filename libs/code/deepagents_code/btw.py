@@ -350,6 +350,53 @@ class BtwOperation(AgentMiddleware):
             model_response=await handler(request), command=command
         )
 
+    async def _resolve_context(
+        self, thread_id: str, state: Mapping[str, object]
+    ) -> tuple[BaseChatModel, SystemMessage, dict[str, Any]]:
+        """Resolve side-answer settings within the workspace environment.
+
+        Returns:
+            Model, instructions, and generation settings with tools removed,
+            preferring live snapshots over checkpoint and workspace defaults.
+
+        Raises:
+            TypeError: If the configured model is not a chat model.
+        """
+        from deepagents_code.config import create_model
+
+        snapshot = self._snapshots.get(thread_id)
+        model, system, settings = snapshot or (self._model, self._system, {})
+        settings = deepcopy(settings)
+        spec = state.get("_model_spec")
+        if (snapshot is None and isinstance(spec, str) and spec) or isinstance(
+            model, str
+        ):
+            params = state.get("_model_params")
+            result = await asyncio.to_thread(
+                create_model,
+                spec if isinstance(spec, str) and spec else str(model),
+                extra_kwargs=dict(params) if isinstance(params, Mapping) else None,
+                profile_overrides=self._profile_overrides,
+                bind_preserved_thinking=False,
+            )
+            model = result.model
+        while isinstance(model, RunnableBinding):
+            settings = {**deepcopy(model.kwargs), **settings}
+            model = model.bound
+        settings = _tool_free_options(settings)
+        if not isinstance(model, BaseChatModel):
+            msg = "Side questions require an unbound chat model."
+            raise TypeError(msg)
+        if snapshot is None:
+            saved_system = state.get("_btw_system_prompt")
+            if isinstance(saved_system, str):
+                system = SystemMessage(content=saved_system)
+            else:
+                system = await _restore_system(
+                    system, model, state, self._instruction_middleware
+                )
+        return _tool_free_model(model), system, settings
+
     async def answer(
         self,
         thread_id: str,
@@ -380,42 +427,11 @@ class BtwOperation(AgentMiddleware):
 
         Raises:
             TypeError: If the configured model is not a chat model.
-        """
-        from deepagents_code.config import create_model, use_environment
+        """  # noqa: DOC502 — raised by _resolve_context
+        from deepagents_code.config import use_environment
 
-        snapshot = self._snapshots.get(thread_id)
-        model, system, settings = snapshot or (self._model, self._system, {})
-        settings = deepcopy(settings)
         with use_environment(self._environ):
-            spec = state.get("_model_spec")
-            if (snapshot is None and isinstance(spec, str) and spec) or isinstance(
-                model, str
-            ):
-                params = state.get("_model_params")
-                result = await asyncio.to_thread(
-                    create_model,
-                    spec if isinstance(spec, str) and spec else str(model),
-                    extra_kwargs=dict(params) if isinstance(params, Mapping) else None,
-                    profile_overrides=self._profile_overrides,
-                    bind_preserved_thinking=False,
-                )
-                model = result.model
-            while isinstance(model, RunnableBinding):
-                settings = {**deepcopy(model.kwargs), **settings}
-                model = model.bound
-            settings = _tool_free_options(settings)
-            if not isinstance(model, BaseChatModel):
-                msg = "Side questions require an unbound chat model."
-                raise TypeError(msg)
-            if snapshot is None:
-                saved_system = state.get("_btw_system_prompt")
-                if isinstance(saved_system, str):
-                    system = SystemMessage(content=saved_system)
-                else:
-                    system = await _restore_system(
-                        system, model, state, self._instruction_middleware
-                    )
-            model = _tool_free_model(model)
+            model, system, settings = await self._resolve_context(thread_id, state)
             messages = [
                 *_conversation(state),
                 *(

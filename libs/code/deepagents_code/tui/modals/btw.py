@@ -105,10 +105,10 @@ class BtwScreen(ModalScreen[None]):
             yield Static(self._help_text(), id="btw-help")
 
     def _help_text(self) -> str:
-        hints = ["Enter ask", newline_hint()]
+        hints = ["Enter submit", newline_hint()]
         if self.has_class("has-history"):
-            hints.append("Tab history/input")
-        hints.extend(("Ctrl+X clear", "Esc hide"))
+            hints.extend(("Tab history/input", "Ctrl+X clear"))
+        hints.append("Esc hide")
         return f" {get_glyphs().bullet} ".join(hints)
 
     async def on_mount(self) -> None:

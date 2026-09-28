@@ -1605,7 +1605,7 @@ async def delete_thread(thread_id: str) -> bool:
     """Delete thread checkpoints, side-question costs, and offloaded history.
 
     Removes the thread's checkpoint/write rows, then makes a best-effort attempt
-    to remove the per-thread offloaded conversation-history archive under
+    to remove the per-thread compaction archive and handoff snapshots under
     `~/.deepagents` (local mode) so deletion does not leave orphaned history
     behind. History cleanup failures are logged, not raised, and do not affect
     the return value, which reflects only whether checkpoint rows were removed.

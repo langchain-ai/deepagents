@@ -1499,11 +1499,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         summary = await summarization._acreate_summary(to_summarize)
         # Handoffs snapshot every checkpointed message without advancing the
         # source cutoff. Appending to its compaction archive would repeat history.
-        session_id = (
-            f"handoff_{uuid4().hex}"
-            if handoff
-            else summarization._get_session_id(state)
-        )
+        # The server adds source-thread ownership before committing the snapshot.
+        session_id = uuid4().hex if handoff else summarization._get_session_id(state)
         archive = _PendingArchive(
             summarization,
             self._summarization._backend,

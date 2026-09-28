@@ -30,6 +30,7 @@ from deepagents_code.hooks.server_middleware import (
     HookTransportInterruptError,
     operation_hook_responses,
 )
+from deepagents_code.offload import _handoff_archive_prefix
 from deepagents_code.offload_middleware import (
     OffloadStateUpdate,
     _archive_lock,
@@ -987,6 +988,11 @@ async def _commit_handoff(
     archive = execution.archive
     if archive is None:
         return
+    # Bind the immutable recovery snapshot to its source before writing it.
+    # Cleanup can then find it even if child creation fails or the app restarts.
+    archive = archive._replace(
+        session_id=f"{_handoff_archive_prefix(thread_id)}{archive.session_id}"
+    )
     append = None
     async with _archive_lock(archive.session_id):
         try:

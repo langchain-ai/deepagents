@@ -983,6 +983,23 @@ class TestExecuteOffload:
             transcript = (await backend.adownload_files([archive_path]))[0].content
             assert transcript is not None
             assert "hello" in transcript.decode("utf-8")
+
+            # Deletion must reach the real handoff file even with retention off
+            # and no remaining checkpoints, as after an interrupted deletion.
+            from deepagents_code import offload, sessions
+
+            monkeypatch.setattr(offload, "_offload_fallback_root", lambda: tmp_path)
+            monkeypatch.setattr(offload, "_history_retention_days", lambda: 0)
+            monkeypatch.setattr(
+                sessions, "get_db_path", lambda: tmp_path / "sessions.db"
+            )
+            assert offload.sweep_offloaded_history() == 0
+            await sessions.delete_thread("unrelated-thread")
+            assert (await backend.adownload_files([archive_path]))[
+                0
+            ].content == transcript
+            await sessions.delete_thread("thread-1")
+            assert (await backend.adownload_files([archive_path]))[0].content is None
         else:
             assert result["status"] == "failed"
             assert result["error"]

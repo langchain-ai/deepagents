@@ -27,7 +27,7 @@ from textual.widgets import Markdown, Static, TextArea
 
 from deepagents_code.btw import BtwOperation
 from deepagents_code.client.remote_client import RemoteAgent
-from deepagents_code.tui.modals.btw import BtwScreen
+from deepagents_code.tui.modals.btw import BtwScreen, BtwTextArea
 from deepagents_code.tui.widgets.messages import AssistantMessage, UserMessage
 
 if TYPE_CHECKING:
@@ -1335,6 +1335,130 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
         await app._handle_command("/btw Start over")
         await pilot.pause()
         assert remote.abtw.call_args.kwargs["history"] == ()
+
+
+@pytest.mark.parametrize("focus_history", [False, True])
+async def test_clear_discards_side_history_errors_and_draft(
+    btw_app: tuple[DeepAgentsApp, MagicMock], focus_history: bool
+) -> None:
+    app, remote = btw_app
+    remote.abtw.side_effect = [
+        "Old answer",
+        RuntimeError("Old error"),
+        "Fresh answer",
+        "Follow-up answer",
+    ]
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        app._connecting = False
+        app._set_session_cost(1.5)
+        before = app._message_store.get_all_messages()
+        await pilot.press(*"/btw", "enter")
+        await pilot.pause()
+        screen = app.screen
+        editor = screen.query_one(BtwTextArea)
+        placeholder = editor.placeholder
+        # Clearing an empty modal is harmless, including repeated resets.
+        await pilot.press("ctrl+x", "ctrl+x", *"First", "enter")
+        await pilot.pause()
+        await pilot.press(*"Failed follow-up", "enter")
+        await pilot.pause()
+        assert screen.query(".btw-error").last(Static).content == "Old error"
+        app.post_message(events.Paste("Draft line\n" * 100))
+        await pilot.pause()
+        assert editor.submitted_value == "Draft line\n" * 100
+        if focus_history:
+            await pilot.press("tab")
+            assert screen.query_one("#btw-scroll").has_focus
+
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        assert app.screen is screen
+        assert not screen.query(UserMessage)
+        assert not screen.query(AssistantMessage)
+        assert not screen.query(".btw-error")
+        assert not screen.query_one("#btw-scroll").display
+        assert not screen.query_one("#btw-loading").display
+        assert not screen.has_class("has-history")
+        assert editor.has_focus
+        assert editor.placeholder == placeholder
+        assert editor.submitted_value == ""
+        assert app._session_cost_usd == pytest.approx(1.5)
+        # Undo must not resurrect the discarded draft or its paste placeholders.
+        await pilot.press("ctrl+z", *"Fresh", "enter")
+        await pilot.pause()
+        assert remote.abtw.call_args.args == ("Fresh",)
+        assert remote.abtw.call_args.kwargs["history"] == ()
+        await pilot.press(*"Follow-up", "enter")
+        await pilot.pause()
+        assert remote.abtw.call_args.kwargs["history"] == (("Fresh", "Fresh answer"),)
+        assert app._message_store.get_all_messages() == before
+        assert not app._pending_messages
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_clear_cancels_side_answer_and_keeps_main_worker_running(
+    btw_app: tuple[DeepAgentsApp, MagicMock], streaming: bool
+) -> None:
+    app, remote = btw_app
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release_main = asyncio.Event()
+
+    async def answer(
+        question: str, *, on_text: Callable[[str], Awaitable[None]], **_kwargs: object
+    ) -> str:
+        if question == "Fresh":
+            return "Fresh answer"
+        try:
+            if streaming:
+                await on_text("Partial answer")
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+        return "unreachable"
+
+    remote.abtw.side_effect = answer
+    async with app.run_test(size=(110, 36)) as pilot:
+        await pilot.pause()
+        app._connecting = False
+        app._agent_running = True
+        main = app.run_worker(release_main.wait(), group="agent")
+        before = app._message_store.get_all_messages()
+        try:
+            await pilot.press(*"/btw why", "enter")
+            await asyncio.wait_for(started.wait(), 2)
+            await pilot.pause()
+            screen = app.screen
+            message = screen.query_one(AssistantMessage)
+            assert screen.query_one(BtwTextArea).disabled
+            assert screen.query_one("#btw-loading").display is not streaming
+
+            await pilot.press("ctrl+x")
+            await asyncio.wait_for(cancelled.wait(), 2)
+            await pilot.pause()
+            assert app.screen is screen
+            assert not screen.query(AssistantMessage)
+            assert message._stream is None
+            assert not screen.query_one("#btw-loading").display
+            assert screen.query_one(BtwTextArea).has_focus
+            assert not screen.query_one(BtwTextArea).disabled
+            assert main.is_running
+            assert not main.is_cancelled
+            assert app._agent_running
+
+            await pilot.press(*"Fresh", "enter")
+            await pilot.pause()
+            assert remote.abtw.call_args.kwargs["history"] == ()
+            assert screen.query_one(AssistantMessage).query_one(Markdown)._markdown == (
+                "Fresh answer"
+            )
+            assert app._message_store.get_all_messages() == before
+        finally:
+            release_main.set()
+            await main.wait()
+            app._agent_running = False
 
 
 async def test_thinking_follows_question_and_prevents_duplicate_submits() -> None:

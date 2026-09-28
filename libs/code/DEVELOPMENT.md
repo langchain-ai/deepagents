@@ -149,7 +149,7 @@ Raw stdio MCP server stderr is discarded to protect the TUI and prevent unbounde
 
 Press `Ctrl+\` (or run the hidden `/debug` command) inside a session to toggle a read-only Debug Console overlay. It shows a point-in-time session/runtime snapshot (version, model, thread, cwd, auto-approve, sandbox, MCP servers, token usage, debug-log path) plus a live tail of recent `deepagents_code.*` log records.
 
-The tail is fed by an always-on in-memory ring buffer (`_debug_buffer.install_log_buffer`, installed on the package logger in `__init__.py`), so it works **without** `DEEPAGENTS_CODE_DEBUG` — though enabling that switch raises the captured level to `DEBUG` and adds the file handler above. In the console, `Ctrl+L` clears the on-screen view (the buffer keeps accruing) and `c` copies the visible lines.
+The tail is fed by an always-on in-memory ring buffer (`_debug_buffer.install_log_buffer`, installed on the package logger in `__init__.py`), so it works **without** `DEEPAGENTS_CODE_DEBUG` — though enabling that switch raises the captured level to `DEBUG` and adds the file handler above. In the console, `Ctrl+X` clears the on-screen view (the buffer keeps accruing) and `c` copies the visible lines. `Ctrl+L` remains an alias for clearing the view. In `/btw`, `Ctrl+X` cancels the side answer and clears the transcript, follow-up context, and draft while keeping the modal open.
 
 ## Local dev installs
 

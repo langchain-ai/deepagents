@@ -3631,7 +3631,7 @@ class DeepAgentsApp(App):
         self._debug_console_cleared_upto = 0
         """Absolute emission index the Debug Console was last cleared up to.
 
-        Persists a `Ctrl+L` clear across close/reopen of the console for the
+        Persists a `Ctrl+X` clear across close/reopen of the console for the
         process lifetime; each newly opened `DebugConsoleScreen` is seeded from
         it and reports a fresh clear back through its `on_clear` callback.
         """
@@ -16944,7 +16944,9 @@ class DeepAgentsApp(App):
                 return text
 
             self.push_screen(
-                BtwScreen(answer, question, stream_answer=answer),
+                BtwScreen(
+                    answer, question, stream_answer=answer, on_clear=history.clear
+                ),
                 lambda _result: self._focus_chat_input_after_refresh(),
             )
         elif cmd == "/agents":

@@ -457,7 +457,7 @@ On Slack, the client treats a message starting with `/` as a slash command, so t
 
 1. An unknown sender DMs the bot. Their message is dropped before it reaches the host or the model, and the bot replies once with a code such as `K7QM-3XRD`. The code is bound to that sender on that channel, expires after 1 hour, and works once.
 2. The sender passes the code to the operator by any other means.
-3. The operator approves it with `/pair approve K7QM-3XRD` in their own DM with the bot, or with `deepagents-talon pairing approve discord K7QM-3XRD`. The sender is told they were approved, and their next DM reaches the agent.
+3. The operator approves it with `/pair approve K7QM-3XRD` in their own DM with the bot, or with `deepagents-talon pairing approve <channel> K7QM-3XRD`, where `<channel>` is the requester's channel (`discord`, `slack`, or `telegram`); a code only approves on the channel it was issued on. The sender is told they were approved, and their next DM reaches the agent.
 
 `/pair list` shows pending codes and paired senders. `/pair revoke <sender-id>` removes a sender, cancels their in-flight run, pauses cron jobs created in their DM, and stops any of those jobs' runs in progress so their results are not delivered. Paused jobs stay paused if the sender is approved again. The CLI has matching `list`, `approve`, and `revoke` subcommands. A CLI revoke takes effect on the sender's next message but cannot cancel a run in progress. It lists their enabled cron jobs and prints a `deepagents-talon pairing pause-jobs <channel> <conversation-id>` command to pause them. Run that only while Talon is stopped, because the running host is the cron store's only writer.
 

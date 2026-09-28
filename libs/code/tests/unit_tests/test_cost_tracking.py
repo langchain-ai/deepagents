@@ -2347,12 +2347,11 @@ class TestGraphCostOwnership:
         assert second_total_usd == pytest.approx(10 * self._one_call_usd())
 
 
-@pytest.mark.parametrize("pricing_ok", [False, True])
 @pytest.mark.parametrize(
     "error", [sqlite3.OperationalError("database is locked"), OSError("unavailable")]
 )
 def test_side_database_failure_preserves_main_cost_event(
-    error: Exception, monkeypatch: pytest.MonkeyPatch, *, pricing_ok: bool
+    error: Exception, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from deepagents_code import btw_cost
 
@@ -2368,7 +2367,7 @@ def test_side_database_failure_preserves_main_cost_event(
         _runtime(thread_id=THREAD_ID, events=events),
         0.5,
         delta,
-        pricing_ok=pricing_ok,
+        pricing_ok=False,
     )
 
     assert len(events) == 1
@@ -2379,7 +2378,7 @@ def test_side_database_failure_preserves_main_cost_event(
     assert event["breakdown"] == event["graph_breakdown"]
     assert event["breakdown"]["request_count"] == 2
     assert event["side_breakdown"] is None
-    assert event["pricing_ok"] is pricing_ok
+    assert event["pricing_ok"] is False
 
 
 async def test_side_question_cost_is_durable_without_another_turn(

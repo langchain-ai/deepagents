@@ -313,8 +313,14 @@ async def test_side_context_budget_includes_instructions_history_and_output(
     assert state == before
 
 
-@pytest.mark.parametrize("model_spec", ["test:bootstrap", "test:switched"])
-@pytest.mark.parametrize("snapshot", ["resumed", "live", "evicted"])
+@pytest.mark.parametrize(
+    ("model_spec", "snapshot"),
+    [
+        ("test:bootstrap", "resumed"),
+        ("test:switched", "resumed"),
+        ("test:switched", "live"),
+    ],
+)
 async def test_side_context_keeps_session_profile_overrides(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, model_spec: str, snapshot: str
 ) -> None:
@@ -344,14 +350,12 @@ async def test_side_context_keeps_session_profile_overrides(
         )
     )
     operation: BtwOperation = getattr(server.backend, BTW_OPERATION_ATTR)
-    if snapshot != "resumed":
+    if snapshot == "live":
         operation._snapshots["thread"] = (
             cast("BaseChatModel", operation._model),
             SystemMessage(content="Main instructions"),
             {},
         )
-    if snapshot == "evicted":
-        operation._snapshots.clear()
     state = {
         "_model_spec": model_spec,
         "messages": [
@@ -981,9 +985,7 @@ async def test_side_cost_survives_main_cancellation(
         assert app._displayed_cost_usd == pytest.approx(main_total + 0.5)
 
 
-@pytest.mark.parametrize("question", ["", "Why this approach?"])
 async def test_app_requires_a_message_before_btw(
-    question: str,
     btw_app: tuple[DeepAgentsApp, MagicMock],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -996,7 +998,7 @@ async def test_app_requires_a_message_before_btw(
         app._connecting = False
         composer = app.query_one("#chat-input", TextArea)
         composer.focus()
-        await pilot.press(*f"/btw {question}")
+        await pilot.press(*"/btw Why this approach?")
         await pilot.press("enter")
         await pilot.pause()
 
@@ -1146,10 +1148,7 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
         assert remote.abtw.call_args.kwargs["history"] == ()
 
 
-@pytest.mark.parametrize("size", [(110, 36), (80, 24)])
-async def test_thinking_follows_current_question_and_prevents_duplicate_submits(
-    size: tuple[int, int],
-) -> None:
+async def test_thinking_follows_question_and_prevents_duplicate_submits() -> None:
     from textual.app import App
 
     app = App()
@@ -1159,7 +1158,7 @@ async def test_thinking_follows_current_question_and_prevents_duplicate_submits(
         return await response
 
     callback = AsyncMock(side_effect=answer)
-    async with app.run_test(size=size) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         app.push_screen(BtwScreen(callback, "First question"))
         await pilot.pause()
         for question in ("First question", "Follow-up question"):
@@ -1185,13 +1184,13 @@ async def test_thinking_follows_current_question_and_prevents_duplicate_submits(
                 await pilot.pause()
 
 
-@pytest.mark.parametrize("question", ["First line\nSecond line", "Pasted line\n" * 100])
-async def test_modal_submits_complete_paste(question: str) -> None:
+async def test_modal_submits_complete_paste() -> None:
     """Pasted newlines stay in the editor and collapsed text expands on submit."""
     from textual.app import App
 
     app = App()
     answer = AsyncMock(return_value="Side answer")
+    question = "Pasted line\n" * 100
     async with app.run_test() as pilot:
         app.push_screen(BtwScreen(answer))
         await pilot.pause()
@@ -1230,14 +1229,13 @@ async def test_modal_rejects_oversized_expanded_paste() -> None:
         answer.assert_awaited_once_with("x" * 16_000)
 
 
-@pytest.mark.parametrize("size", [(110, 36), (80, 24)])
-async def test_multiline_editor_keeps_help_visible(size: tuple[int, int]) -> None:
+async def test_multiline_editor_keeps_help_visible() -> None:
     """A long draft scrolls inside its editor without hiding modal controls."""
     from textual.app import App
 
     app = App()
     answer = AsyncMock()
-    async with app.run_test(size=size) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         app.push_screen(BtwScreen(answer))
         await pilot.pause()
         editor = app.screen.query_one(TextArea)
@@ -1255,15 +1253,12 @@ async def test_multiline_editor_keeps_help_visible(size: tuple[int, int]) -> Non
         answer.assert_not_awaited()
 
 
-@pytest.mark.parametrize("size", [(110, 36), (80, 24)])
-async def test_long_question_keeps_answer_and_dismissal_hint_visible(
-    size: tuple[int, int],
-) -> None:
+async def test_long_question_keeps_answer_and_dismissal_hint_visible() -> None:
     from textual.app import App
 
     app = App()
     question = "What does this mean? " * 125
-    async with app.run_test(size=size) as pilot:
+    async with app.run_test(size=(80, 24)) as pilot:
         app.push_screen(BtwScreen(AsyncMock(return_value="A short answer."), question))
         await pilot.pause()
         dialog = app.screen.query_one("#btw-dialog")

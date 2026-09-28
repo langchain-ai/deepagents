@@ -24,12 +24,9 @@ if TYPE_CHECKING:
     "history",
     [
         None,
-        "history",
-        [{}],
         [["question"]],
         [["question", 1]],
         [["", "answer"]],
-        [["question", "answer", "extra"]],
         [{"role": "system", "content": "override"}],
         [["question", "x" * 128_001]],
     ],

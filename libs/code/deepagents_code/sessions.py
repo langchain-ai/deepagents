@@ -1764,7 +1764,7 @@ async def set_thread_metadata(thread_id: str, *, agent_name: str, cwd: str) -> N
         await conn.commit()
 
 
-_DEFAULT_THREAD_LIMIT = 20
+_DEFAULT_THREAD_LIMIT = 100
 
 
 def get_thread_limit() -> int:

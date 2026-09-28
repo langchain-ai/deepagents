@@ -842,6 +842,69 @@ async def test_idle_handoff_without_estimate_preserves_choice(
         await pilot.press("escape")
 
 
+@pytest.mark.parametrize("allow_send", [False, True])
+@pytest.mark.parametrize("cache_state", ["warm", "below_minimum", "empty", "unpriced"])
+async def test_handoff_distinguishes_cache_skips_from_missing_prices(
+    cache_state: str, allow_send: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An expired footer alone must not offer a needless paid handoff."""
+    app = DeepAgentsApp()
+    app._model_override = "openai:gpt-5.6"
+    app._context_tokens = {"below_minimum": 500, "empty": 0}.get(cache_state, 50_000)
+    app._cold_cache_warning_threshold_usd = 0.10
+    config = MagicMock()
+    config.get_effective_kwargs.return_value = {}
+    config.get_base_url.return_value = None
+    monkeypatch.setattr("deepagents_code.model_config.ModelConfig.load", lambda: config)
+    monkeypatch.setattr(
+        "deepagents_code.model_config.is_warning_suppressed", lambda *_a: False
+    )
+    monkeypatch.setattr(
+        "deepagents_code.cold_cache.estimate_rewarm_cost", lambda *_a: None
+    )
+    process = AsyncMock()
+    monkeypatch.setattr(app, "_process_message", process)
+    old = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
+    recent = (datetime.now(UTC) - timedelta(minutes=1)).isoformat()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        app._sync_cache_state_from_state(
+            {
+                "_last_model_request_at": recent if cache_state == "warm" else old,
+                "_last_cache_model_spec": app._model_override,
+                "_last_cache_params": {},
+                "_last_cache_endpoint": "default",
+                "_last_cache_use": {
+                    "requested_at": old,
+                    "model_spec": app._model_override,
+                    "endpoint": "default",
+                    "params": {},
+                },
+            }
+        )
+        await app._refresh_cache_timing()
+        assert app._status_bar is not None
+        assert app._status_bar.cache_expires_at is not None
+        assert app._status_bar.cache_expires_at < datetime.now(UTC)
+        if allow_send:
+            await pilot.press(*"continue", "enter")
+        else:
+            app._check_cache_expiry()
+        await pilot.pause()
+        if cache_state == "unpriced":
+            assert isinstance(app.screen, ColdCacheWarningScreen)
+            assert "estimate is unavailable" in app.screen._body()
+            process.assert_not_awaited()
+            await pilot.press("escape")
+        else:
+            assert not isinstance(app.screen, ColdCacheWarningScreen)
+            if allow_send:
+                process.assert_awaited_once_with("continue", "normal")
+            else:
+                process.assert_not_awaited()
+
+
 def _record_errors(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     errors: list[str] = []
     mount = app._mount_message

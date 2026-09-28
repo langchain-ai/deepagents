@@ -1236,6 +1236,7 @@ if TYPE_CHECKING:
     from deepagents_code.cold_cache import (
         CacheActivity,
         ColdCacheReason,
+        ColdCacheSkip,
         ColdCacheWarning,
         PromptCachePolicy,
     )
@@ -9818,6 +9819,7 @@ class DeepAgentsApp(App):
                 prompt to offer a choice without quoting a cost.
         """
         from deepagents_code._env_vars import DEBUG_COLD_CACHE, is_env_truthy
+        from deepagents_code.cold_cache import ColdCacheSkip
 
         if await self._cold_cache_opted_out():
             return False
@@ -9826,6 +9828,8 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning("Could not estimate cache re-warm cost", exc_info=True)
             return True
+        if isinstance(warning, ColdCacheSkip):
+            return False
         return (
             warning is None
             or is_env_truthy(DEBUG_COLD_CACHE)
@@ -9849,6 +9853,7 @@ class DeepAgentsApp(App):
         Raises:
             asyncio.CancelledError: If the task is cancelled, such as on exit.
         """
+        from deepagents_code.cold_cache import ColdCacheSkip
         from deepagents_code.tui.modals.cold_cache import (
             ColdCacheChoice,
             ColdCacheWarningScreen,
@@ -9862,6 +9867,8 @@ class DeepAgentsApp(App):
                 warning = None
             if self._exiting or self._lc_thread_id != thread_id:
                 return None
+            if isinstance(warning, ColdCacheSkip):
+                return ColdCacheChoice.SEND if allow_send else None
             if warning is not None:
                 await self._emit_cold_cache_warning_hook(warning)
             screen = ColdCacheWarningScreen(
@@ -12818,6 +12825,7 @@ class DeepAgentsApp(App):
             Warning data, or `None` when dispatch should proceed.
         """
         from deepagents_code._env_vars import DEBUG_COLD_CACHE, is_env_truthy
+        from deepagents_code.cold_cache import ColdCacheSkip
 
         if message.mode != "normal" or message.origin != "interactive":
             return None
@@ -12833,6 +12841,8 @@ class DeepAgentsApp(App):
                 exc_info=True,
             )
             self._notify_cold_cache_degraded_once()
+            return None
+        if isinstance(warning, ColdCacheSkip):
             return None
         if warning is None or debug_forced:
             return warning
@@ -12863,13 +12873,15 @@ class DeepAgentsApp(App):
             return None
         return warning
 
-    async def _cold_cache_estimate(self) -> ColdCacheWarning | None:
+    async def _cold_cache_estimate(self) -> ColdCacheWarning | ColdCacheSkip | None:
         """Estimate a cold cache independently of prompt timing and preferences.
 
         Returns:
-            Cache policy, cause, and cost, or `None` when no estimate is available.
+            Cache policy, cause, and cost; a skip when the cache is warm or the
+                context is too small; or `None` when policy/pricing is unavailable.
         """
         from deepagents_code._env_vars import DEBUG_COLD_CACHE, is_env_truthy
+        from deepagents_code.cold_cache import ColdCacheSkip
 
         debug_forced = is_env_truthy(DEBUG_COLD_CACHE)
         model_spec = self._effective_model_spec() or ""
@@ -12881,13 +12893,13 @@ class DeepAgentsApp(App):
             logger.debug(
                 "Skipping cold-cache warning: no context tokens recorded yet",
             )
-            return None
+            return ColdCacheSkip.BELOW_MINIMUM
 
         last_spec = self._last_cache_model_spec
         last_params = self._last_cache_model_params
         last_endpoint = self._last_cache_endpoint
 
-        def _evaluate() -> ColdCacheWarning | None:
+        def _evaluate() -> ColdCacheWarning | ColdCacheSkip | None:
             from datetime import UTC, datetime
 
             from deepagents_code.cold_cache import (
@@ -12992,7 +13004,7 @@ class DeepAgentsApp(App):
                     policy.provider_name,
                     policy.minimum_tokens,
                 )
-                return None
+                return ColdCacheSkip.BELOW_MINIMUM
 
             # An unusable request time means the age cannot be computed, not
             # that the cache is warm. Treat it as cold, matching how an
@@ -13050,7 +13062,7 @@ class DeepAgentsApp(App):
                 elif age_seconds > policy.window_seconds:
                     reason = "idle"
                 else:
-                    return None
+                    return ColdCacheSkip.WARM
             estimate = estimate_rewarm_cost(context_tokens, model_spec, policy)
             if estimate is None:
                 logger.debug(

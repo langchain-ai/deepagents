@@ -1996,34 +1996,74 @@ async def test_modal_renders_streamed_text(
 
 
 @pytest.mark.parametrize("read_history", [False, True])
+@pytest.mark.parametrize("delay_render", [False, True])
 async def test_stream_follows_bottom_without_displacing_history_reader(
-    read_history: bool,
+    monkeypatch: pytest.MonkeyPatch, read_history: bool, delay_render: bool
 ) -> None:
     from textual.app import App
 
     release = asyncio.Event()
+    finish = asyncio.Event()
+    render_started = asyncio.Event()
+    render_release = asyncio.Event()
+    first_rendered = asyncio.Event()
+    final_rendered = asyncio.Event()
     text = "\n\n".join(f"Paragraph {i}" for i in range(40))
+    append = Markdown.append
+    if not delay_render:
+        render_release.set()
+
+    async def delayed_append(markdown: Markdown, content: str) -> None:
+        render_started.set()
+        await render_release.wait()
+        await append(markdown, content)
+        (first_rendered if content == text else final_rendered).set()
+
+    monkeypatch.setattr(Markdown, "append", delayed_append)
 
     async def stream(_question: str, on_text: Callable[[str], Awaitable[None]]) -> str:
         await on_text(text)
         await release.wait()
         await on_text("\n\nFinal paragraph.")
+        await finish.wait()
         return text + "\n\nFinal paragraph."
 
     app = App()
     async with app.run_test(size=(80, 24)) as pilot:
         app.push_screen(BtwScreen(AsyncMock(), "why", stream_answer=stream))
+        await asyncio.wait_for(render_started.wait(), 2)
+        await pilot.pause()
+        render_release.set()
+        await asyncio.wait_for(first_rendered.wait(), 2)
         await pilot.pause()
         scroll = app.screen.query_one("#btw-scroll", VerticalScroll)
+
+        async def wait_for_bottom() -> None:
+            async with asyncio.timeout(2):
+                while not scroll.is_vertical_scroll_end:
+                    await pilot.pause()
+            assert scroll.is_vertical_scroll_end
+
         assert scroll.max_scroll_y > 0
-        assert scroll.is_vertical_scroll_end
+        await wait_for_bottom()
         if read_history:
             await pilot.press("home")
             await pilot.pause()
             assert scroll.scroll_y == 0
+        previous_height = scroll.virtual_size.height
         release.set()
+        await asyncio.wait_for(final_rendered.wait(), 2)
+        await pilot.pause()
+        assert scroll.virtual_size.height > previous_height
+        assert app.screen.query_one(TextArea).disabled
+        if read_history:
+            assert scroll.scroll_y == 0
+        else:
+            await wait_for_bottom()
+        finish.set()
+        await app.workers.wait_for_complete()
         await pilot.pause()
         if read_history:
             assert scroll.scroll_y == 0
         else:
-            assert scroll.is_vertical_scroll_end
+            await wait_for_bottom()

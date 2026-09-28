@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from textual.app import ComposeResult
+    from textual.geometry import Size
     from textual.timer import Timer
     from textual.widget import Widget
 
@@ -114,12 +115,28 @@ class BtwScreen(ModalScreen[None]):
     async def on_mount(self) -> None:
         """Start an independent worker only after the modal is mounted."""
         self.query_one("#btw-loading").display = False
-        self.query_one("#btw-scroll").display = False
+        scroll = self.query_one("#btw-scroll", VerticalScroll)
+        scroll.display = False
+        self.watch(
+            scroll, "virtual_size", partial(self._follow_rendered_content, scroll)
+        )
         await self._restore_history()
         if self._question:
             await self._start(self._question)
         else:
             self.query_one(BtwTextArea).focus(scroll_visible=False)
+
+    def _follow_rendered_content(
+        self, scroll: VerticalScroll, old_size: Size, new_size: Size
+    ) -> None:
+        old_bottom = max(
+            0,
+            old_size.height
+            - scroll.container_size.height
+            + scroll.scrollbar_size_horizontal,
+        )
+        if new_size.height > old_size.height and scroll.scroll_y >= old_bottom:
+            self._follow_answer()
 
     async def _restore_history(self) -> None:
         if not self._history:

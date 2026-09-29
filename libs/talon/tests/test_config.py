@@ -49,6 +49,7 @@ def test_ensure_home_materializes_usable_tool_approvals(tmp_path: Path) -> None:
         "delete_conversations": True,
         "update_mcp_server": True,
         "start_async_task": True,
+        "send_message": True,
     }
     assert snapshot.interrupt_on == {
         name: {"allowed_decisions": ["approve", "reject"]} for name in snapshot.approvals
@@ -169,7 +170,6 @@ def test_from_env_keeps_runtime_env_vars(tmp_path: Path) -> None:
         base_home=tmp_path,
     )
 
-    assert not hasattr(config, "fleet_dir")
     assert config.env["LANGSMITH_TENANT_ID"] == "tenant"
     assert config.env["LANGSMITH_ORGANIZATION_ID"] == "org"
     assert config.env["LANGSMITH_USER_ID"] == "user"
@@ -182,23 +182,3 @@ def test_from_env_keeps_runtime_env_vars(tmp_path: Path) -> None:
 def test_from_env_rejects_unsafe_assistant_id(tmp_path: Path, assistant_id: str) -> None:
     with pytest.raises(TalonConfigError):
         TalonConfig.from_env({"AGENT_ASSISTANT_ID": assistant_id}, base_home=tmp_path)
-
-
-@pytest.mark.parametrize(
-    "env_key",
-    ["DEEPAGENTS_TALON_FLEET_DIR", "AGENT_FLEET_DIR", "FLEET_DIR"],
-)
-def test_from_env_has_no_fleet_dir_field(tmp_path: Path, env_key: str) -> None:
-    """Legacy Fleet direct-run env vars no longer configure a Fleet source."""
-    config = TalonConfig.from_env(
-        {
-            "AGENT_ASSISTANT_ID": "assistant-1",
-            env_key: str(tmp_path / "fleet"),
-            "AGENT_MODEL": "provider:model",
-        },
-        base_home=tmp_path,
-    )
-
-    assert not hasattr(config, "fleet_dir")
-    assert config.model == "provider:model"
-    assert config.assistant_id == "assistant-1"

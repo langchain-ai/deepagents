@@ -1,11 +1,10 @@
 ---
-type: scheduler concept
-title: Talon Scheduled Work and Cron Semantics
-description: Persistent Talon cron jobs, their schedule grammar and durable lifecycle, and the limits that apply when an unattended job invokes and delivers through a channel host.
-tags: [talon, scheduling, cron, persistence, channels, permissions]
+type: "Reference"
+title: "Talon Scheduled Work and Cron Semantics"
+openwiki_generated: true
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-28T08:12:24.067Z
+    at: 2026-09-29T08:06:56.235Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
@@ -23,22 +22,11 @@ sources:
     resource: repo://libs/talon/deepagents_talon/pairing.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-75458be2d378c9102e37d6c4
-    resource: repo://libs/talon/tests/cron/test_expression.py
-  - id: openwiki-source-058eda257c62daed009e3f78
-    resource: repo://libs/talon/tests/cron/test_jobs.py
-  - id: openwiki-source-376016a439d0559796a191a0
-    resource: repo://libs/talon/tests/cron/test_scheduler.py
-  - id: openwiki-source-3c0ee8cc5cf93b1411287e26
-    resource: repo://libs/talon/tests/cron/test_until.py
   - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
     resource: repo://libs/talon/tests/test_host.py
-  - id: openwiki-source-4d6726e17c8a0c78539a7d33
-    resource: repo://libs/talon/tests/test_runtime.py
-  - id: openwiki-source-f2859f71853cf2cbdb40aaa3
-    resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-28T08:12:24.067Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-29T08:06:56.235Z" }
 ---
+
 
 # Talon Scheduled Work and Cron Semantics
 
@@ -112,4 +100,5 @@ By contrast, `deepagents-talon pairing pause-jobs <channel> <conversation_id>` i
 
 Preserve strict parsing/serialization, local-date DST candidate construction, and the **persist-before-run** claim ordering. Keep origin injection trusted and management scoped to conversation plus channel. Do not add an approval or authorization path to cron. Treat execution status, channel delivery, retention, and archive behavior as distinct boundaries.
 
-Focused coverage includes `libs/talon/tests/cron/test_jobs.py` for persistence, schedule state, scope, and recurrence; `test_scheduler.py` for claim/run/delivery/error behavior and ticker survival; `libs/talon/tests/test_host.py` for timeout, exclusion, and revocation; and `libs/talon/tests/unit_tests/test_scheduled_history.py` for origin-history access and the no-archive execution boundary. See [Talon channel admission](./talon-channel-admission.md), [Permissions and Human-in-the-Loop](./permissions-hitl.md), [State and persistence](./state-persistence.md), and [Talon runtime integration](../integrations/talon.md).
+Focused coverage includes `libs/talon/tests/cron/test_jobs.py` for persistence, schedule state, scope, and recurrence; `test_scheduler.py` for claim/run/delivery/error behavior and ticker survival; `libs/talon/tests/test_host.py` for timeout, non-overlap, dedicated-thread execution, delivery, and revocation; and `libs/talon/tests/unit_tests/test_scheduled_history.py` for origin-history access and the no-archive execution boundary. See [Talon channel admission](./talon-channel-admission.md), [Permissions and Human-in-the-Loop](./permissions-hitl.md), [State and persistence](./state-persistence.md), and [Talon runtime integration](../integrations/talon.md).
+md), [State and persistence](./state-persistence.md), and [Talon runtime integration](../integrations/talon.md).

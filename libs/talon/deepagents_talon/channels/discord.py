@@ -190,6 +190,7 @@ class _DiscordInboundMessage:
     is_dm: bool
     from_self: bool
     attachments: tuple[_DiscordAttachment, ...] = ()
+    history_chat: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,6 +251,7 @@ class _DiscordInboundInteraction:
     is_dm: bool
     responder: _InteractionResponder
     argument: str | None = None
+    history_chat: str | None = None
 
 
 @dataclass(slots=True)
@@ -823,17 +825,19 @@ class DiscordChannel:
             # one would let a command reset a thread the user never named.
             await inbound.responder.reject(_COMMAND_UNAVAILABLE_MESSAGE)
             return
+        metadata: dict[str, object] = {
+            "provider": "discord",
+            "is_dm": inbound.is_dm,
+            "from_self": False,
+        }
+        if inbound.history_chat is not None:
+            metadata["history_chat"] = inbound.history_chat
         message = ChannelMessage(
             conversation_id=inbound.channel_id,
             text=f"{command.text} {inbound.argument}" if inbound.argument else command.text,
             sender_id=inbound.sender_id,
             message_id=inbound.interaction_id,
-            metadata={
-                "provider": "discord",
-                "is_dm": inbound.is_dm,
-                # An interaction is never the bot's own event, unlike `on_message`.
-                "from_self": False,
-            },
+            metadata=metadata,
         )
         if not self._admits(message):
             log_debug_event(
@@ -1004,6 +1008,13 @@ class DiscordChannel:
         return destination
 
 
+def _public_thread_parent(channel: object) -> str | None:
+    """Return the parent of a public Discord thread, if available."""
+    if isinstance(channel, discord.Thread) and not channel.is_private():
+        return str(channel.parent_id) if channel.parent_id is not None else None
+    return None
+
+
 def _convert_message(message: discord.Message, *, bot_id: str | None) -> _DiscordInboundMessage:
     attachments = tuple(
         _DiscordAttachment(
@@ -1015,6 +1026,7 @@ def _convert_message(message: discord.Message, *, bot_id: str | None) -> _Discor
         for attachment in message.attachments
     )
     sender_id = str(message.author.id)
+    history_chat = _public_thread_parent(message.channel)
     return _DiscordInboundMessage(
         channel_id=str(message.channel.id),
         message_id=str(message.id),
@@ -1023,6 +1035,7 @@ def _convert_message(message: discord.Message, *, bot_id: str | None) -> _Discor
         is_dm=message.guild is None,
         from_self=bot_id is not None and sender_id == bot_id,
         attachments=attachments,
+        history_chat=history_chat,
     )
 
 
@@ -1090,6 +1103,7 @@ def _convert_interaction(
         is_dm=interaction.guild_id is None,
         responder=_DiscordPyResponder(interaction),
         argument=argument,
+        history_chat=_public_thread_parent(interaction.channel),
     )
 
 
@@ -1143,6 +1157,8 @@ def _message_metadata(inbound: _DiscordInboundMessage) -> dict[str, object]:
         "is_dm": inbound.is_dm,
         "from_self": inbound.from_self,
     }
+    if inbound.history_chat is not None:
+        metadata["history_chat"] = inbound.history_chat
     if inbound.attachments:
         attachment = inbound.attachments[0]
         metadata["media_type"] = _attachment_media_type(attachment)

@@ -589,7 +589,7 @@ def _is_retryable_error(error: str | None) -> bool:
 
 
 async def send_with_retry(
-    send_fn: Callable[[], Awaitable[SendResult | None]],
+    send_fn: Callable[[], Awaitable[SendResult]],
     *,
     max_retries: int = 2,
     base_delay: float = 2.0,
@@ -610,7 +610,7 @@ async def send_with_retry(
     Returns:
         The final `SendResult` from the send function.
     """
-    result = _normalize_send_result(await _safe_send(send_fn))
+    result = await _safe_send(send_fn)
     if result.success:
         return result
     if not (result.retryable or _is_retryable_error(result.error)):
@@ -618,7 +618,7 @@ async def send_with_retry(
     for attempt in range(1, max_retries + 1):
         delay = base_delay * (2 ** (attempt - 1))
         await asyncio.sleep(delay)
-        result = _normalize_send_result(await _safe_send(send_fn))
+        result = await _safe_send(send_fn)
         if result.success:
             return result
         if not (result.retryable or _is_retryable_error(result.error)):
@@ -626,7 +626,7 @@ async def send_with_retry(
     return result
 
 
-async def _safe_send(send_fn: Callable[[], Awaitable[SendResult | None]]) -> SendResult | None:
+async def _safe_send(send_fn: Callable[[], Awaitable[SendResult]]) -> SendResult:
     """Call ``send_fn`` and convert exceptions to failed `SendResult` objects.
 
     Args:
@@ -640,17 +640,3 @@ async def _safe_send(send_fn: Callable[[], Awaitable[SendResult | None]]) -> Sen
         return await send_fn()
     except Exception as exc:  # noqa: BLE001  # transport errors must not crash the host loop
         return SendResult(success=False, error=str(exc) or repr(exc), retryable=True)
-
-
-def _normalize_send_result(result: SendResult | None) -> SendResult:
-    """Normalize a send result, treating ``None`` as success for legacy adapters.
-
-    Args:
-        result: Return value from a channel send method, or ``None``.
-
-    Returns:
-        The original result, or a success result when the adapter returned ``None``.
-    """
-    if result is None:
-        return SendResult(success=True)
-    return result

@@ -26295,6 +26295,65 @@ class TestChatScrollAnchoring:
 class TestResumeScrollPosition:
     """Regression coverage for resumed transcript positioning."""
 
+    @pytest.mark.parametrize(("height", "count"), [(80, 100), (200, 40)])
+    async def test_compact_history_fills_initial_viewport(
+        self, height: int, count: int
+    ) -> None:
+        """Compact tails load until scrolling works or all history is mounted."""
+        app = DeepAgentsApp()
+        app._message_timestamps_visible = False
+        payload = _ThreadHistoryPayload(
+            messages=[
+                MessageData(
+                    type=MessageType.TOOL_GROUP,
+                    content="",
+                    id=f"compact-group-{index}",
+                    tool_group_messages=[
+                        MessageData(
+                            type=MessageType.TOOL,
+                            content="",
+                            tool_name="read_file",
+                            tool_status=ToolStatus.SUCCESS,
+                        )
+                    ],
+                )
+                for index in range(count)
+            ],
+            context_tokens=0,
+            model_spec="",
+        )
+
+        async with app.run_test(size=(80, height)) as pilot:
+            await pilot.pause()
+            await app._load_thread_history(
+                thread_id="compact-resume", preloaded_payload=payload
+            )
+            chat = app.query_one("#chat", _ChatScroll)
+            store = app._message_store
+            for _ in range(20):
+                await pilot.pause()
+                if chat.max_scroll_y > 0 or not store.has_messages_above:
+                    break
+
+            assert store.visible_count > store.INITIAL_WINDOW_SIZE + 1
+            if height == 200:
+                assert not store.has_messages_above
+                assert app.query_one("#compact-group-0", LazyToolGroupSummary)
+            else:
+                assert chat.max_scroll_y > 0
+                assert store.has_messages_above
+                mounted_count = store.visible_count
+                await pilot.pause()
+                assert store.visible_count == mounted_count
+                assert chat.scroll_y == chat.max_scroll_y
+
+                chat.scroll_home(animate=False)
+                for _ in range(20):
+                    await pilot.pause()
+                    if store.visible_count > mounted_count:
+                        break
+                assert store.visible_count > mounted_count
+
     async def test_history_load_scrolls_to_bottom_after_layout(self) -> None:
         """A resumed transcript should open on its newest message.
 
@@ -26344,40 +26403,16 @@ class TestResumeScrollPosition:
             chat = app.query_one("#chat", _ChatScroll)
             for _ in range(20):
                 await pilot.pause()
-                if (
-                    app._message_store.visible_count == 580
-                    and not app._history_prefetch_active
-                    and chat.max_scroll_y > 0
-                    and chat.scroll_y == chat.max_scroll_y
-                ):
+                if chat.max_scroll_y > 0 and chat.scroll_y == chat.max_scroll_y:
                     break
 
-            assert app._message_store.visible_count == 580
-            assert not app._history_prefetch_active
+            assert app._message_store.visible_count == 31
+            assert app._message_store.has_messages_above
             assert chat.max_scroll_y > 0
             assert chat.scroll_y == chat.max_scroll_y
-            # Resume reaches the bottom via refresh-deferred scrolls during the
-            # initial tail load and prefetch, not bottom-follow (see
-            # `DeepAgentsApp.on_mount`).
+            # Resume reaches the bottom via a refresh-deferred scroll after the
+            # initial tail load, not bottom-follow (see `DeepAgentsApp.on_mount`).
             assert not chat.is_anchored
-
-    async def test_prefetch_teardown_preserves_new_bottom_follow(self) -> None:
-        """A live bottom-follow request should outlive resumed-history prefetch."""
-        app = DeepAgentsApp()
-
-        async with app.run_test(size=(80, 12)) as pilot:
-            chat = app.query_one("#chat", _ChatScroll)
-            await chat.mount(Static("\n".join(f"line {index}" for index in range(20))))
-            await pilot.pause()
-
-            app._history_prefetch_active = True
-            chat.anchor()
-            app._history_prefetch_anchor_generation = chat._bottom_follow_generation
-            chat.anchor()
-            app._stop_history_prefetch()
-
-            assert chat.is_anchored
-            assert chat._follow_bottom_when_scrollable
 
 
 class TestWelcomeBannerLiveUpdates:
@@ -27318,6 +27353,7 @@ class TestResumeThreadCwdSwitch:
         """The `/threads` switcher offers abort; aborting keeps the current thread."""
         monkeypatch.chdir(tmp_path)
         app = DeepAgentsApp(thread_id="old-thread", cwd=tmp_path)
+        monkeypatch.setattr(app, "_set_spinner", AsyncMock())
         app._agent = MagicMock()
         app._session_state = TextualSessionState(thread_id="old-thread")
         app._lc_thread_id = "old-thread"
@@ -27347,6 +27383,7 @@ class TestResumeThreadCwdSwitch:
     ) -> None:
         """A failed or cancelled cwd lookup must not block subsequent switches."""
         app = DeepAgentsApp(thread_id="old-thread", cwd=tmp_path)
+        monkeypatch.setattr(app, "_set_spinner", AsyncMock())
         app._agent = MagicMock()
         app._session_state = TextualSessionState(thread_id="old-thread")
         mount = AsyncMock()
@@ -27368,6 +27405,64 @@ class TestResumeThreadCwdSwitch:
         mount.assert_not_awaited()
         assert app._thread_switching is False
 
+    @pytest.mark.parametrize("thread_id", ["old-thread", "new-thread"])
+    @pytest.mark.parametrize("outcome", ["abort", "blocked", "error", "cancel"])
+    async def test_thread_preflight_spinner_cleans_up(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        thread_id: str,
+        outcome: str,
+    ) -> None:
+        """Preflight shows progress without stranding it on an early exit."""
+        app = DeepAgentsApp(thread_id="old-thread", cwd=tmp_path)
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def preflight(*_args: object, **_kwargs: object) -> str:
+            entered.set()
+            await release.wait()
+            if outcome == "error":
+                msg = "preflight failed"
+                raise RuntimeError(msg)
+            return "abort"
+
+        monkeypatch.setattr(app, "_offer_thread_cwd_switch", preflight)
+        monkeypatch.setattr(
+            app,
+            "_thread_resume_block",
+            preflight if outcome == "blocked" else AsyncMock(return_value=None),
+        )
+        async with app.run_test() as pilot:
+            app._agent = MagicMock()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            task = asyncio.create_task(app._resume_thread(thread_id))
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=5)
+                await pilot.pause()
+                assert app._loading_widget is not None
+                assert app._loading_widget.is_attached
+                if outcome == "cancel":
+                    task.cancel()
+                else:
+                    release.set()
+                if outcome in {"error", "cancel"}:
+                    error = (
+                        RuntimeError if outcome == "error" else asyncio.CancelledError
+                    )
+                    with pytest.raises(error):
+                        await task
+                else:
+                    await task
+                assert app._loading_widget is None
+                assert app._thread_switching is False
+                assert app._session_state.thread_id == "old-thread"
+            finally:
+                release.set()
+                if not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+
     async def test_threads_reselect_offers_abort(
         self,
         tmp_path: Path,
@@ -27376,6 +27471,7 @@ class TestResumeThreadCwdSwitch:
         """Reselecting the current thread also offers abort and cancels silently."""
         monkeypatch.chdir(tmp_path)
         app = DeepAgentsApp(thread_id="thread-1", cwd=tmp_path)
+        monkeypatch.setattr(app, "_set_spinner", AsyncMock())
         app._agent = MagicMock()
         app._session_state = TextualSessionState(thread_id="thread-1")
         app._lc_thread_id = "thread-1"

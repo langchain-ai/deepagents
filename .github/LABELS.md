@@ -21,7 +21,7 @@ Rules that are easy to get wrong:
 
 - **PR type labels mirror the Conventional Commit title.** The labeler derives the work type and optional breaking marker from the title, and `package:*` and `integration:*` from its scope. Labels support triage; release-please still reads Conventional Commits to determine releases. `release(...)` titles receive `auto:release-pr` for release and stale-PR automation.
 - An issue carries exactly one `type:*`, normally one `package:*`, and any number of `topic:*`.
-- `priority:*` has three levels on issues, with `priority:backlog` as the default. Only `priority:urgent` and `priority:high` propagate to linked PRs; backlog leaves a PR without a priority label. Retired `p0`–`p4` labels are stripped from PRs without mapping them to a new priority.
+- New issues receive `priority:triage` until a maintainer replaces it with `priority:backlog`, `priority:high`, or `priority:urgent`. Only urgent and high propagate to linked PRs; triage and backlog leave a PR without a priority label. Retired `p0`–`p4` labels are stripped from PRs without mapping them to a new priority.
 - **A `ci:*` label always represents a human decision, but two of them are written by automation on a maintainer's instruction:** `ci:keep-open` (`keep_open_on_comment.yml`, on a `!keep-open` comment) and `ci:skip-issue-link` (`require_issue_link.yml`, when a maintainer bypasses the gate). The labeler never applies a `ci:*`, and every one of them is read by a gate. See the `ci:*` table for which are read-only.
 - Every label must have a description.
 
@@ -79,11 +79,11 @@ Runtime labeling reads the local manifest, so it makes no extra label-list API c
 
 ### `priority:*` — `auto-label-by-package.yml`, `sync_priority_labels.yml`
 
-`priority:urgent` > `priority:high` > `priority:backlog`, mutually exclusive.
+`priority:triage` marks issues awaiting review. Replace it with one of the mutually exclusive assigned priorities: `priority:urgent` > `priority:high` > `priority:backlog`. Filter the unreviewed queue with `is:issue is:open label:priority:triage`.
 
-**Every new issue gets `priority:backlog`** from the "Apply default priority" step in `auto-label-by-package.yml`, which runs on `opened` before the Area sync so an issue filed without the form is still prioritized. It skips an issue that already carries a `priority:*`, so a re-run never overwrites an escalation.
+**Every new issue gets `priority:triage`** from the "Apply default priority" step in `auto-label-by-package.yml`, which runs on `opened` before the Area sync so an issue filed without the form still enters the triage queue. It skips an issue that already carries a `priority:*`, so a re-run never overwrites an assigned priority. Existing backlog issues are not migrated automatically.
 
-`sync_priority_labels.yml` copies a priority from issues linked by `Closes/Fixes/Resolves #N` onto the PR, highest across linked issues winning — but **only `priority:urgent` and `priority:high` propagate** (`PROPAGATED_PRIORITY_LABELS`). Backlog is every issue's default, so copying it would label nearly every PR while saying nothing; a PR carrying a backlog label from an earlier run gets it stripped. The workflow also strips the retired `p0`–`p4` from PRs (`STALE_PRIORITY_LABELS`) without mapping them onto a new priority — drop that list once no open item carries one.
+`sync_priority_labels.yml` copies a priority from issues linked by `Closes/Fixes/Resolves #N` onto the PR, highest across linked issues winning — but **only `priority:urgent` and `priority:high` propagate** (`PROPAGATED_PRIORITY_LABELS`). Triage is not an assigned priority and backlog does not indicate an escalation; neither is copied to PRs. A PR carrying a backlog label from an earlier run gets it stripped. The workflow also strips the retired `p0`–`p4` from PRs (`STALE_PRIORITY_LABELS`) without mapping them onto a new priority — drop that list once no open item carries one.
 
 ### `auto:*` — lifecycle and release automation
 

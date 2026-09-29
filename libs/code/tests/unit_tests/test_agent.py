@@ -4736,6 +4736,24 @@ class TestCreateCliAgentInterpreterWiring:
             compaction_middleware
         )
 
+    def test_mcp_tools_wire_timeout_middleware(self, tmp_path: Path) -> None:
+        """MCP tools install the middleware that owns their call deadline."""
+        from langchain_core.tools import StructuredTool
+
+        mcp_tool = StructuredTool.from_function(
+            lambda: "ok",
+            name="linear_get_issue",
+            description="Get an issue",
+        )
+        mcp_tool.metadata = {
+            "_deepagents_code_mcp": True,
+            "_deepagents_code_mcp_server": "linear",
+        }
+
+        middleware = self._capture_middleware(tmp_path, mcp_tools=[mcp_tool])
+
+        assert any(item.name == "MCPToolMiddleware" for item in middleware)
+
     def test_auto_mode_omitted_with_sandbox(self, tmp_path: Path) -> None:
         """Auto is refused (no middleware) when a sandbox backend is active.
 

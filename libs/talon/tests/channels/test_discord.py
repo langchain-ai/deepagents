@@ -4,6 +4,7 @@ import asyncio
 import logging
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,8 @@ from deepagents_talon.channels.discord import (
     InboundInteractionCallback,
     InboundMessageCallback,
     InboundReactionCallback,
+    _convert_interaction,
+    _convert_message,
     _DiscordAttachment,
     _DiscordConnectionState,
     _DiscordInboundInteraction,
@@ -563,6 +566,52 @@ async def test_inbound_message_from_operator_dm_is_dispatched(tmp_path):
     assert len(received) == 1
     assert received[0].text == "hi"
     assert received[0].conversation_id == "chan-1"
+
+
+@pytest.mark.parametrize(
+    ("is_thread", "is_private", "parent_id", "expected"),
+    [
+        (True, False, 42, "42"),
+        (True, True, 42, None),
+        (False, False, None, None),
+    ],
+)
+def test_discord_thread_history_scope(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    is_thread: bool,
+    is_private: bool,
+    parent_id: int | None,
+    expected: str | None,
+) -> None:
+    class FakeThread:
+        id = 100
+
+        def __init__(self, parent: int | None) -> None:
+            self.parent_id = parent
+
+        def is_private(self) -> bool:
+            return is_private
+
+    monkeypatch.setattr(discord_module.discord, "Thread", FakeThread)
+    channel = FakeThread(parent_id) if is_thread else SimpleNamespace(id=100)
+    message = SimpleNamespace(
+        channel=channel,
+        guild=SimpleNamespace(id=1),
+        id=10,
+        author=SimpleNamespace(id=7),
+        content="hi",
+        attachments=[],
+    )
+
+    inbound = _convert_message(message, bot_id=None)
+    interaction = FakeInteraction(channel_id=100, guild_id=1, user_id=7, interaction_id=20)
+    interaction.channel = channel
+    command = _convert_interaction(interaction, "new")
+
+    assert inbound.channel_id == "100"
+    assert inbound.history_chat == expected
+    assert command.history_chat == expected
 
 
 async def test_inbound_message_from_non_operator_is_rejected(tmp_path):
@@ -1255,6 +1304,7 @@ class FakeInteraction:
 
     def __init__(self, *, channel_id, guild_id, user_id, interaction_id) -> None:
         self.channel_id = channel_id
+        self.channel = None
         self.guild_id = guild_id
         self.user = self._User(user_id)
         self.id = interaction_id

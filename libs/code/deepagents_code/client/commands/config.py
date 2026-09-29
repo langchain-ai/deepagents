@@ -273,6 +273,7 @@ def _resolve(
         _ranked_source,
         resolve_auto_classifier_model_with_source,
         resolve_auto_classifier_timeout_with_source,
+        resolve_mcp_tool_timeout_with_source,
         resolve_startup_mode_with_source,
     )
     from deepagents_code.configuration.resolver import (
@@ -318,6 +319,13 @@ def _resolve(
         # runtime rejects; use the bounded resolver so the display matches what
         # the middleware actually enforces.
         timeout, source = resolve_auto_classifier_timeout_with_source(
+            toml_data=toml_data,
+            managed_toml_data=managed_toml_data,
+        )
+        return source != "default", source, timeout
+
+    if option.key == "mcp.tool_timeout":
+        timeout, source = resolve_mcp_tool_timeout_with_source(
             toml_data=toml_data,
             managed_toml_data=managed_toml_data,
         )

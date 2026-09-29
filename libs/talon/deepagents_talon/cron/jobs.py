@@ -94,6 +94,7 @@ class CronOriginDict(TypedDict):
     channel: str | None
     message_id: str | None
     sender_id: NotRequired[str | None]
+    history_chat: NotRequired[str | None]
 
 
 class CronScheduleDict(TypedDict):
@@ -205,12 +206,14 @@ class CronOrigin:
         message_id: Optional source message id that created or edited the job.
         sender_id: Optional channel sender id of whoever created the job, so
             revoking a paired sender can find jobs they made in shared chats.
+        history_chat: Optional parent channel used for history in public Discord threads.
     """
 
     conversation_id: str
     channel: str | None = None
     message_id: str | None = None
     sender_id: str | None = None
+    history_chat: str | None = None
 
     def to_dict(self) -> CronOriginDict:
         """Serialize this origin for disk storage.
@@ -223,6 +226,7 @@ class CronOrigin:
             "channel": self.channel,
             "message_id": self.message_id,
             "sender_id": self.sender_id,
+            "history_chat": self.history_chat,
         }
 
     @classmethod
@@ -244,6 +248,7 @@ class CronOrigin:
             channel=_optional_str_field(record, "channel"),
             message_id=_optional_str_field(record, "message_id"),
             sender_id=_optional_str_field(record, "sender_id"),
+            history_chat=_optional_str_field(record, "history_chat"),
         )
 
 

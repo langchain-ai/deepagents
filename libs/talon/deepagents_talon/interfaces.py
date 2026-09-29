@@ -336,6 +336,18 @@ class ModelSelectableRuntime(Protocol):
 
 
 @runtime_checkable
+class SmartModelRuntime(Protocol):
+    """Optional runtime capability for the assistant-wide one-off help model."""
+
+    @property
+    def smart_model(self) -> str | None:
+        """Current helper model, or None when consultations are disabled."""
+
+    async def select_smart_model(self, spec: str | None) -> bool:
+        """Validate and activate a helper model for subsequent turns."""
+
+
+@runtime_checkable
 class MCPReloadableRuntime(Protocol):
     """Optional runtime capability for reloading MCP configuration."""
 

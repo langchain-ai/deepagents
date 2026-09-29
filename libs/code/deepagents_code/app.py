@@ -4547,12 +4547,6 @@ class DeepAgentsApp(App):
         self._hydration_scheduled = False
         """Whether a hydration slice is queued or currently running."""
 
-        self._history_prefetch_active = False
-        """Whether resumed history is warming toward the soft window size."""
-
-        self._history_prefetch_anchor_generation: int | None = None
-        """Bottom-follow generation owned by resumed-history prefetch."""
-
         self._transcript_prune_timer: Timer | None = None
         """Idle timer that defers opposite-edge pruning while scrolling."""
 
@@ -10244,27 +10238,17 @@ class DeepAgentsApp(App):
                 return
             direction = self._hydration_preferred_direction
             self._hydration_requests.discard(direction)
-            count = self._message_store.HYDRATE_BUFFER
-            if direction == "above" and self._history_prefetch_active:
-                count = min(
-                    count,
-                    max(
-                        0,
-                        self._message_store.WINDOW_SIZE
-                        - self._message_store.visible_count,
-                    ),
-                )
-            hydrated_count = await self._hydrate_messages(direction, count=count)
+            hydrated_count = await self._hydrate_messages(
+                direction, count=self._message_store.HYDRATE_BUFFER
+            )
         finally:
             self._hydration_scheduled = False
 
-        if hydrated_count == 0 and direction == "above":
-            self._stop_history_prefetch()
         if hydrated_count or self._hydration_requests:
             self.call_after_refresh(lambda: self._continue_hydration(direction))
 
     def _continue_hydration(self, direction: Literal["above", "below"] | None) -> None:
-        """Continue coalesced or background hydration after layout catches up."""
+        """Continue coalesced hydration after layout catches up."""
         if self._hydration_requests:
             pending_direction = self._hydration_preferred_direction
             if pending_direction not in self._hydration_requests:
@@ -10272,47 +10256,25 @@ class DeepAgentsApp(App):
             self._request_hydration(pending_direction)
             return
 
-        if self._history_prefetch_active:
-            if (
-                self._message_store.has_messages_above
-                and self._message_store.visible_count < self._message_store.WINDOW_SIZE
-            ):
-                self._request_hydration("above")
-                return
-            self._stop_history_prefetch()
-            return
-
         if direction == "above":
             self._check_hydration_needed()
         elif direction == "below":
             self._check_hydration_below_needed()
 
-    def _start_history_prefetch(self) -> None:
-        """Warm resumed history toward the soft window without blocking startup."""
-        self._history_prefetch_active = (
-            self._message_store.has_messages_above
-            and self._message_store.visible_count < self._message_store.WINDOW_SIZE
-        )
-        if not self._history_prefetch_active:
+    async def _fill_history_viewport(self) -> None:
+        """Hydrate a compact resumed tail until scrolling becomes possible."""
+        if not self._message_store.has_messages_above:
             return
-        self._history_prefetch_anchor_generation = None
-        with suppress(NoMatches):
-            chat = self.query_one("#chat", _ChatScroll)
-            chat.anchor()
-            self._history_prefetch_anchor_generation = chat._bottom_follow_generation
-        self._request_hydration("above")
-
-    def _stop_history_prefetch(self) -> None:
-        """End resumed-history warming and its temporary bottom anchor."""
-        if not self._history_prefetch_active:
+        try:
+            chat = self.query_one("#chat", VerticalScroll)
+        except NoMatches:
             return
-        self._history_prefetch_active = False
-        generation = self._history_prefetch_anchor_generation
-        self._history_prefetch_anchor_generation = None
-        with suppress(NoMatches):
-            chat = self.query_one("#chat", _ChatScroll)
-            if generation == chat._bottom_follow_generation:
-                chat.anchor(False)
+        if chat.max_scroll_y > 0:
+            return
+        if await self._hydrate_messages(
+            "above", count=self._message_store.HYDRATE_BUFFER
+        ):
+            self.call_after_refresh(self._fill_history_viewport)
 
     def _check_hydration_needed(self) -> None:
         """Prefetch older messages near the mounted-window boundary."""
@@ -10325,6 +10287,8 @@ class DeepAgentsApp(App):
             logger.debug("Skipping hydration check: #chat container not found")
             return
 
+        if chat.max_scroll_y > 0 and chat.scroll_y >= chat.max_scroll_y:
+            return
         start, _end = self._message_store.get_visible_range()
         top_spacer_bottom = self._message_store.range_height(0, start)
         if self._message_store.should_hydrate_above(
@@ -10491,11 +10455,7 @@ class DeepAgentsApp(App):
             return 0
 
         old_scroll_y = chat.scroll_y
-        keep_at_bottom = (
-            above
-            and self._history_prefetch_active
-            and chat.scroll_y >= chat.max_scroll_y
-        )
+        keep_at_bottom = above and chat.scroll_y >= chat.max_scroll_y
         rows = reversed(to_hydrate) if above else iter(to_hydrate)
         entries = [self._build_hydration_entry(data) for data in rows]
         if above:
@@ -20710,8 +20670,8 @@ class DeepAgentsApp(App):
         this reuses that data. Otherwise, it fetches checkpoint state from the
         agent and converts stored messages into lightweight `MessageData`
         objects. The method then bulk-loads into the `MessageStore` and mounts
-        only the initial tail window synchronously, then warms toward the soft
-        window size in small post-refresh batches.
+        only the initial tail window. Older messages hydrate on demand as the
+        user scrolls toward them.
 
         Args:
             thread_id: Optional explicit thread ID to load.
@@ -20931,7 +20891,10 @@ class DeepAgentsApp(App):
             with suppress(NoMatches):
                 chat = self.query_one("#chat", VerticalScroll)
                 chat.scroll_end(animate=False)
-            self.call_after_refresh(self._start_history_prefetch)
+            # A compact tail may not scroll, so no Scrolled event will start
+            # hydration. Fill only until the transcript is tall enough to
+            # scroll, checking the settled layout after each batch.
+            self.call_after_refresh(self._fill_history_viewport)
 
         except asyncio.CancelledError:
             # The offloaded conversion and hook projection are await points, so
@@ -21801,10 +21764,6 @@ class DeepAgentsApp(App):
         # reset, switch, or resume.
         self._pending_shell_messages.clear()
         self._hydration_requests.clear()
-        self._history_prefetch_active = False
-        self._history_prefetch_anchor_generation = None
-        with suppress(NoMatches):
-            self.query_one("#chat", _ChatScroll).anchor(False)
         if self._transcript_prune_timer is not None:
             self._transcript_prune_timer.stop()
             self._transcript_prune_timer = None
@@ -30749,11 +30708,15 @@ class DeepAgentsApp(App):
 
         if self._session_state.thread_id == thread_id:
             prev_cwd = Path(self._cwd)
-            cwd_choice = await self._offer_thread_cwd_switch(
-                thread_id,
-                restart_server=True,
-                abort="thread_switch",
-            )
+            try:
+                await self._set_spinner("Loading thread")
+                cwd_choice = await self._offer_thread_cwd_switch(
+                    thread_id,
+                    restart_server=True,
+                    abort="thread_switch",
+                )
+            finally:
+                await self._set_spinner(None)
             if cwd_choice == "abort":
                 return
             if await asyncio.to_thread(self._cwd_paths_equal, self._cwd, prev_cwd):
@@ -30789,6 +30752,8 @@ class DeepAgentsApp(App):
 
         self._thread_switching = True
         try:
+            self._update_status(f"Loading thread: {thread_id}")
+            await self._set_spinner("Loading thread")
             blocked = await self._thread_resume_block(thread_id)
             if blocked:
                 await self._mount_message(AppMessage(blocked))
@@ -30819,8 +30784,6 @@ class DeepAgentsApp(App):
             prefetched_payload: _ThreadHistoryPayload | None = None
             outgoing_ended = False
             try:
-                self._update_status(f"Loading thread: {thread_id}")
-                await self._set_spinner("Loading thread")
                 prefetched_payload = await self._fetch_thread_history_data(thread_id)
                 from deepagents_code.hooks.models.domain import (
                     SessionEndCause,
@@ -30973,12 +30936,12 @@ class DeepAgentsApp(App):
                 error_message += " Use /threads to try again."
                 await self._mount_message(AppMessage(error_message))
             finally:
-                await self._set_spinner(None)
-                self._update_status("")
                 if self._chat_input:
                     self._chat_input.set_cursor_active(active=not self._agent_running)
         finally:
             self._thread_switching = False
+            await self._set_spinner(None)
+            self._update_status("")
 
     async def _mount_resume_adoption_failure(
         self, desired: str, reason: str, *, hint: str = ""

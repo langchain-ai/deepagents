@@ -2147,7 +2147,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
-    from deepagents_code._constants import DEFAULT_AGENT_NAME
+    from deepagents_code._constants import DEFAULT_AGENT_NAME, DEFAULT_THREAD_LIMIT
     from deepagents_code.client.commands.auth import setup_auth_parser
     from deepagents_code.client.commands.config import setup_config_parser
     from deepagents_code.client.commands.mcp import setup_mcp_parsers
@@ -2324,7 +2324,7 @@ def parse_args() -> argparse.Namespace:
         "--limit",
         type=int,
         default=None,
-        help="Max number of threads to display (default: 20)",
+        help=f"Max number of threads to display (default: {DEFAULT_THREAD_LIMIT})",
     )
     threads_list.add_argument(
         "--sort",
@@ -2359,7 +2359,7 @@ def parse_args() -> argparse.Namespace:
         "--relative",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Show timestamps as relative time (default: from config, or absolute)",
+        help="Show timestamps as relative time (default: from config)",
     )
     threads_delete = threads_sub.add_parser(
         "delete",
@@ -3805,9 +3805,10 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
     # Restore stdin from the real terminal so the interactive Textual app
     # (used by the -m path) can read keyboard/mouse input normally.
     # Textual's driver reads from file descriptor 0 directly (not sys.stdin),
-    # so we must replace the underlying fd with /dev/tty using os.dup2.
+    # so we must replace the underlying fd with the controlling terminal.
+    tty_path = "CONIN$" if sys.platform == "win32" else "/dev/tty"
     try:
-        tty_fd = os.open("/dev/tty", os.O_RDONLY)
+        tty_fd = os.open(tty_path, os.O_RDONLY)
     except OSError:
         # No controlling terminal (CI, Docker, headless). Non-interactive
         # path still works; interactive -m path will fail later with a
@@ -3824,7 +3825,8 @@ def apply_stdin_pipe(args: argparse.Namespace) -> None:
             "Interactive mode (-m) may not work correctly."
         )
         logger.warning(
-            "TTY restoration failed after opening /dev/tty",
+            "TTY restoration failed after opening %s",
+            tty_path,
             exc_info=True,
         )
         try:

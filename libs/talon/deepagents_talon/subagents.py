@@ -57,6 +57,7 @@ _DELEGATION_TOOLS = frozenset(
         "list_async_tasks",
         "list_subagents",
         "cancel_subagent",
+        "ask_for_help",
     }
 )
 

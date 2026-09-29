@@ -12,6 +12,8 @@ import pytest
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from deepagents_code import sessions
+from deepagents_code._constants import DEFAULT_THREAD_LIMIT
+from deepagents_code._env_vars import RECENT_THREADS
 from deepagents_code.app import TextualSessionState
 
 if TYPE_CHECKING:
@@ -1252,6 +1254,47 @@ class TestMessageCountFromCheckpointBlob:
 
 class TestGetThreadLimit:
     """Tests for get_thread_limit() env var parsing."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (None, DEFAULT_THREAD_LIMIT),
+            ("invalid", DEFAULT_THREAD_LIMIT),
+            ("7", 7),
+            ("0", 1),
+            ("-5", 1),
+        ],
+    )
+    def test_environment_limit(
+        self, monkeypatch: pytest.MonkeyPatch, value: str | None, expected: int
+    ) -> None:
+        if value is None:
+            monkeypatch.delenv(RECENT_THREADS, raising=False)
+        else:
+            monkeypatch.setenv(RECENT_THREADS, value)
+        assert sessions.get_thread_limit() == expected
+
+    @pytest.mark.parametrize("limit", [None, 7])
+    async def test_database_limit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit: int | None
+    ) -> None:
+        monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "threads.db")
+        async with sessions._connect() as conn:
+            await conn.execute(
+                "CREATE TABLE checkpoints (thread_id TEXT, checkpoint_ns TEXT, "
+                "checkpoint_id TEXT, metadata BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO checkpoints VALUES (?, '', 'cp', '{}')",
+                [(f"thread-{i}",) for i in range(DEFAULT_THREAD_LIMIT + 1)],
+            )
+            await conn.commit()
+        threads = (
+            await sessions.list_threads()
+            if limit is None
+            else await sessions.list_threads(limit=limit)
+        )
+        assert len(threads) == (DEFAULT_THREAD_LIMIT if limit is None else limit)
 
 
 class TestListThreadsSortAndBranch:

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -23,11 +22,9 @@ from langchain_openai import ChatOpenAI
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
-from deepagents.profiles import HarnessProfile, register_harness_profile
-from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable
     from pathlib import Path
 
     import pytest
@@ -111,18 +108,6 @@ class RecordingResolver:
         """Record `name` and return its tools."""
         self.calls.append(name)
         return list(self.families.get(name, []))
-
-
-@contextmanager
-def excluding_profile(*names: str) -> Iterator[None]:
-    """Register a `skilltoolsprov` harness profile excluding `names`, for the duration."""
-    original = dict(_HARNESS_PROFILES)
-    try:
-        register_harness_profile("skilltoolsprov", HarnessProfile(excluded_tools=frozenset(names)))
-        yield
-    finally:
-        _HARNESS_PROFILES.clear()
-        _HARNESS_PROFILES.update(original)
 
 
 def linear_resolver() -> RecordingResolver:

@@ -138,21 +138,20 @@ from langgraph.types import Command
 from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
 from deepagents.backends.utils import to_posix_path
 from deepagents.middleware._skill_tools import (
-    INCLUDE_TOOLS_KEY,
-    SKILL_TOOLS_DISCLOSED_KEY,
-    SkillRead,
-    aresolve_include_name,
-    bind_disclosures,
-    discard_rejected_schemas,
-    disclosed_record,
-    include_names,
-    inline_block_builder,
-    insert_disclosures,
-    normalize_skill_tools,
-    plan_disclosure,
-    resolve_include_name,
-    skill_reads,
-    unclaimed_include_names,
+    _INCLUDE_TOOLS_KEY,
+    _SKILL_TOOLS_DISCLOSED_KEY,
+    _aresolve_include_name,
+    _bind_disclosures,
+    _discard_rejected_schemas,
+    _disclosed_record,
+    _find_skill_reads,
+    _inline_block_builder,
+    _insert_disclosures,
+    _normalize_skill_tools,
+    _plan_disclosure,
+    _resolve_include_name,
+    _SkillRead,
+    _unclaimed_include_names,
 )
 from deepagents.middleware._utils import append_to_system_message
 
@@ -554,7 +553,7 @@ def _warn_malformed_include_tools(name: str, skill_path: str, metadata: dict[str
     would never match a tool. Logged rather than recorded in
     `skills_load_errors`, which is rendered into the model's prompt.
     """
-    value = metadata.get(INCLUDE_TOOLS_KEY)
+    value = metadata.get(_INCLUDE_TOOLS_KEY)
     if value is not None and ("[" in value or "," in value):
         logger.warning(
             "Skill '%s' (%s): metadata.include_tools should be a space-separated string of tool names; got %r",
@@ -894,9 +893,10 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
     On models that accept tool changes mid-conversation (the Claude API's Opus
     4.8, Opus 5, Fable 5 and Mythos 5 models, and `ChatOpenAI` `gpt-5.6-` and
-    `gpt-6-` models on the Responses API), each definition is sent in a system
-    message right after the earliest read producing it, at the same position on
-    every call, so the prompt cache survives. Every other model receives
+    `gpt-6-` models on the Responses API, which need `langchain-openai>=1.6.5`),
+    each definition is sent in a system message right after the earliest read
+    producing it, at the same position on every call, so the prompt cache
+    survives. Every other model receives
     disclosed tools in `tools`, which costs a cache miss but gates calls the
     same way. Anthropic rejects a tool whose root input schema uses `oneOf`,
     `anyOf` or `allOf`, failing the whole request, so such a tool is never
@@ -1045,8 +1045,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         self.system_prompt_template = system_prompt
         # Kept off `self.tools`: `create_agent` registers those with the tool
         # node, which would make skill tools callable without their skill.
-        # `None` when `skill_tools` is a resolver rather than a list.
-        self._skill_tool_resolver, self._listed_skill_tools = normalize_skill_tools(skill_tools)
+        self._skill_tool_resolver = _normalize_skill_tools(skill_tools)
 
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
@@ -1171,7 +1170,6 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             # silently disappear when the fragment is suppressed.
             logger.warning("Skills load errors: %s", skills_load_errors)
         skills = list(all_skills.values())
-        self._log_unreferenced_skill_tools(skills)
         # Always write the errors so warnings from an earlier load are cleared
         return SkillsStateUpdate(skills_metadata=skills, skills_load_errors=skills_load_errors)
 
@@ -1218,43 +1216,34 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             # silently disappear when the fragment is suppressed.
             logger.warning("Skills load errors: %s", skills_load_errors)
         skills = list(all_skills.values())
-        self._log_unreferenced_skill_tools(skills)
         # Always write the errors so warnings from an earlier load are cleared
         return SkillsStateUpdate(skills_metadata=skills, skills_load_errors=skills_load_errors)
 
-    def _log_unreferenced_skill_tools(self, skills: list[SkillMetadata]) -> None:
-        """Log each listed skill tool no loaded skill names; routine with per-run tool rosters."""
-        if self._listed_skill_tools is None:
-            return
-        named = {name for skill in skills for name in include_names(skill)}
-        for name in sorted(self._listed_skill_tools.keys() - named):
-            logger.debug("Skill tool '%s' is not named by any loaded skill", name)
-
-    def _skill_reads(self, request: ModelRequest[ContextT]) -> list[SkillRead]:
+    def _skill_reads(self, request: ModelRequest[ContextT]) -> list[_SkillRead]:
         """Return the reads of tool-naming skills in the messages this call sends."""
-        return skill_reads(request.messages, request.state.get("skills_metadata") or [])
+        return _find_skill_reads(request.messages, request.state.get("skills_metadata") or [])
 
     def _disclose_skill_tools(
-        self, request: ModelRequest[ContextT], reads: list[SkillRead], resolved: Mapping[str, Sequence[BaseTool]]
+        self, request: ModelRequest[ContextT], reads: list[_SkillRead], resolved: Mapping[str, Sequence[BaseTool]]
     ) -> tuple[ModelRequest[ContextT], dict[str, str]]:
         """Disclose what the read skills' include names produce.
 
         Returns:
             The request to send, and the record of the gated skill tools it discloses.
         """
-        disclosure = plan_disclosure(reads, request.tools, resolved)
-        discard_rejected_schemas(disclosure, request.model)
+        disclosure = _plan_disclosure(reads, request.tools, resolved)
+        _discard_rejected_schemas(disclosure, request.model)
         record = disclosure.record()
         if not disclosure.anchors:
             return request, record
-        build = inline_block_builder(request.model)
+        build = _inline_block_builder(request.model)
         if build is None:
-            return request.override(tools=bind_disclosures(request.tools, disclosure)), record
-        return request.override(messages=insert_disclosures(request.messages, disclosure, build)), record
+            return request.override(tools=_bind_disclosures(request.tools, disclosure)), record
+        return request.override(messages=_insert_disclosures(request.messages, disclosure, build)), record
 
     def _record_disclosed_skill_tools(self, response: ModelResponse[ResponseT], record: dict[str, str]) -> ExtendedModelResponse[ResponseT]:
         """Record which skill tools `response`'s model call was shown, for the tool-time gate."""
-        return ExtendedModelResponse(model_response=response, command=Command(update={SKILL_TOOLS_DISCLOSED_KEY: record}))
+        return ExtendedModelResponse(model_response=response, command=Command(update={_SKILL_TOOLS_DISCLOSED_KEY: record}))
 
     def wrap_model_call(
         self,
@@ -1273,8 +1262,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         """
         request = self.modify_request(request)
         reads = self._skill_reads(request)
-        names = unclaimed_include_names(reads, request.tools)
-        resolved = {name: resolve_include_name(self._skill_tool_resolver, name, request.runtime) for name in names}
+        names = _unclaimed_include_names(reads, request.tools)
+        resolved = {name: _resolve_include_name(self._skill_tool_resolver, name, request.runtime) for name in names}
         request, record = self._disclose_skill_tools(request, reads, resolved)
         return self._record_disclosed_skill_tools(handler(request), record)
 
@@ -1295,8 +1284,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         """
         request = self.modify_request(request)
         reads = self._skill_reads(request)
-        names = unclaimed_include_names(reads, request.tools)
-        tools = await asyncio.gather(*(aresolve_include_name(self._skill_tool_resolver, name, request.runtime) for name in names))
+        names = _unclaimed_include_names(reads, request.tools)
+        tools = await asyncio.gather(*(_aresolve_include_name(self._skill_tool_resolver, name, request.runtime) for name in names))
         request, record = self._disclose_skill_tools(request, reads, dict(zip(names, tools, strict=True)))
         return self._record_disclosed_skill_tools(await handler(request), record)
 
@@ -1308,7 +1297,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         """
         if request.tool is not None:
             return None
-        return disclosed_record(request.state).get(request.tool_call["name"])
+        return _disclosed_record(request.state).get(request.tool_call["name"])
 
     def _with_disclosed_skill_tool(self, request: ToolCallRequest, include_name: str, tools: Sequence[BaseTool]) -> ToolCallRequest:
         """Return `request` running the tool it calls from `tools`, or unchanged to fail as invalid if that's missing."""
@@ -1336,7 +1325,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         include_name = self._disclosing_include_name(request)
         if include_name is None:
             return handler(request)
-        tools = resolve_include_name(self._skill_tool_resolver, include_name, get_runtime())
+        tools = _resolve_include_name(self._skill_tool_resolver, include_name, get_runtime())
         return handler(self._with_disclosed_skill_tool(request, include_name, tools))
 
     async def awrap_tool_call(
@@ -1356,7 +1345,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         include_name = self._disclosing_include_name(request)
         if include_name is None:
             return await handler(request)
-        tools = await aresolve_include_name(self._skill_tool_resolver, include_name, get_runtime())
+        tools = await _aresolve_include_name(self._skill_tool_resolver, include_name, get_runtime())
         return await handler(self._with_disclosed_skill_tool(request, include_name, tools))
 
 
@@ -1374,7 +1363,7 @@ def disclosed_skill_tool_names(state: Mapping[str, object]) -> frozenset[str]:
     Returns:
         The disclosed skill tools' names, reflecting the latest model call.
     """
-    return frozenset(disclosed_record(state))
+    return frozenset(_disclosed_record(state))
 
 
 __all__ = ["SkillMetadata", "SkillToolResolver", "SkillsMiddleware", "SkillsState", "disclosed_skill_tool_names"]

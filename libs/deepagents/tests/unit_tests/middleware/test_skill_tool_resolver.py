@@ -14,7 +14,6 @@ import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
 
 import pytest
 from langchain.agents.middleware.types import AgentMiddleware, ToolCallRequest
@@ -39,7 +38,6 @@ from tests.unit_tests.middleware.skill_tools_support import (
     bound_tool_names,
     call,
     create_issue,
-    excluding_profile,
     invoke,
     linear_resolver,
     list_issues,
@@ -58,7 +56,6 @@ if TYPE_CHECKING:
 
     from langchain_core.runnables import RunnableConfig
 
-    from deepagents.middleware.skills import SkillToolResolver
     from deepagents.middleware.subagents import SubAgent
 
 
@@ -375,36 +372,6 @@ def test_resolver_returning_something_other_than_tools_raises(tmp_path: Path, mo
 
     with pytest.raises(TypeError, match=msg):
         invoke(agent, {"messages": [HumanMessage("go")]}, mode)
-
-
-@pytest.mark.parametrize(
-    ("mode", "resolver"),
-    [
-        pytest.param("sync", linear_resolver(), id="sync-sync-resolver"),
-        pytest.param("async", linear_resolver(), id="async-sync-resolver"),
-        pytest.param("async", _async_linear, id="async-async-resolver"),
-    ],
-)
-def test_profile_excluded_tools_are_dropped_from_resolver_output(tmp_path: Path, mode: str, resolver: SkillToolResolver) -> None:
-    write_skill(tmp_path, "linear", "linear")
-    model = _model(ai(read("r1", path=LINEAR_PATH)), ai(call(CREATE_ISSUE, "c1", title="x")))
-    with excluding_profile(CREATE_ISSUE), patch("deepagents.graph.resolve_model", return_value=model):
-        agent = skills_agent(tmp_path, "skilltoolsprov:model", skill_tools=resolver)
-        result = invoke(agent, {"messages": [HumanMessage("go")]}, mode)
-
-    assert CREATE_ISSUE not in bound_tool_names(model.call_history[1])
-    assert bound_tool_names(model.call_history[1])[-1] == LIST_ISSUES
-    assert tool_messages(result, CREATE_ISSUE)[0].content == f"Error: {CREATE_ISSUE} is not available."
-
-
-def test_profile_exclusion_keeps_an_async_resolver_closeable_on_the_sync_entry_point(tmp_path: Path) -> None:
-    write_skill(tmp_path, "linear", "linear")
-    model = _model(ai(read("r1", path=LINEAR_PATH)))
-    with excluding_profile(CREATE_ISSUE), patch("deepagents.graph.resolve_model", return_value=model):
-        agent = skills_agent(tmp_path, "skilltoolsprov:model", skill_tools=_async_linear)
-
-    with _no_warnings(), pytest.raises(TypeError, match=r"^skill_tools resolver returned an awaitable for 'linear'"):
-        invoke(agent, {"messages": [HumanMessage("go")]}, "sync")
 
 
 class TestConstruction:

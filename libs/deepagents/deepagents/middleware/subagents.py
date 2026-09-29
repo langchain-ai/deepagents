@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
-from deepagents.middleware._skill_tools import SKILL_TOOLS_DISCLOSED_KEY
+from deepagents.middleware._skill_tools import _SKILL_TOOLS_DISCLOSED_KEY
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.skills import SkillToolResolver
@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
 
-_FORK_EXCLUDED_STATE_KEYS = frozenset({"structured_response", SUMMARIZATION_EVENT_KEY, SUMMARIZATION_SESSION_ID_KEY, SKILL_TOOLS_DISCLOSED_KEY})
+_FORK_EXCLUDED_STATE_KEYS = frozenset({"structured_response", SUMMARIZATION_EVENT_KEY, SUMMARIZATION_SESSION_ID_KEY, _SKILL_TOOLS_DISCLOSED_KEY})
 """State a fork must not resume.
 
 The summarization event is folded into the fork's messages instead. Dropping the
@@ -414,7 +414,7 @@ _EXCLUDED_STATE_KEYS = {
     "todos",
     "structured_response",
     "skills_metadata",
-    SKILL_TOOLS_DISCLOSED_KEY,
+    _SKILL_TOOLS_DISCLOSED_KEY,
     _FORKED_CONTEXT_KEY,
 }
 """State keys that are excluded when passing state to subagents and when

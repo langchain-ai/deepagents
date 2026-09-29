@@ -12,7 +12,6 @@ import json
 import logging
 import warnings
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
 
 import httpx
 import pytest
@@ -22,24 +21,19 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 
-from deepagents.graph import create_deep_agent
 from deepagents.middleware._skill_tools import _ANTHROPIC_INLINE_TOOL_MODELS
 from deepagents.middleware.summarization import SummarizationMiddleware
-from deepagents.profiles import HarnessProfile, register_harness_profile
-from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES
 from tests.unit_tests.chat_model import GenericFakeChatModel
 from tests.unit_tests.middleware.skill_tools_support import (
     CREATE_ISSUE,
     LINEAR_PATH,
     LIST_ISSUES,
-    SKILLS_SOURCE,
     ProviderStub,
     RecordingResolver,
     ai,
     call,
     create_customer_request,
     create_issue,
-    excluding_profile,
     invoke,
     linear_resolver,
     list_customer_requests,
@@ -280,40 +274,6 @@ def test_skill_naming_a_bound_tool_sends_nothing(tmp_path: Path, monkeypatch: py
 
     assert _anthropic_system_turns(stub.bodies[1]) == []
     assert _tool_names(stub.bodies[1]) == _tool_names(stub.bodies[0])
-
-
-def test_profile_excluded_skill_tool_is_never_disclosed_inline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
-    write_skill(tmp_path, "crm", "create_customer_request list_customer_requests")
-    model, stub = stub_anthropic(monkeypatch, [[read("r1")], [call("create_customer_request", "c1", title="x")], "done"])
-    original = dict(_HARNESS_PROFILES)
-    try:
-        register_harness_profile("skilltoolsprov", HarnessProfile(excluded_tools=frozenset({"create_customer_request"})))
-        with patch("deepagents.graph.resolve_model", return_value=model):
-            agent = create_deep_agent(
-                model="skilltoolsprov:claude-opus-5-5",
-                backend=skills_backend(tmp_path),
-                skills=[SKILLS_SOURCE],
-                skill_tools=[create_customer_request, list_customer_requests],
-            )
-        result = invoke(agent, {"messages": [HumanMessage("go")]}, mode)
-    finally:
-        _HARNESS_PROFILES.clear()
-        _HARNESS_PROFILES.update(original)
-
-    [(_, content)] = _anthropic_system_turns(stub.bodies[1])
-    assert [block["tool"]["definition"]["name"] for block in content] == ["list_customer_requests"]
-    assert tool_messages(result, "create_customer_request")[0].content == "Error: create_customer_request is not available."
-
-
-def test_profile_excluded_tool_is_dropped_from_resolver_output_inline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
-    write_skill(tmp_path, "linear", "linear")
-    model, stub = stub_anthropic(monkeypatch, [[read("r1", path=LINEAR_PATH)], "done"])
-    with excluding_profile(CREATE_ISSUE), patch("deepagents.graph.resolve_model", return_value=model):
-        agent = skills_agent(tmp_path, "skilltoolsprov:claude-opus-5-5", skill_tools=linear_resolver())
-        invoke(agent, {"messages": [HumanMessage("go")]}, mode)
-
-    [(_, content)] = _anthropic_system_turns(stub.bodies[1])
-    assert [block["tool"]["definition"]["name"] for block in content] == [LIST_ISSUES]
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
 
 import pytest
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ModelRequest, ModelResponse, ToolCallRequest
@@ -24,8 +23,6 @@ from deepagents.backends.state import StateBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.summarization import SummarizationMiddleware
-from deepagents.profiles import HarnessProfile, register_harness_profile
-from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES
 from tests.unit_tests.chat_model import GenericFakeChatModel
 from tests.unit_tests.middleware.skill_tools_support import (
     SKILLS_SOURCE,
@@ -348,17 +345,16 @@ def test_tool_another_middleware_exposes_wins(tmp_path: Path, mode: str) -> None
     assert ran.content == "registered x"
 
 
-def test_unresolved_names_and_unreferenced_skill_tools_log_at_debug(tmp_path: Path, mode: str, caplog: pytest.LogCaptureFixture) -> None:
+def test_unresolved_names_log_at_debug(tmp_path: Path, mode: str, caplog: pytest.LogCaptureFixture) -> None:
     write_skill(tmp_path, "crm", "create_customer_request missing_tool")
     model = _model(ai(read("r1")))
-    agent = skills_agent(tmp_path, model, skill_tools=[create_customer_request, list_customer_requests])
+    agent = skills_agent(tmp_path, model)
 
     with caplog.at_level(logging.DEBUG, logger="deepagents.middleware"):
         invoke(agent, {"messages": [HumanMessage("go")]}, mode)
 
     debug = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG and r.name.startswith("deepagents.middleware")]
     assert "Skill 'crm' names tool 'missing_tool', which is not available in this request" in debug
-    assert debug.count("Skill tool 'list_customer_requests' is not named by any loaded skill") == 1
     assert not [r for r in caplog.records if r.levelno > logging.DEBUG and "missing_tool" in r.getMessage()]
 
 
@@ -457,24 +453,6 @@ class TestConstruction:
         result = invoke(skills_agent(tmp_path, model, skill_tools=[lookup_account]), {"messages": [HumanMessage("go")]}, "sync")
 
         assert tool_messages(result, "lookup_account")[0].content == "account 42"
-
-
-def test_profile_excluded_tools_drop_a_skill_tool(tmp_path: Path, mode: str) -> None:
-    write_skill(tmp_path, "crm", "create_customer_request list_customer_requests")
-    model = _model(ai(read("r1")), ai(call("create_customer_request", "c1", title="x")))
-    original = dict(_HARNESS_PROFILES)
-    try:
-        register_harness_profile("skilltoolsprov", HarnessProfile(excluded_tools=frozenset({"create_customer_request"})))
-        with patch("deepagents.graph.resolve_model", return_value=model):
-            agent = skills_agent(tmp_path, "skilltoolsprov:model", skill_tools=[create_customer_request, list_customer_requests])
-        result = invoke(agent, {"messages": [HumanMessage("go")]}, mode)
-    finally:
-        _HARNESS_PROFILES.clear()
-        _HARNESS_PROFILES.update(original)
-
-    assert "create_customer_request" not in bound_tool_names(model.call_history[1])
-    assert "list_customer_requests" in bound_tool_names(model.call_history[1])
-    assert tool_messages(result, "create_customer_request")[0].content == "Error: create_customer_request is not available."
 
 
 class _RecordsInputState(AgentMiddleware):

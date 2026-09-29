@@ -306,34 +306,22 @@ async def _run_host(
     config: TalonConfig,
     cron_store: CronJobStore,
     channels: Sequence[ChannelAdapter],
-    *,
-    checkpointer: Checkpointer | None = None,
 ) -> None:
     if config.model is None:
         await _run_host_with_agent(args, config, cron_store, channels, await _agent_runtime(config))
         return
     async with open_sandbox(config) as sandbox:
-        await _run_model_host(
-            args, config, cron_store, channels, checkpointer=checkpointer, sandbox=sandbox
-        )
+        await _run_model_host(args, config, cron_store, channels, sandbox=sandbox)
 
 
-async def _run_model_host(  # noqa: PLR0913  # threads host wiring through unchanged
+async def _run_model_host(
     args: argparse.Namespace,
     config: TalonConfig,
     cron_store: CronJobStore,
     channels: Sequence[ChannelAdapter],
     *,
-    checkpointer: Checkpointer | None,
     sandbox: SandboxSession | None,
 ) -> None:
-    if checkpointer is not None:
-        agent = await _agent_runtime(
-            config, cron_store=cron_store, checkpointer=checkpointer, sandbox=sandbox
-        )
-        await _run_host_with_agent(args, config, cron_store, channels, agent)
-        return
-
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: PLC0415
 
     from deepagents_talon.archive_saver import ConversationSaver  # noqa: PLC0415

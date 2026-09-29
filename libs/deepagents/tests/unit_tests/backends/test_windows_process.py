@@ -48,17 +48,17 @@ def test_pipe_errors_distinguish_eof_from_failure(code: int) -> None:
 
 
 def test_retries_preserve_multibyte_output_and_newlines() -> None:
-    process = _process()
+    process = _process(errors="replace")
     process.poll.return_value = 7
     reader = WindowsProcessReader(process)
     try:
         with (
-            patch.object(windows_process, "_read_available", side_effect=[b"\xc3", b"err\r", b"\xa9\r", b"\n", b"\nx\r", b"", b"\n", b""]),
+            patch.object(windows_process, "_read_available", side_effect=[b"\xc3", b"err\r", b"\xa9\r", b"\n\xff", b"\nx\r", b"", b"\n", b""]),
             patch.object(windows_process.time, "monotonic", side_effect=chain([0, 0], repeat(2))),
         ):
             with pytest.raises(subprocess.TimeoutExpired):
                 reader.communicate(timeout=1)
-            assert reader.communicate(timeout=1) == ("é\nx\n", "err\n")
+            assert reader.communicate(timeout=1) == ("é\nx\n", "err\n�")
         assert process.stdout.closed
         assert process.stderr.closed
     finally:
@@ -87,16 +87,6 @@ def test_closed_pipes_still_wait_for_process_exit() -> None:
         with patch.object(windows_process, "_read_available", return_value=b""):
             assert WindowsProcessReader(process).communicate(timeout=1) == ("", "")
         assert process.poll.call_count == 2
-    finally:
-        process.stdout.close()
-        process.stderr.close()
-
-
-def test_decode_errors_follow_process_settings() -> None:
-    process = _process(errors="replace")
-    try:
-        with patch.object(windows_process, "_read_available", side_effect=[b"\xff", b"", b""]):
-            assert WindowsProcessReader(process).communicate(timeout=1) == ("�", "")
     finally:
         process.stdout.close()
         process.stderr.close()

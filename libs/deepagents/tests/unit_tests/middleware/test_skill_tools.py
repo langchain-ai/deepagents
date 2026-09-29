@@ -88,7 +88,7 @@ def test_call_in_the_same_turn_as_the_read_is_rejected(tmp_path: Path, mode: str
     result = invoke(skills_agent(tmp_path, model), {"messages": [HumanMessage("go")]}, mode)
 
     rejected, ran = tool_messages(result, "create_customer_request")
-    assert rejected.content == "Error: create_customer_request is not available yet. Read the crm skill (/skills/crm/SKILL.md) to make it available."
+    assert rejected.content.startswith("Error: create_customer_request is not a valid tool")
     assert rejected.status == "error"
     assert rejected.tool_call_id == "c1"
     assert ran.content == "created late (c2)"
@@ -96,16 +96,12 @@ def test_call_in_the_same_turn_as_the_read_is_rejected(tmp_path: Path, mode: str
 
 def test_call_before_any_read_is_rejected_without_running(tmp_path: Path, mode: str) -> None:
     write_skill(tmp_path, "crm", "create_customer_request")
-    write_skill(tmp_path, "support", "create_customer_request")
     model = _model(ai(call("create_customer_request", "c1", title="x")))
 
     result = invoke(skills_agent(tmp_path, model), {"messages": [HumanMessage("go")]}, mode)
 
     [rejected] = tool_messages(result, "create_customer_request")
-    assert rejected.content == (
-        "Error: create_customer_request is not available yet. Read one of these skills to make it available: "
-        "crm (/skills/crm/SKILL.md), support (/skills/support/SKILL.md)."
-    )
+    assert rejected.content.startswith("Error: create_customer_request is not a valid tool")
     assert rejected.status == "error"
     assert "create_customer_request" not in bound_tool_names(model.call_history[1])
 
@@ -131,7 +127,6 @@ def test_skill_tool_no_skill_names_gets_the_invalid_tool_error(tmp_path: Path, m
     [error] = tool_messages(result, "create_customer_request")
     assert error.status == "error"
     assert "is not a valid tool" in error.content
-    assert "not available yet" not in error.content
 
 
 def _compacting(tmp_path: Path, trigger: int) -> SummarizationMiddleware:
@@ -157,8 +152,8 @@ def test_compaction_that_drops_the_read_withdraws_the_tool(tmp_path: Path, mode:
     assert "create_customer_request" not in bound_tool_names(model.call_history[2])
     ran, rejected = tool_messages(result, "create_customer_request")
     assert ran.content == "created a (c1)"
-    assert rejected.content.startswith("Error: create_customer_request is not available yet.")
-    assert agent.get_state(config).values["_skill_tools_disclosed"] == []
+    assert rejected.content.startswith("Error: create_customer_request is not a valid tool")
+    assert agent.get_state(config).values["_skill_tools_disclosed"] == {}
 
 
 def test_disclosed_record_follows_each_model_call(tmp_path: Path, mode: str) -> None:
@@ -169,7 +164,10 @@ def test_disclosed_record_follows_each_model_call(tmp_path: Path, mode: str) -> 
 
     invoke(agent, {"messages": [HumanMessage("go")]}, mode, config)
 
-    assert agent.get_state(config).values["_skill_tools_disclosed"] == ["create_customer_request", "list_customer_requests"]
+    assert agent.get_state(config).values["_skill_tools_disclosed"] == {
+        "create_customer_request": "create_customer_request",
+        "list_customer_requests": "list_customer_requests",
+    }
     assert "_skill_tools_disclosed" not in invoke(agent, {"messages": [HumanMessage("again")]}, mode, config)
 
 
@@ -192,7 +190,23 @@ def test_rebuild_without_skill_tools_clears_a_checkpointed_record(tmp_path: Path
     result = invoke(with_tools, Command(resume={"decisions": [{"type": "approve"}]}), mode, config)
 
     [rejected] = tool_messages(result, "create_customer_request")
-    assert rejected.content == "Error: create_customer_request is not available yet. Read the crm skill (/skills/crm/SKILL.md) to make it available."
+    assert rejected.content.startswith("Error: create_customer_request is not a valid tool")
+
+
+def test_record_of_an_earlier_shape_reads_as_empty(tmp_path: Path, mode: str) -> None:
+    """A record in the shape an earlier build wrote never crashes the gate after an upgrade mid-thread."""
+    write_skill(tmp_path, "crm", "create_customer_request")
+    config: RunnableConfig = {"configurable": {"thread_id": "upgrade"}}
+    model = _model(ai(read("r1")), ai(call("create_customer_request", "c1", title="x")))
+    agent = skills_agent(tmp_path, model, interrupt_on={"create_customer_request": True}, checkpointer=InMemorySaver())
+    assert invoke(agent, {"messages": [HumanMessage("go")]}, mode, config)["__interrupt__"]
+    # The list of names an earlier build recorded, left in place while the tool call waits for approval.
+    agent.update_state(config, {"_skill_tools_disclosed": ["create_customer_request"]})
+
+    result = invoke(agent, Command(resume={"decisions": [{"type": "approve"}]}), mode, config)
+
+    [rejected] = tool_messages(result, "create_customer_request")
+    assert rejected.content.startswith("Error: create_customer_request is not a valid tool")
 
 
 def _discloses_after(tmp_path: Path, mode: str, history: list[AIMessage | ToolMessage]) -> bool:

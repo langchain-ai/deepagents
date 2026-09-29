@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -17,20 +18,23 @@ import langchain_anthropic.chat_models as anthropic_chat_models
 from langchain.tools import ToolRuntime  # noqa: TC002  # `@tool` resolves the injected `runtime` annotation at runtime
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import AIMessage, ToolCall
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, StructuredTool, tool
 from langchain_openai import ChatOpenAI
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
+from deepagents.profiles import HarnessProfile, register_harness_profile
+from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
     from pathlib import Path
 
     import pytest
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
     from langgraph.graph.state import CompiledStateGraph
+    from langgraph.runtime import Runtime
 
 SKILLS_SOURCE = "/skills/"
 CRM_PATH = "/skills/crm/SKILL.md"
@@ -79,6 +83,66 @@ def search_tickets(query: str) -> str:
     return f"tickets for {query}"
 
 
+LINEAR_PATH = "/skills/linear/SKILL.md"
+LIST_ISSUES = "mcp_linear_list_issues_ab12"
+CREATE_ISSUE = "mcp_linear_create_issue_cd34"
+
+
+@tool(LIST_ISSUES)
+def list_issues() -> str:
+    """List Linear issues."""
+    return "no issues"
+
+
+@tool(CREATE_ISSUE)
+def create_issue(title: str, runtime: ToolRuntime) -> str:
+    """Create a Linear issue."""
+    return f"issue {title} ({runtime.tool_call_id})"
+
+
+@dataclass
+class RecordingResolver:
+    """A `skill_tools` resolver over a fixed map of names, recording every name it's asked for."""
+
+    families: dict[str, list[BaseTool]]
+    calls: list[str] = field(default_factory=list)
+
+    def __call__(self, name: str, runtime: Runtime[Any]) -> list[BaseTool]:
+        """Record `name` and return its tools."""
+        self.calls.append(name)
+        return list(self.families.get(name, []))
+
+
+@contextmanager
+def excluding_profile(*names: str) -> Iterator[None]:
+    """Register a `skilltoolsprov` harness profile excluding `names`, for the duration."""
+    original = dict(_HARNESS_PROFILES)
+    try:
+        register_harness_profile("skilltoolsprov", HarnessProfile(excluded_tools=frozenset(names)))
+        yield
+    finally:
+        _HARNESS_PROFILES.clear()
+        _HARNESS_PROFILES.update(original)
+
+
+def linear_resolver() -> RecordingResolver:
+    """Return a resolver mapping `linear` to both Linear tools."""
+    return RecordingResolver({"linear": [list_issues, create_issue]})
+
+
+def logged_create_issue(log: list[str]) -> BaseTool:
+    """Return a `CREATE_ISSUE` tool that appends `ran <call id>` to `log` when it runs.
+
+    Sharing a resolver's `calls` as `log` shows which name each tool-time lookup used.
+    """
+
+    def run(title: str, runtime: ToolRuntime) -> str:
+        log.append(f"ran {runtime.tool_call_id}")
+        return f"issue {title} ({runtime.tool_call_id})"
+
+    return StructuredTool.from_function(run, name=CREATE_ISSUE, description="Create a Linear issue.")
+
+
 def call(name: str, call_id: str, **args: Any) -> ToolCall:
     """Return a tool call as the model would emit it."""
     return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
@@ -94,11 +158,11 @@ def ai(*calls: ToolCall, content: str = "") -> AIMessage:
     return AIMessage(content=content, tool_calls=list(calls))
 
 
-def invoke(agent: CompiledStateGraph, state: dict[str, Any], mode: str, config: RunnableConfig | None = None) -> dict[str, Any]:
-    """Run `agent` through its sync or async entry point."""
+def invoke(agent: CompiledStateGraph, state: dict[str, Any], mode: str, config: RunnableConfig | None = None, **kwargs: Any) -> dict[str, Any]:
+    """Run `agent` through its sync or async entry point, passing `kwargs` (e.g. `context`) through."""
     if mode == "sync":
-        return agent.invoke(state, config)
-    return asyncio.run(agent.ainvoke(state, config))
+        return agent.invoke(state, config, **kwargs)
+    return asyncio.run(agent.ainvoke(state, config, **kwargs))
 
 
 def tool_messages(result: dict[str, Any], name: str) -> list[Any]:

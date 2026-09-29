@@ -99,22 +99,23 @@ middleware = SkillsMiddleware(
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any
 
 import yaml
 from langchain.agents.middleware.types import OmitFromOutput, PrivateStateAttr
+from langchain_core.tools import BaseTool
+from langgraph.runtime import Runtime, get_runtime
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
-
+    from langchain_core.messages import ToolMessage
     from langchain_core.runnables import RunnableConfig
-    from langchain_core.tools import BaseTool
-    from langgraph.runtime import Runtime
 
     from deepagents.backends.protocol import BackendProtocol
 
@@ -132,7 +133,6 @@ from langchain.agents.middleware.types import (
     TracePolicy,
     omit_payload,
 )
-from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
@@ -140,14 +140,19 @@ from deepagents.backends.utils import to_posix_path
 from deepagents.middleware._skill_tools import (
     INCLUDE_TOOLS_KEY,
     SKILL_TOOLS_DISCLOSED_KEY,
+    SkillLoad,
+    aresolve,
     bind_disclosures,
-    coerce_skill_tools,
+    discard_rejected_schemas,
+    disclosed_record,
     disclosure_builder,
     included_tool_names,
     insert_disclosures,
-    not_disclosed_error,
+    resolve,
     resolve_disclosure,
-    skills_naming,
+    skill_loads,
+    skill_tools_form,
+    unclaimed_names,
 )
 from deepagents.middleware._utils import append_to_system_message
 
@@ -164,6 +169,14 @@ _SKILL_LOAD_WARNING_TRUNCATION_SUFFIX = "... [truncated]"
 MAX_SKILL_NAME_LENGTH = 64
 MAX_SKILL_DESCRIPTION_LENGTH = 1024
 MAX_SKILL_COMPATIBILITY_LENGTH = 500
+
+SkillToolResolver = Callable[[str, Runtime[ContextT]], Sequence[BaseTool] | Awaitable[Sequence[BaseTool]]]
+"""Resolve one `metadata.include_tools` name to the skill tools it stands for.
+
+Called with the name and the graph's `Runtime`, it returns zero or more tools,
+directly or as an awaitable. Returning several is how one name stands for a
+family of tools. See `SkillsMiddleware` for the contract.
+"""
 
 SkillSource = str | tuple[str, str]
 """A skill source: either a bare path or a `(path, label)` pair.
@@ -320,12 +333,14 @@ class SkillsState(AgentState):
     skills_load_errors: NotRequired[Annotated[list[str], PrivateStateAttr]]
     """Skill source loading errors. Not propagated to parent agents."""
 
-    _skill_tools_disclosed: NotRequired[Annotated[list[str], PrivateStateAttr]]
-    """Skill tools disclosed to the latest model call, sorted. Not propagated to parent agents.
+    _skill_tools_disclosed: NotRequired[Annotated[dict[str, str], PrivateStateAttr]]
+    """Skill tools disclosed to the latest model call, each mapped to the name that produced it.
 
-    Written on every model call, including `[]`, so the tool-time gate admits
-    exactly the calls whose schema the model was shown, and a record checkpointed
-    by an earlier build of the agent never outlives the next model call.
+    Keys are sorted. Not propagated to parent agents. Written on every model
+    call, including `{}`, so the tool-time gate admits exactly the calls whose
+    schema the model was shown, and a record checkpointed by an earlier build of
+    the agent never outlives the next model call. Read it through
+    `disclosed_skill_tool_names`.
     """
 
 
@@ -856,27 +871,77 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
     ```yaml
     metadata:
-      include_tools: create_customer_request list_customer_requests
+      include_tools: create_customer_request linear
     ```
 
-    Tools passed as `skill_tools` are never bound up front. Once the model reads
-    a skill's `SKILL.md` with `read_file`, each tool the skill names is disclosed
-    to every model call while that read remains in the messages the model sees.
-    If compaction drops the read, the tool is withdrawn with it. A call to a
-    skill tool that wasn't disclosed to the model call that made it returns an
-    error naming the skill to read, and the tool doesn't run.
+    Skill tools are never bound up front. Once the model reads a skill's
+    `SKILL.md` with `read_file`, the tools its names produce are disclosed to
+    every model call while that read remains in the messages the model sees.
+    If compaction drops the read, they are withdrawn with it. A call to a skill
+    tool that wasn't disclosed to the model call that made it gets the tool
+    node's standard invalid-tool error, and the tool doesn't run.
+
+    `skill_tools` is a list of tools, each produced by its own name, or a
+    `SkillToolResolver`: a function from one name to the tools it stands for.
+    A resolver lets a skill name tools whose real names are generated at
+    runtime, stand for a whole family of tools with one name, or reach tools
+    built per run or per user:
+
+    ```python
+    def resolve(name: str, runtime: Runtime[Workspace]) -> list[BaseTool]:
+        return integration_tools(runtime.context.workspace_id).get(name, [])
+    ```
 
     On models that accept tool changes mid-conversation (the Claude API's Opus
     4.8, Opus 5, Fable 5 and Mythos 5 models, and `ChatOpenAI` `gpt-5.6-` and
     `gpt-6-` models on the Responses API), each definition is sent in a system
-    message right after the read, at the same position on every call, so the
-    prompt cache survives. Every other model receives disclosed tools in
-    `tools`, which costs a cache miss but gates calls the same way.
+    message right after the earliest read producing it, at the same position on
+    every call, so the prompt cache survives. Every other model receives
+    disclosed tools in `tools`, which costs a cache miss but gates calls the
+    same way. Anthropic rejects a tool whose root input schema uses `oneOf`,
+    `anyOf` or `allOf`, failing the whole request, so such a tool is never
+    disclosed to a `ChatAnthropic` model; a warning names it.
 
-    A skill can also name one of the agent's own tools. A deferred tool
+    ### Precedence
+
+    A name that exactly matches a tool in the request's `tools` is claimed by
+    it and never reaches the resolver. A deferred tool
     (`extras={"defer_loading": True}`) is disclosed early the same way but is
     never gated and stays searchable; a tool the model already sees is left
-    alone.
+    alone. Each tool a resolver returns is classified by identity: the very
+    object of one of the request's tools follows that tool's rules, a different
+    tool whose name is already taken is dropped (shadowed, logged at debug
+    level), and any other is gated.
+
+    A resolver can return deferred tools passed to `create_deep_agent(tools=...)`
+    by closing over them. It never sees the request's tools, so it can't reach
+    tools that another middleware adds per request.
+
+    ### The resolver contract
+
+    The resolver is called with one name and the graph's `Runtime`, once per
+    distinct name on every model call while a read naming it stays in context,
+    and again when a tool it produced is called, with the name that produced
+    it. It returns `BaseTool`s, directly or as an awaitable; an async resolver
+    needs the agent's async entry point.
+
+    - For the same name within a thread, return the same tools. A change moves
+        bytes the provider has already been sent, which is a history edit: it
+        costs the cache from that point, and under Anthropic's thinking-binding
+        enforcement it fails the request with a 400.
+    - Be cheap, or cache.
+    - Names are resolved concurrently. Cache the pending work, not only its
+        result, so concurrent calls share one set-up.
+    - One resolver serves every thread. Scope any cache by what the tools
+        depend on, usually something in `runtime.context`.
+    - `runtime.context` is whatever the current invocation passed, and isn't
+        checkpointed. A caller resuming a thread must pass it again, or the
+        resolver sees `None` at tool time.
+    - Exceptions propagate out of the model or tool call. To degrade
+        gracefully, catch inside the resolver and return nothing.
+
+    `disclosed_skill_tool_names` tells middleware with its own tool gate which
+    skill tools the latest model call was shown.
 
     !!! warning
 
@@ -927,7 +992,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         backend: BackendProtocol,
         sources: Sequence[SkillSource],
         system_prompt: str | None = SKILLS_SYSTEM_PROMPT,
-        skill_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
+        skill_tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None = None,
     ) -> None:
         """Initialize the skills middleware.
 
@@ -948,14 +1013,17 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             skill_tools: Tools the model sees only after reading a skill that
                 names them in `metadata.include_tools`.
 
-                Callables are converted as `create_agent` converts tools. A tool
-                of the same name in the request's `tools` always wins.
+                Either a list of tools, each named by its own name, or a
+                `SkillToolResolver` from one name to the tools it stands for.
+                Callables in a list are converted as `create_agent` converts
+                tools. A name matching a tool in the request's `tools` always
+                wins; see above for precedence and the resolver contract.
 
         Raises:
             TypeError: If a tuple entry in `sources` is not exactly a
                 `(str, str)` pair, if `system_prompt` is not `str` or
-                `None`, or if a `skill_tools` entry is a provider-native
-                tool dict.
+                `None`, if `skill_tools` is a single tool rather than a list,
+                or if a `skill_tools` entry is a provider-native tool dict.
             ValueError: If `system_prompt` is a string missing any of the
                 required format slots, or if `skill_tools` repeats a name.
         """
@@ -977,7 +1045,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         self.system_prompt_template = system_prompt
         # Kept off `self.tools`: `create_agent` registers those with the tool
         # node, which would make skill tools callable without their skill.
-        self._skill_tools: dict[str, BaseTool] = coerce_skill_tools(skill_tools or ())
+        # `_skill_tools` is the listed tools, or `None` for a resolver.
+        self._resolver, self._skill_tools = skill_tools_form(skill_tools)
 
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
@@ -1154,31 +1223,38 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         return SkillsStateUpdate(skills_metadata=skills, skills_load_errors=skills_load_errors)
 
     def _log_unreferenced_skill_tools(self, skills: list[SkillMetadata]) -> None:
-        """Log each skill tool no loaded skill names; routine with per-run tool rosters."""
+        """Log each listed skill tool no loaded skill names; routine with per-run tool rosters."""
+        if self._skill_tools is None:
+            return
         named = {name for skill in skills for name in included_tool_names(skill)}
         for name in sorted(self._skill_tools.keys() - named):
             logger.debug("Skill tool '%s' is not named by any loaded skill", name)
 
-    def _disclose(self, request: ModelRequest[ContextT]) -> tuple[ModelRequest[ContextT], list[str]]:
-        """Disclose the tools named by the skills read in the request's messages.
+    def _skill_loads(self, request: ModelRequest[ContextT]) -> list[SkillLoad]:
+        """Return the reads of tool-naming skills in the messages this call sends."""
+        return skill_loads(request.messages, request.state.get("skills_metadata") or [])
+
+    def _disclose(
+        self, request: ModelRequest[ContextT], loads: list[SkillLoad], resolved: Mapping[str, Sequence[BaseTool]]
+    ) -> tuple[ModelRequest[ContextT], dict[str, str]]:
+        """Disclose what the read skills' names produce.
 
         Returns:
-            The request to send, and the sorted names of the gated skill tools it
-                discloses.
+            The request to send, and the record of the gated skill tools it discloses.
         """
-        skills = request.state.get("skills_metadata") or []
-        disclosure = resolve_disclosure(request.messages, skills, request.tools, self._skill_tools)
-        gated = sorted(disclosure.gated)
+        disclosure = resolve_disclosure(loads, request.tools, resolved)
+        discard_rejected_schemas(disclosure, request.model)
+        record = disclosure.record()
         if not disclosure.anchors:
-            return request, gated
+            return request, record
         build = disclosure_builder(request.model)
         if build is None:
-            return request.override(tools=bind_disclosures(request.tools, disclosure)), gated
-        return request.override(messages=insert_disclosures(request.messages, disclosure, build)), gated
+            return request.override(tools=bind_disclosures(request.tools, disclosure)), record
+        return request.override(messages=insert_disclosures(request.messages, disclosure, build)), record
 
-    def _record_disclosed(self, response: ModelResponse[ResponseT], disclosed: list[str]) -> ExtendedModelResponse[ResponseT]:
+    def _record_disclosed(self, response: ModelResponse[ResponseT], record: dict[str, str]) -> ExtendedModelResponse[ResponseT]:
         """Record which skill tools `response`'s model call was shown, for the tool-time gate."""
-        return ExtendedModelResponse(model_response=response, command=Command(update={SKILL_TOOLS_DISCLOSED_KEY: disclosed}))
+        return ExtendedModelResponse(model_response=response, command=Command(update={SKILL_TOOLS_DISCLOSED_KEY: record}))
 
     def wrap_model_call(
         self,
@@ -1195,8 +1271,11 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             Model response from handler, with the skill tools it disclosed recorded
                 in state.
         """
-        request, disclosed = self._disclose(self.modify_request(request))
-        return self._record_disclosed(handler(request), disclosed)
+        request = self.modify_request(request)
+        loads = self._skill_loads(request)
+        resolved = {name: resolve(self._resolver, name, request.runtime) for name in unclaimed_names(loads, request.tools)}
+        request, record = self._disclose(request, loads, resolved)
+        return self._record_disclosed(handler(request), record)
 
     async def awrap_model_call(
         self,
@@ -1213,61 +1292,86 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             Model response from handler, with the skill tools it disclosed recorded
                 in state.
         """
-        request, disclosed = self._disclose(self.modify_request(request))
-        return self._record_disclosed(await handler(request), disclosed)
+        request = self.modify_request(request)
+        loads = self._skill_loads(request)
+        names = unclaimed_names(loads, request.tools)
+        tools = await asyncio.gather(*(aresolve(self._resolver, name, request.runtime) for name in names))
+        request, record = self._disclose(request, loads, dict(zip(names, tools, strict=True)))
+        return self._record_disclosed(await handler(request), record)
 
-    def _gate_tool_call(self, request: ToolCallRequest) -> ToolCallRequest | ToolMessage:
-        """Route a call: registered tools pass, disclosed skill tools run, undisclosed ones are rejected."""
+    def _breadcrumb(self, request: ToolCallRequest) -> str | None:
+        """Return the name that produced the disclosed skill tool `request` calls, or `None`.
+
+        `None` for a registered tool, or one an outer middleware supplied, and for
+        any name the latest model call wasn't shown as a skill tool.
+        """
+        if request.tool is not None:
+            return None
+        return disclosed_record(request.state).get(request.tool_call["name"])
+
+    def _route(self, request: ToolCallRequest, breadcrumb: str, tools: Sequence[BaseTool]) -> ToolCallRequest:
+        """Run the disclosed skill tool `breadcrumb` resolved to, or leave the call to fail as invalid."""
         name = request.tool_call["name"]
-        skill_tool = self._skill_tools.get(name)
-        if request.tool is not None or skill_tool is None:
+        tool = next((t for t in tools if t.name == name), None)
+        if tool is None:
+            logger.warning("Skill tool '%s' was disclosed via '%s', but the resolver no longer returns it", name, breadcrumb)
             return request
-        if name in (request.state.get(SKILL_TOOLS_DISCLOSED_KEY) or []):
-            return request.override(tool=skill_tool)
-        skills = skills_naming(request.state.get("skills_metadata") or [], name)
-        if not skills:
-            # Falls through to the tool node's invalid-tool error, which lists
-            # only registered tools.
-            return request
-        return ToolMessage(content=not_disclosed_error(name, skills), tool_call_id=request.tool_call["id"], name=name, status="error")
+        return request.override(tool=tool)
 
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
     ) -> ToolMessage | Command[Any]:
-        """Run a disclosed skill tool, or reject a call to one the model wasn't shown.
+        """Run a disclosed skill tool; calls to any other unregistered tool fail as invalid.
 
         Args:
             request: Tool call request being processed
             handler: Handler function to call with the routed request
 
         Returns:
-            The tool's result, or an error `ToolMessage` naming the skill to read.
+            The tool's result, or the tool node's invalid-tool error.
         """
-        routed = self._gate_tool_call(request)
-        if isinstance(routed, ToolMessage):
-            return routed
-        return handler(routed)
+        breadcrumb = self._breadcrumb(request)
+        if breadcrumb is None:
+            return handler(request)
+        return handler(self._route(request, breadcrumb, resolve(self._resolver, breadcrumb, get_runtime())))
 
     async def awrap_tool_call(
         self,
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
     ) -> ToolMessage | Command[Any]:
-        """Run a disclosed skill tool, or reject a call to one the model wasn't shown (async version).
+        """Run a disclosed skill tool; calls to any other unregistered tool fail as invalid (async version).
 
         Args:
             request: Tool call request being processed
             handler: Async handler function to call with the routed request
 
         Returns:
-            The tool's result, or an error `ToolMessage` naming the skill to read.
+            The tool's result, or the tool node's invalid-tool error.
         """
-        routed = self._gate_tool_call(request)
-        if isinstance(routed, ToolMessage):
-            return routed
-        return await handler(routed)
+        breadcrumb = self._breadcrumb(request)
+        if breadcrumb is None:
+            return await handler(request)
+        return await handler(self._route(request, breadcrumb, await aresolve(self._resolver, breadcrumb, get_runtime())))
 
 
-__all__ = ["SkillMetadata", "SkillsMiddleware", "SkillsState"]
+def disclosed_skill_tool_names(state: Mapping[str, object]) -> frozenset[str]:
+    """Return the names of the gated skill tools disclosed to the latest model call.
+
+    For middleware that gates tool calls itself and runs outside
+    `SkillsMiddleware`, so it can admit the skill tools the model was shown.
+    It reads the same record `SkillsMiddleware`'s own gate reads, and a missing
+    or malformed record reads as empty.
+
+    Args:
+        state: The agent state, such as `request.state` in `wrap_tool_call`.
+
+    Returns:
+        The disclosed skill tools' names, reflecting the latest model call.
+    """
+    return frozenset(disclosed_record(state))
+
+
+__all__ = ["SkillMetadata", "SkillToolResolver", "SkillsMiddleware", "SkillsState", "disclosed_skill_tool_names"]

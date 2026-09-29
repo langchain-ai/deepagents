@@ -34,6 +34,7 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._skill_tools import SKILL_TOOLS_DISCLOSED_KEY
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.skills import SkillToolResolver
 from deepagents.middleware.summarization import (
     SUMMARIZATION_EVENT_KEY,
     SUMMARIZATION_SESSION_ID_KEY,
@@ -120,8 +121,10 @@ class SubAgent(TypedDict):
         skill_tools: Tools this subagent sees only after reading a skill that
             names them in `metadata.include_tools`.
 
-            Never inherited from the main agent. Requires `skills`, and is
-            forbidden under `mode="fork"`, which inherits the parent's.
+            A list of tools, or a `SkillToolResolver` from one name to the
+            tools it stands for, as for `create_deep_agent`. Never inherited
+            from the main agent. Requires `skills`, and is forbidden under
+            `mode="fork"`, which inherits the parent's.
         permissions: Filesystem permission rules for this subagent.
 
             If omitted, inherits the parent agent's permissions. If provided,
@@ -160,8 +163,8 @@ class SubAgent(TypedDict):
     skills: NotRequired[list[str]]
     """Skill source paths for `SkillsMiddleware`. Forbidden under `mode="fork"`."""
 
-    skill_tools: NotRequired[Sequence[BaseTool | Callable[..., Any]]]
-    """Tools disclosed once a skill naming them is read. Requires `skills`; forbidden under `mode="fork"`."""
+    skill_tools: NotRequired[Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver]
+    """Tools, or a resolver of them, disclosed once a skill naming them is read. Requires `skills`; forbidden under `mode="fork"`."""
 
     permissions: NotRequired[list[FilesystemPermission]]
     """List of `FilesystemPermission` rules for this subagent.

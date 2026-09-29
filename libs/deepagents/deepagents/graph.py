@@ -44,7 +44,7 @@ from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
-from deepagents.middleware._skill_tools import coerce_skill_tools
+from deepagents.middleware._skill_tools import excluding, skill_tools_form
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware._utils import append_to_system_message
@@ -52,7 +52,7 @@ from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMi
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.skills import SkillsMiddleware
+from deepagents.middleware.skills import SkillsMiddleware, SkillToolResolver
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     CompiledSubAgent,
@@ -244,7 +244,7 @@ def _apply_custom_middleware(
 def _skills_middleware(
     backend: BackendProtocol,
     sources: list[str],
-    skill_tools: Sequence[BaseTool | Callable[..., Any]] | None,
+    skill_tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None,
     profile: HarnessProfile,
 ) -> SkillsMiddleware:
     """Build `SkillsMiddleware`, dropping skill tools the harness profile excludes.
@@ -252,7 +252,9 @@ def _skills_middleware(
     `_ToolExclusionMiddleware` only sees `request.tools`, so an excluded skill
     tool must be removed here or it would still be disclosed inline.
     """
-    tools = coerce_skill_tools(skill_tools or ())
+    resolver, tools = skill_tools_form(skill_tools)
+    if tools is None:
+        return SkillsMiddleware(backend=backend, sources=sources, skill_tools=excluding(resolver, profile.excluded_tools))
     kept = [tool for name, tool in tools.items() if name not in profile.excluded_tools]
     return SkillsMiddleware(backend=backend, sources=sources, skill_tools=kept)
 
@@ -295,7 +297,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
     subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     skills: list[str] | None = None,
-    skill_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
+    skill_tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None = None,
     memory: list[str] | None = None,
     permissions: list[FilesystemPermission] | None = None,
     backend: BackendProtocol | None = None,
@@ -492,22 +494,33 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             space-separated string: `metadata: {include_tools: "a b"}`. Each
             skill tool stays out of the model's tools until a successful
             `read_file` of a skill naming it, and is withdrawn again if
-            compaction drops that read. A call made before the tool was
-            disclosed returns an error naming the skill to read. On models
-            that accept tool changes mid-conversation, disclosure keeps the
-            prompt cache intact; see
-            [`SkillsMiddleware`][deepagents.middleware.skills.SkillsMiddleware].
+            compaction drops that read. A call to a skill tool the model
+            wasn't shown gets the standard invalid-tool error. On models that
+            accept tool changes mid-conversation, disclosure keeps the prompt
+            cache intact.
+
+            Pass a list of tools, each named by its own name, or a
+            [`SkillToolResolver`][deepagents.middleware.skills.SkillToolResolver]:
+            a sync or async function from one name and the graph's `Runtime`
+            to the tools that name stands for, looked up when a skill naming
+            it is read. A resolver can map a stable name to tools whose real
+            names are generated at runtime, or to a whole family of tools.
+            See [`SkillsMiddleware`][deepagents.middleware.skills.SkillsMiddleware]
+            for the resolver contract.
 
             A skill may also name a tool from `tools`. A deferred one
             (`extras={"defer_loading": True}`) is disclosed early the same
             way but stays callable and searchable; any other is unaffected.
             A name in both `tools` and `skill_tools` behaves as a `tools`
-            tool.
+            tool, and a resolver's tool whose name is taken by a different
+            tool in the request is dropped. A resolver may return the very
+            deferred tools passed in `tools`, which are then disclosed early
+            the same way.
 
             The general-purpose subagent and forks inherit these along with
             `skills`; declarative subagents use only their own
             `skill_tools`. Names in the harness profile's `excluded_tools`
-            are dropped.
+            are dropped, from a resolver's output too.
 
             Requires `skills`.
         memory: List of memory file paths (`AGENTS.md` files) to load
@@ -632,7 +645,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     Raises:
         ImportError: If a required provider package is missing or below the
             minimum supported version (e.g., `langchain-openrouter`).
-        TypeError: If a `skill_tools` entry is a provider-native tool dict.
+        TypeError: If `skill_tools` is a single tool rather than a list, or
+            a `skill_tools` entry is a provider-native tool dict.
         ValueError: If `skill_tools` is passed without `skills` or repeats a
             tool name.
         ValueError: If the active `HarnessProfile.excluded_middleware`

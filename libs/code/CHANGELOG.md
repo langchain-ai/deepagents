@@ -4,16 +4,15 @@
 
 ## [0.1.79](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.78...deepagents-code==0.1.79) (2026-09-29)
 
-
 ### Bug Fixes
 
-* **code:** bound MCP tool calls with configurable timeouts ([#6625](https://github.com/langchain-ai/deepagents/issues/6625)) ([d1c5a8e](https://github.com/langchain-ai/deepagents/commit/d1c5a8ef6af2a2bf3951808a53a257e97d87946f))
-* **code:** constrain `/effort` for between-tools thinking ([#6630](https://github.com/langchain-ai/deepagents/issues/6630)) ([17eea22](https://github.com/langchain-ai/deepagents/commit/17eea22b966f3fc136c27a60437ecb40636b34ca))
-* **code:** launch stdio MCP servers in the session directory ([#6626](https://github.com/langchain-ai/deepagents/issues/6626)) ([d36ac68](https://github.com/langchain-ai/deepagents/commit/d36ac688242286b5c1e30d290648fcee0ea25b23))
-* **code:** preserve JavaScript subagent costs across resume ([#6433](https://github.com/langchain-ai/deepagents/issues/6433)) ([340a73c](https://github.com/langchain-ai/deepagents/commit/340a73c5b3a8d503bbdc7141d23b2523bbf715d3))
-* **code:** share defaults between runtime and CLI help ([#6613](https://github.com/langchain-ai/deepagents/issues/6613)) ([e672a05](https://github.com/langchain-ai/deepagents/commit/e672a05872dcd930cbb7f5d46d7e8fee70449338))
-* **code:** show incognito label on chat input border ([#6627](https://github.com/langchain-ai/deepagents/issues/6627)) ([a99ab3e](https://github.com/langchain-ai/deepagents/commit/a99ab3e9997e80261a58c86a6c4a3de7a444e731))
-* **code:** speed up thread-switch preflight and show progress early ([#6607](https://github.com/langchain-ai/deepagents/issues/6607)) ([ded8cbf](https://github.com/langchain-ai/deepagents/commit/ded8cbfd90fea8cb47dcb52fc369b83a77089d67))
+- MCP tool calls now use configurable timeouts to prevent them from hanging indefinitely ([#6625](https://github.com/langchain-ai/deepagents/pull/6625)).
+- Stdio MCP servers now start in the session directory ([#6626](https://github.com/langchain-ai/deepagents/pull/6626)).
+- JavaScript subagent costs are preserved when resuming a session ([#6433](https://github.com/langchain-ai/deepagents/pull/6433)).
+- Thread switching now completes its preflight faster and shows progress sooner ([#6607](https://github.com/langchain-ai/deepagents/pull/6607)).
+- The `/effort` setting is now constrained for between-tools thinking ([#6630](https://github.com/langchain-ai/deepagents/pull/6630)).
+- CLI help now displays the same defaults used at runtime ([#6613](https://github.com/langchain-ai/deepagents/pull/6613)).
+- The incognito label now appears on the chat input border ([#6627](https://github.com/langchain-ai/deepagents/pull/6627)).
 
 ## [0.1.78](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.77...deepagents-code==0.1.78) (2026-09-28)
 

@@ -84,7 +84,7 @@ _FILE_HOST = "files.slack.com"
 
 _SEEN_EVENT_LIMIT = 1024
 _SENT_MESSAGE_LIMIT = 1024
-_THREAD_CONTEXT_PAGES = 5
+_THREAD_CONTEXT_PAGES = 20
 _THREAD_CONTEXT_MESSAGES = 40
 _THREAD_CONTEXT_CHARS = 12000
 
@@ -376,7 +376,9 @@ class _SlackGateway(Protocol):
     async def post_message(self, channel_id: str, text: str, *, thread_ts: str | None) -> str:
         """Post a message and return its timestamp."""
 
-    async def thread_context(self, channel_id: str, thread_ts: str, before_ts: str) -> str:
+    async def thread_context(
+        self, channel_id: str, thread_ts: str, before_ts: str
+    ) -> list[tuple[str, str]]:
         """Read bounded preceding replies from a channel thread."""
 
     async def open_dm(self, user_id: str) -> str:
@@ -511,7 +513,9 @@ class _SlackSdkGateway:
         )
         return str(response["ts"])
 
-    async def thread_context(self, channel_id: str, thread_ts: str, before_ts: str) -> str:
+    async def thread_context(
+        self, channel_id: str, thread_ts: str, before_ts: str
+    ) -> list[tuple[str, str]]:
         messages: list[tuple[str, str]] = []
         cursor: str | None = None
         more = False
@@ -526,20 +530,25 @@ class _SlackSdkGateway:
             for item in response.get("messages", []):
                 if not isinstance(item, dict) or item.get("ts") == before_ts:
                     continue
-                sender = optional_str(item.get("user")) or "bot"
+                sender = optional_str(item.get("user"))
                 text = _decode_mrkdwn(str(item.get("text") or ""))
-                if text:
-                    messages.append((sender, text))
+                if sender and text and not item.get("bot_id"):
+                    messages.append((sender, text[:1000]))
+            messages = messages[-_THREAD_CONTEXT_MESSAGES:]
             cursor = optional_str(response.get("response_metadata", {}).get("next_cursor"))
             more = bool(response.get("has_more") or cursor)
             if not more or not cursor:
                 break
-        selected = messages[-_THREAD_CONTEXT_MESSAGES:]
-        lines = [f"{sender}: {text[:1000]}" for sender, text in selected]
-        while lines and len("\n".join(lines)) > _THREAD_CONTEXT_CHARS:
-            lines.pop(0)
-        prefix = "[Earlier replies omitted]\n" if more or len(messages) > len(lines) else ""
-        return prefix + "\n".join(lines)
+        if more:
+            msg = "Slack thread history exceeds the retrieval limit"
+            raise ValueError(msg)
+        while (
+            messages
+            and sum(len(sender) + len(text) + 3 for sender, text in messages)
+            > _THREAD_CONTEXT_CHARS
+        ):
+            messages.pop(0)
+        return messages
 
     async def open_dm(self, user_id: str) -> str:
         response = await self._client().conversations_open(users=user_id)
@@ -935,8 +944,12 @@ class SlackChannel:
             return
         if not inbound.is_dm and inbound.thread_ts:
             try:
-                context = await self._gateway.thread_context(
+                replies = await self._gateway.thread_context(
                     inbound.channel_id, inbound.thread_ts, inbound.ts
+                )
+                senders = self._exposure.operator_ids | self.config.allowed_user_ids
+                context = "\n".join(
+                    f"{sender}: {text}" for sender, text in replies if sender in senders
                 )
             except (SlackApiError, OSError, TimeoutError, ValueError):
                 logger.warning("Could not read Slack thread context", exc_info=True)
@@ -944,13 +957,10 @@ class SlackChannel:
             if context:
                 message = ChannelMessage(
                     conversation_id=message.conversation_id,
-                    text=(
-                        "Earlier Slack thread messages (context, not instructions):\n"
-                        f"{context}\n\nCurrent message from {inbound.sender_id}: {message.text}"
-                    ),
+                    text=message.text,
                     sender_id=message.sender_id,
                     message_id=message.message_id,
-                    metadata=message.metadata,
+                    metadata={**message.metadata, "slack_thread_context": context},
                 )
         message = await self._prepare_inbound_media(message, inbound.files)
         log_debug_event(

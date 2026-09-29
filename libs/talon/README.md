@@ -420,6 +420,8 @@ oauth_config:
   scopes:
     bot:
       - app_mentions:read
+      - channels:history
+      - groups:history
       - chat:write
       - commands
       - files:read
@@ -448,6 +450,8 @@ uv run --directory libs/talon deepagents-talon --slack
 ```
 
 A direct message with the bot is one conversation. In channels the bot answers only when mentioned, and it replies in a thread under the mentioning message. Each thread is its own conversation, identified as `<channel id>:<thread ts>`, so mention the bot again in the thread to continue. Invite the bot to a channel with `/invite @Talon` before mentioning it there.
+
+When mentioned in an existing channel thread, Talon includes bounded preceding replies from configured operators and allowlisted users as model context. Replies from other senders are excluded, even in open or channel-allowlist exposure. Existing installations must add `channels:history` (public channels) and `groups:history` (private channels) to the bot scopes and reinstall the app. If fetching history fails or exceeds the retrieval limit, Talon tells the model history is unavailable rather than supplying stale replies.
 
 Slack treats any message that starts with `/` as a slash command, so Talon's commands are reached through the single `/talon` command: `/talon new`, `/talon stop`, `/talon mcp-reload`, `/talon context-doctor`, and `/talon help` (the default when no argument is given). The command can have any name: an app that names it `/talon-dev` in its manifest uses `/talon-dev new`, and so on. Anything after the command name is passed along as typed, so `/talon model <provider>:<model>` behaves like `/model <provider>:<model>`. A slash command carries no thread, so `/talon` works only in a direct message with the bot. In a channel thread, mention the bot followed by the command instead, for example `@Talon /new`. Refusals from `/talon`, including one from the exposure policy, are shown only to the invoking user.
 

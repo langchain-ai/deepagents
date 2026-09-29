@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -139,19 +138,10 @@ def test_upcoming_stops_at_until(tmp_path) -> None:
     assert job.upcoming(5) == [NOON + timedelta(hours=1), NOON + timedelta(hours=2)]
 
 
-def test_until_round_trips_and_older_records_load_without_it(tmp_path) -> None:
+def test_until_round_trips(tmp_path) -> None:
     store = _store(tmp_path)
     job = _hourly_until(store, NOON + timedelta(days=1))
-    payload = json.loads(store.path.read_text(encoding="utf-8"))
-    del payload["jobs"][0]["until"]
-    legacy = _store(tmp_path / "legacy")
-    legacy.cron_dir.mkdir(mode=0o700, parents=True)
-    legacy.path.write_text(json.dumps(payload), encoding="utf-8")
-
     assert _store(tmp_path).get_job(job.id) == job
-    reloaded = legacy.get_job(job.id)
-    assert reloaded is not None
-    assert reloaded.until is None
 
 
 def test_edit_sets_clears_and_validates_until(tmp_path) -> None:

@@ -662,7 +662,7 @@ class TalonHost:
         if not isinstance(store, CronJobStore):
             return []
         try:
-            jobs = sender_jobs(store, provider, revoked.sender_id, revoked.conversation_id)
+            jobs = sender_jobs(store, provider, revoked.sender_id)
             paused = pause_jobs(store, jobs)
         except (CronJobError, OSError):
             logger.warning("Could not pause a revoked sender's cron jobs", exc_info=True)

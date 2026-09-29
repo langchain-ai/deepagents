@@ -565,20 +565,13 @@ def revoke_sender(pairing: SenderPairing, sender_id: str) -> PairCommandResult:
     return PairCommandResult(f"Revoked sender {sender_id}.", revoked=revoked)
 
 
-def sender_jobs(
-    store: CronJobStore, provider: str, sender_id: str, dm_conversation_id: str | None
-) -> list[CronJob]:
+def sender_jobs(store: CronJobStore, provider: str, sender_id: str) -> list[CronJob]:
     """Return cron jobs a sender created on one channel, in any chat.
-
-    Jobs record their creator in `origin.sender_id`. Jobs saved before that
-    field existed carry no creator; those are matched by the sender's DM, the
-    only place a paired sender could reach the agent at the time.
 
     Args:
         store: Cron job store.
         provider: Channel provider key the jobs were created on.
         sender_id: Sender whose jobs to find.
-        dm_conversation_id: The sender's DM, for jobs without a recorded creator.
 
     Returns:
         Every matching job, enabled or not.
@@ -586,15 +579,7 @@ def sender_jobs(
     return [
         job
         for job in store.list_jobs()
-        if job.origin.channel == provider
-        and (
-            job.origin.sender_id == sender_id
-            or (
-                job.origin.sender_id is None
-                and dm_conversation_id is not None
-                and job.origin.conversation_id == dm_conversation_id
-            )
-        )
+        if job.origin.channel == provider and job.origin.sender_id == sender_id
     ]
 
 

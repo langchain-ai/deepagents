@@ -2255,7 +2255,7 @@ Two seconds balances responsiveness with avoiding accidental approval
 key presses.
 """
 
-_CACHE_EXPIRING_LEAD_SECONDS = 30
+_CACHE_EXPIRING_LEAD_SECONDS = 60
 """Lead time for the prompt-cache retention notification."""
 
 _DEFERRED_APPROVAL_TIMEOUT_SECONDS: float = 30.0

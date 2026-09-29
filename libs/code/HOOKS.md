@@ -64,7 +64,7 @@ Native tools are matched by their wire names (for example `execute` → `Bash`, 
 ### Prompt-cache expiry notification
 
 In interactive `dcode`, `Notification` with matcher `cache_expiring` fires once per
-active thread/cache window per process, during the final 30 seconds of its known
+active thread/cache window per process, during the final 60 seconds of its known
 retention window. It uses a one-second timer and does not replay already-expired
 windows. Unknown retention windows emit nothing; provider retention estimates do
 not guarantee a cache miss at expiry.

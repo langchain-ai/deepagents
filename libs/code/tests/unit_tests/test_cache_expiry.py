@@ -39,7 +39,7 @@ def _prepare(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> None:
     app._status_bar.cache_expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
 
-@pytest.mark.parametrize("remaining", [None, -1, 0, 1, 30, 31])
+@pytest.mark.parametrize("remaining", [None, -1, 0, 1, 60, 61])
 async def test_cache_expiring_notification_window(
     remaining: int | None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -57,10 +57,10 @@ async def test_cache_expiring_notification_window(
     await app._notify_cache_expiring()
     await app._notify_cache_expiring()
 
-    if remaining in (1, 30):
+    if remaining in (1, 60):
         notify.assert_awaited_once_with(
             DcodeNotificationKind.CACHE_EXPIRING,
-            "Prompt-cache retention may end within 30 seconds.",
+            "Prompt-cache retention may end within 60 seconds.",
             title="Prompt cache expiring",
         )
     else:

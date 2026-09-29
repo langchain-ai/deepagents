@@ -59,6 +59,10 @@ class StubGateway:
         self.posts.append((channel_id, text, thread_ts))
         return f"1700000100.{len(self.posts):06d}"
 
+    async def thread_context(self, channel_id, thread_ts, before_ts):
+        del channel_id, thread_ts, before_ts
+        return ""
+
     async def upload_file(self, channel_id, file_path, *, thread_ts, comment):
         del channel_id, file_path, thread_ts, comment
 

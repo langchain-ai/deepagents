@@ -32,20 +32,7 @@ this reader cannot detect truncation.
 
 
 def _peek_pipe(descriptor: int) -> int:
-    """Return available pipe bytes without consuming or waiting for output.
-
-    `PeekNamedPipe` returns `(available, left_in_message)` when it is asked for
-    zero bytes, so the byte count is the second element from the end.
-
-    Args:
-        descriptor: File descriptor of a pipe opened by `subprocess`.
-
-    Returns:
-        The number of bytes that a read can take immediately.
-
-    Raises:
-        OSError: If this is not Windows, or if the pipe cannot be peeked.
-    """
+    """Return available pipe bytes without consuming or waiting for output."""
     # Keep the literal `sys.platform` test. The type checker uses it to remove
     # the Windows-only imports on other platforms.
     if sys.platform == "win32":
@@ -70,13 +57,7 @@ def _read_available(pipe: IO[str]) -> bytes | None:
 
 
 def _make_decoder(pipe: IO[str] | None) -> io.IncrementalNewlineDecoder | None:
-    r"""Build an incremental decoder matching one text-mode pipe.
-
-    The decoder holds back the bytes of a character that a read cut in half, and
-    `IncrementalNewlineDecoder` applies the same universal-newline translation
-    `subprocess` gives a fully buffered stream, including a `\r\n` pair split
-    across two reads.
-    """
+    """Build an incremental decoder matching one text-mode pipe."""
     if pipe is None:
         return None
     stream = cast("TextIO", pipe)

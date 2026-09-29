@@ -428,16 +428,18 @@ class TestPromptIndicator:
             chat_input = app.query_one(ChatInput)
 
             input_box = chat_input.query_one("#input-box")
-            chat_input.mode = "shell_incognito"
+            await pilot.press("!", "!")
             await pilot.pause()
             assert input_box.border_title == "incognito"
             assert chat_input.has_class("mode-shell-incognito")
+            assert "incognito" in app.export_screenshot()
 
             chat_input.mode = "shell"
             await pilot.pause()
             assert input_box.border_title is None
             assert not chat_input.has_class("mode-shell-incognito")
             assert chat_input.has_class("mode-shell")
+            assert "incognito" not in app.export_screenshot()
 
 
 class TestShellSyntaxHighlighting:

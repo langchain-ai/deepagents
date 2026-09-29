@@ -597,10 +597,16 @@ async def test_local_shell_backend_async_cancellation_kills_windows_process() ->
 
 
 @_POSIX_SHELL_ONLY
-async def test_local_shell_backend_async_cancellation_stops_descendant(tmp_path: Path) -> None:
+@pytest.mark.parametrize("inherited", [False, True], ids=["builtin", "inherited"])
+async def test_local_shell_backend_async_cancellation_stops_descendant(tmp_path: Path, *, inherited: bool) -> None:
     """Test cancelling a real command stops its background descendant."""
+
+    class InheritedLocalShellBackend(LocalShellBackend):
+        pass
+
+    backend_type = InheritedLocalShellBackend if inherited else LocalShellBackend
     command, pid_file, heartbeat = _heartbeat_command(tmp_path)
-    task = asyncio.create_task(LocalShellBackend(root_dir=tmp_path, inherit_env=True).aexecute(command))
+    task = asyncio.create_task(backend_type(root_dir=tmp_path, inherit_env=True).aexecute(command))
     try:
         assert await asyncio.to_thread(_wait_for_file, pid_file)
         assert await asyncio.to_thread(_wait_for_file, heartbeat)
@@ -653,7 +659,7 @@ def test_local_shell_backend_async_start_race_skips_execution() -> None:
         cancellation_event = threading.Event()
         execution_started = threading.Event()
         cancellation_event.set()
-        with patch.object(backend, "execute") as execute, pytest.raises(asyncio.CancelledError):
+        with patch.object(backend, "_execute") as execute, pytest.raises(asyncio.CancelledError):
             backend._execute_in_thread("echo skipped", None, cancellation_event, execution_started)
 
     assert execution_started.is_set()
@@ -672,7 +678,7 @@ async def test_local_shell_backend_async_cancellation_preserves_cancelled_error(
     release_execution = threading.Event()
 
     class FailingLocalShellBackend(LocalShellBackend):
-        def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        def _execute(self, command: str, *, timeout: int | None, cancellation_event: threading.Event | None = None) -> ExecuteResponse:
             execution_started.set()
             release_execution.wait()
             msg = f"backend failed to execute {command}"
@@ -708,36 +714,57 @@ async def test_local_shell_backend_async_cancellation_preserves_cancelled_error(
     assert not local_shell_module._BACKGROUND_WORKERS
 
 
-async def test_local_shell_backend_async_cancellation_bypasses_execute_wrappers() -> None:
-    """Test that cancellation is not exposed to wrappers as command output."""
+@pytest.mark.parametrize("cancel", [False, True], ids=["normal", "cancelled"])
+async def test_local_shell_backend_async_execute_wrapper_keeps_legacy_behavior(*, cancel: bool) -> None:
+    """Test wrappers finish normally even after their async caller is cancelled."""
     communication_started = threading.Event()
+    release_communication = threading.Event()
+    execution_finished = threading.Event()
     observed_results: list[ExecuteResponse] = []
 
     def block_communication(
-        _process: subprocess.Popen[str], _timeout: int, cancellation_event: threading.Event, **_kwargs: object
+        _process: subprocess.Popen[str], _timeout: int, _cancellation_event: threading.Event | None, **_kwargs: object
     ) -> tuple[str, str]:
         communication_started.set()
-        assert cancellation_event.wait(2)
-        raise local_shell_module._CommandCancelled
+        assert release_communication.wait(5)
+        return "original output", ""
 
     class ObservingLocalShellBackend(LocalShellBackend):
         def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-            result = super().execute(command, timeout=timeout)
-            observed_results.append(result)
-            return result
+            try:
+                result = super().execute(command, timeout=timeout)
+                result.output = f"wrapped: {result.output}"
+                observed_results.append(result)
+                return result
+            finally:
+                execution_finished.set()
 
     with (
         tempfile.TemporaryDirectory() as tmpdir,
         patch.object(local_shell_module, "_communicate", side_effect=block_communication),
-        patch("subprocess.Popen"),
+        patch("subprocess.Popen", return_value=MagicMock(returncode=0)),
     ):
-        task = asyncio.create_task(ObservingLocalShellBackend(root_dir=tmpdir).aexecute("sleep 10"))
-        assert await asyncio.to_thread(communication_started.wait, 1)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        task = asyncio.create_task(ObservingLocalShellBackend(root_dir=tmpdir).aexecute("ignored", timeout=5))
+        try:
+            assert await asyncio.to_thread(communication_started.wait, 2)
+            if cancel:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert not execution_finished.is_set()
+            else:
+                release_communication.set()
+                result = await task
+                assert result.output == "wrapped: original output"
+        finally:
+            release_communication.set()
+            with suppress(asyncio.CancelledError):
+                await task
+            assert await asyncio.to_thread(execution_finished.wait, 2)
 
-    assert observed_results == []
+    assert len(observed_results) == 1
+    assert observed_results[0].output == "wrapped: original output"
+    assert observed_results[0].exit_code == 0
 
 
 def test_local_shell_backend_async_cancellation_skips_queued_command() -> None:
@@ -874,53 +901,9 @@ def test_local_shell_backend_unexpected_failure_is_reported_and_logged(caplog: p
     assert "sensitive-placeholder" not in caplog.text
 
 
-async def test_local_shell_backend_cancellation_does_not_stop_another_backend() -> None:
-    """Test one backend's cancellation cannot stop a command run by another.
-
-    An override runs inside the cancelling backend's copied context, so a second
-    backend called from that override sees the same context. `execute` must
-    ignore a cancellation event that belongs to a different backend.
-    """
-    execution_started = threading.Event()
-    release_execution = threading.Event()
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        inner = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
-
-        class NestingLocalShellBackend(LocalShellBackend):
-            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-                execution_started.set()
-                release_execution.wait(5)
-                return inner.execute("echo nested")
-
-        task = asyncio.create_task(NestingLocalShellBackend(root_dir=tmpdir, inherit_env=True).aexecute("outer"))
-        try:
-            assert await asyncio.to_thread(execution_started.wait, 2)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-            # The override is still blocked, so cancellation retains its worker.
-            (worker,) = local_shell_module._BACKGROUND_WORKERS
-        finally:
-            release_execution.set()
-            with suppress(asyncio.CancelledError):
-                await task
-            # Await the actual worker before deleting its working directory.
-            if local_shell_module._BACKGROUND_WORKERS:
-                await asyncio.wait_for(asyncio.gather(*local_shell_module._BACKGROUND_WORKERS), timeout=5)
-
-    result = worker.result()
-    assert result.exit_code == 0
-    assert "nested" in result.output
-
-
 @_POSIX_SHELL_ONLY
 async def test_local_shell_backend_cancelling_one_command_leaves_a_sibling_running() -> None:
-    """Test cancelling one async command does not disturb a concurrent one.
-
-    Each worker gets its own cancellation event through `copy_context`. Holding
-    the event on the backend instead would make sibling commands kill each other.
-    """
+    """Test cancelling one async command does not disturb a concurrent one."""
     with tempfile.TemporaryDirectory() as tmpdir:
         backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
         survivor = asyncio.create_task(backend.aexecute("sleep 0.5; echo survivor"))
@@ -946,7 +929,7 @@ async def test_local_shell_backend_repeated_cancellation_still_tracks_the_worker
     release_execution = threading.Event()
 
     class SlowLocalShellBackend(LocalShellBackend):
-        def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        def _execute(self, command: str, *, timeout: int | None, cancellation_event: threading.Event | None = None) -> ExecuteResponse:
             execution_started.set()
             release_execution.wait(5)
             return ExecuteResponse(output="done", exit_code=0, truncated=False)
@@ -974,5 +957,5 @@ async def test_local_shell_backend_repeated_cancellation_still_tracks_the_worker
 
     assert task.cancelled()
     assert tracked == 1, "the repeated cancellation skipped the background-worker bookkeeping"
-    assert "overridden execute method may still be running" in caplog.text
+    assert "exceeded" in caplog.text
     assert not local_shell_module._BACKGROUND_WORKERS

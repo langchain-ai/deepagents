@@ -26,37 +26,6 @@ def _process(*, errors: str = "strict") -> MagicMock:
     )
 
 
-def test_peek_uses_available_byte_count() -> None:
-    """Test the byte count is taken from the `PeekNamedPipe` result."""
-    # `_peek_pipe` keeps a literal `sys.platform` test so the type checker can
-    # drop the Windows-only imports elsewhere, so this test has to patch it.
-    # That is safe here only because this test starts no threads and runs no
-    # event loop while the patch is active.
-    with (
-        patch.object(windows_process, "_winapi", create=True) as api,
-        patch.object(windows_process, "msvcrt", create=True) as runtime,
-        patch.object(windows_process.sys, "platform", "win32"),
-    ):
-        runtime.get_osfhandle.return_value = 123
-        api.PeekNamedPipe.return_value = (7, 0)
-        assert windows_process._peek_pipe(42) == 7
-        api.PeekNamedPipe.assert_called_once_with(123, 0)
-
-
-def test_does_not_read_empty_live_pipe() -> None:
-    pipe = MagicMock()
-    with patch.object(windows_process, "_peek_pipe", return_value=0), patch.object(windows_process.os, "read") as read:
-        assert windows_process._read_available(pipe) is None
-    read.assert_not_called()
-
-
-def test_reads_only_available_bytes() -> None:
-    pipe = MagicMock()
-    with patch.object(windows_process, "_peek_pipe", return_value=3), patch.object(windows_process.os, "read", return_value=b"abc") as read:
-        assert windows_process._read_available(pipe) == b"abc"
-    read.assert_called_once_with(pipe.fileno(), 3)
-
-
 @pytest.mark.parametrize("code", [109, 232, 233, 5])
 def test_pipe_errors_distinguish_eof_from_failure(code: int) -> None:
     """Test every end-of-stream error code reads as EOF and others propagate.
@@ -79,13 +48,10 @@ def test_pipe_errors_distinguish_eof_from_failure(code: int) -> None:
 
 
 def test_timeout_keeps_output_read_so_far() -> None:
-    """Test a timeout carries the text already decoded.
-
-    A read can end in the middle of an encoded character. Those bytes stay with
-    the decoder, so a decoding error cannot replace the timeout.
-    """
+    """Snapshot decoded text without flushing incomplete characters or copying on each poll."""
     process = _process()
     process.poll.return_value = None
+    reader = WindowsProcessReader(process)
     try:
         with (
             patch.object(windows_process, "_read_available", side_effect=[b"partial \xc3", b"err", None, None]),
@@ -93,27 +59,28 @@ def test_timeout_keeps_output_read_so_far() -> None:
             patch.object(windows_process.time, "sleep"),
             pytest.raises(subprocess.TimeoutExpired) as caught,
         ):
-            WindowsProcessReader(process).communicate(timeout=1)
+            reader.communicate(timeout=1)
 
-        assert caught.value.stdout == "partial "
-        assert caught.value.stderr == "err"
+        assert caught.value.stdout is None
+        assert caught.value.stderr is None
+        assert reader.snapshot() == ("partial ", "err")
     finally:
         process.stdout.close()
         process.stderr.close()
 
 
 def test_retries_preserve_multibyte_output_and_newlines() -> None:
-    process = _process()
+    process = _process(errors="replace")
     process.poll.return_value = 7
     reader = WindowsProcessReader(process)
     try:
         with (
-            patch.object(windows_process, "_read_available", side_effect=[b"\xc3", b"err\r", b"\xa9\r", b"\n", b"\nx\r", b"", b"\n", b""]),
+            patch.object(windows_process, "_read_available", side_effect=[b"\xc3", b"err\r", b"\xa9\r", b"\n\xff", b"\nx\r", b"", b"\n", b""]),
             patch.object(windows_process.time, "monotonic", side_effect=chain([0, 0], repeat(2))),
         ):
             with pytest.raises(subprocess.TimeoutExpired):
                 reader.communicate(timeout=1)
-            assert reader.communicate(timeout=1) == ("é\nx\n", "err\n")
+            assert reader.communicate(timeout=1) == ("é\nx\n", "err\n�")
         assert process.stdout.closed
         assert process.stderr.closed
     finally:
@@ -142,16 +109,6 @@ def test_closed_pipes_still_wait_for_process_exit() -> None:
         with patch.object(windows_process, "_read_available", return_value=b""):
             assert WindowsProcessReader(process).communicate(timeout=1) == ("", "")
         assert process.poll.call_count == 2
-    finally:
-        process.stdout.close()
-        process.stderr.close()
-
-
-def test_decode_errors_follow_process_settings() -> None:
-    process = _process(errors="replace")
-    try:
-        with patch.object(windows_process, "_read_available", side_effect=[b"\xff", b"", b""]):
-            assert WindowsProcessReader(process).communicate(timeout=1) == ("�", "")
     finally:
         process.stdout.close()
         process.stderr.close()

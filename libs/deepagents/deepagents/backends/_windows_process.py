@@ -106,7 +106,12 @@ class WindowsProcessReader:
         self._process = process
         self._pipes = (process.stdout, process.stderr)
         self._decoders = tuple(_make_decoder(pipe) for pipe in self._pipes)
-        self._texts = ["", ""]
+        # Retain chunks separately so each read does not copy all prior output.
+        self._chunks: list[list[str]] = [[], []]
+
+    def snapshot(self) -> tuple[str, str]:
+        """Join decoded output only when execution reaches its final timeout."""
+        return "".join(self._chunks[0]), "".join(self._chunks[1])
 
     def _read(self) -> bool:
         """Read one bounded chunk from each open pipe without starving either."""
@@ -119,7 +124,7 @@ class WindowsProcessReader:
                 progress = True
                 # Empty bytes mean EOF, which is where a still-incomplete
                 # character is a decoding error rather than a short read.
-                self._texts[index] += decoder.decode(data, final=not data)
+                self._chunks[index].append(decoder.decode(data, final=not data))
                 if not data:
                     pipe.close()
         return progress
@@ -139,8 +144,7 @@ class WindowsProcessReader:
 
         Raises:
             subprocess.TimeoutExpired: If output or process completion exceeds the
-                deadline. The exception carries the text decoded so far, so a
-                caller that gives up keeps it.
+                deadline. Captured output remains available through `snapshot`.
             OSError: If reading a captured pipe fails.
             UnicodeError: If captured output cannot be decoded.
         """
@@ -148,14 +152,9 @@ class WindowsProcessReader:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise subprocess.TimeoutExpired(
-                    self._process.args,
-                    timeout,
-                    output=self._texts[0],
-                    stderr=self._texts[1],
-                )
+                raise subprocess.TimeoutExpired(self._process.args, timeout)
             progress = self._read()
             if all(pipe is None or pipe.closed for pipe in self._pipes) and self._process.poll() is not None:
-                return self._texts[0], self._texts[1]
+                return "".join(self._chunks[0]), "".join(self._chunks[1])
             if not progress:
                 time.sleep(min(remaining, _POLL_INTERVAL))

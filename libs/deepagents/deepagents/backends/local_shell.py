@@ -57,9 +57,6 @@ _ASYNC_EXECUTION_CONTEXT: ContextVar[tuple[object, threading.Event] | None] = Co
 )
 """Owning backend and cancellation event for one async execution thread."""
 
-_COMMAND_LOG_LIMIT = 120
-"""Maximum command characters to repeat in a log line."""
-
 _BACKGROUND_WORKERS: set[asyncio.Future[ExecuteResponse]] = set()
 """Workers retained until an uncooperative `execute` override finishes.
 
@@ -89,16 +86,10 @@ class _CommandTimeout(subprocess.TimeoutExpired):
         self.terminated = terminated
 
 
-def _command_summary(command: str) -> str:
-    """Shorten a command so a log line stays readable."""
-    return command if len(command) <= _COMMAND_LOG_LIMIT else f"{command[:_COMMAND_LOG_LIMIT]}..."
-
-
 def _report_worker_failure(
     worker: asyncio.Future[ExecuteResponse],
     *,
     backend_id: str,
-    command: str,
 ) -> None:
     """Retrieve a finished worker's exception and log a real failure.
 
@@ -112,11 +103,11 @@ def _report_worker_failure(
     error = worker.exception()
     if error is None or isinstance(error, asyncio.CancelledError):
         return
+    # Exception messages and tracebacks can repeat sensitive command arguments.
     logger.warning(
         "Local shell command failed on backend %s after its caller was cancelled: %s",
         backend_id,
-        command,
-        exc_info=error,
+        type(error).__name__,
     )
 
 
@@ -124,11 +115,10 @@ def _release_background_worker(
     worker: asyncio.Future[ExecuteResponse],
     *,
     backend_id: str,
-    command: str,
 ) -> None:
     """Consume the result of an execution worker retained after cancellation."""
     _BACKGROUND_WORKERS.discard(worker)
-    _report_worker_failure(worker, backend_id=backend_id, command=command)
+    _report_worker_failure(worker, backend_id=backend_id)
 
 
 async def _wait_for_worker_shutdown(worker: asyncio.Future[ExecuteResponse]) -> bool:
@@ -571,13 +561,11 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                     _ASYNC_CANCELLATION_GRACE_PERIOD,
                 )
                 _BACKGROUND_WORKERS.add(worker)
-                # Keep only the log-sized command. An uncooperative worker may
-                # never finish, so the callback can outlive the whole command.
                 worker.add_done_callback(
-                    functools.partial(_release_background_worker, backend_id=self.id, command=_command_summary(command)),
+                    functools.partial(_release_background_worker, backend_id=self.id),
                 )
                 raise
-            _report_worker_failure(worker, backend_id=self.id, command=_command_summary(command))
+            _report_worker_failure(worker, backend_id=self.id)
             raise
 
     def execute(
@@ -766,12 +754,14 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 exit_code=124,  # Standard timeout exit code
                 truncated=False,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001  # Preserve error responses without logging sensitive exception details.
             # Broad exception catch is intentional: we want to catch all execution errors
             # and return a consistent ExecuteResponse rather than propagating exceptions.
-            # Log it, because exit code 1 is otherwise indistinguishable from the
-            # command itself failing and the traceback would be lost.
-            logger.exception("Local shell command failed on backend %s: %s", self.id, _command_summary(command))
+            # Distinguish backend errors from command failures without logging
+            # command arguments, which may also appear in exception messages.
+            logger.error(  # noqa: TRY400  # Exception tracebacks can expose sensitive command arguments.
+                "Local shell command failed on backend %s: %s", self.id, type(e).__name__
+            )
             return ExecuteResponse(
                 output=f"Error executing command ({type(e).__name__}): {e}",
                 exit_code=1,

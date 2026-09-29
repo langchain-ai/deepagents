@@ -20,6 +20,7 @@ import uuid
 from contextvars import ContextVar, copy_context
 from typing import IO, TYPE_CHECKING
 
+from deepagents.backends._posix_process import PosixProcessReader
 from deepagents.backends._windows_process import WindowsProcessReader
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol, execute_accepts_timeout
@@ -254,10 +255,9 @@ def _communicate(
 
     With no `cancellation_event` the output is collected in one call. With one,
     output is collected in short attempts so cancellation is noticed quickly.
-    Retrying after `TimeoutExpired` is safe: `Popen.communicate` keeps the bytes
-    it has already read, and the `WindowsProcessReader` below is created once so
-    that it reuses its own buffers. Creating a new reader per attempt would drop
-    output and split multi-byte characters.
+    Each polling reader retains chunks across attempts and joins them only on
+    completion. `Popen.communicate` instead copies all accumulated output into
+    every `TimeoutExpired`, making repeated polling costly for verbose commands.
 
     Args:
         process: The running shell process.
@@ -273,7 +273,12 @@ def _communicate(
         _CommandCancelled: If `cancellation_event` was set before the command finished.
         BaseException: Anything raised while output was collected, after cleanup.
     """
-    collect = WindowsProcessReader(process).communicate if _IS_WINDOWS else process.communicate
+    if _IS_WINDOWS:
+        collect = WindowsProcessReader(process).communicate
+    elif cancellation_event is not None:
+        collect = PosixProcessReader(process).communicate
+    else:
+        collect = process.communicate
     deadline = time.monotonic() + timeout
     try:
         while cancellation_event is None or not cancellation_event.is_set():

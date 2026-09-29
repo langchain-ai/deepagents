@@ -1374,6 +1374,74 @@ class TestStartupSequence:
 class TestStatusBarPickerActions:
     """Tests for status-bar actions that open existing picker flows."""
 
+    @pytest.mark.parametrize("target", ["model", "effort"])
+    @pytest.mark.parametrize("busy", [False, True])
+    async def test_picker_preserves_transcript_scroll(
+        self, target: str, busy: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Opening and cancelling a footer picker preserves the reading position."""
+        from deepagents_code.app import _EffortContext
+        from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.status import ModelLabel
+
+        app = DeepAgentsApp(agent=MagicMock())
+        monkeypatch.setattr(
+            app,
+            "_resolve_effort_context",
+            lambda: _EffortContext(
+                spec="openai:gpt-5.5",
+                efforts=("low", "high"),
+                current="high",
+                default="low",
+            ),
+        )
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            await app._mount_message(
+                AppMessage("\n".join(f"Line {i}" for i in range(100)))
+            )
+            label = app.query_one("#model-display", ModelLabel)
+            label.provider, label.model, label.effort = "openai", "gpt-5.5", "high"
+            await pilot.pause()
+            chat = app.query_one("#chat", _ChatScroll)
+            chat.release_anchor()
+            chat.scroll_to(y=10, animate=False)
+            await pilot.pause()
+            position = chat.scroll_y
+            assert 0 < position < chat.max_scroll_y
+            app._agent_running = busy
+
+            offset = label.content_region.x - label.region.x
+            offset += 0 if target == "model" else len("openai:gpt-5.5 ")
+            await pilot.click(label, offset=(offset, 0))
+            await pilot.pause()
+            if busy and target == "effort":
+                assert [message.text for message in app._pending_messages] == [
+                    "/effort"
+                ]
+                app._agent_running = False
+                await app._process_next_from_queue()
+                await pilot.pause()
+            expected = (
+                ModelSelectorScreen if target == "model" else EffortSelectorScreen
+            )
+            assert isinstance(app.screen, expected)
+            assert chat.scroll_y == position
+            assert not chat.is_anchored
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, ModalScreen)
+            assert chat.scroll_y == position
+            assert not chat.is_anchored
+
+            await app._handle_command("/help")
+            await pilot.pause()
+            assert chat.is_anchored
+            assert chat.scroll_y == chat.max_scroll_y
+            app._agent_running = False
+
 
 class TestStartupFocus:
     """Tests for focus selection before the app starts processing input."""

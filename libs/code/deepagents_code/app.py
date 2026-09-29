@@ -17888,7 +17888,8 @@ class DeepAgentsApp(App):
 
         # Anchor to bottom so command output stays visible
         with suppress(NoMatches, ScreenStackError):
-            self.query_one("#chat", VerticalScroll).anchor()
+            if not isinstance(self.screen, ModalScreen):
+                self.query_one("#chat", VerticalScroll).anchor()
 
     async def _invoke_skill(
         self,

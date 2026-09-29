@@ -106,7 +106,8 @@ class WindowsProcessReader:
         self._process = process
         self._pipes = (process.stdout, process.stderr)
         self._decoders = tuple(_make_decoder(pipe) for pipe in self._pipes)
-        self._texts = ["", ""]
+        # Retain chunks separately so each read does not copy all prior output.
+        self._chunks: list[list[str]] = [[], []]
 
     def _read(self) -> bool:
         """Read one bounded chunk from each open pipe without starving either."""
@@ -119,7 +120,7 @@ class WindowsProcessReader:
                 progress = True
                 # Empty bytes mean EOF, which is where a still-incomplete
                 # character is a decoding error rather than a short read.
-                self._texts[index] += decoder.decode(data, final=not data)
+                self._chunks[index].append(decoder.decode(data, final=not data))
                 if not data:
                     pipe.close()
         return progress
@@ -153,6 +154,6 @@ class WindowsProcessReader:
                 )
             progress = self._read()
             if all(pipe is None or pipe.closed for pipe in self._pipes) and self._process.poll() is not None:
-                return self._texts[0], self._texts[1]
+                return "".join(self._chunks[0]), "".join(self._chunks[1])
             if not progress:
                 time.sleep(min(remaining, _POLL_INTERVAL))

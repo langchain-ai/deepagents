@@ -19190,9 +19190,9 @@ class DeepAgentsApp(App):
         """Update model displays and the `/effort` hint for the active model."""
         from deepagents_code.config import runtime_state
         from deepagents_code.reasoning_effort import (
+            available_efforts_for_model,
             current_effort_from_model_params,
             default_effort_for_model,
-            supported_efforts_for_model,
         )
 
         provider = runtime_state.model_provider or ""
@@ -19200,8 +19200,10 @@ class DeepAgentsApp(App):
         spec = self._effective_model_spec()
         if self._chat_input is not None:
             try:
-                efforts = supported_efforts_for_model(
-                    spec, cli_override=self._profile_override
+                efforts = available_efforts_for_model(
+                    spec,
+                    self._model_params_override,
+                    cli_override=self._profile_override,
                 )
                 hint = f"[{'|'.join((*efforts, 'clear'))}]" if efforts else ""
                 self._chat_input.set_argument_hint_override("/effort", hint)
@@ -19243,8 +19245,10 @@ class DeepAgentsApp(App):
                 or default_effort_for_model(spec, cli_override=self._profile_override)
                 or (
                     _UNKNOWN_EFFORT_LABEL
-                    if supported_efforts_for_model(
-                        spec, cli_override=self._profile_override
+                    if available_efforts_for_model(
+                        spec,
+                        self._model_params_override,
+                        cli_override=self._profile_override,
                     )
                     else ""
                 )
@@ -19268,6 +19272,7 @@ class DeepAgentsApp(App):
             load_effort_for_model,
         )
         from deepagents_code.reasoning_effort import (
+            available_efforts_for_model,
             has_explicit_effort_model_params,
             is_effort_supported_for_model,
             with_effort_model_params,
@@ -19296,6 +19301,10 @@ class DeepAgentsApp(App):
                     model_spec,
                 )
             return
+        if effort not in available_efforts_for_model(
+            model_spec, self._model_params_override, cli_override=self._profile_override
+        ):
+            return
         self._model_params_override = with_effort_model_params(
             model_spec,
             self._model_params_override,
@@ -19313,9 +19322,9 @@ class DeepAgentsApp(App):
                 `isinstance(..., _EffortUnavailable)`.
         """
         from deepagents_code.reasoning_effort import (
+            available_efforts_for_model,
             current_effort_from_model_params,
             default_effort_for_model,
-            supported_efforts_for_model,
         )
 
         spec = self._effective_model_spec()
@@ -19323,7 +19332,9 @@ class DeepAgentsApp(App):
             return _EffortUnavailable(
                 "No model is configured yet. Run `/model` to choose one."
             )
-        efforts = supported_efforts_for_model(spec, cli_override=self._profile_override)
+        efforts = available_efforts_for_model(
+            spec, self._model_params_override, cli_override=self._profile_override
+        )
         if not efforts:
             return _EffortUnavailable(
                 f"Reasoning effort is not configurable for {spec}."

@@ -1,6 +1,6 @@
 # Applies `package:*` / `integration:*` labels from the issue form's
 # "Area" section, `topic:*` from a small open model, and a default
-# `priority:backlog` on every new issue.
+# `priority:triage` on every new issue.
 # Taxonomy: .github/LABELS.md.
 
 name: Auto Label Issues by Package
@@ -26,12 +26,9 @@ jobs:
       # workflow runs on `issues` events, which carry no PR code.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # Every new issue starts in the backlog; a maintainer escalates from
-      # there. Runs before the Area sync so an issue opened without the form
-      # (API, blank issue) is still prioritized even though package labeling
-      # does not apply. Skipped when a priority is already
-      # present, so a re-run or a form-applied label is never overwritten and
-      # an escalation is never demoted.
+      # Mark new issues for triage before the Area sync, including issues
+      # opened without the form (API, blank issue). Skip issues that already
+      # carry a priority so re-runs do not overwrite maintainer decisions.
       - name: Apply default priority
         if: github.event.action == 'opened'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -39,7 +36,7 @@ jobs:
           script: |
             const { owner, repo } = context.repo;
             const issue_number = context.payload.issue.number;
-            const DEFAULT_PRIORITY = 'priority:backlog';
+            const DEFAULT_PRIORITY = 'priority:triage';
 
             const { data: issue } = await github.rest.issues.get({
               owner, repo, issue_number,

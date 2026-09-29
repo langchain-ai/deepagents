@@ -9723,12 +9723,15 @@ class DeepAgentsApp(App):
         ):
             return
         self._cache_expiring_seen[thread_id] = expires_at
+        message = (
+            "Prompt-cache retention may end within "
+            f"{_CACHE_EXPIRING_LEAD_SECONDS} seconds."
+        )
+        title = "Prompt cache expiring"
+        self.notify(message, title=title, severity="warning", markup=False)
         try:
             await self._hooks.notify(
-                DcodeNotificationKind.CACHE_EXPIRING,
-                "Prompt-cache retention may end within "
-                f"{_CACHE_EXPIRING_LEAD_SECONDS} seconds.",
-                title="Prompt cache expiring",
+                DcodeNotificationKind.CACHE_EXPIRING, message, title=title
             )
         except ClientHookStopError:
             logger.info("Cache-expiring notification was stopped by a hook")

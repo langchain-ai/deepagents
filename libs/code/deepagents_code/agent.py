@@ -3003,13 +3003,6 @@ def create_cli_agent(
             model_result=model_result,
         ),
     ]
-    if mcp_tools:
-        from deepagents_code.config_manifest import resolve_mcp_tool_timeout
-        from deepagents_code.mcp_middleware import mcp_tool_middleware
-
-        agent_middleware.append(
-            mcp_tool_middleware(timeout_seconds=resolve_mcp_tool_timeout())
-        )
     if not interactive:
         agent_middleware.append(_GlmTerminalStallRecovery())
 
@@ -3347,6 +3340,15 @@ def create_cli_agent(
     hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
     server_hooks_middleware = ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools)
     agent_middleware.append(server_hooks_middleware)
+    # Keep timeout results inside the hooks wrapper so PostToolUseFailure sees
+    # them just like other failed tool calls.
+    if mcp_tools:
+        from deepagents_code.config_manifest import resolve_mcp_tool_timeout
+        from deepagents_code.mcp_middleware import mcp_tool_middleware
+
+        agent_middleware.append(
+            mcp_tool_middleware(timeout_seconds=resolve_mcp_tool_timeout())
+        )
 
     # Publish the server operation on the backend shared with `server_graph`.
     # The custom HTTP route owns checkpoint access and persistence, while this

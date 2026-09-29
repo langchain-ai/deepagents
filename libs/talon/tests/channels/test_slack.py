@@ -43,6 +43,8 @@ class RecordingGateway:
         self.uploads: list[tuple[str, Path, str | None, str | None]] = []
         self.updates: list[tuple[str, str, str]] = []
         self._next_ts = 0
+        self.context = ""
+        self.context_calls: list[tuple[str, str, str]] = []
         self.handle_message = None
         self.handle_reaction = None
         self.handle_connection = None
@@ -61,6 +63,10 @@ class RecordingGateway:
         self.posts.append((channel_id, text, thread_ts))
         self._next_ts += 1
         return f"1700000000.00000{self._next_ts}"
+
+    async def thread_context(self, channel_id, thread_ts, before_ts):
+        self.context_calls.append((channel_id, thread_ts, before_ts))
+        return self.context
 
     async def open_dm(self, user_id):
         return f"D{user_id}"
@@ -882,3 +888,47 @@ def test_any_slash_command_name_is_accepted(name: str) -> None:
     command = _convert_command(_command_payload(command=name, text="new"))
     assert command is not None
     assert command.command == "new"
+
+
+@pytest.mark.asyncio
+async def test_mention_in_thread_receives_unmentioned_context(tmp_path: Path) -> None:
+    channel, gateway, messages, _ = _channel(tmp_path)
+    gateway.context = "UOTHER: please schedule hello in one minute"
+    inbound = _SlackInboundMessage(
+        channel_id="C1",
+        ts="1700000001.000100",
+        thread_ts="1700000000.000100",
+        sender_id=OPERATOR,
+        text="",
+        is_dm=False,
+    )
+    await channel._process_message(inbound)
+    assert gateway.context_calls == [("C1", "1700000000.000100", "1700000001.000100")]
+    assert "UOTHER: please schedule hello in one minute" in messages[0].text
+    assert messages[0].conversation_id == "C1:1700000000.000100"
+
+
+@pytest.mark.asyncio
+async def test_dm_does_not_fetch_thread_context(tmp_path: Path) -> None:
+    channel, gateway, messages, _ = _channel(tmp_path)
+    await channel._process_message(_dm())
+    assert gateway.context_calls == []
+    assert messages[0].text == "hi"
+
+
+@pytest.mark.asyncio
+async def test_thread_context_excludes_trigger_and_is_bounded() -> None:
+    gateway = slack_module._SlackSdkGateway(bot_token="b", app_token="a", timeout_seconds=1)  # noqa: S106  # inert test token
+
+    class Web:
+        async def conversations_replies(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "messages": [
+                    {"ts": "1.0", "user": "U1", "text": "request"},
+                    {"ts": "2.0", "user": "U2", "text": "current"},
+                ],
+                "has_more": False,
+            }
+
+    gateway._web = Web()  # type: ignore[assignment]
+    assert await gateway.thread_context("C1", "1.0", "2.0") == "U1: request"

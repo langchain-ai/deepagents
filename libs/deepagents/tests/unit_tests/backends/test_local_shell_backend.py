@@ -168,7 +168,7 @@ async def test_local_shell_backend_late_cooperative_cancellation_is_not_logged(c
     worker = asyncio.get_running_loop().create_future()
     worker.set_exception(asyncio.CancelledError())
     local_shell_module._BACKGROUND_WORKERS.add(worker)
-    local_shell_module._release_background_worker(worker, backend_id="local-test", command="echo hi")
+    local_shell_module._release_background_worker(worker, backend_id="local-test")
     assert worker not in local_shell_module._BACKGROUND_WORKERS
     assert not caplog.records
 
@@ -660,12 +660,13 @@ def test_local_shell_backend_async_start_race_skips_execution() -> None:
     execute.assert_not_called()
 
 
-async def test_local_shell_backend_async_cancellation_preserves_cancelled_error(caplog: pytest.LogCaptureFixture) -> None:
+@pytest.mark.parametrize("background", [False, True], ids=["during-cleanup", "after-cleanup"])
+async def test_local_shell_backend_async_cancellation_preserves_cancelled_error(caplog: pytest.LogCaptureFixture, *, background: bool) -> None:
     """Test a worker failure cannot replace async cancellation, but is still reported.
 
     Cancellation wins the race, so the caller sees `CancelledError`. The real
-    failure must still reach the log, or a broken command is indistinguishable
-    from an ordinary cancellation.
+    failure type must still reach the log without exposing command arguments,
+    including when the worker fails after the cleanup grace period.
     """
     execution_started = threading.Event()
     release_execution = threading.Event()
@@ -674,24 +675,37 @@ async def test_local_shell_backend_async_cancellation_preserves_cancelled_error(
         def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
             execution_started.set()
             release_execution.wait()
-            msg = "backend exploded"
+            msg = f"backend failed to execute {command}"
             raise RuntimeError(msg)
 
     with (
         tempfile.TemporaryDirectory() as tmpdir,
+        patch.object(local_shell_module, "_ASYNC_CANCELLATION_GRACE_PERIOD", 0 if background else 1),
         caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
     ):
-        task = asyncio.create_task(FailingLocalShellBackend(root_dir=tmpdir).aexecute("explode"))
-        assert await asyncio.to_thread(execution_started.wait, 1)
-        task.cancel()
-        release_execution.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        backend = FailingLocalShellBackend(root_dir=tmpdir)
+        task = asyncio.create_task(backend.aexecute("echo sensitive-placeholder"))
+        try:
+            assert await asyncio.to_thread(execution_started.wait, 1)
+            task.cancel()
+            if not background:
+                release_execution.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            release_execution.set()
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+            if local_shell_module._BACKGROUND_WORKERS:
+                await asyncio.wait_for(asyncio.gather(*local_shell_module._BACKGROUND_WORKERS, return_exceptions=True), timeout=5)
 
     assert task.cancelled()
     assert "failed on backend" in caplog.text
-    assert "explode" in caplog.text
-    assert "backend exploded" in caplog.text
+    assert backend.id in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "sensitive-placeholder" not in caplog.text
+    assert not local_shell_module._BACKGROUND_WORKERS
 
 
 async def test_local_shell_backend_async_cancellation_bypasses_execute_wrappers() -> None:
@@ -837,23 +851,27 @@ def test_local_shell_backend_already_exited_group_is_not_a_cleanup_failure(caplo
 
 
 def test_local_shell_backend_unexpected_failure_is_reported_and_logged(caplog: pytest.LogCaptureFixture) -> None:
-    """Test an unexpected error becomes an error response and leaves a traceback.
+    """Test errors retain diagnostics without logging sensitive command arguments.
 
-    Exit code 1 is indistinguishable from the command itself failing, so the
-    traceback has to reach the log or the failure is undiagnosable.
+    The response still carries the error details for the caller, while shared
+    logs contain only the backend ID and exception type.
     """
+    command = "echo sensitive-placeholder"
     with (
         tempfile.TemporaryDirectory() as tmpdir,
-        patch("subprocess.Popen", side_effect=OSError("boom")),
+        patch("subprocess.Popen", side_effect=OSError(f"failed to launch {command}")),
         caplog.at_level("ERROR", logger="deepagents.backends.local_shell"),
     ):
-        result = LocalShellBackend(root_dir=tmpdir).execute("echo hi")
+        backend = LocalShellBackend(root_dir=tmpdir)
+        result = backend.execute(command)
 
     assert result.exit_code == 1
     assert "OSError" in result.output
-    assert "boom" in result.output
+    assert command in result.output
     assert "Local shell command failed" in caplog.text
-    assert "echo hi" in caplog.text
+    assert backend.id in caplog.text
+    assert "OSError" in caplog.text
+    assert "sensitive-placeholder" not in caplog.text
 
 
 async def test_local_shell_backend_cancellation_does_not_stop_another_backend() -> None:

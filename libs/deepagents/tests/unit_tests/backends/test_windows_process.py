@@ -28,12 +28,7 @@ def _process(*, errors: str = "strict") -> MagicMock:
 
 @pytest.mark.parametrize("code", [109, 232, 233, 5])
 def test_pipe_errors_distinguish_eof_from_failure(code: int) -> None:
-    """Test every end-of-stream error code reads as EOF and others propagate.
-
-    Windows reports a pipe whose write end is gone as `ERROR_BROKEN_PIPE` (109),
-    `ERROR_NO_DATA` (232) or `ERROR_PIPE_NOT_CONNECTED` (233), depending on how
-    far teardown has progressed. Any other code is a real failure.
-    """
+    """Test every end-of-stream error code reads as EOF and others propagate."""
 
     class PipeError(OSError):
         winerror = code
@@ -127,26 +122,17 @@ async def _cancel_command(backend: local_shell.LocalShellBackend, started: threa
 
 @pytest.mark.parametrize("cancel", [False, True], ids=["timeout", "async-cancellation-and-shutdown"])
 def test_backend_shutdown_does_not_wait_for_inherited_pipe_writer(*, cancel: bool) -> None:
-    """Test cleanup closes a pipe whose write end another process still holds.
-
-    `subprocess.communicate` would start a reader thread per pipe and that thread
-    holds the pipe until the write end closes. `WindowsProcessReader` polls
-    instead, so nothing holds the pipe and `_close_pipe` returns at once. `peek`
-    reporting zero bytes forever is what an inherited but idle write end looks
-    like.
-    """
+    """Test cleanup closes a pipe whose write end another process still holds."""
     descriptor, writer = os.pipe()
     pipe = os.fdopen(descriptor, "r", encoding="utf-8")
     process = MagicMock(args="command", pid=1234, stdout=pipe, stderr=None, returncode=0)
     process.poll.return_value = 0
     started = threading.Event()
-    polled = threading.Event()
     finished = threading.Event()
     errors: list[BaseException] = []
     backend = local_shell.LocalShellBackend()
 
     def peek(_descriptor: int) -> int:
-        polled.set()
         started.set()
         return 0
 
@@ -166,14 +152,16 @@ def test_backend_shutdown_does_not_wait_for_inherited_pipe_writer(*, cancel: boo
         patch.object(local_shell, "_IS_WINDOWS", new=True),
         patch.object(local_shell.subprocess, "Popen", return_value=process),
         patch.object(windows_process, "_peek_pipe", side_effect=peek),
+        patch.object(local_shell.os, "killpg", create=True) as killpg,
     ):
         worker.start()
         try:
             assert finished.wait(3), "cleanup or executor shutdown waited for the inherited pipe writer"
             assert not errors, errors
-            # Without this the test would still pass if the backend silently took
-            # the POSIX path and never used the polling reader at all.
-            assert polled.is_set(), "the Windows polling reader was never used"
+            assert started.is_set(), "the Windows polling reader was never used"
+            process.kill.assert_called_once_with()
+            process.wait.assert_called_once_with(timeout=local_shell._PROCESS_REAP_TIMEOUT)
+            killpg.assert_not_called()
             assert pipe.closed
             # Closing the read end must not disturb the inherited write end.
             os.fstat(writer)
@@ -186,11 +174,7 @@ def test_backend_shutdown_does_not_wait_for_inherited_pipe_writer(*, cancel: boo
 
 @pytest.mark.skipif(sys.platform != "win32", reason="requires native Windows pipe handles")
 def test_windows_output_capture() -> None:
-    """Test a large two-stream capture survives the polling reader on Windows.
-
-    Both streams exceed the pipe buffer, so the reader has to drain them as the
-    process writes. Draining only one would deadlock the other.
-    """
+    """Test a large two-stream capture survives the polling reader on Windows."""
     script = "import os; os.write(1, b'hello\\r\\n' * 10000); os.write(2, b'error\\r\\n' * 10000)"
     with subprocess.Popen(  # noqa: S603  # Run a fixed output probe with the test interpreter.
         [sys.executable, "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True

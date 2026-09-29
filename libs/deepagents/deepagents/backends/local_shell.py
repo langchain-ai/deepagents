@@ -32,12 +32,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = sys.platform == "win32"
-"""Whether this process runs on Windows.
-
-Read through this constant instead of `sys.platform` so a test can select the
-other platform's branch without changing `sys.platform` for every other library
-in the process.
-"""
 
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
@@ -92,13 +86,7 @@ def _report_worker_failure(
     *,
     backend_id: str,
 ) -> None:
-    """Retrieve a finished worker's exception and log a real failure.
-
-    The worker lost the race with cancellation, but it may have failed for an
-    unrelated reason. Report that instead of dropping it, or the caller only
-    ever sees "cancelled" for a real error. Retrieving the exception also stops
-    asyncio reporting it as never retrieved at an unrelated point later.
-    """
+    """Retrieve a finished worker's exception and log a real failure."""
     if worker.cancelled():
         return
     error = worker.exception()
@@ -123,15 +111,7 @@ def _release_background_worker(
 
 
 async def _wait_for_worker_shutdown(worker: asyncio.Future[ExecuteResponse]) -> bool:
-    """Wait through repeated cancellation up to the cleanup grace period.
-
-    Args:
-        worker: The executor future that runs the command.
-
-    Returns:
-        `True` if the worker finished inside the grace period, `False` if the
-        grace period expired first.
-    """
+    """Wait through repeated cancellation up to the cleanup grace period."""
     deadline = asyncio.get_running_loop().time() + _ASYNC_CANCELLATION_GRACE_PERIOD
     while not worker.done():
         remaining = deadline - asyncio.get_running_loop().time()
@@ -148,15 +128,7 @@ async def _wait_for_worker_shutdown(worker: asyncio.Future[ExecuteResponse]) -> 
 
 
 def _terminate_process(process: subprocess.Popen[str], process_group: int | None) -> bool:
-    """Kill a shell process, or its process group on POSIX.
-
-    Args:
-        process: The shell process started by `execute`.
-        process_group: POSIX process group id, or `None` to kill only `process`.
-
-    Returns:
-        `True` if nothing this function can reach is still running.
-    """
+    """Kill a shell process, or its process group on POSIX."""
     # An already-reaped process or an empty group is the ordinary result when
     # cancellation arrives just after a command ends, so it is a success.
     if not _IS_WINDOWS and process_group is not None:
@@ -182,14 +154,7 @@ def _terminate_process(process: subprocess.Popen[str], process_group: int | None
 
 
 def _reap_process(process: subprocess.Popen[str]) -> bool:
-    """Wait briefly for a terminated shell without blocking indefinitely.
-
-    Args:
-        process: The shell process that was just terminated.
-
-    Returns:
-        `True` if the process exited inside `_PROCESS_REAP_TIMEOUT` seconds.
-    """
+    """Wait briefly for a terminated shell without blocking indefinitely."""
     try:
         process.wait(timeout=_PROCESS_REAP_TIMEOUT)
     except subprocess.TimeoutExpired:
@@ -205,43 +170,21 @@ def _reap_process(process: subprocess.Popen[str]) -> bool:
     return True
 
 
-def _close_pipe(pipe: IO[str] | None, name: str, process_id: int) -> None:
-    """Close one subprocess pipe without replacing an active exception."""
-    if pipe is None:
-        return
-    try:
-        pipe.close()
-    except (OSError, ValueError):
-        logger.warning("Failed to close %s for local shell process %s", name, process_id, exc_info=True)
-
-
 def _kill_and_reap(process: subprocess.Popen[str], process_group: int | None) -> bool:
-    """Terminate a command and release its local resources.
-
-    The pipes are closed even when the process could not be reaped, so a stuck
-    command cannot leak file descriptors.
-
-    Args:
-        process: The shell process started by `execute`.
-        process_group: POSIX process group id, or `None` on Windows.
-
-    Returns:
-        `True` if the command is known to have exited.
-    """
+    """Terminate a command and release its local resources."""
     terminated = _terminate_process(process, process_group)
     reaped = _reap_process(process)
-    _close_pipe(process.stdout, "stdout", process.pid)
-    _close_pipe(process.stderr, "stderr", process.pid)
+    for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
+        if pipe is not None:
+            try:
+                pipe.close()
+            except (OSError, ValueError):
+                logger.warning("Failed to close %s for local shell process %s", name, process.pid, exc_info=True)
     return terminated and reaped
 
 
 def _decode_stream(data: bytes | str | None, pipe: IO[str] | None) -> str:
-    """Decode output taken from a `TimeoutExpired` raised by a text-mode process.
-
-    `Popen.communicate` decodes its return value but not the partial output on
-    its `TimeoutExpired`, which stays as bytes even in text mode.
-    `WindowsProcessReader` attaches text, which is returned unchanged.
-    """
+    """Decode partial output without letting incomplete characters hide the timeout."""
     if not data:
         return ""
     if isinstance(data, str):
@@ -251,23 +194,6 @@ def _decode_stream(data: bytes | str | None, pipe: IO[str] | None) -> str:
     return data.decode(encoding, errors="replace")
 
 
-def _timeout_with_partial_output(
-    process: subprocess.Popen[str],
-    timeout: float,
-    partial: subprocess.TimeoutExpired | None,
-    *,
-    terminated: bool,
-) -> _CommandTimeout:
-    """Build the timeout error, keeping whatever the command printed."""
-    return _CommandTimeout(
-        str(process.args),
-        timeout,
-        output=_decode_stream(partial.stdout if partial is not None else None, process.stdout),
-        stderr=_decode_stream(partial.stderr if partial is not None else None, process.stderr),
-        terminated=terminated,
-    )
-
-
 def _communicate(
     process: subprocess.Popen[str],
     timeout: int,
@@ -275,28 +201,7 @@ def _communicate(
     *,
     process_group: int | None = None,
 ) -> tuple[str, str]:
-    """Collect command output, cleaning up if execution is interrupted.
-
-    With no `cancellation_event` the output is collected in one call. With one,
-    output is collected in short attempts so cancellation is noticed quickly.
-    Each polling reader retains chunks across attempts and joins them only on
-    completion. `Popen.communicate` instead copies all accumulated output into
-    every `TimeoutExpired`, making repeated polling costly for verbose commands.
-
-    Args:
-        process: The running shell process.
-        timeout: Total seconds allowed for the command.
-        cancellation_event: Set by `aexecute` when its caller is cancelled.
-        process_group: POSIX process group id, or `None` on Windows.
-
-    Returns:
-        The decoded stdout and stderr of the command.
-
-    Raises:
-        _CommandTimeout: If the command did not finish inside `timeout`.
-        _CommandCancelled: If `cancellation_event` was set before the command finished.
-        BaseException: Anything raised while output was collected, after cleanup.
-    """
+    """Collect command output, cleaning up if execution is interrupted."""
     reader = WindowsProcessReader(process) if _IS_WINDOWS else PosixProcessReader(process) if cancellation_event is not None else None
     collect = reader.communicate if reader is not None else process.communicate
     deadline = time.monotonic() + timeout
@@ -323,7 +228,13 @@ def _communicate(
             if reader is not None:
                 stdout, stderr = reader.snapshot()
                 partial = subprocess.TimeoutExpired(process.args, timeout, output=stdout, stderr=stderr)
-            raise _timeout_with_partial_output(process, timeout, partial, terminated=terminated) from None
+            raise _CommandTimeout(
+                str(process.args),
+                timeout,
+                output=_decode_stream(partial.stdout if partial is not None else None, process.stdout),
+                stderr=_decode_stream(partial.stderr if partial is not None else None, process.stderr),
+                terminated=terminated,
+            ) from None
         raise
 
 
@@ -694,18 +605,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         return self._execute(command, timeout=timeout)
 
     def _combine_output(self, stdout: str | None, stderr: str | None) -> tuple[str, bool]:
-        r"""Merge the captured streams into one string and apply the size limit.
-
-        Each stderr line is prefixed with `[stderr]` so the source of a line is
-        clear, for example `"hello\n[stderr] error: file not found"`.
-
-        Args:
-            stdout: Captured standard output, or `None`.
-            stderr: Captured standard error, or `None`.
-
-        Returns:
-            The combined text and whether it was truncated.
-        """
+        """Merge the captured streams into one string and apply the size limit."""
         output_parts: list[str] = []
         if stdout:
             output_parts.append(stdout)

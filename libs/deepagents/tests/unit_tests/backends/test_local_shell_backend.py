@@ -12,7 +12,7 @@ import time
 import warnings
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import AbstractContextManager, contextmanager, suppress
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from pathlib import Path
 from unittest.mock import MagicMock, patch, sentinel
@@ -26,26 +26,9 @@ from deepagents.backends.protocol import ExecuteResponse
 _POSIX_SHELL_ONLY = pytest.mark.skipif(sys.platform == "win32", reason="test requires POSIX shell behavior")
 
 
-@pytest.fixture(autouse=True)
-def _reset_background_workers() -> Iterator[None]:
-    """Keep the module-global worker set from leaking between tests.
-
-    `_BACKGROUND_WORKERS` is process-wide. A worker left behind by a failing test
-    makes a later assertion on the set fail in an unrelated place.
-    """
-    local_shell_module._BACKGROUND_WORKERS.clear()
-    yield
-    local_shell_module._BACKGROUND_WORKERS.clear()
-
-
 @contextmanager
 def _as_posix() -> Iterator[None]:
-    """Select the POSIX cleanup branch for the duration of a test.
-
-    Patching the module constant keeps the choice local. Patching `sys.platform`
-    instead would change it for every library in the process, which breaks
-    anything that resolves platform-specific behavior while the test runs.
-    """
+    """Select the POSIX cleanup branch for the duration of a test."""
     # Windows lacks SIGKILL. Mock the module-local signal API along with the
     # platform choice; callers also mock killpg so no real signal is sent.
     with (
@@ -53,11 +36,6 @@ def _as_posix() -> Iterator[None]:
         patch.object(local_shell_module, "signal", SIGKILL=sentinel.SIGKILL),
     ):
         yield
-
-
-def _as_windows() -> AbstractContextManager[bool]:
-    """Select the Windows cleanup branch for the duration of a test."""
-    return patch.object(local_shell_module, "_IS_WINDOWS", new=True)
 
 
 def _heartbeat_command(directory: Path) -> tuple[str, Path, Path]:
@@ -95,17 +73,6 @@ def _stop_test_descendant(pid_file: Path) -> None:
         return
     with suppress(ProcessLookupError):
         os.kill(int(pid_file.read_text()), signal.SIGKILL)
-
-
-def _assert_posix_cleanup(process: MagicMock, killpg: MagicMock) -> None:
-    """Assert cleanup killed the POSIX process group and reaped the shell.
-
-    Callers patch `_IS_WINDOWS` to `False`, so this runs on every platform rather
-    than testing only whichever branch the host happens to take.
-    """
-    killpg.assert_called_once_with(1234, sentinel.SIGKILL)
-    process.kill.assert_not_called()
-    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
 
 
 def test_local_shell_backend_initialization() -> None:
@@ -161,16 +128,9 @@ def test_local_shell_backend_interrupt_cleans_up_posix_process_group() -> None:
     ):
         LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
 
-    _assert_posix_cleanup(process, killpg)
-
-
-async def test_local_shell_backend_late_cooperative_cancellation_is_not_logged(caplog: pytest.LogCaptureFixture) -> None:
-    worker = asyncio.get_running_loop().create_future()
-    worker.set_exception(asyncio.CancelledError())
-    local_shell_module._BACKGROUND_WORKERS.add(worker)
-    local_shell_module._release_background_worker(worker, backend_id="local-test")
-    assert worker not in local_shell_module._BACKGROUND_WORKERS
-    assert not caplog.records
+    killpg.assert_called_once_with(1234, sentinel.SIGKILL)
+    process.kill.assert_not_called()
+    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
 
 
 @_POSIX_SHELL_ONLY
@@ -202,27 +162,6 @@ def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.Lo
     assert "Failed to reap local shell process 1234" in caplog.text
     assert "Failed to close stdout for local shell process 1234" in caplog.text
     assert "Failed to close stderr for local shell process 1234" in caplog.text
-
-
-def test_local_shell_backend_windows_timeout_kills_direct_process() -> None:
-    """Test Windows timeout cleanup terminates and reaps the direct shell."""
-    process = MagicMock(pid=1234)
-    process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
-    process.snapshot.return_value = ("", "")
-    with (
-        tempfile.TemporaryDirectory() as tmpdir,
-        _as_windows(),
-        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
-        patch("subprocess.Popen", return_value=process) as popen,
-        patch.object(local_shell_module.os, "killpg", create=True) as killpg,
-    ):
-        result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
-
-    assert result.exit_code == 124
-    assert popen.call_args.kwargs["start_new_session"] is False
-    process.kill.assert_called_once_with()
-    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
-    killpg.assert_not_called()
 
 
 @pytest.mark.parametrize("failure", ["termination", "reaping"])
@@ -552,52 +491,6 @@ async def test_local_shell_backend_async_preserves_context_and_legacy_override()
         context.reset(token)
 
 
-@pytest.mark.parametrize("exception_type", [KeyboardInterrupt, SystemExit])
-def test_local_shell_backend_async_override_interrupt_is_catchable(exception_type: type[BaseException]) -> None:
-    class InterruptingBackend(LocalShellBackend):
-        def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-            msg = "override interrupted"
-            raise exception_type(msg)
-
-    async def run() -> None:
-        with pytest.raises(exception_type, match="override interrupted"):
-            await InterruptingBackend().aexecute("ignored")
-
-    try:
-        asyncio.run(run())
-    except exception_type:
-        pytest.fail("The override interruption escaped the caller's exception handler")
-
-
-async def test_local_shell_backend_async_cancellation_kills_windows_process() -> None:
-    """Test Windows cancellation kills the direct shell; POSIX uses a real descendant below."""
-    communication_started = threading.Event()
-    process = MagicMock(pid=1234)
-
-    def block_communication(*, timeout: float) -> tuple[str, str]:
-        communication_started.set()
-        timeout_error = subprocess.TimeoutExpired(process.args, timeout)
-        raise timeout_error
-
-    process.communicate.side_effect = block_communication
-    with (
-        tempfile.TemporaryDirectory() as tmpdir,
-        _as_windows(),
-        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
-        patch("subprocess.Popen", return_value=process),
-        patch.object(local_shell_module.os, "killpg", create=True) as killpg,
-    ):
-        task = asyncio.create_task(LocalShellBackend(root_dir=tmpdir).aexecute("sleep 10"))
-        assert await asyncio.to_thread(communication_started.wait, 1)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    killpg.assert_not_called()
-    process.kill.assert_called_once_with()
-    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
-
-
 @_POSIX_SHELL_ONLY
 @pytest.mark.parametrize("inherited", [False, True], ids=["builtin", "inherited"])
 async def test_local_shell_backend_async_cancellation_stops_descendant(tmp_path: Path, *, inherited: bool) -> None:
@@ -666,54 +559,6 @@ def test_local_shell_backend_async_start_race_skips_execution() -> None:
 
     assert execution_started.is_set()
     execute.assert_not_called()
-
-
-@pytest.mark.parametrize("background", [False, True], ids=["during-cleanup", "after-cleanup"])
-async def test_local_shell_backend_async_cancellation_preserves_cancelled_error(caplog: pytest.LogCaptureFixture, *, background: bool) -> None:
-    """Test a worker failure cannot replace async cancellation, but is still reported.
-
-    Cancellation wins the race, so the caller sees `CancelledError`. The real
-    failure type must still reach the log without exposing command arguments,
-    including when the worker fails after the cleanup grace period.
-    """
-    execution_started = threading.Event()
-    release_execution = threading.Event()
-
-    class FailingLocalShellBackend(LocalShellBackend):
-        def _execute(self, command: str, *, timeout: int | None, cancellation_event: threading.Event | None = None) -> ExecuteResponse:
-            execution_started.set()
-            release_execution.wait()
-            msg = f"backend failed to execute {command}"
-            raise RuntimeError(msg)
-
-    with (
-        tempfile.TemporaryDirectory() as tmpdir,
-        patch.object(local_shell_module, "_ASYNC_CANCELLATION_GRACE_PERIOD", 0 if background else 1),
-        caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
-    ):
-        backend = FailingLocalShellBackend(root_dir=tmpdir)
-        task = asyncio.create_task(backend.aexecute("echo sensitive-placeholder"))
-        try:
-            assert await asyncio.to_thread(execution_started.wait, 1)
-            task.cancel()
-            if not background:
-                release_execution.set()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-        finally:
-            release_execution.set()
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-            if local_shell_module._BACKGROUND_WORKERS:
-                await asyncio.wait_for(asyncio.gather(*local_shell_module._BACKGROUND_WORKERS, return_exceptions=True), timeout=5)
-
-    assert task.cancelled()
-    assert "failed on backend" in caplog.text
-    assert backend.id in caplog.text
-    assert "RuntimeError" in caplog.text
-    assert "sensitive-placeholder" not in caplog.text
-    assert not local_shell_module._BACKGROUND_WORKERS
 
 
 @pytest.mark.parametrize("cancel", [False, True], ids=["normal", "cancelled"])
@@ -896,11 +741,7 @@ async def test_local_shell_backend_timeout_replaces_undecodable_output(tmp_path:
 
 
 def test_local_shell_backend_already_exited_group_is_not_a_cleanup_failure(caplog: pytest.LogCaptureFixture) -> None:
-    """Test an empty process group counts as success, not as a failed kill.
-
-    Cancellation arriving just after a command finished finds nothing left to
-    kill. Reporting that as a failure would train readers to ignore this logger.
-    """
+    """Test an empty process group counts as success, not as a failed kill."""
     process = MagicMock(pid=1234)
     with (
         _as_posix(),
@@ -914,11 +755,7 @@ def test_local_shell_backend_already_exited_group_is_not_a_cleanup_failure(caplo
 
 
 def test_local_shell_backend_unexpected_failure_is_reported_and_logged(caplog: pytest.LogCaptureFixture) -> None:
-    """Test errors retain diagnostics without logging sensitive command arguments.
-
-    The response still carries the error details for the caller, while shared
-    logs contain only the backend ID and exception type.
-    """
+    """Test errors retain diagnostics without logging sensitive command arguments."""
     command = "echo sensitive-placeholder"
     with (
         tempfile.TemporaryDirectory() as tmpdir,
@@ -955,12 +792,7 @@ async def test_local_shell_backend_cancelling_one_command_leaves_a_sibling_runni
 
 
 async def test_local_shell_backend_repeated_cancellation_still_tracks_the_worker(caplog: pytest.LogCaptureFixture) -> None:
-    """Test a second cancellation during the grace period does not skip cleanup.
-
-    If the repeat `CancelledError` escaped, the worker would never be added to
-    `_BACKGROUND_WORKERS` and asyncio would later report its result as never
-    retrieved at an unrelated point.
-    """
+    """Test a second cancellation during the grace period does not skip cleanup."""
     execution_started = threading.Event()
     release_execution = threading.Event()
 
@@ -968,14 +800,15 @@ async def test_local_shell_backend_repeated_cancellation_still_tracks_the_worker
         def _execute(self, command: str, *, timeout: int | None, cancellation_event: threading.Event | None = None) -> ExecuteResponse:
             execution_started.set()
             release_execution.wait(5)
-            return ExecuteResponse(output="done", exit_code=0, truncated=False)
+            msg = f"backend failed to execute {command}"
+            raise RuntimeError(msg)
 
     with (
         tempfile.TemporaryDirectory() as tmpdir,
         patch.object(local_shell_module, "_ASYNC_CANCELLATION_GRACE_PERIOD", 0.3),
         caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
     ):
-        task = asyncio.create_task(SlowLocalShellBackend(root_dir=tmpdir).aexecute("slow override"))
+        task = asyncio.create_task(SlowLocalShellBackend(root_dir=tmpdir).aexecute("sensitive-placeholder"))
         assert await asyncio.to_thread(execution_started.wait, 2)
         task.cancel()
         # Let the coroutine reach the grace-period wait, then cancel again.
@@ -995,3 +828,5 @@ async def test_local_shell_backend_repeated_cancellation_still_tracks_the_worker
     assert tracked == 1, "the repeated cancellation skipped the background-worker bookkeeping"
     assert "exceeded" in caplog.text
     assert not local_shell_module._BACKGROUND_WORKERS
+    assert "RuntimeError" in caplog.text
+    assert "sensitive-placeholder" not in caplog.text

@@ -61,10 +61,6 @@ Native tools are matched by their wire names (for example `execute` → `Bash`, 
 | `SubagentStart` | server | `agent_name` | When a subagent starts |
 | `SubagentStop` | server | `agent_name` | When a subagent stops |
 
-In interactive `dcode`, the `Notification` matcher `cache_expiring` fires once per
-active thread/cache window during its final 60 seconds of known retention,
-independent of cold-cache warning settings. It does not refresh the cache.
-
 ## Handler shape
 
 Each matcher group has a `hooks` list of command handlers:

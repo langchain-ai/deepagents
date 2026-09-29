@@ -2,6 +2,12 @@
 
 # Changelog
 
+## [0.3.8](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.7...langchain-quickjs==0.3.8) (2026-09-29)
+
+### Bug Fixes
+
+- Preserve subagent identity when replaying interrupts.
+
 ## [0.3.7](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.6...langchain-quickjs==0.3.7) (2026-09-06)
 
 ### Features

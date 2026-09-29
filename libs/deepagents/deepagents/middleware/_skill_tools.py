@@ -1,9 +1,13 @@
 """Disclose the tools a skill names once its `SKILL.md` has been read.
 
 `SkillsMiddleware` owns the behavior; this module holds the pieces it is
-built from: which reads count as skill loads, how the names they list resolve
-to tools and which of those they disclose, where the disclosure goes in the
-conversation, and the provider-native blocks that carry each tool's definition.
+built from: which reads of a `SKILL.md` count, how the include names a skill
+lists resolve to tools and which of those are disclosed, where the disclosure
+goes in the conversation, and the provider-native blocks that carry each tool's
+definition.
+
+An include name is one entry in a skill's `metadata.include_tools`: a tool's
+exact name, or a name a resolver maps to tools.
 """
 
 from __future__ import annotations
@@ -33,10 +37,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 INCLUDE_TOOLS_KEY = "include_tools"
-"""`SKILL.md` frontmatter `metadata` key listing the skill's tools, space-separated."""
+"""`SKILL.md` frontmatter `metadata` key listing the skill's include names, space-separated."""
 
 SKILL_TOOLS_DISCLOSED_KEY = "_skill_tools_disclosed"
-"""Private state key mapping each skill tool disclosed to the latest model call to its breadcrumb."""
+"""Private state key mapping each skill tool disclosed to the latest model call to the include name that produced it."""
 
 _DEFER_LOADING = "defer_loading"
 """Tool `extras` key (and provider field) that withholds a tool's schema until searched for."""
@@ -83,7 +87,7 @@ def coerce_skill_tools(entries: Sequence[BaseTool | Callable[..., Any]]) -> dict
     return {t.name: t for t in tools}
 
 
-def skill_tools_form(
+def normalize_skill_tools(
     skill_tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None,
 ) -> tuple[SkillToolResolver, dict[str, BaseTool] | None]:
     """Return the resolver `skill_tools` stands for, and the tools it lists when it's a sequence.
@@ -108,7 +112,7 @@ def _by_exact_name(tools: Mapping[str, BaseTool], name: str, runtime: Runtime[An
     return [tools[name]] if name in tools else []
 
 
-def excluding(resolver: SkillToolResolver, excluded: frozenset[str]) -> SkillToolResolver:
+def resolver_excluding(resolver: SkillToolResolver, excluded: frozenset[str]) -> SkillToolResolver:
     """Wrap `resolver` so its output never includes a tool named in `excluded`.
 
     An async resolver stays async, so the sync hooks still reject it.
@@ -146,7 +150,7 @@ class _Excluded:
         return _without(tools, self._excluded)
 
     def close(self) -> None:
-        """Close the pending tools unawaited, as `resolve` does before rejecting them."""
+        """Close the pending tools unawaited, as `resolve_include_name` does before rejecting them."""
         _close(self._pending)
 
 
@@ -157,7 +161,7 @@ def _close(awaitable: object) -> None:
         close()
 
 
-def resolve(resolver: SkillToolResolver, name: str, runtime: Runtime[Any]) -> list[BaseTool]:
+def resolve_include_name(resolver: SkillToolResolver, name: str, runtime: Runtime[Any]) -> list[BaseTool]:
     """Resolve `name` on a sync hook.
 
     Raises:
@@ -171,7 +175,7 @@ def resolve(resolver: SkillToolResolver, name: str, runtime: Runtime[Any]) -> li
     return _checked(name, result)
 
 
-async def aresolve(resolver: SkillToolResolver, name: str, runtime: Runtime[Any]) -> list[BaseTool]:
+async def aresolve_include_name(resolver: SkillToolResolver, name: str, runtime: Runtime[Any]) -> list[BaseTool]:
     """Resolve `name` on an async hook, awaiting the resolver if it's async.
 
     Raises:
@@ -202,7 +206,7 @@ def _checked(name: str, result: object) -> list[BaseTool]:
 
 
 def disclosed_record(state: Mapping[str, object]) -> dict[str, str]:
-    """Return the recorded `{tool name: breadcrumb}` map, or `{}` if it's missing or malformed.
+    """Return the recorded `{tool name: include name}` map, or `{}` if it's missing or malformed.
 
     A record of any other shape, such as one checkpointed by an earlier build,
     reads as empty rather than failing the gate.
@@ -214,8 +218,8 @@ def disclosed_record(state: Mapping[str, object]) -> dict[str, str]:
     return entries if len(entries) == len(record) else {}
 
 
-def included_tool_names(skill: SkillMetadata) -> list[str]:
-    """Return the tool names a skill's frontmatter lists under `metadata.include_tools`."""
+def include_names(skill: SkillMetadata) -> list[str]:
+    """Return the include names a skill's frontmatter lists under `metadata.include_tools`."""
     return (skill.get("metadata") or {}).get(INCLUDE_TOOLS_KEY, "").split()
 
 
@@ -232,55 +236,55 @@ class Disclosure:
     anchors: dict[str, int] = field(default_factory=dict)
     """Index of the earliest skill read producing each tool."""
 
-    breadcrumbs: dict[str, str] = field(default_factory=dict)
-    """The frontmatter name that produced each gated tool at its anchor, for tool-time lookup."""
+    produced_by: dict[str, str] = field(default_factory=dict)
+    """The include name that produced each gated tool at its anchor, for tool-time lookup."""
 
     def tools(self) -> dict[str, BaseTool]:
         """Return every disclosed tool by name."""
         return {**self.deferred, **self.gated}
 
     def record(self) -> dict[str, str]:
-        """Return the gated tools' breadcrumbs, sorted by tool name, for the tool-time gate."""
-        return {name: self.breadcrumbs[name] for name in sorted(self.gated)}
+        """Return the include name that produced each gated tool, sorted by tool name, for the tool-time gate."""
+        return {name: self.produced_by[name] for name in sorted(self.gated)}
 
     def discard(self, name: str) -> None:
         """Withhold the tool `name`, so the model isn't shown it and the gate doesn't admit it."""
-        for disclosed in (self.deferred, self.gated, self.anchors, self.breadcrumbs):
+        for disclosed in (self.deferred, self.gated, self.anchors, self.produced_by):
             disclosed.pop(name, None)
 
 
-SkillLoad = tuple[int, "SkillMetadata"]
+SkillRead = tuple[int, "SkillMetadata"]
 """A successful read of a skill's `SKILL.md`: the tool result's message index, and the skill."""
 
 
-def unclaimed_names(loads: Sequence[SkillLoad], request_tools: Sequence[BaseTool | dict[str, Any]]) -> list[str]:
-    """Return each distinct name the read skills list that no request tool claims, in read order."""
+def unclaimed_include_names(reads: Sequence[SkillRead], request_tools: Sequence[BaseTool | dict[str, Any]]) -> list[str]:
+    """Return each distinct include name the read skills list that no request tool claims, in read order."""
     present = {_tool_name(t) for t in request_tools}
-    return list(dict.fromkeys(name for _, skill in loads for name in included_tool_names(skill) if name not in present))
+    return list(dict.fromkeys(name for _, skill in reads for name in include_names(skill) if name not in present))
 
 
-def resolve_disclosure(
-    loads: Sequence[SkillLoad],
+def plan_disclosure(
+    reads: Sequence[SkillRead],
     request_tools: Sequence[BaseTool | dict[str, Any]],
     resolved: Mapping[str, Sequence[BaseTool]],
 ) -> Disclosure:
-    """Classify what each read skill's names produce, anchoring each tool at the earliest read producing it.
+    """Classify what each read skill's include names produce, anchoring each tool at the earliest read producing it.
 
-    A name matching a request tool exactly is claimed by it. Any other name
+    An include name matching a request tool exactly is claimed by it. Any other
     produces what the resolver returned for it (`resolved`), and each returned
     tool is classified by identity against the request's tools.
     """
     disclosure = Disclosure()
     present = {_tool_name(t): t for t in request_tools}
     unresolved: set[str] = set()
-    for index, skill in loads:
-        for name in included_tool_names(skill):
-            produced = [present[name]] if name in present else resolved.get(name, [])
-            if not produced and name not in unresolved:
-                unresolved.add(name)
-                logger.debug("Skill '%s' names tool '%s', which is not available in this request", skill["name"], name)
+    for index, skill in reads:
+        for include_name in include_names(skill):
+            produced = [present[include_name]] if include_name in present else resolved.get(include_name, [])
+            if not produced and include_name not in unresolved:
+                unresolved.add(include_name)
+                logger.debug("Skill '%s' names tool '%s', which is not available in this request", skill["name"], include_name)
             for tool in produced:
-                _classify(disclosure, tool, present, index, name)
+                _classify(disclosure, tool, present, index, include_name)
     return disclosure
 
 
@@ -289,9 +293,9 @@ def _classify(
     tool: BaseTool | dict[str, Any],
     present: Mapping[str | None, BaseTool | dict[str, Any]],
     index: int,
-    name: str,
+    include_name: str,
 ) -> None:
-    """Add `tool`, produced by frontmatter `name` at read `index`, unless an earlier read already did.
+    """Add `tool`, produced by `include_name` at read `index`, unless an earlier read already did.
 
     A provider-native dict can only be a request tool claiming its own name,
     which the model already sees.
@@ -301,9 +305,9 @@ def _classify(
     entry = present.get(tool.name)
     if entry is None:
         disclosure.gated[tool.name] = tool
-        disclosure.breadcrumbs[tool.name] = name
+        disclosure.produced_by[tool.name] = include_name
     elif entry is not tool:
-        logger.debug("Skill tool '%s' from '%s' is shadowed by a request tool of the same name", tool.name, name)
+        logger.debug("Skill tool '%s' from '%s' is shadowed by a request tool of the same name", tool.name, include_name)
         return
     elif (tool.extras or {}).get(_DEFER_LOADING) is True:
         disclosure.deferred[tool.name] = tool
@@ -330,13 +334,13 @@ def _normalized_path(path: object) -> str | None:
         return None
 
 
-def skill_loads(messages: Sequence[AnyMessage], skills: Sequence[SkillMetadata]) -> list[SkillLoad]:
+def skill_reads(messages: Sequence[AnyMessage], skills: Sequence[SkillMetadata]) -> list[SkillRead]:
     """Return `(index, skill)` for every successful `read_file` result of a `SKILL.md` naming tools.
 
     Any `offset` or `limit` counts, and so does a result whose content was later
     truncated or clipped, since only the call and the result's status are read.
     """
-    skills_by_path = {path: skill for skill in skills if included_tool_names(skill) and (path := _normalized_path(skill["path"])) is not None}
+    skills_by_path = {path: skill for skill in skills if include_names(skill) and (path := _normalized_path(skill["path"])) is not None}
     if not skills_by_path:
         return []
     read_paths = {
@@ -346,14 +350,14 @@ def skill_loads(messages: Sequence[AnyMessage], skills: Sequence[SkillMetadata])
         for tool_call in message.tool_calls
         if tool_call["name"] == "read_file" and tool_call["id"]
     }
-    loads: list[SkillLoad] = []
+    reads: list[SkillRead] = []
     for index, message in enumerate(messages):
         if not isinstance(message, ToolMessage) or message.status == "error":
             continue
         skill = skills_by_path.get(_normalized_path(read_paths.get(message.tool_call_id)) or "")
         if skill is not None:
-            loads.append((index, skill))
-    return loads
+            reads.append((index, skill))
+    return reads
 
 
 def _insertion_point(messages: Sequence[AnyMessage], anchor: int) -> int:
@@ -428,7 +432,7 @@ def discard_rejected_schemas(disclosure: Disclosure, model: object) -> None:
             disclosure.discard(name)
 
 
-def disclosure_builder(model: object) -> Callable[[BaseTool], ToolDisclosure] | None:
+def inline_block_builder(model: object) -> Callable[[BaseTool], ToolDisclosure] | None:
     """Return how `model` is given a tool mid-conversation, or `None` if it can't be.
 
     The one place that decides support, so a model-profile capability can replace

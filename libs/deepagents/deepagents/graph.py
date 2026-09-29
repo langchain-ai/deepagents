@@ -44,7 +44,7 @@ from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
-from deepagents.middleware._skill_tools import excluding, skill_tools_form
+from deepagents.middleware._skill_tools import normalize_skill_tools, resolver_excluding
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware._utils import append_to_system_message
@@ -252,9 +252,9 @@ def _skills_middleware(
     `_ToolExclusionMiddleware` only sees `request.tools`, so an excluded skill
     tool must be removed here or it would still be disclosed inline.
     """
-    resolver, tools = skill_tools_form(skill_tools)
+    resolver, tools = normalize_skill_tools(skill_tools)
     if tools is None:
-        return SkillsMiddleware(backend=backend, sources=sources, skill_tools=excluding(resolver, profile.excluded_tools))
+        return SkillsMiddleware(backend=backend, sources=sources, skill_tools=resolver_excluding(resolver, profile.excluded_tools))
     kept = [tool for name, tool in tools.items() if name not in profile.excluded_tools]
     return SkillsMiddleware(backend=backend, sources=sources, skill_tools=kept)
 

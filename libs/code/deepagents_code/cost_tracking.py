@@ -3115,6 +3115,11 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
                 remaining_transfers.pop(source_scope, None)
                 claimed_transfer = True
         transferred_usd = delta_usd
+        transferred_breakdown = breakdown
+        # Receipts describe only this node's requests. Descendants have their
+        # own receipts, and completeness flags cannot be subtracted after merge.
+        delta_usd = 0.0
+        breakdown = _empty_cost_breakdown()
         represented_message_ids: set[str] = set()
         represented_count = 0
         pricing_attempted = False
@@ -3222,7 +3227,9 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
             ):
                 from deepagents_code._js_cost import record_cost_receipt
 
-                record_cost_receipt(delta_usd - transferred_usd)
+                record_cost_receipt(delta_usd, breakdown=breakdown)
+            delta_usd += transferred_usd
+            breakdown = _merge_cost_breakdowns(transferred_breakdown, breakdown)
             has_breakdown = breakdown["request_count"] > 0
             if not self._nested and (
                 delta_usd > 0 or pricing_attempted or has_breakdown

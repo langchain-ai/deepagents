@@ -21,7 +21,11 @@ from langgraph.checkpoint.base import (
 from langgraph.config import get_config
 from langgraph.types import Command
 
-from deepagents_code.cost_tracking import _parent_checkpoint_scope
+from deepagents_code.cost_tracking import (
+    _empty_cost_breakdown,
+    _merge_cost_breakdowns,
+    _parent_checkpoint_scope,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -29,6 +33,8 @@ if TYPE_CHECKING:
     from langchain_core.messages import ToolMessage
     from langchain_core.runnables import RunnableConfig
     from langgraph.prebuilt.tool_node import ToolCallRequest, ToolRuntime
+
+    from deepagents_code.cost_tracking import CostBreakdown
 
 _ACCOUNTING_KEY = "__deepagents_js_cost_owner"
 _RESPONSE_FORMAT_KEY = "__deepagents_subagent_response_format"
@@ -94,13 +100,15 @@ class CostAwareCodeInterpreterMiddleware(CodeInterpreterMiddleware):
             await asyncio.gather(*active, return_exceptions=True)
         if owner:
             return result
-        total = await _receipt_total(runtime.config, accounting)
-        if total <= 0:
+        receipt = await _receipt_total(runtime.config, accounting)
+        if receipt is None:
             return result
+        total, breakdown = receipt
         transfers = {
             accounting: {
                 "owner_scope": _parent_checkpoint_scope(scope),
                 "cost_usd": total,
+                "breakdown": breakdown,
             }
         }
         if isinstance(result, Command):
@@ -139,6 +147,9 @@ def _cost_task(
             f"{scope}|js_dispatch:{fingerprint}_{occurrence}"
         )
         configurable[_ACCOUNTING_KEY] = owner
+        # The SDK's task closure owns the actual child ainvoke, including
+        # dynamic response schemas. Public durability="sync" belongs there;
+        # until that boundary exposes it, inherit LangGraph 1.2's config key.
         configurable["__pregel_durability"] = "sync"
         configurable["__deepagents_js_cost_loop"] = asyncio.get_running_loop()
         scratchpad = configurable.get("__pregel_scratchpad")
@@ -167,12 +178,22 @@ def _cost_task(
     return tool.model_copy(update={"coroutine": invoke})
 
 
-def record_cost_receipt(amount: float) -> None:
-    """Persist one locally priced node delta before its graph update returns."""
+def record_cost_receipt(
+    amount: float, *, breakdown: CostBreakdown | None = None
+) -> None:
+    """Persist one local node delta before its graph update returns.
+
+    Args:
+        amount: Dollars priced here, excluding claimed descendant transfers.
+        breakdown: Local requests, including free and unpriceable usage.
+            Omitted detail is preserved as incomplete legacy accounting.
+    """
     configurable = get_config().get("configurable", {})
     owner = configurable.get(_ACCOUNTING_KEY)
     saver = configurable.get("__pregel_checkpointer")
-    if not owner or not isinstance(saver, BaseCheckpointSaver) or amount <= 0:
+    if not owner or not isinstance(saver, BaseCheckpointSaver):
+        return
+    if amount <= 0 and (breakdown is None or breakdown["request_count"] == 0):
         return
     namespace = configurable.get("checkpoint_ns", "")
     config: RunnableConfig = {
@@ -183,31 +204,42 @@ def record_cost_receipt(amount: float) -> None:
     }
     loop = configurable["__deepagents_js_cost_loop"]
     asyncio.run_coroutine_threadsafe(
-        _put_receipt(saver, config, owner, amount), loop
+        _put_receipt(saver, config, owner, amount, breakdown), loop
     ).result()
 
 
 async def _put_receipt(
-    saver: BaseCheckpointSaver, config: RunnableConfig, owner: str, amount: float
+    saver: BaseCheckpointSaver,
+    config: RunnableConfig,
+    owner: str,
+    amount: float,
+    breakdown: CostBreakdown | None,
 ) -> None:
-    """Persist a node's first priced delta without replacing it on replay."""
+    """Persist a node's first usage delta without replacing it on replay."""
     if await saver.aget_tuple(config) is not None:
         return
     checkpoint = empty_checkpoint()
     checkpoint["channel_values"] = {"cost_usd": amount}
-    checkpoint["channel_versions"] = {"cost_usd": checkpoint["id"]}
+    if breakdown is not None:
+        checkpoint["channel_values"]["breakdown"] = breakdown
+    checkpoint["channel_versions"] = dict.fromkeys(
+        checkpoint["channel_values"], checkpoint["id"]
+    )
     metadata: _ReceiptMetadata = {"js_cost_owner": owner}
     await saver.aput(config, checkpoint, metadata, checkpoint["channel_versions"])
 
 
-async def _receipt_total(config: RunnableConfig, owner: str) -> float:
+async def _receipt_total(
+    config: RunnableConfig, owner: str
+) -> tuple[float, CostBreakdown] | None:
     """Return the sum of the latest local receipts owned by this eval."""
     configurable = config.get("configurable", {})
     saver = configurable.get("__pregel_checkpointer")
     if not isinstance(saver, BaseCheckpointSaver):
-        return 0.0
+        return None
     seen: set[str] = set()
     total = 0.0
+    breakdown = _empty_cost_breakdown()
     async for receipt in saver.alist(
         {"configurable": {"thread_id": configurable["thread_id"]}},
         filter={"js_cost_owner": owner},
@@ -216,12 +248,21 @@ async def _receipt_total(config: RunnableConfig, owner: str) -> float:
         if namespace in seen:
             continue
         seen.add(namespace)
-        amount = receipt.checkpoint["channel_values"].get("cost_usd")
+        values = receipt.checkpoint["channel_values"]
+        amount = values.get("cost_usd")
         if (
             isinstance(amount, int | float)
             and not isinstance(amount, bool)
             and math.isfinite(amount)
-            and amount > 0
+            and amount >= 0
         ):
             total += amount
-    return total
+            detail = values.get("breakdown")
+            if not isinstance(detail, Mapping):
+                # Keep legacy dollars without inventing requests or attribution.
+                detail = _empty_cost_breakdown(historical_complete=False)
+                detail["total_cost_usd"] = amount
+            breakdown = _merge_cost_breakdowns(breakdown, detail)
+        else:
+            breakdown["historical_complete"] = False
+    return (total, breakdown) if seen else None

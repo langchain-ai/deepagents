@@ -102,6 +102,15 @@ effectively remove it. A resolved value above the ceiling is rejected and falls
 through to the next layer / default.
 """
 
+MCP_TOOL_TIMEOUT_SECONDS_DEFAULT = 120.0
+"""Default wall-clock budget for one MCP tool call."""
+
+MCP_TOOL_TIMEOUT_FLOOR = 1.0
+"""Smallest accepted MCP tool-call timeout."""
+
+MCP_TOOL_TIMEOUT_CEILING = 900.0
+"""Largest accepted MCP tool-call timeout."""
+
 RECURSION_LIMIT_FLOOR = 25
 """Smallest `recursion_limit` accepted from managed config, the env var, or TOML.
 
@@ -1630,6 +1639,97 @@ def resolve_auto_classifier_timeout(
     return value
 
 
+def _is_valid_mcp_tool_timeout(value: object) -> TypeIs[float]:
+    """Return whether `value` is an accepted MCP tool-call timeout."""
+    return (
+        isinstance(value, float)
+        and math.isfinite(value)
+        and MCP_TOOL_TIMEOUT_FLOOR <= value <= MCP_TOOL_TIMEOUT_CEILING
+    )
+
+
+def resolve_mcp_tool_timeout(
+    *,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
+) -> float:
+    """Resolve the wall-clock budget for one MCP tool call.
+
+    Returns:
+        The resolved timeout in seconds within the accepted bounds.
+    """
+    data = toml_data
+    option = get_option("mcp.tool_timeout")
+    if option is None:
+        return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
+
+    resolved = _resolve_option(
+        option,
+        toml_data=data,
+        managed_toml_data=managed_toml_data,
+    )
+    _emit_ranked_diagnostics(option, resolved)
+    value, source = resolved.value, _ranked_source(resolved)
+    if _is_valid_mcp_tool_timeout(value):
+        return value
+
+    from deepagents_code.configuration.service import managed_decided
+
+    managed_rejected = managed_decided(source)
+    if managed_rejected:
+        logger.warning(
+            "Ignoring managed mcp.tool_timeout %r (expected seconds in [%g, %g]); "
+            "falling through to the next config source",
+            value,
+            MCP_TOOL_TIMEOUT_FLOOR,
+            MCP_TOOL_TIMEOUT_CEILING,
+        )
+        resolved = _resolve_option_without_managed(option, toml_data=data)
+        _emit_ranked_diagnostics(option, resolved)
+        value, source = resolved.value, _ranked_source(resolved)
+        if _is_valid_mcp_tool_timeout(value):
+            return value
+
+    if source.startswith("env (") and source.endswith(")"):
+        env_name = source[len("env (") : -1]
+        logger.warning(
+            "Ignoring %s mcp.tool_timeout %r (expected seconds in [%g, %g]); "
+            "falling through to the next config source",
+            source,
+            value,
+            MCP_TOOL_TIMEOUT_FLOOR,
+            MCP_TOOL_TIMEOUT_CEILING,
+        )
+        previous = os.environ.pop(env_name, None)
+        if previous is None:
+            return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
+        try:
+            if managed_rejected:
+                resolved = _resolve_option_without_managed(option, toml_data=data)
+                _emit_ranked_diagnostics(option, resolved)
+                value, source = resolved.value, _ranked_source(resolved)
+                if _is_valid_mcp_tool_timeout(value):
+                    return value
+            else:
+                return resolve_mcp_tool_timeout(
+                    toml_data=data,
+                    managed_toml_data=managed_toml_data,
+                )
+        finally:
+            os.environ[env_name] = previous
+
+    if source != "default":
+        logger.warning(
+            "Ignoring %s mcp.tool_timeout %r (expected seconds in [%g, %g]); using %g",
+            source,
+            value,
+            MCP_TOOL_TIMEOUT_FLOOR,
+            MCP_TOOL_TIMEOUT_CEILING,
+            MCP_TOOL_TIMEOUT_SECONDS_DEFAULT,
+        )
+    return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
+
+
 def blank_auto_classifier_env_name() -> str | None:
     """Return the env var blanking the Auto classifier model, if any.
 
@@ -2884,6 +2984,15 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         env_var=_env_vars.SUPPRESS_ENV_OVERRIDE_WARNING,
     ),
     # --- MCP ------------------------------------------------------------
+    ConfigOption(
+        key="mcp.tool_timeout",
+        group="MCP",
+        summary="Seconds an MCP tool call may run before returning an error (1-900).",
+        kind=OptionKind.FLOAT,
+        default=MCP_TOOL_TIMEOUT_SECONDS_DEFAULT,
+        env_var=_env_vars.MCP_TOOL_TIMEOUT,
+        toml_keys=("mcp", "tool_timeout"),
+    ),
     # Project trust lists are parsed by `model_config.load_mcp_server_trust_lists`,
     # which reads them only from the user-level config.toml (never a project file),
     # so they are STRUCTURED-for-discovery here rather than env-backed scalars. The

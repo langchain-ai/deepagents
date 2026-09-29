@@ -25,11 +25,15 @@ from deepagents_code.client.commands.config import (
     run_config_command,
 )
 from deepagents_code.config_manifest import (
+    MCP_TOOL_TIMEOUT_CEILING,
+    MCP_TOOL_TIMEOUT_FLOOR,
+    MCP_TOOL_TIMEOUT_SECONDS_DEFAULT,
     ConfigOption,
     OptionKind,
     get_config_options,
     get_option,
     options_with_key_prefix,
+    resolve_mcp_tool_timeout,
 )
 from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
 from unit_tests.conftest import resolve_option_for_test
@@ -42,6 +46,31 @@ if TYPE_CHECKING:
 # config file, or built-in defaults; adding the env var here would hide the
 # config/default cases these tests are trying to verify.
 pytestmark = pytest.mark.self_managed_update_check
+
+
+def test_mcp_tool_timeout_resolves_env_and_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MCP timeout accepts env overrides and rejects values outside its bounds."""
+    option = get_option("mcp.tool_timeout")
+    assert option is not None
+    assert option.env_var == _env_vars.MCP_TOOL_TIMEOUT
+
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, "45")
+    assert resolve_mcp_tool_timeout(
+        toml_data={"mcp": {"tool_timeout": 30.0}}
+    ) == pytest.approx(45.0)
+
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, str(MCP_TOOL_TIMEOUT_CEILING + 1))
+    assert resolve_mcp_tool_timeout(
+        toml_data={"mcp": {"tool_timeout": 30.0}}
+    ) == pytest.approx(30.0)
+
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, str(MCP_TOOL_TIMEOUT_FLOOR - 1))
+    assert resolve_mcp_tool_timeout(
+        toml_data={"mcp": {"tool_timeout": 30.0}}
+    ) == pytest.approx(30.0)
+    assert pytest.approx(120.0) == MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
 
 
 def _resolve_manifest_option(

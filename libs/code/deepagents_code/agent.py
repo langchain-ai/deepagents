@@ -2996,6 +2996,13 @@ def create_cli_agent(
             model_result=model_result,
         ),
     ]
+    if mcp_tools:
+        from deepagents_code.config_manifest import resolve_mcp_tool_timeout
+        from deepagents_code.mcp_middleware import mcp_tool_middleware
+
+        agent_middleware.append(
+            mcp_tool_middleware(timeout_seconds=resolve_mcp_tool_timeout())
+        )
     if not interactive:
         agent_middleware.append(_GlmTerminalStallRecovery())
 

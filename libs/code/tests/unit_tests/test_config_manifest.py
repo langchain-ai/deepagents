@@ -109,6 +109,55 @@ def test_mcp_timeout_falls_back_through_all_rejected_sources(
     ) == pytest.approx(MCP_TOOL_TIMEOUT_SECONDS_DEFAULT)
 
 
+@pytest.mark.parametrize(
+    ("managed", "environment", "user", "expected", "source"),
+    [
+        (20, "45", 30, 20.0, "managed config"),
+        (901, "45", 30, 45.0, f"env ({_env_vars.MCP_TOOL_TIMEOUT})"),
+        (901, "901", 30, 30.0, "config.toml"),
+        (901, "901", 901, MCP_TOOL_TIMEOUT_SECONDS_DEFAULT, "default"),
+    ],
+)
+def test_mcp_timeout_display_matches_runtime_source(
+    monkeypatch: pytest.MonkeyPatch,
+    managed: int,
+    environment: str,
+    user: int,
+    expected: float,
+    source: str,
+) -> None:
+    """Config introspection reports the accepted value and its actual source."""
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, environment)
+    option = get_option("mcp.tool_timeout")
+    assert option is not None
+    assert _resolve(
+        option,
+        toml_data={"mcp": {"tool_timeout": user}},
+        managed_toml_data={"mcp": {"tool_timeout": managed}},
+    ) == (source != "default", source, expected)
+
+
+@pytest.mark.parametrize("user_timeout", [30, 901])
+def test_config_get_mcp_timeout_reports_bounded_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    user_timeout: int,
+) -> None:
+    """The config command falls back to TOML or the default for invalid env values."""
+    config = tmp_path / "config.toml"
+    config.write_text(f"[mcp]\ntool_timeout = {user_timeout}\n", encoding="utf-8")
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, "901")
+
+    payload = _get_json_object("mcp.tool_timeout", capsys)
+
+    expected = 30.0 if user_timeout == 30 else MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
+    assert payload["value"] == expected
+    assert payload["source"] == ("config.toml" if user_timeout == 30 else "default")
+    assert payload["set"] is (user_timeout == 30)
+
+
 def _resolve_manifest_option(
     option: ConfigOption[object],
     *,

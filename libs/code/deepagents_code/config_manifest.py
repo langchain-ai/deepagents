@@ -1648,11 +1648,11 @@ def _is_valid_mcp_tool_timeout(value: object) -> TypeIs[float]:
     )
 
 
-def resolve_mcp_tool_timeout(
+def resolve_mcp_tool_timeout_with_source(
     *,
     toml_data: dict[str, Any] | None = None,
     managed_toml_data: dict[str, Any] | None = None,
-) -> float:
+) -> tuple[float, str]:
     """Resolve the wall-clock budget for one MCP tool call.
 
     Out-of-range overrides fall through to the next configuration source.
@@ -1662,11 +1662,11 @@ def resolve_mcp_tool_timeout(
         managed_toml_data: Parsed managed TOML for an explicit generation.
 
     Returns:
-        The resolved timeout in seconds within the accepted bounds.
+        `(timeout_seconds, source)` with the timeout within the accepted bounds.
     """
     option = get_option("mcp.tool_timeout")
     if option is None:
-        return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
+        return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT, "default"
 
     resolver = _resolver_for_option_sources(
         toml_data=toml_data,
@@ -1678,9 +1678,9 @@ def resolve_mcp_tool_timeout(
         _emit_ranked_diagnostics(option, resolved)
         value, source = resolved.value, _ranked_source(resolved)
         if _is_valid_mcp_tool_timeout(value):
-            return value
+            return value, source
         if source == "default" or not resolved.ranks:
-            return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
+            return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT, "default"
         logger.warning(
             "Ignoring %s mcp.tool_timeout %r (expected seconds in [%g, %g]); "
             "falling through to the next config source",
@@ -1692,6 +1692,27 @@ def resolve_mcp_tool_timeout(
         # Exclude the rejected provider from this read, preserving the active
         # workspace environment and the resolver's pinned file snapshots.
         excluded.update(resolved.ranks)
+
+
+def resolve_mcp_tool_timeout(
+    *,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
+) -> float:
+    """Resolve the bounded wall-clock budget for one MCP tool call.
+
+    Args:
+        toml_data: Parsed user TOML. Omit both tables to use the shared resolver.
+        managed_toml_data: Parsed managed TOML for an explicit generation.
+
+    Returns:
+        The resolved timeout in seconds within the accepted bounds.
+    """
+    value, _ = resolve_mcp_tool_timeout_with_source(
+        toml_data=toml_data,
+        managed_toml_data=managed_toml_data,
+    )
+    return value
 
 
 def blank_auto_classifier_env_name() -> str | None:

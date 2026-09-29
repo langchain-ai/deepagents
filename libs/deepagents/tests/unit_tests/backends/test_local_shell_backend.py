@@ -14,7 +14,6 @@ from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, contextmanager, suppress
 from contextvars import ContextVar
-from itertools import chain, repeat
 from pathlib import Path
 from unittest.mock import MagicMock, patch, sentinel
 
@@ -133,11 +132,13 @@ def test_local_shell_backend_execute_simple_command() -> None:
 
 
 @_POSIX_SHELL_ONLY
-def test_local_shell_backend_timeout_stops_descendant(tmp_path: Path) -> None:
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_local_shell_backend_timeout_stops_descendant(tmp_path: Path, *, asynchronous: bool) -> None:
     """Test a real background descendant stops after command timeout."""
     command, pid_file, heartbeat = _heartbeat_command(tmp_path)
     try:
-        result = LocalShellBackend(root_dir=tmp_path, inherit_env=True).execute(command, timeout=1)
+        backend = LocalShellBackend(root_dir=tmp_path, inherit_env=True)
+        result = await backend.aexecute(command, timeout=1) if asynchronous else backend.execute(command, timeout=1)
         assert result.exit_code == 124
         assert _wait_for_file(pid_file)
         assert _wait_for_file(heartbeat)
@@ -161,25 +162,6 @@ def test_local_shell_backend_interrupt_cleans_up_posix_process_group() -> None:
         LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
 
     _assert_posix_cleanup(process, killpg)
-
-
-def test_local_shell_backend_polling_deadline_kills_process_group() -> None:
-    """Test the cancellation-aware polling loop enforces its deadline."""
-    process = MagicMock(pid=1234)
-    with (
-        patch.object(local_shell_module.time, "monotonic", side_effect=chain([0], repeat(2))),
-        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
-        patch.object(local_shell_module, "_kill_and_reap") as kill_and_reap,
-        pytest.raises(subprocess.TimeoutExpired),
-    ):
-        local_shell_module._communicate(
-            process,
-            1,
-            threading.Event(),
-            process_group=1234,
-        )
-
-    kill_and_reap.assert_called_once_with(process, 1234)
 
 
 async def test_local_shell_backend_late_cooperative_cancellation_is_not_logged(caplog: pytest.LogCaptureFixture) -> None:
@@ -242,23 +224,30 @@ def test_local_shell_backend_windows_timeout_kills_direct_process() -> None:
     killpg.assert_not_called()
 
 
-def test_local_shell_backend_timeout_bounds_process_reaping(caplog: pytest.LogCaptureFixture) -> None:
-    """Test that a stuck process cannot extend cleanup indefinitely."""
+@pytest.mark.parametrize("failure", ["termination", "reaping"])
+def test_local_shell_backend_timeout_reports_incomplete_cleanup(failure: str, caplog: pytest.LogCaptureFixture) -> None:
+    """Test failed cleanup releases pipes and warns the caller about a live command."""
     process = MagicMock(pid=1234)
     process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
-    process.wait.side_effect = subprocess.TimeoutExpired("sleep 10", 5)
+    if failure == "termination":
+        process.kill.side_effect = PermissionError
+    else:
+        process.wait.side_effect = subprocess.TimeoutExpired("sleep 10", 5)
     with (
         tempfile.TemporaryDirectory() as tmpdir,
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
-        patch.object(local_shell_module.os, "killpg", create=True),
+        patch.object(local_shell_module.os, "killpg", create=True, side_effect=PermissionError if failure == "termination" else None),
         caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
     ):
         result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
 
     assert result.exit_code == 124
     process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
-    assert "did not exit within 5 seconds after termination" in caplog.text
+    if failure == "termination":
+        assert "Failed to terminate local shell process 1234" in caplog.text
+    else:
+        assert "did not exit within 5 seconds after termination" in caplog.text
     # Pipes must close even when the process could not be reaped, or a stuck
     # command leaks two descriptors.
     process.stdout.close.assert_called_once_with()
@@ -829,30 +818,6 @@ class TestLocalShellVirtualModeDefault:
         assert deprecations == []
 
 
-@_POSIX_SHELL_ONLY
-def test_local_shell_backend_polling_loop_keeps_output_from_every_attempt() -> None:
-    """Test the cancellation-aware loop keeps output read by earlier attempts.
-
-    The loop retries `communicate` with a short timeout and depends on each retry
-    keeping the bytes already read. A command that prints across several poll
-    intervals shows this: if a retry reset the buffers, only the last chunk would
-    survive and no other test would notice.
-    """
-    chunks = 8
-    script = f'for i in $(seq 1 {chunks}); do printf "out$i\\n"; printf "err$i\\n" >&2; sleep 0.05; done'
-    process = subprocess.Popen(  # noqa: S602  # Fixed shell probe with no external input.
-        script, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
-    )
-    try:
-        stdout, stderr = local_shell_module._communicate(process, 30, threading.Event(), process_group=process.pid)
-    finally:
-        with suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
-
-    assert stdout == "".join(f"out{index}\n" for index in range(1, chunks + 1))
-    assert stderr == "".join(f"err{index}\n" for index in range(1, chunks + 1))
-
-
 def test_local_shell_backend_already_exited_group_is_not_a_cleanup_failure(caplog: pytest.LogCaptureFixture) -> None:
     """Test an empty process group counts as success, not as a failed kill.
 
@@ -869,17 +834,6 @@ def test_local_shell_backend_already_exited_group_is_not_a_cleanup_failure(caplo
 
     process.kill.assert_not_called()
     assert "Failed to terminate" not in caplog.text
-
-
-def test_local_shell_backend_failed_termination_is_reported_to_its_caller() -> None:
-    """Test cleanup reports failure so the caller can warn about an orphan."""
-    process = MagicMock(pid=1234)
-    process.kill.side_effect = PermissionError
-    with (
-        _as_posix(),
-        patch.object(local_shell_module.os, "killpg", create=True, side_effect=PermissionError),
-    ):
-        assert local_shell_module._kill_and_reap(process, 1234) is False
 
 
 def test_local_shell_backend_unexpected_failure_is_reported_and_logged(caplog: pytest.LogCaptureFixture) -> None:

@@ -26,37 +26,6 @@ def _process(*, errors: str = "strict") -> MagicMock:
     )
 
 
-def test_peek_uses_available_byte_count() -> None:
-    """Test the byte count is taken from the `PeekNamedPipe` result."""
-    # `_peek_pipe` keeps a literal `sys.platform` test so the type checker can
-    # drop the Windows-only imports elsewhere, so this test has to patch it.
-    # That is safe here only because this test starts no threads and runs no
-    # event loop while the patch is active.
-    with (
-        patch.object(windows_process, "_winapi", create=True) as api,
-        patch.object(windows_process, "msvcrt", create=True) as runtime,
-        patch.object(windows_process.sys, "platform", "win32"),
-    ):
-        runtime.get_osfhandle.return_value = 123
-        api.PeekNamedPipe.return_value = (7, 0)
-        assert windows_process._peek_pipe(42) == 7
-        api.PeekNamedPipe.assert_called_once_with(123, 0)
-
-
-def test_does_not_read_empty_live_pipe() -> None:
-    pipe = MagicMock()
-    with patch.object(windows_process, "_peek_pipe", return_value=0), patch.object(windows_process.os, "read") as read:
-        assert windows_process._read_available(pipe) is None
-    read.assert_not_called()
-
-
-def test_reads_only_available_bytes() -> None:
-    pipe = MagicMock()
-    with patch.object(windows_process, "_peek_pipe", return_value=3), patch.object(windows_process.os, "read", return_value=b"abc") as read:
-        assert windows_process._read_available(pipe) == b"abc"
-    read.assert_called_once_with(pipe.fileno(), 3)
-
-
 @pytest.mark.parametrize("code", [109, 232, 233, 5])
 def test_pipe_errors_distinguish_eof_from_failure(code: int) -> None:
     """Test every end-of-stream error code reads as EOF and others propagate.

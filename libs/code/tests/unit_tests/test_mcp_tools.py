@@ -283,6 +283,257 @@ def mcp_servers() -> Generator[MCPServerRegistry]:
         yield registry
 
 
+@pytest.mark.parametrize("source", ["user", "project", "explicit", "plugin"])
+@pytest.mark.parametrize("directory", ["root", "subdirectory", "override"])
+@pytest.mark.parametrize("stateless", [False, True])
+@pytest.mark.timeout(30)
+async def test_stdio_session_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    source: str,
+    directory: str,
+    stateless: bool,
+) -> None:
+    _set_profile_root(monkeypatch, fake_home / "profile", launch_home=fake_home)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    session = project if directory == "root" else project / "subdirectory"
+    session.mkdir(exist_ok=True)
+    context = ProjectContext.from_user_cwd(session)
+    assert context.project_root == project
+    backend = tmp_path / "deepagents_server"
+    backend.mkdir()
+    expected = session if source in {"project", "explicit"} else backend
+    if directory == "override":
+        expected = tmp_path / "override"
+    expected.mkdir(exist_ok=True)
+    (expected / "relative.txt").write_text("session file", encoding="utf-8")
+    script = tmp_path / "server.py"
+    script.write_text(
+        "from pathlib import Path\nfrom fastmcp import FastMCP\n"
+        "directory = str(Path.cwd())\n"
+        "contents = Path('relative.txt').read_text()\n"
+        "server = FastMCP('cwd')\n"
+        "@server.tool\nasync def read() -> str:\n"
+        "    return directory + '\\n' + contents\n"
+        "server.run()\n",
+        encoding="utf-8",
+    )
+    server: dict[str, Any] = {"command": sys.executable, "args": [str(script)]}
+    if directory == "override":
+        server["cwd"] = str(expected)
+    config = {"mcpServers": {"cwd": server}}
+    config_path = {
+        "user": fake_home / "profile" / ".mcp.json",
+        "project": project / ".mcp.json",
+        "explicit": tmp_path / "explicit.json",
+        "plugin": tmp_path / "unused.json",
+    }[source]
+    if source != "plugin":
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+    monkeypatch.chdir(backend)
+    manager = None if stateless else MCPSessionManager()
+    try:
+        tools, _, infos = await resolve_and_load_mcp_tools(
+            explicit_config_path=str(config_path) if source == "explicit" else None,
+            additional_configs=(config,) if source == "plugin" else (),
+            project_context=context,
+            trust_project_mcp=True,
+            stateless=True,
+            session_manager=manager,
+        )
+        assert [(info.name, info.status) for info in infos] == [("cwd", "ok")], infos
+        result = await tools[0].ainvoke({})
+        assert result[0]["text"] == f"{expected}\nsession file"
+        assert Path.cwd() == backend
+    finally:
+        if manager is not None:
+            await manager.cleanup()
+
+
+@pytest.mark.parametrize("source", ["user", "plugin"])
+@pytest.mark.parametrize("stateless", [False, True])
+@pytest.mark.timeout(30)
+async def test_global_stdio_server_ignores_project_module(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    source: str,
+    stateless: bool,
+) -> None:
+    _set_profile_root(monkeypatch, fake_home / "profile", launch_home=fake_home)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    context = ProjectContext.from_user_cwd(project)
+    trusted = tmp_path / "trusted"
+    trusted.mkdir()
+    (trusted / "trusted_mcp_server.py").write_text(
+        "from fastmcp import FastMCP\n"
+        "server = FastMCP('trusted')\n"
+        "@server.tool\nasync def identity() -> str:\n"
+        "    return 'trusted server'\n"
+        "server.run()\n",
+        encoding="utf-8",
+    )
+    marker = project / "executed"
+    (project / "trusted_mcp_server.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).touch()\n"
+        "raise RuntimeError('project module executed')\n",
+        encoding="utf-8",
+    )
+    config = {
+        "mcpServers": {
+            "trusted": {
+                "command": sys.executable,
+                "args": ["-m", "trusted_mcp_server"],
+                "env": {"PYTHONPATH": str(trusted), "PYTHONSAFEPATH": ""},
+            }
+        }
+    }
+    if source == "user":
+        config_path = fake_home / "profile" / ".mcp.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+    backend = tmp_path / "deepagents_server"
+    backend.mkdir()
+    monkeypatch.chdir(backend)
+    manager = None if stateless else MCPSessionManager()
+    try:
+        tools, _, infos = await resolve_and_load_mcp_tools(
+            additional_configs=(config,) if source == "plugin" else (),
+            project_context=context,
+            stateless=True,
+            session_manager=manager,
+        )
+        assert not marker.exists(), "project module executed during discovery"
+        assert [(info.name, info.status) for info in infos] == [("trusted", "ok")], (
+            infos
+        )
+        result = await tools[0].ainvoke({})
+        assert result[0]["text"] == "trusted server"
+        assert not marker.exists(), "project module executed during invocation"
+        assert Path.cwd() == backend
+    finally:
+        if manager is not None:
+            await manager.cleanup()
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["plugin", "project", "explicit", "explicit-override", "unapproved-project"],
+)
+@pytest.mark.parametrize("stateless", [False, True])
+async def test_stdio_cwd_follows_winning_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    mcp_servers: MCPServerRegistry,
+    source: str,
+    stateless: bool,
+) -> None:
+    _set_profile_root(monkeypatch, fake_home / "profile", launch_home=fake_home)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    session = project / "subdirectory"
+    session.mkdir()
+    context = ProjectContext.from_user_cwd(session)
+    user_cwd = tmp_path / "user"
+    project_cwd = tmp_path / "project-override"
+    explicit_cwd = tmp_path / "explicit-override"
+    for directory in (user_cwd, project_cwd, explicit_cwd):
+        directory.mkdir()
+    config = {
+        "mcpServers": {
+            "shared": {
+                "command": sys.executable,
+                "args": ["-m", "user"],
+                "cwd": str(user_cwd),
+            },
+            "global": {"command": sys.executable, "args": ["-m", "global"]},
+        }
+    }
+    if source == "unapproved-project":
+        config["mcpServers"]["shared"].pop("cwd")
+    user_path = fake_home / "profile" / ".mcp.json"
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    user_path.write_text(json.dumps(config), encoding="utf-8")
+    project_server: dict[str, Any] = {
+        "command": sys.executable,
+        "args": ["-m", "project"],
+    }
+    explicit_path = None
+    additional_configs = ()
+    if source == "plugin":
+        additional_configs = (
+            {
+                "mcpServers": {
+                    "shared": {"command": sys.executable, "args": ["-m", "plugin"]}
+                }
+            },
+        )
+        expected_command, expected_cwd = "plugin", None
+    else:
+        if source.startswith("explicit"):
+            project_server["cwd"] = str(project_cwd)
+        (project / ".mcp.json").write_text(
+            json.dumps({"mcpServers": {"shared": project_server}}), encoding="utf-8"
+        )
+        expected_command, expected_cwd = "project", str(session)
+        if source == "unapproved-project":
+            expected_command, expected_cwd = "user", None
+        elif source.startswith("explicit"):
+            explicit_server: dict[str, Any] = {
+                "command": sys.executable,
+                "args": ["-m", "explicit"],
+            }
+            expected_command = "explicit"
+            if source == "explicit-override":
+                explicit_server["cwd"] = expected_cwd = str(explicit_cwd)
+            config_path = tmp_path / "explicit.json"
+            config_path.write_text(
+                json.dumps({"mcpServers": {"shared": explicit_server}}),
+                encoding="utf-8",
+            )
+            explicit_path = str(config_path)
+    for name in ("shared", "global"):
+        mcp_servers.register(name, "identity")
+    manager = None if stateless else MCPSessionManager()
+    try:
+        tools, _, infos = await resolve_and_load_mcp_tools(
+            explicit_config_path=explicit_path,
+            additional_configs=additional_configs,
+            project_context=context,
+            trust_project_mcp=source != "unapproved-project",
+            stateless=True,
+            session_manager=manager,
+        )
+        assert {(info.name, info.status) for info in infos} == {
+            ("shared", "ok"),
+            ("global", "ok"),
+        }
+        assert {tuple(transport.args) for transport in mcp_servers.transports} == {
+            ("-m", "global"),
+            ("-m", expected_command),
+        }
+        results = [await tool.ainvoke({}) for tool in tools]
+        assert {result[0]["text"] for result in results} == {
+            "shared:identity",
+            "global:identity",
+        }
+        assert {
+            (transport.args[-1], transport.cwd) for transport in mcp_servers.transports
+        } == {("global", None), (expected_command, expected_cwd)}
+    finally:
+        if manager is not None:
+            await manager.cleanup()
+
+
 @pytest.fixture
 def fake_tool_result() -> Any:  # noqa: ANN401
     """Build a valid `CallToolResult` for runtime tool tests."""

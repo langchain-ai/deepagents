@@ -468,38 +468,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             from disk relative to the backend's `root_dir`. Later sources
             override earlier ones for skills with the same name (last one wins).
         skill_tools: Tools the model sees only after reading a skill that
-            names them.
+            lists them.
 
-            A skill names its tools in its `SKILL.md` frontmatter, as a
-            space-separated string: `metadata: {include_tools: "a b"}`. Each
-            skill tool stays out of the model's tools until a successful
-            `read_file` of a skill naming it, and is withdrawn again if
-            compaction drops that read. A call to a skill tool the model
-            wasn't shown gets the standard invalid-tool error. On models that
-            accept tool changes mid-conversation, disclosure keeps the prompt
-            cache intact.
-
-            Pass a list of tools, each named by its own name, or a
-            [`SkillToolResolver`][deepagents.middleware.skills.SkillToolResolver]:
-            a sync or async function from one name and the graph's `Runtime`
-            to the tools that name stands for, looked up when a skill naming
-            it is read. A resolver can map a stable name to tools whose real
-            names are generated at runtime, or to a whole family of tools.
-            See [`SkillsMiddleware`][deepagents.middleware.skills.SkillsMiddleware]
-            for the resolver contract.
-
-            A skill may also name a tool from `tools`. A deferred one
-            (`extras={"defer_loading": True}`) is disclosed early the same
-            way but stays callable and searchable; any other is unaffected.
-            A name in both `tools` and `skill_tools` behaves as a `tools`
-            tool, and a resolver's tool whose name is taken by a different
-            tool in the request is dropped. A resolver may return the very
-            deferred tools passed in `tools`, which are then disclosed early
-            the same way.
+            A skill lists its tools in its `SKILL.md` frontmatter, as
+            `metadata: {include_tools: "a b"}`. Pass a list of tools, or a
+            [`SkillToolResolver`][deepagents.middleware.skills.SkillToolResolver]
+            that looks up the tools for a name when a skill is read. See
+            [`SkillsMiddleware`][deepagents.middleware.skills.SkillsMiddleware]
+            for how skill tools are disclosed.
 
             The general-purpose subagent and forks inherit these along with
-            `skills`; declarative subagents use only their own
-            `skill_tools`.
+            `skills`. Declarative subagents use only their own `skill_tools`.
 
             Requires `skills`.
         memory: List of memory file paths (`AGENTS.md` files) to load

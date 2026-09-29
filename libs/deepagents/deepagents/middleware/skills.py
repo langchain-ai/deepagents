@@ -170,11 +170,33 @@ MAX_SKILL_DESCRIPTION_LENGTH = 1024
 MAX_SKILL_COMPATIBILITY_LENGTH = 500
 
 SkillToolResolver = Callable[[str, Runtime[ContextT]], Sequence[BaseTool] | Awaitable[Sequence[BaseTool]]]
-"""Resolve one `metadata.include_tools` name to the skill tools it stands for.
+"""Return the skill tools that one `metadata.include_tools` name stands for.
 
-Called with the name and the graph's `Runtime`, it returns zero or more tools,
-directly or as an awaitable. Returning several is how one name stands for a
-family of tools. See `SkillsMiddleware` for the contract.
+A resolver lets a skill list tools whose real names are only known at runtime,
+such as generated MCP tool names, and lets one name stand for several tools.
+It's called with the name and the graph's `Runtime` on every model call after a
+skill listing that name is read, and again before one of its tools runs. It can
+be sync or async. An async resolver needs the agent's async entry point, such as
+`ainvoke`.
+
+- Return the same tools for the same name within a thread, or the prompt cache
+    breaks.
+- Keep it cheap, or cache, since it runs on every model call.
+- One resolver serves every thread, so scope any cache by what the tools
+    depend on, usually something in `runtime.context`.
+
+Example:
+    ```python
+    # e.g. every tool on a Linear MCP connection, whatever their generated names
+    tools_by_integration = {"linear": linear_tools}
+
+
+    def resolve_skill_tools(name: str, runtime: Runtime) -> list[BaseTool]:
+        return tools_by_integration.get(name, [])
+
+
+    agent = create_deep_agent(model=model, skills=["/skills/"], skill_tools=resolve_skill_tools)
+    ```
 """
 
 SkillSource = str | tuple[str, str]
@@ -865,98 +887,30 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
     ## Skill tools
 
-    A skill can name the tools its instructions depend on, as a space-separated
-    string under `metadata` in its `SKILL.md` frontmatter:
+    A skill can list the tools its instructions use, separated by spaces, under
+    `metadata.include_tools` in its `SKILL.md` frontmatter:
 
     ```yaml
     metadata:
-      include_tools: create_customer_request linear
+      include_tools: create_customer_request list_customer_requests
     ```
 
-    Skill tools are never bound up front. Once the model reads a skill's
-    `SKILL.md` with `read_file`, the tools its names produce are disclosed to
-    every model call while that read remains in the messages the model sees.
-    If compaction drops the read, they are withdrawn with it. A call to a skill
-    tool that wasn't disclosed to the model call that made it gets the tool
-    node's standard invalid-tool error, and the tool doesn't run.
+    Pass those tools as `skill_tools`, either as a list or as a
+    `SkillToolResolver` that looks them up by name. The model sees a skill tool
+    only after it uses `read_file` on a skill that lists it, and only while that
+    read stays in context. Until then, calling the tool fails as an unknown tool.
 
-    `skill_tools` is a list of tools, each produced by its own name, or a
-    `SkillToolResolver`: a function from one name to the tools it stands for.
-    A resolver lets a skill name tools whose real names are generated at
-    runtime, stand for a whole family of tools with one name, or reach tools
-    built per run or per user:
-
-    ```python
-    def resolve(name: str, runtime: Runtime[Workspace]) -> list[BaseTool]:
-        return integration_tools(runtime.context.workspace_id).get(name, [])
-    ```
-
-    On models that accept tool changes mid-conversation (the Claude API's Opus
-    4.8, Opus 5, Fable 5 and Mythos 5 models, and `ChatOpenAI` `gpt-5.6-` and
-    `gpt-6-` models on the Responses API, which need `langchain-openai>=1.6.5`),
-    each definition is sent in a system message right after the earliest read
-    producing it, at the same position on every call, so the prompt cache
-    survives. Every other model receives
-    disclosed tools in `tools`, which costs a cache miss but gates calls the
-    same way. Anthropic rejects a tool whose root input schema uses `oneOf`,
-    `anyOf` or `allOf`, failing the whole request, so such a tool is never
-    disclosed to a `ChatAnthropic` model; a warning names it.
-
-    ### Precedence
-
-    A name that exactly matches a tool in the request's `tools` is claimed by
-    it and never reaches the resolver. A deferred tool
-    (`extras={"defer_loading": True}`) is disclosed early the same way but is
-    never gated and stays searchable; a tool the model already sees is left
-    alone. Each tool a resolver returns is classified by identity: the very
-    object of one of the request's tools follows that tool's rules, a different
-    tool whose name is already taken is dropped (shadowed, logged at debug
-    level), and any other is gated.
-
-    A resolver can return deferred tools passed to `create_deep_agent(tools=...)`
-    by closing over them. It never sees the request's tools, so it can't reach
-    tools that another middleware adds per request.
-
-    ### The resolver contract
-
-    The resolver is called with one name and the graph's `Runtime`, once per
-    distinct name on every model call while a read naming it stays in context,
-    and again when a tool it produced is called, with the name that produced
-    it. It returns `BaseTool`s, directly or as an awaitable; an async resolver
-    needs the agent's async entry point.
-
-    - For the same name within a thread, return the same tools. A change moves
-        bytes the provider has already been sent, which is a history edit: it
-        costs the cache from that point, and under Anthropic's thinking-binding
-        enforcement it fails the request with a 400.
-    - Be cheap, or cache.
-    - Names are resolved concurrently. Cache the pending work, not only its
-        result, so concurrent calls share one set-up.
-    - One resolver serves every thread. Scope any cache by what the tools
-        depend on, usually something in `runtime.context`.
-    - `runtime.context` is whatever the current invocation passed, and isn't
-        checkpointed. A caller resuming a thread must pass it again, or the
-        resolver sees `None` at tool time.
-    - Exceptions propagate out of the model or tool call. To degrade
-        gracefully, catch inside the resolver and return nothing.
-
-    `disclosed_skill_tool_names` tells middleware with its own tool gate which
-    skill tools the latest model call was shown.
-
-    !!! warning
-
-        The gate controls what reaches the model's context; it is not a
-        security boundary. Only skill loads made through `read_file` disclose
-        tools, a skill tool instance passed to `CodeInterpreterMiddleware(ptc=...)`
-        bypasses the gate, and disclosed skill tools aren't callable from the
-        REPL.
+    `include_tools` can also list a tool passed in the agent's `tools` rather
+    than `skill_tools`. If that tool is deferred
+    (`extras={"defer_loading": True}`), reading the skill discloses it
+    automatically.
 
     ## Placement
 
     `create_deep_agent` places this middleware for you. When composing
-    `create_agent` by hand, put it inside summarization and any model fallback
+    `create_agent` by hand, put it after summarization and any model fallback
     or routing middleware, so it sees the compacted conversation and the model
-    actually being called, and before prompt caching:
+    actually called, and before prompt caching:
 
     ```python
     create_agent(
@@ -1011,13 +965,11 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 to skip appending entirely (skills are still loaded into
                 `state["skills_metadata"]`).
             skill_tools: Tools the model sees only after reading a skill that
-                names them in `metadata.include_tools`.
+                lists them in `metadata.include_tools`.
 
-                Either a list of tools, each named by its own name, or a
-                `SkillToolResolver` from one name to the tools it stands for.
-                Callables in a list are converted as `create_agent` converts
-                tools. A name matching a tool in the request's `tools` always
-                wins; see above for precedence and the resolver contract.
+                A list of tools, or a `SkillToolResolver` that returns the tools
+                for a name. Plain functions in a list are converted to tools, as
+                `create_agent` does.
 
         Raises:
             TypeError: If a tuple entry in `sources` is not exactly a
@@ -1350,18 +1302,17 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
 
 def disclosed_skill_tool_names(state: Mapping[str, object]) -> frozenset[str]:
-    """Return the names of the gated skill tools disclosed to the latest model call.
+    """Return the names of the skill tools disclosed to the latest model call.
 
-    For middleware that gates tool calls itself and runs outside
-    `SkillsMiddleware`, so it can admit the skill tools the model was shown.
-    It reads the same record `SkillsMiddleware`'s own gate reads, and a missing
-    or malformed record reads as empty.
+    Use it in middleware that gates tool calls itself, so the gate admits the
+    skill tools the model has been shown. The agent's own deferred tools aren't
+    included, even when a skill disclosed them.
 
     Args:
         state: The agent state, such as `request.state` in `wrap_tool_call`.
 
     Returns:
-        The disclosed skill tools' names, reflecting the latest model call.
+        The disclosed skill tools' names, or an empty set if there are none.
     """
     return frozenset(_disclosed_record(state))
 

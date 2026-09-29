@@ -119,12 +119,12 @@ class SubAgent(TypedDict):
             List of paths to skill directories
             (e.g., `["/skills/user/", "/skills/project/"]`).
         skill_tools: Tools this subagent sees only after reading a skill that
-            names them in `metadata.include_tools`.
+            lists them in `metadata.include_tools`.
 
-            A list of tools, or a `SkillToolResolver` from one name to the
-            tools it stands for, as for `create_deep_agent`. Never inherited
-            from the main agent. Requires `skills`, and is forbidden under
-            `mode="fork"`, which inherits the parent's.
+            A list of tools or a `SkillToolResolver`, as for
+            `create_deep_agent`. Never inherited from the main agent. Requires
+            `skills`, and is forbidden under `mode="fork"`, which inherits the
+            parent's.
         permissions: Filesystem permission rules for this subagent.
 
             If omitted, inherits the parent agent's permissions. If provided,
@@ -164,7 +164,7 @@ class SubAgent(TypedDict):
     """Skill source paths for `SkillsMiddleware`. Forbidden under `mode="fork"`."""
 
     skill_tools: NotRequired[Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver]
-    """Tools, or a resolver of them, disclosed once a skill naming them is read. Requires `skills`; forbidden under `mode="fork"`."""
+    """Tools disclosed once a skill listing them is read, as a list or a `SkillToolResolver`. Requires `skills`; forbidden under `mode="fork"`."""
 
     permissions: NotRequired[list[FilesystemPermission]]
     """List of `FilesystemPermission` rules for this subagent.

@@ -729,6 +729,18 @@ class SlackChannel:
         log_debug_event(logger, "slack.outbound.media.completed", media_type=checked.media_type)
         return SendResult(success=True, message_id=message_id)
 
+    def top_level_conversation_id(self, conversation_id: str) -> str:
+        """Return the conversation that posts to a thread's channel, not the thread.
+
+        Args:
+            conversation_id: DM channel id, or `channel:thread_ts` for a thread.
+
+        Returns:
+            The channel id on its own, which Slack posts to the channel's top level.
+        """
+        channel_id, _ = _parse_conversation_id(conversation_id)
+        return channel_id
+
     async def edit_message(self, conversation_id: str, message_id: str, text: str) -> SendResult:
         """Edit a previously posted message.
 

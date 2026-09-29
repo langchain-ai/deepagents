@@ -17,13 +17,13 @@ import sys
 import threading
 import time
 import uuid
-from contextvars import ContextVar, copy_context
+from contextvars import copy_context
 from typing import IO, TYPE_CHECKING
 
 from deepagents.backends._posix_process import PosixProcessReader
 from deepagents.backends._windows_process import WindowsProcessReader
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol, execute_accepts_timeout
+from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -51,30 +51,12 @@ _ASYNC_CANCELLATION_GRACE_PERIOD = 1
 _PROCESS_REAP_TIMEOUT = 5
 """Maximum seconds to wait for a killed shell process to exit."""
 
-_ASYNC_EXECUTION_CONTEXT: ContextVar[tuple[object, threading.Event] | None] = ContextVar(
-    "_ASYNC_EXECUTION_CONTEXT",
-    default=None,
-)
-"""Owning backend and cancellation event for one async execution thread."""
-
 _BACKGROUND_WORKERS: set[asyncio.Future[ExecuteResponse]] = set()
-"""Workers retained until an uncooperative `execute` override finishes.
-
-This set holds a strong reference so the worker is not collected before it ends,
-and so its exception is retrieved. Without it, asyncio reports the exception as
-never retrieved at an unrelated point later. Entries are removed by
-`_release_background_worker`.
-"""
+"""Workers retained until built-in process cleanup finishes."""
 
 
 class _CommandCancelled(BaseException):
-    """Signal async cancellation through synchronous execution wrappers.
-
-    This derives from `BaseException`, not `Exception`, on purpose. `_execute`
-    catches `Exception` to turn any failure into an `ExecuteResponse`. If this
-    class derived from `Exception`, that catch would convert cancellation into a
-    normal response with exit code 1 and the caller would never see it.
-    """
+    """Signal cancellation without converting it into a command error response."""
 
 
 class _CommandTimeout(subprocess.TimeoutExpired):
@@ -496,15 +478,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         execution_started.set()
         if cancellation_event.is_set():
             raise asyncio.CancelledError
-        token = _ASYNC_EXECUTION_CONTEXT.set((self, cancellation_event))
         try:
-            if timeout is not None and execute_accepts_timeout(type(self)):
-                return self.execute(command, timeout=timeout)
-            return self.execute(command)
+            return self._execute(command, timeout=timeout, cancellation_event=cancellation_event)
         except _CommandCancelled:
             raise asyncio.CancelledError from None
-        finally:
-            _ASYNC_EXECUTION_CONTEXT.reset(token)
 
     async def aexecute(
         self,
@@ -528,12 +505,15 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         Note:
             Cancellation allows synchronous execution a short grace period for
-            cleanup, set by `_ASYNC_CANCELLATION_GRACE_PERIOD`. An overridden
-            `execute` method that does not cooperate may continue running in a
-            background thread after cancellation is raised. That bound applies to
+            cleanup, set by `_ASYNC_CANCELLATION_GRACE_PERIOD`. Subclasses that
+            override `execute` retain thread delegation without cancellation
+            cleanup, even when calling `super().execute`. That bound applies to
             this await, not to application shutdown: shutting down the default
             executor still waits for running threads.
         """
+        if type(self).execute is not LocalShellBackend.execute:
+            return await super().aexecute(command, timeout=timeout)
+
         cancellation_event = threading.Event()
         execution_started = threading.Event()
         worker = asyncio.get_running_loop().run_in_executor(
@@ -554,8 +534,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 worker.cancel()
             if not await _wait_for_worker_shutdown(worker):
                 logger.warning(
-                    "Cancellation of local shell backend %s (%s) exceeded %s seconds. "
-                    "Its overridden execute method may still be running, or cleanup is still waiting for a shell process that ignores termination.",
+                    "Cancellation of local shell backend %s (%s) exceeded %s seconds. Process cleanup may still be running in a background thread.",
                     self.id,
                     type(self).__name__,
                     _ASYNC_CANCELLATION_GRACE_PERIOD,
@@ -603,6 +582,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         exit. A descendant that makes its own session or process group, for
         example with `setsid`, leaves that group and is not killed. `nohup` alone
         does not change the process group or protect against `SIGKILL`.
+
+        Async cancellation cleanup applies only when `execute` is not overridden.
 
         On Windows, commands do not start in a new process group. Cleanup
         terminates only the direct shell process, so descendants may continue
@@ -657,11 +638,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             result = backend.execute("cat /etc/passwd")  # Can read system files!
             ```
         """
-        execution_context = _ASYNC_EXECUTION_CONTEXT.get()
-        # An override may call another backend in the copied context. Match the
-        # owner so backend A's cancellation cannot stop backend B's command.
-        cancellation_event = execution_context[1] if execution_context is not None and execution_context[0] is self else None
-        return self._execute(command, timeout=timeout, cancellation_event=cancellation_event)
+        return self._execute(command, timeout=timeout)
 
     def _combine_output(self, stdout: str | None, stderr: str | None) -> tuple[str, bool]:
         r"""Merge the captured streams into one string and apply the size limit.

@@ -131,6 +131,13 @@ class _PTCState:
     remaining_calls: int | None
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
+    task_dispatch_count: int = 0
+    """Ordinal for the next `task()` dispatch in this eval.
+
+    Starts at 0 for every eval, so a replayed eval that dispatches in the
+    same order reproduces the same ordinals and therefore the same derived
+    dispatch ids.
+    """
 
     def consume_call_budget(
         self, *, function_name: str, max_ptc_calls: int | None
@@ -529,6 +536,7 @@ class _ThreadREPL:
         payload: dict[str, Any],
         *,
         state: _PTCState,
+        dispatch_ordinal: int,
     ) -> Any:
         """Validate JS `task()` input and invoke the runner on the right loop.
 
@@ -555,6 +563,7 @@ class _ThreadREPL:
                 response_schema=response_schema,
                 runtime=runtime,
                 label=label,
+                dispatch_ordinal=dispatch_ordinal,
             )
 
         outer_loop = state.outer_loop
@@ -585,11 +594,14 @@ class _ThreadREPL:
                 raise RuntimeError(msg)
 
             payload = _normalize_tool_input(raw_input)
+            dispatch_ordinal = state.task_dispatch_count
+            self._ptc_state = replace(state, task_dispatch_count=dispatch_ordinal + 1)
             async with task_calls:
                 try:
                     result = await self._ainvoke_task_on_outer_loop(
                         payload,
                         state=state,
+                        dispatch_ordinal=dispatch_ordinal,
                     )
                 except GraphInterrupt:
                     raise

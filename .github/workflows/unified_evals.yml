@@ -12,7 +12,7 @@ on:
         type: string
         default: "autonomous,conversation,research"
       agent_impls:
-        description: "Comma-separated harnesses: bare, dcode, codex, claude-code. Native Codex/Claude Code require matching provider models and no branch comparison; conversation retains tau3 and also runs native agents. Each config runs as its own (model, config) row."
+        description: "Comma-separated harnesses: bare, dcode, codex, claude-code, hermes, pi. Native agents require supported provider models and no branch comparison; conversation retains tau3 and also runs native agents. Each config runs as its own (model, config) row."
         type: string
         default: "bare"
       branches_to_compare:

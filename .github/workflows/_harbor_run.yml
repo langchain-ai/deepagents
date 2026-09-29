@@ -520,7 +520,7 @@ jobs:
         run: echo "HARBOR_LANGSMITH_DATASET_NAME=drbench-app" >> "$GITHUB_ENV"
 
       - name: "✂️ Prune agent provider deps to selected model"
-        if: ${{ matrix.agent_impl != 'codex' && matrix.agent_impl != 'claude-code' && inputs.agent_impl != 'codex' && inputs.agent_impl != 'claude-code' }}
+        if: ${{ matrix.agent_impl != 'codex' && matrix.agent_impl != 'claude-code' && matrix.agent_impl != 'hermes' && matrix.agent_impl != 'pi' && inputs.agent_impl != 'codex' && inputs.agent_impl != 'claude-code' && inputs.agent_impl != 'hermes' && inputs.agent_impl != 'pi' }}
         # The agent loads its model via init_chat_model, which lazily imports
         # only the provider matching HARBOR_MODEL. langgraph.json ships every
         # provider (for local `langgraph dev`); a single job needs just one, so
@@ -878,15 +878,15 @@ jobs:
           env_flag="--env $HARBOR_SANDBOX_ENV"
           agent_args=()
           case "$HARBOR_AGENT_IMPL" in
-            codex|claude-code)
+            codex|claude-code|hermes|pi)
               if [ "$HARBOR_BRANCH" != current ]; then
                 echo "::error::$HARBOR_AGENT_IMPL does not support branch overlays"; exit 1
               fi
-              expected_provider=openai
-              [ "$HARBOR_AGENT_IMPL" = claude-code ] && expected_provider=anthropic
-              if [ "${HARBOR_MODEL%%:*}" != "$expected_provider" ]; then
-                echo "::error::$HARBOR_AGENT_IMPL requires a $expected_provider model"; exit 1
-              fi
+              model_provider="${HARBOR_MODEL%%:*}"
+              case "$HARBOR_AGENT_IMPL:$model_provider" in
+                codex:openai|claude-code:anthropic|hermes:openai|hermes:anthropic|pi:openai|pi:anthropic) ;;
+                *) echo "::error::$HARBOR_AGENT_IMPL does not support $model_provider models"; exit 1 ;;
+              esac
               agent_args=(--agent "$HARBOR_AGENT_IMPL")
               ;;
             *)
@@ -977,9 +977,9 @@ jobs:
           echo ""
 
           agent_model="$HARBOR_MODEL"
-          if [ "$HARBOR_AGENT_IMPL" = codex ] || [ "$HARBOR_AGENT_IMPL" = claude-code ]; then
-            agent_model="${HARBOR_MODEL%%:*}/${HARBOR_MODEL#*:}"
-          fi
+          case "$HARBOR_AGENT_IMPL" in
+            codex|claude-code|hermes|pi) agent_model="${HARBOR_MODEL%%:*}/${HARBOR_MODEL#*:}" ;;
+          esac
           uv run harbor run \
             --yes \
             "${agent_args[@]}" \

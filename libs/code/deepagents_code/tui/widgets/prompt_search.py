@@ -27,12 +27,15 @@ PROMPT_SEARCH_MAX_ROWS = 5
 """Result rows the inline panel shows before the list scrolls."""
 
 
-def prompt_search_hint() -> str:
+def prompt_search_hint(*, has_matches: bool = True) -> str:
     """Build the footer line for the current charset mode.
 
     The Ctrl+R mention is what makes the modal tier discoverable. The line is
     kept short enough to wrap within `PROMPT_SEARCH_MAX_HINT_ROWS` at the
     narrow widths the composer supports.
+
+    Args:
+        has_matches: Whether navigation and insertion are available.
 
     Returns:
         The hint text, using ASCII glyphs on terminals that need them.
@@ -41,14 +44,13 @@ def prompt_search_hint() -> str:
 
     glyphs = get_glyphs()
     sep = f"  {glyphs.bullet}  "
-    return sep.join(
-        (
+    hints = ["Ctrl+R full view", "Esc cancel"]
+    if has_matches:
+        hints[:0] = [
             f"{glyphs.arrow_up}/{glyphs.arrow_down} navigate",
             "Tab/Enter insert",
-            "Ctrl+R full view",
-            "Esc cancel",
-        )
-    )
+        ]
+    return sep.join(hints)
 
 
 PROMPT_SEARCH_WINDOW = 50
@@ -382,6 +384,8 @@ class PromptSearchPanel(Vertical):
         """
         if empty is not None:
             titles = []
+        if self._hint_static is not None:
+            self._hint_static.update(prompt_search_hint(has_matches=bool(titles)))
         self._selected_index = selected_index
         # Copy: the panel keeps this list across frames, so an owner that
         # mutated the list it passed would rewrite the pending window in place.

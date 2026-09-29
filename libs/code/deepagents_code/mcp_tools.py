@@ -1707,7 +1707,7 @@ spawn an unbounded number of simultaneous socket/subprocess handshakes (or
 
 
 def _warm_mcp_adapter_imports() -> None:
-    """Eagerly import MCP modules whose first import may block.
+    """Warm MCP imports and lazy filesystem-backed caches off the event loop.
 
     Run via `asyncio.to_thread` before adapter/auth symbols are used, so any
     blocking side effect of a first import happens off the server event loop
@@ -1724,9 +1724,15 @@ def _warm_mcp_adapter_imports() -> None:
     import `mcp_auth` otherwise — so it is swallowed here and left to re-raise
     at the real use site. Runs only when at least one active MCP server exists.
     """
+    from importlib import import_module
+
+    from fastmcp.server.dependencies import is_docket_available
     from langchain_core._api import (  # noqa: PLC2701
         suppress_langchain_beta_warning,
     )
+
+    import_module("jsonschema")
+    is_docket_available()
 
     with suppress_langchain_beta_warning():
         from langchain import mcp as _langchain_mcp  # noqa: F401
@@ -1801,6 +1807,7 @@ def _build_transport(
     *,
     auth: httpx2.Auth | None,
     keep_alive: bool,
+    cwd: str | None = None,
 ) -> ClientTransport:
     """Build the FastMCP transport for one configured server.
 
@@ -1819,6 +1826,7 @@ def _build_transport(
         auth: OAuth provider to attach, for a remote server that uses one.
         keep_alive: Whether a stdio server's subprocess outlives one connection.
             A live client reuses it across tool calls; a stateless load does not.
+        cwd: Session directory used when a stdio server has no configured cwd.
 
     Returns:
         A transport ready to mount on the router.
@@ -1842,6 +1850,8 @@ def _build_transport(
 
     stdio = StdioMCPServer.model_validate(dict(server_config))
     stdio.keep_alive = keep_alive
+    if stdio.cwd is None:
+        stdio.cwd = cwd
     return stdio.to_transport()
 
 
@@ -2032,6 +2042,7 @@ def _classify_connect_failure(
 async def _load_tools_from_config(
     config: dict[str, Any],
     *,
+    server_cwds: dict[str, str] | None = None,
     stateless: bool = False,
     session_manager: MCPSessionManager | None = None,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
@@ -2050,6 +2061,9 @@ async def _load_tools_from_config(
 
     Args:
         config: Validated MCP configuration dict with `mcpServers` key.
+        server_cwds: Per-server fallback directories for approved project and
+            explicitly supplied configs. Other servers inherit the backend
+            process directory; explicit server `cwd` settings take precedence.
         stateless: When `True`, tools avoid returning an owned session manager.
         session_manager: Optional externally owned runtime session manager.
 
@@ -2194,6 +2208,7 @@ async def _load_tools_from_config(
                 server_config,
                 auth=None,
                 keep_alive=not stateless or session_manager is not None,
+                cwd=(server_cwds or {}).get(server_name),
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             if redact_failure_details:
@@ -2365,17 +2380,23 @@ async def _load_tools_from_config(
     elif stateless:
         await runtime_manager.cleanup()
         for tool in all_tools:
-            _make_stateless_tool(tool, config)
+            _make_stateless_tool(tool, config, server_cwds=server_cwds)
     return all_tools, None if stateless else runtime_manager, server_infos
 
 
-def _make_stateless_tool(tool: BaseTool, config: dict[str, Any]) -> None:
+def _make_stateless_tool(
+    tool: BaseTool,
+    config: dict[str, Any],
+    *,
+    server_cwds: dict[str, str] | None = None,
+) -> None:
     """Give a tool a fresh, locally owned backend for each invocation."""
     from langchain_core.tools import StructuredTool
 
     if not isinstance(tool, StructuredTool):
         return
     server = (tool.metadata or {})["_deepagents_code_mcp_server"]
+    cwd = (server_cwds or {}).get(server)
     server_config = copy.deepcopy(config["mcpServers"][server])
     original = (tool.metadata or {})[_MCP_ORIGINAL_TOOL_NAME_KEY]
     # This wrapper passed the full-config filters. A single-server reload has
@@ -2385,7 +2406,8 @@ def _make_stateless_tool(tool: BaseTool, config: dict[str, Any]) -> None:
 
     async def call(**arguments: Any) -> Any:  # noqa: ANN401
         tools, manager, infos = await _load_tools_from_config(
-            {"mcpServers": {server: server_config}}
+            {"mcpServers": {server: server_config}},
+            server_cwds={server: cwd} if cwd is not None else None,
         )
         try:
             for candidate in tools:
@@ -2624,6 +2646,7 @@ async def resolve_and_load_mcp_tools(
     project_configs = sources.project_paths
     project_roots = sources.project_roots
     configs: list[dict[str, Any]] = []
+    session_cwd_servers: set[str] = set()
 
     for path in user_configs:
         config, error = load_mcp_config_with_error(path)
@@ -2759,6 +2782,7 @@ async def resolve_and_load_mcp_tools(
                 config_load_errors.append((server_sources[name], error))
             if valid["mcpServers"]:
                 configs.append(valid)
+                session_cwd_servers.update(valid["mcpServers"])
         elif not project_servers:
             # Nothing was trusted and no dict server produced a summary, so
             # every entry is malformed. Re-validate the merged config (no second
@@ -2786,7 +2810,9 @@ async def resolve_and_load_mcp_tools(
             if project_context is not None
             else explicit_config_path
         )
-        configs.append(load_mcp_config(config_path))
+        explicit_config = load_mcp_config(config_path)
+        configs.append(explicit_config)
+        session_cwd_servers.update(explicit_config["mcpServers"])
 
     def _bad_config_infos() -> list[MCPServerInfo]:
         return [
@@ -2850,6 +2876,11 @@ async def resolve_and_load_mcp_tools(
 
     tools, manager, server_infos = await _load_tools_from_config(
         merged,
+        server_cwds={
+            name: str(project_context.user_cwd) for name in session_cwd_servers
+        }
+        if project_context is not None
+        else None,
         stateless=stateless,
         session_manager=session_manager,
     )

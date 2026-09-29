@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
 from discord.app_commands.commands import validate_name
 
-from deepagents_talon import commands as chat_commands, host
 from deepagents_talon.commands import (
     CHAT_COMMANDS,
     COMMANDS_BY_NAME,
@@ -13,6 +14,15 @@ from deepagents_talon.commands import (
     build_help_message,
     visible_commands,
 )
+from deepagents_talon.host import TalonHost
+from deepagents_talon.interfaces import ChannelMessage
+from tests.conftest import RecordingChannel
+from tests.test_host import BlockingAgent, _config
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from deepagents_talon.commands import ChatCommand
 
 
 def test_registry_is_not_empty_and_has_unique_names():
@@ -63,27 +73,22 @@ def test_help_message_omits_hidden_commands():
         assert f"{command.text} —" not in message
 
 
-def test_host_dispatch_constants_match_the_registry():
-    """The host dispatches on literals; drift here would silently break a command."""
-    assert host._HELP_COMMAND == chat_commands.HELP
-    assert host._NEW_COMMAND == chat_commands.NEW
-    assert host._STOP_COMMAND == chat_commands.STOP
-    assert host._MCP_RELOAD_COMMAND == chat_commands.MCP_RELOAD
-    assert host._RESET_ALL_HISTORY_COMMAND == chat_commands.RESET_ALL_HISTORY
-
-
-def test_every_registry_command_is_dispatched_by_the_host():
-    """A registered command with no host branch would silently reach the agent."""
-    dispatched = {
-        host._HELP_COMMAND,
-        host._NEW_COMMAND,
-        host._STOP_COMMAND,
-        host._MCP_RELOAD_COMMAND,
-        host._RESET_ALL_HISTORY_COMMAND,
-    }
-
-    assert {command.text for command in CHAT_COMMANDS} == dispatched
-
-
-def test_host_help_message_comes_from_the_registry():
-    assert build_help_message() == host._HELP_MESSAGE
+@pytest.mark.parametrize("command", CHAT_COMMANDS, ids=lambda command: command.name)
+async def test_registered_commands_reply_without_invoking_agent(
+    tmp_path: Path, command: ChatCommand
+) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id="chat", text=command.text)
+        )
+        assert len(channel.sent) == 1
+        chat, reply = channel.sent[0]
+        assert chat == "chat"
+        assert reply
+        assert agent.requests == []
+    finally:
+        await host.stop()

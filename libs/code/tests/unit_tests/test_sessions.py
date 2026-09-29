@@ -12,10 +12,80 @@ import pytest
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from deepagents_code import sessions
+from deepagents_code._constants import DEFAULT_THREAD_LIMIT
+from deepagents_code._env_vars import RECENT_THREADS
 from deepagents_code.app import TextualSessionState
 
 if TYPE_CHECKING:
     import aiosqlite
+    from langchain_core.runnables import RunnableConfig
+
+
+async def test_thread_seed_is_resumable_and_preserves_later_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recovery seed supports preview and continuation without replacing work."""
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+    from langchain_core.messages import HumanMessage
+
+    monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+    values = {"messages": [HumanMessage("Saved summary")]}
+    await sessions.save_thread_seed(
+        "child", values, agent_name="agent", cwd=str(tmp_path)
+    )
+    threads = await sessions.list_threads(agent_name="agent", cwd=str(tmp_path))
+    await sessions.populate_thread_checkpoint_details(threads)
+    assert len(threads) == 1
+    assert threads[0]["initial_prompt"] == "Saved summary"
+    assert threads[0]["message_count"] == 1
+
+    async with sessions.get_checkpointer() as checkpointer:
+        graph = create_agent(
+            FakeListChatModel(responses=["Continued reply"]), checkpointer=checkpointer
+        )
+        config: RunnableConfig = {"configurable": {"thread_id": "child"}}
+        state = await graph.aget_state(config)
+        assert not state.next
+        await graph.ainvoke({"messages": [HumanMessage("Continue")]}, config)
+        await sessions.save_thread_seed(
+            "child", values, agent_name="agent", cwd=str(tmp_path)
+        )
+        state = await graph.aget_state(config)
+        assert [message.text for message in state.values["messages"]] == [
+            "Saved summary",
+            "Continue",
+            "Continued reply",
+        ]
+
+
+async def test_activity_refresh_preserves_seed_creation_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated remote activity changes recency without changing creation order."""
+    monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+    created = datetime(2025, 1, 1, tzinfo=UTC)
+    for offset, thread_id in enumerate(("older", "newer")):
+        await sessions.save_thread_seed(
+            thread_id, {"messages": []}, agent_name="agent", cwd=str(tmp_path)
+        )
+        async with sessions._connect() as conn:
+            await conn.execute(
+                "UPDATE checkpoints SET metadata = json_set(metadata, "
+                "'$.updated_at', ?) WHERE thread_id = ?",
+                ((created + timedelta(days=offset)).isoformat(), thread_id),
+            )
+            await conn.commit()
+
+    for days in (2, 3):
+        updated = created + timedelta(days=days)
+        await sessions.refresh_thread_activity("older", updated)
+        by_creation = await sessions.list_threads(sort_by="created")
+        assert [thread["thread_id"] for thread in by_creation] == ["newer", "older"]
+        assert by_creation[1]["created_at"] == created.isoformat()
+        assert by_creation[1]["updated_at"] == updated.isoformat()
+        by_activity = await sessions.list_threads(sort_by="updated")
+        assert [thread["thread_id"] for thread in by_activity] == ["older", "newer"]
 
 
 class TestGenerateThreadId:
@@ -922,7 +992,7 @@ class TestPrewarmThreadMessageCounts:
             ),
             patch.object(
                 sessions,
-                "populate_thread_checkpoint_details",
+                "_enrich_thread_checkpoint_details",
                 new_callable=AsyncMock,
                 return_value=threads,
             ) as mock_populate,
@@ -933,6 +1003,7 @@ class TestPrewarmThreadMessageCounts:
             threads,
             include_message_count=True,
             include_initial_prompt=False,
+            source="startup-prewarm",
         )
 
 
@@ -1183,6 +1254,47 @@ class TestMessageCountFromCheckpointBlob:
 
 class TestGetThreadLimit:
     """Tests for get_thread_limit() env var parsing."""
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            (None, DEFAULT_THREAD_LIMIT),
+            ("invalid", DEFAULT_THREAD_LIMIT),
+            ("7", 7),
+            ("0", 1),
+            ("-5", 1),
+        ],
+    )
+    def test_environment_limit(
+        self, monkeypatch: pytest.MonkeyPatch, value: str | None, expected: int
+    ) -> None:
+        if value is None:
+            monkeypatch.delenv(RECENT_THREADS, raising=False)
+        else:
+            monkeypatch.setenv(RECENT_THREADS, value)
+        assert sessions.get_thread_limit() == expected
+
+    @pytest.mark.parametrize("limit", [None, 7])
+    async def test_database_limit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit: int | None
+    ) -> None:
+        monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "threads.db")
+        async with sessions._connect() as conn:
+            await conn.execute(
+                "CREATE TABLE checkpoints (thread_id TEXT, checkpoint_ns TEXT, "
+                "checkpoint_id TEXT, metadata BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO checkpoints VALUES (?, '', 'cp', '{}')",
+                [(f"thread-{i}",) for i in range(DEFAULT_THREAD_LIMIT + 1)],
+            )
+            await conn.commit()
+        threads = (
+            await sessions.list_threads()
+            if limit is None
+            else await sessions.list_threads(limit=limit)
+        )
+        assert len(threads) == (DEFAULT_THREAD_LIMIT if limit is None else limit)
 
 
 class TestListThreadsSortAndBranch:
@@ -1448,6 +1560,38 @@ class TestBatchCheckpointSummaries:
         assert results["t1"].initial_prompt == "hello"
         assert results["t2"].message_count == 1
 
+    async def test_selects_latest_checkpoint_across_namespaces(self) -> None:
+        """The latest checkpoint should win without filtering its namespace."""
+        serde = JsonPlusSerializer()
+        older = serde.dumps_typed({"channel_values": {"messages": []}})
+        newer = serde.dumps_typed(
+            {"channel_values": {"messages": [{"role": "user", "content": "new"}]}}
+        )
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE checkpoints "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "type TEXT, checkpoint BLOB, metadata TEXT)"
+            )
+            await conn.executemany(
+                "INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?, '{}')",
+                [
+                    ("t1", "", "cp_1", older[0], older[1]),
+                    ("t1", "subgraph", "cp_2", newer[0], newer[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_latest_checkpoint_summaries_batch(
+                conn, ["t1"], serde
+            )
+
+        assert results["t1"].message_count == 1
+        assert results["t1"].initial_prompt == "new"
+
     async def test_batch_chunking_returns_all_results(self) -> None:
         """Chunking across multiple batches should merge all results."""
         serde = JsonPlusSerializer()
@@ -1546,6 +1690,37 @@ class TestLoadInitialPromptsFromWritesBatch:
             await conn.commit()
 
             results = await sessions._load_initial_prompts_from_writes_batch(  # pyright: ignore[reportPrivateUsage]
+                conn, ["t1"], serde
+            )
+
+        assert results == {"t1": "first"}
+
+    async def test_preserves_namespace_and_channel_selection(self) -> None:
+        """Earliest messages write should win regardless of its namespace."""
+        serde = JsonPlusSerializer()
+        first = serde.dumps_typed([{"role": "user", "content": "first"}])
+        later = serde.dumps_typed([{"role": "user", "content": "later"}])
+        ignored = serde.dumps_typed([{"role": "user", "content": "ignored"}])
+
+        import aiosqlite
+
+        async with aiosqlite.connect(":memory:") as conn:
+            await conn.execute(
+                "CREATE TABLE writes "
+                "(thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, "
+                "task_id TEXT, idx INTEGER, channel TEXT, type TEXT, value BLOB)"
+            )
+            await conn.executemany(
+                "INSERT INTO writes VALUES (?, ?, ?, '', ?, ?, ?, ?)",
+                [
+                    ("t1", "subgraph", "cp_a", 1, "messages", first[0], first[1]),
+                    ("t1", "", "cp_b", 0, "messages", later[0], later[1]),
+                    ("t1", "", "cp_0", 0, "other", ignored[0], ignored[1]),
+                ],
+            )
+            await conn.commit()
+
+            results = await sessions._load_initial_prompts_from_writes_batch(
                 conn, ["t1"], serde
             )
 

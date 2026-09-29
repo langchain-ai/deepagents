@@ -98,7 +98,7 @@ test('pr_labeler.yml consumes the shared helper, not an inline alias map', () =>
 // The org labels are applied by pr_labeler.yml directly rather than derived
 // from config (see its `org:external` branch), so they are not reachable from
 // any config map and have to be named here.
-const WORKFLOW_APPLIED_LABELS = ['org:external', 'org:internal'];
+const WORKFLOW_APPLIED_LABELS = ['org:external', 'org:internal', 'priority:triage'];
 
 function creatableLabels() {
   const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);
@@ -468,7 +468,7 @@ test('topic labels come from the modules a PR touched', () => {
     ['libs/deepagents/deepagents/backends/sandbox.py', ['topic:backends', 'topic:sandboxes']],
     ['libs/code/deepagents_code/mcp_tools.py', ['topic:mcp']],
     ['libs/code/deepagents_code/skills/index.py', ['topic:skills']],
-    ['libs/deepagents/deepagents/profiles/harness/base.py', ['topic:harness']],
+    ['libs/deepagents/deepagents/profiles/harness/base.py', []],
     ['libs/code/deepagents_code/_tracing.py', ['topic:tracing']],
     ['README.md', []],
     ['libs/deepagents/pyproject.toml', []],

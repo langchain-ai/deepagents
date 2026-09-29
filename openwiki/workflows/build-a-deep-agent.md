@@ -1,7 +1,7 @@
 ---
 type: workflow
 title: Build and Customize a Deep Agent
-description: Maintainer recipe for constructing a Deep Agents LangGraph application, selecting execution boundaries, extending its middleware and delegation model, and validating the resulting behavior.
+description: Maintainer workflow for constructing a Deep Agents LangGraph application, selecting its model and execution boundary, extending its delegation and middleware behavior, and testing the resulting tool loop.
 tags: [deepagents, langgraph, middleware, subagents, testing]
 sources:
   - id: openwiki-source-50173942904153d619b9ae0d
@@ -36,19 +36,19 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
+    at: 2026-09-25T08:06:00.203Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 ---
 
 # Build and Customize a Deep Agent
 
-Use `create_deep_agent` when an application needs LangChain's tool-calling agent loop together with the Deep Agents harness: filesystem access, planning and context management, delegation, skills, and memory. The builder returns a compiled LangGraph graph constructed around LangChain's `create_agent`; it is not a separate execution runtime. For component ownership, see [SDK construction & execution](/openwiki/architecture/sdk-construction-execution.md) and [the middleware stack](/openwiki/architecture/middleware-stack.md).
+Use `create_deep_agent` when an application needs LangChain's tool-calling loop with the Deep Agents harness: filesystem tools, planning and context management, delegation, skills, and memory. It returns a compiled LangGraph graph constructed around LangChain's `create_agent`, rather than a distinct runtime. For component ownership, see [SDK construction & execution](/openwiki/architecture/sdk-construction-execution.md).
 
-## 1. Start with an explicit model and minimal invocation
+## 1. Start with an explicit model and a small tool loop
 
-Install with `uv add deepagents`. Pass a tool-calling model explicitly. `model` accepts either a `provider:model` string, which is resolved through `init_chat_model`, or an initialized `BaseChatModel`. The latter is the right choice when provider-specific options matter—for example, OpenAI Responses API selection or retention configuration.
+Install with `uv add deepagents`. Pass a tool-calling model explicitly. `model` accepts a `provider:model` string, resolved through `init_chat_model`, or an initialized `BaseChatModel`. Use an initialized model when provider-specific choices matter, such as disabling the OpenAI Responses API or configuring its retention behavior.
 
 ```python
 from deepagents import create_deep_agent
@@ -61,7 +61,7 @@ agent = create_deep_agent(
 result = agent.invoke({"messages": "Research LangGraph and write a summary"})
 ```
 
-Do not rely on `model=None`: it currently selects `ChatAnthropic(model_name="claude-sonnet-4-6")`, requires `ANTHROPIC_API_KEY`, and is deprecated for removal in `deepagents==1.0.0`. The returned graph has `recursion_limit=9_999` to accommodate long tool loops. That limit is not a safety boundary; expose only bounded, appropriately isolated tools and test termination behavior.
+Do not rely on `model=None`: it selects `ChatAnthropic(model_name="claude-sonnet-4-6")`, requires `ANTHROPIC_API_KEY`, and is deprecated for removal in `deepagents==1.0.0`. The compiled graph has `recursion_limit=9_999` for long tool loops. That setting is not a security or termination boundary: expose only appropriately bounded tools and test the paths that can repeat.
 
 ```mermaid
 sequenceDiagram
@@ -73,11 +73,11 @@ sequenceDiagram
     participant Tools
     Maintainer->>Builder: model tools backend and extensions
     Builder->>Stack: resolve profile and assemble middleware
-    Builder->>Graph: model prompt tools middleware config
+    Builder->>Graph: model prompt tools middleware and config
     Graph-->>Maintainer: compiled graph
     Maintainer->>Graph: invoke or ainvoke with messages
-    Graph->>Stack: prepare request
-    Stack->>Model: system prompt and available tools
+    Graph->>Stack: prepare model request
+    Stack->>Model: prompt and available tools
     alt model requests a tool
         Model-->>Graph: tool call
         Graph->>Tools: execute selected tool
@@ -90,79 +90,67 @@ sequenceDiagram
     end
 ```
 
-Caption: Build-time resolves policy and compiles the LangChain graph; invoke-time middleware shapes each model request and the graph loops through requested tools until the model finishes.
+Caption: Build-time resolves policy and compiles the LangChain graph; at invocation, middleware shapes model requests and the graph loops through requested tools until the model finishes.
 
-## 2. Choose the storage and execution boundary first
+## 2. Select storage and execution boundaries before tools
 
-`backend=` owns file storage and command-execution capability. It defaults to `StateBackend`, which stores files in graph state. Its data is checkpointed within a conversation thread, not shared across threads, and it can only be accessed during LangGraph execution. Seed it through graph input, for example `agent.invoke({"messages": [...], "files": {...}})`, rather than calling it directly.
+`backend=` owns file storage and command-execution capability. It defaults to `StateBackend`, which keeps files in graph state. Files are checkpointed within one conversation thread rather than shared across threads, and this backend may only be used during LangGraph execution. Seed state-backed files in graph input, for example `agent.invoke({"messages": [...], "files": {...}})`, not by calling the backend outside a run. See [tools & filesystem](/openwiki/concepts/tools-filesystem.md).
 
-Public backend exports include `FilesystemBackend`, `StoreBackend`, `CompositeBackend`, `ContextHubBackend`, `LocalShellBackend`, and `LangSmithSandbox`. Select an implementation based on the required storage and execution boundary; see [backends](/openwiki/concepts/backends.md).
+`FilesystemMiddleware` provides `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`. `execute` runs a command only if the backend implements `SandboxBackendProtocol`; otherwise it returns an error. `LocalShellBackend` implements that protocol but runs commands directly on the host without sandboxing, process isolation, or security restrictions. Shell access can bypass filesystem policy, so it is unsuitable for web/API, multi-tenant, or untrusted workloads.
 
-`FilesystemMiddleware` provides `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`. The `execute` tool runs a command only when the resolved backend implements `SandboxBackendProtocol`; otherwise it returns an error. In particular, `LocalShellBackend` implements that protocol but executes directly on the host without sandboxing, process isolation, or security restrictions. Shell access bypasses filesystem rules, so do not use it for web/API, multi-tenant, or untrusted workloads.
+`tools=` is additive: application tools are merged with the built-in suite and never remove a built-in. Use a harness profile's `excluded_tools` to stop offering a built-in to the model, or supply a replacement `FilesystemMiddleware` with the desired `tools` to remove filesystem capability from the harness.
 
-`tools=` is additive: application tools are merged with the built-in suite. To hide a built-in tool from the model, use a harness profile's `excluded_tools`; to remove filesystem tools from the harness itself, provide a `FilesystemMiddleware` configured with the desired `tools`.
+## 3. Set the prompt and profile policy deliberately
 
-## 3. Set prompt and profile policy deliberately
+`system_prompt` is caller-owned `USER` content. The active harness profile appends `BASE` and then `SUFFIX`: `USER -> BASE -> SUFFIX`, with blank lines between nonempty parts. If the caller passes a `SystemMessage`, its content blocks, including `cache_control`, are retained; profile content becomes an appended text block.
 
-`system_prompt` is caller-owned `USER` content. The resolved harness profile appends `BASE` and `SUFFIX`, in that order: `USER -> BASE -> SUFFIX`, with blank-line separation. When the caller passes a `SystemMessage`, its content blocks—including `cache_control`—are retained and profile text is appended as a text block.
+Profiles provide model/provider-specific policy, including prompt slots, tool-description overrides and exclusions, extra middleware, and the default general-purpose subagent. Profile resolution follows model construction. Treat a profile change as behavior-changing: test profile selection, prompt output, and final stack/tool shape.
 
-Profiles own provider/model-specific policy: prompt slots, tool descriptions and exclusions, extra middleware, and the default general-purpose subagent. The builder resolves a profile after model construction. Treat a profile change as a behavior change and cover its matching and final graph shape with a focused test.
+## 4. Extend at the middleware boundary
 
-## 4. Extend at the middleware assembly boundary
+Use an ordinary entry in `tools=[]` for a stateless action. Use middleware when a feature must intercept each model request, change available tools or the system prompt, transform history, or maintain typed state. The main assembly is:
 
-Middleware is more than a tool list: its `wrap_model_call()` hooks can intercept every model request, dynamically filter tools, inject system-prompt context, transform history, and maintain typed state across turns. Use a plain `tools=[]` function for a stateless, consumer-specific action; use middleware when the feature changes per-call requests, prompt/tool availability, or state.
+1. **Core:** optional `SkillsMiddleware`, `FilesystemMiddleware`, optional `SubAgentMiddleware`, summarization middleware, `PatchToolCallsMiddleware`, and optional `AsyncSubAgentMiddleware`.
+2. **Custom:** caller `middleware` entries are inserted after the core.
+3. **Tail:** profile extra middleware, provider prompt-caching middleware, optional `MemoryMiddleware`, optional `HumanInTheLoopMiddleware`, and `UnsupportedContentMiddleware`. Profile tool exclusion is applied last, after custom middleware, so an excluded tool cannot be restored by a custom model hook.
 
-The builder's stack is ordered as follows:
+A custom middleware whose `.name` matches a current entry replaces it in place; a new name is inserted between core and tail. Profiles may filter middleware, but `FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding: they back the built-in filesystem tools and synchronous `task` handler. Invalid, private, ambiguous, unmatched, or protected exclusions raise `ValueError` instead of silently producing a degraded agent.
 
-1. Core: optional `SkillsMiddleware`, `FilesystemMiddleware`, optional `SubAgentMiddleware`, summarization middleware, `PatchToolCallsMiddleware`, and optional `AsyncSubAgentMiddleware`.
-2. Caller-provided `middleware` is inserted after the core.
-3. Tail: profile `extra_middleware`, tool exclusion, provider prompt-caching middleware, optional `MemoryMiddleware`, and optional `HumanInTheLoopMiddleware`.
+Prefer state supplied by the middleware that owns it. If graph-wide `state_schema` is necessary, make it a `TypedDict` subclass of `DeepAgentState` to preserve the `DeltaChannel` reducer for `messages`; it avoids quadratic checkpoint growth. Declarative subagents receive that base schema, whereas precompiled and remote subagents retain their own schemas.
 
-A custom middleware whose `.name` already exists replaces that entry in place; a new name is inserted between core and tail. Profile tool exclusion is applied after custom middleware, so a custom model hook cannot restore an excluded tool.
+## 5. Add delegation for the intended execution model
 
-`FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding: they back the built-in file tools and synchronous `task` handler. A profile cannot exclude either; invalid, private, ambiguous, or unmatched exclusions raise `ValueError` rather than silently producing a degraded agent.
+`subagents=` supports three execution boundaries:
 
-Prefer state supplied by the middleware that owns it. If a graph-wide `state_schema` is necessary, make it a `TypedDict` subclass of `DeepAgentState` to retain its `DeltaChannel` message reducer, which reduces checkpoint growth from quadratic to linear. Declarative subagents receive this base schema; precompiled and remote subagents retain their own schemas.
+- A declarative `SubAgent` is compiled for synchronous `task` delegation. It may override model, prompt, tools, middleware, skills, permissions, interrupts, and response format.
+- A `CompiledSubAgent` exposes an already-built runnable through `task`. Its runnable needs a `messages` state key; configure its schema and approval behavior when compiling it.
+- An `AsyncSubAgent`, identified by `graph_id`, is routed to `AsyncSubAgentMiddleware`. It launches tracked background work through the LangGraph SDK, returning task identity immediately; the agent can launch, check, update, cancel, and list tasks.
 
-## 5. Add delegation for a specific execution model
+Unless the profile disables it or an inline subagent is named `general-purpose`, the builder supplies a default synchronous `general-purpose` subagent. Therefore `task` is normally present. Disable that default with `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)` and pass no synchronous subagents to omit `task`; asynchronous subagents are independent.
 
-`subagents=` accepts three different boundaries:
+A normal declarative subagent inherits parent application tools when its own `tools` field is absent, but not arbitrary parent middleware. It inherits parent filesystem permissions and `interrupt_on` unless it declares replacements. A `mode="fork"` declarative subagent is experimental: it continues the parent conversation, appends its own prompt to the inherited prompt, cannot declare skills, and refuses recursive delegation. Any LangGraph `CompiledStateGraph` can be used as a compiled subagent.
 
-- A declarative `SubAgent` is compiled for synchronous `task` delegation. It can override model, prompt, tools, middleware, skills, permissions, interrupts, and response format.
-- A `CompiledSubAgent` exposes an already-built runnable through `task`; its schema and approval behavior must be configured when that runnable is compiled.
-- An `AsyncSubAgent`, identified by `graph_id`, is routed to `AsyncSubAgentMiddleware`. It launches background work through the LangGraph SDK and provides tools to start, check, update, cancel, and list tasks.
+For remote work, provide `name`, `description`, and `graph_id`, plus an endpoint and optional headers. It must be an Agent Protocol server. If `url` is omitted for local ASGI transport, call the parent using `ainvoke`; synchronous `invoke` requires a reachable server URL.
 
-Unless the active profile disables it or an inline subagent is named `general-purpose`, the builder adds a default synchronous `general-purpose` subagent. Thus `task` is normally available. Disable it with `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)` and pass no synchronous subagents to omit `task`; async subagents remain independent.
+## 6. Configure skills, memory, and approval at their owners
 
-Normal declarative subagents inherit parent application tools when their own `tools` field is absent, but do not inherit arbitrary parent middleware. They inherit parent filesystem permissions and `interrupt_on` unless their own value replaces it. A `mode="fork"` subagent is experimental: it continues the parent conversation, appends its prompt to the inherited prompt, cannot declare skills, and refuses recursive delegation.
+`skills=` supplies POSIX backend paths to skill directories. `SkillsMiddleware` uses backend APIs to discover `SKILL.md` metadata and expose the index for progressive loading; later sources override earlier sources with the same skill name. With the default `StateBackend`, provide the skill files in invocation state. See [subagents & skills](/openwiki/concepts/subagents-skills.md).
 
-For remote delegation, host an Agent Protocol-compatible server and use `name`, `description`, `graph_id`, plus an endpoint and optional headers. The self-hosted example starts with:
+`memory=` supplies `AGENTS.md` paths. `MemoryMiddleware` loads sources at agent startup, concatenates them in source order, strips HTML comments, and adds them to system-prompt context. Its injected guidance directs the model to treat memory as reference material, not instructions that override the user or verified tool evidence.
 
-```bash
-cd examples/async-subagent-server
-uv sync
-uv run uvicorn server:app --port 2024
-```
+Use `permissions=` for policy over built-in filesystem tools, not for sandboxing. `FilesystemPermission` rules are ordered first-match decisions with `allow`, `deny`, and `interrupt` modes; unmatched calls are allowed. `FilesystemMiddleware` enforces them at the tool boundary, not during direct backend use. Declarative subagents inherit parent rules unless they specify replacement rules.
 
-The server pattern exposes endpoints to create threads, start/restart and poll runs, read thread state, cancel work, and health check. It is demonstration code only: it does not provide authentication or rate limiting. When `url` is omitted for local ASGI transport, invoke the parent asynchronously with `ainvoke`; synchronous `invoke` requires a reachable Agent Protocol server URL.
+Pass `interrupt_on` for explicit tool approval, or use interrupt-mode filesystem rules. The builder converts interrupt-mode rules to path-aware `HumanInTheLoopMiddleware` predicates and merges them with explicit entries; explicit entries win for the same tool. Bulk calls such as `ls`, `glob`, `grep`, and `delete` interrupt conservatively when their scope could intersect a protected path. A checkpointer is required to persist and resume approval interruptions.
 
-## 6. Configure skills, memory, and approval policy at their owners
+## 7. Forward LangGraph operational configuration without confusing ownership
 
-`skills=` supplies POSIX backend paths to skill directories. `SkillsMiddleware` reads each skill's `SKILL.md` metadata through backend APIs and progressively loads it; later sources win for duplicate names. With the default `StateBackend`, provide these files in invocation state. See [subagents & skills](/openwiki/concepts/subagents-skills.md).
+`checkpointer`, `store`, `context_schema`, `response_format`, `cache`, `name`, and `debug` are forwarded to LangChain's `create_agent`. Use a checkpointer for persistent graph state and resumable approval, a store for a backend that needs one, and `response_format` for structured output. These options do not replace the main boundaries: the backend selects storage/execution, profiles select harness policy, and middleware controls request-time behavior.
 
-`memory=` supplies `AGENTS.md` paths. `MemoryMiddleware` loads sources in order at startup, concatenates them into system-prompt context, and strips HTML comments. Its injected guidance treats memory as reference material rather than instructions that override the user's request or verified tool evidence.
+## 8. Test the closest boundary, then the complete loop
 
-Use `permissions=` for built-in filesystem-tool policy, not sandboxing. `FilesystemPermission` rules are ordered first-match decisions with `allow`, `deny`, and `interrupt` modes; unmatched operations are allowed. `FilesystemMiddleware` enforces them for its tools, but direct backend use does not. Declarative subagents inherit parent rules unless their own rules replace them.
+Start with fake-model assembly tests. Assert profile prompt output, selected tools, middleware order, metadata, and expected validation failures. `test_graph.py` covers profile lookup and prompt assembly, general-purpose subagent wiring, prompt caching, tool exclusion, and profile/middleware invariants.
 
-Pass `interrupt_on` for explicit tool approval, or use interrupt-mode filesystem rules. The builder turns those rules into path-aware `HumanInTheLoopMiddleware` predicates and merges them with explicit entries; explicit configuration wins when both name the same tool. Bulk operations such as `ls`, `glob`, `grep`, and `delete` interrupt conservatively when their possible scope could overlap a protected path. Install a `checkpointer` when interrupted runs must be resumed.
-
-## 7. Pass LangGraph operational configuration through
-
-`checkpointer`, `store`, `context_schema`, `response_format`, `cache`, `name`, and `debug` are forwarded to LangChain's `create_agent`. Use a checkpointer for state persistence and resumable human approval, provide the store required by `StoreBackend`, and use `response_format` for structured output. These parameters do not replace the ownership boundaries above: backend selects storage/execution, profiles select harness policy, and middleware selects request-time behavior.
-
-## 8. Validate the closest boundary, then the loop
-
-Start with assembly tests using a fake model: assert selected tools, profile prompt output, middleware order, metadata, and expected validation failures. `test_graph.py` exercises profile lookup and prompt assembly, general-purpose subagent wiring, prompt-caching wiring, tool exclusion, and middleware/profile invariants. Then use a scripted fake model in an end-to-end test for the changed tool loop. The end-to-end suite demonstrates construction and invocation, built-in filesystem calls, custom tools, and sequential tool calls by asserting the resulting message state and tool messages.
+Then use a scripted fake model to exercise the modified loop. The end-to-end suite constructs and invokes an agent, verifies built-in filesystem and custom tool calls, and verifies sequential tool calls by inspecting the resulting message state and tool messages. For policy work, add targeted permission and HITL cases in `test_permissions.py`; for delegation, backend, skills, or memory changes, add a component-boundary test and a graph-level wiring assertion.
 
 From `libs/deepagents`, run focused tests before the broader suite:
 
@@ -172,13 +160,13 @@ uv run --group test pytest -vvv --disable-socket --allow-unix-socket tests/unit_
 uv run --group test pytest -vvv --disable-socket --allow-unix-socket tests/unit_tests/test_end_to_end.py
 ```
 
-`test_graph.py` covers graph/profile assembly and `test_permissions.py` covers filesystem permission and HITL behavior. The project `make test` runs unit tests through `uv` with socket access disabled except Unix sockets. For a delegation change, also target its synchronous or async subagent tests; for a backend, skills, or memory change, add a test at that component's boundary and one graph-level assertion that confirms it is wired into the agent. See the [testing guide](/openwiki/testing/testing-guide.md).
+`make test` uses `uv` and disables socket access except Unix sockets. See the [testing guide](/openwiki/testing/testing-guide.md).
 
 ## Safe-change checklist
 
-1. Choose an explicit model and backend before exposing tools that act outside the graph.
-2. Treat `tools=` as additive; use a profile or replacement filesystem middleware to reduce capabilities.
-3. Put control at the correct owner: backend for isolation, filesystem middleware for path policy, HITL for approval, profiles for provider-specific behavior.
-4. Test each subagent's isolation, inheritance, and approval behavior independently of the parent.
+1. Choose an explicit model and backend before exposing tools that act outside graph state.
+2. Treat `tools=` as additive; use a profile or replacement filesystem middleware to reduce capability.
+3. Assign controls to their owner: backend for isolation, filesystem middleware for path policy, HITL for approval, and profiles for model-specific behavior.
+4. Test each subagent's isolation, inheritance, and approval behavior independently of its parent.
 5. Preserve `DeepAgentState` message reduction when extending state.
-6. Assert the compiled graph's actual middleware/tool shape, then execute the security-sensitive or multi-step path that motivated the change.
+6. Assert the compiled middleware/tool shape and execute the security-sensitive or multi-step path that motivated the change.

@@ -63,6 +63,23 @@ def test_invalid_storage_fails_without_overwrite(tmp_path, raw):
     assert path.read_bytes() == raw
 
 
+def test_send_message_requires_approval_by_default_without_overwriting_existing_policy(tmp_path):
+    path = tmp_path / "tools.json"
+    store = ToolApprovalStore(path)
+    default = store.ensure()
+    assert default.approvals["send_message"] is True
+    assert default.interrupt_on["send_message"] == {"allowed_decisions": ["approve", "reject"]}
+
+    saved = store.update({"send_message": False}, default.revision)
+    assert saved["status"] == "updated"
+    assert store.ensure().approvals["send_message"] is False
+    assert "send_message" not in store.ensure().interrupt_on
+
+    path.write_text('{"custom_tool": true}')
+    assert store.ensure().approvals == {"custom_tool": True}
+    assert "send_message" not in store.ensure().interrupt_on
+
+
 def test_revisions_batch_and_active_view(tmp_path):
     path = tmp_path / "tools.json"
     store = ToolApprovalStore(path)

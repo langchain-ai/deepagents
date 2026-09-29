@@ -17,7 +17,71 @@ so leaks come from misuse, not from this interface's shape.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+
+
+class MCPLoginAbortedError(RuntimeError):
+    """The user aborted browser authorization from the terminal."""
+
+
+async def _wait_for_browser_authorization[T](
+    wait: Callable[[], Coroutine[object, object, T]],
+) -> T:
+    """Wait for a browser callback with terminal-only Esc cancellation.
+
+    Returns:
+        The browser callback result.
+
+    Raises:
+        MCPLoginAbortedError: If the user aborts authorization.
+    """
+    import asyncio
+    import sys
+
+    if not (sys.stdin.isatty() and sys.stderr.isatty()):
+        return await wait()
+
+    from prompt_toolkit.application import Application
+    from prompt_toolkit.key_binding import KeyBindings, KeyPressEvent
+    from prompt_toolkit.layout import Layout, Window
+    from prompt_toolkit.layout.controls import FormattedTextControl
+    from prompt_toolkit.output.defaults import create_output
+
+    bindings = KeyBindings()
+
+    @bindings.add("escape")
+    @bindings.add("c-c")
+    @bindings.add("c-d")
+    def abort(event: KeyPressEvent) -> None:
+        event.app.exit(exception=MCPLoginAbortedError())
+
+    app: Application[None] = Application(
+        layout=Layout(Window(FormattedTextControl("esc to abort"), height=1)),
+        key_bindings=bindings,
+        output=create_output(stdout=sys.stderr),
+        full_screen=False,
+        erase_when_done=True,
+    )
+    callback = asyncio.create_task(wait())
+    keyboard = asyncio.create_task(app.run_async(handle_sigint=False))
+    try:
+        done, _ = await asyncio.wait(
+            (callback, keyboard), return_when=asyncio.FIRST_COMPLETED
+        )
+        if callback in done:
+            return await callback
+        try:
+            await keyboard
+        except EOFError as exc:
+            raise MCPLoginAbortedError from exc
+        raise MCPLoginAbortedError
+    finally:
+        callback.cancel()
+        keyboard.cancel()
+        await asyncio.gather(callback, keyboard, return_exceptions=True)
 
 
 class OAuthInteraction(Protocol):

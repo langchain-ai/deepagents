@@ -6,10 +6,12 @@ import logging
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
+import pytest
 from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Select, Static
 
+import deepagents_code.tui.modals.cost_breakdown as cost_breakdown_mod
 import deepagents_code.tui.widgets.debug_console as debug_console_mod
 from deepagents_code._debug_buffer import InMemoryLogRecord, get_log_buffer
 from deepagents_code.app import DeepAgentsApp
@@ -23,7 +25,6 @@ from deepagents_code.tui.widgets.debug_console import (
 )
 
 if TYPE_CHECKING:
-    import pytest
     from textual.strip import Strip
 
 
@@ -375,6 +376,36 @@ class TestDebugConsoleScreen:
             await pilot.pause()
             assert app.screen is console
 
+    async def test_cost_breakdown_updates_while_open_and_copies_latest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        breakdown = "Input  12  0.01"
+        copied: list[str] = []
+        monkeypatch.setattr(
+            cost_breakdown_mod,
+            "copy_text_to_clipboard",
+            lambda _app, text: (copied.append(text) or True, None),
+        )
+        app = _Harness()
+        async with app.run_test() as pilot:
+            console = DebugConsoleScreen(
+                _snapshot(), cost_breakdown_provider=lambda: breakdown
+            )
+            app.push_screen(console)
+            await pilot.pause()
+            await pilot.click(console.query_one("#debug-cost-breakdown", Button))
+            await pilot.pause()
+            modal = cast("CostBreakdownScreen", app.screen)
+            assert "12" in _widget_text(modal.query_one(".cost-breakdown-body", Static))
+
+            breakdown = "Input  24  0.02"
+            await pilot.pause(delay=0.6)
+            assert breakdown in _widget_text(
+                modal.query_one(".cost-breakdown-body", Static)
+            )
+            await pilot.press("c")
+            assert copied == [breakdown]
+
     async def test_escape_dismisses(self) -> None:
         app = _Harness()
         async with app.run_test() as pilot:
@@ -453,7 +484,11 @@ class TestDebugConsoleToggle:
             assert screen.focused is log
             assert app._auto_approve is False
 
-    async def test_clear_persists_across_reopen(self) -> None:
+    @pytest.mark.parametrize("key", ["ctrl+x", "ctrl+l"])
+    @pytest.mark.parametrize("open_filter", [False, True])
+    async def test_clear_persists_across_reopen(
+        self, key: str, open_filter: bool
+    ) -> None:
         logger.info("debug-console-persist-marker")
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         async with app.run_test() as pilot:
@@ -466,12 +501,19 @@ class TestDebugConsoleToggle:
                 "debug-console-persist-marker" in record.message
                 for record in log.records
             )
+            if open_filter:
+                select = screen.query_one("#debug-level-filter", Select)
+                select.focus()
+                await pilot.press("enter")
+                assert select.expanded
 
             buffer = get_log_buffer()
             assert buffer is not None
             expected = buffer.total_emitted
-            await pilot.press("ctrl+l")
+            await pilot.press(key)
             await pilot.pause()
+            assert app.screen is screen
+            assert not log.records
             assert app._debug_console_cleared_upto == expected
 
             # A record emitted after the clear must survive the reopen; only the

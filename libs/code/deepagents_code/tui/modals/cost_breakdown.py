@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.binding import Binding, BindingType
@@ -15,7 +16,11 @@ from deepagents_code.config import get_glyphs
 from deepagents_code.unicode_security import sanitize_control_chars
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from textual.app import ComposeResult
+
+logger = logging.getLogger(__name__)
 
 
 class CostBreakdownScreen(ModalScreen[None]):
@@ -45,9 +50,10 @@ class CostBreakdownScreen(ModalScreen[None]):
     }
     """
 
-    def __init__(self, breakdown: str) -> None:
-        """Initialize with a plain-text breakdown."""
+    def __init__(self, breakdown: str, provider: Callable[[], str]) -> None:
+        """Initialize with a plain-text breakdown and its live provider."""
         super().__init__()
+        self._provider = provider
         self._breakdown = sanitize_control_chars(
             breakdown, keep_newlines=True, collapse_whitespace=False
         )
@@ -71,8 +77,25 @@ class CostBreakdownScreen(ModalScreen[None]):
             )
 
     def on_mount(self) -> None:
-        """Focus the modal so its bindings receive keyboard input."""
+        """Focus the modal and refresh its breakdown while open."""
         self.focus()
+        self.set_interval(0.5, self._refresh_breakdown)
+
+    def _refresh_breakdown(self) -> None:
+        """Update the displayed and copyable breakdown when costs change."""
+        try:
+            breakdown = self._provider()
+        except Exception:
+            logger.debug("Cost breakdown refresh failed", exc_info=True)
+            return
+        if not breakdown:
+            return
+        breakdown = sanitize_control_chars(
+            breakdown, keep_newlines=True, collapse_whitespace=False
+        )
+        if breakdown != self._breakdown:
+            self._breakdown = breakdown
+            self.query_one(".cost-breakdown-body", Static).update(Content(breakdown))
 
     def action_copy(self) -> None:
         """Copy the complete breakdown to the clipboard."""

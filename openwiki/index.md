@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Repository Quickstart](quickstart.md) - A concise map from common Deep Agents repository changes to the owning package, related wiki guidance, focused validation, and release checks.
+- [Engineer Navigation Guide](quickstart.md) - Concise navigation for engineers changing the Deep Agents SDK, dcode, ACP, Talon, partner integrations, or evaluation suite. Routes common work to the architecture, concepts, workflows, operations, and focused testing guidance.
 
 # Directories
 

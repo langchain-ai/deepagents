@@ -45,6 +45,17 @@ class TestLoadHooks:
 
         assert result == []
 
+    def test_invalid_utf8(self, tmp_path):
+        """Returns empty list when the file is not valid UTF-8."""
+        # `é` as a single cp1252 byte, as an editor saving in an ANSI code page
+        # would write it.
+        (tmp_path / "hooks.json").write_bytes(b'{"hooks": [{"command": ["caf\xe9"]}]}')
+
+        with patch("deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path):
+            result = hooks_mod._load_hooks()
+
+        assert result == []
+
 
 # ---------------------------------------------------------------------------
 # dispatch_hook

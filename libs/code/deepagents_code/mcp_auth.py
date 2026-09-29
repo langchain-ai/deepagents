@@ -1218,6 +1218,7 @@ def _make_loopback_handlers(
     extras = dict(extra_auth_params or {})
     interaction = ui if ui is not None else _default_ui()
     last_authorize_url: str | None = None
+    browser_opened = False
     _paste_redirect, paste_callback = _make_paste_back_handlers(
         extra_auth_params=extra_auth_params,
         ui=interaction,
@@ -1227,7 +1228,8 @@ def _make_loopback_handlers(
         import asyncio
         import webbrowser
 
-        nonlocal last_authorize_url
+        nonlocal last_authorize_url, browser_opened
+        browser_opened = False
         final_url = _append_query_params(auth_url, extras) if extras else auth_url
         last_authorize_url = final_url
 
@@ -1268,10 +1270,18 @@ def _make_loopback_handlers(
             )
             await interaction.show_authorize_url(final_url, opened_in_browser=False)
             return
+        browser_opened = True
         await interaction.show_authorize_url(final_url, opened_in_browser=True)
 
     async def callback() -> AuthorizationCodeResult:
+        from deepagents_code.mcp_oauth_ui import (
+            CliOAuthInteraction,
+            _wait_for_browser_authorization,
+        )
+
         try:
+            if browser_opened and isinstance(interaction, CliOAuthInteraction):
+                return await _wait_for_browser_authorization(callback_server.wait)
             return await callback_server.wait()
         except (
             _LoopbackCallbackTimeoutError,
@@ -1998,6 +2008,7 @@ def format_login_failure(exc: BaseException) -> str:
     if reauth is not None:
         return str(reauth)
 
+    from deepagents_code.mcp_oauth_ui import MCPLoginAbortedError
     from deepagents_code.mcp_tools import MCPConfigError
 
     if isinstance(exc, MCPConfigError):
@@ -2018,8 +2029,12 @@ def format_login_failure(exc: BaseException) -> str:
     visited: set[int] = set()
     while current is not None and id(current) not in visited:
         visited.add(id(current))
+        if isinstance(current, MCPLoginAbortedError):
+            return "MCP login aborted."
         parts.append(type(current).__name__)
         if isinstance(current, BaseExceptionGroup):
+            if current.subgroup(MCPLoginAbortedError) is not None:
+                return "MCP login aborted."
             parts.append(
                 "[" + ", ".join(type(e).__name__ for e in current.exceptions[:5]) + "]"
             )

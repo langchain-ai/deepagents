@@ -2,6 +2,67 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.78](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.77...deepagents-code==0.1.78) (2026-09-28)
+
+### Features
+
+- Ask isolated side questions with `/btw` ([#6434](https://github.com/langchain-ai/deepagents/pull/6434)).
+- Offer to summarize threads and switch when the cache expires ([#6477](https://github.com/langchain-ai/deepagents/pull/6477)).
+- Persist project MCP startup denials ([#6597](https://github.com/langchain-ai/deepagents/pull/6597)).
+
+### Bug Fixes
+
+- Show 100 recent threads by default ([#6604](https://github.com/langchain-ai/deepagents/pull/6604)).
+- Restore console input after piped prompts on Windows ([#6572](https://github.com/langchain-ai/deepagents/pull/6572)).
+- Load resumed conversation history on demand ([#6342](https://github.com/langchain-ai/deepagents/pull/6342)).
+
+## [0.1.77](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.76...deepagents-code==0.1.77) (2026-09-24)
+
+### Bug Fixes
+
+- Preview remote plugin contents before installation.
+- Report mis-encoded `config.toml` files created by older config writers.
+- Show how to cancel MCP browser login and handle Escape.
+- Make workspace configuration warnings actionable.
+- Hide prompt search hints when search is unavailable.
+
+## [0.1.76](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.75...deepagents-code==0.1.76) (2026-09-24)
+
+### Features
+
+- Label plugin servers in the MCP viewer ([#6539](https://github.com/langchain-ai/deepagents/pull/6539)).
+
+### Bug Fixes
+
+- Resolve plugin MCP servers during login ([#6524](https://github.com/langchain-ai/deepagents/pull/6524)).
+- Keep empty MCP servers searchable and include descriptions in search results ([#6540](https://github.com/langchain-ai/deepagents/pull/6540)).
+
+## [0.1.75](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.74...deepagents-code==0.1.75) (2026-09-23)
+
+### Bug Fixes
+
+- Lazy MCP caches now warm without blocking the event loop.
+- Token and cost breakdowns now refresh while the view is open.
+
+## [0.1.74](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.73...deepagents-code==0.1.74) (2026-09-23)
+
+### Features
+
+- Added inline thread mentions & picker via `@@` ([#6197](https://github.com/langchain-ai/deepagents/pull/6197)).
+- Usage summaries now show human invocations ([#6500](https://github.com/langchain-ai/deepagents/pull/6500)).
+
+### Bug Fixes
+
+- Retry bare `openai.APIError` exceptions raised mid-stream ([#6499](https://github.com/langchain-ai/deepagents/pull/6499)).
+- Keep prompt recall results out of the file picker ([#6494](https://github.com/langchain-ai/deepagents/pull/6494)).
+- Read `hooks.json` as UTF-8 in the legacy hook loader ([#6501](https://github.com/langchain-ai/deepagents/pull/6501)).
+
+### Performance Improvements
+
+- Reuse Auto classifier history ([#6056](https://github.com/langchain-ai/deepagents/pull/6056)).
+- Rank checkpoint and message row IDs before loading blobs and prompts ([#6488](https://github.com/langchain-ai/deepagents/pull/6488), [#6489](https://github.com/langchain-ai/deepagents/pull/6489)).
+- Log thread-loading phase timings ([#6490](https://github.com/langchain-ai/deepagents/pull/6490)).
+
 ## [0.1.73](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.72...deepagents-code==0.1.73) (2026-09-22)
 
 ### Features

@@ -89,6 +89,37 @@ async def test_sqlite_uri_preserves_connection_options(tmp_path):
     assert not path.exists()
 
 
+async def test_failed_sqlite_connect_waits_for_worker_shutdown(tmp_path, monkeypatch):
+    connection = history_backends.aiosqlite.Connection
+    stop = connection.stop
+    stopping, release = asyncio.Event(), threading.Event()
+
+    def delayed_stop(conn):
+        conn._tx.put_nowait((None, lambda: release.wait(timeout=5)))
+        future = stop(conn)
+        stopping.set()
+        return future
+
+    monkeypatch.setattr(connection, "stop", delayed_stop)
+    config = TalonConfig.from_env(
+        {URI_KEY: (tmp_path / "missing.sqlite").as_uri() + "?mode=rw"}, base_home=tmp_path
+    )
+
+    async def open_archive():
+        async with open_history(config):
+            pytest.fail("opening a missing database must fail")
+
+    task = asyncio.create_task(open_archive())
+    try:
+        await asyncio.wait_for(stopping.wait(), timeout=2)
+        await asyncio.sleep(0)
+        assert not task.done(), "startup returned before its SQLite worker stopped"
+    finally:
+        release.set()
+        with pytest.raises(TalonConfigError, match="SQLite history"):
+            await task
+
+
 def install_plugin(monkeypatch, factory, *, count=1):
     plugin = EntryPoint(
         name="mysql", value="example_history:open_store", group="deepagents_talon.history_backends"

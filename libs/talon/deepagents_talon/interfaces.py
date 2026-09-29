@@ -138,6 +138,9 @@ class AgentRequest:
         message_handler: Optional callback for progress updates to the originating chat.
         authorization_handler: Optional callback used for authorization events
             that must be handled outside model context.
+        model: `provider:model` spec the conversation selected with `/model`, or
+            `None` for the runtime's default. Set only by the host, never from
+            channel metadata.
     """
 
     conversation_id: str
@@ -162,6 +165,7 @@ class AgentRequest:
         repr=False,
         compare=False,
     )
+    model: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -291,6 +295,56 @@ class AgentRuntime(Protocol):
 
     async def recover_interrupted(self, conversation_id: str) -> None:
         """Record an interrupted turn after its latest committed checkpoint."""
+
+
+@runtime_checkable
+class ContextDoctorRuntime(Protocol):
+    """Optional runtime capability for read-only context diagnostics."""
+
+    async def context_doctor(self, conversation_id: str) -> str:
+        """Audit the current conversation without invoking the model.
+
+        Args:
+            conversation_id: Host-resolved agent thread to inspect.
+
+        Returns:
+            Context token estimates, without prompt or conversation contents.
+        """
+
+
+@runtime_checkable
+class ModelSelectableRuntime(Protocol):
+    """Optional runtime capability for switching a conversation's model."""
+
+    @property
+    def default_model(self) -> str:
+        """Model spec every conversation uses until it selects another."""
+
+    async def model_catalog(self) -> dict[str, list[str]]:
+        """Return the selectable models keyed by provider."""
+
+    async def select_model(self, spec: str) -> bool:
+        """Validate and prepare `spec` so a later turn can use it.
+
+        Args:
+            spec: Requested `provider:model` spec.
+
+        Returns:
+            Whether `spec` is a selectable model. A model that is selectable but
+            cannot be built raises instead.
+        """
+
+
+@runtime_checkable
+class SmartModelRuntime(Protocol):
+    """Optional runtime capability for the assistant-wide one-off help model."""
+
+    @property
+    def smart_model(self) -> str | None:
+        """Current helper model, or None when consultations are disabled."""
+
+    async def select_smart_model(self, spec: str | None) -> bool:
+        """Validate and activate a helper model for subsequent turns."""
 
 
 @runtime_checkable

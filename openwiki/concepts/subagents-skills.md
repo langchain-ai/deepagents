@@ -1,113 +1,111 @@
 ---
-type: Talon delegation architecture
+type: delegation and skill-discovery concept
 title: Subagents and Skills
-description: Talon delegates configured subagents differently in chat and cron turns. Chat delegation creates owner-scoped in-memory jobs with later result delivery, while cron delegation waits for bounded inline results without job records or interactive authority.
-tags: [talon, subagents, skills, delegation, cron, mcp]
-sources:
-  - id: openwiki-source-6a038e6e1a11f450bcafce54
-    resource: repo://libs/talon/deepagents_talon/__main__.py
-  - id: openwiki-source-ef66a16bd57d322614dc349d
-    resource: repo://libs/talon/deepagents_talon/async_subagents.py
-  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
-    resource: repo://libs/talon/deepagents_talon/background.py
-  - id: openwiki-source-d98b6d615a63b95a7c893810
-    resource: repo://libs/talon/deepagents_talon/mcp_middleware.py
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-2d1f686d24d8182f60108ae7
-    resource: repo://libs/talon/deepagents_talon/subagents.py
-  - id: openwiki-source-8ca4576d19f02a613c296c83
-    resource: repo://libs/talon/tests/test_async_subagents.py
-  - id: openwiki-source-82dab853903c3a574614fd1e
-    resource: repo://libs/talon/tests/unit_tests/test_background.py
-  - id: openwiki-source-a4cc4beb110c42a169caf195
-    resource: repo://libs/talon/tests/unit_tests/test_research_subagents.py
-  - id: openwiki-source-ba64217fcf5745a7cb863296
-    resource: repo://libs/talon/tests/unit_tests/test_subagent_reload.py
+description: Deep Agents delegates synchronous isolated or forked work through a task tool and can track remote Agent Protocol work asynchronously. Skills are a separate backend-discovery and prompt-index mechanism, with explicit state and propagation boundaries.
+tags: [deepagents, subagents, delegation, skills, middleware, agent-protocol]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-20T08:05:19.815Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-20T08:05:19.815Z" }
+    at: 2026-09-25T08:06:00.203Z
+sources:
+  - id: openwiki-source-0fc0e47059e4d07e23e50be2
+    resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
+    resource: repo://libs/deepagents/deepagents/middleware/skills.py
+  - id: openwiki-source-114a1c7a58992fa867a94ef0
+    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-ca8183c87e6002c442ee2d62
+    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 ---
 
 # Subagents and Skills
 
-Talon uses configured subagents for focused delegated work. The relevant boundary is a **capability boundary**, not a sandbox: a locally compiled child receives fresh task input and only explicitly attached tools, while a graph snapshot determines which definitions and attachments a turn or already-started task continues to use. Delegation has two execution modes selected by the invoking turn: chat launches a background job and later receives its result; cron waits for an inline result in the same scheduled turn.
+`create_deep_agent` assembles two distinct extension mechanisms. **Subagents** execute a delegated task and return a result through a tool call; they may be local synchronous agents, caller-provided runnables, or remote asynchronous Agent Protocol tasks. **Skills** are not delegated agents or tools: `SkillsMiddleware` indexes instruction bundles in backend storage and tells an agent where to read a relevant `SKILL.md` when needed.
 
-This page covers Talon’s delegation contract. For parent context and SDK `fork` semantics, see [Context management](/openwiki/concepts/context-management.md); for approval rules, see [Permissions and human-in-the-loop](/openwiki/concepts/permissions-hitl.md); for MCP configuration and authorization, see [MCP](/openwiki/integrations/mcp.md); and for persistent conversation behavior, see [State persistence](/openwiki/concepts/state-persistence.md).
+This distinction is important for capability design. A subagent's context, tools, middleware, permission rules, approval behavior, and state transfer are determined by its spec and compilation path. A skill only contributes metadata and a progressive-disclosure prompt section; it does not itself grant a tool or execute code. See [Middleware catalog](/openwiki/concepts/middleware-catalog.md), [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md), and [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md) for the surrounding construction mechanisms.
 
-## Two execution modes
+## Assembly and delegation paths
 
-`BackgroundSubagents` intercepts the SDK `task` and `start_async_task` tools only when called by the main agent. A nested child call is refused, so a delegated child cannot recursively launch local or remote work. The runtime sets the scheduled-turn flag only when `request.metadata["trigger"] == "cron"`; it resets the flag at the end of every invocation. A background-result delivery turn is not a cron turn, so it retains chat behavior and can detach new work.
+The `subagents=` argument accepts three shapes:
+
+- A declarative `SubAgent` is compiled into a local runnable and called through `task`.
+- A `CompiledSubAgent` supplies its own runnable; Deep Agents treats its graph, state schema, and embedded controls as caller-owned.
+- An `AsyncSubAgent`, identified by `graph_id`, is routed to `AsyncSubAgentMiddleware` instead of the synchronous middleware and talks to an Agent Protocol server.
+
+Unless the selected harness profile disables it or a caller supplies a replacement, the factory adds a synchronous `general-purpose` agent. Thus the normal graph exposes `task`; disable the default and provide no synchronous subagents to remove it. Async definitions are independent and install their own launch and task-management tools.
 
 ```mermaid
 flowchart TD
-    Turn["Main-agent tool call"] --> Kind{"Cron turn"}
-    Kind -->|No chat| Job["Create owner-scoped in-memory job"]
-    Job --> Reply["Return task ID and continue chat"]
-    Reply --> Later["Later owner turn receives completed data"]
-    Kind -->|Yes| Slot["Wait for inline capacity"]
-    Slot --> Inline["Run subagent in this turn"]
-    Inline --> Result["Return bounded result to main agent"]
+    Parent["Parent model"] --> Task["task tool"]
+    Task --> Mode{"Subagent mode"}
+    Mode -->|"isolated"| Fresh["Task message and filtered state"]
+    Mode -->|"fork"| History["Effective parent history and task preamble"]
+    Fresh --> Local["Local runnable"]
+    History --> Local
+    Local --> Result["ToolMessage or Command update"]
+    Parent --> Start["start_async_task"]
+    Start --> Remote["Remote Agent Protocol thread and run"]
+    Remote --> Record["async_tasks state"]
+    Record --> Manage["check update cancel list tools"]
 ```
-*Chat delegation returns a handle for later delivery, whereas cron delegation returns the subagent outcome to the same turn.*
 
-### Chat turns: detached jobs and later delivery
+*The synchronous `task` path waits for a local result, while the asynchronous path records a remote task and returns its identifier immediately.*
 
-For a non-cron call, Talon requires a non-empty conversation thread ID, creates a `subagent-{uuid}` record, and starts a worker in a copied context. The record is owner-scoped: `list_subagents` lists only the caller’s thread and `cancel_subagent` rejects another conversation’s task ID. The worker receives a distinct task thread ID and runs local work or a remote stream independently of the parent turn. It returns the task ID immediately and instructs the main agent to continue the user conversation rather than poll.
+The synchronous task schema deliberately accepts only `description` and `subagent_type`; unknown model-supplied arguments are rejected rather than silently losing instructions. Agent names must be unique and unsupported modes fail validation; `handoff` remains a legacy spelling for isolated. The selected agent is invoked with the parent run's ambient callbacks, tags, and configurable values, plus subagent tracing metadata. Independent `task` calls can run as parallel tool calls under the agent runtime.
 
-Chat jobs are process-memory state. Talon retains at most 128 records and allows at most four running workers; a capacity hit refuses the launch. A worker has a one-hour timeout, caps stored text at 64,000 characters, turns exceptions and timeouts into generic result text, and cancels a remote stream on disconnect. It clears the authorization handler and operator flag before running, though copied scoped context such as history scope and cron origin remains available to attached tools. An approval interrupt therefore reports that the protected action did not run rather than waiting for an operator.
+## Isolated and forked local execution
 
-When a non-cancelled job has a result, the next delivery turn for its owner receives it as a synthetic data message. The runtime acknowledges it only after that main-agent turn completes, and returns the consumed IDs to the host. If the host discards that reply, it can requeue only those IDs. If a delivery turn fails, Talon retries the pending result; after three failed deliveries it marks it dropped. Cancelling a conversation’s workers also discards its completed results. Neither jobs nor pending results survive a process restart.
+### Isolated is the default
 
-### Cron turns: inline, bounded, and non-interactive
+An isolated declarative subagent receives a new `HumanMessage` containing only the delegated description. It does **not** receive the parent message history, todos, parent `structured_response`, skill metadata, or middleware-private state. Public state fields can be passed in, and returned public updates can be merged back, but the task adapter excludes `messages`, `todos`, `structured_response`, `skills_metadata`, the fork marker, and all discovered private state fields. This lets a child report a useful public update without exposing parent-only implementation state or allowing its skills index to replace the parent’s.
 
-A cron turn has nobody to converse with while work runs and no later user turn into which to inject a result. Talon therefore runs `task` and `start_async_task` inline: the tool call waits for the result, returns it directly to the scheduled main graph, and creates **no** job record. In this mode, `start_async_task` streams the configured remote graph itself instead of using the SDK pollable task mechanism. `list_subagents` and `cancel_subagent` are hidden from the model because the cron turn owns no background jobs.
+The child is compiled with the spec's model and tools. If `tools` is omitted, declarative specs inherit the parent-supplied tool sequence; supplying it replaces that inherited application-tool sequence. A declarative subagent may choose its own model, middleware, skill sources, permission rules, `interrupt_on`, and response format. Its permissions inherit the parent rules only when its spec omits `permissions`; an explicit list replaces them. Likewise, `interrupt_on` inherits by default but an explicit child value overrides it. A compiled runnable does not receive these factory-level inheritance rules—configure its state schema, permissions, middleware, and approval controls when compiling it.
 
-Inline delegation has bounds separate from chat workers. It has a semaphore of four concurrent inline calls; additional cron fan-out waits rather than being refused, and it does not consume or contend with the four chat-worker slots. The default inline timeout is 600 seconds, distinct from the detached worker’s one-hour timeout. `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT` can override it with a positive integer number of seconds. Queue time does not consume that timeout; the timeout begins after an inline slot is acquired. Inline outputs are also clamped to 64,000 characters because a scheduled thread is reused on later fires.
+### Fork continues the parent, but cannot recurse
 
-Cron delegation disables interactive authority in two ways. The scheduled prompt tells the model to use each result in the same turn rather than await later delivery, and the scheduled invocation cannot set the approval-operator flag. An approval-gated tool is therefore denied through the scheduled approval flow, while the inline helper converts delegation errors and timeouts into sanitized tool errors instead of letting them escape and retry the whole graph. The child still cannot perform nested delegation.
+`mode="fork"` is experimental. A fork receives the parent’s effective conversation history—including application of a prior summarization event—followed by a preamble and the delegated task. For a declarative fork, Deep Agents also carries parent state except stale structured output and summarization session/event state, marks the child as forked, rebuilds the parent system prompt, and appends the spec’s `system_prompt` as an addendum. It mirrors the parent’s prompt-producing middleware so dynamic prompt content can be reconstructed; a compiled fork is opaque, so it gets only non-excluded, non-private public state.
 
-## Local definitions and fresh compilation
+A fork cannot declare `skills`: it inherits the parent’s skill behavior so it cannot silently diverge from the inherited prompt. It is also given a guarded `task` tool rather than having delegation removed; when it calls it, the tool returns a refusal. This retains the familiar tool surface and turns recursive delegation into an explicit model-visible failure instead of launching an unbounded delegation tree.
 
-Talon has no implicit `general-purpose` child. Without configured definitions there is no `task` tool; a configured child named `general-purpose` is only an ordinary named definition. At startup and explicit reload, the runtime reads local definitions from `agents/{name}/AGENTS.md`—using `assistant_dir/agents` when it exists, otherwise the parent directory’s `agents` directory—then combines those with supplied and loader-backed definitions. Names must be unique across all sources.
+## Result contract and tracing identity
 
-A local file uses YAML frontmatter plus a Markdown body. It requires a non-empty `description`; `name` falls back to the directory name, an optional `model` must be a string, and the body becomes the system prompt. Missing, unreadable, or malformed local files are skipped, but a duplicate resolved local name fails the load. Local `mode` may only be `fresh`; Talon rejects `fork` for local, supplied, and compiled specs.
+Synchronous subagents return a `Command` that creates a `ToolMessage` tied to the original tool-call ID. For an ordinary result, the middleware walks backward to the last non-empty `AIMessage` text; it does not expose the child’s intermediate conversation. When the child returns `structured_response`, the value is JSON-serialized instead—using Pydantic's `model_dump_json()` or dataclass conversion where appropriate. This is the supported bridge for a subagent response schema, while the child's `structured_response` key itself remains excluded from parent state.
 
-The optional `tools` list contains unique, non-empty exact names. Talon resolves them from the parent graph’s attachment catalog before compilation and rejects unavailable attachments. `web: true` is boolean-only and additionally makes the configured web tools available. It is the declared option, not an agent name, that grants those web attachments.
+A `CompiledSubAgent` must return a state containing `messages`; otherwise the task fails with a configuration error because no result can be communicated. It can return public state updates, but excluded and private keys do not cross the boundary. Dynamic response formats are available only for declarative specs via `__deepagents_subagent_response_format`; applying one to a compiled runnable raises rather than pretending the opaque graph supports it.
 
-A local definition is compiled as a fresh graph with its selected model, prompt, and attachments. The input adapter retains only `messages`; the child has no checkpointer, and task invocations use a recursion limit of 500. Thus the delegated description is the only user message: parent chat history, memory, skills, filesystem and shell tools, archive and reload tools, and delegation tools are not automatically carried into the child. This is an explicit compilation and attachment boundary; it does not claim operating-system or network sandboxing.
+Each synchronous child call enters a LangSmith tracing context with `ls_agent_type="subagent"`, preserving the enclosing tracing fields while changing that identity. The tool also stamps this as configurable metadata for the child invocation. This makes delegated work identifiable in tracing without manually copying callbacks, tags, or configurable values; the runtime carries those ambient parent values and the child's bound configuration wins collisions.
 
-## Per-task capability additions and protections
+## Remote asynchronous subagents
 
-`get_agent_tools` exposes a credential- and prompt-free attachment inventory. For a local child it reports configured tools and the parent tool names eligible for dynamic selection; opaque compiled and remote definitions report `tools: null`. The inventory also distinguishes the graph captured by the current turn from the latest active graph and reports saved changes that are not active.
+An `AsyncSubAgent` names a remote `graph_id`, with optional `url` and `headers`. `start_async_task` creates a remote thread and run with the delegated description as a user message, then stores an `AsyncTask` record keyed by the remote thread ID in `async_tasks`. The record holds the agent name, thread ID, current run ID, status, and creation/check/update timestamps, so it persists with agent state rather than relying only on conversational text. The middleware adds `x-auth-scheme: langsmith` unless headers already supply it. SDK environment credentials support managed deployments; headers are the extension point for self-hosted authentication.
 
-A parent may use `task(..., tools=[...])` only with a named local child. Each requested name must be unique and selectable from the parent catalog; delegation and management tools are excluded. The request recompiles that one fresh child with its configured tools plus missing requested attachments—it cannot replace persisted attachments or edit `AGENTS.md`. Invalid, duplicate, unavailable, or opaque-child selections do not run a child.
+`check_async_task` fetches the current run and, on success, reads the remote thread’s final message. `update_async_task` interrupts the current run and starts a new one on the same remote thread, retaining the task ID while replacing its run ID. `cancel_async_task` cancels the tracked remote run, and `list_async_tasks` filters tracked records then refreshes nonterminal statuses. Unknown types and unknown task IDs are returned as tool errors; failures communicating with the server also become a tool result rather than corrupting the task record. A synchronous parent call requires a URL; URL-less local ASGI transport is available only through async invocation.
 
-Every locally compiled child installs `talon_mcp_middleware`. For a metadata-marked MCP attachment, it normalizes arguments against the tool schema, binds authorization invocation state, and converts `MCPError` to a sanitized `ToolMessage` containing only the code and message. This applies to configured and dynamically selected MCP tools in both inline and detached delegation.
+Remote tasks do not inherit the parent’s local tool set, filesystem permissions, state schema, or `interrupt_on` policy. They execute the graph deployed at the remote endpoint, which must own its own authorization and approval configuration.
 
-Fresh compilation filters the current approval policy to enabled rules whose names are actually attached, then installs `HumanInTheLoopMiddleware` for that subset. Consequently, an explicitly attached protected tool still requires approval. Detached workers and cron turns cannot acquire an operator decision; their results report that the protected action has not run.
+## Skills: discovery, not delegation
 
-## Remote definitions and graph snapshots
+A skill source is a backend path or `(path, label)` pair. Each immediate child directory is considered a candidate only when it contains `SKILL.md`; the middleware reads this file through backend `ls` and `download_files` APIs, not direct host filesystem APIs. Frontmatter must provide a name and description to load. The metadata includes the backend path and optional license, compatibility, arbitrary metadata, and `allowed-tools` advisory list. Invalid or unreadable content, invalid metadata, and files larger than 10 MiB are skipped with diagnostics rather than becoming instructions.
 
-The CLI provides `load_async_subagents` to `DeepAgentRuntime`. It reads `[async_subagents.<name>]` tables from `~/.deepagents/config.toml`: `description` and `graph_id` are required non-empty strings, `url` is an optional non-empty string, and `headers` must map strings to strings. A missing file or section yields no definitions. Unreadable or malformed TOML, a non-table section, or one invalid entry rejects the whole load rather than leaving a partial remote configuration active.
+At `before_agent`, metadata is loaded in source order and later entries with the same skill name replace earlier entries. The result is cached in `skills_metadata` per state/thread: a present list—including an empty one—prevents a rescan; setting it to `None` in invocation input or with `update_state` requests reload on the next run. Source-level failures are logged and retained as private `skills_load_errors`; the prompt renders a bounded, escaped diagnostic block and treats it as untrusted content.
 
-Remote definitions are loaded at startup and explicit reload, not on every turn. A configured middleware copy binds its remote targets to the graph snapshot. Therefore an already-started remote job continues with its original graph ID, URL, and headers after a reload; the same snapshot principle applies to already-running local work.
+The model sees source labels, skill names, descriptions, optional annotations, and the `SKILL.md` path. It must choose a relevant skill, explicitly read that file with its available file tool, then use any referenced supporting files or scripts. `allowed-tools` is descriptive metadata in this implementation, not an enforcement mechanism. Passing `system_prompt=None` still loads and caches metadata but suppresses this prompt index; a custom template must retain the three runtime substitution slots.
 
-`reload_subagent_configuration` resolves and constructs a replacement graph under the tools lock before assigning either the resolved definitions or active graph. Failure leaves the previous graph active and returns a non-sensitive failure response from the exposed reload tool. Each invocation captures its graph in a context variable, so reload affects subsequent turns only. Removing an attachment or definition is not immediate revocation of running tasks: use `list_subagents` and `cancel_subagent` before relying on the capability change.
+### Skill propagation boundary
 
-## Operations and focused tests
+Top-level `skills=` installs `SkillsMiddleware` on the main graph. It is also installed on the automatically generated general-purpose subagent, so that default worker can discover the same sources. A named declarative isolated subagent receives skills only when its own spec sets `skills`; its own list replaces the parent skill sources rather than inheriting them. Forks instead replay the parent skills behavior and are forbidden from supplying a separate list. In all cases, `skills_metadata` does not cross the normal parent/child state boundary, so one agent cannot overwrite another agent's cached discovery index.
 
-- Use chat delegation for work that may outlive a reply and should be delivered back to that conversation. Monitor and cancel it through `list_subagents` and `cancel_subagent`; account for its in-memory lifecycle and delivery retries.
-- Use cron delegation when the scheduled graph must act on findings in that firing. Size `DEEPAGENTS_TALON_INLINE_SUBAGENT_TIMEOUT` to the schedule; a stalled inline call costs scheduled-run time, not a background slot.
-- When changing attachments, test both configured and dynamic paths. The research-subagent tests cover fresh context, absent implicit delegation, exact attachments, dynamic additions, MCP middleware, approvals, web capability, and reload inventory.
-- The background tests cover owner-scoped chat jobs, delivery acknowledgement and requeueing, result redaction, remote target snapshots, plus cron inline execution, concurrency queueing, timeout behavior, result clamping, and hidden job-management tools. Host tests cover the absence of approval and authorization handlers on background-result delivery turns and scheduled-run lifecycle behavior.
+## Configuration and focused verification
+
+Use declarative isolated agents for focused work where the parent must provide all necessary task context and wants a narrow, independently configured capability set. Use a fork only when the worker genuinely needs the effective conversation and system-prompt context; it carries more context, is experimental, and cannot delegate again. Use `CompiledSubAgent` when a separately built graph is the required extension boundary. Use `AsyncSubAgent` for long-running remote work where a persistent task record and later status or result checks are preferable to blocking the parent turn.
+
+Focused tests cover synchronous final-message and structured-response forwarding, isolation of todo, private, and skill state, inherited runtime metadata, fork history/prompt reconstruction and recursion refusal, tracing identity, and skills installed on the appropriate child types. Async-subagent tests cover launch, check, update, cancellation, task-state updates, stale-status refresh, and error paths. Skills middleware tests exercise backend discovery, source precedence, invalid files and diagnostics, state caching/reload, and the no-prompt-index mode.
 
 ## Related
 
-- [Context management](/openwiki/concepts/context-management.md)
-- [Permissions and human-in-the-loop](/openwiki/concepts/permissions-hitl.md)
-- [State persistence](/openwiki/concepts/state-persistence.md)
-- [MCP](/openwiki/integrations/mcp.md)
+- [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md)
+- [Middleware catalog](/openwiki/concepts/middleware-catalog.md)
 - [Talon](/openwiki/integrations/talon.md)
-- [Testing guide](/openwiki/testing/testing-guide.md)
+- [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md)

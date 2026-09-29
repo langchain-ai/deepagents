@@ -9,6 +9,7 @@ import argparse
 from rich.markup import escape
 
 from deepagents_code import theme
+from deepagents_code._constants import DEFAULT_AGENT_NAME, DEFAULT_THREAD_LIMIT
 from deepagents_code._paths import PATHS
 from deepagents_code._version import DOCS_URL, __version__
 from deepagents_code.config import (
@@ -431,7 +432,7 @@ def show_skills_help() -> None:
     console.print("  trust             Manage trusted skill directories")
     console.print()
     _print_option_section(
-        "  --agent <name>    Specify agent identifier (default: agent)",
+        f"  --agent <name>    Specify agent identifier (default: {DEFAULT_AGENT_NAME})",
         "  --project         Use project-level skills instead of user-level",
         title="Common options",
     )
@@ -492,7 +493,7 @@ def show_skills_list_help() -> None:
     console.print("  dcode skills list [options]")
     console.print()
     _print_option_section(
-        "  --agent NAME            Agent identifier (default: agent)",
+        f"  --agent NAME            Agent identifier (default: {DEFAULT_AGENT_NAME})",
         "  --project               Show only project-level skills",
     )
     console.print()
@@ -510,7 +511,7 @@ def show_skills_create_help() -> None:
     console.print("  dcode skills create <name> [options]")
     console.print()
     _print_option_section(
-        "  --agent NAME            Agent identifier (default: agent)",
+        f"  --agent NAME            Agent identifier (default: {DEFAULT_AGENT_NAME})",
         "  --project               Create in project directory "
         "instead of user directory",
     )
@@ -528,7 +529,7 @@ def show_skills_info_help() -> None:
     console.print("  dcode skills info <name> [options]")
     console.print()
     _print_option_section(
-        "  --agent NAME            Agent identifier (default: agent)",
+        f"  --agent NAME            Agent identifier (default: {DEFAULT_AGENT_NAME})",
         "  --project               Search only in project skills",
     )
     console.print()
@@ -545,7 +546,7 @@ def show_skills_delete_help() -> None:
     console.print("  dcode skills delete <name> [options]")
     console.print()
     _print_option_section(
-        "  --agent NAME            Agent identifier (default: agent)",
+        f"  --agent NAME            Agent identifier (default: {DEFAULT_AGENT_NAME})",
         "  --project               Search only in project skills",
         "  -f, --force             Skip confirmation prompt",
         "  --dry-run               Show what would happen without making changes",
@@ -1045,7 +1046,8 @@ def show_threads_list_help() -> None:
         "  --branch TEXT             Filter by git branch name",
         "  --cwd [PATH]              Filter by working directory (no value = current)",
         "  --sort {created,updated}  Sort order (default: from config, or updated)",
-        "  -n, --limit N             Maximum threads to display (default: 20)",
+        "  -n, --limit N             Maximum threads to display "
+        f"(default: {DEFAULT_THREAD_LIMIT})",
         "  -v, --verbose             Show all columns (branch, created, prompt)",
         "  -r, --relative/--no-relative"
         "  Show relative timestamps (default: from config)",

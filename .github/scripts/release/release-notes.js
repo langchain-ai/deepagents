@@ -497,7 +497,7 @@ function overrideBody({ component, version, head, mainHead, headingHash, fingerp
     // instructions produces a visibly distinct comment. Escape HTML so the
     // instructions cannot break the <details> wrapper or inject markup.
     ...(instructions
-        ? ['', '<details>', '<summary>📝 <strong>Drafted with maintainer instructions</strong></summary>', '', escapeHtml(instructions), '</details>']
+        ? ['', '<details>', '<summary>📝 <strong>Drafted with maintainer instructions</strong></summary>', '', `<pre><code>${escapeHtml(instructions)}</code></pre>`, '</details>']
         : []),
     '',
     '---',

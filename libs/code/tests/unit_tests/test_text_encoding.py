@@ -1,13 +1,15 @@
-"""UTF-8 prompts and skills must survive legacy Windows text encodings."""
+"""UTF-8 prompts, skills, and hooks must survive legacy Windows text encodings."""
 
 import importlib.util
 import io
+import json
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-from deepagents_code import agent, config
+from deepagents_code import agent, config, model_config
+from deepagents_code.hooks import legacy as legacy_hooks
 from deepagents_code.skills import commands
 
 _PACKAGE = Path(config.__file__).parent
@@ -117,6 +119,21 @@ def test_skill_creator_preserves_unicode(tmp_path: Path) -> None:
     assert (path / "assets" / "example_asset.txt").read_text(
         encoding="utf-8"
     ) == creator.EXAMPLE_ASSET
+
+
+def test_legacy_hooks_config_reads_utf8(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Hook commands with non-ASCII arguments must load exactly as written."""
+    hooks = [{"command": ["notify-send", "完了 — café"]}]
+    # `ensure_ascii=False` keeps the raw UTF-8 bytes a hand-edited file would
+    # contain; `\u` escapes would make the file ASCII and hide the decoding.
+    (tmp_path / "hooks.json").write_text(
+        json.dumps({"hooks": hooks}, ensure_ascii=False), encoding="utf-8"
+    )
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_DIR", tmp_path)
+
+    assert legacy_hooks._load_hooks() == hooks
 
 
 def test_skill_validator_reads_utf8(tmp_path: Path) -> None:

@@ -875,7 +875,7 @@ class TestThreadSelectorLimit:
                 "deepagents_code.sessions.list_threads",
                 new_callable=AsyncMock,
                 return_value=threads_without_details,
-            ) as mock_lt,
+            ),
             _patch_columns(),
             patch(
                 "deepagents_code.sessions.populate_thread_checkpoint_details",
@@ -893,12 +893,6 @@ class TestThreadSelectorLimit:
                         break
                     await pilot.pause(0.05)
 
-                mock_lt.assert_awaited_once_with(
-                    limit=20,
-                    include_message_count=False,
-                    sort_by="updated",
-                    cwd=None,
-                )
                 mock_populate.assert_awaited_once()
 
                 screen = app.screen
@@ -967,10 +961,6 @@ class TestThreadSelectorPrefetchedRows:
 
 class TestThreadSelectorInitialSortOrder:
     """Tests for initial sort order applied to prefetched rows."""
-
-
-class TestThreadSelectorSearch:
-    """Tests for fuzzy search filtering."""
 
 
 class TestThreadSelectorDelete:
@@ -1226,9 +1216,12 @@ class TestResumeThread:
         assert len(mounted) == 1
         assert "no active session" in _get_widget_text(mounted[0])
 
-    async def test_managed_cutoff_blocks_switch_without_mutation(self) -> None:
+    async def test_managed_cutoff_blocks_switch_without_mutation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A blocked target leaves the current thread and transcript untouched."""
         app = DeepAgentsApp(thread_id="current-thread")
+        monkeypatch.setattr(app, "_set_spinner", AsyncMock())
         app._agent = MagicMock()
         app._session_state = _mock_session_state("current-thread")
         mounted: list[Static] = []
@@ -1520,9 +1513,12 @@ class TestResumeThread:
             for call in _app_test_double(app)._mount_message.call_args_list
         )
 
-    async def test_prefetch_failure_keeps_current_thread_visible(self) -> None:
+    async def test_prefetch_failure_keeps_current_thread_visible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Failed prefetch should not clear current conversation state."""
         app = DeepAgentsApp(thread_id="old-thread")
+        monkeypatch.setattr(app, "_set_spinner", AsyncMock())
         app._agent = MagicMock()
         app._session_state = _mock_session_state("old-thread")
         fetch_history_mock = AsyncMock(

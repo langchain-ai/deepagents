@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
+
+import pytest
 
 from deepagents_code.mcp_login_service import (
     ConfigErrorKind,
@@ -19,8 +22,6 @@ from deepagents_code.mcp_login_service import (
 from deepagents_code.mcp_tools import DiscoveredMCPConfig, MCPConfigScope
 
 if TYPE_CHECKING:
-    import pytest
-
     from deepagents_code.json_types import JsonValue
 
 
@@ -70,6 +71,152 @@ def _isolate_project_mcp_trust_lists(
     monkeypatch.delenv(_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS, raising=False)
     monkeypatch.delenv(_env_vars.DISABLED_PROJECT_MCP_SERVERS, raising=False)
     return user_config
+
+
+@pytest.fixture
+def plugin_server(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Install an enabled HTTP plugin in isolated local state."""
+    from deepagents_code.plugins.adapters.mcp import scoped_mcp_server_name
+
+    plugin_id = "sentry@claude-plugins-official"
+    plugin = tmp_path / "plugins" / "sentry"
+    state = tmp_path / "state"
+    for path, data in (
+        (state / "plugin_state.json", {"enabledPlugins": {plugin_id: True}}),
+        (
+            state / "installed_plugins.json",
+            {
+                "plugins": {
+                    plugin_id: [{"installPath": str(plugin), "version": "1.4.0"}]
+                }
+            },
+        ),
+        (
+            plugin / ".claude-plugin" / "plugin.json",
+            {
+                "name": "sentry",
+                "version": "1.4.0",
+                "mcpServers": {
+                    "sentry": {
+                        "type": "http",
+                        "url": "https://example.invalid/mcp",
+                        "headers": {"X-Project": "${CLAUDE_PROJECT_DIR}"},
+                    }
+                },
+            },
+        ),
+    ):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data), encoding="utf-8")
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_STATE_DIR", state)
+    monkeypatch.setenv("DEEPAGENTS_CODE_PLUGIN_CACHE_DIR", str(tmp_path / "plugins"))
+    monkeypatch.setattr(
+        "deepagents_code.mcp_tools._resolve_project_config_base", lambda _: tmp_path
+    )
+    monkeypatch.setattr("deepagents_code.mcp_tools.discover_mcp_config_sources", list)
+    _isolate_project_mcp_trust_lists(monkeypatch, tmp_path)
+    return scoped_mcp_server_name(plugin_id, "sentry")
+
+
+class TestResolveMcpConfigPlugins:
+    """Login discovers the same enabled plugin servers as startup."""
+
+    @pytest.mark.parametrize("with_user_config", [False, True])
+    def test_resolves_plugin_server(
+        self,
+        plugin_server: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        with_user_config: bool,
+    ) -> None:
+        """Plugin login works with or without an ordinary MCP config file."""
+        user_cfg = tmp_path / "user.json"
+        user_cfg.write_text(
+            '{"mcpServers":{"docs":{"url":"https://docs.invalid/mcp"}}}'
+        )
+        if with_user_config:
+            monkeypatch.setattr(
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                lambda: [_user_source(user_cfg)],
+            )
+        result = resolve_mcp_config(None)
+        assert isinstance(result, ConfigResolution)
+        selection = select_server(result, plugin_server)
+        assert isinstance(selection, ServerSelection)
+        assert selection.server_name == plugin_server
+        assert selection.server_config["url"] == "https://example.invalid/mcp"
+        assert selection.server_config["headers"] == {"X-Project": str(tmp_path)}
+        assert result.used_paths == ((user_cfg,) if with_user_config else ())
+        assert "enabled plugins" in result.search_label
+        assert ("docs" in result.config["mcpServers"]) is with_user_config
+
+    @pytest.mark.parametrize("policy", ["disabled", "unreadable"])
+    def test_plugin_trust_fails_closed(
+        self,
+        plugin_server: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        policy: str,
+    ) -> None:
+        """Plugin installation never overrides a deny or an unreadable policy."""
+        config_text = (
+            f'[mcp]\ndisabled_project_servers = ["{plugin_server}"]\n'
+            if policy == "disabled"
+            else "[mcp]\ndisabled_project_servers = 123\n"
+        )
+        _isolate_project_mcp_trust_lists(monkeypatch, tmp_path, config_text)
+        result = resolve_mcp_config(None, trust_project_mcp=True)
+        assert isinstance(result, ConfigResolutionError)
+        assert result.kind is ConfigErrorKind.NO_USABLE_CONFIG
+        assert (result.policy_error is not None) is (policy == "unreadable")
+
+    @pytest.mark.parametrize("trusted_project", [False, True])
+    def test_plugin_merge_precedence(
+        self,
+        plugin_server: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        trusted_project: bool,
+    ) -> None:
+        """Plugins override user entries but trusted project entries win."""
+        paths = [tmp_path / "user.json", tmp_path / "project.json"]
+        for path in paths:
+            path.write_text(
+                json.dumps(
+                    {
+                        "mcpServers": {
+                            plugin_server: {"url": f"https://{path.stem}.invalid/mcp"}
+                        }
+                    }
+                )
+            )
+        monkeypatch.setattr(
+            "deepagents_code.mcp_tools.discover_mcp_config_sources",
+            lambda: [_user_source(paths[0]), _project_source(paths[1])],
+        )
+        result = resolve_mcp_config(None, trust_project_mcp=trusted_project)
+        assert isinstance(result, ConfigResolution)
+        selection = select_server(result, plugin_server)
+        assert isinstance(selection, ServerSelection)
+        host = "project" if trusted_project else "example"
+        assert selection.server_config["url"] == f"https://{host}.invalid/mcp"
+
+    def test_explicit_config_does_not_include_plugins(
+        self,
+        plugin_server: str,
+        tmp_path: Path,
+    ) -> None:
+        """An explicit file remains an isolated login configuration."""
+        cfg = tmp_path / "explicit.json"
+        cfg.write_text('{"mcpServers":{"docs":{"url":"https://docs.invalid/mcp"}}}')
+        result = resolve_mcp_config(str(cfg))
+        assert isinstance(result, ConfigResolution)
+        selection = select_server(result, plugin_server)
+        assert isinstance(selection, ConfigResolutionError)
+        assert selection.kind is ConfigErrorKind.UNKNOWN_SERVER
+        assert result.search_label == str(cfg)
 
 
 class TestResolveMcpConfigExplicit:

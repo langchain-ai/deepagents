@@ -125,13 +125,22 @@ def _handler(
     return snapshot.match(invocation).handlers[0]
 
 
-def test_snapshot_matches_notification_and_skips_tool_mismatch(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("kind", "matcher"),
+    [
+        (DcodeNotificationKind.PERMISSION_REQUIRED, "permission_prompt"),
+        (DcodeNotificationKind.CACHE_EXPIRING, "cache_expiring"),
+    ],
+)
+def test_snapshot_matches_notification_and_skips_tool_mismatch(
+    tmp_path: Path, kind: DcodeNotificationKind, matcher: str
+) -> None:
     snapshot = HooksSnapshot.from_config(
         _config(
             {
                 "Notification": [
                     {
-                        "matcher": "permission_prompt",
+                        "matcher": matcher,
                         "hooks": [{"type": "command", "command": "notify"}],
                     }
                 ],
@@ -149,8 +158,8 @@ def test_snapshot_matches_notification_and_skips_tool_mismatch(tmp_path: Path) -
         NotificationEvent(
             event=HookEvent.NOTIFICATION,
             notification=DcodeNotification(
-                type=DcodeNotificationKind.PERMISSION_REQUIRED,
-                message="Approve",
+                type=kind,
+                message="Notification",
             ),
         ),
     )
@@ -243,6 +252,19 @@ def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
             {
                 "hook_event_name": "Notification",
                 "notification_type": "cold_cache_warning",
+            },
+        ),
+        (
+            NotificationEvent(
+                event=HookEvent.NOTIFICATION,
+                notification=DcodeNotification(
+                    type=DcodeNotificationKind.CACHE_EXPIRING,
+                    message="Prompt cache expiring",
+                ),
+            ),
+            {
+                "hook_event_name": "Notification",
+                "notification_type": "cache_expiring",
             },
         ),
         (

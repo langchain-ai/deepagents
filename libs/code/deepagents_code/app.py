@@ -2255,6 +2255,9 @@ Two seconds balances responsiveness with avoiding accidental approval
 key presses.
 """
 
+_CACHE_EXPIRING_LEAD_SECONDS = 60
+"""Lead time for the prompt-cache retention notification."""
+
 _DEFERRED_APPROVAL_TIMEOUT_SECONDS: float = 30.0
 """Maximum seconds the deferred-approval worker will wait for the user to stop
 typing before showing the approval widget regardless."""
@@ -4652,6 +4655,9 @@ class DeepAgentsApp(App):
         )
         """Minimum estimated cold-versus-warm cost delta that opens the modal."""
 
+        self._cache_expiring_seen: dict[str, datetime] = {}
+        self._cache_expiring_worker: Worker[None] | None = None
+
         self._cache_expiry_seen: dict[str, datetime] = {}
         """Per-thread expiry already offered as a handoff, so each window
         prompts at most once."""
@@ -5465,6 +5471,7 @@ class DeepAgentsApp(App):
 
         self.run_worker(self._init_session_state, exclusive=True, group="session-init")
         self.set_interval(1.0, self._check_cache_expiry)
+        self.set_interval(1.0, self._check_cache_expiring)
 
         from deepagents_code.offload import sweep_offloaded_history
 
@@ -9688,6 +9695,45 @@ class DeepAgentsApp(App):
         thread_id = self._lc_thread_id
         if thread_id and expires_at is not None and datetime.now(UTC) >= expires_at:
             self._cache_expiry_seen[thread_id] = expires_at
+
+    def _check_cache_expiring(self) -> None:
+        """Dispatch cache notifications without blocking the UI or other hooks."""
+        if self._cache_expiring_worker and not self._cache_expiring_worker.is_finished:
+            return
+        self._cache_expiring_worker = self.run_worker(
+            self._notify_cache_expiring(), group="cache-expiring", exit_on_error=False
+        )
+
+    async def _notify_cache_expiring(self) -> None:
+        """Notify once per thread/window during its final retention seconds."""
+        from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+        from deepagents_code.hooks.models.domain import DcodeNotificationKind
+
+        expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+        thread_id = self._lc_thread_id
+        if (
+            self._exiting
+            or self._thread_switching
+            or not thread_id
+            or expires_at is None
+            or self._cache_expiring_seen.get(thread_id) == expires_at
+            or not 0
+            < (expires_at - datetime.now(UTC)).total_seconds()
+            <= _CACHE_EXPIRING_LEAD_SECONDS
+        ):
+            return
+        self._cache_expiring_seen[thread_id] = expires_at
+        try:
+            await self._hooks.notify(
+                DcodeNotificationKind.CACHE_EXPIRING,
+                "Prompt-cache retention may end within "
+                f"{_CACHE_EXPIRING_LEAD_SECONDS} seconds.",
+                title="Prompt cache expiring",
+            )
+        except ClientHookStopError:
+            logger.info("Cache-expiring notification was stopped by a hook")
+        except Exception:
+            logger.debug("Cache-expiring notification failed", exc_info=True)
 
     def _check_cache_expiry(self) -> None:
         """Offer a handoff once per expired cache window, only when idle.

@@ -1807,6 +1807,7 @@ def _build_transport(
     *,
     auth: httpx2.Auth | None,
     keep_alive: bool,
+    cwd: str | None = None,
 ) -> ClientTransport:
     """Build the FastMCP transport for one configured server.
 
@@ -1825,6 +1826,7 @@ def _build_transport(
         auth: OAuth provider to attach, for a remote server that uses one.
         keep_alive: Whether a stdio server's subprocess outlives one connection.
             A live client reuses it across tool calls; a stateless load does not.
+        cwd: Session directory used when a stdio server has no configured cwd.
 
     Returns:
         A transport ready to mount on the router.
@@ -1848,6 +1850,8 @@ def _build_transport(
 
     stdio = StdioMCPServer.model_validate(dict(server_config))
     stdio.keep_alive = keep_alive
+    if stdio.cwd is None:
+        stdio.cwd = cwd
     return stdio.to_transport()
 
 
@@ -2038,6 +2042,7 @@ def _classify_connect_failure(
 async def _load_tools_from_config(
     config: dict[str, Any],
     *,
+    cwd: str | None = None,
     stateless: bool = False,
     session_manager: MCPSessionManager | None = None,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
@@ -2056,6 +2061,7 @@ async def _load_tools_from_config(
 
     Args:
         config: Validated MCP configuration dict with `mcpServers` key.
+        cwd: Session directory used when a stdio server has no configured cwd.
         stateless: When `True`, tools avoid returning an owned session manager.
         session_manager: Optional externally owned runtime session manager.
 
@@ -2200,6 +2206,7 @@ async def _load_tools_from_config(
                 server_config,
                 auth=None,
                 keep_alive=not stateless or session_manager is not None,
+                cwd=cwd,
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             if redact_failure_details:
@@ -2371,11 +2378,13 @@ async def _load_tools_from_config(
     elif stateless:
         await runtime_manager.cleanup()
         for tool in all_tools:
-            _make_stateless_tool(tool, config)
+            _make_stateless_tool(tool, config, cwd=cwd)
     return all_tools, None if stateless else runtime_manager, server_infos
 
 
-def _make_stateless_tool(tool: BaseTool, config: dict[str, Any]) -> None:
+def _make_stateless_tool(
+    tool: BaseTool, config: dict[str, Any], *, cwd: str | None = None
+) -> None:
     """Give a tool a fresh, locally owned backend for each invocation."""
     from langchain_core.tools import StructuredTool
 
@@ -2391,7 +2400,7 @@ def _make_stateless_tool(tool: BaseTool, config: dict[str, Any]) -> None:
 
     async def call(**arguments: Any) -> Any:  # noqa: ANN401
         tools, manager, infos = await _load_tools_from_config(
-            {"mcpServers": {server: server_config}}
+            {"mcpServers": {server: server_config}}, cwd=cwd
         )
         try:
             for candidate in tools:
@@ -2856,6 +2865,7 @@ async def resolve_and_load_mcp_tools(
 
     tools, manager, server_infos = await _load_tools_from_config(
         merged,
+        cwd=str(project_context.user_cwd) if project_context is not None else None,
         stateless=stateless,
         session_manager=session_manager,
     )

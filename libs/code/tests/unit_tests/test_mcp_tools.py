@@ -283,6 +283,75 @@ def mcp_servers() -> Generator[MCPServerRegistry]:
         yield registry
 
 
+@pytest.mark.parametrize("source", ["user", "project", "explicit", "plugin"])
+@pytest.mark.parametrize("directory", ["root", "subdirectory", "override"])
+@pytest.mark.parametrize("stateless", [False, True])
+@pytest.mark.timeout(30)
+async def test_stdio_session_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    source: str,
+    directory: str,
+    stateless: bool,
+) -> None:
+    _set_profile_root(monkeypatch, fake_home / "profile", launch_home=fake_home)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".git").mkdir()
+    session = project if directory == "root" else project / "subdirectory"
+    session.mkdir(exist_ok=True)
+    context = ProjectContext.from_user_cwd(session)
+    assert context.project_root == project
+    expected = tmp_path / "override" if directory == "override" else session
+    expected.mkdir(exist_ok=True)
+    (expected / "relative.txt").write_text("session file", encoding="utf-8")
+    script = tmp_path / "server.py"
+    script.write_text(
+        "from pathlib import Path\nfrom fastmcp import FastMCP\n"
+        "directory = str(Path.cwd())\n"
+        "contents = Path('relative.txt').read_text()\n"
+        "server = FastMCP('cwd')\n"
+        "@server.tool\nasync def read() -> str:\n"
+        "    return directory + '\\n' + contents\n"
+        "server.run()\n",
+        encoding="utf-8",
+    )
+    server: dict[str, Any] = {"command": sys.executable, "args": [str(script)]}
+    if directory == "override":
+        server["cwd"] = str(expected)
+    config = {"mcpServers": {"cwd": server}}
+    config_path = {
+        "user": fake_home / "profile" / ".mcp.json",
+        "project": project / ".mcp.json",
+        "explicit": tmp_path / "explicit.json",
+        "plugin": tmp_path / "unused.json",
+    }[source]
+    if source != "plugin":
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+    backend = tmp_path / "deepagents_server"
+    backend.mkdir()
+    monkeypatch.chdir(backend)
+    manager = None if stateless else MCPSessionManager()
+    try:
+        tools, _, infos = await resolve_and_load_mcp_tools(
+            explicit_config_path=str(config_path) if source == "explicit" else None,
+            additional_configs=(config,) if source == "plugin" else (),
+            project_context=context,
+            trust_project_mcp=True,
+            stateless=True,
+            session_manager=manager,
+        )
+        assert [(info.name, info.status) for info in infos] == [("cwd", "ok")], infos
+        result = await tools[0].ainvoke({})
+        assert result[0]["text"] == f"{expected}\nsession file"
+        assert Path.cwd() == backend
+    finally:
+        if manager is not None:
+            await manager.cleanup()
+
+
 @pytest.fixture
 def fake_tool_result() -> Any:  # noqa: ANN401
     """Build a valid `CallToolResult` for runtime tool tests."""

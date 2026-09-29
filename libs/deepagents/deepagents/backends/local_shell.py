@@ -601,7 +601,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         `KeyboardInterrupt`, and async cancellation all terminate the command's
         process group with `SIGKILL`, then wait briefly for the shell process to
         exit. A descendant that makes its own session or process group, for
-        example with `nohup` or `setsid`, leaves that group and is not killed.
+        example with `setsid`, leaves that group and is not killed. `nohup` alone
+        does not change the process group or protect against `SIGKILL`.
 
         On Windows, commands do not start in a new process group. Cleanup
         terminates only the direct shell process, so descendants may continue

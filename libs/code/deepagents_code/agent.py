@@ -2869,6 +2869,13 @@ def create_cli_agent(
                 mcp_tools=mcp_tools,
             )
         )
+        if mcp_tools:
+            from deepagents_code.config_manifest import resolve_mcp_tool_timeout
+            from deepagents_code.mcp_middleware import mcp_tool_middleware
+
+            middleware.append(
+                mcp_tool_middleware(timeout_seconds=resolve_mcp_tool_timeout())
+            )
         # Subagents share the on-disk filesystem backend and can edit the user
         # AGENTS.md, so they get the same managed onboarding-name block guard as
         # the main agent. Gated on memory because the block only exists when

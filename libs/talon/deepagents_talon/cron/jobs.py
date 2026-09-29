@@ -78,6 +78,7 @@ _SCHEDULE_FORMS_HELP = (
 JobStatus = Literal["ok", "error"]
 ScheduleKind = Literal["one_shot", "recurring"]
 ScheduleForm = Literal["interval", "at", "daily", "cron"]
+DeliverTo = Literal["thread", "channel"]
 
 _FileIdentity = tuple[int, int, int]
 """Store file fingerprint: modification time in ns, size, and inode."""
@@ -85,6 +86,7 @@ _FileIdentity = tuple[int, int, int]
 _JOB_STATUSES: tuple[str, ...] = ("ok", "error")
 _SCHEDULE_KINDS: tuple[str, ...] = ("one_shot", "recurring")
 _SCHEDULE_FORMS: tuple[str, ...] = ("interval", "at", "daily", "cron")
+_DELIVER_TO: tuple[str, ...] = ("thread", "channel")
 
 
 class CronOriginDict(TypedDict):
@@ -167,6 +169,7 @@ class CronJobDict(TypedDict):
     origin: CronOriginDict
     until: NotRequired[int | None]
     claimed_at: NotRequired[int | None]
+    deliver_to: NotRequired[DeliverTo]
 
 
 class CronJobWireDict(TypedDict):
@@ -187,6 +190,7 @@ class CronJobWireDict(TypedDict):
     origin: CronOriginDict
     until: str | None
     claimed_at: str | None
+    deliver_to: DeliverTo
 
 
 class CronStoreDict(TypedDict):
@@ -666,6 +670,8 @@ class CronJob:
         claimed_at: When the scheduler claimed the current run, or `None` once
             its outcome is recorded. Still set after a restart means the run
             was interrupted and its outcome is unknown.
+        deliver_to: Where results post when the origin is a channel thread:
+            `channel` posts to the parent channel, `thread` replies in the thread.
     """
 
     id: str
@@ -683,6 +689,7 @@ class CronJob:
     origin: CronOrigin
     until: datetime | None = None
     claimed_at: datetime | None = None
+    deliver_to: DeliverTo = "channel"
 
     def upcoming(self, count: int = 3) -> list[datetime]:
         """Return the next few scheduled runs, honoring `until` and the repeat cap.
@@ -732,6 +739,7 @@ class CronJob:
             "origin": self.origin.to_dict(),
             "until": _to_optional_epoch(self.until),
             "claimed_at": _to_optional_epoch(self.claimed_at),
+            "deliver_to": self.deliver_to,
         }
 
     def to_wire(self) -> CronJobWireDict:
@@ -760,6 +768,7 @@ class CronJob:
             "origin": self.origin.to_dict(),
             "until": _format_optional_time(self.until),
             "claimed_at": _format_optional_time(self.claimed_at),
+            "deliver_to": self.deliver_to,
         }
 
     @classmethod
@@ -795,6 +804,11 @@ class CronJob:
             origin=CronOrigin.from_dict(record.get("origin")),
             until=_from_optional_epoch(_optional_int_field(record, "until")),
             claimed_at=_from_optional_epoch(_optional_int_field(record, "claimed_at")),
+            # Jobs saved before this field existed default to the channel.
+            deliver_to=cast(
+                "DeliverTo",
+                _optional_literal_field(record, "deliver_to", _DELIVER_TO) or "channel",
+            ),
         )
 
 
@@ -823,6 +837,7 @@ class CronJobStore:
         name: str = "",
         repeat_times: int | None = None,
         until: datetime | None = None,
+        deliver_to: DeliverTo = "channel",
         now: datetime | None = None,
     ) -> CronJob:
         """Create and persist a cron job.
@@ -834,6 +849,7 @@ class CronJobStore:
             name: Human-readable label.
             repeat_times: Optional cap for recurring jobs.
             until: Optional last instant a recurring job may run, inclusive.
+            deliver_to: Whether a thread origin's results post to its channel or thread.
             now: Creation time override for deterministic tests.
 
         Returns:
@@ -866,6 +882,7 @@ class CronJobStore:
             last_error=None,
             origin=origin,
             until=until,
+            deliver_to=deliver_to,
         )
         jobs = [*self.list_jobs(), job]
         self._write_jobs(jobs)
@@ -928,6 +945,7 @@ class CronJobStore:
         repeat_times: int | None = None,
         until: datetime | None = None,
         clear_until: bool = False,
+        deliver_to: DeliverTo | None = None,
         now: datetime | None = None,
     ) -> CronJob:
         """Edit a job within the current conversation scope.
@@ -942,6 +960,7 @@ class CronJobStore:
             repeat_times: Optional replacement repeat cap for recurring jobs.
             until: Optional replacement for the job's last allowed run instant.
             clear_until: Remove the job's `until` bound.
+            deliver_to: Optional replacement delivery target.
             now: Timestamp used to recalculate `next_run_at` when schedule changes.
 
         Returns:
@@ -984,6 +1003,7 @@ class CronJobStore:
                 enabled=job.enabled if enabled is None else enabled,
                 next_run_at=next_run_at,
                 until=new_until,
+                deliver_to=job.deliver_to if deliver_to is None else deliver_to,
             )
             result.append(updated)
         if updated is None:

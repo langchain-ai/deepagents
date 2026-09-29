@@ -358,6 +358,28 @@ async def test_outbound_mention_policy_applies_to_media_captions(tmp_path: Path)
     assert gateway.uploads == [("D1", image.resolve(), None, "<@U123> &lt;@U999&gt;")]
 
 
+@pytest.mark.parametrize(
+    ("conversation_id", "expected"), [("C1:1712.345", "C1"), ("C1", "C1"), ("D1", "D1")]
+)
+def test_top_level_conversation_drops_the_thread(
+    tmp_path: Path, conversation_id: str, expected: str
+) -> None:
+    channel, _, _, _ = _channel(tmp_path)
+    assert channel.top_level_conversation_id(conversation_id) == expected
+
+
+async def test_top_level_conversation_posts_to_the_channel(tmp_path: Path) -> None:
+    channel, gateway, _, _ = _channel(tmp_path)
+    await channel.send_message(channel.top_level_conversation_id("C1:1712.345"), "report")
+    assert gateway.posts == [("C1", "report", None)]
+
+
+def test_top_level_conversation_rejects_malformed_ids(tmp_path: Path) -> None:
+    channel, _, _, _ = _channel(tmp_path)
+    with pytest.raises(ValueError, match="not a Slack conversation id"):
+        channel.top_level_conversation_id("general")
+
+
 @pytest.mark.parametrize("conversation_id", ["", "D1:", "C1:abc", "general", "C1:1.2:3"])
 async def test_malformed_conversation_id_is_rejected(tmp_path: Path, conversation_id: str) -> None:
     channel, gateway, _, _ = _channel(tmp_path)

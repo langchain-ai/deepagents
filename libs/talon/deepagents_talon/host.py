@@ -60,6 +60,7 @@ from deepagents_talon.interfaces import (
     ReactionChannelAdapter,
     SendResult,
     SmartModelRuntime,
+    ThreadedChannelAdapter,
     ToolApprovalDecision,
     ToolApprovalRequest,
 )
@@ -1245,9 +1246,8 @@ class TalonHost:
             job: Cron job that produced the result.
             text: Message text to send.
         """
-        result = await send_with_retry(
-            lambda: channel.send_message(job.origin.conversation_id, text)
-        )
+        target = _scheduled_target(channel, job)
+        result = await send_with_retry(lambda: channel.send_message(target, text))
         if result.success and not is_silent(text):
             provider = _channel_key(channel, job.origin.channel)
             chat = job.origin.history_chat or job.origin.conversation_id
@@ -2005,6 +2005,24 @@ class TalonHost:
                 signal.signal(signum, previous)
 
         return cleanup
+
+
+def _scheduled_target(channel: ChannelAdapter, job: CronJob) -> str:
+    """Return the conversation a scheduled result posts to.
+
+    A `channel` job made in a thread posts to the parent channel, so a result
+    that fires weeks later is not buried in an old thread. Only the send moves:
+    the job stays scoped to, and records history under, its origin thread. A
+    private Discord thread has no known parent, so its results stay inside it.
+    """
+    origin = job.origin
+    if job.deliver_to == "thread":
+        return origin.conversation_id
+    if origin.history_chat is not None:
+        return origin.history_chat
+    if isinstance(channel, ThreadedChannelAdapter):
+        return channel.top_level_conversation_id(origin.conversation_id)
+    return origin.conversation_id
 
 
 def _history_chat(message: ChannelMessage, provider: str | None) -> str:

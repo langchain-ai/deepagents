@@ -61,6 +61,32 @@ Native tools are matched by their wire names (for example `execute` → `Bash`, 
 | `SubagentStart` | server | `agent_name` | When a subagent starts |
 | `SubagentStop` | server | `agent_name` | When a subagent stops |
 
+### Prompt-cache expiry notification
+
+In interactive `dcode`, `Notification` with matcher `cache_expiring` fires once per
+active thread/cache window per process, during the final 30 seconds of its known
+retention window. It uses a one-second timer and does not replay already-expired
+windows. Unknown retention windows emit nothing; provider retention estimates do
+not guarantee a cache miss at expiry.
+
+This notification is independent of cold-cache warning preferences and cost
+thresholds, and does not open a prompt, send a model request, or refresh the cache.
+Only configured matching hooks run. A slow notification handler does not block
+the UI, but can delay or miss a later window's notification.
+
+```json
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "cache_expiring",
+        "hooks": [{"type": "command", "command": "your-notification-command"}]
+      }
+    ]
+  }
+}
+```
+
 ## Handler shape
 
 Each matcher group has a `hooks` list of command handlers:

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import tomllib
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -71,6 +72,41 @@ def test_mcp_tool_timeout_resolves_env_and_bounds(
         toml_data={"mcp": {"tool_timeout": 30.0}}
     ) == pytest.approx(30.0)
     assert pytest.approx(120.0) == MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
+
+
+@pytest.mark.parametrize("process_value", [None, "45", "901"])
+@pytest.mark.parametrize("managed_value", [None, 901.0])
+def test_mcp_timeout_rejects_scoped_environment_override(
+    monkeypatch: pytest.MonkeyPatch,
+    process_value: str | None,
+    managed_value: float | None,
+) -> None:
+    """A rejected workspace override reveals TOML without changing the process."""
+    from deepagents_code.config import active_environment, use_environment
+
+    if process_value is None:
+        monkeypatch.delenv(_env_vars.MCP_TOOL_TIMEOUT, raising=False)
+    else:
+        monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, process_value)
+    managed = {} if managed_value is None else {"mcp": {"tool_timeout": managed_value}}
+    with use_environment({_env_vars.MCP_TOOL_TIMEOUT: "901"}):
+        assert resolve_mcp_tool_timeout(
+            toml_data={"mcp": {"tool_timeout": 30.0}}, managed_toml_data=managed
+        ) == pytest.approx(30.0)
+        assert active_environment()[_env_vars.MCP_TOOL_TIMEOUT] == "901"
+        assert os.environ.get(_env_vars.MCP_TOOL_TIMEOUT) == process_value
+
+
+@pytest.mark.parametrize("invalid", [0, 901, "nan", "inf", "invalid"])
+def test_mcp_timeout_falls_back_through_all_rejected_sources(
+    monkeypatch: pytest.MonkeyPatch, invalid: int | str
+) -> None:
+    """Invalid values at every precedence level still leave a finite deadline."""
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, str(invalid))
+    assert resolve_mcp_tool_timeout(
+        toml_data={"mcp": {"tool_timeout": invalid}},
+        managed_toml_data={"mcp": {"tool_timeout": invalid}},
+    ) == pytest.approx(MCP_TOOL_TIMEOUT_SECONDS_DEFAULT)
 
 
 def _resolve_manifest_option(

@@ -1655,43 +1655,32 @@ def resolve_mcp_tool_timeout(
 ) -> float:
     """Resolve the wall-clock budget for one MCP tool call.
 
+    Out-of-range overrides fall through to the next configuration source.
+
+    Args:
+        toml_data: Parsed user TOML. Omit both tables to use the shared resolver.
+        managed_toml_data: Parsed managed TOML for an explicit generation.
+
     Returns:
         The resolved timeout in seconds within the accepted bounds.
     """
-    data = toml_data
     option = get_option("mcp.tool_timeout")
     if option is None:
         return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
 
-    resolved = _resolve_option(
-        option,
-        toml_data=data,
+    resolver = _resolver_for_option_sources(
+        toml_data=toml_data,
         managed_toml_data=managed_toml_data,
     )
-    _emit_ranked_diagnostics(option, resolved)
-    value, source = resolved.value, _ranked_source(resolved)
-    if _is_valid_mcp_tool_timeout(value):
-        return value
-
-    from deepagents_code.configuration.service import managed_decided
-
-    managed_rejected = managed_decided(source)
-    if managed_rejected:
-        logger.warning(
-            "Ignoring managed mcp.tool_timeout %r (expected seconds in [%g, %g]); "
-            "falling through to the next config source",
-            value,
-            MCP_TOOL_TIMEOUT_FLOOR,
-            MCP_TOOL_TIMEOUT_CEILING,
-        )
-        resolved = _resolve_option_without_managed(option, toml_data=data)
+    excluded: set[int] = set()
+    while True:
+        resolved = resolver.get_without_ranks(option, excluded)
         _emit_ranked_diagnostics(option, resolved)
         value, source = resolved.value, _ranked_source(resolved)
         if _is_valid_mcp_tool_timeout(value):
             return value
-
-    if source.startswith("env (") and source.endswith(")"):
-        env_name = source[len("env (") : -1]
+        if source == "default" or not resolved.ranks:
+            return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
         logger.warning(
             "Ignoring %s mcp.tool_timeout %r (expected seconds in [%g, %g]); "
             "falling through to the next config source",
@@ -1700,34 +1689,9 @@ def resolve_mcp_tool_timeout(
             MCP_TOOL_TIMEOUT_FLOOR,
             MCP_TOOL_TIMEOUT_CEILING,
         )
-        previous = os.environ.pop(env_name, None)
-        if previous is None:
-            return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
-        try:
-            if managed_rejected:
-                resolved = _resolve_option_without_managed(option, toml_data=data)
-                _emit_ranked_diagnostics(option, resolved)
-                value, source = resolved.value, _ranked_source(resolved)
-                if _is_valid_mcp_tool_timeout(value):
-                    return value
-            else:
-                return resolve_mcp_tool_timeout(
-                    toml_data=data,
-                    managed_toml_data=managed_toml_data,
-                )
-        finally:
-            os.environ[env_name] = previous
-
-    if source != "default":
-        logger.warning(
-            "Ignoring %s mcp.tool_timeout %r (expected seconds in [%g, %g]); using %g",
-            source,
-            value,
-            MCP_TOOL_TIMEOUT_FLOOR,
-            MCP_TOOL_TIMEOUT_CEILING,
-            MCP_TOOL_TIMEOUT_SECONDS_DEFAULT,
-        )
-    return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
+        # Exclude the rejected provider from this read, preserving the active
+        # workspace environment and the resolver's pinned file snapshots.
+        excluded.update(resolved.ranks)
 
 
 def blank_auto_classifier_env_name() -> str | None:

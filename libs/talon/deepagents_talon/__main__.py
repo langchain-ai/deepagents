@@ -197,11 +197,6 @@ def _add_pairing_parsers(
     )
     pause.add_argument("channel", choices=PAIRING_CHANNELS)
     pause.add_argument("sender_id")
-    pause.add_argument(
-        "--dm",
-        dest="dm_conversation_id",
-        help="The sender's DM, to also match jobs saved before creators were recorded",
-    )
 
 
 def _run_pairing_command(args: argparse.Namespace, config: TalonConfig) -> int:
@@ -211,7 +206,7 @@ def _run_pairing_command(args: argparse.Namespace, config: TalonConfig) -> int:
         print("\n".join(listings))  # noqa: T201
         return 0
     if args.pairing_command == "pause-jobs":
-        jobs = _cli_jobs(config, args.channel, args.sender_id, args.dm_conversation_id)
+        jobs = _cli_jobs(config, args.channel, args.sender_id)
         paused = pause_jobs(_cron_store(config), jobs)
         print(f"Paused {paused} scheduled job(s).")  # noqa: T201
         return 0
@@ -241,22 +236,19 @@ def _cron_store(config: TalonConfig) -> CronJobStore:
     return CronJobStore(assistant_id=config.assistant_id, cron_dir=config.cron_dir)
 
 
-def _cli_jobs(
-    config: TalonConfig, channel: str, sender_id: str, dm_conversation_id: str | None
-) -> list[CronJob]:
-    return sender_jobs(_cron_store(config), channel, sender_id, dm_conversation_id)
+def _cli_jobs(config: TalonConfig, channel: str, sender_id: str) -> list[CronJob]:
+    return sender_jobs(_cron_store(config), channel, sender_id)
 
 
 def _report_revoked_jobs(config: TalonConfig, channel: str, revoked: PairedSender) -> None:
-    jobs = _cli_jobs(config, channel, revoked.sender_id, revoked.conversation_id)
+    jobs = _cli_jobs(config, channel, revoked.sender_id)
     enabled = [job for job in jobs if job.enabled]
     if not enabled:
         return
     names = ", ".join(f"{job.id} ({job.name})" for job in enabled)
     print(  # noqa: T201
         f"Still enabled, created by them: {names}. Stop Talon and run: "
-        f"deepagents-talon pairing pause-jobs {channel} {revoked.sender_id} "
-        f"--dm {revoked.conversation_id}"
+        f"deepagents-talon pairing pause-jobs {channel} {revoked.sender_id}"
     )
 
 

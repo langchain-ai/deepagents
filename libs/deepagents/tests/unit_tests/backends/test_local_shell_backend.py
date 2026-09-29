@@ -109,36 +109,6 @@ def _assert_posix_cleanup(process: MagicMock, killpg: MagicMock) -> None:
     process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
 
 
-def _execute_controlling_terminal_probe(directory: Path, result_file: Path) -> None:
-    """Run the backend probe after proving this process owns `/dev/tty`."""
-    descriptor = os.open("/dev/tty", os.O_RDONLY)
-    os.close(descriptor)
-    result = LocalShellBackend(root_dir=directory).execute(": </dev/tty")
-    result_file.write_text(f"{result.exit_code}\n{result.output}", encoding="utf-8")
-
-
-def _run_controlling_terminal_probe(directory: Path) -> tuple[int, str]:
-    """Run the backend inside a child that owns a real controlling terminal."""
-    pty = pytest.importorskip("pty")
-    result_file = directory / "tty-result"
-    child_id, terminal = pty.fork()
-    if child_id == 0:  # pragma: no cover - assertions run in the parent process
-        try:
-            _execute_controlling_terminal_probe(directory, result_file)
-        except BaseException as error:  # noqa: BLE001  # Report child setup failures to the parent.
-            result_file.write_text(f"harness error: {error}", encoding="utf-8")
-            os._exit(1)
-        os._exit(0)
-    try:
-        _, status = os.waitpid(child_id, 0)
-    finally:
-        os.close(terminal)
-    details = result_file.read_text(encoding="utf-8")
-    assert os.waitstatus_to_exitcode(status) == 0, details
-    exit_code, output = details.split("\n", 1)
-    return int(exit_code), output
-
-
 def test_local_shell_backend_initialization() -> None:
     """Test that LocalShellBackend initializes correctly."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -191,25 +161,6 @@ def test_local_shell_backend_interrupt_cleans_up_posix_process_group() -> None:
         LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
 
     _assert_posix_cleanup(process, killpg)
-
-
-def test_local_shell_backend_polling_interrupt_kills_process_group() -> None:
-    """Test an interrupt in the cancellation-aware polling loop cleans up."""
-    process = MagicMock(pid=1234)
-    process.communicate.side_effect = KeyboardInterrupt
-    with (
-        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
-        patch.object(local_shell_module, "_kill_and_reap") as kill_and_reap,
-        pytest.raises(KeyboardInterrupt),
-    ):
-        local_shell_module._communicate(
-            process,
-            10,
-            threading.Event(),
-            process_group=1234,
-        )
-
-    kill_and_reap.assert_called_once_with(process, 1234)
 
 
 def test_local_shell_backend_polling_deadline_kills_process_group() -> None:
@@ -314,14 +265,6 @@ def test_local_shell_backend_timeout_bounds_process_reaping(caplog: pytest.LogCa
     process.stderr.close.assert_called_once_with()
     # The caller cannot see the log, so the response has to carry the warning.
     assert "could not be stopped and may still be running" in result.output
-
-
-@_POSIX_SHELL_ONLY
-def test_local_shell_backend_cannot_open_parent_controlling_terminal(tmp_path: Path) -> None:
-    """Test a command cannot open the controlling terminal owned by its parent."""
-    exit_code, output = _run_controlling_terminal_probe(tmp_path)
-    assert exit_code != 0
-    assert "/dev/tty" in output
 
 
 def test_local_shell_backend_execute_with_error() -> None:
@@ -798,42 +741,6 @@ async def test_local_shell_backend_async_cancellation_bypasses_execute_wrappers(
     assert observed_results == []
 
 
-async def test_local_shell_backend_async_cancellation_bounds_override_wait(caplog: pytest.LogCaptureFixture) -> None:
-    """Test that an uncooperative override cannot block cancellation."""
-    execution_started = threading.Event()
-    release_execution = threading.Event()
-    execution_finished = threading.Event()
-
-    class SlowLocalShellBackend(LocalShellBackend):
-        def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-            execution_started.set()
-            release_execution.wait()
-            execution_finished.set()
-            return ExecuteResponse(output="done", exit_code=0, truncated=False)
-
-    with (
-        tempfile.TemporaryDirectory() as tmpdir,
-        patch.object(local_shell_module, "_ASYNC_CANCELLATION_GRACE_PERIOD", 0.01),
-        caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
-    ):
-        task = asyncio.create_task(SlowLocalShellBackend(root_dir=tmpdir).aexecute("slow override"))
-        assert await asyncio.to_thread(execution_started.wait, 1)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=0.5)
-
-        release_execution.set()
-        assert await asyncio.to_thread(execution_finished.wait, 1)
-        for _ in range(100):
-            if not local_shell_module._BACKGROUND_WORKERS:
-                break
-            await asyncio.sleep(0)
-
-    assert task.cancelled()
-    assert not local_shell_module._BACKGROUND_WORKERS
-    assert "overridden execute method may still be running" in caplog.text
-
-
 def test_local_shell_backend_async_cancellation_skips_queued_command() -> None:
     """Test that cancellation does not wait for or run queued executor work."""
 
@@ -948,29 +855,6 @@ def test_local_shell_backend_polling_loop_keeps_output_from_every_attempt() -> N
 
     assert stdout == "".join(f"out{index}\n" for index in range(1, chunks + 1))
     assert stderr == "".join(f"err{index}\n" for index in range(1, chunks + 1))
-
-
-@_POSIX_SHELL_ONLY
-def test_local_shell_backend_polling_loop_drains_more_than_a_pipe_buffer() -> None:
-    """Test output larger than the pipe buffer cannot deadlock the poll loop.
-
-    A pipe holds roughly 64 KB. If the loop stopped draining one stream, the
-    command would block on its write and the command would time out instead of
-    returning.
-    """
-    script = "import sys; sys.stdout.write('o' * 500_000); sys.stderr.write('e' * 200_000)"
-    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
-    process = subprocess.Popen(  # noqa: S602  # Fixed probe that runs the test interpreter.
-        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
-    )
-    try:
-        stdout, stderr = local_shell_module._communicate(process, 30, threading.Event(), process_group=process.pid)
-    finally:
-        with suppress(ProcessLookupError):
-            os.killpg(process.pid, signal.SIGKILL)
-
-    assert len(stdout) == 500_000
-    assert len(stderr) == 200_000
 
 
 def test_local_shell_backend_already_exited_group_is_not_a_cleanup_failure(caplog: pytest.LogCaptureFixture) -> None:

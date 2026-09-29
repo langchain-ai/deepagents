@@ -578,9 +578,8 @@ def test_local_shell_backend_async_override_interrupt_is_catchable(exception_typ
         pytest.fail("The override interruption escaped the caller's exception handler")
 
 
-@pytest.mark.parametrize("is_windows", [False, True])
-async def test_local_shell_backend_async_cancellation_cleans_up_platform_process_scope(*, is_windows: bool) -> None:
-    """Test async cancellation cleans up the platform's supported process scope."""
+async def test_local_shell_backend_async_cancellation_kills_windows_process() -> None:
+    """Test Windows cancellation kills the direct shell; POSIX uses a real descendant below."""
     communication_started = threading.Event()
     process = MagicMock(pid=1234)
 
@@ -592,7 +591,7 @@ async def test_local_shell_backend_async_cancellation_cleans_up_platform_process
     process.communicate.side_effect = block_communication
     with (
         tempfile.TemporaryDirectory() as tmpdir,
-        _as_windows() if is_windows else _as_posix(),
+        _as_windows(),
         patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
         patch("subprocess.Popen", return_value=process),
         patch.object(local_shell_module.os, "killpg", create=True) as killpg,
@@ -603,12 +602,9 @@ async def test_local_shell_backend_async_cancellation_cleans_up_platform_process
         with pytest.raises(asyncio.CancelledError):
             await task
 
-    if is_windows:
-        killpg.assert_not_called()
-        process.kill.assert_called_once_with()
-        process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
-    else:
-        _assert_posix_cleanup(process, killpg)
+    killpg.assert_not_called()
+    process.kill.assert_called_once_with()
+    process.wait.assert_called_once_with(timeout=local_shell_module._PROCESS_REAP_TIMEOUT)
 
 
 @_POSIX_SHELL_ONLY
@@ -641,15 +637,11 @@ def test_local_shell_backend_cancellation_after_output_stops_descendant(tmp_path
     process = subprocess.Popen(  # noqa: S602  # Fixed shell probe with a quoted pytest temporary path.
         command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True
     )
-    communicate = process.communicate
-
-    def cancel_before_return(*, timeout: float) -> tuple[str, str]:
-        output = communicate(timeout=timeout)
-        cancellation_event.set()
-        return output
-
     try:
-        with patch.object(process, "communicate", side_effect=cancel_before_return), pytest.raises(local_shell_module._CommandCancelled):
+        with (
+            patch.object(cancellation_event, "is_set", side_effect=lambda: process.returncode is not None),
+            pytest.raises(local_shell_module._CommandCancelled),
+        ):
             local_shell_module._communicate(process, 5, cancellation_event, process_group=process.pid)
         assert process.returncode == 0
         assert process.stdout is not None and process.stdout.closed
@@ -658,7 +650,11 @@ def test_local_shell_backend_cancellation_after_output_stops_descendant(tmp_path
     finally:
         with suppress(ProcessLookupError):
             os.killpg(process.pid, signal.SIGKILL)
-        process.communicate(timeout=5)
+        process.wait(timeout=5)
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
 
 
 def test_local_shell_backend_async_start_race_skips_execution() -> None:
@@ -713,11 +709,13 @@ async def test_local_shell_backend_async_cancellation_bypasses_execute_wrappers(
     """Test that cancellation is not exposed to wrappers as command output."""
     communication_started = threading.Event()
     observed_results: list[ExecuteResponse] = []
-    process = MagicMock(pid=1234)
 
-    def block_communication(*, timeout: float) -> tuple[str, str]:
+    def block_communication(
+        _process: subprocess.Popen[str], _timeout: int, cancellation_event: threading.Event, **_kwargs: object
+    ) -> tuple[str, str]:
         communication_started.set()
-        raise subprocess.TimeoutExpired(process.args, timeout)
+        assert cancellation_event.wait(2)
+        raise local_shell_module._CommandCancelled
 
     class ObservingLocalShellBackend(LocalShellBackend):
         def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
@@ -725,12 +723,10 @@ async def test_local_shell_backend_async_cancellation_bypasses_execute_wrappers(
             observed_results.append(result)
             return result
 
-    process.communicate.side_effect = block_communication
     with (
         tempfile.TemporaryDirectory() as tmpdir,
-        patch.object(local_shell_module, "WindowsProcessReader", return_value=process),
-        patch("subprocess.Popen", return_value=process),
-        patch.object(local_shell_module, "_kill_and_reap"),
+        patch.object(local_shell_module, "_communicate", side_effect=block_communication),
+        patch("subprocess.Popen"),
     ):
         task = asyncio.create_task(ObservingLocalShellBackend(root_dir=tmpdir).aexecute("sleep 10"))
         assert await asyncio.to_thread(communication_started.wait, 1)

@@ -14,18 +14,17 @@ Starting point for working in the Deep Agents monorepo. For how the code is stru
 
 ## Quickstart
 
-Pick the package you are changing, install its dependencies, and use its `Makefile` for the normal edit-test-lint loop:
+From the repository root, select the package you are changing for the normal edit-test-lint loop:
 
 ```bash
 uv tool install pre-commit
 pre-commit install --install-hooks
-cd libs/deepagents
-uv sync --all-groups
-make test
-make lint
+make sync PACKAGE=deepagents
+make test PACKAGE=deepagents
+make lint PACKAGE=deepagents
 ```
 
-Use `make help` inside any package to see its supported targets. To run a repo-wide check, move to `libs/` and use the fan-out targets, for example `make lint` or `make lock-check`.
+Use `make help` at the root for shared commands, or inside a package for its full target list. Root commands delegate to the existing package Makefiles; environments and lockfiles remain package-local.
 
 ## Repository layout
 
@@ -46,7 +45,7 @@ libs/
     └── quickjs/
 ```
 
-Each package has its own `pyproject.toml`, `Makefile`, and `README.md`. There is no root `pyproject.toml`; you work inside the package you are changing. Local package dependencies are editable, so changes in one package are visible to sibling packages that depend on it during development.
+Each package has its own `pyproject.toml`, `Makefile`, and `README.md`. There is no root `pyproject.toml`; root commands select a package with `PACKAGE`, or you can work inside that package directly. Local package dependencies are editable, so changes in one package are visible to sibling packages that depend on it during development.
 
 ## Setup
 
@@ -89,7 +88,7 @@ uv run --group test pytest tests/unit_tests/test_specific.py
 
 ### Repo-wide commands
 
-Run these from `libs/` to fan out across packages:
+Run these from the repository root (the existing `libs/` commands also work):
 
 | Command | What it does |
 | --- | --- |
@@ -98,6 +97,23 @@ Run these from `libs/` to fan out across packages:
 | `make lock` | Update all lockfiles |
 | `make lock-check` | Verify all lockfiles are up to date |
 | `make lock-bump DEP=<pkg>` | Bump one dependency across all lockfiles |
+
+Use `PACKAGE=code` or `PACKAGE=partners/quickjs` to scope `sync`, `test`, `lint`, and `format`. `sync` and `test` require a package; lock maintenance and `bench-all` always use the existing repository-wide targets. Package variables pass through, for example:
+
+```bash
+make test PACKAGE=deepagents TEST_FILE=tests/unit_tests/test_graph.py
+make lock no-cache
+```
+
+### Moving to a shared uv workspace
+
+Root commands are the first step toward a root `pyproject.toml`, shared `uv.lock`, and editable workspace members. Before switching dependency resolution:
+
+- Align Ruff and ty versions before moving them to a root development group. Currently dcode requires Ruff 0.16+, while SDK and Talon cap it below 0.16. dcode also caps ty below 0.0.62 because newer versions panic; SDK and Talon require newer versions. Keep package-specific lint configuration.
+- Resolve the Talon / dcode Fireworks extra conflict: Talon requires Pydantic 2.13.4+, while the resolved Fireworks dependency caps it below 2.13.
+- Keep evals isolated until its overrides are compatible with runtime packages. Its `filelock` override deliberately exceeds dcode's cap, and its Python range excludes 3.14.
+- Preserve Python 3.11 package tests when the shared development workspace requires Python 3.12+. A workspace's Python range is the intersection of its members' ranges.
+- Migrate lockfile checks, CI change detection and caches, Dependabot, release automation, and wheel-install tests together with the shared lockfile. Continue testing published package metadata independently of editable workspace sources.
 
 ## Docstrings
 

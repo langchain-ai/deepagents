@@ -157,9 +157,16 @@ async def test_scheduled_job_does_not_block_sibling_thread(tmp_path: Path) -> No
         await host.stop()
 
 
-@pytest.mark.parametrize(("deliver_to", "target"), [("channel", "100"), ("thread", "thread-1")])
-async def test_scheduled_history_uses_discord_parent_and_delivers_by_choice(
-    tmp_path, monkeypatch, deliver_to, target
+@pytest.mark.parametrize(
+    ("provider", "conversation", "parent", "deliver_to"),
+    [
+        ("discord", "thread-1", "100", "channel"),
+        ("discord", "thread-1", "100", "thread"),
+        ("slack", "C1:1700000000.000100", "C1", "channel"),
+    ],
+)
+async def test_scheduled_history_uses_parent_and_delivers_by_choice(  # noqa: PLR0913  # Shared provider fixture.
+    tmp_path, monkeypatch, provider, conversation, parent, deliver_to
 ):
     origins = []
     scopes = []
@@ -180,7 +187,7 @@ async def test_scheduled_history_uses_discord_parent_and_delivers_by_choice(
         return graph.compile(checkpointer=kwargs["checkpointer"])
 
     monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", factory)
-    channel = RecordingChannel("discord")
+    channel = RecordingChannel(provider)
     async with make_saver(tmp_path / "history.sqlite") as saver:
         host = TalonHost(
             config=_config(tmp_path), agent=make_runtime(saver, tmp_path), channels=[channel]
@@ -188,7 +195,12 @@ async def test_scheduled_history_uses_discord_parent_and_delivers_by_choice(
         await host.start()
         try:
             await host.receive_message(
-                channel, ChannelMessage("thread-1", "hello", metadata={"history_chat": "100"})
+                channel,
+                ChannelMessage(
+                    conversation,
+                    "hello",
+                    metadata={"history_chat": parent, "is_dm": False},
+                ),
             )
             await asyncio.gather(*host._tasks.values())
             store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
@@ -200,14 +212,17 @@ async def test_scheduled_history_uses_discord_parent_and_delivers_by_choice(
             )
             saved = store.get_job(job.id)
             assert saved is not None
-            assert saved.origin.conversation_id == "thread-1"
-            assert saved.origin.history_chat == "100"
+            assert saved.origin.conversation_id == conversation
+            assert saved.origin.history_chat == parent
             result = await host.run_scheduled_job(saved)
             assert [entry["preview"] for entry in scopes] == ["hello"]
             await host.deliver_scheduled_result(channel, saved, result)
-            assert channel.sent[-1] == (target, "noted")
+            assert channel.sent[-1] == (
+                parent if deliver_to == "channel" else conversation,
+                "noted",
+            )
             entries = await saver.archive.entries(
-                {"talon_history_channel": "discord", "talon_history_chat": "100"},
+                {"talon_history_channel": provider, "talon_history_chat": parent},
                 session_id=f"{job.id}:talon-cron",
             )
             assert [entry["text"] for entry in entries] == ["noted"]

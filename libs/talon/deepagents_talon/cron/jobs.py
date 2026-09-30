@@ -210,7 +210,7 @@ class CronOrigin:
         message_id: Optional source message id that created or edited the job.
         sender_id: Optional channel sender id of whoever created the job, so
             revoking a paired sender can find jobs they made in shared chats.
-        history_chat: Optional parent channel used for history in public Discord threads.
+        history_chat: Optional parent channel used for history in public Discord or Slack threads.
     """
 
     conversation_id: str

@@ -2026,10 +2026,14 @@ def _scheduled_target(channel: ChannelAdapter, job: CronJob) -> str:
 
 
 def _history_chat(message: ChannelMessage, provider: str | None) -> str:
-    """Use the parent channel for public Discord threads' archive scope."""
+    """Use shared guild/channel archive scopes without joining active threads."""
     chat = message.metadata.get("history_chat")
     if provider == "discord" and isinstance(chat, str) and chat.isdigit() and chat != "0":
         return chat
+    if provider == "slack" and message.metadata.get("is_dm") is False:
+        channel, separator, thread = message.conversation_id.partition(":")
+        if separator and thread and channel.startswith(("C", "G")):
+            return channel
     return message.conversation_id
 
 

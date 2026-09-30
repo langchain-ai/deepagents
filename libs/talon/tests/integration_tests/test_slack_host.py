@@ -162,6 +162,7 @@ async def test_thread_follow_up_keeps_the_thread_conversation(tmp_path: Path) ->
         "1700000000.000100",
         "1700000000.000300",
     ]
+    assert [request.metadata["history_chat"] for request in agent.requests] == ["C1"] * 3
 
 
 async def test_talon_help_is_answered_through_the_command(tmp_path: Path) -> None:

@@ -100,21 +100,20 @@ async def _serve_example_agent() -> None:
 
     # Define available models for dynamic switching
     baseten_models = [
-        {"value": "baseten:moonshotai/Kimi-K2.7-Code", "name": "Kimi-K2.7-Code"},
-        {"value": "baseten:zai-org/GLM-5.2", "name": "GLM-5.2"},
+        {"value": "baseten:zai-org/GLM-5.3", "name": "GLM-5.3"},
+        {"value": "baseten:moonshotai/Kimi-K3", "name": "Kimi-K3"},
     ]
     anthropic_models = [
+        {"value": "anthropic:claude-opus-5.5", "name": "Claude Opus 5.5"},
+        {"value": "anthropic:claude-sonnet-5.5", "name": "Claude Sonnet 5.5"},
         {"value": "anthropic:claude-fable-5-1", "name": "Claude Fable 5.1"},
-        {"value": "anthropic:claude-opus-5", "name": "Claude Opus 5"},
-        {"value": "anthropic:claude-sonnet-5", "name": "Claude Sonnet 5"},
         {"value": "anthropic:claude-haiku-4-5", "name": "Claude Haiku 4.5"},
     ]
     openai_models = [
+        {"value": "openai:gpt-6.1-sol", "name": "GPT-6.1-Sol"},
         {"value": "openai:gpt-6-astra", "name": "GPT-6-Astra"},
-        {"value": "openai:gpt-5.6-sol", "name": "GPT-5.6-Sol"},
+        {"value": "openai:gpt-6-luna", "name": "GPT-6-Luna"},
         {"value": "openai:gpt-5.6-terra", "name": "GPT-5.6-Terra"},
-        {"value": "openai:gpt-5.6-luna", "name": "GPT-5.6-Luna"},
-        {"value": "openai:gpt-5.5", "name": "GPT-5.5"},
     ]
     models = baseten_models + anthropic_models + openai_models
 

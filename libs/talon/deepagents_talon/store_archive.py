@@ -50,6 +50,16 @@ _MAX_SCAN = 500
 _MAX_SEARCH_PAGES = 32
 
 
+def _compatible_scope(stored: ArchiveScope, requested: ArchiveScope) -> bool:
+    parent, _, thread = stored["talon_history_chat"].partition(":")
+    return stored == requested or (
+        stored["talon_history_channel"] == requested["talon_history_channel"] == "slack"
+        and parent.startswith(("C", "G"))
+        and bool(thread)
+        and parent == requested["talon_history_chat"]
+    )
+
+
 def _bounds(after: int, limit: int) -> None:
     if not 1 <= limit <= _MAX_PAGE_SIZE or after < 0:
         msg = "limit must be between 1 and 20 and after must be non-negative"
@@ -199,7 +209,8 @@ class StoreConversationArchive:
     async def _register(self, scope: ArchiveScope, session_id: str, timestamp: str) -> Record:
         session = await self.session(session_id)
         if session is not None:
-            if session["scope"] != scope or session.get("deleting"):
+            stored = cast("ArchiveScope", session["scope"])
+            if session.get("deleting") or not _compatible_scope(stored, scope):
                 msg = "Session belongs to another scope or is being deleted"
                 raise ValueError(msg)
             return session
@@ -245,9 +256,10 @@ class StoreConversationArchive:
         """
         await self.setup()
         async with self.records.access():
-            await self._register(scope, session_id, timestamp)
+            session = await self._register(scope, session_id, timestamp)
+            stored = cast("ArchiveScope", session["scope"])
             for chunk in _chunks(messages, timestamp):
-                await self._append_chunk(scope, session_id, timestamp, chunk)
+                await self._append_chunk(stored, session_id, timestamp, chunk)
         if self.vectors is not None:
             self.vectors.wake.set()
 

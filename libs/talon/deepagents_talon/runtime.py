@@ -60,7 +60,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalRequest,
 )
 from deepagents_talon.mcp import _cancel_mcp_elicitation
-from deepagents_talon.messaging import MESSAGE_HANDLER, send_message
+from deepagents_talon.messaging import MESSAGE_HANDLER, ProgressMessages, send_message
 from deepagents_talon.model_selection import (
     ACTIVE_MODEL,
     ModelSelection,
@@ -466,6 +466,7 @@ class DeepAgentRuntime:
                 self.backend,
             ),
             ModelSelectionMiddleware(),
+            ProgressMessages(),
             *self.middleware,
         ]
         task_tools = TaskTools(

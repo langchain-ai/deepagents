@@ -24,7 +24,10 @@ class ProgressMessages(AgentMiddleware):
     async def aafter_model(self, state: AgentState, runtime: Runtime) -> None:
         """Forward visible tool-calling messages to the originating channel."""
         del runtime
-        message = state["messages"][-1]
+        message = next(
+            (message for message in reversed(state["messages"]) if isinstance(message, AIMessage)),
+            None,
+        )
         if (
             not _IN_SUBAGENT.get()
             and isinstance(message, AIMessage)

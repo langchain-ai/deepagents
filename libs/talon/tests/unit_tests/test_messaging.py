@@ -5,9 +5,12 @@ from typing import TYPE_CHECKING
 
 import pytest
 from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 from deepagents_talon.background import _IN_SUBAGENT
 from deepagents_talon.host import TalonHost
@@ -76,6 +79,58 @@ async def test_narration_precedes_tools(
         assert result["messages"][-1].text == "done"
     finally:
         _IN_SUBAGENT.reset(subagent_token)
+        MESSAGE_HANDLER.reset(token)
+
+
+async def test_narration_precedes_remaining_tools_after_rejection() -> None:
+    events: list[str] = []
+
+    @tool
+    def work() -> str:
+        """Perform the allowed work."""
+        events.append("tool")
+        return "completed"
+
+    @tool
+    def gated() -> str:
+        """Perform work requiring approval."""
+        events.append("gated")
+        return "completed"
+
+    async def deliver(text: str) -> SendResult:
+        events.append(text)
+        return SendResult(success=True)
+
+    model = ToolCallingModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="working",
+                    tool_calls=[
+                        {"name": "work", "args": {}, "id": "work"},
+                        {"name": "gated", "args": {}, "id": "gated"},
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    graph = create_agent(
+        model,
+        tools=[work, gated],
+        middleware=[ProgressMessages(), HumanInTheLoopMiddleware(interrupt_on={"gated": True})],
+        checkpointer=InMemorySaver(),
+    )
+    token = MESSAGE_HANDLER.set(deliver)
+    try:
+        config = {"configurable": {"thread_id": "rejection"}}
+        result = await graph.ainvoke({"messages": [{"role": "user", "content": "work"}]}, config)
+        assert result["__interrupt__"]
+        assert events == []
+        result = await graph.ainvoke(Command(resume={"decisions": [{"type": "reject"}]}), config)
+        assert events == ["working", "tool"]
+        assert result["messages"][-1].text == "done"
+    finally:
         MESSAGE_HANDLER.reset(token)
 
 

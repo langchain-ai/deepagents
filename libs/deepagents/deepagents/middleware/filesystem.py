@@ -1843,7 +1843,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             raise TypeError(msg)
         self.state_schema = cast(
             "type[FilesystemState]",
-            FilesystemState if _uses_state_backend(self.backend) else AgentState,
+            _FilesystemBlobPayloadState if _uses_state_backend(self.backend) else _BlobPayloadState,
         )
         if _permissions and supports_execution(self.backend) and not _all_paths_scoped_to_routes(_permissions, self.backend):
             msg = (
@@ -1860,10 +1860,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._conversation_history_prefix = f"{_root}/conversation_history"
         self._blobs_prefix = f"{_root}/blobs"
         self._offload_binary_content = offload_binary_content and not _routes_to_state_backend(self.backend, f"{self._blobs_prefix}/")
-        if self._offload_binary_content:
-            self.state_schema = cast(
-                "type[FilesystemState]", _FilesystemBlobPayloadState if self.state_schema is FilesystemState else _BlobPayloadState
-            )
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt

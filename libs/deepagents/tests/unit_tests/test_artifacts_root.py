@@ -1,5 +1,7 @@
 """Tests for artifacts_root parameterization."""
 
+from hashlib import sha256
+
 from langchain_core.messages import ToolMessage
 from langgraph.store.memory import InMemoryStore
 
@@ -54,6 +56,23 @@ class TestFilesystemMiddlewareArtifactsRoot:
         [resp] = backend.download_files(["/workspace/large_tool_results/evict_123"])
         assert resp.error is None
         assert resp.content is not None
+        assert resp.content == b"x" * 5000
+
+    def test_long_tool_call_id_uses_bounded_path(self) -> None:
+        backend = _make_store_backend()
+        mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
+        tool_call_id = "call_" + "thought_signature" * 300
+        path = f"/large_tool_results/call-{sha256(tool_call_id.encode()).hexdigest()}"
+        msg = ToolMessage(content="x" * 5000, tool_call_id=tool_call_id)
+
+        result = mw._intercept_large_tool_result(msg)
+
+        assert isinstance(result, ToolMessage)
+        assert result.tool_call_id == tool_call_id
+        assert path in result.content
+        assert f"{tool_call_id[:32]}..." in result.content
+        assert tool_call_id not in result.content
+        [resp] = backend.download_files([path])
         assert resp.content == b"x" * 5000
 
     def test_large_tool_result_eviction_default_root(self) -> None:
@@ -116,6 +135,23 @@ class TestCompositeBackendEvictionArtifactsRoot:
 
 class TestAsyncEvictionArtifactsRoot:
     """Tests for async eviction paths with custom artifacts_root."""
+
+    async def test_long_tool_call_id_uses_bounded_path(self) -> None:
+        backend = _make_store_backend()
+        mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
+        tool_call_id = "call_" + "thought_signature" * 300
+        path = f"/large_tool_results/call-{sha256(tool_call_id.encode()).hexdigest()}"
+        msg = ToolMessage(content="x" * 5000, tool_call_id=tool_call_id)
+
+        result = await mw._aintercept_large_tool_result(msg)
+
+        assert isinstance(result, ToolMessage)
+        assert result.tool_call_id == tool_call_id
+        assert path in result.content
+        assert f"{tool_call_id[:32]}..." in result.content
+        assert tool_call_id not in result.content
+        [resp] = await backend.adownload_files([path])
+        assert resp.content == b"x" * 5000
 
     async def test_async_large_tool_result_eviction_uses_artifacts_root(self) -> None:
         backend = _make_composite_backend(artifacts_root="/workspace")

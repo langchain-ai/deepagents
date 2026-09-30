@@ -150,17 +150,17 @@ def create_sandbox(
     # Create or connect to sandbox
     console.print(f"[yellow]Starting {provider} sandbox...[/yellow]")
     backend = provider_obj.get_or_create(sandbox_id=sandbox_id, **provider_kwargs)
-    glyphs = get_glyphs()
-    console.print(
-        f"[green]{glyphs.checkmark} {provider.capitalize()} sandbox ready: "
-        f"{backend.id}[/green]"
-    )
 
-    # Run setup script if provided
-    if setup_script_path:
-        _run_sandbox_setup(backend, setup_script_path)
-
+    # Once acquired, an owned sandbox must also be cleaned up if setup fails.
     try:
+        glyphs = get_glyphs()
+        console.print(
+            f"[green]{glyphs.checkmark} {provider.capitalize()} sandbox ready: "
+            f"{backend.id}[/green]"
+        )
+        if setup_script_path:
+            _run_sandbox_setup(backend, setup_script_path)
+
         yield backend
     finally:
         if should_cleanup:

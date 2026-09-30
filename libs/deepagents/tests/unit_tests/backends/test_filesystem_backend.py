@@ -37,7 +37,7 @@ def require_ripgrep() -> None:
     `rg` is expected and still skips. CI allows the failure in two cases: the
     bounded install on an ordinary PR hit its two-minute timeout, or the
     unbounded strict install on a release PR failed and was bypassed under the
-    `bypass-ripgrep-check` label.
+    `ci:skip-ripgrep` label.
     """
     if shutil.which("rg") is not None:
         return

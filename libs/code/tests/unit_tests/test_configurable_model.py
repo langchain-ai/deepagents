@@ -4,7 +4,7 @@ import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain.agents.middleware.types import (
@@ -190,6 +190,93 @@ class TestCheckpointPersistence:
         result = middleware.wrap_model_call(request, lambda _request: _make_response())
 
         assert isinstance(result, ModelResponse)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_cache_activity_keeps_each_requests_identity(asynchronous: bool) -> None:
+    """Writes, reads, and misses preserve distinct request times and policies."""
+    middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=False)
+    request = _make_request(_make_model("gpt-5.4"))
+    state: dict[str, object] = {}
+    times = [f"2026-09-21T12:0{i}:00+00:00" for i in range(3)]
+    for timestamp, detail in zip(
+        times, ("cache_creation", "cache_read", None), strict=True
+    ):
+        response = ModelResponse(
+            result=[
+                AIMessage(
+                    content="response",
+                    usage_metadata={
+                        "input_tokens": 2000,
+                        "output_tokens": 1,
+                        "total_tokens": 2001,
+                        "input_token_details": {detail: 2000} if detail else {},
+                    },
+                )
+            ]
+        )
+        with (
+            patch(
+                "deepagents_code.configurable_model._utc_now_iso",
+                return_value=timestamp,
+            ),
+            patch(
+                "deepagents_code.configurable_model._cache_endpoint_identity",
+                return_value="default",
+            ),
+            patch(
+                "deepagents_code.configurable_model._effective_cache_params",
+                return_value={"prompt_cache_retention": "24h"},
+            ),
+        ):
+            if asynchronous:
+                result = await middleware.awrap_model_call(
+                    request, AsyncMock(return_value=response)
+                )
+            else:
+                result = middleware.wrap_model_call(
+                    request, MagicMock(return_value=response)
+                )
+        assert isinstance(result, ExtendedModelResponse)
+        assert result.command is not None
+        assert isinstance(result.command.update, dict)
+        state.update(result.command.update)
+
+    assert state["_last_model_request_at"] == times[2]
+    identity = {
+        "model_spec": "openai:gpt-5.4",
+        "endpoint": "default",
+        "params": {"prompt_cache_retention": "24h"},
+    }
+    assert state["_last_cache_write"] == {**identity, "requested_at": times[0]}
+    assert state["_last_cache_use"] == {**identity, "requested_at": times[1]}
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_subagent_cache_activity_is_not_checkpointed(asynchronous: bool) -> None:
+    """Auxiliary model usage cannot overwrite the main model's cache identity."""
+    middleware = ConfigurableModelMiddleware(persist_model_state=False)
+    request = _make_request(_make_model("gpt-5.4"))
+    response = ModelResponse(
+        result=[
+            AIMessage(
+                content="response",
+                usage_metadata={
+                    "input_tokens": 2000,
+                    "output_tokens": 1,
+                    "total_tokens": 2001,
+                    "input_token_details": {"cache_creation": 2000},
+                },
+            )
+        ]
+    )
+    if asynchronous:
+        result = await middleware.awrap_model_call(
+            request, AsyncMock(return_value=response)
+        )
+    else:
+        result = middleware.wrap_model_call(request, MagicMock(return_value=response))
+    assert result is response
 
 
 class TestNoOverride:

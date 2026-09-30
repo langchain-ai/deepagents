@@ -1,136 +1,165 @@
 ---
-type: runtime behavior
-title: dcode Runtime Behavior and Failure Handling
-description: How dcode launches and owns a workspace-aware LangGraph runtime, constructs its agent resources, selects bounded workspace runtimes, and surfaces startup and request failures.
-tags: [dcode, runtime, server-startup, workspace, sandbox, extensions, mcp, retry, shutdown]
+type: runtime architecture
+title: Talon Host Runtime Behavior
+description: Control flow and isolation rules for Talon's durable agent turns, host command and delivery lifecycle, models, approvals, background work, and scheduled execution.
+tags: [talon, runtime, lifecycle, model-selection, approvals, scheduling, persistence]
 sources:
-  - id: openwiki-source-1728494bdd59604ce9b5f65b
-    resource: repo://libs/code/deepagents_code/_server_config.py
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
-  - id: openwiki-source-b9ef532d79a0667acf40e58b
-    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
-  - id: openwiki-source-074ce96a8baea27a6c43328b
-    resource: repo://libs/code/deepagents_code/client/launch/server.py
-  - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
-    resource: repo://libs/code/deepagents_code/client/remote_client.py
-  - id: openwiki-source-c101168dc0286ff6c29ed37f
-    resource: repo://libs/code/deepagents_code/model_retry.py
-  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
-    resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-c8dacdfd6192dd22d24a9362
-    resource: repo://libs/code/tests/integration_tests/test_pending_work_recovery.py
-  - id: openwiki-source-c04c6318f6e59e0d1c9d6182
-    resource: repo://libs/code/tests/unit_tests/test_model_retry.py
-  - id: openwiki-source-439d3e6c6f1b62e6d282df3f
-    resource: repo://libs/code/tests/unit_tests/test_remote_client.py
-  - id: openwiki-source-784e764f7f5eb5169220c3d2
-    resource: repo://libs/code/tests/unit_tests/test_server_graph.py
-  - id: openwiki-source-f598809da8d8fbff2d7ae090
-    resource: repo://libs/code/tests/unit_tests/test_server_manager.py
+  - id: openwiki-source-995d5d95882808a64071f617
+    resource: repo://libs/talon/deepagents_talon/archive_saver.py
+  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
+    resource: repo://libs/talon/deepagents_talon/background.py
+  - id: openwiki-source-0ad7ce4799b63dc215741642
+    resource: repo://libs/talon/deepagents_talon/channels/base.py
+  - id: openwiki-source-4b1e381713dec742c675816b
+    resource: repo://libs/talon/deepagents_talon/context_doctor.py
+  - id: openwiki-source-f55101eb12af3c6ae9b9d823
+    resource: repo://libs/talon/deepagents_talon/cron/jobs.py
+  - id: openwiki-source-363e56d368aecc6ab73d3e2f
+    resource: repo://libs/talon/deepagents_talon/cron/scheduler.py
+  - id: openwiki-source-ef047a301ffca1d2f8ab2c87
+    resource: repo://libs/talon/deepagents_talon/cron/tools.py
+  - id: openwiki-source-6801a88de6305bc8cbdd259f
+    resource: repo://libs/talon/deepagents_talon/host.py
+  - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
+    resource: repo://libs/talon/deepagents_talon/model_selection.py
+  - id: openwiki-source-26b7e102f81f5c7bcfdc2424
+    resource: repo://libs/talon/deepagents_talon/pairing.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-267468fe937003d4716fe6c2
+    resource: repo://libs/talon/deepagents_talon/tool_approvals.py
+  - id: openwiki-source-376016a439d0559796a191a0
+    resource: repo://libs/talon/tests/cron/test_scheduler.py
+  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
+    resource: repo://libs/talon/tests/test_host.py
+  - id: openwiki-source-4d6726e17c8a0c78539a7d33
+    resource: repo://libs/talon/tests/test_runtime.py
+  - id: openwiki-source-1e472b2d67bd29dc25c17e85
+    resource: repo://libs/talon/tests/unit_tests/test_context_doctor.py
+  - id: openwiki-source-817808ec0e85107297729a56
+    resource: repo://libs/talon/tests/unit_tests/test_model_selection.py
+  - id: openwiki-source-8614e79d8a8371505c879e50
+    resource: repo://libs/talon/tests/unit_tests/test_pairing.py
+  - id: openwiki-source-f2859f71853cf2cbdb40aaa3
+    resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+    at: 2026-09-30T08:06:28.871Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-30T08:06:28.871Z" }
 ---
 
-# dcode Runtime Behavior and Failure Handling
+# Talon Host Runtime Behavior
 
-Interactive dcode runs its agent in an owned, loopback `langgraph dev` subprocess and accesses the `agent` graph through `RemoteAgent` over HTTP and SSE. The split is intentional: the client retains UI and session concerns, while the server owns the compiled graph, its backend, MCP sessions, sandbox lifetime, and server-side offload operation. ACP's in-process stdio path is outside this page. See [Deep Agents Code Architecture](/openwiki/architecture/code-agent.md), [Configuration Layering](/openwiki/concepts/config-layering.md), [State Persistence](/openwiki/concepts/state-persistence.md), [MCP](/openwiki/integrations/mcp.md), [Sandbox partners](/openwiki/integrations/sandbox-partners.md), and [Run a dcode session](/openwiki/workflows/run-dcode-session.md).
+Talon is an experimental Deep Agents runtime. `DeepAgentRuntime` owns graph construction, checkpoints, turn-local context, and agent execution. `TalonHost` owns managed startup and shutdown, channel commands and admission-facing dispatch, per-conversation serialization and replacement, delivery, background follow-ups, and scheduled dispatch. This boundary lets later configuration changes take effect without altering a graph, model, or approval policy already captured by a running turn. See [Permissions and Human-in-the-Loop](/openwiki/concepts/permissions-hitl.md), [State Persistence](/openwiki/concepts/state-persistence.md), [Talon channel admission](/openwiki/concepts/talon-channel-admission.md), and [Talon scheduling](/openwiki/concepts/talon-scheduling.md).
 
-## Launch and runtime construction
+## Host lifecycle and inbound dispatch
 
-`start_server_and_get_agent` captures an explicit or current project context, pre-validates an explicit MCP configuration, derives `ServerConfig` from the invocation, exports its `DEEPAGENTS_CODE_SERVER_*` representation, and scaffolds a temporary server project. It starts `langgraph dev` on `127.0.0.1` and port `0` by default, waits for the `agent` graph, then configures the returned `RemoteAgent` with the workspace's **session** policy claim and fingerprint. Project-scoped policy is not included in that claim: it is resolved and trusted by the server for the target directory.
+On start, the host starts the runtime, binds each channel's message handler (and reaction handler where supported), starts channels, then starts the scheduler. A partial start is unwound in reverse. On stop it cancels its background dispatcher and in-flight work, stops channels and scheduler, and finally asks the runtime to stop; a failure stopping one component is logged but does not prevent cleanup of the others. `run_until_stopped()` installs signal handlers around this lifecycle.
+
+For each inbound message, the host derives a provider-qualified conversation root, serializes processing with the conversation lock, and records the history scope. It handles `/help` before that lock, then—inside it—handles host commands, pending approval replies, and authorization replies before treating the message as model input. Thus `/new`, `/stop`, `/mcp-reload`, `/context-doctor`, `/model`, `/smart-model`, `/pair`, and history reset do not reach the agent graph. Channel adapters separately enforce their configured exposure policy before dispatching messages to the host; an `open` policy requires an explicit risk acknowledgement because arbitrary senders can otherwise trigger the agent with host access.
 
 ```mermaid
 sequenceDiagram
-    participant Client as dcode client
-    participant Manager as server manager
-    participant Child as langgraph dev
-    participant Factory as graph factory
-    participant Remote as RemoteAgent
-    Client->>Manager: start_server_and_get_agent
-    Manager->>Manager: capture workspace and resolve ServerConfig
-    Manager->>Manager: validate explicit MCP config and scaffold runtime
-    Manager->>Child: launch loopback server
-    Child->>Factory: load make_graph
-    Factory->>Factory: build or retrieve launch runtime
-    Manager->>Child: wait for agent readiness
-    Manager->>Remote: create remote graph client
-    Manager->>Remote: set workspace claim and fingerprint
-    Manager-->>Client: hand off agent and process ownership
+    participant Channel
+    participant Host as TalonHost
+    participant Runtime as DeepAgentRuntime
+    participant Graph
+    Channel->>Host: inbound ChannelMessage
+    Host->>Host: lock conversation and intercept commands
+    Host->>Host: cancel and recover prior turn if replaced
+    Host->>Runtime: invoke AgentRequest
+    Runtime->>Runtime: capture graph policy and model
+    Runtime->>Graph: invoke or resume
+    Graph-->>Runtime: final text or interrupt
+    Runtime-->>Host: AgentResult
+    Host->>Channel: deliver confirmed reply
+    Host->>Runtime: record delivered reply
 ```
 
-This sequence shows the construction handoff. Before a successful return, the manager owns the child; its `finally` invokes idempotent cleanup after every setup failure, including cancellation. An explicit malformed or missing MCP config fails before process creation, whereas project- and user-discovered MCP configuration is handled by server-side discovery.
+This sequence shows the important delivery boundary: a completed model invocation is not yet a delivered reply.
 
-`ServerConfig` is the process-boundary contract: the parent serializes it to environment variables and the server reconstructs it from the same prefix. It carries the model and model parameters, interaction and tool choices, sandbox selection, MCP settings, extension settings, and project context. A supplied filesystem-tool allowlist is a security control: malformed, empty, or unknown values received from the environment fail closed, and an explicit list must include `read_file`.
+## Startup, graph assembly, and durable state
 
-At server construction, `_make_graphs` snapshots dotenv-derived workspace environment and credentials before activating that immutable environment for runtime assembly. Blocking path/bootstrap, model, plugin-discovery, and synchronous graph-construction work is moved off the event loop. It creates the configured model; adds built-in `fetch_url` and thread-ID tools; conditionally adds web search when workspace credentials provide a Tavily key; and discovers MCP tools unless `no_mcp` is set. Criteria and rubric agents receive only read-only built-ins and MCP tools explicitly and coherently annotated read-only, rather than a name-based approximation.
+`DeepAgentRuntime.start()` resolves configured subagents, materializes the tool-approval policy, and compiles the initial graph. Assembly gives `create_deep_agent` the resolved model and subagents, built-in and runtime tools, approval-management tools and `interrupt_on` policy, backend, prompt, skills, memory, caller middleware, task/background middleware, and a checkpointer. The default checkpointer is `InMemorySaver`, so same-process turns using a conversation `thread_id` share graph history.
 
-Sandbox creation is server-process lifetime state. A configured provider is opened while building the runtime, held for cleanup through `atexit`, and passed into `create_cli_agent`; unsupported, absent, invalid, or failed sandbox setup emits a startup error and exits. With experimental extensions enabled, the server loads extensions using the workspace path, interactive/headless mode, project-trust decision, and explicit extension paths; load errors are warnings, while an active registry is bound to server extensions and shut down if graph construction later fails.
+`ConversationSaver` is the archival checkpointer option. It serializes writes, persists the checkpoint before committed archive revisions, and—if cancelled—waits for both operations to settle before re-raising cancellation. This does not make reply text delivered: the host records a final reply in semantic history only after channel delivery succeeds.
 
-`create_cli_agent` receives the resolved model, tool/MCP set, sandbox, approval and shell policy, filesystem and interpreter choices, memory/skills/subagents, rubric settings, extension registry, environment, and credential snapshot. The resulting `ServerRuntime` keeps the compiled agent, the exact `CompositeBackend` used to construct it, its MCP metadata, and an offload operation derived from that backend. Failure to expose that operation is a construction failure, not a partially functional server: `/offload` must share the same backend and archive policy as the agent.
+The default local shell backend is deliberately separated from the parent process environment. It uses a fixed safe `PATH`, an allowlisted and scrubbed child environment that excludes loader-hijack and credential-like values, and an artifacts directory created and enforced with mode `0700`. This reduces exposure but does not replace approval policy.
 
-## Workspace selection, caching, and policy drift
+## Reload, invocation isolation, and execution recovery
 
-The initial graph load is not enough to select a request runtime. `make_graph` receives LangGraph execution context when serving a run; it requires a nonempty thread ID and workspace context, verifies the durable thread-to-workspace binding, then selects that binding's runtime. Calls without execution context use the configured launch runtime. This prevents an arbitrary request from selecting a workspace merely by naming a directory.
+Before an invocation, `refresh_tools` may replace runtime tools. Explicit MCP and subagent reloads use the same candidate-before-replacement shape: resolve and validate inputs, construct a graph, then assign it under `_tools_lock`. A build failure leaves the previous graph usable. An approval-file revision also compiles a replacement graph at the next invocation.
+
+While holding that lock, `invoke()` captures the graph in a context variable and binds the approval snapshot. Initial graph calls and approval resumes use that captured graph after the lock is released. An active turn is therefore insulated from later MCP, subagent, or approval reloads; `get_agent_tools` reports inactive saved changes and warns that running work retains its original capabilities.
+
+Every graph call uses the request conversation ID as LangGraph `thread_id` and the configured recursion limit. Whole calls retry only classified transient connection, timeout, status, parsing, context-limit, or message-marker failures with capped exponential backoff; cancellation and terminal failures escape. Empty final text follows a separate bounded continuation-nudge path and then a forced summary.
+
+`recover_interrupted()` reads the latest checkpoint, uses `PatchToolCallsMiddleware` to repair dangling assistant tool calls, and appends an interruption marker at the checkpoint configuration. The runtime stops background workers before teardown; if a worker survives cancellation, it refuses to close graph/checkpoint resources that worker might still write.
+
+## Per-conversation replacement and delivery containment
+
+Inbound model turns are serialized by conversation root. Except for commands and pending approval or authorization responses, a new message replaces the active turn: the host increments its generation, cancels it, recovers its graph thread, and starts the replacement. If cancellation or recovery cannot settle within the bound, the conversation is blocked until restart rather than risking concurrent use of its graph thread. A recovery failure still permits the replacement, marked with degraded-recovery metadata.
+
+After model work, the host reacquires the conversation lock and verifies both the current graph thread and generation before delivery. Superseded output is dropped. Successful delivery is passed to `record_delivered_reply`; delivery failure or supersession is not written as a semantic final reply.
+
+All host channel sends, including commands, progress updates, agent replies, and scheduled delivery, use `send_with_retry`. It converts transport exceptions to failed `SendResult` values, retries retryable or recognized transient-network failures twice with exponential delays, and returns a non-retryable failure without raising into the host loop. This confines channel transport faults to the particular delivery decision.
+
+## Model selection and context diagnostics
+
+`/model` is host-wide state, not graph configuration: a non-default selection is stored under a global key in the model-state JSON and attached to subsequent interactive `AgentRequest`s for **all chats**. Only an operator may switch or reset it; listing is available to others. A selection captured in `_Turn` remains fixed for that already-started turn, and the persisted setting survives `/new` and host restart. Scheduled jobs do not receive this chat selection.
+
+The runtime discovers selectable models from the shared catalog, including only providers with required credentials in Talon's environment, plus the startup default. Requested text must match that catalog exactly. Non-default models are lazily built and cached under a lock; a stale or unbuildable saved selection falls back to the default for that turn rather than failing the chat.
+
+A selected model is bound in the `ACTIVE_MODEL` turn context variable. Outer `ModelSelectionMiddleware` substitutes it into main-agent model calls without recompiling the graph. `SelectedModelSummarization` occupies Deep Agents' summarizer slot and maintains per-selected-model summarizers, so compaction uses the selected model's input budget. Delegated subagents retain the startup model and summarizer.
+
+`DeepAgentRuntime.context_doctor(conversation_id)` is an optional, read-only capability served by `/context-doctor`. It reads the active graph checkpoint and produces bounded token estimates without calling a model or changing state. The host resolves the current thread, applies a ten-second bound, and returns generic unavailable/failure responses instead of diagnostic exceptions.
+
+## Approval and unattended authority
+
+The approval file is a bounded, non-symlink regular JSON document with validated exact names and byte-revision compare-and-swap updates. An `ApprovalSnapshot` freezes policy for an invocation and compiles interrupts only for enabled names; updates apply on a later invocation. The runtime batches tool interrupts, audits action names and counts rather than arguments, resumes aligned decisions, and caps approval rounds.
+
+An attended channel turn can receive channel approval and authorization handlers. **Cron and background-delivery requests are unattended:** the host supplies neither interactive handler, and the runtime clears approval-operator authority. A protected-tool interrupt without an eligible handler is auto-rejected, so unattended work fails closed instead of waiting for a human. Detached background workers also clear authorization and approval authority, so they cannot carry it past their owner turn. Scheduled and detached work therefore lacks interactive approval and authorization; it must be safe to reject rather than rely on a later human response.
+
+## Sender pairing and revocation
+
+Pairing is an opt-in admission mechanism for Discord, Slack, and Telegram; it is incompatible with open exposure. An unknown direct-message sender receives an eight-character, one-hour code bound to its provider and sender. Only an environment-configured operator can list, approve, or revoke pairing in a direct message (or use the CLI), so a requester cannot submit guesses to the bot. Approval consumes the code and admits that paired sender in any visible chat, but does not grant operator controls such as `/pair` or approval-policy changes. Environment-listed senders remain authoritative and cannot be revoked through pairing.
+
+The pairing store uses a locked read-modify-write and atomic replacement. It validates bounded regular-file JSON, refuses symlinks, and fails closed on unreadable or invalid state; cached admission reads include the inode, so a replacement-based revocation takes effect rather than being hidden by cache.
+
+Revocation is operational containment, not merely future-message admission. The host cancels work in the sender's direct message and every non-idle conversation where that sender initiated a turn; this also stops background work associated with such a conversation even when another sender spoke later. When the scheduler exposes a `CronJobStore`, it disables every job created by the sender on that provider and cancels any of those jobs currently running. A revoked scheduled run repairs its dedicated graph thread and raises a scheduler-visible failure, producing no delivery. If bounded cancellation cannot finish, the host tells the operator to restart.
+
+## Background subagents and follow-up delivery
+
+For ordinary channel turns, `task` and `start_async_task` create in-memory jobs associated with the owner thread. Capacity and running-work limits apply; jobs use separate task thread IDs, cannot delegate recursively, have no approval operator or authorization handler, have bounded/sanitized results, and have a one-hour timeout. A completed result is injected as data into an owner follow-up turn. The runtime acknowledges result IDs only after that main-agent turn completes, and returns their IDs in `AgentResult` because only the host knows whether the user saw its reply.
+
+The host background loop checks once per second and only launches an unattended follow-up when the owner is idle, current, and unlocked. It spaces repeated attempts with capped exponential delay. Failed consumption increments a bounded delivery counter; after the limit, the result is dropped rather than retried forever. If a result-consuming turn is superseded or cancelled before delivery, the host requeues its IDs. A deliberately suppressed result remains acknowledged because the host intentionally withheld output after the model consumed it.
+
+## Scheduled execution
+
+Cron jobs persist an origin, prompt, parsed minute-granularity schedule, repeat/run state, optional expiry, and claim state. Management tools are scoped to the current `CronOrigin`, preventing one conversation from administering another's jobs. The scheduler first sweeps finished records, then claims a due occurrence by advancing `next_run_at` before execution, records its outcome, suppresses `[SILENT]` output, and logs ticker failures while continuing on the normal tick interval. A claim beyond the `until` grace expires; finished records are retained only where error or unresolved-claim retention needs later pruning.
 
 ```mermaid
 flowchart TD
-    Request["make_graph invocation"] --> HasExecution{"Execution context present"}
-    HasExecution -- No --> Launch["Get launch ServerRuntime"]
-    HasExecution -- Yes --> Valid{"Thread ID and workspace context valid"}
-    Valid -- No --> Reject["Raise ValueError"]
-    Valid -- Yes --> Binding["Verify durable thread workspace binding"]
-    Binding --> Policy["Resolve current workspace policy"]
-    Policy --> Drift{"Policy and fingerprint unchanged"}
-    Drift -- No --> Conflict["Raise workspace conflict"]
-    Drift -- Yes --> Cache{"Runtime cached by resource key"}
-    Cache -- Yes --> Touch["Refresh LRU position"]
-    Touch --> Agent["Return bound runtime agent"]
-    Cache -- No --> Build["Claim sandbox and build workspace runtime"]
-    Build --> Store["Insert into bounded LRU"]
-    Store --> Agent
-    Launch --> Agent
+    Scan["Ticker scans jobs"] --> Sweep["Sweep finished records"]
+    Sweep --> Claim["Claim due occurrence"]
+    Claim -->|"not due or expired"| Next["Continue tick"]
+    Claim --> Run["Run scheduled graph thread"]
+    Run -->|"timeout"| Repair["Recover interrupted thread"]
+    Repair --> Error["Record error"]
+    Run -->|"failure"| Error
+    Run -->|"silent"| Success["Record success"]
+    Run -->|"text"| Deliver["Deliver to origin"]
+    Deliver --> Success
+    Success --> Next
+    Error --> Next
 ```
 
-This flow distinguishes launch-time construction from execution-time workspace routing.
+This flow shows that claiming advances the occurrence before agent execution, while the scheduler records success or error after execution and, for text, after delivery.
 
-The process runtime is lock-protected and constructed once. Its cache is load-bearing: rebuilding per request would repeat MCP discovery, create/leak sandbox sessions, register duplicate `atexit` handlers, and make the graph and offload route disagree about backend state. Workspace-specific runtimes use a second lock-protected LRU keyed by the binding resource key; an access refreshes recency and insertion evicts the oldest entry once the cache exceeds 32 entries.
+The host uses a dedicated `<job-id>:talon-cron` thread and holds its conversation lock for each run, preventing overlap. A scheduled-run timeout invokes interruption recovery before it reaches the scheduler. Scheduled requests have no approval or authorization handlers and run subagent delegations inline rather than leaving detached work for a later turn. Inline delegation disables recursion and detached-job management tools, queues behind a separate concurrency limit, has a bounded timeout, converts failures to sanitized output, and clamps returned text.
 
-Before reusing or building a workspace runtime, the server resolves current policy for the binding and compares both project-policy fields and the full workspace fingerprint against the durable binding. It preserves bound extension trust while resolving current policy, but reports any remaining project policy drift or fingerprint change as `WorkspaceConflictError`; even a trust-store read failure is treated as a policy change. A process-wide sandbox may be claimed only by one workspace ID, so a second workspace cannot silently share it.
+A scheduled turn may read the origin chat's history only when history is enabled and the origin identifies a reachable channel. The request carries that trusted history scope, while the cron thread's archive session is read-only: it is not indexed as a conversational entry and cannot delete conversations. On successful non-silent delivery, the host records the final reply under the origin history chat (the parent chat for a public thread). `deliver_to` selects the origin thread or, for threaded adapters, its top-level channel; it does not change the history scope.
 
-On first use of a thread, `RemoteAgent` posts `cwd`, and when configured the session claim plus fingerprint, to `/dcode/threads/{thread_id}/workspace`; it validates and caches the returned descriptor per thread. `set_workspace` requires the policy and fingerprint together and clears that cache. This client cache avoids repeated binding requests but is not the authority: the durable server binding and per-request validation govern selection.
+## Focused change checks
 
-## Streaming, state, and operation failures
-
-`RemoteAgent.astream` requires a thread ID, gets that thread's workspace descriptor, adds it to the runtime context, and delegates SSE framing, `messages-tuple` negotiation, namespace extraction, and interrupt detection to `RemoteGraph`. It defaults to `messages` and `updates`, deserializes message dictionaries for the UI, converts `__interrupt__` update data, and deliberately leaves state snapshots serialized. A message conversion failure is counted and reported after streaming rather than aborting unrelated events.
-
-Checkpoint data and the development server's HTTP thread row have separate lifecycles. `aget_state` returns empty state for a missing remote thread or the SDK's known no-checkpoint `TypeError`, but logs and re-raises other errors. `aensure_thread` idempotently creates the live HTTP row, allowing a persisted thread to receive state mutations after a server restart. For a state-update conflict, the client cancels pending/running runs concurrently with bounded per-run waits and retries the update once.
-
-Lost or cancelled work is recovered destructively, not resumed. `aabandon_pending_work` cancels active runs, calculates error `ToolMessage` values only for unanswered calls in the trailing AI-message turn, writes `__end__` to discard queued work, then re-reads state and fails if queued nodes, tasks, or interrupts remain. The trailing-turn restriction preserves tool-use/result adjacency and avoids producing invalid history for older interrupted calls.
-
-The server also exposes backend-owned offload through an authenticated custom HTTP route rather than a second addressable graph. The generated configuration enables custom-route authentication when a deployment supplies auth; local process launch explicitly uses noop auth and loopback binding. The remote offload client ensures the thread exists, forwards workspace context, validates protocol responses, and treats an absent route as a server compatibility error.
-
-## Retry, startup, and shutdown semantics
-
-`CodeModelRetryMiddleware` wraps the model-node handler rather than an entire agent turn and is installed inside side-effecting automatic compaction. Thus a transient provider retry does not replay completed tools, summary generation, or archive append. It remains installed even with a zero startup budget because a runtime-selected model can provide a request-time budget. `GraphBubbleUp` passes through as graph control flow; classified transient failures are retried while budget remains using usable `Retry-After` guidance or jittered exponential backoff, while terminal failures are re-raised rather than turned into artificial AI output. Correlated attempt and retry events record whether visible output may already have started, without allowing diagnostic-event failure to fail the run.
-
-Runtime construction is a startup barrier. The process runtime factory checks managed configuration health, emits `DEEPAGENTS_STARTUP_ERROR:` and exits nonzero when construction fails; early child-exit health polling extracts that marker and adds it to the parent error. Request-scoped callers must catch `SystemExit` and map it appropriately rather than terminating an already-serving child. This is especially relevant to operation routes.
-
-The child environment strips `PYTHONPATH` and other startup-influencing values before launching the server interpreter. It preserves the launch `PYTHONPATH` only in a dedicated carrier for downstream agent execute commands, and protects immutable profile/carrier values from later environment overrides.
-
-`ServerProcess` owns shutdown. On POSIX the child starts in a dedicated session/process group; stop sends `SIGTERM` to that group, waits for the whole group, then escalates with `SIGKILL` if necessary, refusing to target dcode's own group. Windows sends Ctrl+Break for graceful shutdown and escalates by killing the root process; a surviving descendant can therefore be orphaned. Signaling failures are logged because cleanup cannot guarantee that the child is gone.
-
-## Focused regression coverage and safe changes
-
-Server-graph unit tests inject builders to verify one construction under repeated and concurrent factory access, the startup marker/exit contract, and nonblocking bootstrap. They also exercise ordered, identity-based criteria tool selection and fail-closed MCP annotations. Server-manager tests cover config serialization, filesystem allowlist rejection, project-relative MCP path normalization, session-only workspace claims, scaffold forwarding, generated built-in graph/operation registration, and option forwarding.
-
-When changing this area:
-
-1. Keep policy partitioning and durable binding validation aligned with the workspace cache key.
-2. Do not make a process-wide sandbox reusable across workspace IDs.
-3. Keep graph and offload construction on the same `ServerRuntime` backend.
-4. Preserve startup-marker parsing, request-scope `SystemExit` containment, and cancellation-safe launch cleanup.
-5. Keep model retries inside compaction and pending-work recovery ordered as cancel, trailing-turn repair, `__end__`, then verification.
-6. Test both platform shutdown scopes when changing process ownership or escalation.
+When changing this area, preserve candidate-before-replacement graph construction and capture graph, approval, selected model, and host generation per turn. Do not transfer attended authority into cron, detached workers, or background delivery. Repair a cancelled thread before reuse; treat host-confirmed delivery as the semantic-history boundary; and requeue background results only when unintended loss prevented delivery. Focused tests exercise graph refresh isolation, approvals and interruption repair, shell hardening, global model persistence and selected-model summarization, host timeout/replacement/delivery/requeue behavior, pairing code and revocation containment, origin-scoped scheduled history and delivery targeting, scheduled delegation, and scheduler resilience.

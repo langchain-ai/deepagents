@@ -20,7 +20,7 @@
 #   were still running.
 #
 #   "Normally" is load-bearing. `guard-pending-release` waits on the
-#   `autorelease: pending` label, which release.yml flips in `mark-release`,
+#   `auto:release-pending` label, which release.yml flips in `mark-release`,
 #   not on the release run concluding — sibling jobs (`bump-code-sdk-pin`)
 #   can still be running after the label clears. The guard also gives up
 #   after its own MAX_WAIT and defers on release commits, both of which end
@@ -351,12 +351,23 @@ jobs:
           # dispatched release.yml run failed: its release-commit guard skips
           # follow-up work in that case. Base the outcome summary on the
           # release runs themselves rather than the enclosing workflow.
+          guidance=""
           if printf '%s\n' "$RUNS" | awk -F '\t' 'NF == 0 { next } $2 != "success" { exit 1 }'; then
             header="All dispatched package releases published successfully:"
           else
             header="One or more dispatched package releases did not complete successfully:"
+            guide="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/blob/main/.github/RELEASING.md"
+            guidance=$(printf '%s\n' \
+              '**Maintainer next steps**' \
+              '1. Open each unsuccessful run linked above and inspect its failed job logs and step summary.' \
+              '2. Check whether the exact package version is already on PyPI before retrying; a failed workflow does not necessarily mean publishing failed.' \
+              "3. If it has not published, follow the [hotfix protocol](${guide}#case-a--release-failed-before-pypi-publish) and [manual release instructions](${guide}#manual-release) to fix the cause and re-dispatch with an explicit release SHA." \
+              "4. If it has published, do not re-publish that version or move its tag. Use [release troubleshooting](${guide}#troubleshooting) to recover incomplete release notes or labels; code fixes need a new patch release.")
           fi
           body="${header}"$'\n\n'"${lines}"
+          if [ -n "$guidance" ]; then
+            body="${body}"$'\n\n'"${guidance}"
+          fi
 
           # The reverse case: the release runs above are only the publish
           # outcome, while the enclosing release-please run also carries the

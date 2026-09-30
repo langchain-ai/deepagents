@@ -59,7 +59,13 @@ async def prepare_generation(config: TalonConfig, archive: StoreConversationArch
         async with vector_backend(config, None, generation) as old:
             await _erase_vectors(archive, old)
         root = await archive.records.root()
-        root = {**root, "indexed": 0, "reindex_cursor": 0, "reindexing": False}
+        root = {
+            **root,
+            "indexed": 0,
+            "reindex_cursor": 0,
+            "reindexing": False,
+            "semantic_cleanup_end": 0,
+        }
     async with asyncio.timeout(15), archive.records.access():
         await archive.records.commit(
             [

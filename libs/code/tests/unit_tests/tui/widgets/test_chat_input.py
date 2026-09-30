@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from textual import events
@@ -12,6 +14,7 @@ from textual.containers import Container
 from textual.widgets import Static
 from textual.widgets.text_area import Selection
 
+from deepagents_code.command_registry import ALWAYS_IMMEDIATE, HIDDEN_COMMANDS
 from deepagents_code.input import MediaTracker
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.tui.widgets import (
@@ -33,6 +36,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from textual.pilot import Pilot
+
+    from deepagents_code.sessions import ThreadInfo
 
 
 class TestCompletionOption:
@@ -257,6 +262,24 @@ class TestChatInputScrollbar:
     so the bar appears only on genuine overflow.
     """
 
+    async def test_overflowing_paste_scrolls_to_cursor(self) -> None:
+        """A paste taller than the composer leaves its end visible."""
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            text_area = app.query_one(ChatTextArea)
+            owner = text_area._chat_input_owner
+            assert owner is not None
+            owner._collapse_pastes = False
+            text_area.focus()
+            await pilot.pause()
+
+            pasted = "word " * 200
+            app.post_message(events.Paste(pasted))
+            await pilot.pause()
+
+            assert text_area.cursor_location == (0, len(pasted))
+            assert text_area.scroll_y == text_area.max_scroll_y
+
 
 class TestChatTextAreaKeybindings:
     """Regression tests for terminal key aliases in the chat input."""
@@ -312,6 +335,79 @@ class _ImagePasteRecordingApp(App[None]):
         self.submitted.append(event)
 
 
+@pytest.mark.parametrize(
+    "command", [*sorted(ALWAYS_IMMEDIATE | HIDDEN_COMMANDS), "/RESTART"]
+)
+async def test_submission_pause_allows_recovery_commands(command: str) -> None:
+    """Recovery commands must reach the app through the Enter-key path."""
+    app = _RecordingApp()
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatInput)
+        chat.submission_block_reason = "Wait for the handoff to finish."
+        # A trailing space submits the exact name, including hidden commands
+        # and aliases, without accepting a fuzzy autocomplete suggestion.
+        chat.set_value_at_end(f"{command} ")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert len(app.submitted) == 1
+        assert app.submitted[0].value == command
+        assert app.submitted[0].mode == "command"
+        assert chat.value == ""
+        assert chat.submission_block_reason is not None
+
+
+@pytest.mark.parametrize(
+    "draft",
+    ["keep working", "/help ", "/restart later", "/quitter ", "!quit", "!!quit"],
+)
+async def test_submission_pause_blocks_ordinary_input(draft: str) -> None:
+    """Normal messages, other commands, and shell input remain editable."""
+    app = _RecordingApp()
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatInput)
+        chat.submission_block_reason = "Wait for the handoff to finish."
+        chat.set_value_at_end(draft)
+        await pilot.pause()
+        original = chat.value
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert not app.submitted
+        assert chat.value == original
+
+
+async def test_submission_pause_preserves_pastes_and_images(tmp_path: Path) -> None:
+    """Blocked Enter must keep attachment payloads usable on a later send."""
+    from PIL import Image
+
+    image_path = tmp_path / "draft.png"
+    Image.new("RGB", (4, 4), color="yellow").save(image_path)
+    pasted_text = "p" * 900
+    app = _ImagePasteRecordingApp()
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatInput)
+        chat.handle_external_paste(str(image_path))
+        chat.handle_external_paste(pasted_text)
+        await pilot.pause()
+        draft = chat.value
+        assert "[image 1]" in draft
+        assert "[Pasted text #1]" in draft
+        chat.submission_block_reason = "Wait for the handoff to finish."
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not app.submitted
+        assert chat.value == draft
+        assert len(app.tracker.get_images()) == 1
+        chat.submission_block_reason = None
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(app.submitted) == 1
+        assert app.submitted[0].value == f"[image 1] {pasted_text}"
+        assert len(app.tracker.get_images()) == 1
+
+
 async def _pause_for_strip(pilot: Pilot[None]) -> None:
     """Wait two frames so the prefix-strip text-change event propagates."""
     await pilot.pause()
@@ -332,16 +428,18 @@ class TestPromptIndicator:
             chat_input = app.query_one(ChatInput)
 
             input_box = chat_input.query_one("#input-box")
-            chat_input.mode = "shell_incognito"
+            await pilot.press("!", "!")
             await pilot.pause()
             assert input_box.border_title == "incognito"
             assert chat_input.has_class("mode-shell-incognito")
+            assert "incognito" in app.export_screenshot()
 
             chat_input.mode = "shell"
             await pilot.pause()
             assert input_box.border_title is None
             assert not chat_input.has_class("mode-shell-incognito")
             assert chat_input.has_class("mode-shell")
+            assert "incognito" not in app.export_screenshot()
 
 
 class TestShellSyntaxHighlighting:
@@ -490,6 +588,161 @@ class TestHistoryBoundaryNavigation:
 
 class TestCompletionPopupClickBubbling:
     """Test that clicks on options bubble up through the popup."""
+
+
+class TestThreadCompletionIntegration:
+    """Tests for `@@` completion inside the mounted chat input."""
+
+    @pytest.mark.parametrize(
+        ("order", "expected"),
+        [((1, 0), 1), ((0,), 0), ((), None)],
+        ids=["reordered", "selected_removed", "empty"],
+    )
+    async def test_background_load_preserves_selected_thread(
+        self, order: tuple[int, ...], expected: int | None
+    ) -> None:
+        threads: list[ThreadInfo] = [
+            {
+                "thread_id": "11111111-2222-3333-4444-555555555555",
+                "agent_name": "coder",
+                "updated_at": None,
+                "initial_prompt": "Fix the parser",
+            },
+            {
+                "thread_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "agent_name": "coder",
+                "updated_at": None,
+                "initial_prompt": "Research caching",
+            },
+        ]
+        loaded = asyncio.Event()
+
+        async def load_threads(*, limit: int) -> list[ThreadInfo]:
+            await loaded.wait()
+            return [threads[index] for index in order][:limit]
+
+        with (
+            patch("deepagents_code.sessions.get_cached_threads", return_value=threads),
+            patch("deepagents_code.sessions.list_threads", side_effect=load_threads),
+            patch(
+                "deepagents_code.sessions.populate_thread_checkpoint_details",
+                new=AsyncMock(),
+            ),
+        ):
+            app = _RecordingApp()
+            async with app.run_test() as pilot:
+                chat = app.query_one(ChatInput)
+                assert chat._text_area is not None
+                chat._text_area.insert("compare @@")
+                await pilot.pause()
+                await pilot.press("down")
+
+                loaded.set()
+                await chat.workers.wait_for_complete()
+                await pilot.pause()
+                if expected is None:
+                    assert not chat._current_suggestions
+                    assert chat._text_area.text == "compare @@"
+                else:
+                    await pilot.press("enter")
+                    assert chat._text_area.text == (
+                        f"compare @@(thread:{threads[expected]['thread_id']}) "
+                    )
+                assert not app.submitted
+
+    @pytest.mark.parametrize(
+        "state",
+        ["active", "dismissed", "escape", "inactive", "cursor_moved", "changed"],
+    )
+    async def test_background_load_refreshes_only_active_query(
+        self, state: str
+    ) -> None:
+        threads: list[ThreadInfo] = [
+            {
+                "thread_id": "11111111-2222-3333-4444-555555555555",
+                "agent_name": "coder",
+                "updated_at": None,
+                "initial_prompt": "Fix the parser",
+            }
+        ]
+        loaded = asyncio.Event()
+
+        async def load_threads(*, limit: int) -> list[ThreadInfo]:
+            await loaded.wait()
+            return threads[:limit]
+
+        with (
+            patch(
+                "deepagents_code.sessions.get_cached_threads",
+                return_value=threads if state in {"dismissed", "escape"} else [],
+            ),
+            patch("deepagents_code.sessions.list_threads", side_effect=load_threads),
+            patch(
+                "deepagents_code.sessions.populate_thread_checkpoint_details",
+                new=AsyncMock(),
+            ),
+        ):
+            app = _RecordingApp()
+            async with app.run_test() as pilot:
+                chat = app.query_one(ChatInput)
+                assert chat._text_area is not None
+                chat._text_area.insert("compare @@parser")
+                await pilot.pause()
+                if state == "dismissed":
+                    assert chat.dismiss_completion()
+                elif state == "escape":
+                    await pilot.press("escape")
+                elif state == "inactive":
+                    chat._text_area.text = "plain text"
+                elif state == "cursor_moved":
+                    chat._text_area.move_cursor((0, 0))
+                elif state == "changed":
+                    chat._text_area.insert(" missing")
+                await pilot.pause()
+                assert not chat._current_suggestions
+
+                loaded.set()
+                await chat.workers.wait_for_complete()
+                await pilot.pause()
+                if state == "active":
+                    assert chat._current_suggestions[0][0] == "Fix the parser"
+                    await pilot.press("enter")
+                    assert chat._text_area.text == (
+                        "compare @@(thread:11111111-2222-3333-4444-555555555555) "
+                    )
+                    assert not app.submitted
+                else:
+                    assert not chat._current_suggestions
+
+    async def test_thread_completion_click_inserts_durable_token(self) -> None:
+        app = _ChatInputTestApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            await chat.workers.wait_for_complete()
+            assert chat._text_area is not None
+            assert chat._thread_controller is not None
+            chat._thread_controller.update_threads(
+                [
+                    {
+                        "thread_id": "11111111-2222-3333-4444-555555555555",
+                        "agent_name": "coder",
+                        "updated_at": None,
+                        "initial_prompt": "Fix the parser",
+                    }
+                ]
+            )
+            chat._text_area.insert("compare @@parser")
+            await pilot.pause()
+
+            assert chat._current_suggestions[0][0] == "Fix the parser"
+            chat.on_completion_popup_option_clicked(
+                CompletionPopup.OptionClicked(index=0)
+            )
+            await pilot.pause()
+
+            assert chat._text_area.text == (
+                "compare @@(thread:11111111-2222-3333-4444-555555555555) "
+            )
 
 
 class TestDismissCompletion:
@@ -954,6 +1207,33 @@ class TestDroppedImagePaste:
 
             assert chat._text_area.text == "[image 1] "
             assert len(app.tracker.get_images()) == 1
+
+    async def test_submit_non_media_absolute_path_stays_normal(
+        self, tmp_path: Path
+    ) -> None:
+        """An existing absolute path is agent text, not a slash command."""
+        csv_path = tmp_path / "Mobile Documents" / "studio results.csv"
+        csv_path.parent.mkdir()
+        csv_path.write_text("result,score\npass,1\n")
+        pasted = str(csv_path).replace(" ", r"\ ")
+
+        app = _ImagePasteRecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            assert chat._text_area is not None
+
+            chat._text_area.text = pasted
+            await pilot.pause()
+
+            assert chat.mode == "normal"
+            assert chat._text_area.text == pasted
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert len(app.submitted) == 1
+            assert app.submitted[0].value == pasted
+            assert app.submitted[0].mode == "normal"
 
     async def test_submit_leading_path_handles_unicode_space_variants(
         self, tmp_path
@@ -1664,7 +1944,7 @@ class TestPromptSearchPanel:
         for prompt in prompts:
             chat._history.add(prompt)
 
-    async def test_ctrl_r_opens_inline_panel_above_input(self, tmp_path) -> None:
+    async def test_ctrl_r_replaces_input_with_search(self, tmp_path) -> None:
         from deepagents_code.tui.widgets.prompt_search import (
             PromptSearchInput,
             PromptSearchPanel,
@@ -1688,10 +1968,65 @@ class TestPromptSearchPanel:
             panel = app.query_one(PromptSearchPanel)
             assert panel.styles.display == "block"
             assert chat._prompt_search_active is True
+            assert not chat.query_one(".input-row").display
+            assert app.focused is app.query_one(PromptSearchInput)
             assert app.query_one(PromptSearchInput).value == "second"
             assert chat._prompt_search_filtered == ["second prompt"]
             # Seeding the filter does not consume or change the draft.
             assert chat._text_area.text == "second"
+
+    @pytest.mark.parametrize("prompts", [[], ["fix tests"]])
+    async def test_footer_tracks_available_actions(
+        self, tmp_path: Path, prompts: list[str]
+    ) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, prompts)
+            chat.open_prompt_search()
+            await pilot.pause()
+
+            for key, has_matches in (
+                ("z", False),
+                ("backspace", bool(prompts)),
+                ("z", False),
+            ):
+                await pilot.press(key)
+                await pilot.pause()
+                hint = str(app.query_one(".prompt-search-hint", Static).content)
+                assert ("navigate" in hint) is has_matches
+                assert ("Tab/Enter insert" in hint) is has_matches
+                assert "Ctrl+R full view" in hint
+                assert "Esc cancel" in hint
+
+            await pilot.press("escape")
+            assert chat.query_one(".input-row").display
+
+    async def test_option_backspace_deletes_word_left(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["alpha beta", "alpha gamma"])
+            await pilot.pause()
+            assert chat._text_area is not None
+            chat._text_area.insert("alpha beta")
+            await pilot.pause()
+
+            chat.open_prompt_search()
+            await pilot.pause()
+            await pilot.pause()
+            search = app.query_one(PromptSearchInput)
+            assert search.value == "alpha beta"
+            assert app.focused is search
+            await pilot.press("alt+backspace")
+            await pilot.pause()
+
+            assert app.query_one(PromptSearchInput).value == "alpha "
+            assert chat._prompt_search_filtered == ["alpha gamma", "alpha beta"]
 
     async def test_typing_filters_results(self, tmp_path) -> None:
         from deepagents_code.tui.widgets.prompt_search import PromptSearchPanel
@@ -1717,6 +2052,29 @@ class TestPromptSearchPanel:
             panel = app.query_one(PromptSearchPanel)
             assert panel.styles.display == "block"
 
+    async def test_queued_query_edits_keep_latest_text(self, tmp_path) -> None:
+        from deepagents_code.tui.widgets.prompt_search import PromptSearchInput
+
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, ["fix tests", "first prompt"])
+            chat.open_prompt_search()
+            await pilot.pause()
+            query = app.query_one(PromptSearchInput)
+
+            for value in ("f", "fi", "fix", "fi", "fix tests"):
+                query.value = value
+            await pilot.pause()
+
+            assert query.value == "fix tests"
+            assert chat._prompt_search_filtered == ["fix tests"]
+            await pilot.press("enter")
+            assert chat.value == "fix tests"
+            assert chat.query_one(".input-row").display
+            assert app.focused is chat._text_area
+
     async def test_escape_restores_draft(self, tmp_path) -> None:
         app = _RecordingApp()
         async with app.run_test() as pilot:
@@ -1741,6 +2099,8 @@ class TestPromptSearchPanel:
 
             assert chat._prompt_search_active is False
             assert chat._text_area.text == "my draft"
+            assert chat.query_one(".input-row").display
+            assert app.focused is chat._text_area
 
     async def test_escape_preserves_concurrently_updated_draft(self, tmp_path) -> None:
         """Cancel should not replace a draft changed outside prompt search."""

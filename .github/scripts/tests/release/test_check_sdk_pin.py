@@ -268,11 +268,11 @@ def test_workflow_warning_comments_link_pin_release() -> None:
 
 
 def test_workflow_prerelease_warning_requires_release_deps_acknowledgement() -> None:
-    """Prerelease pins fail closed until `release-deps: acknowledged` is present."""
+    """Prerelease pins fail closed until `ci:ack-release-deps` is present."""
     workflow = Path(__file__).parents[3] / "workflows" / "check_sdk_pin.yml"
     text = workflow.read_text()
 
-    assert 'RELEASE_DEPS_BYPASS_LABEL: "release-deps: acknowledged"' in text
+    assert 'RELEASE_DEPS_BYPASS_LABEL: "ci:ack-release-deps"' in text
     assert "${releaseDepsBypassLabel}" in text
     assert "This is allowed" not in text
     assert "Required:** add the" in text

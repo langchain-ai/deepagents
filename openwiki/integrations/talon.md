@@ -1,110 +1,164 @@
 ---
-type: integration runtime host
-title: Talon Runtime Host
-description: Talon is an experimental single-assistant host that connects a Deep Agents runtime to messaging channels, durable conversation history, and scheduled work. It documents lifecycle ownership, conversation and approval controls, persistence, observability, and operational boundaries.
-tags: [talon, runtime-host, channels, cron, mcp, experimental]
+type: runtime integration
+title: Talon Channels, Models, MCP, and Sandboxes
+description: Operator guide to wiring the experimental Talon host to channels, models, MCP servers, scheduling state, and optional execution sandboxes.
+tags: [talon, channels, models, mcp, sandbox, scheduling, security]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-30T08:06:28.871Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
+  - id: openwiki-source-0ad7ce4799b63dc215741642
+    resource: repo://libs/talon/deepagents_talon/channels/base.py
+  - id: openwiki-source-a8e2e928218febcb386206bf
+    resource: repo://libs/talon/deepagents_talon/channels/discord.py
+  - id: openwiki-source-553e668943289ec108603518
+    resource: repo://libs/talon/deepagents_talon/channels/slack.py
+  - id: openwiki-source-80976c09402c30d4f886a2fa
+    resource: repo://libs/talon/deepagents_talon/commands.py
   - id: openwiki-source-81698d033a5726401d48b135
     resource: repo://libs/talon/deepagents_talon/config.py
-  - id: openwiki-source-f55101eb12af3c6ae9b9d823
-    resource: repo://libs/talon/deepagents_talon/cron/jobs.py
-  - id: openwiki-source-363e56d368aecc6ab73d3e2f
-    resource: repo://libs/talon/deepagents_talon/cron/scheduler.py
-  - id: openwiki-source-ef047a301ffca1d2f8ab2c87
-    resource: repo://libs/talon/deepagents_talon/cron/tools.py
-  - id: openwiki-source-470e982344d3fb19aa4cd0a7
-    resource: repo://libs/talon/deepagents_talon/history_backends.py
+  - id: openwiki-source-4b1e381713dec742c675816b
+    resource: repo://libs/talon/deepagents_talon/context_doctor.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-cebe4ea270e21dce4de9b074
-    resource: repo://libs/talon/deepagents_talon/interfaces.py
+  - id: openwiki-source-82cac27adeecff8a900a40fa
+    resource: repo://libs/talon/deepagents_talon/mcp.py
+  - id: openwiki-source-ccdb88feadbc25be2fc7b63b
+    resource: repo://libs/talon/deepagents_talon/media.py
+  - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
+    resource: repo://libs/talon/deepagents_talon/model_selection.py
   - id: openwiki-source-5c7840a55ecf6660d9f718f2
     resource: repo://libs/talon/deepagents_talon/observability.py
+  - id: openwiki-source-26b7e102f81f5c7bcfdc2424
+    resource: repo://libs/talon/deepagents_talon/pairing.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-580d91c607e0a09e0659e565
+    resource: repo://libs/talon/deepagents_talon/sandbox.py
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-30T08:06:28.871Z" }
 ---
 
-# Talon Runtime Host
+# Talon Channels, Models, MCP, and Sandboxes
 
-> **Experimental and not production-hardened.** Talon is alpha software, subject to change or removal, and is not intended for production or enterprise use. It lacks complete production HITL policy, channel administrator controls, sandbox isolation, and multi-tenant boundaries. Treat channel access as direct access to the operator's agent, model credentials, MCP tools, and local-host resources.
+> **Experimental local-host authority.** Talon is alpha software, not a production security or multi-tenant boundary. An admitted sender can invoke work with the operator's model credentials, MCP tools, and—without a sandbox—local-host authority. Channel admission, approvals, and sandboxing are useful controls, not complete HITL policy, channel-administrator controls, or isolation. Sandboxing does not cover MCP tools.
 
-Talon (`libs/talon`) is the long-running process boundary for **one assistant**. `TalonHost` owns an `AgentRuntime`, zero or more channel adapters, and optionally a persistent cron scheduler in one asyncio event loop. Its built-in adapters are WhatsApp, Telegram, and Discord; the host converts inbound channel events into conversation-scoped agent requests and routes current results back to the originating conversation.
+Talon is the single-event-loop local host for a Deep Agents assistant. It owns adapter lifecycle, conversation routing, per-conversation serialization and cancellation, delivery, and the optional persistent cron scheduler. Adapters normalize provider input into `ChannelMessage`; the runtime owns graph invocation and tools. See [Talon channel admission](../concepts/talon-channel-admission.md) and [Talon scheduling](../concepts/talon-scheduling.md) for their detailed policies.
 
-## Entry points, configuration, and component lifecycle
+## Start, assembly, and state
 
-Run `deepagents-talon` from `libs/talon`; `--whatsapp`, `--telegram`, and `--discord` attach adapters, while `--once` starts then tears down the host. The CLI reads `TalonConfig`, creates the cron store, ensures the assistant home, applies retention cleanup, constructs channels, and selects an agent. If no model is configured it uses `EchoAgentRuntime`, which returns request text and is useful for lifecycle and channel-wiring checks. With a model, it opens a local SQLite LangGraph checkpointer and history archive, wraps them in `ConversationSaver`, loads MCP tools, and builds `DeepAgentRuntime`. A `PersistentCronScheduler` is attached only when at least one channel is configured, because scheduled output needs a channel delivery route.
+Run from `libs/talon` (or prefix repository-root commands with `--directory libs/talon`):
 
-`DEEPAGENTS_TALON_ASSISTANT_ID` takes precedence over `AGENT_ASSISTANT_ID`; it defaults to `default` and must be a safe 1–128-character path segment. `DEEPAGENTS_TALON_MODEL` likewise takes precedence over `AGENT_MODEL`. The default home is `~/.deepagents/<assistant-id>/` (or the base selected by `DEEPAGENTS_TALON_HOME`). `ensure_home()` creates the assistant home plus manifest, `agents/`, `cron/`, `channels/`, and `media/inbound/` directories with mode `0700`.
+```bash
+uv sync --group test
+AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-talon --once
+```
 
-`start()` ensures the home, starts the runtime, installs channel message and supported reaction callbacks, starts channels, and then starts the scheduler. `run_until_stopped()` installs `SIGINT` and `SIGTERM` where the event loop supports them; `request_shutdown()` sets the stop event. Teardown first cancels the background-result loop, in-flight work, and pending approval/authorization futures; it then stops channels in reverse order, followed by the scheduler and runtime. Shutdown cancellation deliberately does not persist interruption recovery state.
+`--once` starts and then stops the assembled host, making it a useful configuration check. `--whatsapp`, `--telegram`, `--discord`, and `--slack` attach adapters; the matching `DEEPAGENTS_TALON_<CHANNEL>_ENABLED` variables also do so. Without a model, Talon uses `EchoAgentRuntime` for lifecycle and channel-wiring checks. With a model, it opens SQLite checkpoints and the history archive, wraps them in `ConversationSaver`, loads MCP tools, and creates `DeepAgentRuntime`. A `PersistentCronScheduler` is attached only when at least one channel exists.
 
 ```mermaid
 sequenceDiagram
-    participant User
-    participant Channel
+    participant Adapter
     participant Host
     participant Runtime
-    participant Graph as Agent graph
-    User->>Channel: Send message
-    Channel->>Host: receive_message
-    Host->>Host: Identify thread and replace active turn
-    Host->>Runtime: invoke AgentRequest
-    Runtime->>Graph: Invoke with thread_id
-    Graph-->>Runtime: Text or approval interrupt
-    Runtime-->>Host: AgentResult
-    Host->>Host: Verify current generation
-    Host->>Channel: Send text or media
-    Channel-->>User: Deliver response
+    participant Graph
+    Adapter->>Host: inbound message or command
+    Host->>Host: route, authorize, serialize
+    Host->>Runtime: AgentRequest with thread identity
+    Runtime->>Graph: invoke or resume
+    Graph-->>Runtime: result or interrupt
+    Runtime-->>Host: result
+    Host->>Adapter: deliver reply
 ```
 
-This shows the normal host, channel, and agent lifecycle for one turn. Interruptions, commands, and approval interrupts alter the path below.
+This shows the adapter-to-host attended-turn lifecycle. On startup the host starts the agent, then adapters, then its scheduler. If startup fails it unwinds started components; on shutdown it cancels work, then stops channels, scheduler, and runtime.
 
-## Conversation ownership, commands, and interruption
+`TalonConfig` validates the assistant ID and uses `~/.deepagents/<assistant-id>` by default; `DEEPAGENTS_TALON_HOME` selects its parent. It creates the home and managed directories with restrictive permissions. Checkpoints, conversation-reset state, assistant-wide model state, smart-model state, pairing state, `cron/`, `channels/`, and inbound media live under that home. The workspace is separate: it defaults to the current directory and is changed with `DEEPAGENTS_TALON_WORKSPACE`. Keep the assistant home and MCP configuration outside the workspace.
 
-The channel conversation ID is the normal conversation root. Talon prefixes it with the provider when multiple channels are configured or persistent history is active, avoiding cross-provider collisions. The current reset counter from `conversations.json` is appended as `:talon-reset:<n>` to form the agent thread ID. Commands are case-insensitive and accept an optional `@bot` suffix: `/help`, `/new`, `/stop`, `/reset-all-history`, and `/mcp-reload`.
+## Channels, commands, and Slack
 
-`/new` cancels current work and atomically persists an incremented reset counter, so the next turn starts a fresh agent thread while prior sessions remain searchable. `/reset-all-history` is available only to a history-capable runtime: after cancellation it removes archive/checkpoint state for that channel and chat, then advances the reset counter. It leaves cron jobs, memory files, media, traces, and backups intact. A cancellation timeout leaves history intact; an archive deletion failure can leave a partial reset that should be retried.
+All adapters implement the provider-neutral `ChannelAdapter` boundary: start and stop, register an inbound handler, deliver text or media, and report status. The host adds reaction handling when an adapter supports it. Shared exposure modes are:
 
-A new ordinary message **replaces rather than queues behind** an active turn in that conversation. Talon increments its generation, cancels the task, and uses the same 30-second total budget for cancellation and `recover_interrupted()`. `DeepAgentRuntime` repairs pending tool calls in the latest committed graph state and adds a system interruption marker. Delivery requires the current thread and generation to still match, preventing stale output from a cancelled turn. Separate conversations can run concurrently. If cancellation does not finish in time, Talon blocks that conversation until restart; if checkpoint recovery fails, it permits a replacement turn and marks its metadata as degraded.
+- `self` admits configured operator identities or a provider self-message identity;
+- `allowlist` admits configured chats and users, with optional message-text mention patterns; and
+- explicitly acknowledged `open` admits arbitrary senders.
 
-## Runtime, graph, and execution boundary
+A mention pattern is text matching, not sender authentication. `open` therefore grants arbitrary senders a path to the operator's credentials and host resources.
 
-The `AgentRuntime` protocol—`start`, `stop`, `invoke`, and `recover_interrupted`—decouples host orchestration from the agent implementation. Talon supplies `EchoAgentRuntime` and `DeepAgentRuntime`. On start, the latter resolves subagents and constructs a Deep Agents graph through `create_deep_agent`; its wiring includes model, backend, tools, middleware, HITL configuration, skills, memory, subagents, and checkpointer. Every invocation sets LangGraph `thread_id` to the Talon conversation ID and passes a recursion limit, defaulting to 500 and configurable with `DEEPAGENTS_TALON_RECURSION_LIMIT`.
+The shared command registry supplies host parsing, `/help`, and native command advertisements where supported. `/reset-all-history` and `/pair` are deliberately hidden but remain executable; `/model` and `/smart-model` are visible. Commands are handled by the host rather than sent to the model.
 
-The runtime adds `current_time`, optional conversation archive tools, and cron tools when a store is supplied. MCP tools load before graph construction and can be refreshed before a turn or explicitly reloaded. Reload builds a replacement graph before swapping it in, so an invalid MCP update leaves the previous graph usable. Subagent definitions reload only on request and apply to later turns; active turns and tasks retain the graph and capabilities with which they started.
+| Adapter | Transport and setup | Operational behavior |
+| --- | --- | --- |
+| WhatsApp | Local Node bridge over loopback. Enable with `DEEPAGENTS_TALON_WHATSAPP_ENABLED=true`; `DEEPAGENTS_TALON_WHATSAPP_START_BRIDGE=true` lets Talon start it. | Its QR flow pairs the operator account, not sender pairing. |
+| Telegram | Bot API long polling. Set `DEEPAGENTS_TALON_TELEGRAM_BOT_TOKEN` or `TELEGRAM_BOT_TOKEN`. | Typed commands use normal messages; polling state is under the assistant channel directory. |
+| Discord | Gateway. Set `DEEPAGENTS_TALON_DISCORD_BOT_TOKEN` and enable Message Content intent. | Visible shared commands can be registered as native slash commands. Guild-scoped registration is immediate but does not reach DMs; global commands propagate more slowly. |
+| Slack | Socket Mode. Set `DEEPAGENTS_TALON_SLACK_BOT_TOKEN` (`xoxb-`) and `DEEPAGENTS_TALON_SLACK_APP_TOKEN` (`xapp-`). | A DM is one conversation. In channels, Talon responds only to a bot mention and replies in that thread; each thread is a conversation. |
 
-The default execution backend is a non-virtual `LocalShellBackend` rooted at `DEEPAGENTS_TALON_WORKSPACE` or the current directory. Its child environment is allowlisted, removes known secrets and environment-hijack keys, and replaces `PATH` with a fixed safe value. This reduces accidental credential propagation but is **not** sandbox isolation. The runtime retries retryable provider, parsing, context-limit, and transport failures with exponential backoff. For empty graph text it sends configured continuation nudges and then a no-tools summary prompt; approval interruption/resumption is capped at 50 rounds.
+Slack acknowledges Socket Mode envelopes before handling them to avoid Slack redelivery while an agent turn runs, and deduplicates recent event IDs. It exposes one slash command, normally `/talon`: it is accepted only in a bot DM, and its remaining text is translated to the corresponding typed Talon command. In a channel thread, mention the bot and include the typed command, for example `@Talon /new`. Slash-command refusals are private. Slack text is rendered as `mrkdwn`, split at 4,000 characters, and can turn literal valid `<@USER_ID>` prose references into mentions; use `DEEPAGENTS_TALON_SLACK_MENTION_ALLOWLIST_USERS` to restrict those recipients. The inbound-download path sends the bot token only to `https://files.slack.com` and refuses redirects.
 
-## Channels, approvals, media, and MCP authorization
+### Pairing administration
 
-A channel adapter implements lifecycle, message-handler registration, typing, text/media sending, editing, and status; reaction-capable adapters additionally expose reaction-handler registration. During a turn the host refreshes typing best-effort, optionally transcribes voice, augments model content with inbound media context, and sends nonempty output. Markdown image or video references become attachments only if their resolved files stay within `DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR`, or the workspace/current directory when it is not set. Failed or rejected attachments are reported in fallback text.
+Sender pairing is opt-in for Discord, Slack, and Telegram; WhatsApp is excluded. It is refused with `open` exposure. An unknown sender is stopped before the host or model and receives a short-lived, channel-bound, single-use code. An operator approves it from an operator DM with `/pair approve <code>` or with `deepagents-talon pairing approve <channel> <code>`; the CLI also provides `list`, `revoke`, and `pause-jobs`.
 
-For an agent tool-approval interrupt in a channel turn, the host stores a pending future under the agent conversation, sends tool names and argument previews, and accepts an approve/deny text reply or matching reaction only from the sender who started the run. `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` additively overlays tool names onto configured `interrupt_on`. Scheduled runs cannot surface an interactive decision, so a gated tool call is denied with an explanatory result rather than blocking the job; channel turns without an approval handler are treated similarly.
+Pairing adds an allowlisted sender, not operator authority: paired senders cannot administer pairing or tool-approval policy. The persisted `pairing.json` store uses locked, atomic updates; unreadable or invalid state fails closed, leaving only environment-configured senders admitted. A live host owns cron-store writes, so run `deepagents-talon pairing pause-jobs <channel> <sender-id>` only while Talon is stopped. Revocation through the live host also cancels relevant active work and pauses jobs created by that sender.
 
-For channel MCP OAuth, Talon sends the authorization URL or device code directly to the origin chat. It accepts a callback only when its sender, provider, conversation, binding, and expiry match the active authorization flow; authorization values bypass model context and tracing. `DEEPAGENTS_TALON_MCP_CONFIG` selects an explicit configuration, otherwise the default discovery location is used. `deepagents-talon mcp config` shows discovery paths, `deepagents-talon mcp login <server>` provides terminal OAuth, and `/mcp-reload` requests runtime reload without a restart.
+## Models, diagnostics, and cron state
 
-## Durable history and scheduled work
+`/model` is **assistant-wide**, not per-chat. It reports the active choice and credentialed providers; `/model <provider>` lists a provider, `/model <provider:model>` selects one, and `/model default` restores the startup model. Only an operator can change it. The choice is persisted in `models.json`, restored across restarts, and captured at turn start, so a later switch does not affect an already-running turn. The model catalog comes from installed tool-calling provider packages with credentials available to Talon, plus the default model; exact catalog matching occurs before lazy construction and caching.
 
-The standard model-backed CLI keeps local checkpoints and a channel/chat-scoped conversation archive in `checkpoints.sqlite` using `ConversationSaver`; `DeepAgentRuntime` constructed directly defaults to `InMemorySaver`. The archive retains text, tool-call arguments, and message revisions without automatic expiry; archive retrieval is restricted to the current channel/chat and bounded pages. Scheduled runs do not enter archive history. Set `DEEPAGENTS_TALON_HISTORY_URI` to use a SQLite URI, MongoDB, PostgreSQL, or a trusted operator-installed history-backend entry point; checkpoints remain local. History stores are namespaced by assistant ID and require a single writer per assistant. Optional vector search is enabled with `DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH=1`; selecting a remote embedding adapter sends archived text and queries to that provider.
+The selected model is bound into main-agent turns without recompiling the graph. Its context budget also controls the selected model's summarizer and compaction thresholds. Scheduled jobs and subagents keep their own configured or startup models rather than inheriting this override.
 
-`CronJobStore` persists assistant-scoped jobs at `cron/jobs.json`, including prompt, schedule/repeat state, delivery origin, next run, and final outcome. Writes use a fsynced temporary file followed by atomic replacement and mode `0600`. The agent sees `create_job`, `list_jobs`, `edit_job`, and `remove_job` only when the runtime has a cron store; a context variable scopes them to the current conversation origin.
+`/smart-model` is separate: it controls the assistant-wide model used by `ask_for_help`, persists independently, and can be set to `off` or restored to `DEEPAGENTS_TALON_HELP_MODEL`. The help tool is restricted to an operator main conversation and requires channel approval before sending its question to that model. It sends the question and fixed instruction, not chat history, tools, or filesystem; inspect the question before approving.
 
-`PersistentCronScheduler` scans immediately and normally once per minute, waking sooner for stop. A failed scan is logged and retried on the normal interval, leaving jobs due. Before invoking a due job, it calls `advance_next_run` to claim that interval; it then records `ok` or `error` with `mark_job_run`. This prevents re-running a claimed interval after a crash between invocation and outcome recording. One-shots and exhausted repeats are disabled. Delivery targets the recorded origin unless trimmed output starts or ends with `[SILENT]`; a delivery failure overwrites a successful generation outcome with an error.
+`/context-doctor` reads the active checkpoint to produce bounded, content- and path-redacting context estimates. It does not invoke a model or mutate state. The host gives it 10 seconds, returns generic unavailable or failure responses, and leaves an active turn running.
 
-## Observability and focused verification
+Cron state belongs in the assistant home's `cron/` directory. The CLI creates the scheduler only when a channel is attached, and delivery resolves the job's origin back to a serving channel; missing channel service drops the result rather than redirecting it. Operate schedule creation and retention through the agent tools and the scheduling guide, not by concurrent manual writes to the store.
 
-Talon emits structured `talon_event` JSON logs. Log redaction recognizes secret-bearing fields and direct conversation, message, and sender IDs; sensitive identifiers can instead be represented by a stable short hash. Cron logs tick, dispatch, generation failure/success, suppression, delivery, and delivery failures. `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING=true` enables local run, model-lifecycle, and bounded/redacted tool previews; it does not log hidden chain-of-thought. LangSmith tracing is enabled only when `LANGSMITH_TRACING` is truthy and `LANGSMITH_API_KEY` is set, and carries assistant, conversation, trigger, and request metadata. Those traces, MCP services, history backends, and remote embedding providers are outbound data surfaces.
+## MCP configuration, reload, and OAuth
 
-Channel logging follows `DEEPAGENTS_CODE_DEBUG` or `DEEPAGENTS_CODE_LOG_LEVEL`; the latter accepts `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. This is a logging seam, not a security boundary.
+At model-runtime startup, `MCPToolProvider` reads `~/.deepagents/.mcp.json` unless `DEEPAGENTS_TALON_MCP_CONFIG` selects a path. It loads server tools, adds Talon's MCP status/reload/configuration capabilities, and fails configuration on a collision with a management-tool name. Individual server failures are logged while other servers can remain available.
 
-Focused integration tests cover inbound channel-to-reply routing and persisted cron delivery to its recorded origin. Host tests cover lifecycle ordering, commands, cancellation timeout/recovery, media containment, approval identity checks, and OAuth callback binding. Runtime tests cover graph wiring, thread configuration, retry and continuation behavior, environment scrubbing, history, approval resumption, and transactional reload behavior. Scheduler tests cover interval claiming, silence, and delivery-failure outcome handling.
+```mermaid
+flowchart TD
+    Config["MCP configuration"] --> Load["Load server tools"]
+    Load --> Graph["Build runtime graph"]
+    Edit["Manual edit or managed update"] --> Reload["Reload MCP tools"]
+    Reload --> Build["Build replacement graph"]
+    Build -->|success| Graph
+    Build -->|failure| Prior["Keep prior graph"]
+```
 
-See [architecture overview](../architecture/overview.md), [permissions and HITL](../concepts/permissions-hitl.md), [state persistence](../concepts/state-persistence.md), [MCP integration](./mcp.md), [security operations](../operations/security.md), and the [testing guide](../testing/testing-guide.md).
+This shows MCP activation and replacement. `/mcp-reload` forces a reload after manual edits. The agent-side `reload_mcp_configuration` schedules a refresh before the next turn. Runtime replacement is serialized under a lock: failure leaves the previous graph usable and the reload inactive; active tasks retain their original capabilities.
+
+Use `deepagents-talon mcp config` to print configuration discovery paths and `deepagents-talon mcp login <server>` for terminal OAuth. For an OAuth-configured server, Talon can also send an authorization URL to the originating interactive channel and accept its callback outside model context and traces; completing login schedules refresh. Use `${ENV_VAR}` references for credentials and keep the configuration outside the workspace. See [MCP integration](./mcp.md).
+
+## Media and observability
+
+Inbound supported images become bounded multimodal data-URL blocks. Outbound Markdown media must resolve to a supported regular file below the trusted outbound root; URLs, traversal, and symlink escapes are rejected. Treat inbound attachment metadata and files as untrusted.
+
+LangSmith tracing runs only when `LANGSMITH_TRACING` is truthy and `LANGSMITH_API_KEY` is present. Each traced invocation carries Talon assistant, conversation, trigger, and request metadata; a missing optional tracing package produces a warning and normal operation continues. `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING=true` enables local agent, model-lifecycle, and tool events. Tool previews are redacted, structurally bounded, and truncated to 1,000 characters, but can still contain sensitive application data.
+
+## Optional sandbox execution
+
+Without `DEEPAGENTS_TALON_SANDBOX`, agent shell and file tools run on the host. Select a `deepagents-code` provider to start a sandbox for the host lifetime:
+
+```bash
+DEEPAGENTS_TALON_SANDBOX=langsmith AGENT_MODEL=<provider>:<model-id> uv run deepagents-talon
+```
+
+`langsmith` works directly. `agentcore`, `daytona`, `modal`, `runloop`, and `vercel` require their matching extras and provider credentials in the Talon process. `DEEPAGENTS_TALON_SANDBOX_ID` attaches an existing sandbox that Talon does not delete; otherwise Talon owns the session and closes it on shutdown. `DEEPAGENTS_TALON_SANDBOX_SNAPSHOT` and `DEEPAGENTS_TALON_SANDBOX_SETUP` configure supported bootstrap behavior. A configured sandbox that cannot start fails host startup; Talon never silently falls back to host execution.
+
+In sandbox mode, the composite backend routes only `skills/` and `memory/` to host storage. Its default filesystem and all `execute` calls go to the sandbox, preventing sandbox tools from rewriting `tools.json` and other assistant state. This is not broad containment: MCP and web tools, channels and media processing, credentials, and host-side state remain outside that backend. See [sandbox partners](./sandbox-partners.md).
+
+## Verification
+
+Run focused checks from `libs/talon`:
+
+```bash
+uv run --group test pytest tests/
+```
+
+For these boundaries, prioritize `tests/channels/test_slack.py`, `tests/unit_tests/test_pairing.py`, host/model-selection tests, MCP reload/OAuth coverage, sandbox tests, and a `--once` startup check using the intended channel and sandbox environment.

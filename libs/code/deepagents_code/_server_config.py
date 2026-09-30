@@ -79,6 +79,62 @@ execute one directory's configuration against another directory's trust
 decision.
 """
 
+MODEL_COMPATIBLE_FIELDS = frozenset(
+    {
+        "auto_classifier_model",
+        "cli_max_retries",
+        "model",
+        "rubric_model",
+        "summarization_model",
+    }
+)
+"""Cosmetic model settings that do not affect durable access-policy compat.
+
+Changing which model serves a bound thread — or the retry budget or auxiliary
+grader/classifier models — does not change what the thread is *allowed* to do
+(trust, tool, sandbox, and approval policy are unchanged). These fields are
+therefore excluded from the policy fingerprint, so a model switch does not
+invalidate a durable binding. They remain part of the runtime fingerprint so
+the runtime rebuilds. `None` and an empty/unset value are normalized as
+equivalent here.
+"""
+
+RUNTIME_ONLY_FIELDS = frozenset(
+    {
+        "assistant_id",
+        "model_params",
+        "profile_overrides",
+        "recursion_limit",
+        "rubric_max_iterations",
+        "system_prompt",
+    }
+)
+"""Runtime-identity fields that are not durable access policy.
+
+These shape *how* the runtime executes (model kwargs, prompt, step budget,
+graph id) but are not the trust/tool/sandbox/approval policy a binding guards.
+They are fingerprinted into the runtime identity (so changing them rebuilds the
+runtime) yet never persisted or reported — `model_params`, `profile_overrides`,
+and `system_prompt` can carry secrets and prompt material.
+"""
+
+WORKSPACE_IDENTITY_FIELDS = frozenset({"cwd", "project_root"})
+"""Fields that name *which* workspace a binding is for.
+
+Workspace identity is part of durable access-policy compatibility: a binding
+is meaningless if it can be replayed against a different directory. These are
+compared exactly (canonical paths) and are never normalized away.
+"""
+
+
+def _classified_fields() -> frozenset[str]:
+    """Return every field the policy/runtime split accounts for.
+
+    Returns:
+        The union of all classification sets plus workspace identity.
+    """
+    return MODEL_COMPATIBLE_FIELDS | RUNTIME_ONLY_FIELDS | WORKSPACE_IDENTITY_FIELDS
+
 
 def _same_workspace_project(first: str | None, second: str) -> bool:
     """Whether two paths name the same project directory.
@@ -636,8 +692,34 @@ class ServerConfig:
             return replace(self, trust_project_extensions=False)
         return self
 
-    def workspace_fingerprint(self) -> str:
-        """Fingerprint the resolved runtime config except workspace identity.
+    def policy_fingerprint(self) -> str:
+        """Fingerprint durable access policy plus workspace identity.
+
+        Covers the trust/tool/sandbox/approval payload (the
+        `to_workspace_payload()` keys) and the workspace's `cwd`/`project_root`.
+        Cosmetic model settings (`MODEL_COMPATIBLE_FIELDS`) are excluded so a
+        model switch does not invalidate a durable binding; runtime-only fields
+        (`RUNTIME_ONLY_FIELDS`) are excluded because they are not persisted.
+
+        Returns:
+            The canonical SHA-256 fingerprint.
+        """
+        from deepagents_code.workspace import canonical_fingerprint
+
+        return canonical_fingerprint(
+            {
+                "cwd": self.cwd,
+                "policy": self.to_workspace_payload(),
+                "project_root": self.project_root,
+            }
+        )
+
+    def runtime_fingerprint(self) -> str:
+        """Fingerprint the full runtime identity, including model settings.
+
+        Any change to model, model params, prompt, policy, or runtime fields
+        yields a different value, so the runtime cache can rebuild on any of
+        them while the binding only guards the policy fingerprint.
 
         Returns:
             The canonical SHA-256 fingerprint.
@@ -648,6 +730,16 @@ class ServerConfig:
         from deepagents_code.workspace import canonical_fingerprint
 
         return canonical_fingerprint(values)
+
+    def workspace_fingerprint(self) -> str:
+        """Fingerprint the resolved runtime config except workspace identity.
+
+        Retained for compatibility; equivalent to `runtime_fingerprint()`.
+
+        Returns:
+            The canonical SHA-256 fingerprint.
+        """
+        return self.runtime_fingerprint()
 
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.
@@ -1015,3 +1107,38 @@ def _normalize_path(
             "Ensure the path exists and is accessible."
         )
         raise ValueError(msg) from exc
+
+
+def classified_config_fields() -> dict[str, str]:
+    """Classify every `ServerConfig` field for the policy/runtime split.
+
+    Every dataclass field must land in exactly one bucket so the fingerprint
+    split cannot silently drop a setting. A field missing from a bucket is a
+    programming error and fails closed (raises) rather than being treated as
+    either policy or runtime by default.
+
+    Returns:
+        A mapping of field name to one of `"model"`, `"runtime"`,
+        `"identity"`, or `"policy"`.
+
+    Raises:
+        RuntimeError: If a `ServerConfig` field is not classified.
+    """
+    import dataclasses
+
+    policy_fields = set(ServerConfig().to_workspace_payload())
+    classification: dict[str, str] = {}
+    for field_info in dataclasses.fields(ServerConfig):
+        name = field_info.name
+        if name in MODEL_COMPATIBLE_FIELDS:
+            classification[name] = "model"
+        elif name in RUNTIME_ONLY_FIELDS:
+            classification[name] = "runtime"
+        elif name in WORKSPACE_IDENTITY_FIELDS:
+            classification[name] = "identity"
+        elif name in policy_fields:
+            classification[name] = "policy"
+        else:
+            msg = f"ServerConfig field {name!r} is not classified"
+            raise RuntimeError(msg)
+    return classification

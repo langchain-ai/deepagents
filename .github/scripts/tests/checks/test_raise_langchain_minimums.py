@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -28,6 +30,7 @@ from raise_langchain_minimums import (
     _run,
     _select_manifests,
     edits_markdown,
+    lock_dirs_for,
     stale_lock_dirs,
 )
 
@@ -283,6 +286,11 @@ class TestStaleLockDirs:
 
     def test_leaf_package_only_invalidates_itself(self) -> None:
         assert stale_lock_dirs(["libs/evals/pyproject.toml"]) == ["libs/evals"]
+
+    def test_can_skip_reverse_dependents(self) -> None:
+        assert lock_dirs_for(["libs/code/pyproject.toml"], skip_dependents=True) == [
+            "libs/code"
+        ]
 
 
 class TestSelectManifests:
@@ -550,19 +558,38 @@ def test_main_passes_the_parsed_dependencies_to_run(
     """Guards the CLI plumbing: dropping the flag here is otherwise invisible."""
     captured: dict[str, object] = {}
 
-    def _fake_run(package: str, narrow_to: frozenset[str] | None = None) -> int:
+    def _fake_run(
+        package: str,
+        narrow_to: frozenset[str] | None = None,
+        *,
+        skip_dependent_locks: bool = False,
+    ) -> int:
         captured["package"] = package
         captured["narrow_to"] = narrow_to
+        captured["skip_dependent_locks"] = skip_dependent_locks
         return 0
 
     monkeypatch.setattr(raise_langchain_minimums, "_run", _fake_run)
     monkeypatch.setattr(raise_langchain_minimums, "_write_output", lambda *_: None)
     monkeypatch.setattr(
-        sys, "argv", ["prog", "--package", "pkg", "--dependencies", "LangChain-Core"]
+        sys,
+        "argv",
+        [
+            "prog",
+            "--package",
+            "pkg",
+            "--dependencies",
+            "LangChain-Core",
+            "--skip-dependent-locks",
+        ],
     )
 
     assert raise_langchain_minimums.main() == 0
-    assert captured == {"package": "pkg", "narrow_to": frozenset({"langchain-core"})}
+    assert captured == {
+        "package": "pkg",
+        "narrow_to": frozenset({"langchain-core"}),
+        "skip_dependent_locks": True,
+    }
 
 
 def test_workflow_expressions_use_only_real_functions() -> None:
@@ -595,6 +622,98 @@ def test_workflow_expressions_use_only_real_functions() -> None:
             assert not unknown, (
                 f"{workflow.name}: unknown expression function(s) {unknown}"
             )
+
+
+@pytest.mark.parametrize("already_copied_main", [False, True])
+def test_refresh_preserves_main_ancestry(
+    tmp_path: Path, already_copied_main: bool
+) -> None:
+    """Refreshing a shallow branch keeps unrelated main changes out of the PR."""
+    source = tmp_path / "source"
+    source.mkdir()
+
+    def git(directory: Path, *args: str) -> str:
+        return subprocess.check_output(
+            ["git", "-C", str(directory), *args], text=True
+        ).strip()
+
+    git(source, "init", "-b", "main")
+    git(source, "config", "user.name", "github-actions[bot]")
+    git(source, "config", "user.email", "bot@example.com")
+    for name in ("pyproject.toml", "uv.lock", "unrelated.py", "removed.py"):
+        (source / name).write_text("original\n")
+    git(source, "add", ".")
+    git(source, "commit", "-m", "initial")
+    branch = "chore/raise-dependency-minimums-all"
+    git(source, "checkout", "-b", branch)
+    (source / "pyproject.toml").write_text("raised\n")
+    (source / "uv.lock").write_text("raised\n")
+    git(source, "commit", "-am", "raise minimums")
+    git(source, "checkout", "main")
+    (source / "unrelated.py").write_text("updated on main\n")
+    (source / "added.py").write_text("added on main\n")
+    (source / "removed.py").unlink()
+    git(source, "add", "-A")
+    git(source, "commit", "-m", "unrelated main changes")
+    base = git(source, "rev-parse", "HEAD")
+    if already_copied_main:
+        git(source, "checkout", branch)
+        git(source, "read-tree", "--reset", "-u", base)
+        for name in ("pyproject.toml", "uv.lock"):
+            (source / name).write_text("raised\n")
+        git(source, "add", ".")
+        git(source, "commit", "-m", "broken refresh without main parent")
+        git(source, "checkout", "main")
+    remote = tmp_path / "remote.git"
+    git(tmp_path, "clone", "--bare", str(source), str(remote))
+    workflow = REPO_ROOT / ".github/workflows/raise_langchain_minimums.yml"
+    steps = yaml.safe_load(workflow.read_text())["jobs"]["raise"]["steps"]
+    script = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Refresh existing minimums bump PR"
+    )
+    for iteration in range(2):
+        checkout = tmp_path / f"checkout-{iteration}"
+        git(tmp_path, "clone", "--depth=1", remote.as_uri(), str(checkout))
+        assert git(checkout, "rev-parse", "--is-shallow-repository") == "true"
+        previous = git(remote, "rev-parse", branch)
+        git(
+            checkout,
+            "config",
+            f"url.{remote.as_uri()}.insteadOf",
+            "https://x-access-token:test@github.com/test/repo.git",
+        )
+        for name in ("pyproject.toml", "uv.lock"):
+            (checkout / name).write_text("raised\n")
+        env = {
+            **os.environ,
+            "GH_TOKEN": "test",
+            "GITHUB_REPOSITORY": "test/repo",
+            "BRANCH": branch,
+            "BOT_EMAIL": "bot@example.com",
+            "CHANGED_FILES": "pyproject.toml",
+            "LOCK_DIRS": ".",
+            "TITLE": "raise minimums",
+            "PR_NUMBER": "1",
+            "PR_URL": "unused",
+            "TMPDIR": str(tmp_path),
+        }
+        subprocess.run(
+            ["bash", "-c", "gh() { :; }\n" + script],
+            cwd=checkout,
+            env=env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert git(remote, "rev-parse", f"{branch}^1") == previous
+        assert git(remote, "rev-parse", f"{branch}^2") == base
+        assert git(remote, "merge-base", "main", branch) == base
+        assert git(remote, "diff", "--name-only", f"main...{branch}").splitlines() == [
+            "pyproject.toml",
+            "uv.lock",
+        ]
 
 
 def test_workflow_options_match_release_labels() -> None:

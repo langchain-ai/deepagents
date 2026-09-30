@@ -21,6 +21,7 @@ os.environ["DEEPAGENTS_HOME"] = _TEST_PROFILE_HOME.name
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine, Generator, Iterator, Mapping
     from pathlib import Path
+    from unittest.mock import MagicMock
 
     from textual.pilot import Pilot
     from textual.screen import Screen
@@ -54,6 +55,28 @@ class WaitForModal(Protocol):
 
 
 _UPDATE_CHECK_SELF_MANAGED_MARK = "self_managed_update_check"
+
+
+@pytest.fixture
+def btw_app(monkeypatch: pytest.MonkeyPatch) -> tuple[DeepAgentsApp, MagicMock]:
+    """Build an app with an existing conversation and an isolated side-answer client."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="btw-test")
+    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    monkeypatch.setattr(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(return_value={"messages": [{"type": "human", "content": "main"}]}),
+    )
+    remote = MagicMock(spec=RemoteAgent)
+    remote.abtw.return_value = "Side answer"
+    remote.get_cached_session_cost.return_value = None
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    return app, remote
 
 
 def _self_manages_update_check(request: pytest.FixtureRequest) -> bool:
@@ -123,6 +146,36 @@ def _restore_os_environ() -> Generator[None, None, None]:
         for key, value in snapshot.items():
             if os.environ.get(key) != value:
                 os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
+def _restore_dotenv_loader_state() -> Generator[None, None, None]:
+    """Snapshot and restore the dotenv loader's module-level maps.
+
+    `_load_dotenv` records every value it injects in two module dicts
+    (`_dotenv_loaded_values` and its `_dotenv_provenance` sibling) so a later
+    reload can strip them and `dcode config` can name the file behind an
+    `env (...)` source. Tests that call the loader leave entries behind, and the
+    hand-rolled `try/finally ... _dotenv_loaded_values.clear()` idiom several of
+    them use clears only the first map, leaking `tmp_path` paths that no longer
+    exist into later tests. Restoring both here removes the need for callers to
+    know how many maps the loader keeps.
+
+    Reads the module attributes on teardown rather than holding the dicts, so a
+    test that swaps one out with `monkeypatch.setattr` (whose teardown runs
+    first) still gets the real map restored.
+    """
+    import deepagents_code.config as config_mod
+
+    loaded = dict(config_mod._dotenv_loaded_values)
+    provenance = dict(config_mod._dotenv_provenance)
+    try:
+        yield
+    finally:
+        config_mod._dotenv_loaded_values.clear()
+        config_mod._dotenv_loaded_values.update(loaded)
+        config_mod._dotenv_provenance.clear()
+        config_mod._dotenv_provenance.update(provenance)
 
 
 @pytest.fixture(autouse=True)

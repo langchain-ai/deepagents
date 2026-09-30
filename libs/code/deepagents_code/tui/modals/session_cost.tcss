@@ -1,0 +1,32 @@
+SessionCostWarningScreen {
+    align: center middle;
+
+    & > Vertical {
+        width: 76;
+        max-width: 90%;
+        height: auto;
+        background: $surface;
+        border: solid $warning;
+        padding: 1 2;
+    }
+
+    .session-cost-warning-title {
+        text-style: bold;
+        color: $warning;
+        text-align: center;
+        margin-bottom: 1;
+    }
+
+    .session-cost-warning-body {
+        height: auto;
+        color: $text;
+        margin-bottom: 1;
+    }
+
+    .session-cost-warning-help {
+        height: auto;
+        color: $text-muted;
+        text-style: italic;
+        text-align: center;
+    }
+}

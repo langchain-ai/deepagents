@@ -28,7 +28,13 @@ _MAX_BYTES = 1_048_576
 _MAX_TOOLS = 4096
 _MAX_NAME = 256
 _DEFAULTS = dict.fromkeys(
-    ("update_tool_approvals", "delete_conversations", "update_mcp_server", "start_async_task"),
+    (
+        "update_tool_approvals",
+        "delete_conversations",
+        "update_mcp_server",
+        "start_async_task",
+        "send_message",
+    ),
     True,
 )
 

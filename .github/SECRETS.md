@@ -35,16 +35,33 @@ The sections below describe target configuration. Selecting `environment:` in wo
 
 This environment is selected by `.github/workflows/openwiki-update.yml`.
 
-| Secret | Purpose | Minimum LangSmith permissions |
+| Secret | Purpose | Minimum permissions |
 | --- | --- | --- |
-| `LANGSMITH_API_KEY` | Ingest OpenWiki traces into the `openwiki` project. | `runs:create` |
-| `LS_GATEWAY_OPENAI_API_KEY` | Invoke the configured model through the workflow's current LangSmith Gateway endpoint. | `gateway:invoke`, `workspaces:read` |
+| `OPENWIKI_APP_PRIVATE_KEY` | Authenticate the dedicated OpenWiki GitHub App so the workflow can mint a short-lived installation token. | GitHub repository contents: read/write; pull requests: read/write |
+| `LANGSMITH_API_KEY` | Ingest OpenWiki traces into the `openwiki` project. | LangSmith `runs:create` |
+| `LS_GATEWAY_OPENAI_API_KEY` | Invoke the configured model through the workflow's current LangSmith Gateway endpoint. | LangSmith `gateway:invoke`, `workspaces:read` |
 
-| Actions environment variable | Value | Purpose |
+| Actions variable | Value | Purpose |
 | --- | --- | --- |
+| `OPENWIKI_APP_CLIENT_ID` | Dedicated OpenWiki GitHub App client ID | Identify the App installed only on `langchain-ai/deepagents`; do not reuse the shared repository automation App. |
 | `OPENAI_BASE_URL` | `https://gateway.smith.langchain.com/openai/v1` | Set LangSmith gateway target. |
 
-Use separate workspace-scoped service keys for tracing and Gateway invocation. The environment should not require reviewers because the workflow runs on a schedule. Restrict deployments to `main`.
+Use separate workspace-scoped service keys for tracing and Gateway invocation. The environment should not require reviewers because the workflow runs on a schedule. Restrict deployments to `main`. Install the dedicated OpenWiki App only on this repository and grant it only repository contents and pull requests read/write; the workflow further scopes each installation token to this repository.
+
+### `labeling`
+
+Create this environment for the `label-by-package` job in
+`auto-label-by-package.yml`.
+
+| Secret | Purpose |
+| --- | --- |
+| `GROQ_API_KEY` | Classify issue titles and bodies into topic labels. |
+
+Provision a dedicated Groq inference key for labeling, separate from the evals
+credential, with model and spending limits where supported. Store it only in
+this environment; the issue workflow injects it only into its classification step.
+Do not require reviewers, so automatic labeling can run unattended. Restrict
+deployments to the default branch, which the issue workflow uses.
 
 ### `evals`
 

@@ -7,13 +7,14 @@ Support data comes from LangChain model profiles, so most tests mock
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from textual.app import App
+from textual.widgets import OptionList, Static
 
 from deepagents_code import model_config, reasoning_effort
-from deepagents_code.app import DeepAgentsApp
+from deepagents_code.app import DeepAgentsApp, _EffortContext
 from deepagents_code.config import runtime_state
 from deepagents_code.reasoning_effort import (
     current_effort_from_model_params,
@@ -63,6 +64,24 @@ def test_fireworks_duplicate_forms_fail_closed(
 
 
 # app.py integration (uses real profile data for openai/anthropic)
+
+
+def test_status_exposes_effort_when_default_is_unknown() -> None:
+    app = DeepAgentsApp(
+        profile_override={
+            "reasoning_output": True,
+            "reasoning_effort_levels": ["low", "medium", "high"],
+        }
+    )
+    app._status_bar = Mock()
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-6-astra"
+
+    app._sync_status_model()
+
+    app._status_bar.set_model.assert_called_once_with(
+        provider="openai", model="gpt-6-astra", effort="effort?"
+    )
 
 
 async def test_profile_override_controls_persisted_restoration() -> None:
@@ -154,6 +173,26 @@ async def test_effort_selector_escape_cancels() -> None:
         assert results == [None]
 
 
+async def test_effort_selector_explains_unknown_default() -> None:
+    app = _EffortSelectorHost()
+    async with app.run_test() as pilot:
+        await app.push_screen(
+            EffortSelectorScreen(
+                model_spec="openai:gpt-6-astra",
+                efforts=("low", "medium", "high"),
+            )
+        )
+        await pilot.pause()
+
+        subtitle = app.screen.query_one(".effort-selector-subtitle", Static)
+        options = app.screen.query_one("#effort-options", OptionList)
+        assert "Provider default unknown" in str(subtitle.render())
+        assert all(
+            "default" not in str(options.get_option_at_index(index).prompt)
+            for index in range(options.option_count)
+        )
+
+
 async def test_effort_selector_dims_underlying_content() -> None:
     """The modal must inherit the translucent `ModalScreen` backdrop.
 
@@ -174,3 +213,81 @@ async def test_effort_selector_dims_underlying_content() -> None:
         )
         await pilot.pause()
         assert 0 < app.screen.styles.background.a < 1
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+async def test_between_tools_effort_selection(
+    effort: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = "anthropic:claude-sonnet-5-5"
+    app = DeepAgentsApp()
+    mount = AsyncMock()
+    monkeypatch.setattr(app, "_mount_message", mount)
+    runtime_state.model_provider = "anthropic"
+    runtime_state.model_name = "claude-sonnet-5-5"
+    app._model_params_override = {"thinking": {"type": "between_tools"}}
+
+    await app._set_effort_override(effort)
+
+    if effort in {"xhigh", "max"}:
+        assert app._model_params_override == {"thinking": {"type": "between_tools"}}
+        assert model_config.load_effort_for_model(spec) is None
+        assert mount.await_args is not None
+        assert isinstance(mount.await_args.args[0], ErrorMessage)
+        assert (
+            "Supported efforts: low, medium, high" in mount.await_args.args[0]._content
+        )
+    else:
+        assert app._model_params_override == {
+            "thinking": {"type": "between_tools"},
+            "reasoning_effort": effort,
+        }
+        assert model_config.load_effort_for_model(spec) == effort
+
+
+async def test_between_tools_preserves_saved_adaptive_effort() -> None:
+    spec = "anthropic:claude-sonnet-5-5"
+    model_config.save_effort_for_model(spec, "max")
+    app = DeepAgentsApp()
+    app._model_params_override = {"thinking": {"type": "between_tools"}}
+
+    await app._restore_effort_override(spec)
+
+    assert app._model_params_override == {"thinking": {"type": "between_tools"}}
+    assert model_config.load_effort_for_model(spec) == "max"
+    app._model_params_override = {"thinking": {"type": "adaptive"}}
+    await app._restore_effort_override(spec)
+    assert app._model_params_override["reasoning_effort"] == "max"
+
+
+def test_between_tools_config_filters_selector_and_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_config.DEFAULT_CONFIG_PATH.write_text(
+        '[models.providers.anthropic.params."claude-sonnet-5-5"]\n'
+        'thinking = { type = "between_tools" }\n'
+    )
+    model_config.clear_caches()
+    app = DeepAgentsApp()
+    chat_input = Mock()
+    monkeypatch.setattr(app, "_chat_input", chat_input)
+    runtime_state.model_provider = "anthropic"
+    runtime_state.model_name = "claude-sonnet-5-5"
+
+    context = app._resolve_effort_context()
+    assert isinstance(context, _EffortContext)
+    assert context.efforts == ("low", "medium", "high")
+    app._sync_status_model()
+    chat_input.set_argument_hint_override.assert_called_with(
+        "/effort", "[low|medium|high|clear]"
+    )
+    app._model_params_override = {"thinking": {"type": "adaptive"}}
+    context = app._resolve_effort_context()
+    assert isinstance(context, _EffortContext)
+    assert context.efforts == (
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )

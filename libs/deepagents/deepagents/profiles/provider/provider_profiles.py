@@ -201,47 +201,74 @@ def register_provider_profile(key: str, profile: ProviderProfile) -> None:
         future releases. Refer to the [versioning documentation](https://docs.langchain.com/oss/python/versioning)
         for more details.
 
-    Registrations are **additive**: if a profile is already registered under
-    `key` (including a built-in profile loaded during lazy bootstrap), the new
-    profile is merged on top rather than replacing it. The incoming profile's
-    fields win on conflicts; unspecified fields inherit from the existing
-    profile.
-    `pre_init` callables chain (existing runs first), and `init_kwargs_factory`
-    callables chain — both factories are invoked at every resolution (base
-    first, then override) and their outputs merge with the override's values
-    winning on shared keys.
+    Register under a provider name to set defaults for its models, or under
+    `provider:model` to customize one model. Model-specific settings override
+    conflicting provider defaults and inherit the remaining settings.
 
-    To layer additional kwargs onto a built-in profile, register under the
-    same provider key. To override a built-in default (e.g. disable the
-    OpenAI Responses API), set the conflicting key explicitly:
+    For example, set defaults for a hypothetical provider, then lower the
+    temperature for one model:
 
     ```python
     from deepagents import ProviderProfile, register_provider_profile
 
-    # Adds temperature alongside the built-in `use_responses_api=True`.
-    register_provider_profile("openai", ProviderProfile(init_kwargs={"temperature": 0}))
-
-    # Explicitly disables Responses API for OpenAI. (This will break usage,
-    # this example is purely illustrative.)
     register_provider_profile(
-        "openai",
-        ProviderProfile(init_kwargs={"use_responses_api": False}),
+        "my_provider",
+        ProviderProfile(init_kwargs={"temperature": 0.7, "timeout": 30}),
+    )
+    register_provider_profile(
+        "my_provider:my-model:tag",
+        ProviderProfile(init_kwargs={"temperature": 0}),
     )
     ```
 
+    When Deep Agents constructs `my_provider:my-model:tag`, the profile supplies
+    `temperature=0` and `timeout=30`. Other models from `my_provider` receive
+    `temperature=0.7` and `timeout=30`. The model identifier is `my-model:tag`;
+    only the first colon separates it from the provider.
+
+    Register profiles before constructing the agent. Passing a model instance
+    to `create_deep_agent` leaves its construction settings unchanged; see
+    `register_harness_profile` for examples of both forms.
+
+    Re-registering merges with the existing profile: new values override
+    conflicts and unspecified fields remain. Continuing the example, give
+    this model a longer timeout:
+
+    ```python
+    register_provider_profile(
+        "my_provider:my-model:tag",
+        ProviderProfile(init_kwargs={"timeout": 60}),
+    )
+    ```
+
+    Future construction of this model uses `temperature=0` and `timeout=60`;
+    other models still use the provider's defaults.
+
+    Deep Agents also ships **built-in profiles**: model-construction defaults
+    registered automatically for selected providers. Registering under one of
+    those keys customizes the shipped settings using the same merge rules.
+
+    `pre_init` callables run existing first, then new.
+    Both `init_kwargs_factory` callables run in that order too, with the new
+    factory's output winning on shared keys.
+
+    See the [Profiles guide](https://docs.langchain.com/oss/python/deepagents/profiles)
+    for registration workflows and configuration files.
+
     Args:
         key: Either a provider name (no colon) for provider-wide defaults,
-            or a full `provider:model` spec for a per-model override. Valid
-            shapes:
+            or a full `provider:model` spec for a per-model override. Only the
+            first colon separates the provider from the model identifier:
 
             - `"openai"` — provider-wide
             - `"openai:gpt-5.4"` — specific model
+            - `"ollama:glm-5.2:cloud"` — model identifier containing a colon
 
         profile: The provider profile to register.
 
     Raises:
-        ValueError: If `key` is empty, contains more than one `:`, or has an
-            empty provider/model half.
+        ValueError: If `key` is malformed. See `validate_profile_key` for the
+            exact conditions.
     """
     _ensure_provider_profiles_loaded()
     _register_provider_profile_impl(key, profile)
@@ -271,11 +298,6 @@ def get_provider_profile(spec: str) -> ProviderProfile | None:
     emitted so registrations layered on an exact key can be traced when they
     don't apply (e.g. typo'd specs falling through to the provider default).
 
-    Malformed specs (empty string, more than one `:`, or a `:` with an empty
-    provider/model half) return `None` without consulting the registry. This
-    prevents a spec like `"openai:"` from silently matching the provider-wide
-    `"openai"` registration.
-
     !!! note "Prefer `apply_provider_profile` for model construction"
 
         This function is intended for *inspection* (tooling, conditional logic
@@ -285,16 +307,21 @@ def get_provider_profile(spec: str) -> ProviderProfile | None:
 
     Args:
         spec: Model spec in `provider:model` format, or a bare provider/model
-            identifier.
+            identifier. Only the first colon is a separator.
 
     Returns:
         The matching `ProviderProfile`, or `None` when no registered profile matches.
     """
-    if not spec or spec.count(":") > 1:
+    if not spec:
+        logger.debug("Empty model spec; no ProviderProfile lookup performed.")
         return None
 
     provider, sep, model = spec.partition(":")
     if sep and (not provider or not model):
+        logger.debug(
+            "Model spec %r has an empty provider or model half; no ProviderProfile lookup performed.",
+            spec,
+        )
         return None
 
     _ensure_provider_profiles_loaded()
@@ -345,13 +372,11 @@ def apply_provider_profile(
     silently replaced.
 
     When no profile is registered for `spec`, returns a copy of `kwargs`
-    unchanged. This keeps the helper safe to call unconditionally.
+    unchanged and logs the miss at `DEBUG`.
 
     Args:
-        spec: Model spec in `provider:model` format, or a bare provider/model
-            identifier.
-
-            Same shape accepted by `get_provider_profile`.
+        spec: Model spec to look up. See `get_provider_profile` for accepted
+            formats.
         kwargs: Caller-supplied kwargs that override profile defaults on
             shared keys.
 
@@ -368,6 +393,11 @@ def apply_provider_profile(
     base: dict[str, Any] = dict(kwargs) if kwargs else {}
     profile = get_provider_profile(spec)
     if profile is None:
+        logger.debug(
+            "No provider profile matched spec %r; building the model with caller kwargs only. "
+            "Registry keys are matched exactly, so check the provider and model identifier.",
+            spec,
+        )
         return base
 
     if run_pre_init and profile.pre_init is not None:

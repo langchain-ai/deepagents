@@ -61,6 +61,7 @@ from deepagents.middleware.subagents import (
     _is_forked_subagent,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 from deepagents.profiles.harness.harness_profiles import (
     GeneralPurposeSubagentProfile,
     _apply_profile_prompt,
@@ -393,6 +394,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 when `langchain-fireworks` is installed (no-ops for non-Fireworks models)
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
             - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
+            - [`UnsupportedContentMiddleware`][deepagents.middleware.unsupported_content.UnsupportedContentMiddleware]
 
             After assembly, any entries in the profile's
             `excluded_middleware` are filtered from the final stack. Class
@@ -919,6 +921,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     )
     if main_interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on))
+    deepagent_middleware.append(UnsupportedContentMiddleware())
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,
         _profile,
@@ -939,8 +942,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     state_schemas = [state_schema] if state_schema is not None else []
     state_schemas.extend(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None)
     private_state_keys = private_state_field_names(*state_schemas)
-    if sub_agent_middleware is not None:
-        sub_agent_middleware.private_state_keys = private_state_keys
+    # Apply the keys after caller middleware has replaced the task middleware.
+    for middleware_instance in deepagent_middleware:
+        if isinstance(middleware_instance, SubAgentMiddleware):
+            middleware_instance.private_state_keys = middleware_instance.private_state_keys | private_state_keys
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale

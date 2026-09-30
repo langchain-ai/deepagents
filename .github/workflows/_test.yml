@@ -94,7 +94,7 @@ jobs:
         shell: bash
         run: uv sync --group test
 
-      # Maintainer escape hatch: a release PR labeled `bypass-ripgrep-check`
+      # Maintainer escape hatch: a release PR labeled `ci:skip-ripgrep`
       # turns a strict ripgrep-install failure into a tolerated continue. The
       # label is read from the live GitHub API rather than
       # `github.event.pull_request.labels` because re-running a job replays the
@@ -136,16 +136,16 @@ jobs:
             echo "bypass=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if printf '%s\n' "$LABELS" | grep -Fxq "bypass-ripgrep-check"; then
+          if printf '%s\n' "$LABELS" | grep -Fxq "ci:skip-ripgrep"; then
             echo "bypass=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::'bypass-ripgrep-check' label present — a failed strict ripgrep install will be tolerated and the rg-gated tests will skip"
+            echo "::warning::'ci:skip-ripgrep' label present — a failed strict ripgrep install will be tolerated and the rg-gated tests will skip"
           else
             echo "bypass=false" >> "$GITHUB_OUTPUT"
           fi
 
       # Release-sensitive runs must exercise the real ripgrep code path rather
       # than the Python fallback, so the install has no timeout here and a
-      # failure reds the job — unless the PR carries `bypass-ripgrep-check`,
+      # failure reds the job — unless the PR carries `ci:skip-ripgrep`,
       # which turns an apt failure into a tolerated continue (see
       # RELEASING.md > "Release Failed: Ripgrep Install"). `merge_group` and
       # `push` stay strict even then: they have no PR label context to read,
@@ -184,7 +184,7 @@ jobs:
           # fail as before. The label only exists on a `pull_request`, so
           # `push`/`merge_group` always take the strict path.
           if [ "$BYPASS" != "true" ]; then
-            echo "::error::ripgrep install failed (apt exit $status) on a release-sensitive run and no 'bypass-ripgrep-check' label is present."
+            echo "::error::ripgrep install failed (apt exit $status) on a release-sensitive run and no 'ci:skip-ripgrep' label is present."
             exit "$status"
           fi
           # Bypassed: run the same dpkg unwind and `rg` probe as the
@@ -204,7 +204,7 @@ jobs:
           # Log the apt status: the bypass tolerates every non-zero status, so
           # the status is the only thing that separates a mirror flake from a
           # permanently broken install that will be bypassed on every re-run.
-          echo "::warning::ripgrep install failed (apt exit $status) on release PR; 'bypass-ripgrep-check' present — continuing without ripgrep (rg-gated tests will skip)"
+          echo "::warning::ripgrep install failed (apt exit $status) on release PR; 'ci:skip-ripgrep' present — continuing without ripgrep (rg-gated tests will skip)"
           package="${WORKING_DIRECTORY//\//-}"
           artifact="ripgrep-timeout-${package}-${MATRIX_OS}-${MATRIX_PYTHON}"
           marker="$RUNNER_TEMP/$artifact/warning.txt"
@@ -297,7 +297,7 @@ jobs:
           path: ${{ steps.ripgrep-install.outputs.marker || steps.ripgrep-strict.outputs.marker }}
           retention-days: 1
 
-      # Maintainer escape hatch: a PR labeled `bypass-warnings-check` runs
+      # Maintainer escape hatch: a PR labeled `ci:allow-warnings` runs
       # pytest with `-W default`, demoting the ini `filterwarnings` policy
       # (including the package-level "error" entry) for that run. Per-test
       # `@pytest.mark.filterwarnings` marks are applied after command-line
@@ -331,9 +331,9 @@ jobs:
             echo "flag=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          if printf '%s\n' "$LABELS" | grep -Fxq "bypass-warnings-check"; then
+          if printf '%s\n' "$LABELS" | grep -Fxq "ci:allow-warnings"; then
             echo "flag=-W default" >> "$GITHUB_OUTPUT"
-            echo "::warning::'bypass-warnings-check' label present — test warnings will not fail this run"
+            echo "::warning::'ci:allow-warnings' label present — test warnings will not fail this run"
           else
             echo "flag=" >> "$GITHUB_OUTPUT"
           fi

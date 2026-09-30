@@ -14,7 +14,7 @@ const DEFAULT_CHANGELOG = 'CHANGELOG.md';
 // which path the apply commit writes. Constrain the name to characters that cannot
 // form a path segment, so a malformed config can never widen that write.
 const COMPONENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-const BYPASS_LABEL = 'release: dangerously skip curated notes';
+const BYPASS_LABEL = 'ci:skip-curated-notes';
 const COMMAND_MENTION = '@release-bot';
 const WORKFLOW_BOT_LOGIN = 'github-actions[bot]';
 const OVERRIDE_MARKER = 'release-notes-override';
@@ -497,7 +497,7 @@ function overrideBody({ component, version, head, mainHead, headingHash, fingerp
     // instructions produces a visibly distinct comment. Escape HTML so the
     // instructions cannot break the <details> wrapper or inject markup.
     ...(instructions
-        ? ['', '<details>', '<summary>📝 <strong>Drafted with maintainer instructions</strong></summary>', '', escapeHtml(instructions), '</details>']
+        ? ['', '<details>', '<summary>📝 <strong>Drafted with maintainer instructions</strong></summary>', '', `<pre><code>${escapeHtml(instructions)}</code></pre>`, '</details>']
         : []),
     '',
     '---',

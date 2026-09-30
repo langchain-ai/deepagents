@@ -363,13 +363,16 @@ def _refresh_args(uv_path: str) -> list[str]:
             root would execute instead of the legitimate binary.
 
     Returns:
-        Arguments for the user-approved `uv pip install` process.
+        Arguments for the user-approved `uv pip install` process, with uv's
+        configuration discovery anchored to the editable checkout.
     """
     checkout = _checkout_root()
     args = [
         uv_path,
         "pip",
         "install",
+        "--directory",
+        str(checkout),
         "--python",
         sys.executable,
         "-e",

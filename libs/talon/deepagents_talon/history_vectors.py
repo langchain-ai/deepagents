@@ -250,6 +250,10 @@ class HistoryVectorIndex:
             if failures:
                 await self._backoff(delay)
             else:
+                if self.wake.is_set():
+                    # Empty batches can be legacy catalog backfills or duplicate-only
+                    # ranges. Keep their metadata scans from monopolizing the loop.
+                    await asyncio.sleep(0.01)
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self.wake.wait(), timeout=_RETRY_SECONDS)
 
@@ -357,6 +361,7 @@ class HistoryVectorIndex:
                 )
             items = cast("list[SearchItem]", results[0])
             keys = [item.key for item in items if item.score is not None]
+            keys = await self.archive.semantic(scope, keys)
         except TimeoutError:
             logger.warning(
                 "History vector search timed out after %ss; using keyword search",

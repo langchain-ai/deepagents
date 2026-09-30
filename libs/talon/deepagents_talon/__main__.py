@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from deepagents_talon.async_subagents import load_async_subagents
 from deepagents_talon.channels.discord import DiscordChannel, DiscordChannelConfig
+from deepagents_talon.channels.slack import SlackChannel, SlackChannelConfig
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
 from deepagents_talon.config import TalonConfig
@@ -27,6 +28,21 @@ from deepagents_talon.fleet_import import (
 )
 from deepagents_talon.host import TalonHost
 from deepagents_talon.mcp import MCPToolProvider, login_mcp_server, print_mcp_config_paths
+from deepagents_talon.mcp_middleware import talon_mcp_middleware
+from deepagents_talon.pairing import (
+    PAIRING_CHANNELS,
+    PAIRING_FILENAME,
+    PairedSender,
+    PairingStore,
+    SenderPairing,
+    approve_code,
+    env_sender_ids,
+    format_listing,
+    pause_jobs,
+    revoke_sender,
+    sender_jobs,
+)
+from deepagents_talon.sandbox import SandboxStartupError, open_sandbox
 from deepagents_talon.speech import build_voice_transcriber
 
 if TYPE_CHECKING:
@@ -36,6 +52,7 @@ if TYPE_CHECKING:
 
     from deepagents_talon.cron import CronJob
     from deepagents_talon.interfaces import AgentRuntime, ChannelAdapter
+    from deepagents_talon.sandbox import SandboxSession
 
 logger = logging.getLogger(__name__)
 
@@ -75,9 +92,15 @@ def main() -> None:
         action="store_true",
         help="Attach the Discord channel adapter.",
     )
+    parser.add_argument(
+        "--slack",
+        action="store_true",
+        help="Attach the Slack channel adapter.",
+    )
     subparsers = parser.add_subparsers(dest="command")
     _add_import_fleet_parser(subparsers)
     _add_mcp_parsers(subparsers)
+    _add_pairing_parsers(subparsers)
     args = parser.parse_args()
 
     _configure_logging(os.environ)
@@ -87,6 +110,9 @@ def main() -> None:
         sys.exit(_run_import_fleet_command(args, config))
     if args.command == "mcp":
         sys.exit(asyncio.run(_run_mcp_command(args, config)))
+    if args.command == "pairing":
+        config.ensure_home()
+        sys.exit(_run_pairing_command(args, config))
 
     cron_factory = CronJobStore
     cron_store = cron_factory(assistant_id=config.assistant_id, cron_dir=config.cron_dir)
@@ -98,8 +124,13 @@ def main() -> None:
         whatsapp=args.whatsapp,
         telegram=args.telegram,
         discord=args.discord,
+        slack=args.slack,
     )
-    asyncio.run(_run_host(args, config, cron_store, channels))
+    try:
+        asyncio.run(_run_host(args, config, cron_store, channels))
+    except SandboxStartupError as exc:
+        print(f"talon: {exc}", file=sys.stderr)  # noqa: T201
+        sys.exit(1)
 
 
 def _add_import_fleet_parser(
@@ -144,6 +175,81 @@ def _add_mcp_parsers(
     login = mcp_sub.add_parser("login", help="Run OAuth login for an MCP server")
     login.add_argument("server", help="Server name from mcpServers")
     login.add_argument("--mcp-config", dest="config_path", default=None)
+
+
+def _add_pairing_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    pairing = subparsers.add_parser("pairing", help="Manage paired DM senders")
+    pairing_sub = pairing.add_subparsers(dest="pairing_command", required=True)
+    listing = pairing_sub.add_parser("list", help="Show pending requests and paired senders")
+    listing.add_argument("channel", nargs="?", choices=PAIRING_CHANNELS)
+    approve = pairing_sub.add_parser("approve", help="Approve a pending request by code")
+    approve.add_argument("channel", choices=PAIRING_CHANNELS)
+    approve.add_argument("code")
+    revoke = pairing_sub.add_parser("revoke", help="Revoke a paired sender")
+    revoke.add_argument("channel", choices=PAIRING_CHANNELS)
+    revoke.add_argument("sender_id")
+    pause = pairing_sub.add_parser(
+        "pause-jobs",
+        help="Pause cron jobs a sender created. Run only while Talon is stopped: "
+        "the running host is the cron store's only writer.",
+    )
+    pause.add_argument("channel", choices=PAIRING_CHANNELS)
+    pause.add_argument("sender_id")
+
+
+def _run_pairing_command(args: argparse.Namespace, config: TalonConfig) -> int:
+    channels = [args.channel] if args.channel else list(PAIRING_CHANNELS)
+    if args.pairing_command == "list":
+        listings = (format_listing(_cli_pairing(config, channel)) for channel in channels)
+        print("\n".join(listings))  # noqa: T201
+        return 0
+    if args.pairing_command == "pause-jobs":
+        jobs = _cli_jobs(config, args.channel, args.sender_id)
+        paused = pause_jobs(_cron_store(config), jobs)
+        print(f"Paused {paused} scheduled job(s).")  # noqa: T201
+        return 0
+    pairing = _cli_pairing(config, args.channel)
+    if args.pairing_command == "approve":
+        result = approve_code(pairing, args.code)
+        print(result.reply)  # noqa: T201
+        return 0 if result.approved is not None else 1
+    result = revoke_sender(pairing, args.sender_id)
+    print(result.reply)  # noqa: T201
+    if result.revoked is None:
+        return 1
+    _report_revoked_jobs(config, args.channel, result.revoked)
+    return 0
+
+
+def _cli_pairing(config: TalonConfig, channel: str) -> SenderPairing:
+    prefix = f"DEEPAGENTS_TALON_{channel.upper()}"
+    return SenderPairing(
+        store=PairingStore(config.home / PAIRING_FILENAME),
+        provider=channel,
+        env_sender_ids=env_sender_ids(config.env, prefix),
+    )
+
+
+def _cron_store(config: TalonConfig) -> CronJobStore:
+    return CronJobStore(assistant_id=config.assistant_id, cron_dir=config.cron_dir)
+
+
+def _cli_jobs(config: TalonConfig, channel: str, sender_id: str) -> list[CronJob]:
+    return sender_jobs(_cron_store(config), channel, sender_id)
+
+
+def _report_revoked_jobs(config: TalonConfig, channel: str, revoked: PairedSender) -> None:
+    jobs = _cli_jobs(config, channel, revoked.sender_id)
+    enabled = [job for job in jobs if job.enabled]
+    if not enabled:
+        return
+    names = ", ".join(f"{job.id} ({job.name})" for job in enabled)
+    print(  # noqa: T201
+        f"Still enabled, created by them: {names}. Stop Talon and run: "
+        f"deepagents-talon pairing pause-jobs {channel} {revoked.sender_id}"
+    )
 
 
 def _run_import_fleet_command(args: argparse.Namespace, config: TalonConfig) -> int:
@@ -192,17 +298,22 @@ async def _run_host(
     config: TalonConfig,
     cron_store: CronJobStore,
     channels: Sequence[ChannelAdapter],
-    *,
-    checkpointer: Checkpointer | None = None,
 ) -> None:
     if config.model is None:
         await _run_host_with_agent(args, config, cron_store, channels, await _agent_runtime(config))
         return
-    if checkpointer is not None:
-        agent = await _agent_runtime(config, cron_store=cron_store, checkpointer=checkpointer)
-        await _run_host_with_agent(args, config, cron_store, channels, agent)
-        return
+    async with open_sandbox(config) as sandbox:
+        await _run_model_host(args, config, cron_store, channels, sandbox=sandbox)
 
+
+async def _run_model_host(
+    args: argparse.Namespace,
+    config: TalonConfig,
+    cron_store: CronJobStore,
+    channels: Sequence[ChannelAdapter],
+    *,
+    sandbox: SandboxSession | None,
+) -> None:
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: PLC0415
 
     from deepagents_talon.archive_saver import ConversationSaver  # noqa: PLC0415
@@ -217,6 +328,7 @@ async def _run_host(
             config,
             cron_store=cron_store,
             checkpointer=ConversationSaver(sqlite_checkpointer, archive=archive),
+            sandbox=sandbox,
         )
         await _run_host_with_agent(args, config, cron_store, channels, agent)
 
@@ -250,6 +362,7 @@ async def _agent_runtime(
     config: TalonConfig,
     cron_store: CronJobStore | None = None,
     checkpointer: Checkpointer | None = None,
+    sandbox: SandboxSession | None = None,
 ) -> AgentRuntime:
     from deepagents_talon.runtime import (  # noqa: PLC0415
         DeepAgentRuntime,
@@ -276,7 +389,10 @@ async def _agent_runtime(
         load_subagents=load_async_subagents,
         cron_store=cron_store,
         checkpointer=checkpointer,
+        middleware=(talon_mcp_middleware(),),
         env=env,
+        backend=sandbox.backend if sandbox is not None else None,
+        sandbox_working_dir=sandbox.working_dir if sandbox is not None else None,
     )
 
 
@@ -301,6 +417,7 @@ def _channels(
     whatsapp: bool = False,
     telegram: bool = False,
     discord: bool = False,
+    slack: bool = False,
 ) -> tuple[ChannelAdapter, ...]:
     channels: list[ChannelAdapter] = []
     if whatsapp or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
@@ -309,6 +426,8 @@ def _channels(
         channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
     if discord or _env_enabled(config.env, "DEEPAGENTS_TALON_DISCORD_ENABLED"):
         channels.append(DiscordChannel(DiscordChannelConfig.from_talon_config(config)))
+    if slack or _env_enabled(config.env, "DEEPAGENTS_TALON_SLACK_ENABLED"):
+        channels.append(SlackChannel(SlackChannelConfig.from_talon_config(config)))
     return tuple(channels)
 
 

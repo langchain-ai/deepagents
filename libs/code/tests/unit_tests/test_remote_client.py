@@ -4,7 +4,7 @@ import asyncio
 import itertools
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncGenerator, Sequence
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -188,6 +188,7 @@ def _make_agent(
             yield ev
 
     mock_graph.astream = fake_astream
+    mock_graph.client.http.get = AsyncMock(return_value={"cost": None})
     agent._graph = mock_graph
     agent._workspaces[_TEST_THREAD_ID] = {"workspace_id": "test-workspace"}
     return agent
@@ -212,6 +213,7 @@ def _make_capturing_agent() -> tuple[RemoteAgent, dict[str, Any]]:
             yield ev
 
     mock_graph.astream = fake_astream
+    mock_graph.client.http.get = AsyncMock(return_value={"cost": None})
     agent._graph = mock_graph
     agent._workspaces[_TEST_THREAD_ID] = {"workspace_id": "test-workspace"}
     return agent, captured
@@ -280,6 +282,298 @@ class TestRemoteAgentAstream:
 # ---------------------------------------------------------------------------
 # RemoteAgent — aget_state
 # ---------------------------------------------------------------------------
+
+
+async def test_missing_side_accounting_endpoint_keeps_main_cost() -> None:
+    from httpx import Request, Response
+    from langgraph_sdk.errors import NotFoundError
+
+    agent = _make_agent([])
+    agent._graph.client.http.get.side_effect = NotFoundError(
+        "Not found",
+        response=Response(404, request=Request("GET", "http://test/cost")),
+        body=None,
+    )
+    cost = await agent.aget_session_cost(
+        _config(), checkpoint={"_session_cost_usd": 2.0}
+    )
+    assert cost is not None
+    assert cost["total"] == pytest.approx(2.0)
+    assert not cost["cached"]
+
+
+async def test_invalid_side_cost_does_not_hide_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _make_agent([])
+    monkeypatch.setattr(agent, "aensure_thread", AsyncMock())
+    monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
+    agent._graph.client.http.post = AsyncMock(
+        return_value={"text": "answer", "cost": {"invalid": True}}
+    )
+    assert await agent.abtw("why?", config=_config()) == "answer"
+    assert agent.get_cached_session_cost(_config()) is None
+
+
+async def test_accounting_failure_preserves_main_stream_and_state() -> None:
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    side = _empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+    event = {"type": "session_cost", "total": 2.0}
+    nested = {"type": "session_cost", "total": 0.2}
+    agent = _make_agent([((), "custom", event), (("tools:child",), "custom", nested)])
+    agent._graph.client.http.get.return_value = {"cost": side}
+    saved_cost = await agent.aget_session_cost(
+        _config(), checkpoint={"_session_cost_usd": 1.0}
+    )
+    assert saved_cost is not None
+    assert saved_cost["total"] == pytest.approx(1.5)
+    agent._graph.client.http.get.side_effect = TimeoutError()
+    events = [item async for item in agent.astream({}, config=_config())]
+    assert events[0][2]["total"] == pytest.approx(2.5)
+    assert events[1] == (("tools:child",), "custom", nested)
+
+    from langgraph.types import StateSnapshot
+
+    snapshot = StateSnapshot(
+        values={"messages": [], "_session_cost_usd": 1.0},
+        next=(),
+        config={"configurable": {"thread_id": _TEST_THREAD_ID}},
+        metadata=None,
+        created_at=None,
+        parent_config=None,
+        tasks=(),
+        interrupts=(),
+    )
+    agent._graph.aget_state = AsyncMock(return_value=snapshot)
+    state = await agent.aget_state(_config())
+    assert state is snapshot
+    cost = await agent.aget_session_cost(_config(), checkpoint=state.values)
+    assert cost is not None
+    assert cost["total"] == pytest.approx(2.5)
+
+
+@pytest.mark.parametrize("concurrent_graph_total", [1.0, 3.0])
+@pytest.mark.parametrize("response_side_total", [None, 0.25, 0.75])
+async def test_accounting_read_merges_concurrent_graph_and_side_updates(
+    concurrent_graph_total: float, response_side_total: float | None
+) -> None:
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    main = _empty_cost_breakdown()
+    main.update(total_cost_usd=2.0, request_count=2)
+    side = _empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+    response_side = None
+    if response_side_total is not None:
+        response_side = side.copy()
+        response_side["total_cost_usd"] = response_side_total
+    streamed_main = main.copy()
+    streamed_main["total_cost_usd"] = concurrent_graph_total
+    event = {
+        "type": "session_cost",
+        "total": concurrent_graph_total,
+        "breakdown": streamed_main,
+    }
+    agent = _make_agent([((), "custom", event)])
+    agent._graph.client.http.get.return_value = {"cost": None}
+    await agent.aget_session_cost(_config(), checkpoint={"_session_cost_usd": 1.0})
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def read(_path: str) -> dict[str, object]:
+        if started.is_set():
+            return {"cost": side}
+        started.set()
+        await release.wait()
+        return {"cost": response_side}
+
+    agent._graph.client.http.get = read
+    pending = asyncio.create_task(
+        agent.aget_session_cost(
+            _config(),
+            checkpoint={"_session_cost_usd": 2.0, "_session_cost_breakdown": main},
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 2)
+        if concurrent_graph_total > 1.0:
+            async for _event in agent.astream({}, config=_config()):
+                pass
+        await agent.aget_session_cost(_config(), checkpoint={})
+        release.set()
+        cost = await asyncio.wait_for(pending, 2)
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
+
+    expected = max(2.0, concurrent_graph_total) + max(0.5, response_side_total or 0)
+    assert cost is not None
+    assert cost["total"] == pytest.approx(expected)
+    assert cost["breakdown"] is not None
+    assert cost["breakdown"]["total_cost_usd"] == pytest.approx(expected)
+    assert cost["breakdown"]["request_count"] == 3
+
+
+@pytest.mark.parametrize("graph_total", [2.0, 3.0])
+async def test_delayed_stream_preserves_refreshed_side_cost(graph_total: float) -> None:
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    main = _empty_cost_breakdown()
+    main.update(total_cost_usd=graph_total, request_count=2)
+    side = _empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+    initial = {"type": "session_cost", "total": 2.0}
+    delayed = {
+        "type": "session_cost",
+        "thread_id": _TEST_THREAD_ID,
+        "total": graph_total,
+        "breakdown": main,
+    }
+    agent = _make_agent([((), "custom", initial), ((), "custom", delayed)])
+    stream = agent.astream({}, config=_config())
+    await anext(stream)
+    agent._graph.client.http.get.return_value = {"cost": side}
+    refreshed = await agent.aget_session_cost(_config(), checkpoint={})
+    assert refreshed is not None
+    assert refreshed["total"] == pytest.approx(2.5)
+
+    _, _, event = await anext(stream)
+    assert isinstance(stream, AsyncGenerator)
+    await stream.aclose()  # No completion reconciliation after cancellation.
+    expected = graph_total + 0.5
+    assert event["type"] == "session_cost"
+    assert event["thread_id"] == _TEST_THREAD_ID
+    assert event["total"] == pytest.approx(expected)
+    assert event["breakdown"]["total_cost_usd"] == pytest.approx(expected)
+    assert event["breakdown"]["request_count"] == 3
+    agent._graph.client.http.get.side_effect = RuntimeError("accounting unavailable")
+    cached = await agent.aget_session_cost(_config(), checkpoint={})
+    assert cached is not None
+    assert cached["total"] == pytest.approx(expected)
+    assert cached["breakdown"] == event["breakdown"]
+
+
+@pytest.mark.parametrize("source", ["http", "btw"])
+@pytest.mark.parametrize("incoming_is_newer", [False, True])
+@pytest.mark.parametrize("priced", [False, True], ids=["unpriced", "free"])
+async def test_equal_dollar_snapshots_keep_latest_side_usage(
+    source: str,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    incoming_is_newer: bool,
+    priced: bool,
+) -> None:
+    """Free and unpriced requests advance usage even when spend is unchanged."""
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    main = _empty_cost_breakdown()
+    main.update(total_cost_usd=2.0, request_count=1, priced_request_count=1)
+    older = _empty_cost_breakdown()
+    older.update(
+        total_cost_usd=0.5,
+        request_count=1,
+        priced_request_count=1,
+        input_tokens=10,
+        output_tokens=2,
+    )
+    newer = older.copy()
+    newer.update(
+        request_count=2,
+        priced_request_count=2 if priced else 1,
+        input_tokens=30,
+        output_tokens=5,
+        input_cost_complete=priced,
+        output_cost_complete=priced,
+    )
+    initial, incoming = (older, newer) if incoming_is_newer else (newer, older)
+    agent = _make_agent([])
+    agent._graph.client.http.get.return_value = {"cost": initial}
+    await agent.aget_session_cost(
+        _config(),
+        checkpoint={"_session_cost_usd": 2.0, "_session_cost_breakdown": main},
+    )
+    agent._graph.client.http.get.return_value = {"cost": incoming}
+
+    if source == "http":
+        result = await agent.aget_session_cost(_config(), checkpoint={})
+    else:
+        monkeypatch.setattr(agent, "aensure_thread", AsyncMock())
+        monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
+        agent._graph.client.http.post = AsyncMock(
+            return_value={"text": "answer", "cost": incoming}
+        )
+        agent._graph.client.http.get.reset_mock()
+        assert await agent.abtw("why?", config=_config()) == "answer"
+        agent._graph.client.http.get.assert_not_awaited()
+        result = agent.get_cached_session_cost(_config())
+
+    assert result is not None
+    assert result["total"] == pytest.approx(2.5)
+    breakdown = result["breakdown"]
+    assert breakdown is not None
+    assert breakdown["request_count"] == 3
+    assert breakdown["priced_request_count"] == (3 if priced else 2)
+    assert breakdown["input_tokens"] == 30
+    assert breakdown["output_tokens"] == 5
+    assert breakdown["input_cost_complete"] is priced
+    assert breakdown["output_cost_complete"] is priced
+    agent._graph.client.http.get.side_effect = RuntimeError("accounting unavailable")
+    cached = await agent.aget_session_cost(_config(), checkpoint={})
+    assert cached is not None
+    assert cached["breakdown"] == breakdown
+
+
+@pytest.mark.parametrize(
+    ("missing", "refresh_fails"),
+    [("settlement", False), ("settlement", True), ("graph", False)],
+)
+async def test_btw_refreshes_missing_accounting_without_losing_answer(
+    missing: str, monkeypatch: pytest.MonkeyPatch, *, refresh_fails: bool
+) -> None:
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    agent = _make_agent([])
+    monkeypatch.setattr(agent, "aensure_thread", AsyncMock())
+    monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
+    http = agent._graph.client.http
+    graph_total = 0.0 if missing == "graph" else 2.0
+    http.get.return_value = {"cost": None}
+    if missing != "graph":
+        await agent.aget_session_cost(
+            _config(), checkpoint={"_session_cost_usd": graph_total}
+        )
+    else:
+        agent._graph.aget_state = AsyncMock(
+            side_effect=TypeError("'NoneType' object is not subscriptable")
+        )
+        assert await agent.aget_state(_config()) is None
+    side = _empty_cost_breakdown()
+    side.update(total_cost_usd=0.5, request_count=1)
+    http.post = AsyncMock(
+        return_value={
+            "text": "answer",
+            "cost": side if missing != "settlement" else None,
+        }
+    )
+    http.get.reset_mock()
+    http.get.return_value = {"cost": side}
+    if refresh_fails:
+        http.get.side_effect = RuntimeError("accounting unavailable")
+
+    assert await agent.abtw("why?", config=_config()) == "answer"
+    if missing == "settlement":
+        http.get.assert_awaited_once()
+    else:
+        http.get.assert_not_awaited()
+    cost = agent.get_cached_session_cost(_config())
+    assert cost is not None
+    has_side = missing == "graph" or not refresh_fails
+    assert cost["total"] == pytest.approx(graph_total + (0.5 if has_side else 0.0))
+    if has_side:
+        assert cost["breakdown"] is not None
+        assert cost["breakdown"]["request_count"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +648,33 @@ class TestRemoteAgentUpdateStateConflictRecovery:
         mock_graph._validate_client.return_value = mock_client
         agent._graph = mock_graph
         return agent, mock_graph
+
+    async def test_recovery_write_is_distinguished_for_server_tracing(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(_config(), {"messages": []}, recovery=True)
+
+        mock_graph.aupdate_state.assert_awaited_once_with(
+            _config(),
+            {"messages": []},
+            as_node=None,
+            headers={"x-deepagents-recovery": "interrupt"},
+        )
+
+    async def test_normal_write_has_no_recovery_header(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_graph = MagicMock()
+        mock_graph.aupdate_state = AsyncMock()
+        agent._graph = mock_graph
+
+        await agent.aupdate_state(_config(), {"messages": []})
+
+        mock_graph.aupdate_state.assert_awaited_once_with(
+            _config(), {"messages": []}, as_node=None
+        )
 
     async def test_cancels_all_active_runs_then_retries(self) -> None:
         runs_list = AsyncMock(
@@ -614,6 +935,7 @@ class TestRemoteAgentAbandonPendingWork:
         mock_graph._validate_client.return_value = mock_client
         mock_graph.aupdate_state = AsyncMock()
         mock_graph.aget_state = AsyncMock(side_effect=list(states))
+        mock_graph.client.http.get = AsyncMock(return_value={"cost": None})
         agent._graph = mock_graph
         return agent, mock_graph
 
@@ -1193,6 +1515,64 @@ class TestServerOffload:
 
         assert actual == result
 
+    @pytest.mark.parametrize("handoff", [False, True])
+    async def test_older_server_cannot_compact_a_handoff(self, handoff: bool) -> None:
+        """An old server ignores new body fields but rejects unknown routes."""
+        import httpx
+        from langgraph_sdk.client import LangGraphClient
+
+        compacted = False
+
+        def older_server(request: httpx.Request) -> httpx.Response:
+            nonlocal compacted
+            if request.url.path == "/dcode/threads/thread/offload":
+                compacted = True
+                return httpx.Response(
+                    200, json={"status": "complete", "result": _COMPACTED_RESULT}
+                )
+            return httpx.Response(404, json={"detail": "Not Found"})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(older_server), base_url="http://test"
+        ) as client:
+            http = SimpleNamespace(post=LangGraphClient(client).http.post)
+            agent = RemoteAgent("http://test")
+            with patch.object(agent, "_get_graph", return_value=_offload_graph(http)):
+                if handoff:
+                    with pytest.raises(RuntimeError, match=r"/handoff.*upgrade"):
+                        await agent.aoffload(
+                            config={"configurable": {"thread_id": "thread"}},
+                            context={},
+                            fulfill_hook=AsyncMock(),
+                            handoff=True,
+                        )
+                else:
+                    result = await agent.aoffload(
+                        config={"configurable": {"thread_id": "thread"}},
+                        context={},
+                        fulfill_hook=AsyncMock(),
+                    )
+                    assert result["status"] == "compacted"
+        assert compacted is not handoff
+
+    async def test_handoff_result_requires_summary_and_transcript(self) -> None:
+        agent = RemoteAgent("http://localhost:1234")
+        result = {"status": "summarized", "archive_path": "/t.md"}
+        http = SimpleNamespace(
+            post=AsyncMock(return_value={"status": "complete", "result": result})
+        )
+
+        with (
+            patch.object(agent, "_get_graph", return_value=_offload_graph(http)),
+            pytest.raises(RuntimeError, match="summary"),
+        ):
+            await agent.aoffload(
+                config={"configurable": {"thread_id": "thread"}},
+                context={},
+                fulfill_hook=AsyncMock(),
+                handoff=True,
+            )
+
     async def test_round_limit_logs_the_ids_it_saw(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -1272,3 +1652,85 @@ class TestServerOffload:
             )
 
         assert fulfill.await_count == _OFFLOAD_MAX_RESUME_ROUNDS
+
+
+@pytest.mark.parametrize("outcome", ["complete", "error", "truncated", "cancel"])
+async def test_btw_stream_delivers_fragments_and_closes_transport(
+    outcome: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from httpx import AsyncByteStream, AsyncClient, MockTransport, Request, Response
+    from langgraph_sdk.client import HttpClient
+
+    from deepagents_code.cost_tracking import _empty_cost_breakdown
+
+    release = asyncio.Event()
+    received = asyncio.Event()
+    closed = asyncio.Event()
+    fragments: list[str] = []
+    cost = _empty_cost_breakdown()
+    cost.update(total_cost_usd=0.5, request_count=1)
+
+    class Body(AsyncByteStream):
+        async def __aiter__(self) -> AsyncGenerator[bytes, None]:
+            yield b'event: text\ndata: "First "\n\n'
+            await release.wait()
+            if outcome == "complete":
+                yield b'event: text\ndata: "answer"\n\n'
+                result = json.dumps({"text": "First answer", "cost": cost})
+                yield f"event: complete\ndata: {result}\n\n".encode()
+            elif outcome == "error":
+                yield b'event: error\ndata: {"detail": "Try again"}\n\n'
+
+        async def aclose(self) -> None:
+            closed.set()
+            await super().aclose()
+
+    def respond(request: Request) -> Response:
+        assert request.headers["accept"] == "text/event-stream"
+        assert json.loads(request.content)["history"] == [["prior", "reply"]]
+        return Response(
+            200, headers={"content-type": "text/event-stream"}, stream=Body()
+        )
+
+    async def on_text(text: str) -> None:
+        fragments.append(text)
+        received.set()
+        await asyncio.sleep(0)
+
+    agent = _make_agent([])
+    monkeypatch.setattr(agent, "aensure_thread", AsyncMock())
+    monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
+    async with AsyncClient(
+        transport=MockTransport(respond), base_url="http://test"
+    ) as http:
+        agent._graph.client.http = HttpClient(http)
+        task = asyncio.create_task(
+            agent.abtw(
+                "why", config=_config(), history=[("prior", "reply")], on_text=on_text
+            )
+        )
+        try:
+            await asyncio.wait_for(received.wait(), 2)
+            assert fragments == ["First "]
+            assert not task.done()
+            if outcome == "cancel":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                release.set()
+                if outcome == "complete":
+                    assert await task == "First answer"
+                    assert fragments == ["First ", "answer"]
+                    total = agent.get_cached_session_cost(_config())
+                    assert total is not None
+                    assert total["total"] == pytest.approx(0.5)
+                else:
+                    with pytest.raises(RuntimeError, match=r"Try again|ended before"):
+                        await task
+            assert closed.is_set()
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)

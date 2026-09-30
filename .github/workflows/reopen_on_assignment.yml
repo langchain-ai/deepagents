@@ -37,11 +37,12 @@ jobs:
               `Issue #${issueNumber} assigned to ${assignee} — searching for closed PRs to reopen`,
             );
 
+            // Comma-separated labels are OR: closed PRs are not backfilled.
             const q = [
               `is:pr`,
               `is:closed`,
               `author:${assignee}`,
-              `label:missing-issue-link`,
+              `label:"auto:missing-issue-link","missing-issue-link"`,
               `repo:${owner}/${repo}`,
             ].join(' ');
 
@@ -81,13 +82,13 @@ jobs:
 
               // Skip if already bypassed
               const labels = item.labels.map(l => l.name);
-              if (labels.includes('bypass-issue-check')) {
-                console.log(`PR #${prNumber} already has bypass-issue-check — skipping`);
+              if (labels.includes('ci:skip-issue-link') || labels.includes('bypass-issue-check')) {
+                console.log(`PR #${prNumber} already has an issue-check bypass label — skipping`);
                 continue;
               }
 
               // Reopen first, remove label second — a closed PR that still has
-              // missing-issue-link is recoverable; a closed PR with the label
+              // auto:missing-issue-link is recoverable; a closed PR with the label
               // stripped is invisible to both workflows.
               try {
                 await github.rest.pulls.update({
@@ -124,17 +125,19 @@ jobs:
                 throw e;
               }
 
-              // Remove missing-issue-link label only after successful reopen
-              try {
-                await github.rest.issues.removeLabel({
-                  owner,
-                  repo,
-                  issue_number: prNumber,
-                  name: 'missing-issue-link',
-                });
-                console.log(`Removed missing-issue-link from PR #${prNumber}`);
-              } catch (e) {
-                if (e.status !== 404) throw e;
+              // Remove both lifecycle names only after successful reopen.
+              for (const name of ['auto:missing-issue-link', 'missing-issue-link']) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner,
+                    repo,
+                    issue_number: prNumber,
+                    name,
+                  });
+                  console.log(`Removed ${name} from PR #${prNumber}`);
+                } catch (e) {
+                  if (e.status !== 404) throw e;
+                }
               }
 
               // Minimize stale enforcement comment (best-effort;

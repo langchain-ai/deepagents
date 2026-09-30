@@ -2,8 +2,8 @@
 
 `call_subagent_task_tool` emits start/complete (or error) events via the
 runtime's `stream_writer` so a UI can render a live fan-out panel. These tests
-cover event shape, ordering, id propagation, truncation, and that telemetry
-failures never break the underlying dispatch.
+cover event shape, ordering, id propagation, truncation, replay-stable id
+derivation, and that telemetry failures never break the underlying dispatch.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
+from langgraph.errors import GraphInterrupt
 
 from langchain_quickjs._subagent import call_subagent_task_tool
 
@@ -20,7 +21,7 @@ from langchain_quickjs._subagent import call_subagent_task_tool
 class _FakeRuntime:
     """Minimal stand-in for the LangGraph ToolRuntime the bridge passes in."""
 
-    tool_call_id: str = "eval_call_123"
+    tool_call_id: str | None = "eval_call_123"
     stream_writer: Any = None
     config: dict | None = None
 
@@ -227,3 +228,112 @@ async def test_structured_output_path_still_emits_events() -> None:
     assert out == {"answer": 42}
     assert [e["phase"] for e in rec.events] == ["start", "complete"]
     assert rec.events[0]["eval_id"] == "eval_call_123"
+
+
+class TestReplayStableDispatchIds:
+    """Id derivation is deterministic, so a replayed eval reproduces its ids.
+
+    Nothing here actually replays; each test calls the dispatch twice with
+    the inputs a replay would supply. End-to-end replay through a
+    checkpointer is covered in `test_subagent_replay.py`.
+    """
+
+    async def _dispatch(
+        self,
+        rec: _Recorder,
+        tool: _FakeTaskTool,
+        *,
+        description: str = "Validate outcomes",
+        label: str | None = None,
+        eval_id: str | None = "call_abc",
+        response_schema: dict[str, Any] | None = None,
+    ) -> None:
+        await call_subagent_task_tool(
+            tool,
+            description=description,
+            subagent_type="reviewer",
+            label=label,
+            response_schema=response_schema,
+            runtime=_FakeRuntime(tool_call_id=eval_id, stream_writer=rec),
+        )
+
+    async def test_replayed_complete_matches_interrupted_start_id(self) -> None:
+        rec = _Recorder()
+        with pytest.raises(GraphInterrupt):
+            await self._dispatch(rec, _FakeTaskTool(raise_exc=GraphInterrupt()))
+        assert [e["phase"] for e in rec.events] == ["start"]
+        await self._dispatch(rec, _FakeTaskTool("done"))
+        assert [e["phase"] for e in rec.events] == ["start", "start", "complete"]
+        assert len({e["id"] for e in rec.events}) == 1
+
+    async def test_identical_payloads_in_different_evals_differ(self) -> None:
+        rec = _Recorder()
+        tool = _FakeTaskTool()
+        await self._dispatch(rec, tool, eval_id="call_one")
+        await self._dispatch(rec, tool, eval_id="call_two")
+        starts = [e for e in rec.events if e["phase"] == "start"]
+        assert len({e["id"] for e in starts}) == 2
+
+    @pytest.mark.parametrize("eval_id", [None, ""])
+    async def test_missing_eval_id_keeps_independent_dispatches_distinct(
+        self, eval_id: str | None
+    ) -> None:
+        rec = _Recorder()
+        tool = _FakeTaskTool()
+        for _ in range(2):
+            await self._dispatch(rec, tool, eval_id=eval_id)
+        assert rec.events[0]["id"] == rec.events[1]["id"]
+        assert rec.events[2]["id"] == rec.events[3]["id"]
+        assert rec.events[0]["id"] != rec.events[2]["id"]
+        # A dispatch with an unstable id must not advertise a parent batch.
+        assert all("eval_id" not in event for event in rec.events)
+
+    @pytest.mark.parametrize("delimiter", ["\x1f", "|", ":", "-", ""])
+    async def test_field_boundaries_are_not_smearable(self, delimiter: str) -> None:
+        """A delimiter inside one field cannot forge the next field's boundary.
+
+        The derivation hashes a JSON array, so fields cannot bleed into each
+        other whatever they contain. This guards a rewrite to a joined string,
+        under which both dispatches below would hash identical bytes.
+        """
+        rec = _Recorder()
+        tool = _FakeTaskTool()
+        await self._dispatch(rec, tool, description=f"one{delimiter}two", label="three")
+        await self._dispatch(rec, tool, description="one", label=f"two{delimiter}three")
+        assert rec.events[0]["id"] != rec.events[2]["id"]
+
+    async def test_changed_response_schema_gets_distinct_id(self) -> None:
+        rec = _Recorder()
+        tool = _FakeTaskTool('{"answer": 42}')
+        for field_type in ("number", "integer"):
+            await self._dispatch(
+                rec,
+                tool,
+                response_schema={
+                    "type": "object",
+                    "properties": {"answer": {"type": field_type}},
+                },
+            )
+        assert rec.events[0]["id"] != rec.events[2]["id"]
+
+    async def test_response_schema_key_order_does_not_change_id(self) -> None:
+        """`sort_keys` normalizes nested objects, not just the top level."""
+        rec = _Recorder()
+        tool = _FakeTaskTool('{"answer": 42}')
+        await self._dispatch(
+            rec,
+            tool,
+            response_schema={
+                "type": "object",
+                "properties": {"answer": {"type": "number", "minimum": 0}},
+            },
+        )
+        await self._dispatch(
+            rec,
+            tool,
+            response_schema={
+                "properties": {"answer": {"minimum": 0, "type": "number"}},
+                "type": "object",
+            },
+        )
+        assert rec.events[0]["id"] == rec.events[2]["id"]

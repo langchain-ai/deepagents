@@ -70,8 +70,11 @@ def current_time(timezone: str | None = None) -> dict[str, Any]:
     Returns:
         The current `date`, `time`, `day_of_week`, `local` and `utc` timestamps,
         `utc_offset`, `abbreviation`, and IANA `timezone` name. The `timezone`
-        value can be passed straight into a `create_job` wall-clock schedule,
-        as in `daily at 08:00 <timezone>`. It is `null`, alongside a `note`,
+        value can be passed straight into a `create_job` wall-clock or cron
+        schedule, as in `daily at 08:00 <timezone>` or
+        `cron 0 12 * * sat,sun <timezone>`, and into `until`. Use `date` to
+        compute a relative end such as "three months from now". It is `null`,
+        alongside a `note`,
         when the host timezone name could not be determined. Returns an error
         dictionary for an unusable timezone.
     """

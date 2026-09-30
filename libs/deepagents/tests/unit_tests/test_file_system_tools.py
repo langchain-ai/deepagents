@@ -4,7 +4,6 @@ At the moment these tests are written against the state backend, but we will nee
 to extend them to other backends as well.
 """
 
-import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
@@ -352,14 +351,8 @@ def test_grep_finds_written_file() -> None:
     assert "/project/main.py" in grep_message.content, "Grep should reference the file containing 'import'"
 
 
-# Our reducers do not handle parallel edits in StateBackend.
-# These will also not work correctly for other backends due to race conditions.
-# Even sandbox/file system backend could get into some edge cases (e.g., if the edits are overlapping)
-# Generally best to instruct the LLM to avoid parallel edits of the same file likely.
-@pytest.mark.xfail(reason="We should add after_model middleware to fail parallel edits of the same file.")
 def test_parallel_edit_file_calls() -> None:
-    """Verify that parallel edit_file calls correctly update file state."""
-    # Fake model will write a file, then issue multiple edit_file calls in parallel
+    """Reject the second parallel edit to the same file."""
     fake_model = GenericFakeChatModel(
         messages=iter(
             [
@@ -393,7 +386,7 @@ def test_parallel_edit_file_calls() -> None:
                         {
                             "name": "edit_file",
                             "args": {
-                                "file_path": "/multi.txt",
+                                "file_path": "/./multi.txt",
                                 "old_string": "two",
                                 "new_string": "2",
                             },
@@ -412,11 +405,14 @@ def test_parallel_edit_file_calls() -> None:
         checkpointer=InMemorySaver(),
     )
 
-    _ = agent.invoke(
+    result = agent.invoke(
         {"messages": [HumanMessage(content="Edit file in parallel")]},
         config={"configurable": {"thread_id": "test_thread_parallel_edits"}},
     )
-    assert False, "Finish implementing correct behavior to add a ToolMessage with error if parallel edits to the same file are attempted."  # noqa: PT015, B011
+
+    edits = [message for message in result["messages"] if isinstance(message, ToolMessage) and message.name == "edit_file"]
+    assert [message.status for message in edits] == ["success", "error"]
+    assert result["files"]["/multi.txt"]["content"] == "line 1\nline two\nline three"
 
 
 def test_path_traversal_returns_error_message() -> None:

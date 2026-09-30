@@ -11,7 +11,7 @@
 // as text but never actually run, which lets an inverted condition ship green.
 
 const STICKY_MARKER = "<!-- markdown-file-check -->";
-const ACKNOWLEDGMENT_LABEL = "markdown-added: acknowledged";
+const ACKNOWLEDGMENT_LABEL = "ci:ack-markdown";
 
 // Who authors this workflow's own sticky comments. Matched on when finding the
 // comment to update so a PR author cannot pre-post the marker and capture the

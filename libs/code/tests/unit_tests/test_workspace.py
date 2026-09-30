@@ -166,15 +166,16 @@ async def test_current_schema_migrates_on_reopen(tmp_path, workspace_database) -
     config = {"enable_shell": True}
     binding = await bind_thread_workspace("thread-1", str(tmp_path), config)
 
-    assert binding.schema_version == 3
+    assert binding.schema_version == 4
     assert binding.config_fingerprint
+    assert binding.policy_fingerprint
     assert (await require_thread_workspace("thread-1", binding.to_payload())) == binding
     with closing(sqlite3.connect(workspace_database)) as conn, conn:
         stored_version = conn.execute(
             "SELECT schema_version FROM dcode_thread_workspaces WHERE thread_id = ?",
             ("thread-1",),
         ).fetchone()[0]
-    assert stored_version == 3
+    assert stored_version == 4
 
 
 async def test_a_stale_schema_row_rebinds_instead_of_conflicting(
@@ -203,7 +204,7 @@ async def test_a_stale_schema_row_rebinds_instead_of_conflicting(
         "thread-1", str(tmp_path), {"trust_project_mcp": False}
     )
 
-    assert rebound.schema_version == 3
+    assert rebound.schema_version == 4
     assert rebound.workspace_config()["trust_project_mcp"] is False
     assert rebound.config_fingerprint != "stale-launch-fingerprint"
     assert (await require_thread_workspace("thread-1", rebound.to_payload())) == rebound
@@ -234,6 +235,111 @@ async def test_migration_rejects_session_policy_drift(
         await bind_thread_workspace("thread-1", str(tmp_path), changed)
 
     assert await get_thread_workspace("thread-1") == stored
+
+
+async def test_legacy_v3_row_migrates_only_when_nothing_changed(
+    tmp_path, workspace_database
+) -> None:
+    """A v3 binding upgrades to v4 only when its full fingerprint still matches.
+
+    Exact fingerprint equality proves the whole (model + policy) config is
+    unchanged, so upgrading is safe. The row is rewritten with the new policy
+    and runtime fingerprints; conversation checkpoints live in separate tables
+    and are untouched.
+    """
+    config = {"enable_shell": True, "auto_approve": False}
+    binding = await bind_thread_workspace("thread-1", str(tmp_path), config)
+    # Simulate a v3 row: drop the v4 fingerprints, keep the full fingerprint.
+    with closing(sqlite3.connect(workspace_database)) as conn, conn:
+        conn.execute(
+            """
+            UPDATE dcode_thread_workspaces
+            SET schema_version = 3, policy_fingerprint = '', runtime_fingerprint = ''
+            WHERE thread_id = ?
+            """,
+            ("thread-1",),
+        )
+
+    # Simulate surviving conversation history in a separate table; the
+    # migration must leave it byte-for-byte intact.
+    with closing(sqlite3.connect(workspace_database)) as conn, conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS checkpoints (thread_id TEXT, state TEXT)"
+        )
+        conn.execute(
+            "INSERT INTO checkpoints VALUES ('thread-1', 'conversation-state')"
+        )
+
+    rebound = await bind_thread_workspace("thread-1", str(tmp_path), config)
+
+    assert rebound.schema_version == 4
+    assert rebound.policy_fingerprint
+    assert rebound.runtime_fingerprint
+    assert rebound.workspace_id == binding.workspace_id
+    with closing(sqlite3.connect(workspace_database)) as conn, conn:
+        history = conn.execute(
+            "SELECT state FROM checkpoints WHERE thread_id = 'thread-1'"
+        ).fetchone()
+    assert history == ("conversation-state",)
+
+
+@pytest.mark.parametrize(
+    ("original", "changed"),
+    [
+        ({"auto_approve": False}, {"auto_approve": True}),
+        ({"trust_project_extensions": True}, {"trust_project_extensions": False}),
+        ({"trust_project_mcp": True}, {"trust_project_mcp": False}),
+        ({"extension_paths": ["/original"]}, {"extension_paths": ["/changed"]}),
+        ({"sandbox_setup": "/original"}, {"sandbox_setup": "/changed"}),
+    ],
+)
+async def test_legacy_v3_row_with_policy_change_is_rejected(
+    tmp_path, workspace_database, original, changed
+) -> None:
+    """A v3 row whose full fingerprint no longer matches cannot be proven safe."""
+    await bind_thread_workspace("thread-1", str(tmp_path), original)
+    with closing(sqlite3.connect(workspace_database)) as conn, conn:
+        conn.execute(
+            """
+            UPDATE dcode_thread_workspaces
+            SET schema_version = 3, policy_fingerprint = '', runtime_fingerprint = ''
+            WHERE thread_id = ?
+            """,
+            ("thread-1",),
+        )
+
+    # A real policy change flips the full fingerprint, so the legacy row is
+    # unprovable and is rejected rather than assumed equivalent.
+    with pytest.raises(WorkspaceConflictError):
+        await bind_thread_workspace("thread-1", str(tmp_path), changed)
+
+
+async def test_model_only_change_does_not_rebind_current_schema(tmp_path) -> None:
+    """On the current schema a model change keeps the binding (policy unchanged).
+
+    The payload omits model settings, so the policy fingerprint is stable
+    across a model switch; only the runtime fingerprint changes.
+    """
+    from deepagents_code._server_config import ServerConfig
+
+    bound = ServerConfig(model="anthropic:claude-a", auto_approve=False)
+    binding = await bind_thread_workspace(
+        "thread-1",
+        str(tmp_path),
+        bound.to_workspace_payload(),
+        config_fingerprint=bound.runtime_fingerprint(),
+    )
+
+    switched = ServerConfig(model="openai:gpt-b", auto_approve=False)
+    rebound = await bind_thread_workspace(
+        "thread-1",
+        str(tmp_path),
+        switched.to_workspace_payload(),
+        config_fingerprint=switched.runtime_fingerprint(),
+    )
+
+    assert rebound.policy_fingerprint == binding.policy_fingerprint
+    assert rebound.workspace_id == binding.workspace_id
 
 
 def test_relative_workspace_is_rejected() -> None:

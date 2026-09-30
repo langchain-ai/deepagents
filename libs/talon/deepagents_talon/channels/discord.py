@@ -6,32 +6,40 @@ Talon is an experimental runtime and is subject to change or removal at any time
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import mimetypes
-import re
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field, replace
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import discord
+from discord import app_commands
 
 from deepagents_talon.channels.base import (
     ChannelExposure,
     ChannelExposureEnv,
     ChannelMediaError,
+    ExposureMode,
     channel_exposure_from_env,
     chunk_text,
     dispatch_message,
     max_media_bytes_from_env,
     message_with_media_paths,
     outbound_media_root_from_env,
+    parse_content_length,
     parse_float,
+    safe_filename_part,
+    safe_suffix,
     split_csv,
     validate_media,
+    with_media_error,
 )
+from deepagents_talon.commands import COMMANDS_BY_NAME, ChatCommand, visible_commands
 from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
@@ -42,6 +50,7 @@ from deepagents_talon.interfaces import (
     SendResult,
 )
 from deepagents_talon.observability import log_debug_event
+from deepagents_talon.pairing import SenderPairing, pairing_from_env
 
 if TYPE_CHECKING:
     from deepagents_talon.config import TalonConfig
@@ -54,8 +63,16 @@ MAX_TEXT_CHARS = 2000
 DEFAULT_MAX_MEDIA_BYTES = 1024 * 1024 * 1024
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 35.0
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_DISCORD_OPEN_ACK"
+SLASH_COMMANDS_ENV = "DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS"
+COMMAND_GUILD_ID_ENV = "DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID"
+_ENV_PREFIX = "DEEPAGENTS_TALON_DISCORD"
 
-_SAFE_SUFFIX_PATTERN = re.compile(r"\.[a-z0-9]{1,16}")
+_COMMAND_UNAVAILABLE_MESSAGE = "That command is not available here."
+_UNAUTHORIZED_MESSAGE = "This assistant does not accept commands from you."
+_COMMAND_NO_REPLY_MESSAGE = "Done."
+_COMMAND_FAILED_MESSAGE = "Something went wrong running that command. Check Talon logs."
+_TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+_FALSY_ENV_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +91,13 @@ class DiscordChannelConfig:
             outbound local files.
         request_timeout_seconds: Timeout for Gateway connect and attachment
             downloads.
+        slash_commands_enabled: Whether to register Talon's commands as Discord
+            application commands so they appear in the native `/` picker.
+        command_guild_id: Optional guild id to scope command registration to.
+            A guild-scoped registration applies immediately, which is useful while
+            developing, but by construction it never reaches direct messages.
+        pairing: Optional sender pairing policy that admits approved DM senders
+            and issues codes to unknown ones.
     """
 
     bot_token: str = field(repr=False)
@@ -83,6 +107,9 @@ class DiscordChannelConfig:
     allowed_user_ids: frozenset[str] = field(default_factory=frozenset)
     max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
+    slash_commands_enabled: bool = True
+    command_guild_id: str | None = None
+    pairing: SenderPairing | None = None
 
     @classmethod
     def from_talon_config(cls, config: TalonConfig) -> DiscordChannelConfig:
@@ -112,7 +139,7 @@ class DiscordChannelConfig:
             env,
             ChannelExposureEnv(
                 provider="Discord",
-                env_prefix="DEEPAGENTS_TALON_DISCORD",
+                env_prefix=_ENV_PREFIX,
                 open_ack=OPEN_EXPOSURE_ACK_ENV,
                 require_self_operator=True,
             ),
@@ -129,6 +156,15 @@ class DiscordChannelConfig:
             request_timeout_seconds=parse_float(
                 env.get("DEEPAGENTS_TALON_DISCORD_REQUEST_TIMEOUT_SECONDS"),
                 DEFAULT_REQUEST_TIMEOUT_SECONDS,
+            ),
+            slash_commands_enabled=_parse_flag(env.get(SLASH_COMMANDS_ENV), default=True),
+            command_guild_id=_parse_guild_id(env.get(COMMAND_GUILD_ID_ENV)),
+            pairing=pairing_from_env(
+                env,
+                provider="discord",
+                env_prefix=_ENV_PREFIX,
+                open_exposure=exposure.mode == ExposureMode.OPEN,
+                home=config.home,
             ),
         )
 
@@ -154,6 +190,7 @@ class _DiscordInboundMessage:
     is_dm: bool
     from_self: bool
     attachments: tuple[_DiscordAttachment, ...] = ()
+    history_chat: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,9 +211,81 @@ class _DiscordConnectionState:
     detail: str
 
 
+class _InteractionResponder(Protocol):
+    """Reply surface for one Discord application command invocation.
+
+    Discord requires a response to every interaction, and only the first response
+    may be immediate: anything sent after a deferral is a followup. `reject`
+    answers without deferring, while `defer` plus `send` covers work that may
+    outlast Discord's three-second initial-response budget.
+    """
+
+    async def reject(self, text: str) -> None:
+        """Answer immediately and privately, without deferring."""
+
+    async def defer(self) -> None:
+        """Acknowledge the interaction so a reply can follow later."""
+
+    async def send(self, text: str) -> str | None:
+        """Send a followup reply and return its message id when one is reported."""
+
+
+@dataclass(frozen=True, slots=True)
+class _DiscordInboundInteraction:
+    """Provider-neutral view of one inbound application command invocation.
+
+    Args:
+        command: Invoked command's bare name, without a leading slash.
+        channel_id: Channel the command was invoked in, when Discord reports one.
+        sender_id: Discord user id that invoked the command.
+        interaction_id: Discord's id for this invocation.
+        is_dm: Whether the command was invoked outside a guild.
+        responder: Reply surface bound to this invocation.
+        argument: Text of the command's optional argument, when one was given.
+    """
+
+    command: str
+    channel_id: str | None
+    sender_id: str | None
+    interaction_id: str
+    is_dm: bool
+    responder: _InteractionResponder
+    argument: str | None = None
+    history_chat: str | None = None
+
+
+@dataclass(slots=True)
+class _InteractionSink:
+    """Routes one command's reply back to the interaction that asked for it.
+
+    Args:
+        conversation_id: Channel whose replies belong to this interaction.
+        responder: Reply surface for the invocation.
+        used: Whether a reply has been routed, so the caller knows if it still
+            owes Discord a followup.
+    """
+
+    conversation_id: str
+    responder: _InteractionResponder
+    used: bool = False
+
+
+_INTERACTION_SINK: ContextVar[_InteractionSink | None] = ContextVar(
+    "talon_discord_interaction_sink",
+    default=None,
+)
+"""Reply sink for the application command being handled on this task, if any.
+
+A context variable rather than a table keyed by conversation: `discord.py` runs
+every interaction in its own task, so each invocation sees only its own sink and
+no other task -- a cron delivery, a background result, a progress message aimed
+at the same channel -- can be captured by one.
+"""
+
 InboundMessageCallback = Callable[[_DiscordInboundMessage], Awaitable[None]]
 InboundReactionCallback = Callable[[_DiscordInboundReaction], Awaitable[None]]
 InboundConnectionCallback = Callable[[_DiscordConnectionState], Awaitable[None]]
+InboundInteractionCallback = Callable[[_DiscordInboundInteraction], Awaitable[None]]
 
 _CONNECTED_STATE = _DiscordConnectionState(connected=True, detail="connected")
 _RECONNECTING_STATE = _DiscordConnectionState(connected=True, detail="reconnecting")
@@ -199,6 +308,7 @@ class _DiscordGateway(Protocol):
         handle_message: InboundMessageCallback,
         handle_reaction: InboundReactionCallback,
         handle_connection: InboundConnectionCallback,
+        handle_interaction: InboundInteractionCallback,
     ) -> None:
         """Connect to the Gateway and begin dispatching inbound and connection events."""
 
@@ -227,12 +337,23 @@ class _DiscordGateway(Protocol):
 class _DiscordPyGateway:
     """Gateway implementation backed by the `discord.py` library."""
 
-    def __init__(self, *, token: str, connect_timeout_seconds: float) -> None:
+    def __init__(
+        self,
+        *,
+        token: str,
+        connect_timeout_seconds: float,
+        commands_enabled: bool = True,
+        command_guild_id: str | None = None,
+    ) -> None:
         self._token = token
         self._connect_timeout_seconds = connect_timeout_seconds
+        self._commands_enabled = commands_enabled
+        self._command_guild_id = command_guild_id
         self._client: discord.Client | None = None
         self._task: asyncio.Task[None] | None = None
         self._watch: asyncio.Task[None] | None = None
+        self._tree: app_commands.CommandTree[discord.Client] | None = None
+        self._commands_synced = False
 
     @property
     def bot_id(self) -> str | None:
@@ -246,10 +367,12 @@ class _DiscordPyGateway:
         handle_message: InboundMessageCallback,
         handle_reaction: InboundReactionCallback,
         handle_connection: InboundConnectionCallback,
+        handle_interaction: InboundInteractionCallback,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
         client = discord.Client(intents=intents)
+        self._register_commands(client, handle_interaction)
         self._register_events(
             client,
             handle_message=handle_message,
@@ -287,6 +410,64 @@ class _DiscordPyGateway:
         msg = "Timed out connecting to the Discord Gateway"
         raise TimeoutError(msg)
 
+    def _register_commands(
+        self,
+        client: discord.Client,
+        handle_interaction: InboundInteractionCallback,
+    ) -> None:
+        """Build the application command tree for every advertised command.
+
+        Registration with Discord happens later, in `_sync_commands`, because the
+        sync call needs an application id that only exists once the Gateway is ready.
+
+        Args:
+            client: Client the command tree is attached to.
+            handle_interaction: Callback invoked for each command invocation.
+        """
+        if not self._commands_enabled:
+            return
+        self._tree = app_commands.CommandTree(
+            client,
+            # Set once on the tree: `discord.py` merges these into every command
+            # payload. `dm_channel` is what surfaces the commands in an operator's
+            # direct messages, which is the only place the default `self` exposure
+            # accepts anything. Guild install only -- a user install is rejected
+            # unless it is also enabled in the Discord developer portal.
+            allowed_contexts=app_commands.AppCommandContext(
+                guild=True,
+                dm_channel=True,
+                private_channel=True,
+            ),
+            allowed_installs=app_commands.AppInstallationType(guild=True),
+        )
+        for command in visible_commands():
+            self._tree.add_command(_build_app_command(command, handle_interaction))
+
+    async def _sync_commands(self) -> None:
+        """Register this process's commands with Discord exactly once."""
+        if self._tree is None or self._commands_synced:
+            return
+        # Claimed before the first await: `on_ready` fires again after every
+        # reconnect, and `discord.py` dispatches each one as its own task, so two
+        # of them can reach this point concurrently.
+        self._commands_synced = True
+        guild = (
+            discord.Object(id=int(self._command_guild_id))
+            if self._command_guild_id is not None
+            else None
+        )
+        try:
+            await self._tree.sync(guild=guild)
+        except Exception:  # noqa: BLE001  # A failed registration must not stop the channel.
+            logger.warning("Could not register Discord application commands", exc_info=True)
+            return
+        log_debug_event(
+            logger,
+            "discord.commands.registered",
+            command_count=len(visible_commands()),
+            guild_scoped=guild is not None,
+        )
+
     def _register_events(
         self,
         client: discord.Client,
@@ -319,7 +500,10 @@ class _DiscordPyGateway:
 
         @client.event
         async def on_ready() -> None:
+            # Connection state first: registering commands is a network round trip,
+            # and a channel that reports itself connected is not waiting on it.
             await handle_connection(_CONNECTED_STATE)
+            await self._sync_commands()
 
         @client.event
         async def on_resumed() -> None:
@@ -437,6 +621,8 @@ class DiscordChannel:
         self._gateway = gateway or _DiscordPyGateway(
             token=config.bot_token,
             connect_timeout_seconds=config.request_timeout_seconds,
+            commands_enabled=config.slash_commands_enabled,
+            command_guild_id=config.command_guild_id,
         )
         self._handler: MessageHandler | None = None
         self._reaction_handler: ReactionHandler | None = None
@@ -476,6 +662,7 @@ class DiscordChannel:
             handle_message=self._process_message,
             handle_reaction=self._process_reaction,
             handle_connection=self._process_connection,
+            handle_interaction=self._process_interaction,
         )
         self._status = ChannelStatus(provider="discord", connected=True, detail="connected")
         log_debug_event(logger, "discord.channel.started", connected=True)
@@ -498,6 +685,9 @@ class DiscordChannel:
         Returns:
             Result indicating whether the last chunk send succeeded.
         """
+        sink = _INTERACTION_SINK.get()
+        if sink is not None and sink.conversation_id == conversation_id:
+            return await self._send_interaction_reply(sink, text)
         chunks = chunk_text(text, limit=MAX_TEXT_CHARS)
         log_debug_event(
             logger,
@@ -588,6 +778,105 @@ class DiscordChannel:
         await self.send_message(conversation_id, caption)
         return None
 
+    async def _send_interaction_reply(self, sink: _InteractionSink, text: str) -> SendResult:
+        """Deliver a command reply as the invoking interaction's response.
+
+        Args:
+            sink: Reply sink for the interaction being handled.
+            text: Reply content, split if it exceeds Discord's per-message limit.
+
+        Returns:
+            Result indicating whether the last followup succeeded.
+        """
+        chunks = chunk_text(text, limit=MAX_TEXT_CHARS)
+        log_debug_event(
+            logger,
+            "discord.outbound.interaction.started",
+            chunk_count=len(chunks),
+            text_chars=len(text),
+        )
+        message_id: str | None = None
+        for chunk in chunks:
+            # Marked before the send so a partial failure still counts as answered:
+            # the caller must not add a fallback followup on top of a real reply.
+            sink.used = True
+            message_id = await sink.responder.send(chunk)
+        log_debug_event(
+            logger,
+            "discord.outbound.interaction.completed",
+            chunk_count=len(chunks),
+            message_id_present=message_id is not None,
+        )
+        return SendResult(success=True, message_id=message_id)
+
+    async def _process_interaction(self, inbound: _DiscordInboundInteraction) -> None:
+        """Handle one application command invocation as its text equivalent.
+
+        The invocation is turned into the message a typed command would have
+        produced, so the host parses and dispatches it through exactly one code
+        path and this adapter adds no second notion of what a command means.
+
+        Args:
+            inbound: Provider-neutral view of the invocation.
+        """
+        command = COMMANDS_BY_NAME.get(inbound.command)
+        if command is None or inbound.channel_id is None:
+            # Without a channel there is no conversation to act on, and guessing
+            # one would let a command reset a thread the user never named.
+            await inbound.responder.reject(_COMMAND_UNAVAILABLE_MESSAGE)
+            return
+        metadata: dict[str, object] = {
+            "provider": "discord",
+            "is_dm": inbound.is_dm,
+            "from_self": False,
+        }
+        if inbound.history_chat is not None:
+            metadata["history_chat"] = inbound.history_chat
+        message = ChannelMessage(
+            conversation_id=inbound.channel_id,
+            text=f"{command.text} {inbound.argument}" if inbound.argument else command.text,
+            sender_id=inbound.sender_id,
+            message_id=inbound.interaction_id,
+            metadata=metadata,
+        )
+        if not self._admits(message):
+            log_debug_event(
+                logger,
+                "discord.inbound.interaction.rejected",
+                exposure=self._exposure.mode.value,
+            )
+            # Unlike a typed command, which is simply dropped, Discord requires an
+            # answer to every interaction, so a refusal is visible to its sender.
+            await inbound.responder.reject(_UNAUTHORIZED_MESSAGE)
+            return
+        log_debug_event(logger, "discord.inbound.interaction.dispatching")
+        await inbound.responder.defer()
+        sink = _InteractionSink(inbound.channel_id, inbound.responder)
+        token = _INTERACTION_SINK.set(sink)
+        failed = False
+        try:
+            await dispatch_message(self._handler, message, provider="Discord")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001  # Report the failure through the interaction.
+            logger.warning("Discord command %s failed", inbound.command, exc_info=True)
+            failed = True
+        finally:
+            _INTERACTION_SINK.reset(token)
+        if not sink.used:
+            # A deferred interaction shows "thinking" until something follows up,
+            # so answer even when the command produced no reply of its own.
+            with contextlib.suppress(Exception):
+                await inbound.responder.send(
+                    _COMMAND_FAILED_MESSAGE if failed else _COMMAND_NO_REPLY_MESSAGE,
+                )
+        log_debug_event(logger, "discord.inbound.interaction.dispatched", failed=failed)
+
+    def _admits(self, message: ChannelMessage) -> bool:
+        if _allows_discord_message(self._exposure, self.config.allowed_user_ids, message):
+            return True
+        return self.config.pairing is not None and self.config.pairing.admits(message)
+
     async def _process_message(self, inbound: _DiscordInboundMessage) -> None:
         if inbound.from_self:
             # Discord's Gateway re-delivers the bot's own outbound messages through
@@ -603,13 +892,15 @@ class DiscordChannel:
             message_id=inbound.message_id,
             metadata=_message_metadata(inbound),
         )
-        if not _allows_discord_message(self._exposure, self.config.allowed_user_ids, message):
+        if not self._admits(message):
             log_debug_event(
                 logger,
                 "discord.inbound.message.rejected",
                 exposure=self._exposure.mode.value,
                 has_media=bool(inbound.attachments),
             )
+            if self.config.pairing is not None:
+                await self.config.pairing.offer(message, self.send_message)
             return
         message = await self._prepare_inbound_media(message, inbound.attachments)
         log_debug_event(
@@ -628,7 +919,11 @@ class DiscordChannel:
             sender_id=inbound.sender_id,
             metadata={"provider": "discord"},
         )
-        if not _allows_discord_reaction(self._exposure, self.config.allowed_user_ids, reaction):
+        if not _allows_discord_reaction(
+            self._exposure, self.config.allowed_user_ids, reaction
+        ) and not (
+            self.config.pairing is not None and self.config.pairing.admits_reaction(reaction)
+        ):
             log_debug_event(
                 logger,
                 "discord.inbound.reaction.rejected",
@@ -671,7 +966,7 @@ class DiscordChannel:
         attachment = attachments[0]
         if attachment.size > self.config.max_media_bytes:
             logger.warning("Skipping Discord inbound media because it exceeds the size cap")
-            return _with_media_error(
+            return with_media_error(
                 message,
                 f"media file is too large: {attachment.size} bytes "
                 f"exceeds {self.config.max_media_bytes}",
@@ -680,7 +975,7 @@ class DiscordChannel:
             destination = await self._download_attachment(attachment, message_id=message.message_id)
         except (ChannelMediaError, OSError, urllib.error.URLError, TimeoutError) as error:
             logger.warning("Skipping Discord inbound media after download failure")
-            return _with_media_error(message, str(error))
+            return with_media_error(message, str(error))
         mime_type = attachment.content_type or mimetypes.guess_type(destination.name)[0]
         return message_with_media_paths(
             message,
@@ -697,7 +992,7 @@ class DiscordChannel:
         if self.config.inbound_media_dir is None:
             msg = "Discord inbound media directory is not configured"
             raise ChannelMediaError(msg)
-        suffix = _safe_suffix(attachment.filename, attachment.content_type)
+        suffix = safe_suffix(attachment.filename, attachment.content_type)
         destination = self.config.inbound_media_dir / _inbound_media_filename(
             message_id=message_id,
             attachment_url=attachment.url,
@@ -713,11 +1008,11 @@ class DiscordChannel:
         return destination
 
 
-def _with_media_error(message: ChannelMessage, error: str) -> ChannelMessage:
-    metadata = dict(message.metadata)
-    metadata["has_media"] = False
-    metadata["media_error"] = error
-    return replace(message, metadata=metadata)
+def _public_thread_parent(channel: object) -> str | None:
+    """Return the parent of a public Discord thread, if available."""
+    if isinstance(channel, discord.Thread) and not channel.is_private():
+        return str(channel.parent_id) if channel.parent_id is not None else None
+    return None
 
 
 def _convert_message(message: discord.Message, *, bot_id: str | None) -> _DiscordInboundMessage:
@@ -731,6 +1026,7 @@ def _convert_message(message: discord.Message, *, bot_id: str | None) -> _Discor
         for attachment in message.attachments
     )
     sender_id = str(message.author.id)
+    history_chat = _public_thread_parent(message.channel)
     return _DiscordInboundMessage(
         channel_id=str(message.channel.id),
         message_id=str(message.id),
@@ -739,7 +1035,107 @@ def _convert_message(message: discord.Message, *, bot_id: str | None) -> _Discor
         is_dm=message.guild is None,
         from_self=bot_id is not None and sender_id == bot_id,
         attachments=attachments,
+        history_chat=history_chat,
     )
+
+
+def _build_app_command(
+    command: ChatCommand,
+    handle_interaction: InboundInteractionCallback,
+) -> app_commands.Command[Any, ..., None]:
+    """Build one Discord application command for a Talon chat command.
+
+    Args:
+        command: Registry entry to expose.
+        handle_interaction: Callback invoked when the command is used.
+
+    Returns:
+        Application command ready to add to a command tree.
+    """
+
+    # Left unnamed on purpose. `discord.py` takes the command name from the
+    # argument below, and reassigning `__name__` here would make it disagree with
+    # `__qualname__`, which `discord.py` reads as "this is a method" and then
+    # rejects for having too few parameters.
+    async def callback(interaction: discord.Interaction) -> None:
+        await handle_interaction(_convert_interaction(interaction, command.name))
+
+    # `discord.py` derives options from the callback's signature, so a command
+    # with an argument needs a callback that declares one.
+    async def callback_with_argument(
+        interaction: discord.Interaction, argument: str | None = None
+    ) -> None:
+        await handle_interaction(_convert_interaction(interaction, command.name, argument))
+
+    if command.argument is not None:
+        return app_commands.Command(
+            name=command.name,
+            description=command.summary,
+            callback=app_commands.describe(argument=command.argument)(callback_with_argument),
+        )
+    return app_commands.Command(
+        name=command.name,
+        description=command.summary,
+        callback=callback,
+    )
+
+
+def _convert_interaction(
+    interaction: discord.Interaction,
+    command: str,
+    argument: str | None = None,
+) -> _DiscordInboundInteraction:
+    """Convert a `discord.py` interaction into a provider-neutral value.
+
+    Args:
+        interaction: Interaction reported by the Gateway.
+        command: Bare name of the invoked command.
+        argument: Value of the command's optional argument, when given.
+
+    Returns:
+        Provider-neutral view of the invocation.
+    """
+    return _DiscordInboundInteraction(
+        command=command,
+        channel_id=str(interaction.channel_id) if interaction.channel_id is not None else None,
+        sender_id=str(interaction.user.id),
+        interaction_id=str(interaction.id),
+        is_dm=interaction.guild_id is None,
+        responder=_DiscordPyResponder(interaction),
+        argument=argument,
+        history_chat=_public_thread_parent(interaction.channel),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _DiscordPyResponder:
+    """Interaction reply surface backed by a `discord.py` interaction."""
+
+    interaction: discord.Interaction
+
+    async def reject(self, text: str) -> None:
+        """Answer immediately and privately, without deferring.
+
+        Args:
+            text: Refusal to show the invoking user.
+        """
+        await self.interaction.response.send_message(text, ephemeral=True)
+
+    async def defer(self) -> None:
+        """Acknowledge the interaction so a reply can follow later."""
+        await self.interaction.response.defer(thinking=True)
+
+    async def send(self, text: str) -> str | None:
+        """Send a followup reply.
+
+        Args:
+            text: Reply content, already within Discord's per-message limit.
+
+        Returns:
+            The followup's message id, when Discord reports one.
+        """
+        message = await self.interaction.followup.send(text, wait=True)
+        return None if message is None else str(message.id)
 
 
 def _convert_reaction(payload: discord.RawReactionActionEvent) -> _DiscordInboundReaction | None:
@@ -761,6 +1157,8 @@ def _message_metadata(inbound: _DiscordInboundMessage) -> dict[str, object]:
         "is_dm": inbound.is_dm,
         "from_self": inbound.from_self,
     }
+    if inbound.history_chat is not None:
+        metadata["history_chat"] = inbound.history_chat
     if inbound.attachments:
         attachment = inbound.attachments[0]
         metadata["media_type"] = _attachment_media_type(attachment)
@@ -782,6 +1180,51 @@ def _attachment_media_type(attachment: _DiscordAttachment) -> str:
 
 def _looks_like_voice_message(filename: str) -> bool:
     return Path(filename).stem.startswith("voice-message")
+
+
+def _parse_flag(value: str | None, *, default: bool) -> bool:
+    """Parse a boolean environment value.
+
+    Args:
+        value: Raw environment value, or `None` when unset.
+        default: Value to use when unset or empty.
+
+    Returns:
+        The parsed flag.
+
+    Raises:
+        ValueError: If the value is set but is not a recognized boolean.
+    """
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().lower()
+    if normalized in _TRUTHY_ENV_VALUES:
+        return True
+    if normalized in _FALSY_ENV_VALUES:
+        return False
+    msg = f"{SLASH_COMMANDS_ENV} must be a boolean"
+    raise ValueError(msg)
+
+
+def _parse_guild_id(value: str | None) -> str | None:
+    """Parse an optional Discord guild id.
+
+    Args:
+        value: Raw environment value, or `None` when unset.
+
+    Returns:
+        The guild id, or `None` when unset.
+
+    Raises:
+        ValueError: If the value is set but is not a positive integer.
+    """
+    if value is None or not value.strip():
+        return None
+    guild_id = value.strip()
+    if not guild_id.isdigit():
+        msg = f"{COMMAND_GUILD_ID_ENV} must be a Discord guild id"
+        raise ValueError(msg)
+    return guild_id
 
 
 def _allows_discord_message(
@@ -808,25 +1251,10 @@ def _allows_discord_reaction(
     return reaction.sender_id in exposure.operator_ids or reaction.sender_id in allowed_user_ids
 
 
-def _safe_suffix(filename: str, content_type: str | None) -> str:
-    suffix = Path(filename).suffix.lower()
-    if _SAFE_SUFFIX_PATTERN.fullmatch(suffix):
-        return suffix
-    if content_type:
-        guessed = mimetypes.guess_extension(content_type)
-        if guessed:
-            return guessed
-    return ".bin"
-
-
 def _inbound_media_filename(*, message_id: str | None, attachment_url: str, suffix: str) -> str:
-    message = _safe_filename_part(message_id or "message")
-    token = _safe_filename_part(attachment_url)[-24:] or "file"
+    message = safe_filename_part(message_id or "message")
+    token = safe_filename_part(attachment_url)[-24:] or "file"
     return f"{message}_{token}{suffix}"
-
-
-def _safe_filename_part(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "file"
 
 
 def _download_attachment_file(url: str, destination: Path, timeout: float, max_bytes: int) -> None:
@@ -835,7 +1263,7 @@ def _download_attachment_file(url: str, destination: Path, timeout: float, max_b
     with urllib.request.urlopen(request, timeout=timeout) as response:  # noqa: S310
         length = response.headers.get("content-length")
         if length is not None:
-            expected = _parse_content_length(length)
+            expected = parse_content_length(length)
             if expected is not None and expected > max_bytes:
                 msg = f"media file is too large: {expected} bytes exceeds {max_bytes}"
                 raise ChannelMediaError(msg)
@@ -850,10 +1278,3 @@ def _download_attachment_file(url: str, destination: Path, timeout: float, max_b
                     raise ChannelMediaError(msg)
                 file.write(chunk)
     destination.chmod(0o600)
-
-
-def _parse_content_length(value: str) -> int | None:
-    try:
-        return int(value)
-    except ValueError:
-        return None

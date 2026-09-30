@@ -1,58 +1,74 @@
 ---
-type: operations-guide
-title: Development, CI, and Releases
-description: Package-scoped uv and Make workflows, repository fan-out validation, contributor gates, CI routing, and independently versioned release operations for the Deep Agents monorepo.
-tags: [development, ci, monorepo, uv, make, release-please]
+type: operations guide
+title: Development, Dependency, Release, and Labeling Operations
+description: Package-scoped uv and Makefile workflows, lock and release controls, and the issue and pull-request labeling automation used to route and prioritize work.
+tags: [development, monorepo, dependencies, uv, lockfiles, releases, labeling]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-09T08:05:37.706Z
+    at: 2026-09-30T08:06:28.871Z
 sources:
-  - id: openwiki-source-37e02a57730563a4b4de1690
-    resource: repo://.github/LAYOUT.md
+  - id: openwiki-source-baf30c604828cfde90a8ab63
+    resource: repo://.githooks/pre-push
+  - id: openwiki-source-4e1a48a53f7b34ae16b8d91f
+    resource: repo://.github/LABELS.md
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
-  - id: openwiki-source-477b456c1269748d01a9f090
-    resource: repo://.github/workflows/check_release_deps.yml
+  - id: openwiki-source-9d81aa681a56a98960013750
+    resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
+  - id: openwiki-source-594b8b7a84e0fb527fbafd52
+    resource: repo://.github/scripts/checks/raise_langchain_minimums.py
+  - id: openwiki-source-0b91f453f677e9b0a2cf7828
+    resource: repo://.github/scripts/labeling/pr-labeler-config.json
+  - id: openwiki-source-7330cb37457ccdb62d7c41c7
+    resource: repo://.github/workflows/auto-label-by-package.yml
   - id: openwiki-source-164e2da859b5277df81c7d94
     resource: repo://.github/workflows/ci.yml
+  - id: openwiki-source-bc54cf7ca3addab1b243d7a6
+    resource: repo://.github/workflows/raise_langchain_minimums.yml
   - id: openwiki-source-46fa34397e41ebf7491c7359
     resource: repo://.github/workflows/release-please.yml
   - id: openwiki-source-4d1d392666be6dfdd7a91a2e
     resource: repo://.github/workflows/release.yml
+  - id: openwiki-source-b85e6680825dcbd3b07ebf39
+    resource: repo://.github/workflows/sync_priority_labels.yml
   - id: openwiki-source-4d1645cb6317345817452838
     resource: repo://.pre-commit-config.yaml
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
-  - id: openwiki-source-8037e2358a2c4f9b2c722a11
-    resource: repo://AGENTS.md
+  - id: openwiki-source-bb78950c8b36b7b9f6746e96
+    resource: repo://libs/acp/pyproject.toml
+  - id: openwiki-source-6c2e9cfaa20096e021221d47
+    resource: repo://libs/code/CHANGELOG.md
+  - id: openwiki-source-ac769408e1d61a20b9874382
+    resource: repo://libs/code/deepagents_code/_version.py
   - id: openwiki-source-006b62af9993da1b48c11de8
     resource: repo://libs/code/Makefile
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-0f308f1610986e2f3ed6d53c
     resource: repo://libs/deepagents/Makefile
+  - id: openwiki-source-478a579b56d29c6928ec2320
+    resource: repo://libs/deepagents/pyproject.toml
   - id: openwiki-source-fb60ee46c55b974b8341651c
     resource: repo://libs/DEVELOPMENT.md
   - id: openwiki-source-49fbcc45434b619b68220bf9
     resource: repo://libs/Makefile
-  - id: openwiki-source-667fd72e0b93552f91d3888d
-    resource: repo://libs/partners/AGENTS.md
+  - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
+    resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-09-09T08:05:37.706Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-30T08:06:28.871Z" }
 ---
 
-# Development, CI, and Releases
+# Development, Dependency, Release, and Labeling Operations
 
-This repository is a monorepo of independently versioned Python packages under `libs/`, rather than one root Python project. Work at the package boundary: its `pyproject.toml`, `uv.lock`, and `Makefile` define dependencies and supported commands. Repository-wide locking and release automation deliberately cross that boundary and therefore have separate safeguards.
+This repository is a monorepo of independently versioned Python packages under `libs/`, rather than one root Python project. Work at a package boundary for ordinary changes; use the aggregate tooling for cross-package lock operations. For package structure and tests, see [Source Map](../architecture/source-map.md) and the [Testing Guide](../testing/testing-guide.md).
 
-For initial setup, see [Quickstart](../quickstart.md). See [Testing Guide](../testing/testing-guide.md) for test conventions and [Run Evals](../workflows/run-evals.md) for evaluation execution.
+## Package-local development loop
 
-## Contribution and package-local workflow
+External contributors must link their PR to a maintainer-approved issue or discussion and be assigned to it before opening the PR. Each package owns its `pyproject.toml`, `Makefile`, and README; there is no root `pyproject.toml`. The package Makefile is the command authority—run `make help` in the package instead of assuming every package has identical targets.
 
-External contributors must link a pull request to a maintainer-approved issue or discussion and be assigned to it before opening the PR. Within that constraint, choose the one package being changed. Every package has its own `pyproject.toml`, `Makefile`, and README; local sibling dependencies may be editable, so an in-tree change can be visible to its consumers during development.
-
-Use `uv` for interpreters, environments, and dependencies, and `make` for standard tasks. Do not use `pip`, Poetry, or Conda. `uv` provisions an interpreter compatible with the package's `requires-python`; there is no repository-wide Python version to pin.
-
-Install hooks once, then enter the package being changed:
+Use `uv` for interpreters, environments, and dependencies. A package's `requires-python` declares runtime support, rather than a repository-wide Python pin.
 
 ```bash
 uv tool install pre-commit
@@ -64,128 +80,118 @@ make test
 make lint
 ```
 
-Use `make help` inside the package to discover its actual targets. The Makefile is authoritative: target sets and arguments are similar across packages but are not a uniform API. Explicitly run `uv sync`, using `--group <name>` or `--all-groups` as appropriate; do not create an external environment or mix environments in one session.
-
-| Command | Typical purpose |
-| --- | --- |
-| `make test` | Run package unit tests. In `deepagents`, this is parallel, socket-disabled pytest with coverage. |
-| `make integration_test` | Run network-capable integration tests separately where the package provides the target. |
-| `make lint` | Check Ruff linting and formatting and run the package type check. |
-| `make format` | Apply Ruff formatting and safe fixes; review the resulting diff. |
-| `make type`, `make coverage`, `make test_watch` | Focused package-specific type, coverage, and watch entrypoints. |
-
-Package Makefiles invoke tools through `uv run`. For example, `deepagents` exports `UV_FROZEN = true`, causing commands to fail when the lockfile is stale instead of silently updating it. Do not infer that every package uses precisely the same groups or flags—consult its Makefile.
+`uv sync --all-groups` installs the package and every dependency group. Use a documented narrower group where appropriate, and use `uv run ...` for an exceptional one-off command. Package targets invoke tools through `uv run`; core Makefiles export `UV_FROZEN = true`, so a stale lock fails validation rather than being silently rewritten. Regenerate and commit the owning lock intentionally.
 
 ```mermaid
 flowchart TD
-    Select["Enter changed package"] --> Sync["Sync required dependency groups"]
-    Sync --> Edit["Edit source and focused tests"]
-    Edit --> Test["Run package tests"]
-    Test --> Lint["Run package lint"]
-    Lint --> Pass{"Checks pass"}
-    Pass -->|"No"| Edit
-    Pass -->|"Yes"| PullRequest["Open scoped pull request"]
+    Enter["Enter changed package"] --> Sync["Sync dependency groups"]
+    Sync --> Change["Change source and focused tests"]
+    Change --> Validate["Run package test and lint targets"]
+    Validate --> Result{"Checks pass"}
+    Result -->|"No"| Change
+    Result -->|"Yes"| Review["Commit and open scoped PR"]
 ```
 
-Caption: the normal edit loop remains package-local until its validation passes.
+Caption: the normal package-local loop synchronizes first and validates before review.
 
-### Warnings and local CI parity
+Typical package targets include `make test`, `make integration_test`, `make lint`, and `make format`; `make help` remains authoritative. For example, the Deep Agents `test` target runs socket-disabled unit tests in parallel with coverage, while its integration target permits network-capable tests.
 
-Unaccepted pytest warnings are errors across packages. Fix actionable warnings rather than adding a broad filter. Scope an expected warning to an individual test with `@pytest.mark.filterwarnings`; reserve package-level filters for a justified categorical or third-party condition, and prefer visible `default::` behavior to `ignore::` when possible.
+### Editable dependencies, hooks, and Code parity
 
-`libs/code` supplies a stronger local entrypoint. `make check` first runs lint, import checks, and unit tests, then checks extras synchronization, version equality, and lock freshness. Its SDK-pin check treats only the expected stale-pin result as advisory; other checker failures remain fatal.
+A package may resolve siblings through editable `[tool.uv.sources]` paths. Code does so for deepagents, ACP, and partner distributions, so in-tree source changes are visible to consumers. CI follows that topology: a deepagents change schedules Code, Talon, ACP, and partner checks; Talon also follows Code. Run dependent focused tests after an interface change.
 
-## Repository fan-out, hooks, and CI
+The installed configuration enables `pre-commit`, `commit-msg`, and `pre-push` stages. It checks Conventional Commit types, protects `main`, performs basic file hygiene, runs package-specific format/lint hooks, and checks relevant locks, extras, and version equality. The lock hook checks only touched lock-owning packages/examples—or all of them when supplied no paths—and uses `uv lock --check`. Hooks are early feedback, not a substitute for package checks or CI.
 
-Run cross-package work from `libs/`. Its Makefile discovers direct child packages and `partners/*` packages with a Makefile; lock operations additionally include examples that have a `pyproject.toml`. The loops use `set -e`, so the first failing package stops the operation.
+The pre-push branch-name hook expects `<github-username>/<scope>/<short-description>` for ordinary branches. It can be bypassed locally and server-side enforcement is authoritative.
+
+For `libs/code`, `make bootstrap` syncs the `test` group and installs hooks. `make check` is the local CI-parity entrypoint: after lint, import, and unit-test prerequisites, it checks extras synchronization, version equality, and lock freshness. A stale SDK pin is advisory only; other checker failures stop the command. The current `deepagents-code` version is `0.1.79` in its project metadata and `_version.py`, its changelog begins with that release, and its direct SDK pin is `deepagents==0.7.20`.
+
+## Aggregate lock and dependency operations
+
+Run fan-out operations from `libs/`. Its Makefile discovers library/partner packages with Makefiles and example projects with `pyproject.toml` for lock operations; the loops use `set -e`, stopping on the first failure.
 
 | Command | Purpose |
 | --- | --- |
-| `make lint` / `make format` | Invoke the corresponding target in every discovered library package. |
-| `make lock [no-cache]` | Regenerate discovered library and example locks; `no-cache` bypasses uv's cache. |
-| `make lock-check` | Verify discovered locks. |
-| `make lock-bump DEP=<pkg>` | Re-resolve every discovered lock with `-P <pkg>`; a missing `DEP` is an error. |
-| `make bench-all` | Run `bench` for `deepagents` and `code`. |
+| `make lint` / `make format` | Run the corresponding target across library packages. |
+| `make lock [no-cache]` | Regenerate library and example locks; `no-cache` adds `--no-cache`. |
+| `make lock-check` | Verify every discovered lock is current. |
+| `make lock-bump DEP=<pkg>` | Re-resolve every discovered lock with `-P <pkg>`; `DEP` is required. |
+| `make bench-all` | Run `bench` for deepagents and Code. |
 
-The fan-out lock policy chooses Python 3.14 for ACP and 3.12 elsewhere. It is a locking policy, not a replacement for a package's declared supported-Python range or CI matrix.
+Aggregate lock resolution uses Python 3.14 for ACP and Python 3.12 for every other package or example. That is a lock reproducibility policy, not the support floor: ACP supports `>=3.11`, Deep Agents `>=3.11,<4.0`, Code `>=3.12,<4.0`, and Talon `>=3.12`. When manifests or resolved dependencies change, regenerate the owner lock instead of editing `uv.lock` by hand; use `make -C libs lock-bump DEP=<pkg>` for a shared upgrade and commit every resulting lock.
 
-```bash
-make -C libs/code check
-make -C libs lock-check
-```
+The daily/manual dependency-minimums workflow raises compatible stable lower bounds for selected release-package manifests, regenerates locks, and opens or refreshes a PR. It changes eligible externally resolved LangChain-ecosystem `>=` or `~=` floors, preserving constraints and skipping exact pins. Failure to look up PyPI or validate a narrowed request is a failure, not an “up to date” result. After changing a manifest, it computes the transitive reverse closure of local path-source consumers so dependent locks are also regenerated under the repository interpreter policy.
 
-CI has entry workflows for pull requests, pushes to `main`, and merge queues. It first computes path-based package impact; PRs run the affected package jobs, while push jobs explicitly also run on every `main` push. Filters include `libs/deepagents/**` for editable SDK consumers, so an SDK change validates those consumers rather than waiting for the full post-merge run. Reusable workflows are named `_*.yml`; extend an existing reusable workflow rather than duplicating setup and checkout steps in a new entry workflow.
+## Independent versions and releases
 
-The hook configuration requires pre-commit 3.2.0 or later and installs `pre-commit`, `commit-msg`, and `pre-push` hooks. Local package hooks invoke package Makefiles; lock, extras, and selected version checks are file-scoped. The commit-message hook accepts the configured Conventional Commit types, while PR CI validates scopes.
+Release-please manages nine independently versioned Python distributions—`deepagents`, `deepagents-acp`, `deepagents-code`, `deepagents-talon`, and five partner packages—with separate pull requests. Each managed package declares its Python release type, distribution/component names, changelog, extra version files, and excluded test paths.
 
-The always-run pre-push branch check expects `<github-username>/<scope>/<short-description>` for ordinary branches. It allows protected, automation, and release branches, and resolves the login from `git config github.user`, then `gh`, then the email local part. Set `github.user` when that fallback is ambiguous. `git push --no-verify` or `SKIP=branch-name git push` bypasses only the local check; server-side checks still matter for multi-ref pushes and pushes with no new commits.
+The release manifest records the last-released baseline, not an ordinary development input:
 
-Keep bump-worthy work to one releasable component. Use a separate `chore(deps):` change for cross-package dependency and lock churn.
-
-### Adding or changing a partner package
-
-A partner package is independently versioned and owns its own environment, metadata, Makefile, and tests. Adding one is a repository-wide wiring change, not merely a new directory: register issue areas and labels, Dependabot, CI change detection and jobs, synchronized allowed scopes, release setup and detection, release-please configuration and manifest, release documentation and notes mapping, dependency-maintenance coverage, and secrets. Sandbox-backed partners additionally need Harbor options and credential checks plus integration-test matrix and secret gating. For a first managed release, set the manifest baseline to `0.0.0`.
-
-## Lock and public-dependency validation
-
-Regenerate a package lock whenever its project metadata or resolved dependencies change, then run its package checks or `make -C libs lock-check`. For a shared dependency update, use `make -C libs lock-bump DEP=<pkg>` rather than editing locks manually.
-
-Editable local sources prove in-tree integration but can hide an unsatisfiable public dependency graph. On release PRs, **Check Release Dependencies** removes local sources and resolves changed package manifests against public indexes with `uv pip compile --no-sources --universal --prerelease allow --all-extras`. The `release-deps: acknowledged` label does not skip the work: it makes the check report-only while keeping follow-up releases visible. Use it only for an intentional coordinated release order, not to mask incorrect metadata.
-
-## Release topology and lifecycle
-
-Release-please manages nine independently versioned Python distributions: `deepagents`, `deepagents-acp`, `deepagents-code`, `deepagents-talon`, `langchain-daytona`, `langchain-modal`, `langchain-runloop`, `langchain-vercel-sandbox`, and `langchain-quickjs`. It creates separate draft release PRs. Each managed package has Python release metadata, a package name and component, changelog path, version-bearing extra files, and test-path exclusions. `skip-github-release` is enabled, so a separate publisher—not release-please—creates GitHub releases.
-
-The manifest is the current released-version baseline, not a source-version file, and should not be manually advanced for an existing package:
-
-| Package path | Baseline |
+| Manifest path | Baseline |
 | --- | --- |
-| `libs/deepagents` | `0.7.13` |
-| `libs/acp` | `0.0.11` |
-| `libs/code` | `0.1.67` |
-| `libs/talon` | `0.0.7` |
+| `libs/deepagents` | `0.7.20` |
+| `libs/acp` | `0.0.12` |
+| `libs/code` | `0.1.79` |
+| `libs/talon` | `0.0.8` |
 | `libs/partners/daytona` | `0.0.8` |
 | `libs/partners/modal` | `0.0.6` |
 | `libs/partners/runloop` | `0.0.7` |
 | `libs/partners/vercel` | `0.0.2` |
-| `libs/partners/quickjs` | `0.3.7` |
+| `libs/partners/quickjs` | `0.3.8` |
 
-When adding a managed package, add both its configuration and manifest entry. For an unshipped package whose source begins at `0.0.1`, set the manifest baseline to `0.0.0`; otherwise release-please treats `0.0.1` as already released and proposes `0.0.2`.
-
-Release attribution follows changed paths, not Conventional Commit scope alone. `feat`, `fix`, `perf`, and `revert` enter changelog sections; configured docs, style, chore, refactor, test, CI, and hotfix types are hidden. All managed packages use pre-1.0 rules: an ordinary feature produces a patch bump and a breaking feature produces a minor bump. Tags include the component without a `v`, for example `deepagents==0.7.13`.
+Do not treat a manifest baseline as a standalone version change. Release-please updates release metadata; it does not regenerate `uv.lock`, so its `update-lockfiles` job refreshes locks on a release PR.
 
 ```mermaid
 flowchart TD
-    Land["Releasable change lands on main"] --> Scope["Scope components by changed paths"]
-    Scope --> Draft["Create or update draft release PR"]
-    Draft --> Merge["Merge release PR"]
-    Merge --> Detect["Detect title and changelog change"]
-    Detect --> Dispatch["Dispatch package release workflow"]
-    Dispatch --> Build["Build at resolved release SHA"]
-    Build --> Validate["Run pre-release validation"]
-    Validate --> TestIndex["Publish to TestPyPI"]
-    TestIndex --> Publish["Publish to PyPI"]
-    Publish --> Tag["Create GitHub tag and release"]
+    Main["Releasable change lands on main"] --> ReleasePR["Release-please updates draft release PR"]
+    ReleasePR --> Lock["Refresh affected lockfile"]
+    Lock --> Merge["Merge release PR"]
+    Merge --> Detect["Detect release title and changelog"]
+    Detect --> Build["Build at validated release SHA"]
+    Build --> Checks["Run pre-release validation"]
+    Checks --> TestPyPI["Publish to Test PyPI"]
+    TestPyPI --> PyPI["Publish to PyPI"]
+    PyPI --> Tag["Create GitHub release and tag"]
 ```
 
-Caption: release-please prepares component release PRs; a separate publisher releases a selected immutable tree.
+Caption: release-please prepares an independent release; publishing validates and releases one resolved source tree.
 
-A merged `release(<component>): <version>` commit must change that component's `CHANGELOG.md` for the release-please workflow to dispatch `release.yml`. The publisher resolves an explicit release SHA and normally rejects it unless that commit's `pyproject.toml` declares the requested version. It builds and tags that same SHA and rejects a version already on PyPI. The normal sequence is build, pre-release checks, TestPyPI, PyPI, then GitHub release.
+Component attribution comes from changed paths rather than Conventional Commit scope. Keep a bump-worthy PR within one managed component. An empty commit has no component path and could fan out to all packages, so the release workflow blocks it before release-please runs. After a release PR merge, the title and package changelog change trigger publishing. The publisher resolves a release SHA, verifies the requested package version at that SHA, builds there, and uses that SHA for the tag. It fails closed when PyPI already contains the version, is unreachable, or responds unexpectedly. The build job has minimal permissions and is isolated from the privileged publish/GitHub-release job.
 
-The release workflow's build job has minimal permissions and is separate from the publishing job, which obtains the privileged publishing and repository-write capabilities. This separation limits the effect of a compromised build step. Release notes are deliberately fail-open: a notes-job failure does not prevent PyPI publication or GitHub tagging, so repair an empty GitHub release body afterward.
+## Labeling and routing operations
 
-Manual dispatch is exceptional. Normal manual publication requires a 40-character `release-sha`; `dangerous-nonmain-release` may use the dispatch SHA and skips the normal version match. Use that path only for intentional backports or throwaway prerelease branches.
+The label taxonomy is operational metadata, not a replacement for release conventions: PR type labels mirror a Conventional Commit title, but release-please still determines release behavior from commits. The model is `type:*` plus normally one `package:*`, optional `topic:*`/`integration:*`, provenance (`org:*`), optional priority, one PR size, and temporary `triage:*`, `auto:*`, or `ci:*` state. Every label needs a description.
 
-## Fan-out prevention and recovery
+### Package, type, topic, and size labels
 
-Changed paths make commit partitioning an operational invariant:
+`pr-labeler-config.json` is the shared mapping authority. It maps title scopes and changed path prefixes to additive `package:*` or `integration:*` labels; aliases normalize the Deep Agents family scopes. It also maps recognized Conventional Commit types to managed `type:*` labels and adds `type:breaking` for a `!` immediately before `:`. A recognized title edit replaces stale managed type labels; package and integration labels are additive, so title edits do not remove them. A `release(...)` title receives `auto:release-pr`.
 
-- **Never put an empty commit on `main`.** With no package path, release-please can fan out to every managed component. `guard-empty-commit` blocks it before release-please; the narrow exception is an empty two-parent `hotfix(repo): ...` merge whose introduced commits all change files.
-- **Keep bump-worthy changes in one component.** A `feat` or `fix` that changes lockfiles or real files in another managed component can create a release PR per touched component. The scope guard blocks lockfile-only and multi-component fan-out unless `allow-lockfile-release` acknowledges it; that label allows the PR but does not stop resulting releases.
-- **Separate dependency and lock churn.** Put it in a `chore(deps):` commit or PR so it is not a bump-worthy component change.
+Path-based `topic:*` rules are also additive and apply to PRs for the modules actually touched (for example middleware/subagents, backends/sandbox, or MCP modules). Issues additionally receive model-classified topics only when opened. The classifier filters output through the local topic manifest and adds labels without removing prior topics, allowing a maintainer removal to persist through later issue edits.
 
-Closing an unintended release PR does not erase its triggering commit from `main`, so it can return. Revert or otherwise remove the unreleased bump rather than relying on closure.
+PR size labels are mutually exclusive: `size: XS` below 50 changed lines, `S` below 200, `M` below 500, `L` below 1000, and `XL` otherwise. `uv.lock` and `docs/` do not count toward size.
 
-When a release PR is merged, publishing starts first. Before release-please refreshes remaining release PRs, the workflow waits for every merged PR still labeled `autorelease: pending`; the manifest may otherwise advance before the corresponding tag exists. It fails closed if GitHub release state is unreadable. A genuinely slow publish times out into a deferred refresh on a later push, while a failed pending release requires recovery.
+### Issue intake and priority propagation
 
-For a release that fails **before** PyPI, fix the problem without changing the already-bumped version, then manually dispatch against the exact hotfix SHA and verify that the original release PR label changes from `autorelease: pending` to `autorelease: tagged`. If the version is already public, do not recreate its tag or retry that version: publish a new fix version and consider yanking a harmful release. One version must identify the same artifact and source tree for PyPI, GitHub tags, downstream installers, and audit tooling.
+On every newly opened issue, the issue workflow first adds `priority:triage` unless a priority already exists. It classifies issue topics on opening, then reads the form’s `Area` section on opening and editing to synchronize managed package/integration labels. Only labels represented by the Area mapping are removed when a selection changes; hand-applied unrelated labels remain intact.
+
+```mermaid
+flowchart TD
+    Issue["Issue opened"] --> Triage["Add priority triage if absent"]
+    Triage --> Topics["Classify allowed topic labels"]
+    Topics --> Area["Read Area selection"]
+    Area --> Sync["Synchronize managed package labels"]
+    PR["PR opened or edited"] --> Links["Parse closing issue links"]
+    Links --> Resolve["Resolve highest linked issue priority"]
+    Resolve --> Apply["Apply urgent or high to PR"]
+```
+
+Caption: issue intake owns default triage and Area synchronization, while linked issue priority drives PR escalation.
+
+Priority sync parses `Closes`, `Fixes`, or `Resolves #N` links. Across linked issues, `priority:urgent` outranks `priority:high`, which outranks `priority:backlog`; only urgent and high propagate to a PR. Triage and backlog leave a PR with no priority label, and the synchronizer strips obsolete `p0`–`p4` labels instead of mapping them. It reacts both to PR opening/editing and relevant issue label changes, and has a bounded manual backfill. Per-item concurrency allows independent issue events to race, but each recalculates the complete desired state, so last writer converges.
+
+### Safely changing label automation
+
+Treat `.github/LABELS.md` as the taxonomy contract and the config as mapping authority. For a new package, update scope/path maps, the PR title-scope validation, and the issue form Area option and workflow mapping together so issues and PRs receive the same identity. New labels created by the PR labeler are created on demand using configured descriptions and prefix colors. Workflows that only read labels—especially most `ci:*` overrides—require the repository label to exist already.
+
+Do not add another PR label writer casually: the documented convention centralizes PR label changes in `pr_labeler.yml` to avoid races. Workflows needing downstream label-triggered automation use a GitHub App token because events created by the default `GITHUB_TOKEN` do not trigger subsequent workflows. `sync_priority_labels.yml` deliberately uses `pull_request_target` without checking out or executing PR-head code; preserve that boundary when modifying it.

@@ -16,7 +16,7 @@
 #     apply the acknowledgment label to unblock itself. The exemption is gated
 #     on provenance (author identity, branch prefix, same-repo head), never on
 #     the title — see isReleasePleasePr in the detector.
-#   - Apply the `markdown-added: acknowledged` label when the new files are
+#   - Apply the `ci:ack-markdown` label when the new files are
 #     intentional. The check re-runs on `labeled`/`unlabeled`, leaves an
 #     informational sticky note, and passes while the label is present.
 #

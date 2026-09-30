@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Strategy and Change Validation](testing-guide.md) - Select and run package-local deterministic tests, integration tests, benchmarks, and real-model evaluations in the Deep Agents monorepo. Use CI dependency fan-out and release checks to validate changes that cross package boundaries.
+- [Testing by Runtime Boundary](testing-guide.md) - Route regression coverage to the narrowest deterministic boundary for dcode, Deep Agents, QuickJS, and Talon. Use fakes, temporary state, and focused package targets before networked integration or real-model evaluation.

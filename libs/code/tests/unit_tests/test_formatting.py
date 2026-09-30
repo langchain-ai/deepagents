@@ -9,12 +9,16 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from deepagents_code.formatting import format_message_timestamp, uses_24_hour_clock
+import pytest
+
+from deepagents_code.formatting import (
+    format_duration,
+    format_message_timestamp,
+    uses_24_hour_clock,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-
-    import pytest
 
 
 @contextmanager
@@ -37,6 +41,26 @@ def _utc_timezone() -> Iterator[None]:
 
 class TestFormatDuration:
     """Tests for format_duration() helper."""
+
+    @pytest.mark.parametrize(
+        ("seconds", "expected"),
+        [
+            (4.9, "4.9s"),
+            (0.3, "0.3s"),
+            (5.0, "5s"),
+            # The observed flake: 4.96 rounds to 5 at tenths precision, so the
+            # integer branch takes over and drops the decimal.
+            (4.96, "5s"),
+            (4.94, "4.9s"),
+            (59.9, "59.9s"),
+            (60.0, "1m 0s"),
+            (72.0, "1m 12s"),
+            (3600.0, "1h 0m 0s"),
+            (4913.0, "1h 21m 53s"),
+        ],
+    )
+    def test_formats_known_values(self, seconds: float, expected: str) -> None:
+        assert format_duration(seconds) == expected
 
 
 class TestFormatMessageTimestamp:

@@ -324,6 +324,23 @@ sync with the separator emitted by deepagents' `format_content_with_line_numbers
 """
 
 
+_MAX_READ_NOTICE_LINES = 2
+"""Most explanation lines `read_file` can place above its status header.
+
+A truncation disclosure and an offset-clamp disclosure, one line each. Bounding
+the search keeps a matching line further down in the source from being read as
+the header.
+"""
+
+
+_READ_STATUS_HEADER_RE = re.compile(r"^@@ lines (\d+)-(\d+)(?: of \d+)?(?: \| .*)? @@$")
+"""Match the status header line of a `read_file` result, capturing its range.
+
+Fields after the range vary (resume offset, truncation disclosures), so only
+the range is captured; the rest is display-only.
+"""
+
+
 def _strip_success_exit_line(text: str) -> str:
     """Remove the `[Command succeeded with exit code 0]` trailer.
 
@@ -3279,6 +3296,15 @@ class ToolCallMessage(Vertical):
             The output with compacted gutters, or the original string if no
                 line-numbered content was found.
         """
+        # Only a real status header takes this path; anything else — including
+        # legacy gutter output whose source happens to contain a header-shaped
+        # line — falls through to the gutter compaction below.
+        rendered = ToolCallMessage._render_read_status_header(output)
+        if rendered is not None:
+            # Comment out this line to display the raw status header instead.
+            output = rendered
+            return output  # noqa: RET504  # Assignment kept so the line above toggles
+
         lines = output.split("\n")
         parsed: list[tuple[str, str] | None] = []
         width = 0
@@ -3302,6 +3328,40 @@ class ToolCallMessage(Vertical):
                 marker, source = row
                 compacted.append(f"{marker:>{width}}  {source}")
         return "\n".join(compacted)
+
+    @staticmethod
+    def _render_read_status_header(output: str) -> str | None:
+        r"""Re-derive a display line gutter from a `read_file` status header.
+
+        `read_file` states the line numbers once, in a header above verbatim
+        source, rather than on every row. The header is protocol scaffolding for
+        the model, so the TUI drops it and restores the gutter the rest of the
+        file output uses -- a right-justified marker, two spaces, then the source
+        line, indentation untouched.
+
+        Every line after the header is file content, so all of them are
+        numbered. A truncation explanation may precede the header, and is
+        passed through unnumbered.
+
+        Returns:
+            The rendered gutter, or `None` when line 1 is not a status header.
+        """
+        lines = output.split("\n")
+        for index, line in enumerate(lines[: _MAX_READ_NOTICE_LINES + 1]):
+            header = _READ_STATUS_HEADER_RE.match(line)
+            if header is not None:
+                notices, source = lines[:index], lines[index + 1 :]
+                break
+        else:
+            return None
+
+        start_line = int(header.group(1))
+        width = len(str(start_line + len(source) - 1)) if source else 0
+        numbered = [
+            f"{start_line + offset:>{width}}  {line}"
+            for offset, line in enumerate(source)
+        ]
+        return "\n".join([*notices, *numbered])
 
     def _format_edit_file_output(
         self, output: str, *, is_preview: bool = False
@@ -3992,7 +4052,17 @@ class ToolCallMessage(Vertical):
         if self._expanded:
             # Show full output with formatting
             self._preview_row.display = False
-            self._full_widget.update(full.content)
+            content = full.content
+            if self._tool_name == "read_file":
+                content = Content("\n").join(
+                    (
+                        Content.styled("Arguments", "bold dim"),
+                        self._format_args_detail(),
+                        Content(""),
+                        full.content,
+                    )
+                )
+            self._full_widget.update(content)
             self._full_row.display = True
             # Only offer a collapse affordance when collapsing would actually
             # hide something. Errors are force-expanded (see `set_error`), so a

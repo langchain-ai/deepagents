@@ -1642,11 +1642,13 @@ def _discover_available_models(*, apply_allowlist: bool) -> dict[str, list[str]]
             available["ollama"] = list(
                 dict.fromkeys([*available.get("ollama", []), *discovered])
             )
-        else:
+        elif _ollama_endpoint_key(endpoint) not in _ollama_unreachable_endpoints:
+            # An absent daemon already logged "not detected"; this line would
+            # only restate it. Keep it for a daemon that answered with nothing.
             logger.debug(
                 "Ollama discovery returned no models for %s; "
                 "daemon may be down or have no pulls",
-                endpoint or OLLAMA_DEFAULT_BASE_URL,
+                _ollama_endpoint_key(endpoint),
             )
 
     # Mirror the curated `CODEX_MODELS` subset of `openai` models under a
@@ -1775,7 +1777,7 @@ def get_model_profiles(
     result: dict[str, ModelProfileEntry] = {}
     config = ModelConfig.load()
 
-    # Collect upstream profiles from provider packages.
+    # Assume providers have upstream profiles; skip those whose profiles are missing.
     seen_specs: set[str] = set()
     provider_modules = _get_provider_profile_modules()
     registry_providers: set[str] = set()
@@ -1792,7 +1794,7 @@ def get_model_profiles(
             profiles = _load_provider_profiles(module_path)
         except ImportError:
             logger.debug(
-                "Could not import profiles from %s for provider '%s'",
+                "Model profiles not found in %s for provider '%s'",
                 module_path,
                 provider,
             )
@@ -2001,6 +2003,22 @@ def _ollama_discovery_enabled() -> bool:
     return True
 
 
+def _ollama_endpoint_key(endpoint: str | None) -> str:
+    """Normalize an Ollama endpoint into its cache and log-dedup key.
+
+    Single-sources the normalization so the negative-cache add-site, its
+    lookup, and the "no models" log suppression all agree on one key.
+
+    Args:
+        endpoint: Base URL of the Ollama daemon. When `None`, defaults to
+            `OLLAMA_DEFAULT_BASE_URL`. A trailing `/` is tolerated.
+
+    Returns:
+        The endpoint with any trailing `/` stripped.
+    """
+    return (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+
+
 def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     """Return cached Ollama model names for `endpoint`.
 
@@ -2019,7 +2037,7 @@ def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     Returns:
         Sorted list of model names reported by `/api/tags`.
     """
-    key = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    key = _ollama_endpoint_key(endpoint)
     cached = _ollama_installed_models_cache.get(key)
     if cached is not None:
         return list(cached)
@@ -2127,7 +2145,7 @@ def _fetch_ollama_installed_models(
     from urllib.error import URLError
     from urllib.request import Request, urlopen
 
-    base = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    base = _ollama_endpoint_key(endpoint)
     if not base.startswith(("http://", "https://")):
         logger.warning(
             "Skipping Ollama discovery: %r has no http:// or https:// scheme. "
@@ -2305,7 +2323,7 @@ def _fetch_ollama_installed_model_profiles(
     from urllib.error import URLError
     from urllib.request import Request, urlopen
 
-    base = (endpoint or OLLAMA_DEFAULT_BASE_URL).rstrip("/")
+    base = _ollama_endpoint_key(endpoint)
     if not base.startswith(("http://", "https://")):
         logger.warning(
             "Skipping Ollama profile discovery: %r has no http:// or https:// scheme. "
@@ -4621,6 +4639,11 @@ def suppress_warning_reason(key: str, config_path: Path | None = None) -> str | 
     except tomllib.TOMLDecodeError:
         logger.exception("Could not save warning suppression for '%s'", key)
         return f"{config_path} is not valid TOML"
+    except UnicodeDecodeError:
+        # `tomllib` decodes the bytes itself, so a file that is not UTF-8
+        # raises `UnicodeDecodeError` rather than `TOMLDecodeError`.
+        logger.exception("Could not save warning suppression for '%s'", key)
+        return f"{config_path} is not UTF-8 encoded"
     except OSError:
         logger.exception("Could not save warning suppression for '%s'", key)
         return f"{config_path} could not be written"
@@ -4687,7 +4710,7 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         logger.exception("Could not remove warning suppression for '%s'", key)
         return False
     _invalidate_config_caches(config_path)
@@ -5966,6 +5989,57 @@ def add_enabled_project_mcp_servers(
     return True
 
 
+def add_disabled_project_mcp_servers(
+    names: Iterable[str], config_path: Path | None = None
+) -> bool:
+    """Persist server-name denials across all projects in the user config.
+
+    Args:
+        names: Names to deny; blank names are ignored.
+        config_path: User config override, primarily for tests.
+
+    Returns:
+        Whether the update succeeded, including no-op updates.
+    """
+    from deepagents_code.configuration.writer import update_user_config
+
+    clean_names = {name.strip() for name in names if name.strip()}
+    if not clean_names:
+        return True
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    def mutate(data: dict[str, object]) -> bool:
+        raw_section = data.get("mcp", {})
+        if not isinstance(raw_section, dict):
+            msg = "Cannot update project MCP denials: [mcp] is not a table"
+            raise TypeError(msg)
+        section = dict(raw_section)
+        existing, malformed = _toml_str_list(
+            section.get("disabled_project_servers"),
+            key="disabled_project_servers",
+            config_path=config_path,
+        )
+        if malformed:
+            msg = "Cannot update malformed project MCP denials"
+            raise TypeError(msg)
+        merged = sorted(set(existing) | clean_names)
+        if section.get("disabled_project_servers") == merged:
+            return False
+        section["disabled_project_servers"] = merged
+        data["mcp"] = section
+        return True
+
+    try:
+        result = update_user_config(mutate, config_path=config_path)
+    except TypeError:
+        logger.exception("Could not save project MCP denials to %s", config_path)
+        return False
+    if not result.ok:
+        logger.warning("Could not save project MCP denials: %s", result.error)
+    return result.ok
+
+
 THREAD_COLUMN_DEFAULTS: dict[str, bool] = {
     "thread_id": False,
     "messages": True,
@@ -6138,7 +6212,7 @@ def save_thread_columns(
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread column preferences")
         return False
     invalidate_thread_config_cache()
@@ -6202,7 +6276,7 @@ def save_thread_relative_time(enabled: bool, config_path: Path | None = None) ->
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread relative_time preference")
         return False
     invalidate_thread_config_cache()
@@ -6431,7 +6505,7 @@ def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> 
                 with contextlib.suppress(OSError):
                     Path(tmp_path).unlink()
                 raise
-    except (OSError, tomllib.TOMLDecodeError):
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread sort_order preference")
         return False
     invalidate_thread_config_cache()

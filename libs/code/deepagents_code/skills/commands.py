@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from deepagents_code.output import OutputFormat
 
 from deepagents_code import theme
+from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code._paths import (
     PATHS,
     ensure_project_skills_dir,
@@ -149,7 +150,7 @@ def _list(
     """List all available skills for the specified agent.
 
     Args:
-        agent: Agent identifier for skills (default: agent).
+        agent: Agent identifier for skills.
         project: If True, show only project skills.
             If False, show all skills (user + project).
         output_format: Output format — `'text'` (Rich) or `'json'`.
@@ -488,7 +489,7 @@ def _create(
 
     template = _generate_template(skill_name)
     skill_md = skill_dir / "SKILL.md"
-    skill_md.write_text(template)
+    skill_md.write_text(template, encoding="utf-8")
 
     if output_format == "json":
         from deepagents_code.output import write_json
@@ -533,7 +534,7 @@ def _create(
 def _info(
     skill_name: str,
     *,
-    agent: str = "agent",
+    agent: str = DEFAULT_AGENT_NAME,
     project: bool = False,
     output_format: OutputFormat = "text",
 ) -> None:
@@ -541,7 +542,7 @@ def _info(
 
     Args:
         skill_name: Name of the skill to show info for.
-        agent: Agent identifier for skills (default: agent).
+        agent: Agent identifier for skills.
         project: If True, only search in project skills.
             If False, search in both user and project skills.
         output_format: Output format — `'text'` (Rich) or `'json'`.
@@ -670,7 +671,7 @@ def _info(
 def _delete(
     skill_name: str,
     *,
-    agent: str = "agent",
+    agent: str = DEFAULT_AGENT_NAME,
     project: bool = False,
     force: bool = False,
     dry_run: bool = False,
@@ -1060,8 +1061,8 @@ def setup_skills_parser(
         add_output_args(list_parser)
     list_parser.add_argument(
         "--agent",
-        default="agent",
-        help="Agent identifier for skills (default: agent)",
+        default=DEFAULT_AGENT_NAME,
+        help="Agent identifier for skills (default: %(default)s)",
     )
     list_parser.add_argument(
         "--project",
@@ -1091,8 +1092,8 @@ def setup_skills_parser(
     )
     create_parser.add_argument(
         "--agent",
-        default="agent",
-        help="Agent identifier for skills (default: agent)",
+        default=DEFAULT_AGENT_NAME,
+        help="Agent identifier for skills (default: %(default)s)",
     )
     create_parser.add_argument(
         "--project",
@@ -1113,8 +1114,8 @@ def setup_skills_parser(
     info_parser.add_argument("name", help="Name of the skill to show info for")
     info_parser.add_argument(
         "--agent",
-        default="agent",
-        help="Agent identifier for skills (default: agent)",
+        default=DEFAULT_AGENT_NAME,
+        help="Agent identifier for skills (default: %(default)s)",
     )
     info_parser.add_argument(
         "--project",
@@ -1135,8 +1136,8 @@ def setup_skills_parser(
     delete_parser.add_argument("name", help="Name of the skill to delete")
     delete_parser.add_argument(
         "--agent",
-        default="agent",
-        help="Agent identifier for skills (default: agent)",
+        default=DEFAULT_AGENT_NAME,
+        help="Agent identifier for skills (default: %(default)s)",
     )
     delete_parser.add_argument(
         "--project",

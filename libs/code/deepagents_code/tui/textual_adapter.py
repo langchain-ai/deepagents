@@ -44,6 +44,16 @@ if TYPE_CHECKING:
     # Type alias matching HITLResponse["decisions"] element type
     HITLDecision = ApproveDecision | EditDecision | RejectDecision
 
+    class _StateUpdater(Protocol):
+        """Agent state-update surface used by interruption recovery."""
+
+        async def aupdate_state(
+            self,
+            config: RunnableConfig,
+            values: dict[str, Any],
+            **kwargs: object,
+        ) -> None: ...
+
     class _TokensUpdateCallback(Protocol):
         """Callback signature for `_on_tokens_update`."""
 
@@ -71,15 +81,26 @@ if TYPE_CHECKING:
             *,
             thread_id: str = "",
             pricing_ok: bool | None = None,
+            breakdown: Mapping[str, Any] | None = None,
         ) -> None: ...
 
     class _ProvisionalCostCallback(Protocol):
         """Callback signature for `_on_provisional_cost`.
 
-        Positional-only for the same reason as `_SessionCostCallback`.
+        `cost_usd` is positional-only for the same reason as
+        `_SessionCostCallback`. The rest are keyword-only: an implementation
+        must handle them, so a silent regression to unreconciled deltas is a
+        type error rather than a display bug.
         """
 
-        def __call__(self, cost_usd: float, /) -> None: ...
+        def __call__(
+            self,
+            cost_usd: float,
+            /,
+            *,
+            request_id: str | None,
+            is_correction: bool,
+        ) -> None: ...
 
 
 from deepagents_code import _session_stats
@@ -916,6 +937,10 @@ class TextualUIAdapter:
         Keeps the status bar moving during work whose cost the graph has not
         checkpointed yet — a long subagent run, say — without making the client
         a second authority: every server total replaces what this accumulated.
+        `request_id` names the request the delta belongs to so a late
+        correction only retracts its own contribution, and `is_correction`
+        marks a delta that only revises spend already reported, so one whose
+        subject a backend total has settled is dropped whatever its sign.
         """
 
         self._on_usage_update: Callable[[], None] | None = None
@@ -1087,15 +1112,96 @@ class TextualUIAdapter:
             self._set_active_message(None)
 
 
+def _message_tool_call_ids(message: object) -> set[str]:
+    """Return tool-call IDs from a serialized or deserialized message."""
+    tool_calls = (
+        message.get("tool_calls")
+        if isinstance(message, dict)
+        else getattr(message, "tool_calls", None)
+    )
+    if not isinstance(tool_calls, list):
+        return set()
+    return {
+        tool_id
+        for call in tool_calls
+        if isinstance(
+            tool_id := call.get("id") if isinstance(call, dict) else None, str
+        )
+    }
+
+
+def _current_turn_messages(state: object) -> list[object]:
+    """Return checkpointed messages after the current turn's user message."""
+    values = getattr(state, "values", None)
+    if not isinstance(values, dict) or not isinstance(values.get("messages"), list):
+        return []
+
+    current: list[object] = []
+    for message in reversed(values["messages"]):
+        message_type = (
+            message.get("type")
+            if isinstance(message, dict)
+            else getattr(message, "type", None)
+        )
+        if message_type in {"human", "HumanMessage"}:
+            break
+        current.append(message)
+    return current
+
+
+def _tool_call_ids_from_current_turn(state: object) -> set[str]:
+    """Return tool-call IDs checkpointed after the current turn's user message."""
+    persisted: set[str] = set()
+    for message in _current_turn_messages(state):
+        persisted.update(_message_tool_call_ids(message))
+    return persisted
+
+
+def _is_ai_message(message: object) -> bool:
+    """Return whether a message is serialized or deserialized assistant output."""
+    message_type = (
+        message.get("type")
+        if isinstance(message, dict)
+        else getattr(message, "type", None)
+    )
+    return message_type in {"ai", "AIMessage"}
+
+
+def _content_from_message(message: object) -> str:
+    """Return plain text content when a message uses that representation."""
+    content = (
+        message.get("content")
+        if isinstance(message, dict)
+        else getattr(message, "content", None)
+    )
+    return content.strip() if isinstance(content, str) else ""
+
+
+def _persisted_text_for_tool_calls(
+    messages: list[object], tool_call_ids: set[str]
+) -> str:
+    """Return text from the checkpointed AI message owning active tool calls."""
+    if not tool_call_ids:
+        return ""
+    for message in messages:
+        if _is_ai_message(message) and _message_tool_call_ids(message) & tool_call_ids:
+            return _content_from_message(message)
+    return ""
+
+
 def _build_interrupted_ai_message(
     pending_text_by_namespace: dict[tuple, str],
     current_tool_messages: dict[str, Any],
+    persisted_tool_call_ids: set[str] | None = None,
+    persisted_text: str = "",
 ) -> AIMessage | None:
     """Build an AIMessage capturing interrupted state (text + tool calls).
 
     Args:
         pending_text_by_namespace: Dict of accumulated text by namespace
         current_tool_messages: Dict of tool_id -> ToolCallMessage widget
+        persisted_tool_call_ids: Tool calls already owned by the graph checkpoint.
+        persisted_text: Assistant text already owned by the current checkpoint.
 
     Returns:
         AIMessage with accumulated content and tool calls, or None if empty.
@@ -1104,10 +1210,20 @@ def _build_interrupted_ai_message(
 
     main_ns_key = ()
     accumulated_text = pending_text_by_namespace.get(main_ns_key, "").strip()
+    if accumulated_text == persisted_text:
+        accumulated_text = ""
 
     # Reconstruct tool_calls from displayed tool messages
     tool_calls = []
+    persisted_tool_call_ids = persisted_tool_call_ids or set()
     for tool_id, tool_widget in list(current_tool_messages.items()):
+        if tool_id in persisted_tool_call_ids:
+            logger.info(
+                "Omitting tool call %s from interrupted AIMessage; the graph "
+                "already owns it in the current turn",
+                tool_id,
+            )
+            continue
         if tool_widget.deferred_success_output is not None:
             # An answered `ask_user` stays tracked until its `ToolMessage`
             # arrives, so a cancel lands here with the row still present. The
@@ -1314,6 +1430,18 @@ def _session_cost_thread_id(data: Any) -> str:  # noqa: ANN401  # custom-stream 
     return thread_id if isinstance(thread_id, str) else ""
 
 
+def _session_cost_breakdown(data: Any) -> Mapping[str, Any] | None:  # noqa: ANN401
+    """Return an optional versioned breakdown from a validated cost event."""
+    from deepagents_code.cost_tracking import SESSION_COST_EVENT_VERSION
+
+    if not isinstance(data, dict) or data.get("version") != SESSION_COST_EVENT_VERSION:
+        return None
+    breakdown = data.get("breakdown")
+    if not isinstance(breakdown, dict) or breakdown.get("version") != 1:
+        return None
+    return breakdown
+
+
 def _session_cost_pricing_ok(data: Any) -> bool | None:  # noqa: ANN401  # custom-stream payload is dynamic
     """Return whether the pricing process reported healthy price data.
 
@@ -1512,12 +1640,27 @@ def _apply_recorded_usage(
         adapter._on_usage_update()
     if recorded_usage.cost_usd is None or not adapter._on_provisional_cost:
         return
+    if recorded_usage.cost_usd == 0:
+        # A zero delta changes nothing, so do not forward it.
+        return
     # Display-only: the graph checkpoints the same spend and streams the
-    # authoritative total, which supersedes this estimate.
+    # authoritative total, which supersedes this estimate. The request ID lets
+    # the app reconcile a later correction with its own contribution rather
+    # than the whole running provisional total.
     try:
-        adapter._on_provisional_cost(recorded_usage.cost_usd)
+        adapter._on_provisional_cost(
+            recorded_usage.cost_usd,
+            request_id=recorded_usage.request_id,
+            is_correction=recorded_usage.is_correction,
+        )
     except Exception:
-        logger.warning("on_provisional_cost callback failed", exc_info=True)
+        logger.warning(
+            "on_provisional_cost callback failed; the provisional cost display "
+            "may stall until the next backend total. request_id=%r delta_usd=%r",
+            recorded_usage.request_id,
+            recorded_usage.cost_usd,
+            exc_info=True,
+        )
 
 
 async def _mount_diff_note(adapter: Any, text: str) -> None:  # noqa: ANN401  # adapter type is the TUI callback bundle
@@ -2035,6 +2178,7 @@ async def execute_task_textual(
                                     session_cost_total,
                                     thread_id=_session_cost_thread_id(data),
                                     pricing_ok=_session_cost_pricing_ok(data),
+                                    breakdown=_session_cost_breakdown(data),
                                 )
                             except Exception:
                                 logger.warning(
@@ -4139,6 +4283,18 @@ async def _stop_assistant_streams(
     assistant_message_by_namespace.clear()
 
 
+async def _update_interrupted_state(
+    agent: _StateUpdater, config: RunnableConfig, values: dict[str, Any]
+) -> None:
+    """Persist recovery state, marking it when the client supports that contract."""
+    update_state = agent.aupdate_state
+    parameters = inspect.signature(update_state).parameters
+    if "recovery" in parameters:
+        await update_state(config, values, recovery=True)
+    else:
+        await update_state(config, values)
+
+
 async def _handle_interrupt_cleanup(
     *,
     adapter: TextualUIAdapter,
@@ -4197,7 +4353,7 @@ async def _handle_interrupt_cleanup(
         )
 
     # Proactively cancel server-side runs before persisting recovery state, so
-    # the aupdate_state writes below don't 409 against a still-busy thread. This
+    # the aupdate_state write below doesn't 409 against a still-busy thread. This
     # is defense-in-depth layered on top of aupdate_state's own 409 -> cancel ->
     # retry path (see RemoteAgent.aupdate_state); a failure here is not fatal.
     # Absent on local agents, so this is a no-op for them.
@@ -4219,10 +4375,29 @@ async def _handle_interrupt_cleanup(
                 exc_info=True,
             )
 
+    persisted_tool_call_ids: set[str] = set()
+    persisted_text = ""
+    get_state = getattr(agent, "aget_state", None)
+    if recover_interrupted_turn and get_state is not None:
+        try:
+            state = await get_state(config)
+            current_messages = _current_turn_messages(state)
+            persisted_tool_call_ids = _tool_call_ids_from_current_turn(state)
+            persisted_text = _persisted_text_for_tool_calls(
+                current_messages, set(adapter._current_tool_messages)
+            )
+        except Exception:
+            logger.warning(
+                "Could not inspect interrupted state; preserving displayed output",
+                exc_info=True,
+            )
+
     interrupted_msg = (
         _build_interrupted_ai_message(
             pending_text_by_namespace,
             adapter._current_tool_messages,
+            persisted_tool_call_ids,
+            persisted_text,
         )
         if recover_interrupted_turn
         else None
@@ -4234,7 +4409,7 @@ async def _handle_interrupt_cleanup(
     # (mirroring the HITL-reject branches). The turn does not resume from here,
     # so the returned ids need not be tracked for dedup.
     #
-    # Dispatched *before* the `aupdate_state` writes below (not alongside the
+    # Dispatched *before* the `aupdate_state` write below (not alongside the
     # `set_rejected` loop after them): those writes await a possibly-slow remote
     # checkpointer, and on an interactive quit the graceful-exit drain in
     # `app.py` snapshots the in-flight hook tasks right after cancelling this
@@ -4262,22 +4437,20 @@ async def _handle_interrupt_cleanup(
     from langsmith import tracing_context
 
     try:
-        # tracing_context(enabled=False) suppresses only the UpdateState traced
-        # run that each aupdate_state call would otherwise emit in LangSmith — it
-        # does not affect any other tracing in the surrounding turn. These writes
-        # are internal interrupt-recovery mechanics (partial AI message +
-        # cancellation notice), not user-driven agent activity; surfacing them as
-        # standalone peer runs alongside real agent turns clutters the trace view.
+        # This suppresses local UpdateState tracing without affecting the surrounding
+        # turn. A remote server creates its trace after receiving the HTTP request,
+        # outside this context; `_update_interrupted_state` marks those requests so
+        # server-side tracing policy can distinguish the recovery write.
         with tracing_context(enabled=False):
             if recover_interrupted_turn:
-                if interrupted_msg:
-                    await agent.aupdate_state(config, {"messages": [interrupted_msg]})
-
                 cancellation_msg = HumanMessage(
                     content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
                     "Previous operation was cancelled."
                 )
-                cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
+                messages = [cancellation_msg]
+                if interrupted_msg:
+                    messages.insert(0, interrupted_msg)
+                cancellation_values: dict[str, Any] = {"messages": messages}
                 # Piggy-back the latest token count on this already-required
                 # write instead of issuing a separate `aupdate_state`.
                 # `after_model` never ran on the partial turn, so without this
@@ -4285,7 +4458,7 @@ async def _handle_interrupt_cleanup(
                 captured_total = captured_input_tokens + captured_output_tokens
                 if captured_total:
                     cancellation_values["_context_tokens"] = captured_total
-                await agent.aupdate_state(config, cancellation_values)
+                await _update_interrupted_state(agent, config, cancellation_values)
     except (httpx.TransportError, httpx.TimeoutException) as e:
         logger.warning("Could not save interrupted state (network): %s", e)
     except Exception as exc:  # interrupt cleanup must not propagate

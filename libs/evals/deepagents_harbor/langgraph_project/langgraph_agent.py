@@ -19,7 +19,7 @@ from deepagents_code.agent import create_cli_agent
 from deepagents_code.config import detect_provider, runtime_state
 from deepagents_code.model_config import ModelSpec
 from langchain.chat_models import init_chat_model
-from langchain_mcp_adapters.client import MultiServerMCPClient
+from langchain.mcp import MCPAdapter
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -452,7 +452,7 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
 
 
 def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
-    """Build langchain-mcp-adapters connections from Harbor-forwarded servers.
+    """Build FastMCP connections from Harbor-forwarded servers.
 
     Harbor's LangGraph agent forwards the task environment's declared MCP servers
     via `configurable["mcp_servers"]` (a list of dicts shaped like Harbor's
@@ -461,7 +461,7 @@ def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
     transports.
 
     `stdio` servers are rejected on purpose: they carry a local `command`/
-    `args` that `MultiServerMCPClient` would execute inside the agent sandbox.
+    `args` that `MCPAdapter` would execute inside the agent sandbox.
     Since the dataset (selectable via the workflow's `dataset_override`) controls
     this config, honoring `stdio` would let an untrusted dataset run arbitrary
     commands in CI. tau3-runtime is a remote `streamable-http` server, so only
@@ -471,7 +471,7 @@ def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
         configurable: The graph's `configurable` mapping.
 
     Returns:
-        A mapping of server name to a langchain-mcp-adapters connection dict.
+        A mapping of server name to a FastMCP connection dict.
 
     Raises:
         ValueError: If no MCP servers were forwarded, a server uses an
@@ -501,9 +501,9 @@ def _mcp_connections(configurable: dict[str, object]) -> dict[str, Any]:
         server = cast("dict[str, Any]", raw)
         name = str(server["name"])
         transport = server.get("transport", "sse")
-        if transport in ("streamable-http", "http"):
-            transport = "streamable_http"
-        if transport not in ("streamable_http", "sse"):
+        if transport in ("streamable-http", "streamable_http"):
+            transport = "http"
+        if transport not in ("http", "sse"):
             msg = (
                 f"MCP server {name!r} uses unsupported transport {transport!r}; the "
                 "tau3 graph only allows remote transports (streamable-http, sse). "
@@ -542,8 +542,10 @@ async def make_tau3_graph(config: dict[str, object] | None = None) -> object:
     """
     configurable = _configurable(config)
     model = _build_model(configurable)
-    client = MultiServerMCPClient(_mcp_connections(configurable))
-    tools = await client.get_tools()
+    tools = []
+    for name, connection in _mcp_connections(configurable).items():
+        adapter = MCPAdapter({"mcpServers": {name: connection}})
+        tools.extend(await adapter.list_tools())
     # No `system_prompt`: the tau3-runtime conversation protocol comes from the
     # MCP tools' server-advertised descriptions, without adding an authored base
     # prompt.

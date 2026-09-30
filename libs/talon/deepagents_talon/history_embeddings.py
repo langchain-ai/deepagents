@@ -73,6 +73,7 @@ class HistoryEmbeddings(Embeddings):
         self._lock = threading.Lock()
         self._async_lock = asyncio.Lock()
         self._pending: asyncio.Task[list[list[float]]] | None = None
+        self._pending_texts: tuple[str, ...] = ()
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         """Embed archive chunks without a query instruction.
@@ -117,11 +118,26 @@ class HistoryEmbeddings(Embeddings):
             texts: Transcript chunks or prepared queries.
         """
         async with self._async_lock:
-            if self._pending is not None:
+            if self._pending is not None and self._pending_texts != tuple(texts):
                 await asyncio.shield(asyncio.gather(self._pending, return_exceptions=True))
-            self._pending = asyncio.create_task(asyncio.to_thread(self.embed_documents, texts))
-            self._pending.add_done_callback(_consume_exception)
-            return await asyncio.shield(self._pending)
+                self._pending = None
+            if self._pending is None:
+                self._pending_texts = tuple(texts)
+                self._pending = asyncio.create_task(
+                    asyncio.to_thread(self.embed_documents, list(texts))
+                )
+                self._pending.add_done_callback(_consume_exception)
+            cancelled = False
+            try:
+                return await asyncio.shield(self._pending)
+            except asyncio.CancelledError:
+                cancelled = True
+                raise
+            finally:
+                # Cancellation leaves inference available for the next retry.
+                if not cancelled:
+                    self._pending = None
+                    self._pending_texts = ()
 
     async def aembed_query(self, text: str) -> list[float]:
         """Embed a query off-loop with the retrieval instruction.

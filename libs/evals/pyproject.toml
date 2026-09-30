@@ -19,7 +19,7 @@ classifiers = [
 dependencies = [
     # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
     "deepagents>=0.6.12",
-    "langchain>=1.3.12,<2.0.0",
+    "langchain[mcp]>=1.4.1,<2.0.0",
     "deepagents-code>=0.1.27",
     # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2).
     # 0.20+: managed-Python agent venv. harbor-langsmith 0.3.0+ is the piece that honors
@@ -63,6 +63,7 @@ charts = [
 
 [dependency-groups]
 test = [
+    "fastmcp>=4.0.1,<5.0.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-watcher>=0.6.3,<1.0.0",

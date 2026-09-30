@@ -102,6 +102,15 @@ effectively remove it. A resolved value above the ceiling is rejected and falls
 through to the next layer / default.
 """
 
+MCP_TOOL_TIMEOUT_SECONDS_DEFAULT = 120.0
+"""Default wall-clock budget for one MCP tool call."""
+
+MCP_TOOL_TIMEOUT_FLOOR = 1.0
+"""Smallest accepted MCP tool-call timeout."""
+
+MCP_TOOL_TIMEOUT_CEILING = 900.0
+"""Largest accepted MCP tool-call timeout."""
+
 RECURSION_LIMIT_FLOOR = 25
 """Smallest `recursion_limit` accepted from managed config, the env var, or TOML.
 
@@ -1630,6 +1639,82 @@ def resolve_auto_classifier_timeout(
     return value
 
 
+def _is_valid_mcp_tool_timeout(value: object) -> TypeIs[float]:
+    """Return whether `value` is an accepted MCP tool-call timeout."""
+    return (
+        isinstance(value, float)
+        and math.isfinite(value)
+        and MCP_TOOL_TIMEOUT_FLOOR <= value <= MCP_TOOL_TIMEOUT_CEILING
+    )
+
+
+def resolve_mcp_tool_timeout_with_source(
+    *,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
+) -> tuple[float, str]:
+    """Resolve the wall-clock budget for one MCP tool call.
+
+    Out-of-range overrides fall through to the next configuration source.
+
+    Args:
+        toml_data: Parsed user TOML. Omit both tables to use the shared resolver.
+        managed_toml_data: Parsed managed TOML for an explicit generation.
+
+    Returns:
+        `(timeout_seconds, source)` with the timeout within the accepted bounds.
+    """
+    option = get_option("mcp.tool_timeout")
+    if option is None:
+        return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT, "default"
+
+    resolver = _resolver_for_option_sources(
+        toml_data=toml_data,
+        managed_toml_data=managed_toml_data,
+    )
+    excluded: set[int] = set()
+    while True:
+        resolved = resolver.get_without_ranks(option, excluded)
+        _emit_ranked_diagnostics(option, resolved)
+        value, source = resolved.value, _ranked_source(resolved)
+        if _is_valid_mcp_tool_timeout(value):
+            return value, source
+        if source == "default" or not resolved.ranks:
+            return MCP_TOOL_TIMEOUT_SECONDS_DEFAULT, "default"
+        logger.warning(
+            "Ignoring %s mcp.tool_timeout %r (expected seconds in [%g, %g]); "
+            "falling through to the next config source",
+            source,
+            value,
+            MCP_TOOL_TIMEOUT_FLOOR,
+            MCP_TOOL_TIMEOUT_CEILING,
+        )
+        # Exclude the rejected provider from this read, preserving the active
+        # workspace environment and the resolver's pinned file snapshots.
+        excluded.update(resolved.ranks)
+
+
+def resolve_mcp_tool_timeout(
+    *,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
+) -> float:
+    """Resolve the bounded wall-clock budget for one MCP tool call.
+
+    Args:
+        toml_data: Parsed user TOML. Omit both tables to use the shared resolver.
+        managed_toml_data: Parsed managed TOML for an explicit generation.
+
+    Returns:
+        The resolved timeout in seconds within the accepted bounds.
+    """
+    value, _ = resolve_mcp_tool_timeout_with_source(
+        toml_data=toml_data,
+        managed_toml_data=managed_toml_data,
+    )
+    return value
+
+
 def blank_auto_classifier_env_name() -> str | None:
     """Return the env var blanking the Auto classifier model, if any.
 
@@ -2811,6 +2896,18 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     ),
     # --- Warnings ------------------------------------------------------
     ConfigOption(
+        key="warnings.cache_prompt",
+        group="Warnings",
+        summary=(
+            "When to prompt about an expired prompt cache: 'expiry' offers a "
+            "summarized new thread when the window lapses, 'send' warns only "
+            "on submit, 'off' disables both."
+        ),
+        kind=OptionKind.STR,
+        default="expiry",
+        toml_keys=("warnings", "cache_prompt"),
+    ),
+    ConfigOption(
         key="warnings.cold_cache_min_delta_usd",
         group="Warnings",
         summary=(
@@ -2872,6 +2969,15 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         env_var=_env_vars.SUPPRESS_ENV_OVERRIDE_WARNING,
     ),
     # --- MCP ------------------------------------------------------------
+    ConfigOption(
+        key="mcp.tool_timeout",
+        group="MCP",
+        summary="Seconds an MCP tool call may run before returning an error (1-900).",
+        kind=OptionKind.FLOAT,
+        default=MCP_TOOL_TIMEOUT_SECONDS_DEFAULT,
+        env_var=_env_vars.MCP_TOOL_TIMEOUT,
+        toml_keys=("mcp", "tool_timeout"),
+    ),
     # Project trust lists are parsed by `model_config.load_mcp_server_trust_lists`,
     # which reads them only from the user-level config.toml (never a project file),
     # so they are STRUCTURED-for-discovery here rather than env-backed scalars. The
@@ -3082,7 +3188,7 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         group="Debug",
         summary="Directory for per-thread debug log files.",
         kind=OptionKind.STR,
-        default="/tmp/deepagents_debug",  # noqa: S108  # documents the app default, not a write target
+        default=_env_vars.DEFAULT_DEBUG_DIRECTORY,
         env_var=_env_vars.DEBUG_DIRECTORY,
         toml_keys=("debug", "directory"),
     ),

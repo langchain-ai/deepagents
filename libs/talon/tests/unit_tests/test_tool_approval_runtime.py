@@ -11,7 +11,7 @@ from langchain_core.language_models.fake_chat_models import FakeMessagesListChat
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
 
-from deepagents_talon.interfaces import AgentRequest, ToolApprovalRequest
+from deepagents_talon.interfaces import AgentRequest, SendResult, ToolApprovalRequest
 from deepagents_talon.mcp_config import MCPConfigStore
 from deepagents_talon.runtime import DeepAgentRuntime
 from deepagents_talon.tool_approvals import (
@@ -56,6 +56,43 @@ async def outputs(runtime: DeepAgentRuntime, chat: str, name: str) -> list[dict[
         for message in state.values["messages"]
         if isinstance(message, ToolMessage) and message.name == name and message.status != "error"
     ]
+
+
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+async def test_send_message_requires_approval_before_delivery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, decision: str
+) -> None:
+    model = ToolModel(responses=[call("send_message", text="<@U123>"), AIMessage(content="done")])
+    runtime = make_runtime(tmp_path, monkeypatch, model)
+    sent: list[str] = []
+    approvals: list[ToolApprovalRequest] = []
+
+    async def deliver(text: str) -> SendResult:
+        sent.append(text)
+        return SendResult(success=True)
+
+    async def decide(request: ToolApprovalRequest) -> str:
+        approvals.append(request)
+        assert sent == []
+        return decision
+
+    await runtime.start()
+    try:
+        result = await runtime.invoke(
+            AgentRequest(
+                "chat",
+                "send an update",
+                message_handler=deliver,
+                approval_handler=decide,
+            )
+        )
+        assert result.text == "done"
+        assert [action["name"] for request in approvals for action in request.action_requests] == [
+            "send_message"
+        ]
+        assert sent == (["<@U123>"] if decision == "approve" else [])
+    finally:
+        await runtime.stop()
 
 
 @pytest.mark.parametrize("decision", ["approve", "reject"])
@@ -471,3 +508,46 @@ def test_mcp_unsafe_update_uses_active_policy(
         assert result["status"] == "error"
         assert path.read_bytes() == original
         assert notifications == []
+
+
+@pytest.mark.parametrize("decision", ["approve", "reject"])
+async def test_multiple_tool_calls_wait_for_one_approval(tmp_path, monkeypatch, decision):
+    effects, approvals = [], []
+
+    @tool
+    def protected_effect(item: int) -> str:
+        """Record a protected effect."""
+        effects.append(item)
+        return "done"
+
+    model = ToolModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "protected_effect", "id": str(item), "args": {"item": item}}
+                    for item in (1, 2)
+                ],
+            ),
+            AIMessage(content="done"),
+        ]
+    )
+    runtime = make_runtime(tmp_path, monkeypatch, model)
+    runtime.tools = (protected_effect,)
+    initial = runtime.approval_store.ensure()
+    runtime.approval_store.update({"protected_effect": True}, initial.revision)
+
+    async def decide(request):
+        assert effects == []
+        approvals.append(request)
+        return decision
+
+    await runtime.start()
+    try:
+        result = await runtime.invoke(AgentRequest("batch", "work", approval_handler=decide))
+        assert result.text == "done"
+        assert len(approvals) == 1
+        assert [action["args"]["item"] for action in approvals[0].action_requests] == [1, 2]
+        assert sorted(effects) == ([1, 2] if decision == "approve" else [])
+    finally:
+        await runtime.stop()

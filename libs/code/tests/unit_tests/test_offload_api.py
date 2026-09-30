@@ -76,6 +76,11 @@ async def _workspace_route_client(
             "get_server_runtime",
             new=AsyncMock(side_effect=runtime_error),
         ),
+        patch.object(
+            offload_api,
+            "_validate_workspace_runtime",
+            new=AsyncMock(side_effect=runtime_error),
+        ),
         patch.object(offload_api, "_thread_client") as thread_client,
     ):
         async with AsyncClient(
@@ -278,8 +283,8 @@ class TestWorkspaceRoute:
         runtime.assert_awaited_once_with(binding)
 
     async def test_validation_does_not_bind_or_update_thread(self, tmp_path) -> None:
-        """A successful hostability check does not change durable thread state."""
-        from deepagents_code import offload_api
+        """A hostability check neither builds a runtime nor changes thread state."""
+        from deepagents_code import offload_api, server_graph
         from deepagents_code._server_config import ServerConfig
 
         threads = SimpleNamespace(create=AsyncMock(), update=AsyncMock())
@@ -288,6 +293,13 @@ class TestWorkspaceRoute:
             patch.object(ServerConfig, "from_env", return_value=ServerConfig()),
             patch.object(offload_api, "bind_thread_workspace", new=AsyncMock()) as bind,
             patch.object(offload_api, "get_server_runtime", new=runtime),
+            patch.object(server_graph, "_make_graphs", new=AsyncMock()) as make,
+            patch.object(server_graph, "_server_tracing_settings", None),
+            patch.object(
+                offload_api,
+                "_validate_workspace_runtime",
+                server_graph._validate_workspace_runtime,
+            ),
             patch.object(
                 offload_api,
                 "_thread_client",
@@ -308,12 +320,14 @@ class TestWorkspaceRoute:
 
         assert response.status_code == 200
         bind.assert_not_awaited()
-        runtime.assert_awaited_once()
+        runtime.assert_not_awaited()
+        make.assert_not_awaited()
         threads.create.assert_not_awaited()
         threads.update.assert_not_awaited()
 
+    @pytest.mark.parametrize("validate_only", [False, True])
     async def test_runtime_conflict_returns_409_before_thread_creation(
-        self, tmp_path
+        self, tmp_path, validate_only: bool
     ) -> None:
         """Workspace preflight reports a conflict before a streamed run starts."""
         from deepagents_code.workspace import WorkspaceConflictError
@@ -325,12 +339,89 @@ class TestWorkspaceRoute:
         ):
             response = await client.post(
                 "/dcode/threads/thread-1/workspace",
-                json={"cwd": str(tmp_path)},
+                json={"cwd": str(tmp_path), "validate_only": validate_only},
             )
 
         assert response.status_code == 409
         assert response.json() == {"detail": detail}
         thread_client.assert_not_called()
+
+    async def test_runtime_conflict_includes_diagnostics_when_present(
+        self, tmp_path
+    ) -> None:
+        """A diagnosed conflict adds a `diagnostics` key; the detail is unchanged."""
+        from deepagents_code.workspace import WorkspaceConflictError
+        from deepagents_code.workspace_diagnostics import (
+            FieldChange,
+            WorkspaceDiagnostics,
+        )
+
+        detail = "Cannot host this workspace because the sandbox is already owned."
+        error = WorkspaceConflictError(
+            detail,
+            diagnostics=WorkspaceDiagnostics(
+                category="config_drift",
+                reason="server configuration changed",
+                changes=(FieldChange(name="auto_approve", bound=False, current=True),),
+            ),
+        )
+        async with _workspace_route_client(error) as (client, thread_client):
+            response = await client.post(
+                "/dcode/threads/thread-1/workspace",
+                json={"cwd": str(tmp_path)},
+            )
+
+        assert response.status_code == 409
+        body = response.json()
+        assert body["detail"] == detail
+        assert body["diagnostics"] == {
+            "category": "config_drift",
+            "reason": "server configuration changed",
+            "snapshot_status": "current",
+            "changes": [
+                {
+                    "name": "auto_approve",
+                    "state": "changed",
+                    "bound": False,
+                    "current": True,
+                }
+            ],
+        }
+        thread_client.assert_not_called()
+
+    def test_conflict_diagnostics_parse_from_sdk_error(self) -> None:
+        """The client extracts diagnostics from an SDK 409 body."""
+        from deepagents_code.client.remote_client import (
+            workspace_conflict_diagnostics,
+        )
+
+        body = {
+            "detail": "Cannot host this workspace because ...",
+            "diagnostics": {
+                "category": "config_drift",
+                "reason": "server configuration changed",
+                "snapshot_status": "current",
+                "changes": [
+                    {
+                        "name": "auto_approve",
+                        "state": "changed",
+                        "bound": False,
+                        "current": True,
+                    }
+                ],
+            },
+        }
+        exc = SimpleNamespace(body=body)
+
+        diagnostics = workspace_conflict_diagnostics(cast("Any", exc))
+
+        assert diagnostics is not None
+        assert diagnostics.category == "config_drift"
+        assert diagnostics.changes[0].name == "auto_approve"
+        # Older servers omit the field; malformed payloads degrade to None.
+        empty_body = SimpleNamespace(body={})
+        assert workspace_conflict_diagnostics(cast("Any", empty_body)) is None
+        assert workspace_conflict_diagnostics(Exception("plain")) is None
 
     async def test_runtime_build_exit_is_contained_as_503(self, tmp_path) -> None:
         """`_make_graphs` exits on sandbox failure; the route must contain it.
@@ -483,7 +574,7 @@ class TestOperationPayload:
         """
         from deepagents_code.offload_api import _operation_payload
 
-        _, context, _ = _operation_payload(
+        _, context, _, _ = _operation_payload(
             {
                 "operation_id": "op-1",
                 "context": {
@@ -837,6 +928,96 @@ class TestExecuteOffload:
         )
         assert calls == ["checkpoint", "archive", "checkpoint"]
         prepared.rollback.assert_not_called()
+
+    @pytest.mark.parametrize("archived", [True, False])
+    async def test_handoff_leaves_source_context_uncompacted(
+        self, archived: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Run the real summary operation and commit only cost to the source."""
+        from deepagents.backends import FilesystemBackend
+        from deepagents.middleware.summarization import SummarizationMiddleware
+        from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+        from deepagents_code import offload_api
+        from deepagents_code.hooks.server_middleware import _PRE_TOOL_STATE_KEY
+        from deepagents_code.offload_middleware import (
+            CLICompactionMiddleware,
+            OffloadOperation,
+        )
+
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        summarization = SummarizationMiddleware(
+            FakeListChatModel(responses=["LLM summary"]), backend=backend
+        )
+        compaction = CLICompactionMiddleware(summarization)
+        monkeypatch.setattr(
+            compaction, "_summarization_for_runtime", lambda _runtime: summarization
+        )
+        if not archived:
+            monkeypatch.setattr(
+                summarization, "_aoffload_to_backend", AsyncMock(return_value=None)
+            )
+        hooks = MagicMock()
+        hooks.aafter_model = AsyncMock(return_value={_PRE_TOOL_STATE_KEY: {}})
+        operation = SimpleNamespace(execute=OffloadOperation(compaction, hooks).execute)
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(return_value=_thread_state()),
+            update_state=AsyncMock(),
+        )
+        prepared = SimpleNamespace(
+            update={"_session_cost_usd": 0.25},
+            rollback=MagicMock(),
+            commit=MagicMock(),
+        )
+
+        with self._patched(offload_api, threads, operation, prepared):
+            response = await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+                handoff=True,
+            )
+
+        threads.update_state.assert_awaited_once_with(
+            "thread-1", {"_session_cost_usd": 0.25}
+        )
+        prepared.commit.assert_called_once()
+        assert response["status"] == "complete"
+        result = response["result"]
+        assert result["messages_offloaded"] == 0
+        assert result["messages_kept"] == 1
+        assert result["tokens_after"] == result["tokens_before"] > 0
+        if archived:
+            assert result["status"] == "summarized"
+            assert result["summary"] == "LLM summary"
+            archive_path = result["archive_path"]
+            assert archive_path is not None
+            transcript = (await backend.adownload_files([archive_path]))[0].content
+            assert transcript is not None
+            assert "hello" in transcript.decode("utf-8")
+
+            # Deletion must reach the real handoff file even with retention off
+            # and no remaining checkpoints, as after an interrupted deletion.
+            from deepagents_code import offload, sessions
+
+            monkeypatch.setattr(offload, "_offload_fallback_root", lambda: tmp_path)
+            monkeypatch.setattr(offload, "_history_retention_days", lambda: 0)
+            monkeypatch.setattr(
+                sessions, "get_db_path", lambda: tmp_path / "sessions.db"
+            )
+            assert offload.sweep_offloaded_history() == 0
+            await sessions.delete_thread("unrelated-thread")
+            assert (await backend.adownload_files([archive_path]))[
+                0
+            ].content == transcript
+            await sessions.delete_thread("thread-1")
+            assert (await backend.adownload_files([archive_path]))[0].content is None
+        else:
+            assert result["status"] == "failed"
+            assert result["error"]
+            assert "summary" not in result
 
     async def test_failed_archive_link_restores_the_append(self) -> None:
         """A failed follow-up checkpoint cannot leave duplicate history."""
@@ -2065,6 +2246,44 @@ class TestRouteRegistration:
         # The handler read the id out of the real path params, so the route's
         # converter name and the key it indexes agree.
         assert calls == [("thread-42", "op-1")]
+
+    @pytest.mark.parametrize("route", ["offload", "handoff"])
+    @pytest.mark.parametrize("handoff", [None, False, True, "true"])
+    def test_handoff_mode_validation(
+        self, route: str, handoff: bool | str | None
+    ) -> None:
+        from starlette.testclient import TestClient
+
+        from deepagents_code import offload_api
+        from deepagents_code.offload_middleware import unchanged_offload_result
+
+        execute = AsyncMock(
+            return_value={
+                "status": "complete",
+                "result": unchanged_offload_result("noop", messages=1, tokens=5),
+            }
+        )
+        with (
+            patch.object(offload_api, "_execute_offload", execute),
+            TestClient(offload_api.app) as client,
+        ):
+            response = client.post(
+                f"/dcode/threads/thread-42/{route}",
+                json={
+                    "operation_id": "handoff",
+                    "context": {},
+                    **({"handoff": handoff} if handoff is not None else {}),
+                },
+            )
+        if isinstance(handoff, str):
+            assert response.status_code == 422
+            execute.assert_not_awaited()
+        else:
+            assert response.status_code == 200
+            assert execute.await_args is not None
+            assert execute.await_args.kwargs.get("handoff", False) is (
+                route == "handoff" or handoff is True
+            )
 
     def test_cancel_path_is_registered(self) -> None:
         from starlette.testclient import TestClient

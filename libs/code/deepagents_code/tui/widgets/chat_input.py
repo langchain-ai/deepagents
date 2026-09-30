@@ -14,6 +14,7 @@ from rich.cells import cell_len
 from rich.segment import Segment
 from rich.style import Style
 from rich.text import Text
+from textual import work
 from textual.app import NoScreen
 from textual.color import Color
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -27,7 +28,12 @@ from textual.strip import Strip
 from textual.widgets import Input, Static, TextArea
 
 from deepagents_code import theme
-from deepagents_code.command_registry import CommandEntry, get_slash_commands
+from deepagents_code.command_registry import (
+    ALWAYS_IMMEDIATE,
+    HIDDEN_COMMANDS,
+    CommandEntry,
+    get_slash_commands,
+)
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
@@ -56,6 +62,7 @@ from deepagents_code.tui.widgets.autocomplete import (
     FuzzyFileController,
     MultiCompletionManager,
     SlashCommandController,
+    ThreadCompletionController,
 )
 from deepagents_code.tui.widgets.history import HistoryManager
 from deepagents_code.tui.widgets.prompt_search import (
@@ -1605,6 +1612,11 @@ class ChatTextArea(PasteBurstTextArea):
             owner.apply_paste_payload(event.text, None)
             return
 
+        # TextArea inserts after this handler returns, before the callback runs.
+        # Re-scroll once auto-height layout has settled so an overflowing paste
+        # leaves its end visible instead of showing the start of the draft.
+        self.call_after_refresh(self.scroll_cursor_visible)
+
         # Don't call super() here — Textual's MRO dispatch already calls
         # TextArea._on_paste after this handler returns. Calling super()
         # would insert the text a second time, duplicating the paste.
@@ -1968,6 +1980,7 @@ class ChatInputResizeHandle(Static):
     """
 
     ALLOW_SELECT = False
+    incognito: reactive[bool] = reactive(False)
 
     class DragStarted(Message):
         """Message sent when a resize drag begins."""
@@ -2004,13 +2017,15 @@ class ChatInputResizeHandle(Static):
         self._drag_start_y: int | None = None
         self._highlighted = False
 
-    def render(self) -> str:
-        """Render the border line beneath the drag target.
+    def render(self) -> Content:
+        """Render the border line and active incognito label.
 
         Returns:
-            A charset-compatible horizontal rule spanning the handle.
+            A charset-compatible rule with the active mode label.
         """
-        return get_glyphs().box_horizontal * self.size.width
+        label = Content.styled(" incognito ", "bold") if self.incognito else Content("")
+        line = get_glyphs().box_horizontal * max(0, self.size.width - label.cell_length)
+        return Content.assemble(label, line)
 
     def _set_highlighted(self, *, highlighted: bool) -> None:
         """Publish top-border hover changes."""
@@ -2121,7 +2136,7 @@ class ChatInput(Vertical):
     - Multi-line input with TextArea
     - Enter to submit, modifier key for newlines (see `config.newline_shortcut`)
     - Up/Down arrows for command history at input boundaries (start/end of text)
-    - Autocomplete for @ (files) and / (commands)
+    - Autocomplete for @ (files), @@ (threads), and / (commands)
     - Drag the top border to resize the composer; double-click it to expand to
       the maximum height, or to drop a manual height back to content-driven
       sizing
@@ -2185,9 +2200,25 @@ class ChatInput(Vertical):
         display: none;
     }
 
+    ChatInput #thread-picker-hint {
+        display: none;
+        width: auto;
+        height: 1;
+        margin-left: 1;
+        color: $primary;
+    }
+
+    ChatInput.thread-completion-active #thread-picker-hint {
+        display: block;
+    }
+
     ChatInput .input-row {
         height: auto;
         width: 100%;
+    }
+
+    ChatInput.prompt-search-active .input-row {
+        display: none;
     }
 
     ChatInput .input-prompt {
@@ -2301,6 +2332,9 @@ class ChatInput(Vertical):
         self._completion_manager: MultiCompletionManager | None = None
         self._completion_view: _CompletionViewAdapter | None = None
         self._slash_controller: SlashCommandController | None = None
+        self._thread_controller: ThreadCompletionController | None = None
+        self.submission_block_reason: str | None = None
+        """Pause ordinary submissions while allowing editing and recovery commands."""
 
         # Collapsed paste storage: paste_id → full content.  When a large paste
         # arrives, the full text is stored here and a compact
@@ -2399,6 +2433,9 @@ class ChatInput(Vertical):
         # Action buttons float on their own z-layer over the top border line so
         # they cost no content row and never overlap the draft text.
         with Horizontal(id="input-actions"):
+            yield Static(
+                "[ ctrl+r browse threads ]", id="thread-picker-hint", markup=False
+            )
             yield InputActionButton(
                 "[ X ]",
                 "clear",
@@ -2440,9 +2477,11 @@ class ChatInput(Vertical):
         self._slash_controller = SlashCommandController(
             get_slash_commands(), self._completion_view
         )
+        self._thread_controller = ThreadCompletionController(self._completion_view)
         self._completion_manager = MultiCompletionManager(
             [
                 self._slash_controller,
+                self._thread_controller,
                 self._file_controller,
             ]  # ty: ignore[invalid-argument-type]  # Controller types are compatible at runtime
         )
@@ -2450,9 +2489,14 @@ class ChatInput(Vertical):
         self._rebuild_argument_hints(get_slash_commands())
 
         self._warm_file_cache()
+        self._initialize_thread_cache()
         self.set_interval(
             _FILE_CACHE_REFRESH_INTERVAL_SECONDS,
             self._refresh_file_cache,
+        )
+        self.set_interval(
+            _FILE_CACHE_REFRESH_INTERVAL_SECONDS,
+            self._warm_thread_cache,
         )
         self.call_after_refresh(self._sync_resize_handle_geometry)
         self.watch(self.app, "theme", self._on_theme_change, init=False)
@@ -2583,6 +2627,32 @@ class ChatInput(Vertical):
     def _refresh_file_cache(self) -> None:
         """Re-warm the `@` file-completion cache off the event loop."""
         self._warm_file_cache(force=True, exclusive=True)
+
+    def _initialize_thread_cache(self) -> None:
+        """Use prewarmed thread rows immediately, then refresh asynchronously."""
+        from deepagents_code.sessions import get_cached_threads
+
+        if self._thread_controller is not None:
+            self._thread_controller.update_threads(get_cached_threads() or [])
+        self._warm_thread_cache()
+
+    @work(exclusive=True, group="thread-completion-cache", exit_on_error=False)
+    async def _warm_thread_cache(self) -> None:
+        """Load bounded recent thread metadata for `@@` completion."""
+        from deepagents_code.sessions import (
+            get_thread_limit,
+            list_threads,
+            populate_thread_checkpoint_details,
+        )
+
+        threads = await list_threads(limit=get_thread_limit())
+        await populate_thread_checkpoint_details(
+            threads, include_message_count=False, include_initial_prompt=True
+        )
+        if self._thread_controller is not None:
+            self._thread_controller.update_threads(threads)
+            text, cursor = self._completion_text_and_cursor()
+            self._thread_controller.refresh(text, cursor)
 
     def set_cwd(self, cwd: str | Path) -> None:
         """Update file completion to use a new cwd.
@@ -2985,6 +3055,24 @@ class ChatInput(Vertical):
             col = max(0, col - length)
         self._text_area.move_cursor((row, col))
 
+    def active_thread_query(self) -> str | None:
+        """Return the active `@@` query for full-picker escalation."""
+        if self._thread_controller is None:
+            return None
+        text, cursor = self._completion_text_and_cursor()
+        return self._thread_controller.active_query(text, cursor)
+
+    def insert_thread_reference(self, thread_id: str) -> bool:
+        """Replace the active `@@` query with a durable thread reference.
+
+        Returns:
+            Whether an active query was replaced.
+        """
+        if self._thread_controller is None:
+            return False
+        text, cursor = self._completion_text_and_cursor()
+        return self._thread_controller.replace_active_query(text, cursor, thread_id)
+
     def _completion_text_and_cursor(self) -> tuple[str, int]:
         """Return controller-facing text/cursor in completion space.
 
@@ -3073,6 +3161,25 @@ class ChatInput(Vertical):
             return True
         return True
 
+    def _can_bypass_submission_pause(self, value: str) -> bool:
+        """Recognize the app's urgent commands before mutating draft or media.
+
+        Returns:
+            Whether the draft is an exact always-immediate command.
+        """
+        if self.mode == "normal":
+            if self._is_existing_path_payload(value):
+                return False
+        elif self.mode != "command":
+            return False
+
+        # Command mode normally strips the slash, but completion can restore it
+        # before submission. Match the full command, including either form.
+        prefix = MODE_PREFIXES.get(self.mode, "")
+        if prefix and not value.startswith(prefix):
+            value = prefix + value
+        return value.lower() in ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
+
     def _submit_value(self, value: str) -> None:
         """Prepend mode prefix, save to history, post message, and reset input.
 
@@ -3085,6 +3192,12 @@ class ChatInput(Vertical):
         if not value:
             return
 
+        if self.submission_block_reason and not self._can_bypass_submission_pause(
+            value
+        ):
+            self.notify(self.submission_block_reason, timeout=3, markup=False)
+            return
+
         if self._completion_manager:
             self._completion_manager.reset()
 
@@ -3094,7 +3207,7 @@ class ChatInput(Vertical):
         value = self._replace_submitted_paths_with_images(value)
 
         mode = self.mode
-        if mode == "normal":
+        if mode == "normal" and not self._is_existing_path_payload(value):
             detected = detect_mode_prefix(value)
             if detected is not None:
                 _, mode = detected
@@ -3173,8 +3286,8 @@ class ChatInput(Vertical):
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
         """Handle text submission.
 
-        Always posts the Submitted event - the app layer decides whether to
-        process immediately or queue based on agent status.
+        Unless submission is paused, the app layer decides whether to process
+        immediately or queue based on agent status.
         """
         self._submit_value(event.value)
 
@@ -3431,9 +3544,9 @@ class ChatInput(Vertical):
                     logger.debug("Failed to stat media file %s: %s", path, exc)
                     msg = f"Could not attach {label.lower()}: {path.name}"
                 self.app.notify(msg, severity="warning", timeout=5, markup=False)
+                logger.debug("Could not load media from dropped path: %s", path)
 
             # Not a supported media file, keep as path
-            logger.debug("Could not load media from dropped path: %s", path)
             parts.append(str(path))
 
         if not attached:
@@ -3648,6 +3761,8 @@ class ChatInput(Vertical):
                 self._sync_resize_handle_color()
                 return
             prompt.update(glyph or ">")
+            if self._resize_handle is not None:
+                self._resize_handle.incognito = mode == "shell_incognito"
             if self._input_box is not None:
                 self._input_box.border_title = (
                     "incognito" if mode == "shell_incognito" else None
@@ -3740,7 +3855,7 @@ class ChatInput(Vertical):
         """
         return self._prompt_search_draft is not None
 
-    def open_prompt_search(self) -> Literal["inline", "modal", "noop"]:
+    def open_prompt_search(self) -> Literal["inline", "modal", "file_picker", "noop"]:
         """Open the inline prompt search, or escalate an open one to the modal.
 
         First call shows the inline panel with a fresh prompt snapshot, seeds
@@ -3750,19 +3865,27 @@ class ChatInput(Vertical):
 
         Returns:
             `"inline"` when the panel opened, `"modal"` when the caller should
-            open the full `PromptClipboardScreen`, or `"noop"` when the
-            composer is unavailable.
+            open the full `PromptClipboardScreen`, `"file_picker"` when file
+            completion owns the chord, or `"noop"` when the composer is unavailable.
         """
         if self._text_area is None or self._prompt_search is None:
             return "noop"
         if self._prompt_search_active:
             return "modal"
+        if (
+            self._current_suggestions
+            and self._completion_manager is not None
+            and self._file_controller is not None
+            and self._completion_manager.is_active(self._file_controller)
+        ):
+            return "file_picker"
         if self._current_suggestions:
             # Completion owns the shared panel rows; inserting the search panel
             # between the popup and the input row would break the completion
             # flow's keyboard assumptions, so the modal serves this case.
             return "modal"
 
+        self.add_class("prompt-search-active")
         self._prompt_search_draft = self._text_area.text
         self._prompt_search_cursor = self._text_area.cursor_location
         # Both tiers go through the public accessor so they always show the
@@ -3807,6 +3930,7 @@ class ChatInput(Vertical):
             refocus: Whether to return focus to the composer. Escalating to the
                 modal skips this so the modal's own filter input takes focus.
         """
+        self.remove_class("prompt-search-active")
         draft = self._prompt_search_draft
         cursor = self._prompt_search_cursor
         self._prompt_search_draft = None
@@ -3980,6 +4104,9 @@ class ChatInput(Vertical):
         if not self._prompt_search_active:
             return
         if not isinstance(event.input, PromptSearchInput):
+            return
+        event.stop()
+        if event.value != event.input.value:
             return
         self.post_message(self.Typing())
         self._prompt_search_query = event.value
@@ -4159,6 +4286,10 @@ class ChatInput(Vertical):
         prev_suggestions = self._current_suggestions
         self._current_suggestions = suggestions
         self._current_selected_index = selected_index
+        self.set_class(
+            bool(suggestions) and self.active_thread_query() is not None,
+            "thread-completion-active",
+        )
 
         if self._popup:
             # If only the selection changed (same items), skip full rebuild
@@ -4174,6 +4305,7 @@ class ChatInput(Vertical):
         """Clear/hide the completion popup."""
         self._current_suggestions = []
         self._current_selected_index = 0
+        self.remove_class("thread-completion-active")
 
         if self._popup:
             self._popup.hide()
@@ -4192,32 +4324,10 @@ class ChatInput(Vertical):
         if index < 0 or index >= len(self._current_suggestions):
             return
 
-        # Get the selected completion
-        label, _ = self._current_suggestions[index]
-        text = self._text_area.text
-        cursor = self._get_cursor_offset()
-
-        # Determine replacement range based on completion type.
-        # Slash completions use completion-space coordinates and are translated
-        # through the completion view adapter.
-        if label.startswith("/"):
-            if self._completion_view is None:
-                logger.warning(
-                    "Slash completion clicked but _completion_view is not "
-                    "initialized; this indicates a widget lifecycle issue."
-                )
-                return
-            _, virtual_cursor = self._completion_text_and_cursor()
-            self._completion_view.replace_completion_range(0, virtual_cursor, label)
-        elif label.startswith("@"):
-            # File mention: replace from @ to cursor
-            at_index = text[:cursor].rfind("@")
-            if at_index >= 0:
-                self.replace_completion_range(at_index, cursor, label)
-
-        # Reset completion state
-        if self._completion_manager:
-            self._completion_manager.reset()
+        if self._completion_manager is None:
+            return
+        text, cursor = self._completion_text_and_cursor()
+        self._completion_manager.apply_selection(index, text, cursor)
 
         # Re-focus the text input after click
         self._text_area.focus()

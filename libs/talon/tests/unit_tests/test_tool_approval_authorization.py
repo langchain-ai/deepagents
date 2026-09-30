@@ -96,6 +96,12 @@ async def test_background_delivery_drops_origin_authority(tmp_path, scheduled):
     assert (request.authorization_handler is None) is scheduled
     agent.background.pending.add(request.conversation_id)
     await host._dispatch_background_results()
+    if scheduled:
+        # A scheduled run's delegations finish inside it, so there is no later turn to
+        # strip authority from -- and no route for the dispatcher to start one on.
+        assert request.conversation_id not in host._tasks
+        assert request.conversation_id not in host._background_routes
+        return
     await asyncio.wait_for(host._tasks[request.conversation_id], 2)
     delivered = agent.requests[-1]
     assert delivered.metadata["background_delivery"] is True

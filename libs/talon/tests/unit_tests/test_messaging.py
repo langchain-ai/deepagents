@@ -4,17 +4,163 @@ import asyncio
 from typing import TYPE_CHECKING
 
 import pytest
+from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
+from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
+from deepagents_talon.background import _IN_SUBAGENT
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, AgentResult, SendResult
-from deepagents_talon.messaging import MESSAGE_HANDLER, send_message
+from deepagents_talon.messaging import MESSAGE_HANDLER, ProgressMessages, send_message
 from deepagents_talon.runtime import DeepAgentRuntime
 from tests.conftest import RecordingChannel
 from tests.test_host import BlockingAgent, _config
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+class ToolCallingModel(GenericFakeChatModel):
+    def bind_tools(self, _tools: object, **_kwargs: object) -> ToolCallingModel:
+        return self
+
+
+@pytest.mark.parametrize(
+    ("content", "subagent", "failure", "expected"),
+    [
+        ("working", False, False, ["working", "tool"]),
+        (
+            [{"type": "text", "text": "working"}, {"type": "reasoning", "reasoning": "private"}],
+            False,
+            False,
+            ["working", "tool"],
+        ),
+        ("  ", False, False, ["tool"]),
+        ("working", True, False, ["tool"]),
+        ("working", False, True, ["working", "tool"]),
+    ],
+)
+async def test_narration_precedes_tools(
+    content: str | list[dict], *, subagent: bool, failure: bool, expected: list[str]
+) -> None:
+    events: list[str] = []
+
+    @tool
+    def work() -> str:
+        """Perform the requested work."""
+        events.append("tool")
+        return "completed"
+
+    async def deliver(text: str) -> SendResult:
+        events.append(text)
+        if failure:
+            msg = "private transport detail"
+            raise RuntimeError(msg)
+        return SendResult(success=True)
+
+    model = ToolCallingModel(
+        messages=iter(
+            [
+                AIMessage(content=content, tool_calls=[{"name": "work", "args": {}, "id": "work"}]),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    graph = create_agent(model, tools=[work], middleware=[ProgressMessages()])
+    token = MESSAGE_HANDLER.set(deliver)
+    subagent_token = _IN_SUBAGENT.set(subagent)
+    try:
+        result = await graph.ainvoke({"messages": [{"role": "user", "content": "work"}]})
+        assert events == expected
+        assert result["messages"][-1].text == "done"
+    finally:
+        _IN_SUBAGENT.reset(subagent_token)
+        MESSAGE_HANDLER.reset(token)
+
+
+async def test_narration_precedes_remaining_tools_after_rejection() -> None:
+    events: list[str] = []
+
+    @tool
+    def work() -> str:
+        """Perform the allowed work."""
+        events.append("tool")
+        return "completed"
+
+    @tool
+    def gated() -> str:
+        """Perform work requiring approval."""
+        events.append("gated")
+        return "completed"
+
+    async def deliver(text: str) -> SendResult:
+        events.append(text)
+        return SendResult(success=True)
+
+    model = ToolCallingModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="working",
+                    tool_calls=[
+                        {"name": "work", "args": {}, "id": "work"},
+                        {"name": "gated", "args": {}, "id": "gated"},
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    graph = create_agent(
+        model,
+        tools=[work, gated],
+        middleware=[ProgressMessages(), HumanInTheLoopMiddleware(interrupt_on={"gated": True})],
+        checkpointer=InMemorySaver(),
+    )
+    token = MESSAGE_HANDLER.set(deliver)
+    try:
+        config = {"configurable": {"thread_id": "rejection"}}
+        result = await graph.ainvoke({"messages": [{"role": "user", "content": "work"}]}, config)
+        assert result["__interrupt__"]
+        assert events == []
+        result = await graph.ainvoke(Command(resume={"decisions": [{"type": "reject"}]}), config)
+        assert events == ["working", "tool"]
+        assert result["messages"][-1].text == "done"
+    finally:
+        MESSAGE_HANDLER.reset(token)
+
+
+async def test_explicit_progress_is_not_duplicated() -> None:
+    sent: list[str] = []
+
+    async def deliver(text: str) -> SendResult:
+        sent.append(text)
+        return SendResult(success=True)
+
+    model = ToolCallingModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="working",
+                    tool_calls=[
+                        {"name": "send_message", "args": {"text": "working"}, "id": "progress"}
+                    ],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    graph = create_agent(model, tools=[send_message], middleware=[ProgressMessages()])
+    token = MESSAGE_HANDLER.set(deliver)
+    try:
+        await graph.ainvoke({"messages": [{"role": "user", "content": "work"}]})
+        assert sent == ["working"]
+    finally:
+        MESSAGE_HANDLER.reset(token)
 
 
 async def test_message_requires_channel() -> None:

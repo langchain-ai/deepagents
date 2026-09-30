@@ -11,11 +11,14 @@ import pytest
 from langchain_core.messages import BaseMessage, HumanMessage
 
 from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionState
+from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+from deepagents_code.hooks.models.domain import DcodeNotificationKind
 from deepagents_code.tui.modals.cold_cache import (
     ColdCacheChoice,
     ColdCacheWarningScreen,
 )
 from deepagents_code.tui.widgets.messages import ErrorMessage
+from deepagents_code.tui.widgets.status import StatusBar
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -34,6 +37,147 @@ def _prepare(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> None:
     app._session_state = TextualSessionState(thread_id="source")
     assert app._status_bar is not None
     app._status_bar.cache_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+
+@pytest.mark.parametrize("remaining", [None, -1, 0, 1, 60, 61])
+async def test_cache_expiring_notification_window(
+    remaining: int | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = datetime.now(UTC)
+    monkeypatch.setattr("deepagents_code.app.datetime", MagicMock(now=lambda _: now))
+    app = DeepAgentsApp()
+    app._lc_thread_id = "source"
+    app._status_bar = StatusBar()
+    app._status_bar.cache_expires_at = (
+        now + timedelta(seconds=remaining) if remaining is not None else None
+    )
+    notify = AsyncMock()
+    toast = MagicMock()
+    monkeypatch.setattr(type(app._hooks), "notify", notify)
+    monkeypatch.setattr(app, "notify", toast)
+
+    await app._notify_cache_expiring()
+    await app._notify_cache_expiring()
+
+    if remaining in (1, 60):
+        notify.assert_awaited_once_with(
+            DcodeNotificationKind.CACHE_EXPIRING,
+            "Prompt-cache retention may end within 60 seconds.",
+            title="Prompt cache expiring",
+        )
+        toast.assert_called_once_with(
+            "Prompt-cache retention may end within 60 seconds.",
+            title="Prompt cache expiring",
+            severity="warning",
+            markup=False,
+        )
+    else:
+        notify.assert_not_awaited()
+        toast.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [None, ClientHookStopError, RuntimeError])
+async def test_cache_expiring_dedup_and_rearm(
+    failure: type[Exception] | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+    app._lc_thread_id = "source"
+    app._status_bar = StatusBar()
+    expires_at = datetime.now(UTC) + timedelta(seconds=20)
+    app._status_bar.cache_expires_at = expires_at
+    notify = AsyncMock(side_effect=failure)
+    toast = MagicMock()
+    monkeypatch.setattr(type(app._hooks), "notify", notify)
+    monkeypatch.setattr(app, "notify", toast)
+    app._thread_switching = True
+    await app._notify_cache_expiring()
+    app._thread_switching = False
+    app._exiting = True
+    await app._notify_cache_expiring()
+    notify.assert_not_awaited()
+    toast.assert_not_called()
+    app._exiting = False
+    await app._notify_cache_expiring()
+    app._lc_thread_id = "other"
+    await app._notify_cache_expiring()
+    app._lc_thread_id = "source"
+    await app._notify_cache_expiring()
+    assert notify.await_count == toast.call_count == 2
+    app._status_bar.cache_expires_at = expires_at + timedelta(seconds=1)
+    await app._notify_cache_expiring()
+    assert notify.await_count == toast.call_count == 3
+
+
+async def test_cache_expiring_timer_runs_without_prompt_or_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def notify(*_args: object, **_kwargs: object) -> None:
+        started.set()
+        await release.wait()
+
+    hook = AsyncMock(side_effect=notify)
+    process = AsyncMock()
+    handoff = AsyncMock()
+    monkeypatch.setattr(type(app._hooks), "notify", hook)
+    monkeypatch.setattr(app, "_process_message", process)
+    monkeypatch.setattr(app, "_handoff_expired_cache", handoff)
+    monkeypatch.setattr("deepagents_code.app._load_cache_prompt_mode", lambda: "off")
+    async with app.run_test(notifications=True) as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        assert app._status_bar is not None
+        app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(seconds=20)
+        app._cold_cache_suppressed_for_session = True
+        app._cold_cache_warning_threshold_usd = 0
+        app._set_agent_running(True)
+        await asyncio.wait_for(started.wait(), timeout=5)
+        app._check_cache_expiring()
+        app._check_cache_expiring()
+        assert hook.await_count == 1
+        assert app._chat_input is not None
+        app._chat_input.value = "draft remains editable"
+        await pilot.pause()
+        assert app._chat_input.value == "draft remains editable"
+        assert app.query_one("Toast").region.height > 0
+        assert any(
+            notice.title == "Prompt cache expiring" for notice in app._notifications
+        )
+        release.set()
+        assert app._cache_expiring_worker is not None
+        await app._cache_expiring_worker.wait()
+        app._check_cache_expiring()
+        await app._cache_expiring_worker.wait()
+        assert hook.await_count == 1
+        assert not isinstance(app.screen, ColdCacheWarningScreen)
+        process.assert_not_awaited()
+        handoff.assert_not_awaited()
+
+
+async def test_cache_expiring_toast_without_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    async with app.run_test(notifications=True) as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        assert not app._hooks.enabled
+        assert app._status_bar is not None
+        app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(seconds=45)
+        await app._notify_cache_expiring()
+        await app._notify_cache_expiring()
+        await pilot.pause()
+        notices = [
+            notice
+            for notice in app._notifications
+            if notice.title == "Prompt cache expiring"
+        ]
+        assert len(notices) == 1
+        assert notices[0].message == "Prompt-cache retention may end within 60 seconds."
+        assert app.query_one("Toast").region.height > 0
 
 
 @pytest.mark.parametrize("size", [(80, 20), (60, 16)])
@@ -1189,8 +1333,10 @@ async def test_handoff_does_not_restore_draft_into_unrelated_thread(
         await pilot.pause()
         _prepare(app, monkeypatch)
         await app._dispatch_queued_message(QueuedMessage("source draft", "normal"))
+        task = app._modal_command_tasks["cache-expiry"]
         await pilot.pause()
         await pilot.press("enter")
+        await asyncio.wait_for(task, timeout=5)
         await pilot.pause()
 
         assert remote.aupdate_state.await_args is not None

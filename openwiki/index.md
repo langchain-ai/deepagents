@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Repository Quickstart](quickstart.md) - Route a repository change to its owning package and quickly find the Talon architecture, channel, persistence, scheduling, security, integration, and focused-test guidance.
+- [Engineer Navigation Guide](quickstart.md) - Navigation for maintainers changing the independently released Deep Agents SDK, dcode, ACP, Talon, partner integrations, evaluations, or repository automation. Routes each task to its owner, operational guide, and narrowest observable test boundary.
 
 # Directories
 

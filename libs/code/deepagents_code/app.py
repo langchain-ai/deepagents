@@ -2255,6 +2255,9 @@ Two seconds balances responsiveness with avoiding accidental approval
 key presses.
 """
 
+_CACHE_EXPIRING_LEAD_SECONDS = 60
+"""Lead time for the prompt-cache retention notification."""
+
 _DEFERRED_APPROVAL_TIMEOUT_SECONDS: float = 30.0
 """Maximum seconds the deferred-approval worker will wait for the user to stop
 typing before showing the approval widget regardless."""
@@ -4652,6 +4655,9 @@ class DeepAgentsApp(App):
         )
         """Minimum estimated cold-versus-warm cost delta that opens the modal."""
 
+        self._cache_expiring_seen: dict[str, datetime] = {}
+        self._cache_expiring_worker: Worker[None] | None = None
+
         self._cache_expiry_seen: dict[str, datetime] = {}
         """Per-thread expiry already offered as a handoff, so each window
         prompts at most once."""
@@ -5465,6 +5471,7 @@ class DeepAgentsApp(App):
 
         self.run_worker(self._init_session_state, exclusive=True, group="session-init")
         self.set_interval(1.0, self._check_cache_expiry)
+        self.set_interval(1.0, self._check_cache_expiring)
 
         from deepagents_code.offload import sweep_offloaded_history
 
@@ -9688,6 +9695,48 @@ class DeepAgentsApp(App):
         thread_id = self._lc_thread_id
         if thread_id and expires_at is not None and datetime.now(UTC) >= expires_at:
             self._cache_expiry_seen[thread_id] = expires_at
+
+    def _check_cache_expiring(self) -> None:
+        """Dispatch cache notifications without blocking the UI or other hooks."""
+        if self._cache_expiring_worker and not self._cache_expiring_worker.is_finished:
+            return
+        self._cache_expiring_worker = self.run_worker(
+            self._notify_cache_expiring(), group="cache-expiring", exit_on_error=False
+        )
+
+    async def _notify_cache_expiring(self) -> None:
+        """Notify once per thread/window during its final retention seconds."""
+        from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+        from deepagents_code.hooks.models.domain import DcodeNotificationKind
+
+        expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+        thread_id = self._lc_thread_id
+        if (
+            self._exiting
+            or self._thread_switching
+            or not thread_id
+            or expires_at is None
+            or self._cache_expiring_seen.get(thread_id) == expires_at
+            or not 0
+            < (expires_at - datetime.now(UTC)).total_seconds()
+            <= _CACHE_EXPIRING_LEAD_SECONDS
+        ):
+            return
+        self._cache_expiring_seen[thread_id] = expires_at
+        message = (
+            "Prompt-cache retention may end within "
+            f"{_CACHE_EXPIRING_LEAD_SECONDS} seconds."
+        )
+        title = "Prompt cache expiring"
+        self.notify(message, title=title, severity="warning", markup=False)
+        try:
+            await self._hooks.notify(
+                DcodeNotificationKind.CACHE_EXPIRING, message, title=title
+            )
+        except ClientHookStopError:
+            logger.info("Cache-expiring notification was stopped by a hook")
+        except Exception:
+            logger.debug("Cache-expiring notification failed", exc_info=True)
 
     def _check_cache_expiry(self) -> None:
         """Offer a handoff once per expired cache window, only when idle.
@@ -17888,7 +17937,8 @@ class DeepAgentsApp(App):
 
         # Anchor to bottom so command output stays visible
         with suppress(NoMatches, ScreenStackError):
-            self.query_one("#chat", VerticalScroll).anchor()
+            if not isinstance(self.screen, ModalScreen):
+                self.query_one("#chat", VerticalScroll).anchor()
 
     async def _invoke_skill(
         self,
@@ -19190,9 +19240,9 @@ class DeepAgentsApp(App):
         """Update model displays and the `/effort` hint for the active model."""
         from deepagents_code.config import runtime_state
         from deepagents_code.reasoning_effort import (
+            available_efforts_for_model,
             current_effort_from_model_params,
             default_effort_for_model,
-            supported_efforts_for_model,
         )
 
         provider = runtime_state.model_provider or ""
@@ -19200,8 +19250,10 @@ class DeepAgentsApp(App):
         spec = self._effective_model_spec()
         if self._chat_input is not None:
             try:
-                efforts = supported_efforts_for_model(
-                    spec, cli_override=self._profile_override
+                efforts = available_efforts_for_model(
+                    spec,
+                    self._model_params_override,
+                    cli_override=self._profile_override,
                 )
                 hint = f"[{'|'.join((*efforts, 'clear'))}]" if efforts else ""
                 self._chat_input.set_argument_hint_override("/effort", hint)
@@ -19243,8 +19295,10 @@ class DeepAgentsApp(App):
                 or default_effort_for_model(spec, cli_override=self._profile_override)
                 or (
                     _UNKNOWN_EFFORT_LABEL
-                    if supported_efforts_for_model(
-                        spec, cli_override=self._profile_override
+                    if available_efforts_for_model(
+                        spec,
+                        self._model_params_override,
+                        cli_override=self._profile_override,
                     )
                     else ""
                 )
@@ -19268,6 +19322,7 @@ class DeepAgentsApp(App):
             load_effort_for_model,
         )
         from deepagents_code.reasoning_effort import (
+            available_efforts_for_model,
             has_explicit_effort_model_params,
             is_effort_supported_for_model,
             with_effort_model_params,
@@ -19296,6 +19351,10 @@ class DeepAgentsApp(App):
                     model_spec,
                 )
             return
+        if effort not in available_efforts_for_model(
+            model_spec, self._model_params_override, cli_override=self._profile_override
+        ):
+            return
         self._model_params_override = with_effort_model_params(
             model_spec,
             self._model_params_override,
@@ -19313,9 +19372,9 @@ class DeepAgentsApp(App):
                 `isinstance(..., _EffortUnavailable)`.
         """
         from deepagents_code.reasoning_effort import (
+            available_efforts_for_model,
             current_effort_from_model_params,
             default_effort_for_model,
-            supported_efforts_for_model,
         )
 
         spec = self._effective_model_spec()
@@ -19323,7 +19382,9 @@ class DeepAgentsApp(App):
             return _EffortUnavailable(
                 "No model is configured yet. Run `/model` to choose one."
             )
-        efforts = supported_efforts_for_model(spec, cli_override=self._profile_override)
+        efforts = available_efforts_for_model(
+            spec, self._model_params_override, cli_override=self._profile_override
+        )
         if not efforts:
             return _EffortUnavailable(
                 f"Reasoning effort is not configurable for {spec}."

@@ -97,7 +97,10 @@ _COMMAND_FAILED_MESSAGE = "Something went wrong running that command. Check Talo
 
 _CONVERSATION_PATTERN = re.compile(r"(?P<channel>[CDG][A-Z0-9]+)(?::(?P<thread>\d+\.\d+))?")
 _CODE_SPAN_PATTERN = re.compile(r"```.*?```|`[^`\n]+`", flags=re.DOTALL)
+_ESCAPED_MENTION_PATTERN = re.compile(r"&lt;@([UW][A-Z0-9]+)&gt;")
 _WEB_LINK_PATTERN = re.compile(r"\[([^\]\n]+)]\((https?://[^)\s|]+)\)")
+_NON_WEB_LINK_PATTERN = re.compile(r"(\[[^\]\n]+]\()([^)]+)(\))")
+_SLACK_LINK_PATTERN = re.compile(r"<https?://[^>]+>")
 _SKIN_TONE_PATTERN = re.compile(r"::skin-tone-\d$")
 _INBOUND_LINK_PATTERN = re.compile(r"<((?:https?|mailto):[^<>|]+)(?:\|([^<>]*))?>")
 
@@ -125,6 +128,8 @@ class SlackChannelConfig:
         exposure: Inbound trigger policy.
         allowed_user_ids: Slack user ids always allowed to DM the bot, regardless
             of exposure mode.
+        mention_allowlist_user_ids: Optional outbound mention restriction; `None`
+            allows all valid user mentions, while an empty set allows none.
         max_media_bytes: Maximum media bytes allowed for inbound downloads and
             outbound local files.
         request_timeout_seconds: Timeout for connecting and for file downloads.
@@ -138,6 +143,7 @@ class SlackChannelConfig:
     outbound_media_dir: Path | None = None
     exposure: ChannelExposure = field(default_factory=ChannelExposure)
     allowed_user_ids: frozenset[str] = field(default_factory=frozenset)
+    mention_allowlist_user_ids: frozenset[str] | None = None
     max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     pairing: SenderPairing | None = None
@@ -186,6 +192,11 @@ class SlackChannelConfig:
             exposure=exposure,
             allowed_user_ids=frozenset(
                 split_csv(env.get("DEEPAGENTS_TALON_SLACK_ALLOWLIST_USERS", "")),
+            ),
+            mention_allowlist_user_ids=(
+                frozenset(split_csv(env["DEEPAGENTS_TALON_SLACK_MENTION_ALLOWLIST_USERS"]))
+                if "DEEPAGENTS_TALON_SLACK_MENTION_ALLOWLIST_USERS" in env
+                else None
             ),
             max_media_bytes=max_media_bytes_from_env(env),
             request_timeout_seconds=parse_float(
@@ -316,6 +327,9 @@ class _CommandSink:
 _COMMAND_SINK: ContextVar[_CommandSink | None] = ContextVar(
     "talon_slack_command_sink",
     default=None,
+)
+_TOOL_APPROVAL_PROMPT: ContextVar[bool] = ContextVar(
+    "talon_slack_tool_approval_prompt", default=False
 )
 """Reply sink for the slash command being handled on this task, if any.
 
@@ -651,7 +665,17 @@ class SlackChannel:
         if sink is not None and sink.conversation_id == conversation_id:
             return await self._send_command_reply(sink, text)
         channel_id, thread_ts = _parse_conversation_id(conversation_id)
-        chunks = chunk_text(format_markdown_for_slack(text), limit=MAX_TEXT_CHARS)
+        chunks = chunk_text(
+            format_markdown_for_slack(
+                text,
+                mention_allowlist=(
+                    frozenset()
+                    if _TOOL_APPROVAL_PROMPT.get()
+                    else self.config.mention_allowlist_user_ids
+                ),
+            ),
+            limit=MAX_TEXT_CHARS,
+        )
         log_debug_event(
             logger,
             "slack.outbound.text.started",
@@ -664,6 +688,14 @@ class SlackChannel:
             self._remember_sent(channel_id, message_id, conversation_id)
         log_debug_event(logger, "slack.outbound.text.completed", chunk_count=len(chunks))
         return SendResult(success=True, message_id=message_id)
+
+    async def send_tool_approval_prompt(self, conversation_id: str, text: str) -> SendResult:
+        """Send a tool approval preview without activating user mentions."""
+        token = _TOOL_APPROVAL_PROMPT.set(True)
+        try:
+            return await self.send_message(conversation_id, text)
+        finally:
+            _TOOL_APPROVAL_PROMPT.reset(token)
 
     async def send_media(self, conversation_id: str, media: ChannelMedia) -> SendResult:
         """Upload media as a file with an optional caption.
@@ -697,6 +729,18 @@ class SlackChannel:
         log_debug_event(logger, "slack.outbound.media.completed", media_type=checked.media_type)
         return SendResult(success=True, message_id=message_id)
 
+    def top_level_conversation_id(self, conversation_id: str) -> str:
+        """Return the conversation that posts to a thread's channel, not the thread.
+
+        Args:
+            conversation_id: DM channel id, or `channel:thread_ts` for a thread.
+
+        Returns:
+            The channel id on its own, which Slack posts to the channel's top level.
+        """
+        channel_id, _ = _parse_conversation_id(conversation_id)
+        return channel_id
+
     async def edit_message(self, conversation_id: str, message_id: str, text: str) -> SendResult:
         """Edit a previously posted message.
 
@@ -709,7 +753,9 @@ class SlackChannel:
             Result indicating whether the edit succeeded.
         """
         channel_id, _ = _parse_conversation_id(conversation_id)
-        formatted = format_markdown_for_slack(text)
+        formatted = format_markdown_for_slack(
+            text, mention_allowlist=self.config.mention_allowlist_user_ids
+        )
         await self._gateway.update_message(channel_id, message_id, formatted[:MAX_TEXT_CHARS])
         return SendResult(success=True, message_id=message_id)
 
@@ -733,14 +779,26 @@ class SlackChannel:
     async def _media_comment(self, conversation_id: str, caption: str | None) -> str | None:
         if not caption:
             return None
-        comment = format_markdown_for_slack(caption)
+        comment = format_markdown_for_slack(
+            caption, mention_allowlist=self.config.mention_allowlist_user_ids
+        )
         if len(comment) <= MAX_TEXT_CHARS:
             return comment
         await self.send_message(conversation_id, caption)
         return None
 
     async def _send_command_reply(self, sink: _CommandSink, text: str) -> SendResult:
-        chunks = chunk_text(format_markdown_for_slack(text), limit=MAX_TEXT_CHARS)
+        chunks = chunk_text(
+            format_markdown_for_slack(
+                text,
+                mention_allowlist=(
+                    frozenset()
+                    if _TOOL_APPROVAL_PROMPT.get()
+                    else self.config.mention_allowlist_user_ids
+                ),
+            ),
+            limit=MAX_TEXT_CHARS,
+        )
         message_id: str | None = None
         for chunk in chunks:
             # Marked before the send so a partial failure still counts as answered:
@@ -953,15 +1011,12 @@ class SlackChannel:
         )
 
 
-def format_markdown_for_slack(text: str) -> str:
-    """Convert common Markdown into Slack `mrkdwn`.
-
-    Every `&`, `<`, and `>` is escaped, so agent output can never form a Slack
-    control sequence such as `<!channel>` or a user mention. Only `http(s)` links
-    become Slack links, for the same reason. Code spans keep their content.
+def format_markdown_for_slack(text: str, *, mention_allowlist: frozenset[str] | None = None) -> str:
+    """Convert Markdown to Slack `mrkdwn`, allowing configured user mentions.
 
     Args:
         text: Markdown text returned by the agent.
+        mention_allowlist: User IDs allowed to be mentioned, or `None` for all.
 
     Returns:
         Text safe to post as Slack `mrkdwn`.
@@ -969,21 +1024,45 @@ def format_markdown_for_slack(text: str) -> str:
     parts: list[str] = []
     last = 0
     for match in _CODE_SPAN_PATTERN.finditer(text):
-        parts.append(_format_prose(text[last : match.start()]))
+        parts.append(_format_prose(text[last : match.start()], mention_allowlist))
         parts.append(_escape_mrkdwn(match.group(0)))
         last = match.end()
-    parts.append(_format_prose(text[last:]))
+    parts.append(_format_prose(text[last:], mention_allowlist))
     return "".join(parts)
 
 
-def _format_prose(text: str) -> str:
+def _format_prose(text: str, mention_allowlist: frozenset[str] | None) -> str:
+    escaped = _escape_mrkdwn(text)
     linked = _WEB_LINK_PATTERN.sub(
         lambda match: f"<{match.group(2)}|{match.group(1)}>",
-        _escape_mrkdwn(text),
+        escaped,
     )
-    # Slack shares WhatsApp's `*bold*`/`_italic_` syntax, so the shared converter
-    # applies; it leaves the `<url|text>` links above alone.
-    return format_markdown_for_channel(linked)
+    linked = _NON_WEB_LINK_PATTERN.sub(
+        lambda match: (
+            f"{match.group(1)}{match.group(2).replace('&lt;@', '&amp;lt;@')}{match.group(3)}"
+        ),
+        linked,
+    )
+    formatted = format_markdown_for_channel(linked)
+    parts: list[str] = []
+    last = 0
+    for link in _SLACK_LINK_PATTERN.finditer(formatted):
+        parts.append(_restore_mentions(formatted[last : link.start()], mention_allowlist))
+        parts.append(link.group(0))
+        last = link.end()
+    parts.append(_restore_mentions(formatted[last:], mention_allowlist))
+    return "".join(parts)
+
+
+def _restore_mentions(text: str, allowlist: frozenset[str] | None) -> str:
+    return _ESCAPED_MENTION_PATTERN.sub(
+        lambda match: (
+            f"<@{match.group(1)}>"
+            if allowlist is None or match.group(1) in allowlist
+            else match.group(0)
+        ),
+        text,
+    )
 
 
 def _escape_mrkdwn(text: str) -> str:

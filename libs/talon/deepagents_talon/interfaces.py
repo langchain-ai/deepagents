@@ -253,6 +253,22 @@ class ChannelAdapter(Protocol):
 
 
 @runtime_checkable
+class ThreadedChannelAdapter(Protocol):
+    """Optional channel surface for channels whose conversations can be threads."""
+
+    def top_level_conversation_id(self, conversation_id: str) -> str:
+        """Return the conversation that posts to a thread's parent channel.
+
+        Args:
+            conversation_id: Conversation id, which may name a thread.
+
+        Returns:
+            The parent channel's conversation id, or `conversation_id` itself
+                when it is not a thread.
+        """
+
+
+@runtime_checkable
 class ReactionChannelAdapter(Protocol):
     """Optional channel surface for inbound reaction events."""
 
@@ -333,6 +349,18 @@ class ModelSelectableRuntime(Protocol):
             Whether `spec` is a selectable model. A model that is selectable but
             cannot be built raises instead.
         """
+
+
+@runtime_checkable
+class SmartModelRuntime(Protocol):
+    """Optional runtime capability for the assistant-wide one-off help model."""
+
+    @property
+    def smart_model(self) -> str | None:
+        """Current helper model, or None when consultations are disabled."""
+
+    async def select_smart_model(self, spec: str | None) -> bool:
+        """Validate and activate a helper model for subsequent turns."""
 
 
 @runtime_checkable

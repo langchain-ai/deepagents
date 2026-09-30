@@ -15,6 +15,7 @@ from deepagents_talon.cron.jobs import (
     CronJobStore,
     CronOrigin,
     CronSchedule,
+    DeliverTo,
     parse_until,
 )
 
@@ -50,6 +51,12 @@ UNTIL_HELP = """Optional last local time a recurring job may run, inclusive,
         dropped rather than delivered after it. For "the next three months",
         compute the date from `current_time`."""
 
+DELIVER_TO_HELP = """Where results post when this conversation is a channel
+        thread: `channel` posts to the channel itself, `thread` replies in this
+        thread. Prefer `channel` for anything that fires later than today, and
+        `thread` for short follow-ups on the discussion at hand. Only Slack
+        channel threads and public Discord threads distinguish the two."""
+
 _RESULT_HELP = """The job's `upcoming` field lists its next few run times; check them
     against what the user asked for and fix the schedule if they disagree."""
 
@@ -62,6 +69,7 @@ Args:
     repeat_times: Optional cap for recurring schedules. `1` runs a recurring
         schedule once, at its next match.
     until: {UNTIL_HELP}
+    deliver_to: {DELIVER_TO_HELP}
 
 Returns:
     Created job details, or an error dictionary for invalid input.
@@ -79,6 +87,7 @@ Args:
     repeat_times: Optional replacement repeat cap for recurring schedules.
     until: Optional replacement end time. {UNTIL_HELP}
         Pass an empty string to remove the end time.
+    deliver_to: Optional replacement. {DELIVER_TO_HELP}
 
 Returns:
     Updated job details, or an error dictionary for invalid input.
@@ -99,7 +108,7 @@ class CronTools:
         self.store = store
         self.origin = origin
 
-    def create_job(
+    def create_job(  # noqa: PLR0913  # agent tool exposes optional job fields
         self,
         *,
         prompt: str,
@@ -107,6 +116,7 @@ class CronTools:
         name: str = "",
         repeat_times: int | None = None,
         until: str | None = None,
+        deliver_to: DeliverTo = "channel",
     ) -> dict[str, Any]:
         """Create a scheduled job in the current conversation.
 
@@ -116,6 +126,7 @@ class CronTools:
             name: Optional human-readable label.
             repeat_times: Optional cap for recurring schedules.
             until: Optional end time, in the form `UNTIL_HELP` describes.
+            deliver_to: Where results post, as `DELIVER_TO_HELP` describes.
 
         Returns:
             Created job as a JSON-compatible dictionary, with `upcoming` runs.
@@ -127,6 +138,7 @@ class CronTools:
             name=name,
             repeat_times=repeat_times,
             until=parse_until(until) if until else None,
+            deliver_to=deliver_to,
         )
         return _tool_job(job, upcoming=True)
 
@@ -148,6 +160,7 @@ class CronTools:
         enabled: bool | None = None,
         repeat_times: int | None = None,
         until: str | None = None,
+        deliver_to: DeliverTo | None = None,
     ) -> dict[str, Any]:
         """Edit a scheduled job in the current conversation.
 
@@ -161,6 +174,7 @@ class CronTools:
             repeat_times: Optional replacement repeat cap for recurring jobs.
             until: Optional replacement end time, in the form `UNTIL_HELP`
                 describes. An empty string removes the end time.
+            deliver_to: Optional replacement delivery target.
 
         Returns:
             Updated job as a JSON-compatible dictionary, with `upcoming` runs.
@@ -176,6 +190,7 @@ class CronTools:
             repeat_times=repeat_times,
             until=parse_until(until) if until else None,
             clear_until=until == "",
+            deliver_to=deliver_to,
         )
         return _tool_job(job, upcoming=True)
 
@@ -213,12 +228,13 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
     """
 
     @tool(description=_CREATE_DESCRIPTION)
-    def create_job(
+    def create_job(  # noqa: PLR0913  # agent tool exposes optional job fields
         prompt: str,
         schedule: str,
         name: str = "",
         repeat_times: int | None = None,
         until: str | None = None,
+        deliver_to: DeliverTo = "channel",
     ) -> dict[str, Any]:
         try:
             return cron.create_job(
@@ -227,6 +243,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 name=name,
                 repeat_times=repeat_times,
                 until=_strip_optional_quotes(until),
+                deliver_to=deliver_to,
             )
         except Exception as exc:  # noqa: BLE001
             return _tool_error(exc)
@@ -253,6 +270,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
         enabled: bool | None = None,
         repeat_times: int | None = None,
         until: str | None = None,
+        deliver_to: DeliverTo | None = None,
     ) -> dict[str, Any]:
         try:
             return cron.edit_job(
@@ -263,6 +281,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
                 enabled=enabled,
                 repeat_times=repeat_times,
                 until=_strip_optional_quotes(until),
+                deliver_to=deliver_to,
             )
         except Exception as exc:  # noqa: BLE001
             return _tool_error(exc)
@@ -299,6 +318,7 @@ def _tool_job(job: CronJob, *, upcoming: bool = False) -> dict[str, Any]:
         "last_status": data["last_status"],
         "last_error": data["last_error"],
         "until": data["until"],
+        "deliver_to": data["deliver_to"],
     }
     if upcoming:
         payload["upcoming"] = [run.isoformat() for run in job.upcoming(_UPCOMING_COUNT)]

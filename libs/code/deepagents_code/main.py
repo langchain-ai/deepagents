@@ -2147,7 +2147,7 @@ def parse_args() -> argparse.Namespace:
     Returns:
         Parsed arguments namespace.
     """
-    from deepagents_code._constants import DEFAULT_AGENT_NAME
+    from deepagents_code._constants import DEFAULT_AGENT_NAME, DEFAULT_THREAD_LIMIT
     from deepagents_code.client.commands.auth import setup_auth_parser
     from deepagents_code.client.commands.config import setup_config_parser
     from deepagents_code.client.commands.mcp import setup_mcp_parsers
@@ -2324,7 +2324,7 @@ def parse_args() -> argparse.Namespace:
         "--limit",
         type=int,
         default=None,
-        help="Max number of threads to display (default: 20)",
+        help=f"Max number of threads to display (default: {DEFAULT_THREAD_LIMIT})",
     )
     threads_list.add_argument(
         "--sort",
@@ -2359,7 +2359,7 @@ def parse_args() -> argparse.Namespace:
         "--relative",
         action=argparse.BooleanOptionalAction,
         default=None,
-        help="Show timestamps as relative time (default: from config, or absolute)",
+        help="Show timestamps as relative time (default: from config)",
     )
     threads_delete = threads_sub.add_parser(
         "delete",

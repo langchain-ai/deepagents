@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -51,9 +52,70 @@ _EVENT_LABEL_MAX_CHARS = 120
 _EVENT_LABEL_FALLBACK_MAX_CHARS = 60
 """Character cap on a label derived from the description fallback."""
 
+_DISPATCH_ID_SALT: Final = "langchain-quickjs-subagent-dispatch-v1"
+"""Domain-separation prefix for derived dispatch ids.
+
+Changing this value changes every derived id, so an eval interrupted before
+the change will not recognize its own events after a resume.
+"""
+
+
+def _derive_dispatch_id(
+    *,
+    eval_id: str | None,
+    task_tool_name: str,
+    dispatch_ordinal: int,
+    description: str,
+    subagent_type: str,
+    label: str | None,
+    response_schema: dict[str, Any] | None,
+) -> str:
+    """Derive a dispatch id that is stable across replays of the same eval.
+
+    The id is a truncated SHA-256 over the parent `eval_id`, the ordinal and
+    the request payload, so a replayed eval reproduces it exactly. When there
+    is no parent `eval_id` there is nothing to replay against, so mint a
+    random id instead — unrelated dispatches must never collide.
+
+    The digest is a determinism device, not a security boundary.
+    """
+    if not eval_id:
+        # The middleware always supplies a parent tool-call id, so reaching
+        # this branch means a non-LangGraph caller or a changed runtime shim.
+        # Say so: the only other symptom is duplicate subagent identities
+        # after a resume, which surfaces far from the cause.
+        logger.debug(
+            "No parent eval tool_call_id; dispatch id for %s (ordinal %d) will "
+            "be random and will not survive an interrupt replay.",
+            task_tool_name,
+            dispatch_ordinal,
+        )
+        return f"ptc_{task_tool_name}_{uuid.uuid4().hex}"
+    payload = json.dumps(
+        [
+            _DISPATCH_ID_SALT,
+            eval_id,
+            task_tool_name,
+            dispatch_ordinal,
+            subagent_type,
+            description,
+            label,
+            response_schema,
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(payload.encode()).hexdigest()[:32]
+    return f"ptc_{task_tool_name}_{digest}"
+
 
 class SubagentStartEvent(TypedDict):
-    """A subagent began running inside a `js_eval` call."""
+    """A subagent began running inside a `js_eval` call.
+
+    An interrupted dispatch re-emits `start` with the same `id` when the eval
+    replays, so this means "began, possibly again" rather than "began once".
+    Treat `id` as an idempotency key: upsert on `start`, never append.
+    """
 
     id: str
     """Per-dispatch id, stable across this subagent's start/complete/error."""
@@ -196,11 +258,30 @@ async def call_subagent_task_tool(
     response_schema: dict[str, Any] | None,
     runtime: Any,
     label: str | None = None,
+    dispatch_ordinal: int = 0,
 ) -> Any:
     """Call the Deep Agents task tool and return a JavaScript-friendly value.
 
     This also emits `start` then `complete`/`error` subagent lifecycle
     events on the custom stream.
+
+    A dispatch id survives replay when the parent eval exposes a tool-call id
+    *and* the script reaches its `task()` calls in the same order, because
+    `dispatch_ordinal` is assigned in host-invocation order. A script that
+    races dispatches behind awaits on other tools can reorder them; that
+    yields fresh ids rather than wrong ones, since the payload is hashed too.
+    Without a parent tool-call id, every dispatch gets a random id.
+
+    Args:
+        task_tool: The Deep Agents task tool to invoke.
+        description: Instructions handed to the subagent.
+        subagent_type: Name of the subagent to dispatch.
+        response_schema: JSON schema for structured output, if any.
+        runtime: The `ToolRuntime` of the enclosing `js_eval` call.
+        label: Short display label; falls back to `description`.
+        dispatch_ordinal: Position of this dispatch within the parent eval.
+            Distinguishes otherwise-identical tasks and makes the id
+            reproducible when the eval replays.
     """
     if runtime is None:
         msg = "task() requires an active ToolRuntime"
@@ -212,9 +293,22 @@ async def call_subagent_task_tool(
         response_schema = _ensure_schema_title(response_schema)
         runtime = _runtime_with_response_format(runtime, response_schema)
 
-    eval_id = getattr(runtime, "tool_call_id", None)
+    # Normalize once: a blank or non-string `tool_call_id` is "no parent eval".
+    # The derivation below and the `eval_id is not None` guards on each event
+    # must agree, or an empty id would ship a random dispatch id while still
+    # advertising a parent batch on the wire.
+    raw_eval_id = getattr(runtime, "tool_call_id", None)
+    eval_id = raw_eval_id if isinstance(raw_eval_id, str) and raw_eval_id else None
     stream_writer = getattr(runtime, "stream_writer", None)
-    subagent_id = f"ptc_{task_tool.name}_{uuid.uuid4().hex[:8]}"
+    subagent_id = _derive_dispatch_id(
+        eval_id=eval_id,
+        task_tool_name=task_tool.name,
+        dispatch_ordinal=dispatch_ordinal,
+        description=description,
+        subagent_type=subagent_type,
+        label=label,
+        response_schema=response_schema,
+    )
 
     runtime = _runtime_with_tool_call_id(runtime, subagent_id)
 

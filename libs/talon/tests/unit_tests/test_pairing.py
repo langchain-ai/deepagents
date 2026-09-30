@@ -489,15 +489,6 @@ async def test_pair_is_refused_outside_a_dm(tmp_path: Path) -> None:
     assert agent.requests == []
 
 
-def test_jobs_saved_without_a_creator_still_load() -> None:
-    origin = CronOrigin.from_dict(
-        {"conversation_id": "c", "channel": "discord", "message_id": None}
-    )
-
-    assert origin.sender_id is None
-    assert CronOrigin.from_dict(origin.to_dict()) == origin
-
-
 def _job(cron: CronJobStore, conversation_id: str, sender_id: str | None):
     return cron.create_job(
         prompt="report",
@@ -510,8 +501,7 @@ async def test_revoke_stops_the_run_pauses_jobs_and_blocks_the_sender(tmp_path: 
     host, gateway, agent, cron = await _host(tmp_path, Clock())
     await gateway.deliver_message(_dm(STRANGER, "let me in"))
     await gateway.deliver_message(_dm(OPERATOR, f"/pair approve {_issued_code(gateway)}"))
-    # Saved before creators were recorded: matched by the sender's DM.
-    legacy_job = _job(cron, STRANGER_DM, None)
+    dm_job = _job(cron, STRANGER_DM, STRANGER)
     shared_job = _job(cron, "guild", STRANGER)
     operator_job = _job(cron, "guild", OPERATOR)
     await gateway.deliver_message(_dm(STRANGER, "block", channel_id="guild", is_dm=False))
@@ -528,7 +518,7 @@ async def test_revoke_stops_the_run_pauses_jobs_and_blocks_the_sender(tmp_path: 
     ) in gateway.sent_text
     assert [request.text for request in agent.requests] == ["block"]
     assert [(saved.id, saved.enabled) for saved in cron.list_jobs()] == [
-        (legacy_job.id, False),
+        (dm_job.id, False),
         (shared_job.id, False),
         (operator_job.id, True),
     ]
@@ -599,7 +589,7 @@ async def _approved_stranger_with_job(tmp_path: Path):
     job = cron.create_job(
         prompt="block",
         schedule=CronSchedule.parse("every 1h"),
-        origin=CronOrigin(conversation_id=STRANGER_DM, channel="discord"),
+        origin=CronOrigin(conversation_id=STRANGER_DM, channel="discord", sender_id=STRANGER),
     )
     return host, gateway, agent, job
 
@@ -688,13 +678,13 @@ def test_cli_approves_lists_and_revokes(
     job = cron.create_job(
         prompt="report",
         schedule=CronSchedule.parse("every 1h"),
-        origin=CronOrigin(conversation_id=STRANGER_DM, channel="telegram"),
+        origin=CronOrigin(conversation_id=STRANGER_DM, channel="telegram", sender_id=STRANGER),
     )
     capsys.readouterr()
 
     assert _cli(monkeypatch, tmp_path, "revoke", "telegram", STRANGER) == 0
     assert not store.is_paired("telegram", STRANGER)
-    follow_up = f"deepagents-talon pairing pause-jobs telegram {STRANGER} --dm {STRANGER_DM}"
+    follow_up = f"deepagents-talon pairing pause-jobs telegram {STRANGER}"
     assert follow_up in capsys.readouterr().out
     assert _cli(monkeypatch, tmp_path, *follow_up.split()[2:]) == 0
     assert [(saved.id, saved.enabled) for saved in cron.list_jobs()] == [(job.id, False)]

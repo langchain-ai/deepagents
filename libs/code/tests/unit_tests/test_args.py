@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 from rich.console import Console
 
-from deepagents_code._constants import DEFAULT_AGENT_NAME
+from deepagents_code._constants import DEFAULT_AGENT_NAME, DEFAULT_THREAD_LIMIT
 from deepagents_code.main import _resolve_agent_arg, parse_args
 
 
@@ -242,7 +242,23 @@ class TestSubcommandHelpFlags:
         """Running `deepagents threads list -h` should show threads list help."""
         self._run_help(
             ["deepagents", "threads", "list", "-h"],
-            must_contain="--limit",
+            must_contain=(
+                f"Maximum threads to display (default: {DEFAULT_THREAD_LIMIT})"
+            ),
+            must_not_contain="--sandbox",
+        )
+
+    @pytest.mark.parametrize("command", ["list", "create", "info", "delete"])
+    def test_skills_agent_default(self, command: str) -> None:
+        argv = ["deepagents", "skills", command]
+        if command != "list":
+            argv.append("example-skill")
+        with patch.object(sys, "argv", argv):
+            args = parse_args()
+        assert args.agent == DEFAULT_AGENT_NAME
+        self._run_help(
+            [*argv, "-h"],
+            must_contain=f"Agent identifier (default: {args.agent})",
             must_not_contain="--sandbox",
         )
 

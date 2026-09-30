@@ -1980,6 +1980,7 @@ class ChatInputResizeHandle(Static):
     """
 
     ALLOW_SELECT = False
+    incognito: reactive[bool] = reactive(False)
 
     class DragStarted(Message):
         """Message sent when a resize drag begins."""
@@ -2016,13 +2017,15 @@ class ChatInputResizeHandle(Static):
         self._drag_start_y: int | None = None
         self._highlighted = False
 
-    def render(self) -> str:
-        """Render the border line beneath the drag target.
+    def render(self) -> Content:
+        """Render the border line and active incognito label.
 
         Returns:
-            A charset-compatible horizontal rule spanning the handle.
+            A charset-compatible rule with the active mode label.
         """
-        return get_glyphs().box_horizontal * self.size.width
+        label = Content.styled(" incognito ", "bold") if self.incognito else Content("")
+        line = get_glyphs().box_horizontal * max(0, self.size.width - label.cell_length)
+        return Content.assemble(label, line)
 
     def _set_highlighted(self, *, highlighted: bool) -> None:
         """Publish top-border hover changes."""
@@ -3758,6 +3761,8 @@ class ChatInput(Vertical):
                 self._sync_resize_handle_color()
                 return
             prompt.update(glyph or ">")
+            if self._resize_handle is not None:
+                self._resize_handle.incognito = mode == "shell_incognito"
             if self._input_box is not None:
                 self._input_box.border_title = (
                     "incognito" if mode == "shell_incognito" else None

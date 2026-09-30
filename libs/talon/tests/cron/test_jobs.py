@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from deepagents_talon.cron import (
+    CronJob,
     CronJobError,
     CronJobStore,
     CronOrigin,
@@ -126,6 +127,45 @@ def test_tools_are_scoped_to_current_conversation(tmp_path) -> None:
         tools.edit_job(other_job.id, enabled=False)
     with pytest.raises(CronJobError):
         tools.remove_job(other_job.id)
+
+
+def test_deliver_to_defaults_to_channel_and_persists_edits(tmp_path) -> None:
+    store = _store(tmp_path)
+    tools = CronTools(store=store, origin=lambda: CronOrigin(conversation_id="C1:1.2"))
+
+    created = tools.create_job(prompt="report", schedule="every 1h")
+    assert created["deliver_to"] == "channel"
+    edited = tools.edit_job(created["id"], deliver_to="thread")
+
+    assert edited["deliver_to"] == "thread"
+    assert [job.deliver_to for job in _store(tmp_path).list_jobs()] == ["thread"]
+
+
+def test_job_saved_without_deliver_to_loads_as_channel(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.create_job(
+        prompt="report",
+        schedule=CronSchedule.parse("every 1h"),
+        origin=CronOrigin(conversation_id="C1:1.2"),
+        deliver_to="thread",
+    )
+    payload = json.loads(store.path.read_text(encoding="utf-8"))
+    del payload["jobs"][0]["deliver_to"]
+    store.path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert [job.deliver_to for job in _store(tmp_path).list_jobs()] == ["channel"]
+
+
+def test_unknown_deliver_to_is_rejected(tmp_path) -> None:
+    job = _store(tmp_path).create_job(
+        prompt="report",
+        schedule=CronSchedule.parse("every 1h"),
+        origin=CronOrigin(conversation_id="C1:1.2"),
+    )
+    record = {**job.to_dict(), "deliver_to": "everywhere"}
+
+    with pytest.raises(CronJobError, match="deliver_to"):
+        CronJob.from_dict(record)
 
 
 NEW_YORK = "America/New_York"

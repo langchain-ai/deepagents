@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from langchain.messages import ToolCall
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import ToolMessage
+    from langchain_quickjs import PTCOption
     from langgraph.checkpoint.base import BaseCheckpointSaver
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.pregel import Pregel
@@ -2869,6 +2870,13 @@ def create_cli_agent(
                 mcp_tools=mcp_tools,
             )
         )
+        if mcp_tools:
+            from deepagents_code.config_manifest import resolve_mcp_tool_timeout
+            from deepagents_code.mcp_middleware import mcp_tool_middleware
+
+            middleware.append(
+                mcp_tool_middleware(timeout_seconds=resolve_mcp_tool_timeout())
+            )
         # Subagents share the on-disk filesystem backend and can edit the user
         # AGENTS.md, so they get the same managed onboarding-name block guard as
         # the main agent. Gated on memory because the block only exists when
@@ -3146,7 +3154,8 @@ def create_cli_agent(
         from langchain_core._api import (  # noqa: PLC2701  # re-exported in _api.__all__
             suppress_langchain_beta_warning,
         )
-        from langchain_quickjs import CodeInterpreterMiddleware, PTCOption
+
+        from deepagents_code._js_cost import CostAwareCodeInterpreterMiddleware
 
         interpreter = interpreter_config or InterpreterConfig.from_resolver()
         ptc_names = _resolve_ptc_option(
@@ -3163,7 +3172,7 @@ def create_cli_agent(
         # and the warning is not actionable for users, so suppress it.
         with suppress_langchain_beta_warning():
             agent_middleware.append(
-                CodeInterpreterMiddleware(
+                CostAwareCodeInterpreterMiddleware(
                     tool_name="js_eval",
                     timeout=interpreter.timeout_seconds,
                     memory_limit=interpreter.memory_limit_mb * 1024 * 1024,
@@ -3333,6 +3342,15 @@ def create_cli_agent(
     hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
     server_hooks_middleware = ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools)
     agent_middleware.append(server_hooks_middleware)
+    # Keep timeout results inside the hooks wrapper so PostToolUseFailure sees
+    # them just like other failed tool calls.
+    if mcp_tools:
+        from deepagents_code.config_manifest import resolve_mcp_tool_timeout
+        from deepagents_code.mcp_middleware import mcp_tool_middleware
+
+        agent_middleware.append(
+            mcp_tool_middleware(timeout_seconds=resolve_mcp_tool_timeout())
+        )
 
     # Publish the server operation on the backend shared with `server_graph`.
     # The custom HTTP route owns checkpoint access and persistence, while this

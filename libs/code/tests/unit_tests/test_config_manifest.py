@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import tomllib
 from datetime import date, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
@@ -25,11 +26,15 @@ from deepagents_code.client.commands.config import (
     run_config_command,
 )
 from deepagents_code.config_manifest import (
+    MCP_TOOL_TIMEOUT_CEILING,
+    MCP_TOOL_TIMEOUT_FLOOR,
+    MCP_TOOL_TIMEOUT_SECONDS_DEFAULT,
     ConfigOption,
     OptionKind,
     get_config_options,
     get_option,
     options_with_key_prefix,
+    resolve_mcp_tool_timeout,
 )
 from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
 from unit_tests.conftest import resolve_option_for_test
@@ -42,6 +47,115 @@ if TYPE_CHECKING:
 # config file, or built-in defaults; adding the env var here would hide the
 # config/default cases these tests are trying to verify.
 pytestmark = pytest.mark.self_managed_update_check
+
+
+def test_mcp_tool_timeout_resolves_env_and_bounds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MCP timeout accepts env overrides and rejects values outside its bounds."""
+    option = get_option("mcp.tool_timeout")
+    assert option is not None
+    assert option.env_var == _env_vars.MCP_TOOL_TIMEOUT
+
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, "45")
+    assert resolve_mcp_tool_timeout(
+        toml_data={"mcp": {"tool_timeout": 30.0}}
+    ) == pytest.approx(45.0)
+
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, str(MCP_TOOL_TIMEOUT_CEILING + 1))
+    assert resolve_mcp_tool_timeout(
+        toml_data={"mcp": {"tool_timeout": 30.0}}
+    ) == pytest.approx(30.0)
+
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, str(MCP_TOOL_TIMEOUT_FLOOR - 1))
+    assert resolve_mcp_tool_timeout(
+        toml_data={"mcp": {"tool_timeout": 30.0}}
+    ) == pytest.approx(30.0)
+    assert pytest.approx(120.0) == MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
+
+
+@pytest.mark.parametrize("process_value", [None, "45", "901"])
+@pytest.mark.parametrize("managed_value", [None, 901.0])
+def test_mcp_timeout_rejects_scoped_environment_override(
+    monkeypatch: pytest.MonkeyPatch,
+    process_value: str | None,
+    managed_value: float | None,
+) -> None:
+    """A rejected workspace override reveals TOML without changing the process."""
+    from deepagents_code.config import active_environment, use_environment
+
+    if process_value is None:
+        monkeypatch.delenv(_env_vars.MCP_TOOL_TIMEOUT, raising=False)
+    else:
+        monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, process_value)
+    managed = {} if managed_value is None else {"mcp": {"tool_timeout": managed_value}}
+    with use_environment({_env_vars.MCP_TOOL_TIMEOUT: "901"}):
+        assert resolve_mcp_tool_timeout(
+            toml_data={"mcp": {"tool_timeout": 30.0}}, managed_toml_data=managed
+        ) == pytest.approx(30.0)
+        assert active_environment()[_env_vars.MCP_TOOL_TIMEOUT] == "901"
+        assert os.environ.get(_env_vars.MCP_TOOL_TIMEOUT) == process_value
+
+
+@pytest.mark.parametrize("invalid", [0, 901, "nan", "inf", "invalid"])
+def test_mcp_timeout_falls_back_through_all_rejected_sources(
+    monkeypatch: pytest.MonkeyPatch, invalid: int | str
+) -> None:
+    """Invalid values at every precedence level still leave a finite deadline."""
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, str(invalid))
+    assert resolve_mcp_tool_timeout(
+        toml_data={"mcp": {"tool_timeout": invalid}},
+        managed_toml_data={"mcp": {"tool_timeout": invalid}},
+    ) == pytest.approx(MCP_TOOL_TIMEOUT_SECONDS_DEFAULT)
+
+
+@pytest.mark.parametrize(
+    ("managed", "environment", "user", "expected", "source"),
+    [
+        (20, "45", 30, 20.0, "managed config"),
+        (901, "45", 30, 45.0, f"env ({_env_vars.MCP_TOOL_TIMEOUT})"),
+        (901, "901", 30, 30.0, "config.toml"),
+        (901, "901", 901, MCP_TOOL_TIMEOUT_SECONDS_DEFAULT, "default"),
+    ],
+)
+def test_mcp_timeout_display_matches_runtime_source(
+    monkeypatch: pytest.MonkeyPatch,
+    managed: int,
+    environment: str,
+    user: int,
+    expected: float,
+    source: str,
+) -> None:
+    """Config introspection reports the accepted value and its actual source."""
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, environment)
+    option = get_option("mcp.tool_timeout")
+    assert option is not None
+    assert _resolve(
+        option,
+        toml_data={"mcp": {"tool_timeout": user}},
+        managed_toml_data={"mcp": {"tool_timeout": managed}},
+    ) == (source != "default", source, expected)
+
+
+@pytest.mark.parametrize("user_timeout", [30, 901])
+def test_config_get_mcp_timeout_reports_bounded_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    user_timeout: int,
+) -> None:
+    """The config command falls back to TOML or the default for invalid env values."""
+    config = tmp_path / "config.toml"
+    config.write_text(f"[mcp]\ntool_timeout = {user_timeout}\n", encoding="utf-8")
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+    monkeypatch.setenv(_env_vars.MCP_TOOL_TIMEOUT, "901")
+
+    payload = _get_json_object("mcp.tool_timeout", capsys)
+
+    expected = 30.0 if user_timeout == 30 else MCP_TOOL_TIMEOUT_SECONDS_DEFAULT
+    assert payload["value"] == expected
+    assert payload["source"] == ("config.toml" if user_timeout == 30 else "default")
+    assert payload["set"] is (user_timeout == 30)
 
 
 def _resolve_manifest_option(

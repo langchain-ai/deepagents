@@ -89,6 +89,7 @@ def _channel(
     *,
     exposure: ChannelExposure | None = None,
     allowed_user_ids: frozenset[str] = frozenset(),
+    mention_allowlist_user_ids: frozenset[str] | None = None,
 ) -> tuple[SlackChannel, RecordingGateway, list, list]:
     gateway = RecordingGateway()
     channel = SlackChannel(
@@ -100,6 +101,7 @@ def _channel(
             exposure=exposure
             or ChannelExposure(mode=ExposureMode.SELF, operator_ids=frozenset({OPERATOR})),
             allowed_user_ids=allowed_user_ids,
+            mention_allowlist_user_ids=mention_allowlist_user_ids,
             max_media_bytes=1000,
         ),
         gateway=gateway,
@@ -161,7 +163,29 @@ def test_config_parses_exposure_and_hides_tokens(tmp_path: Path) -> None:
     assert config.exposure.mode is ExposureMode.ALLOWLIST
     assert config.exposure.conversations == frozenset({"C1", "C2"})
     assert config.allowed_user_ids == frozenset({"U1"})
+    assert config.mention_allowlist_user_ids is None
     assert "secret" not in repr(config)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("U1, W2", frozenset({"U1", "W2"})), ("", frozenset())],
+)
+def test_config_parses_outbound_mention_allowlist(
+    tmp_path: Path, value: str, expected: frozenset[str]
+) -> None:
+    config = SlackChannelConfig.from_talon_config(
+        _talon_config(
+            tmp_path,
+            {
+                "DEEPAGENTS_TALON_SLACK_BOT_TOKEN": "xoxb-1",
+                "DEEPAGENTS_TALON_SLACK_APP_TOKEN": "xapp-1",
+                "DEEPAGENTS_TALON_SLACK_OPERATOR_ID": OPERATOR,
+                "DEEPAGENTS_TALON_SLACK_MENTION_ALLOWLIST_USERS": value,
+            },
+        ),
+    )
+    assert config.mention_allowlist_user_ids == expected
 
 
 def test_config_self_exposure_requires_operator(tmp_path: Path) -> None:
@@ -308,6 +332,54 @@ async def test_dm_reply_is_posted_top_level(tmp_path: Path) -> None:
     assert gateway.posts == [("D1", "hello", None)]
 
 
+async def test_outbound_mention_policy_applies_to_posts_and_edits(tmp_path: Path) -> None:
+    channel, gateway, _, _ = _channel(tmp_path, mention_allowlist_user_ids=frozenset({"U123"}))
+    await channel.send_message("D1", "<@U123> <@U999> <!here>")
+    await channel.edit_message("D1", "1700000000.000001", "<@U123> <@U999>")
+    assert gateway.posts == [("D1", "<@U123> &lt;@U999&gt; &lt;!here&gt;", None)]
+    assert gateway.updates == [("D1", "1700000000.000001", "<@U123> &lt;@U999&gt;")]
+
+
+async def test_outbound_mention_policy_applies_to_command_replies(tmp_path: Path) -> None:
+    channel, _, _, _ = _channel(tmp_path, mention_allowlist_user_ids=frozenset({"U123"}))
+    responder = CapturingResponder()
+    sink = slack_module._CommandSink("D1", responder)
+    await channel._send_command_reply(sink, "<@U123> <@U999>")
+    assert responder.sends == ["<@U123> &lt;@U999&gt;"]
+
+
+async def test_outbound_mention_policy_applies_to_media_captions(tmp_path: Path) -> None:
+    image = tmp_path / "chart.png"
+    image.write_bytes(b"\x89PNG")
+    channel, gateway, _, _ = _channel(tmp_path, mention_allowlist_user_ids=frozenset({"U123"}))
+    await channel.send_media(
+        "D1", ChannelMedia(path=image, media_type="image", caption="<@U123> <@U999>")
+    )
+    assert gateway.uploads == [("D1", image.resolve(), None, "<@U123> &lt;@U999&gt;")]
+
+
+@pytest.mark.parametrize(
+    ("conversation_id", "expected"), [("C1:1712.345", "C1"), ("C1", "C1"), ("D1", "D1")]
+)
+def test_top_level_conversation_drops_the_thread(
+    tmp_path: Path, conversation_id: str, expected: str
+) -> None:
+    channel, _, _, _ = _channel(tmp_path)
+    assert channel.top_level_conversation_id(conversation_id) == expected
+
+
+async def test_top_level_conversation_posts_to_the_channel(tmp_path: Path) -> None:
+    channel, gateway, _, _ = _channel(tmp_path)
+    await channel.send_message(channel.top_level_conversation_id("C1:1712.345"), "report")
+    assert gateway.posts == [("C1", "report", None)]
+
+
+def test_top_level_conversation_rejects_malformed_ids(tmp_path: Path) -> None:
+    channel, _, _, _ = _channel(tmp_path)
+    with pytest.raises(ValueError, match="not a Slack conversation id"):
+        channel.top_level_conversation_id("general")
+
+
 @pytest.mark.parametrize("conversation_id", ["", "D1:", "C1:abc", "general", "C1:1.2:3"])
 async def test_malformed_conversation_id_is_rejected(tmp_path: Path, conversation_id: str) -> None:
     channel, gateway, _, _ = _channel(tmp_path)
@@ -342,11 +414,38 @@ def test_markdown_becomes_mrkdwn() -> None:
 
 
 def test_markdown_cannot_form_slack_control_sequences() -> None:
-    # Raw `<!channel>` would notify everyone in the channel; a non-web link
-    # target must not become a Slack link either.
     assert format_markdown_for_slack("<!channel> hi") == "&lt;!channel&gt; hi"
     assert "<" not in format_markdown_for_slack("[x](!channel)")
     assert format_markdown_for_slack("a < b & c") == "a &lt; b &amp; c"
+
+
+def test_markdown_mentions_only_valid_allowed_users_in_prose() -> None:
+    text = "<@U123> <@W456> <@B789> <!channel> <@U123|name> ` <@U123> `"
+    assert format_markdown_for_slack(text) == (
+        "<@U123> <@W456> &lt;@B789&gt; &lt;!channel&gt; &lt;@U123|name&gt; ` &lt;@U123&gt; `"
+    )
+    assert format_markdown_for_slack(text, mention_allowlist=frozenset({"W456"})).startswith(
+        "&lt;@U123&gt; <@W456>"
+    )
+    assert format_markdown_for_slack("<@U123>", mention_allowlist=frozenset()) == ("&lt;@U123&gt;")
+    assert format_markdown_for_slack("&lt;@U123&gt;") == "&amp;lt;@U123&amp;gt;"
+    assert format_markdown_for_slack("[<@U123>](https://example.com)") == (
+        "<https://example.com|&lt;@U123&gt;>"
+    )
+    assert "<@U123>" not in format_markdown_for_slack("[profile](<@U123>)")
+    assert format_markdown_for_slack("[profile](<@U123>) <@U456>").endswith("<@U456>")
+
+
+async def test_tool_approval_prompt_escapes_mentions_without_changing_regular_sends(
+    tmp_path: Path,
+) -> None:
+    channel, gateway, _, _ = _channel(tmp_path)
+    await channel.send_tool_approval_prompt("D1", 'Args: `{"text": "` <@U123> `"}`')
+    await channel.send_message("D1", "<@U123>")
+
+    assert "<@U123>" not in gateway.posts[0][1]
+    assert "&lt;@U123&gt;" in gateway.posts[0][1]
+    assert gateway.posts[1][1] == "<@U123>"
 
 
 def test_code_is_escaped_but_not_reformatted() -> None:

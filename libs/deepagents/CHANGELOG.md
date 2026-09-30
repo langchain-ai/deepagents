@@ -2,6 +2,12 @@
 
 # Deep Agents Changelog
 
+## [0.7.20](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.19...deepagents==0.7.20) (2026-09-29)
+
+### Bug Fixes
+
+- Fixed binary content in `StateBackend.upload_files` being tagged as base64.
+
 ## [0.7.19](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.18...deepagents==0.7.19) (2026-09-24)
 
 ### Bug Fixes

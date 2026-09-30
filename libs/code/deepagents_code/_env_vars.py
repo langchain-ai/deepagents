@@ -70,6 +70,13 @@ Like `AUTO_CLASSIFIER_MODEL`, a committed *project* `.env` cannot set it (see
 `config._PROJECT_DOTENV_DENIED_ENV_KEYS`).
 """
 
+MCP_TOOL_TIMEOUT = "DEEPAGENTS_CODE_MCP_TOOL_TIMEOUT"
+"""Seconds an MCP tool call may run before returning a failed tool message.
+
+Values outside 1-900 seconds are ignored in favor of the next config source.
+Also settable via `[mcp].tool_timeout` in config.toml.
+"""
+
 AUTO_UPDATE = "DEEPAGENTS_CODE_AUTO_UPDATE"
 """Toggle automatic app updates. Enabled by default; set to a falsy value
 ('0', 'false', 'no', 'off', or empty) to opt out."""
@@ -507,7 +514,7 @@ repo file, so a project `.env` cannot disable itself.
 """
 
 RECENT_THREADS = "DEEPAGENTS_CODE_RECENT_THREADS"
-"""Maximum number of recent threads loaded and displayed (default: 100)."""
+"""Maximum recent threads (default: `_constants.DEFAULT_THREAD_LIMIT`)."""
 
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).

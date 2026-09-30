@@ -234,13 +234,20 @@ not. There are no patterns or per-agent policy files. The defaults are:
   "update_tool_approvals": true,
   "delete_conversations": true,
   "update_mcp_server": true,
-  "start_async_task": true
+  "start_async_task": true,
+  "send_message": true
 }
 ```
 
+`ask_for_help` always requires an approval prompt when enabled, independently of
+this policy, because it sends the question to another model provider.
+
 Native and container startup create these defaults when the file is missing and
-preserve existing configuration. Unspecified tools default to `false`; listing,
-searching, and reading conversation history do not prompt by default. A `false` value controls prompting, not tool
+preserve existing configuration. `send_message` prompts before an agent progress
+update, including one with Slack mentions. It does not gate the final reply or
+host-generated messages. Existing policy files retain their settings; add
+`"send_message": true` to an existing `tools.json` to opt in. Unspecified tools
+default to `false`; listing, searching, and reading conversation history do not prompt by default. A `false` value controls prompting, not tool
 availability or authorization. There is no migration from the old approval settings.
 
 Read `get_tool_approvals` before editing:
@@ -389,7 +396,7 @@ Registration needs the **`applications.commands`** scope alongside `bot` in the 
 
 `DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID` scopes registration to one guild, which applies immediately and is useful while developing; global registration can take several minutes to propagate but is the only kind that reaches DMs, so leave this unset for an operator-DM deployment. `DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS=false` disables registration entirely, leaving commands available as typed text.
 
-`conversation_id` is the Discord channel ID, which works uniformly for DM channels and guild text channels. In `allowlist` mode, `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS` allows DMs from specific Discord user IDs regardless of channel, while `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS` allows messages from specific channel IDs (DM or guild). `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure, the default mode, which only accepts DMs from those operators. Outbound text over Discord's 2000-character message limit is split into multiple separate messages sent in order; outbound media is sent as a file attachment with the caption as the message content when it fits, or as a preceding separate message otherwise. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB). If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
+`conversation_id` is the Discord channel ID, which works uniformly for DM channels and guild text channels. A public guild thread keeps its own conversation and reply destination, but its archived history is shared with its parent channel and other public threads there. Private threads and DMs retain separate history. Existing thread-scoped history is not moved into the parent channel. `/reset-all-history` in a public thread clears the parent channel's shared archive; `/new` starts a new conversation only in the current thread. In `allowlist` mode, `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS` allows DMs from specific Discord user IDs regardless of channel, while `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS` allows messages from specific channel IDs (DM or guild). `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure, the default mode, which only accepts DMs from those operators. Outbound text over Discord's 2000-character message limit is split into multiple separate messages sent in order; outbound media is sent as a file attachment with the caption as the message content when it fits, or as a preceding separate message otherwise. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB). If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
 
 ## Slack
 
@@ -446,7 +453,7 @@ Slack treats any message that starts with `/` as a slash command, so Talon's com
 
 `DEEPAGENTS_TALON_SLACK_OPERATOR_ID` accepts one or more comma-separated Slack user IDs (member IDs starting with `U`) for `self` exposure, the default mode. In `allowlist` mode, `DEEPAGENTS_TALON_SLACK_ALLOWLIST_USERS` allows DMs from specific user IDs, and `DEEPAGENTS_TALON_SLACK_ALLOWLIST_CHATS` allows mentions in specific channel IDs, covering every thread in them. `open` mode also requires `DEEPAGENTS_TALON_SLACK_OPEN_ACK=allow-arbitrary-senders`. Reactions are accepted only from operators and allowlisted users; a 👍 (`:+1:`, `:thumbsup:`, or `:thumbsup_all:`) or 👎 reaction on an approval prompt approves or rejects it, as on other channels. To finish an MCP OAuth sign-in, paste the callback URL into the DM, or into the thread after mentioning the bot.
 
-Outbound Markdown is converted to Slack `mrkdwn`, and `&`, `<`, and `>` are always escaped, so agent output cannot mention users or notify `@channel`. Text over 4000 characters is split across posts. Media is uploaded as a file with the caption as its comment. Inbound files are downloaded with the bot token, which is sent only to `https://files.slack.com`, and redirects are refused. `DEEPAGENTS_TALON_SLACK_MEDIA_DIR` overrides the download directory, and `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` applies here as on other channels. Slack has no bot typing indicator, so none is shown while the agent works.
+Outbound Markdown is converted to Slack `mrkdwn`. Literal `<@USER_ID>` references to Slack user IDs (starting with `U` or `W`, including bot users) in prose can notify those users; code spans, other Slack control sequences, and `@channel` remain escaped. To restrict outbound mentions, set `DEEPAGENTS_TALON_SLACK_MENTION_ALLOWLIST_USERS` to comma-separated user IDs; if unset, any valid user mention is allowed, and if set to an empty value, none are allowed. This is separate from the inbound sender allowlist. Only allow outbound mentions where agent-generated text is trusted to notify recipients. Text over 4000 characters is split across posts. Media is uploaded as a file with the caption as its comment. Inbound files are downloaded with the bot token, which is sent only to `https://files.slack.com`, and redirects are refused. `DEEPAGENTS_TALON_SLACK_MEDIA_DIR` overrides the download directory, and `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` applies here as on other channels. Slack has no bot typing indicator, so none is shown while the agent works.
 
 ## Sender pairing
 
@@ -460,7 +467,7 @@ On Slack, the client treats a message starting with `/` as a slash command, so t
 2. The sender passes the code to the operator by any other means.
 3. The operator approves it with `/pair approve K7QM-3XRD` in their own DM with the bot, or with `deepagents-talon pairing approve <channel> K7QM-3XRD`, where `<channel>` is the requester's channel (`discord`, `slack`, or `telegram`); a code only approves on the channel it was issued on. The sender is told they were approved. From then on they reach the agent wherever the bot is, the way an env operator does: in their DM, by mentioning the bot in any Slack channel it has joined, and in any Discord server channel it can read.
 
-`/pair list` shows pending codes and paired senders. `/pair revoke <sender-id>` removes a sender, stops all in-flight work, including background workers, in every chat they have used since that chat was last idle, pauses the cron jobs they created in any chat, and stops any of those jobs' runs in progress so their results are not delivered. Paused jobs stay paused if the sender is approved again. The CLI has matching `list`, `approve`, and `revoke` subcommands. A CLI revoke takes effect on the sender's next message but cannot cancel a run in progress. It lists their enabled cron jobs and prints a `deepagents-talon pairing pause-jobs <channel> <sender-id> --dm <conversation-id>` command to pause them. Run that only while Talon is stopped, because the running host is the cron store's only writer.
+`/pair list` shows pending codes and paired senders. `/pair revoke <sender-id>` removes a sender, stops all in-flight work, including background workers, in every chat they have used since that chat was last idle, pauses the cron jobs they created in any chat, and stops any of those jobs' runs in progress so their results are not delivered. Paused jobs stay paused if the sender is approved again. The CLI has matching `list`, `approve`, and `revoke` subcommands. A CLI revoke takes effect on the sender's next message but cannot cancel a run in progress. It lists their enabled cron jobs and prints a `deepagents-talon pairing pause-jobs <channel> <sender-id>` command to pause them. Run that only while Talon is stopped, because the running host is the cron store's only writer.
 
 Only an operator id from `DEEPAGENTS_TALON_<CHANNEL>_OPERATOR_ID` can run `/pair`, and only in a DM. A paired sender cannot approve anyone, and the model has no pairing tool. Codes are accepted only on those operator surfaces, so strangers have nowhere to guess them. Each sender holds at most one live code, and a channel holds at most 16; further requests are dropped silently. Set `DEEPAGENTS_TALON_<CHANNEL>_PAIRING_REPLY=false` to keep the bot silent and read pending codes from `/pair list` instead.
 
@@ -488,7 +495,7 @@ normally. The destination is fixed by the host, and sending is disabled once the
 originating turn finishes or is superseded. Runs without a channel cannot send updates.
 
 Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
-`/mcp-reload`, `/context-doctor`, and `/model`), and using MCP configuration and OAuth through chat. Help does
+`/mcp-reload`, `/context-doctor`, `/model`, and `/smart-model`), and using MCP configuration and OAuth through chat. Help does
 not interrupt current work or consume a pending approval or sign-in response.
 
 Send `/context-doctor` to estimate the token cost of the configured system prompt,
@@ -510,6 +517,26 @@ The chat's context is sized for the selected model, so switching to a model with
 larger or smaller context window changes when history is compacted. Scheduled jobs
 and subagents keep their own models. The model is built the first time a chat
 selects it, so a model that cannot be loaded is reported when you switch to it.
+
+To let Talon ask a stronger model for one-off advice, set
+`DEEPAGENTS_TALON_HELP_MODEL=<provider>:<model-id>` alongside its provider credentials,
+or send `/smart-model <provider:model>` as an operator. `/smart-model` shows the
+assistant-wide selection, `/smart-model off` disables consultations, and
+`/smart-model default` restores the environment default. The choice persists across
+chats and restarts; unlike `/model`, it does not change the conversation's model.
+The command selects from models Talon can discover using its configured credentials;
+it cannot change provider URLs or API keys. An operator who uses two OpenAI endpoints
+must configure routing in the inference proxy or provider environment directly.
+When enabled, this adds `ask_for_help(question)` to the main agent only. The tool sends just the question and a fixed instruction to the
+configured model, not the chat history, tools, or filesystem. Only an operator's
+main conversation can use it, and a channel approval prompt is always required
+before the question leaves Talon; channels without approval support and scheduled
+runs cannot use it. Inspect the exact question before approving: the agent can
+include private content in it, and the destination provider receives that content.
+The response is advice, not an instruction to run tools. With no environment
+default or saved selection, the tool is omitted. The configured provider must be
+installed and credentialed; configuration and provider errors surface when the tool
+is called.
 
 Commands work as ordinary message text on every channel, and are case-insensitive
 with an optional `@bot` suffix. On Discord they are additionally registered as

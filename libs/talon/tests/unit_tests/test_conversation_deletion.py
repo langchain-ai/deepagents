@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from typing import TYPE_CHECKING
+
 import pytest
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -9,6 +12,9 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from deepagents_talon.interfaces import AgentRequest
 from tests.archive_helpers import make_runtime, make_saver
 from tests.unit_tests.test_archive import OTHER, TELEGRAM, WHATSAPP, _save
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.mark.parametrize("session_ids", ["one", ["one", "two", "one"], ["one", "active"]])
@@ -143,3 +149,62 @@ async def test_tool_without_host_scope_cannot_delete(tmp_path):
         with pytest.raises(RuntimeError, match="supplied by the host"):
             await deletion.ainvoke({"session_ids": "owned"})
         assert await saver.aget(owned)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_running_sibling_cannot_be_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, cancel: bool
+) -> None:
+    started = asyncio.Event()
+    released = asyncio.Event()
+
+    def factory(**kwargs: object):
+        tools = {tool.name: tool for tool in kwargs["tools"]}
+
+        async def reply(state):
+            if state["messages"][-1].text == "wait":
+                started.set()
+                await released.wait()
+            elif state["messages"][-1].text == "delete":
+                listed = await tools["list_conversations"].ainvoke({})
+                assert {"past", "sibling"} <= {item["session_id"] for item in listed}
+                with pytest.raises(ValueError, match="running conversation"):
+                    await tools["delete_conversations"].ainvoke(
+                        {"session_ids": ["past", "sibling"]}
+                    )
+            return {"messages": [AIMessage("done")]}
+
+        graph = StateGraph(MessagesState)
+        graph.add_node("reply", reply)
+        graph.add_edge(START, "reply")
+        graph.add_edge("reply", END)
+        return graph.compile(checkpointer=kwargs["checkpointer"].with_allowlist([]))
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", factory)
+    scope = {"talon_history_channel": "slack", "talon_history_chat": "C1"}
+    metadata = {"history_channel": "slack", "history_chat": "C1"}
+    async with make_saver(tmp_path / "history.sqlite") as saver:
+        past = await _save(saver, "past", "remember", scope=scope)
+        runtime = make_runtime(saver, tmp_path)
+        await runtime.start()
+        await runtime.invoke(AgentRequest("sibling", "seed", metadata))
+        sibling = asyncio.create_task(runtime.invoke(AgentRequest("sibling", "wait", metadata)))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            await runtime.invoke(AgentRequest("active", "delete", metadata))
+            assert await saver.aget(past)
+            assert await saver.aget({"configurable": {"thread_id": "sibling"}})
+            if cancel:
+                sibling.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await sibling
+            else:
+                released.set()
+                await sibling
+            assert await saver.delete_conversations(
+                scope, ["past", "sibling"], current_session="active"
+            ) == {"deleted": ["past", "sibling"], "not_found": []}
+        finally:
+            released.set()
+            await asyncio.gather(sibling, return_exceptions=True)
+            await runtime.stop()

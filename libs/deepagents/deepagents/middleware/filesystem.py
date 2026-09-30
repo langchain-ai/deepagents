@@ -9,6 +9,7 @@ import contextvars
 import mimetypes
 import threading
 import uuid
+import warnings
 from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -1859,7 +1860,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
         self._blobs_prefix = f"{_root}/blobs"
-        self._offload_binary_content = offload_binary_content and not _routes_to_state_backend(self.backend, f"{self._blobs_prefix}/")
+        if offload_binary_content and _routes_to_state_backend(self.backend, f"{self._blobs_prefix}/"):
+            msg = f"`offload_binary_content` has no effect: `{self._blobs_prefix}/` routes to a `StateBackend`, which keeps files in checkpointed state."
+            warnings.warn(msg, stacklevel=2)
+            offload_binary_content = False
+        self._offload_binary_content = offload_binary_content
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt

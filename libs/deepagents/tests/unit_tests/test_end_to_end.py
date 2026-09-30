@@ -1606,7 +1606,8 @@ class TestBinaryContentOffload:
         else:
             backend = CompositeBackend(default=FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True), routes={"/blobs/": StateBackend()})
             (tmp_path / "photo.png").write_bytes(_OFFLOAD_PNG)
-        agent = self._agent(backend, self._read_image_model(), InMemorySaver())
+        with pytest.warns(UserWarning, match="`offload_binary_content` has no effect"):
+            agent = self._agent(backend, self._read_image_model(), InMemorySaver())
         config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
 
         agent.invoke(payload, config)

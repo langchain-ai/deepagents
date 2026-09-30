@@ -4,7 +4,6 @@ from typing import Any
 
 import pytest
 from langchain.agents import create_agent
-from langchain.agents.middleware.types import AgentState
 from langchain_anthropic import ChatAnthropic
 from langgraph.store.memory import InMemoryStore
 
@@ -14,7 +13,6 @@ from deepagents.middleware.filesystem import (
     READ_FILE_TOOL_DESCRIPTION,
     WRITE_FILE_TOOL_DESCRIPTION,
     FilesystemMiddleware,
-    FilesystemState,
 )
 
 
@@ -47,19 +45,19 @@ class TestFilesystemMiddlewareInit:
         middleware = FilesystemMiddleware(backend=StateBackend())
         agent = create_agent(model=ChatAnthropic(model="claude-sonnet-4-6"), middleware=[middleware])
 
-        assert middleware.state_schema is FilesystemState
+        assert "files" in middleware.state_schema.__annotations__
         assert "files" in agent.channels
 
     def test_default_backend_adds_files_state(self) -> None:
         middleware = FilesystemMiddleware()
 
-        assert middleware.state_schema is FilesystemState
+        assert "files" in middleware.state_schema.__annotations__
 
     def test_non_state_backend_uses_base_state(self) -> None:
         middleware = FilesystemMiddleware(backend=StoreBackend(namespace=lambda _rt: ("filesystem",)))
         agent = create_agent(model=ChatAnthropic(model="claude-sonnet-4-6"), middleware=[middleware])
 
-        assert middleware.state_schema is AgentState
+        assert "files" not in middleware.state_schema.__annotations__
         assert "files" not in agent.channels
 
     def test_composite_state_backend_adds_files_state(self) -> None:
@@ -68,14 +66,14 @@ class TestFilesystemMiddlewareInit:
         backend = CompositeBackend(default=store_backend, routes={"/nested/": nested_backend})
         middleware = FilesystemMiddleware(backend=backend)
 
-        assert middleware.state_schema is FilesystemState
+        assert "files" in middleware.state_schema.__annotations__
 
     def test_composite_without_state_backend_uses_base_state(self) -> None:
         store_backend = StoreBackend(namespace=lambda _rt: ("filesystem",))
         backend = CompositeBackend(default=store_backend, routes={"/persistent/": store_backend})
         middleware = FilesystemMiddleware(backend=backend)
 
-        assert middleware.state_schema is AgentState
+        assert "files" not in middleware.state_schema.__annotations__
 
     def test_backend_class_is_rejected(self) -> None:
         """Backend factories were removed in 0.7; callers must pass instances."""

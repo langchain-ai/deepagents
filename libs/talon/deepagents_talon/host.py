@@ -965,7 +965,9 @@ class TalonHost:
     ) -> None:
         channel = route.channel
         agent_conversation_id = turn.conversation_id
-        message = await transcribe_voice_message(self.voice_transcriber, route.message)
+        message = route.message
+        if not route.metadata.get("background_delivery"):
+            message = await transcribe_voice_message(self.voice_transcriber, message)
         message = _prepare_inbound_message(message)
         metadata: dict[str, object] = {
             "channel": turn.provider,

@@ -84,6 +84,9 @@ _FILE_HOST = "files.slack.com"
 
 _SEEN_EVENT_LIMIT = 1024
 _SENT_MESSAGE_LIMIT = 1024
+_THREAD_CONTEXT_PAGES = 20
+_THREAD_CONTEXT_MESSAGES = 40
+_THREAD_CONTEXT_CHARS = 12000
 
 _COMMAND_UNAVAILABLE_MESSAGE = "That command is not available here."
 _COMMAND_DM_ONLY_MESSAGE = (
@@ -373,6 +376,11 @@ class _SlackGateway(Protocol):
     async def post_message(self, channel_id: str, text: str, *, thread_ts: str | None) -> str:
         """Post a message and return its timestamp."""
 
+    async def thread_context(
+        self, channel_id: str, thread_ts: str, before_ts: str
+    ) -> list[tuple[str, str]]:
+        """Read bounded preceding replies from a channel thread."""
+
     async def open_dm(self, user_id: str) -> str:
         """Open a DM with a user and return its channel id."""
 
@@ -504,6 +512,43 @@ class _SlackSdkGateway:
             thread_ts=thread_ts,
         )
         return str(response["ts"])
+
+    async def thread_context(
+        self, channel_id: str, thread_ts: str, before_ts: str
+    ) -> list[tuple[str, str]]:
+        messages: list[tuple[str, str]] = []
+        cursor: str | None = None
+        more = False
+        for _ in range(_THREAD_CONTEXT_PAGES):
+            response = await self._client().conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                latest=before_ts,
+                limit=100,
+                cursor=cursor,
+            )
+            for item in response.get("messages", []):
+                if not isinstance(item, dict) or item.get("ts") == before_ts:
+                    continue
+                sender = optional_str(item.get("user"))
+                text = _decode_mrkdwn(str(item.get("text") or ""))
+                if sender and text and not item.get("bot_id"):
+                    messages.append((sender, text[:1000]))
+            messages = messages[-_THREAD_CONTEXT_MESSAGES:]
+            cursor = optional_str(response.get("response_metadata", {}).get("next_cursor"))
+            more = bool(response.get("has_more") or cursor)
+            if not more or not cursor:
+                break
+        if more:
+            msg = "Slack thread history exceeds the retrieval limit"
+            raise ValueError(msg)
+        while (
+            messages
+            and sum(len(sender) + len(text) + 3 for sender, text in messages)
+            > _THREAD_CONTEXT_CHARS
+        ):
+            messages.pop(0)
+        return messages
 
     async def open_dm(self, user_id: str) -> str:
         response = await self._client().conversations_open(users=user_id)
@@ -897,6 +942,26 @@ class SlackChannel:
             if self.config.pairing is not None:
                 await self._offer_pairing(message, inbound)
             return
+        if not inbound.is_dm and inbound.thread_ts:
+            try:
+                replies = await self._gateway.thread_context(
+                    inbound.channel_id, inbound.thread_ts, inbound.ts
+                )
+                senders = self._exposure.operator_ids | self.config.allowed_user_ids
+                context = "\n".join(
+                    f"{sender}: {text}" for sender, text in replies if sender in senders
+                )
+            except (SlackApiError, OSError, TimeoutError, ValueError):
+                logger.warning("Could not read Slack thread context", exc_info=True)
+                context = "[Slack thread history unavailable; ask for context before acting.]"
+            if context:
+                message = ChannelMessage(
+                    conversation_id=message.conversation_id,
+                    text=message.text,
+                    sender_id=message.sender_id,
+                    message_id=message.message_id,
+                    metadata={**message.metadata, "slack_thread_context": context},
+                )
         message = await self._prepare_inbound_media(message, inbound.files)
         log_debug_event(
             logger,

@@ -43,6 +43,8 @@ class RecordingGateway:
         self.uploads: list[tuple[str, Path, str | None, str | None]] = []
         self.updates: list[tuple[str, str, str]] = []
         self._next_ts = 0
+        self.context: list[tuple[str, str]] = []
+        self.context_calls: list[tuple[str, str, str]] = []
         self.handle_message = None
         self.handle_reaction = None
         self.handle_connection = None
@@ -61,6 +63,10 @@ class RecordingGateway:
         self.posts.append((channel_id, text, thread_ts))
         self._next_ts += 1
         return f"1700000000.00000{self._next_ts}"
+
+    async def thread_context(self, channel_id, thread_ts, before_ts):
+        self.context_calls.append((channel_id, thread_ts, before_ts))
+        return self.context
 
     async def open_dm(self, user_id):
         return f"D{user_id}"
@@ -882,3 +888,132 @@ def test_any_slash_command_name_is_accepted(name: str) -> None:
     command = _convert_command(_command_payload(command=name, text="new"))
     assert command is not None
     assert command.command == "new"
+
+
+@pytest.mark.parametrize("mode", [ExposureMode.SELF, ExposureMode.ALLOWLIST, ExposureMode.OPEN])
+async def test_mention_in_thread_receives_only_authorized_context(
+    tmp_path: Path, mode: ExposureMode
+) -> None:
+    channel, gateway, messages, _ = _channel(
+        tmp_path,
+        exposure=ChannelExposure(
+            mode=mode, operator_ids=frozenset({OPERATOR}), conversations=frozenset({"C1"})
+        ),
+        allowed_user_ids=frozenset({"UALLOWED"}),
+    )
+    gateway.context = [
+        (OPERATOR, "operator request"),
+        ("UALLOWED", "allowed request"),
+        ("UOTHER", "untrusted request"),
+    ]
+    inbound = _SlackInboundMessage(
+        channel_id="C1",
+        ts="1700000001.000100",
+        thread_ts="1700000000.000100",
+        sender_id=OPERATOR,
+        text="",
+        is_dm=False,
+    )
+    await channel._process_message(inbound)
+    assert gateway.context_calls == [("C1", "1700000000.000100", "1700000001.000100")]
+    assert messages[0].text == ""
+    assert (
+        messages[0].metadata["slack_thread_context"]
+        == f"{OPERATOR}: operator request\nUALLOWED: allowed request"
+    )
+    assert messages[0].conversation_id == "C1:1700000000.000100"
+
+
+async def test_dm_does_not_fetch_thread_context(tmp_path: Path) -> None:
+    channel, gateway, messages, _ = _channel(tmp_path)
+    await channel._process_message(_dm())
+    assert gateway.context_calls == []
+    assert messages[0].text == "hi"
+
+
+async def test_thread_context_excludes_trigger_and_is_bounded() -> None:
+    gateway = slack_module._SlackSdkGateway(bot_token="b", app_token="a", timeout_seconds=1)  # noqa: S106  # inert test token
+
+    class Web:
+        async def conversations_replies(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "messages": [
+                    {"ts": "1.0", "user": "U1", "text": "request"},
+                    {"ts": "2.0", "user": "U2", "text": "current"},
+                ],
+                "has_more": False,
+            }
+
+    gateway._web = Web()  # type: ignore[assignment]
+    assert await gateway.thread_context("C1", "1.0", "2.0") == [("U1", "request")]
+
+
+@pytest.mark.parametrize("pages", [7, 21])
+async def test_thread_context_reaches_recent_replies_or_fails(pages: int) -> None:
+    gateway = slack_module._SlackSdkGateway(bot_token="b", app_token="a", timeout_seconds=1)  # noqa: S106  # inert test token
+
+    class Web:
+        async def conversations_replies(self, **kwargs: object) -> dict[str, object]:
+            page = int(str(kwargs.get("cursor") or "0"))
+            return {
+                "messages": [
+                    {"ts": str(page * 100 + index), "user": "U1", "text": str(page * 100 + index)}
+                    for index in range(100)
+                ],
+                "has_more": page + 1 < pages,
+                "response_metadata": {"next_cursor": str(page + 1) if page + 1 < pages else ""},
+            }
+
+    gateway._web = Web()  # type: ignore[assignment]
+    if pages > slack_module._THREAD_CONTEXT_PAGES:
+        with pytest.raises(ValueError, match="retrieval limit"):
+            await gateway.thread_context("C1", "0", "9999")
+    else:
+        context = await gateway.thread_context("C1", "0", "9999")
+        assert context == [("U1", str(index)) for index in range(660, 700)]
+
+
+async def test_thread_context_character_budget_and_missing_senders() -> None:
+    gateway = slack_module._SlackSdkGateway(bot_token="b", app_token="a", timeout_seconds=1)  # noqa: S106  # inert test token
+
+    class Web:
+        async def conversations_replies(self, **_kwargs: object) -> dict[str, object]:
+            return {
+                "messages": [
+                    {"ts": str(index), "user": "U1", "text": "x" * 2000} for index in range(50)
+                ]
+                + [
+                    {"ts": "51", "text": "anonymous"},
+                    {"ts": "52", "user": "U1", "bot_id": "B1", "text": "bot"},
+                ],
+            }
+
+    gateway._web = Web()  # type: ignore[assignment]
+    context = await gateway.thread_context("C1", "0", "100")
+    assert context
+    assert (
+        sum(len(sender) + len(text) + 3 for sender, text in context)
+        <= slack_module._THREAD_CONTEXT_CHARS
+    )
+    assert all(text == "x" * 1000 for _, text in context)
+
+
+async def test_thread_context_failure_preserves_control_text(tmp_path: Path) -> None:
+    channel, gateway, messages, _ = _channel(tmp_path)
+
+    async def unavailable(*_args: object) -> list[tuple[str, str]]:
+        raise TimeoutError
+
+    gateway.thread_context = unavailable
+    await channel._process_message(
+        _SlackInboundMessage(
+            channel_id="C1",
+            ts="2.0",
+            thread_ts="1.0",
+            sender_id=OPERATOR,
+            text="/stop",
+            is_dm=False,
+        )
+    )
+    assert messages[0].text == "/stop"
+    assert "history unavailable" in messages[0].metadata["slack_thread_context"]

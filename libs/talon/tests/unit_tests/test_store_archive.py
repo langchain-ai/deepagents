@@ -4,7 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 
 import pytest
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.store.base import PutOp
 from langgraph.store.memory import InMemoryStore
 from langgraph.store.sqlite.aio import AsyncSqliteStore
@@ -16,6 +16,101 @@ from tests.store_archive_contract import (
     StaticEmbeddings,
     assert_store_archive_contract,
 )
+
+
+@pytest.mark.parametrize("backend", ["memory", "sqlite"])
+@pytest.mark.parametrize("channel", ["C123", "G123"])
+async def test_legacy_slack_session_accepts_parent_scope_without_moving_history(
+    backend, channel, tmp_path
+):
+    legacy = {"talon_history_channel": "slack", "talon_history_chat": f"{channel}:123.456"}
+    parent = {**legacy, "talon_history_chat": channel}
+    async with stores(backend, tmp_path) as (metadata, vectors):
+        async with StoreConversationArchive(
+            metadata, namespace=("legacy-slack",), vector_store=vectors
+        ).open() as archive:
+            await archive.append(
+                legacy,
+                "legacy",
+                "before",
+                [HumanMessage("car before", id="old"), AIMessage("car reply", id="reply")],
+            )
+            await archive.append(parent, "new", "after", [HumanMessage("car sibling")])
+            await archive.append(parent, "legacy", "after", [HumanMessage("car after", id="new")])
+            await archive.record_delivery(parent, "legacy", "car reply")
+            async with asyncio.timeout(2):
+                while True:
+                    if not await archive.vectors.archive.pending(legacy):
+                        break
+                    await asyncio.sleep(0)
+            page = await archive.search_page(legacy, query="automobile")
+            assert {entry["text"] for entry in page["results"]} == {
+                "car before",
+                "car reply",
+                "car after",
+            }
+            assert [entry["text"] for entry in await archive.entries(parent)] == ["car sibling"]
+            assert await archive.sessions(parent) == ["new"]
+        async with StoreConversationArchive(
+            metadata, namespace=("legacy-slack",), vector_store=vectors
+        ).open() as archive:
+            await archive.append(parent, "legacy", "after", [HumanMessage("car after", id="new")])
+            assert [
+                entry["text"] for entry in await archive.entries(legacy, session_id="legacy")
+            ] == [
+                "car before",
+                "car reply",
+                "car after",
+            ]
+            assert (await archive.conversations(legacy))[0]["message_count"] == 3
+            await archive.delete_session("legacy")
+            assert await archive.sessions(legacy) == []
+            assert await archive.entries(legacy) == []
+            assert not await vectors.asearch(
+                archive.vectors.namespace("slack", legacy["talon_history_chat"])
+            )
+            assert await archive.sessions(parent) == ["new"]
+
+
+async def test_empty_legacy_slack_registration_accepts_parent_scope():
+    archive = StoreConversationArchive(InMemoryStore(), namespace=("legacy-empty",))
+    legacy = {"talon_history_channel": "slack", "talon_history_chat": "C123:123.456"}
+    await archive.append(legacy, "session", "before", [])
+    await archive.append(
+        {**legacy, "talon_history_chat": "C123"}, "session", "after", [HumanMessage("new")]
+    )
+    assert [entry["text"] for entry in await archive.entries(legacy)] == ["new"]
+
+
+@pytest.mark.parametrize(
+    ("provider", "stored", "requested", "deleting"),
+    [
+        ("slack", "C123:123.456", "C456", False),
+        ("discord", "C123:123.456", "C123", False),
+        ("slack", "C123:123.456", "C123:456.789", False),
+        ("slack", "C123", "C123:123.456", False),
+        ("slack", "D123:123.456", "D123", False),
+        ("slack", "C123:", "C123", False),
+        ("slack", "C123:123.456", "C123", True),
+    ],
+)
+async def test_legacy_scope_compatibility_rejects_other_scopes_and_deleting_sessions(
+    provider, stored, requested, deleting
+):
+    archive = StoreConversationArchive(InMemoryStore(), namespace=("legacy-rejected",))
+    legacy = {"talon_history_channel": provider, "talon_history_chat": stored}
+    scope = {**legacy, "talon_history_chat": requested}
+    await archive.append(legacy, "session", "before", [HumanMessage("private")])
+    if deleting:
+        async with archive.records.access():
+            await archive.mark_deleted("session")
+    with pytest.raises(ValueError, match="another scope or is being deleted"):
+        await archive.append(scope, "session", "after", [HumanMessage("rejected")])
+    assert await archive.entries(scope) == []
+    if not deleting:
+        assert [entry["text"] for entry in await archive.entries(legacy)] == ["private"]
+    with pytest.raises(ValueError, match="another scope"):
+        await archive.append({**scope, "talon_history_channel": "other"}, "session", "after", [])
 
 
 class CountingStore(InMemoryStore):

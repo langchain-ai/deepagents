@@ -597,6 +597,28 @@ class WhatsAppChannel:
         await self._start_bridge()
         self._failed_health_checks = 0
 
+    async def _prepare_message(self, message: ChannelMessage) -> ChannelMessage:
+        token = message.metadata.get("preparation_token")
+        if not isinstance(token, str):
+            return message
+        payload = await self._transport.post(
+            "/prepare",
+            {
+                "preparation_token": token,
+                "chat_id": message.conversation_id,
+                "message_id": message.message_id,
+            },
+        )
+        prepared = _parse_message(payload)
+        if (prepared.conversation_id, prepared.message_id, prepared.sender_id) != (
+            message.conversation_id,
+            message.message_id,
+            message.sender_id,
+        ):
+            msg = "WhatsApp preparation returned a different input identity"
+            raise _WhatsAppBridgeError(msg)
+        return _enforce_inbound_media_cap(prepared, max_bytes=self.config.max_media_bytes)
+
     async def _poll_messages(self) -> None:
         while not self._stopped.is_set():
             try:
@@ -633,7 +655,12 @@ class WhatsAppChannel:
                             reply_context_status=checked.metadata.get("reply_context_status"),
                             text_chars=len(checked.text),
                         )
-                        await dispatch_message(self._handler, checked, provider="WhatsApp")
+                        await dispatch_message(
+                            self._handler,
+                            checked,
+                            provider="WhatsApp",
+                            prepare=self._prepare_message,
+                        )
                         log_debug_event(logger, "whatsapp.inbound.message.dispatched")
                     else:
                         log_debug_event(
@@ -871,6 +898,7 @@ def _parse_message(payload: object) -> ChannelMessage:
         message_id=optional_str(values.get("message_id") or values.get("messageId")),
         metadata={
             "provider": "whatsapp",
+            "preparation_token": values.get("preparation_token"),
             "event_type": values.get("event_type"),
             "message_type": message_type,
             "media_type": media_type,

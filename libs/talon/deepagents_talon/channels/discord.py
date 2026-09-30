@@ -902,13 +902,16 @@ class DiscordChannel:
             if self.config.pairing is not None:
                 await self.config.pairing.offer(message, self.send_message)
             return
-        message = await self._prepare_inbound_media(message, inbound.attachments)
+
+        async def prepare(message: ChannelMessage) -> ChannelMessage:
+            return await self._prepare_inbound_media(message, inbound.attachments)
+
         log_debug_event(
             logger,
             "discord.inbound.message.dispatching",
             has_media=bool(message.metadata.get("has_media")),
         )
-        await dispatch_message(self._handler, message, provider="Discord")
+        await dispatch_message(self._handler, message, provider="Discord", prepare=prepare)
         log_debug_event(logger, "discord.inbound.message.dispatched")
 
     async def _process_reaction(self, inbound: _DiscordInboundReaction) -> None:

@@ -1,3 +1,4 @@
+import json
 import mimetypes
 import time
 import warnings
@@ -32,6 +33,7 @@ from deepagents.backends.protocol import (
     SandboxBackendProtocol,
 )
 from deepagents.backends.utils import (
+    MAX_LINE_LENGTH,
     TOOL_RESULT_TOKEN_LIMIT,
     TRUNCATION_GUIDANCE,
     TRUNCATION_MARKER_TEMPLATE,
@@ -1908,6 +1910,47 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert mem_store.get(("filesystem",), "/large_tool_results/test_123") is not None
         assert "Tool result too large" in result.content
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            json.dumps({"items": list(range(2000))}),
+            "x" * (MAX_LINE_LENGTH * 2 + 17),
+        ],
+        ids=["json", "plain-text"],
+    )
+    def test_intercepted_tool_result_can_be_paged_to_the_end(self, content):
+        """Offloaded single-line results can be consumed with read_file pagination."""
+        backend, mem_store = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=1000)
+        tool_message = ToolMessage(content=content, tool_call_id="test_paged")
+
+        result = middleware._intercept_large_tool_result(tool_message)
+
+        assert isinstance(result, ToolMessage)
+        stored = mem_store.get(("filesystem",), "/large_tool_results/test_paged")
+        assert stored is not None
+        stored_content = stored.value["content"]
+        assert all(len(line) <= MAX_LINE_LENGTH for line in stored_content.split("\n"))
+        if content.startswith("{"):
+            assert json.loads(stored_content) == json.loads(content)
+        else:
+            assert stored_content.replace("\n", "") == content
+
+        reader = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=10000)
+        read_file_tool = next(tool for tool in reader.tools if tool.name == "read_file")
+        offset = 0
+        pages = []
+        while True:
+            page = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/large_tool_results/test_paged", "offset": offset, "limit": 100})
+            assert isinstance(page, ToolMessage)
+            header, *rows = page.content.split("\n")
+            pages.extend(rows)
+            if "next offset" not in header:
+                break
+            offset = int(header.split("next offset ", 1)[1].split()[0])
+
+        assert "\n".join(pages) == stored_content
 
     def test_intercept_long_toolmessage_preserves_name(self):
         """Test that ToolMessage name is preserved after eviction."""

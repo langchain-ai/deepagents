@@ -11,6 +11,8 @@ Used by:
 
 from __future__ import annotations
 
+import json
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, cast
 from uuid import uuid4
@@ -18,6 +20,7 @@ from uuid import uuid4
 from langchain_core.messages import BaseMessage, ToolMessage
 
 from deepagents.backends.utils import (
+    MAX_LINE_LENGTH,
     TRUNCATION_MARKER_TEMPLATE,
     format_content_with_line_numbers,
     sanitize_tool_call_id,
@@ -32,7 +35,7 @@ _TOO_LARGE_TOOL_MSG = """Tool result too large, the result of this tool call {to
 
 You can read the result from the filesystem by using the read_file tool, but make sure to only read part of the result at a time.
 
-You can do this by specifying an offset and limit in the read_file tool call. For example, to read the first 100 lines, you can use the read_file tool with offset=0 and limit=100.
+The saved result is line-addressable. Specify a zero-based offset and limit in the read_file tool call to page through it, for example offset=0 and limit=100 reads the first 100 lines.
 
 {preview_note}
 
@@ -238,6 +241,17 @@ def _visible_tool_call_id(tool_call_id: str) -> str:
     return f"{tool_call_id[:_VISIBLE_TOOL_CALL_ID_LIMIT]}..." if len(tool_call_id) > _VISIBLE_TOOL_CALL_ID_LIMIT else tool_call_id
 
 
+def _normalize_tool_result_content(content_str: str) -> str:
+    """Make oversized tool results addressable one line at a time."""
+    if all(len(line) <= MAX_LINE_LENGTH for line in content_str.split("\n")):
+        return content_str
+    with suppress(json.JSONDecodeError, TypeError, ValueError):
+        content_str = json.dumps(json.loads(content_str), indent=2)
+    return "\n".join(
+        line[start : start + MAX_LINE_LENGTH] for line in content_str.split("\n") for start in range(0, len(line), MAX_LINE_LENGTH) or [0]
+    )
+
+
 def _render_too_large_tool_msg(*, tool_call_id: str, file_path: str, content_str: str) -> str:
     """Render the large-tool-result stub for `content_str`.
 
@@ -272,6 +286,7 @@ def _offload_tool_message_content(
     """
     sanitized_id = sanitize_tool_call_id(message.tool_call_id) if message.tool_call_id else f"unknown-{uuid4().hex[:8]}"
     file_path = f"{large_tool_results_prefix}/{sanitized_id}"
+    content_str = _normalize_tool_result_content(content_str)
     result = backend.write(file_path, content_str)
     if result is None or result.error:
         return None
@@ -288,6 +303,7 @@ async def _aoffload_tool_message_content(
     """Async variant of `_offload_tool_message_content` using `backend.awrite`."""
     sanitized_id = sanitize_tool_call_id(message.tool_call_id) if message.tool_call_id else f"unknown-{uuid4().hex[:8]}"
     file_path = f"{large_tool_results_prefix}/{sanitized_id}"
+    content_str = _normalize_tool_result_content(content_str)
     result = await backend.awrite(file_path, content_str)
     if result is None or result.error:
         return None

@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import cast
 from urllib.parse import urlparse
 
+from pydantic import AnyUrl
+
 _ASCII_CONTROL_LIMIT = 32
 _ASCII_DELETE = 127
 _MAX_PORT = 65535
@@ -49,10 +51,16 @@ def parse_oauth_config(value: object) -> MCPOAuthConfig:
     ):
         msg = "MCP oauth.client_id must be a non-empty string without control characters."
         raise MCPOAuthConfigError(msg)
+    scopes = _scopes(value)
+    if scopes is not None and client_id is None:
+        msg = (
+            "MCP oauth.scopes requires an explicit client_id; omit scopes for dynamic registration."
+        )
+        raise MCPOAuthConfigError(msg)
     return MCPOAuthConfig(
         client_id=cast("str | None", client_id),
         callback_url=_callback_url(value),
-        scopes=_scopes(value),
+        scopes=scopes,
     )
 
 
@@ -72,7 +80,9 @@ def _callback_url(value: dict[str, object]) -> str | None:
         raise MCPOAuthConfigError(msg)
     url = value.get("callback_url")
     if url is None and "callback_url" not in value:
-        return f"http://localhost:{port}/callback" if port is not None else None
+        if port is None:
+            return None
+        url = f"http://localhost:{port}/callback"
     msg = (
         "MCP oauth.callback_url must be an HTTP loopback URL with an explicit port and path, "
         "without credentials, query, or fragment."
@@ -99,6 +109,16 @@ def _callback_url(value: dict[str, object]) -> str | None:
         raise MCPOAuthConfigError(msg)
     if port is not None and port != parsed.port:
         msg = "MCP oauth.callback_port must match the port in callback_url."
+        raise MCPOAuthConfigError(msg)
+    try:
+        canonical = str(AnyUrl(url))
+    except ValueError:
+        raise MCPOAuthConfigError(msg) from None
+    if canonical != url:
+        msg = (
+            "MCP oauth callback URL must use canonical spelling and a non-default port; "
+            "register that exact URL with the server."
+        )
         raise MCPOAuthConfigError(msg)
     return url
 

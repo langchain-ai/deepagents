@@ -1245,11 +1245,23 @@ async def test_device_registration_bounds_slow_name_resolution(
 
 
 @pytest.mark.parametrize("mismatched_state", [False, True])
+@pytest.mark.parametrize(
+    "callback_url",
+    [
+        "http://127.0.0.1:6359/callback",
+        "http://localhost:6359/callback",
+        "http://[::1]:6359/callback",
+    ],
+)
 async def test_public_client_flow_without_dynamic_registration(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, oauth_network, *, mismatched_state: bool
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    oauth_network,
+    callback_url: str,
+    *,
+    mismatched_state: bool,
 ) -> None:
     monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
-    callback_url = "http://127.0.0.1:6359/callback"
     oauth = parse_oauth_config(
         {
             "client_id": "assigned-client",
@@ -1280,6 +1292,8 @@ async def test_public_client_flow_without_dynamic_registration(
 
     async def callback() -> AuthorizationCodeResult:
         state = "mismatched" if mismatched_state else authorization["state"][0]
+        returned_url = f"{authorization['redirect_uri'][0]}?code=authorization-code&state={state}"
+        assert extract_oauth_callback_url(returned_url, redirect_uri=callback_url) == returned_url
         return AuthorizationCodeResult(code="authorization-code", state=state)
 
     def handle(request: httpx.Request) -> httpx.Response:

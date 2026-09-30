@@ -587,8 +587,11 @@ add an `oauth` object to its HTTP configuration:
 }
 ```
 
-Talon uses S256 PKCE and no client secret. `callback_url` must be an HTTP loopback
-URL with an explicit port and path, matching the server's registered redirect URI.
+Talon uses S256 PKCE and no client secret. Explicit `scopes` require `client_id`;
+omit `scopes` to use dynamic registration. `callback_url` must be a canonical HTTP
+loopback URL with an explicit non-default port and path, matching the server's
+registered redirect URI. URLs that the OAuth client would rewrite (such as an
+uppercase hostname or port 80) are rejected.
 `callback_port` is optional when the URL includes a port; if both are supplied they
 must match. A port alone uses `http://localhost:<port>/callback`. Talon does not
 start a localhost listener: paste the full browser callback URL even if the browser

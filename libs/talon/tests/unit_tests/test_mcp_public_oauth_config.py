@@ -24,7 +24,6 @@ def test_public_oauth_configuration_keeps_tools_disabled(tmp_path: Path) -> None
         "oauth": {
             "client_id": "assigned-client",
             "callback_url": "http://127.0.0.1:6359/callback",
-            "callback_port": 6359,
             "scopes": ["mcp:write"],
         },
         "disabledTools": ["*"],
@@ -50,14 +49,11 @@ def test_public_oauth_configuration_keeps_tools_disabled(tmp_path: Path) -> None
         ("sensitive-invalid", "object"),
         ({"client_id": "\nsensitive-invalid"}, "client_id"),
         ({"client_secret": "sensitive-invalid"}, "Supported MCP oauth fields"),
-        ({"callback_port": True}, "integer from 1 to 65535"),
         ({"callback_url": "http://sensitive-invalid.example:6359/callback"}, "HTTP loopback"),
-        ({"callback_url": "http://127.0.0.1:6359/callback", "callback_port": 6360}, "must match"),
         ({"scopes": ["sensitive-invalid scope"]}, "scope tokens"),
         ({"scopes": ["read"]}, "requires an explicit client_id"),
         ({"scopes": []}, "requires an explicit client_id"),
         ({"callback_url": "http://localhost:80/callback"}, "canonical spelling"),
-        ({"callback_port": 80}, "canonical spelling"),
         ({"callback_url": "http://LOCALHOST:6359/callback"}, "canonical spelling"),
         ({"callback_url": "http://localhost:6359/a/../callback"}, "canonical spelling"),
         ({"callback_url": "http://localhost:6359/caf\u00e9"}, "canonical spelling"),
@@ -84,12 +80,6 @@ def test_invalid_public_oauth_update_is_actionable_and_safe(
     assert updates == []
 
 
-@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
-def test_public_oauth_accepts_loopback_hosts(host: str) -> None:
-    url = f"http://{host}:6359/callback"
-    assert parse_oauth_config({"callback_url": url, "callback_port": 6359}).callback_url == url
-
-
 @pytest.mark.parametrize(
     "url",
     [
@@ -109,18 +99,6 @@ def test_public_oauth_accepts_loopback_hosts(host: str) -> None:
 def test_public_oauth_rejects_unsafe_callback_urls(url: str) -> None:
     with pytest.raises(MCPOAuthConfigError, match="HTTP loopback"):
         parse_oauth_config({"callback_url": url})
-
-
-@pytest.mark.parametrize("port", [False, 0, 65536, "6359", None])
-def test_public_oauth_rejects_invalid_ports(port: object) -> None:
-    with pytest.raises(MCPOAuthConfigError, match="integer from 1 to 65535"):
-        parse_oauth_config({"callback_port": port})
-
-
-def test_callback_port_alone_selects_localhost() -> None:
-    assert (
-        parse_oauth_config({"callback_port": 6359}).callback_url == "http://localhost:6359/callback"
-    )
 
 
 def test_public_oauth_storage_isolated_from_other_clients(

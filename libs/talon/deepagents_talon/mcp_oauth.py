@@ -39,11 +39,8 @@ def parse_oauth_config(value: object) -> MCPOAuthConfig:
     if not isinstance(value, dict):
         msg = "MCP oauth must be an object."
         raise MCPOAuthConfigError(msg)
-    if value.keys() - {"client_id", "callback_url", "callback_port", "scopes"}:
-        msg = (
-            "Supported MCP oauth fields: client_id, callback_url, callback_port, scopes; "
-            "no secret is required."
-        )
+    if value.keys() - {"client_id", "callback_url", "scopes"}:
+        msg = "Supported MCP oauth fields: client_id, callback_url, scopes; no secret is required."
         raise MCPOAuthConfigError(msg)
     client_id = value.get("client_id")
     if "client_id" in value and (
@@ -72,17 +69,9 @@ def _has_controls(value: str) -> bool:
 
 
 def _callback_url(value: dict[str, object]) -> str | None:
-    port = value.get("callback_port")
-    if "callback_port" in value and (
-        not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= _MAX_PORT
-    ):
-        msg = "MCP oauth.callback_port must be an integer from 1 to 65535."
-        raise MCPOAuthConfigError(msg)
+    if "callback_url" not in value:
+        return None
     url = value.get("callback_url")
-    if url is None and "callback_url" not in value:
-        if port is None:
-            return None
-        url = f"http://localhost:{port}/callback"
     msg = (
         "MCP oauth.callback_url must be an HTTP loopback URL with an explicit port and path, "
         "without credentials, query, or fragment."
@@ -106,9 +95,6 @@ def _callback_url(value: dict[str, object]) -> str | None:
     except ValueError:
         raise MCPOAuthConfigError(msg) from None
     if not valid:
-        raise MCPOAuthConfigError(msg)
-    if port is not None and port != parsed.port:
-        msg = "MCP oauth.callback_port must match the port in callback_url."
         raise MCPOAuthConfigError(msg)
     try:
         canonical = str(AnyUrl(url))

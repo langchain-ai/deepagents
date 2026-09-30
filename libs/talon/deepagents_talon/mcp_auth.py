@@ -995,8 +995,6 @@ def build_oauth_provider(
         callback_handler=callback,
     )
     provider.configured_scopes = oauth.scopes
-    if oauth.scopes is not None:
-        provider.context.client_metadata.scope = " ".join(oauth.scopes)
     return provider
 
 

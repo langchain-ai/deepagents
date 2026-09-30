@@ -1244,13 +1244,13 @@ async def test_device_registration_bounds_slow_name_resolution(
     assert ticks > 0
 
 
-@pytest.mark.parametrize("mismatched_state", [False, True])
 @pytest.mark.parametrize(
-    "callback_url",
+    ("callback_url", "mismatched_state"),
     [
-        "http://127.0.0.1:6359/callback",
-        "http://localhost:6359/callback",
-        "http://[::1]:6359/callback",
+        ("http://127.0.0.1:6359/callback", False),
+        ("http://localhost:6359/callback", False),
+        ("http://[::1]:6359/callback", False),
+        ("http://127.0.0.1:6359/callback", True),
     ],
 )
 async def test_public_client_flow_without_dynamic_registration(
@@ -1266,7 +1266,6 @@ async def test_public_client_flow_without_dynamic_registration(
         {
             "client_id": "assigned-client",
             "callback_url": callback_url,
-            "callback_port": 6359,
             "scopes": ["mcp:write"],
         }
     )

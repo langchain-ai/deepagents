@@ -2,6 +2,13 @@
 
 # Deep Agents Changelog
 
+## [0.7.21](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.20...deepagents==0.7.21) (2026-09-30)
+
+
+### Features
+
+* **sdk:** allow `FilesystemMiddleware` to store blobs on backend ([#6550](https://github.com/langchain-ai/deepagents/issues/6550)) ([e38e6c9](https://github.com/langchain-ai/deepagents/commit/e38e6c91def8067e0dec2694d5410d0306f32553))
+
 ## [0.7.20](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.19...deepagents==0.7.20) (2026-09-29)
 
 ### Bug Fixes

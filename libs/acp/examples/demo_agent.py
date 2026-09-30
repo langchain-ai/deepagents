@@ -104,8 +104,8 @@ async def _serve_example_agent() -> None:
         {"value": "baseten:moonshotai/Kimi-K3", "name": "Kimi-K3"},
     ]
     anthropic_models = [
-        {"value": "anthropic:claude-opus-5.5", "name": "Claude Opus 5.5"},
-        {"value": "anthropic:claude-sonnet-5.5", "name": "Claude Sonnet 5.5"},
+        {"value": "anthropic:claude-opus-5-5", "name": "Claude Opus 5.5"},
+        {"value": "anthropic:claude-sonnet-5-5", "name": "Claude Sonnet 5.5"},
         {"value": "anthropic:claude-fable-5-1", "name": "Claude Fable 5.1"},
         {"value": "anthropic:claude-haiku-4-5", "name": "Claude Haiku 4.5"},
     ]

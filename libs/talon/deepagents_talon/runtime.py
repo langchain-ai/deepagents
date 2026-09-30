@@ -1557,7 +1557,9 @@ def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:
         message_id=message_id if isinstance(message_id, str) else None,
         sender_id=sender_id if isinstance(sender_id, str) else None,
         history_chat=(
-            history_chat if channel == "discord" and isinstance(history_chat, str) else None
+            history_chat
+            if channel in {"discord", "slack"} and isinstance(history_chat, str)
+            else None
         ),
     )
 

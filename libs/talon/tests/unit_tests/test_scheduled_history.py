@@ -215,6 +215,63 @@ async def test_scheduled_history_uses_discord_parent_and_delivers_by_choice(
             await host.stop()
 
 
+async def test_scheduled_history_uses_slack_channel_scope(tmp_path, monkeypatch):
+    origins = []
+    scopes = []
+
+    def factory(**kwargs: object):
+        tools = {tool.name: tool for tool in kwargs["tools"]}
+
+        async def reply(state):
+            origins.append(_current_cron_origin())
+            if state["messages"][-1].text == "recall":
+                scopes.extend(await tools["list_conversations"].ainvoke({"limit": 20}))
+            return {"messages": [AIMessage("noted")]}
+
+        graph = StateGraph(MessagesState)
+        graph.add_node("reply", reply)
+        graph.add_edge(START, "reply")
+        graph.add_edge("reply", END)
+        return graph.compile(checkpointer=kwargs["checkpointer"])
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", factory)
+    channel = RecordingChannel("slack")
+    async with make_saver(tmp_path / "history.sqlite") as saver:
+        host = TalonHost(
+            config=_config(tmp_path), agent=make_runtime(saver, tmp_path), channels=[channel]
+        )
+        await host.start()
+        try:
+            await host.receive_message(
+                channel,
+                ChannelMessage(
+                    "C1:1700000000.000100",
+                    "hello",
+                    metadata={"is_dm": False, "history_chat": "C1"},
+                ),
+            )
+            await asyncio.gather(*host._tasks.values())
+            store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+            job = store.create_job(
+                prompt="recall", schedule=CronSchedule.parse("in 5m"), origin=origins[0]
+            )
+            saved = store.get_job(job.id)
+            assert saved is not None
+            assert saved.origin.conversation_id == "C1:1700000000.000100"
+            assert saved.origin.history_chat == "C1"
+            result = await host.run_scheduled_job(saved)
+            assert [entry["preview"] for entry in scopes] == ["hello"]
+            await host.deliver_scheduled_result(channel, saved, result)
+            assert channel.sent[-1] == ("C1", "noted")
+            entries = await saver.archive.entries(
+                {"talon_history_channel": "slack", "talon_history_chat": "C1"},
+                session_id=f"{job.id}:talon-cron",
+            )
+            assert [entry["text"] for entry in entries] == ["noted"]
+        finally:
+            await host.stop()
+
+
 async def test_scheduled_history_preserves_whatsapp_archive_address(tmp_path, monkeypatch):
     origins = []
 

@@ -1403,6 +1403,8 @@ def _message_metadata(inbound: _SlackInboundMessage) -> dict[str, object]:
         "is_dm": inbound.is_dm,
         "from_self": False,
     }
+    if not inbound.is_dm:
+        metadata["history_chat"] = inbound.channel_id
     if inbound.files:
         file = inbound.files[0]
         metadata["media_type"] = _file_media_type(file)

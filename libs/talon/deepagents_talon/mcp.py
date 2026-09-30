@@ -49,6 +49,7 @@ from deepagents_talon.mcp_config import (
     MCPConfigStore,
     agent_workspace_root,
 )
+from deepagents_talon.mcp_oauth import parse_oauth_config
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
@@ -321,7 +322,10 @@ class MCPToolProvider:
         reauthenticate: bool = False,
     ) -> dict[str, str]:
         if server_name not in self._oauth_servers:
-            return {"status": "failed"}
+            return {
+                "status": "failed",
+                "message": "Configure this remote MCP server with auth set to oauth, then reload.",
+            }
         attempt = AuthorizationAttempt(terminal=True)
         try:
             path = mcp_config_path(self._config)
@@ -356,9 +360,13 @@ class MCPToolProvider:
             TimeoutError,
             TypeError,
             ValueError,
-        ):
+        ) as exc:
             if not attempt.completed:
-                return {"status": "failed", "server_name": server_name}
+                return {
+                    "status": "failed",
+                    "server_name": server_name,
+                    "message": format_login_error(exc),
+                }
             logger.debug(
                 "MCP authorization session failed after credentials persisted",
                 exc_info=True,
@@ -623,7 +631,7 @@ async def _run_authorized[AuthorizedResult](
             raise
         if attempt.binding is not None:
             await _finish_authorization(attempt, reason=_authorization_failure_reason(exc))
-            msg = "MCP authorization failed"
+            msg = format_login_error(exc)
             raise MCPAuthorizationError(msg) from None
         raise
     else:
@@ -846,20 +854,20 @@ async def _remote_connection(  # noqa: PLR0913  # keeps distinct OAuth modes exp
         ):
             msg = f"MCP server {name!r} cannot combine OAuth with an Authorization header"
             raise MCPConfigError(msg)
-        storage = (
-            FileTokenStorage(name, server_url=url, force_authorization=True)
-            if force_authorization
-            else FileTokenStorage(name, server_url=url)
+        oauth = parse_oauth_config(server.get("oauth"))
+        storage = FileTokenStorage(
+            name, server_url=url, force_authorization=force_authorization, oauth=oauth
         )
         if not interactive and not channel_authorization and await storage.get_tokens() is None:
             msg = f"MCP server {name!r} needs authentication; run deepagents-talon mcp login {name}"
             raise _MCPLoginRequiredError(msg)
-        await prepare_oauth_login(server_url=url, storage=storage)
+        await prepare_oauth_login(server_url=url, storage=storage, oauth=oauth)
         auth = build_oauth_provider(
             server_name=name,
             server_url=url,
             storage=storage,
             interactive=interactive,
+            oauth=oauth,
         )
     elif server.get("auth") is not None:
         msg = f"MCP server {name!r} uses unsupported auth {server['auth']!r}"

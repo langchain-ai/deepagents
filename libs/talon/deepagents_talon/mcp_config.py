@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING, cast
 
 from langchain_core.tools import tool
 
+from deepagents_talon.mcp_oauth import MCPOAuthConfigError, parse_oauth_config
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
 
@@ -42,6 +44,7 @@ _FIELDS = frozenset(
         "url",
         "headers",
         "auth",
+        "oauth",
         "allowedTools",
         "disabledTools",
     }
@@ -236,7 +239,7 @@ class MCPConfigStore:
                 _atomic_write(self._path, document)
         except TimeoutError:
             return {"status": "conflict", "message": "Configuration is busy; try again."}
-        except _UnsafeUpdateError as exc:
+        except (_UnsafeUpdateError, MCPOAuthConfigError) as exc:
             return {"status": "error", "message": str(exc)}
         except (OSError, ValueError, TypeError, RecursionError):
             return {
@@ -440,6 +443,11 @@ def _validate_server(server: dict[str, object]) -> None:
         raise ValueError(msg)
     _validate_fields(server)
     _validate_references(server)
+    if "oauth" in server:
+        if server.get("auth") != "oauth" or _derived_transport(server) == "stdio":
+            msg = "MCP oauth settings require a remote server with auth set to oauth."
+            raise MCPOAuthConfigError(msg)
+        parse_oauth_config(server["oauth"])
     transport = _derived_transport(server)
     for field, choices in _ENUMS.items():
         if field in server and server[field] not in choices:

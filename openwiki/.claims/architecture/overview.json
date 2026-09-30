@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:1e077f270e6df210da9a029ffaed91c6a7e1cdb581de77ce8334e05ca94e1cfd",
+  "pageVersion": "sha256:60d731e06f047d32889d20b50ee57a62bdf791dfc7d05c48d43f65cb28d5e33b",
   "claims": [
     {
       "id": "claim_02a3292b94514936b7fbbbe869876251",
@@ -52,11 +52,11 @@
     },
     {
       "id": "claim_a49fb7b51f794c52b206c53ebad1caec",
-      "statement": "Talon's CLI loads MCP tools and constructs DeepAgentRuntime with Talon MCP middleware; with a configured checkpointer it uses the supplied checkpoint resource, and otherwise the model-backed host creates an SQLite saver and conversation archive wrapper.",
+      "statement": "Talon's CLI loads MCP tools and constructs DeepAgentRuntime with Talon MCP middleware; on the model-backed path it opens an SQLite checkpointer and history archive and supplies their ConversationSaver wrapper to the runtime.",
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/__main__.py",
-          "version": "repo-file-v1:sha256:61aa3052c12f1e04d6211589ce0b97614b65a53927334b32c55c232550d967d8"
+          "version": "repo-file-v1:sha256:47d54647236442a5fdd163436ee4eb7c7495092db9c82bc922732e4af30ca494"
         }
       ]
     },
@@ -90,7 +90,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:101ba4f4f963220c5e0093fc867437c5ee4c4470a7973722cf4f6b8812a25183"
+          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
@@ -104,7 +104,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:101ba4f4f963220c5e0093fc867437c5ee4c4470a7973722cf4f6b8812a25183"
+          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
@@ -122,7 +122,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:101ba4f4f963220c5e0093fc867437c5ee4c4470a7973722cf4f6b8812a25183"
+          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
         },
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
@@ -158,7 +158,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:101ba4f4f963220c5e0093fc867437c5ee4c4470a7973722cf4f6b8812a25183"
+          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
@@ -200,7 +200,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:101ba4f4f963220c5e0093fc867437c5ee4c4470a7973722cf4f6b8812a25183"
+          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
@@ -214,7 +214,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/__main__.py",
-          "version": "repo-file-v1:sha256:61aa3052c12f1e04d6211589ce0b97614b65a53927334b32c55c232550d967d8"
+          "version": "repo-file-v1:sha256:47d54647236442a5fdd163436ee4eb7c7495092db9c82bc922732e4af30ca494"
         }
       ]
     },
@@ -224,11 +224,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:101ba4f4f963220c5e0093fc867437c5ee4c4470a7973722cf4f6b8812a25183"
+          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/interfaces.py",
-          "version": "repo-file-v1:sha256:276937399b4cc6a58fdc0cac3d8678e73d02fd68c1a4c9d2f1d259b4d89a415a"
+          "version": "repo-file-v1:sha256:29e905a67a663b38cdebadded219fd797b01ceb12d9d0bcdb73377df61650d06"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
@@ -242,7 +242,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/cron/jobs.py",
-          "version": "repo-file-v1:sha256:be15ca63bbd524eac7df9deafcfee4b61388d41cfc739a9c35b0f5d2909da4a5"
+          "version": "repo-file-v1:sha256:a416b8ee877e927a9b39a374a0753cfaae37b1b9ea0f8a78467e1a95cce6edc7"
         }
       ]
     },
@@ -252,15 +252,15 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:ee610710af638563b172ff929f9178aad240a5ac069c4c435745d1eb7ae88bd3"
+          "version": "repo-file-v1:sha256:185ce36e9ecfd942acf1446b4db24643b41f62f2aa147baf30794faaecad5a1b"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:101ba4f4f963220c5e0093fc867437c5ee4c4470a7973722cf4f6b8812a25183"
+          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:cf9a2a3dde63fe8688dd0582dec717d7b1841ca4127275a54f65685dbde6498b"
+          "version": "repo-file-v1:sha256:2c8fb07ca518d3a64c7da3ef628bb57cc3a50d6682744f5c461671e85d0a0359"
         }
       ]
     },
@@ -274,7 +274,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/interfaces.py",
-          "version": "repo-file-v1:sha256:276937399b4cc6a58fdc0cac3d8678e73d02fd68c1a4c9d2f1d259b4d89a415a"
+          "version": "repo-file-v1:sha256:29e905a67a663b38cdebadded219fd797b01ceb12d9d0bcdb73377df61650d06"
         }
       ]
     },
@@ -284,7 +284,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/__main__.py",
-          "version": "repo-file-v1:sha256:61aa3052c12f1e04d6211589ce0b97614b65a53927334b32c55c232550d967d8"
+          "version": "repo-file-v1:sha256:47d54647236442a5fdd163436ee4eb7c7495092db9c82bc922732e4af30ca494"
         }
       ]
     },
@@ -321,10 +321,20 @@
           "version": "repo-file-v1:sha256:88443acb01ceea42de14ede461bd126771570b8808c7eb3522ebe99e75688dca"
         }
       ]
+    },
+    {
+      "id": "claim_0340f56270634441be7793473f5d9a94",
+      "statement": "The monorepo contains independently versioned SDK, terminal-product, ACP, evaluation, Talon, and optional partner packages; the partner group provides Daytona, Modal, Runloop, Vercel, and QuickJS integrations rather than a required core runtime layer.",
+      "evidence": [
+        {
+          "resource": "repo://libs/README.md",
+          "version": "repo-file-v1:sha256:e5d74e3f28cf605b59ca922d1e6195cbaa5237add9bd42e7b1cfa06b74210db9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-29T08:06:56.235Z"
+    "at": "2026-09-30T08:06:28.871Z"
   }
 }

@@ -1,10 +1,11 @@
 ---
-type: "Reference"
-title: "Talon Scheduled Work and Cron Semantics"
-openwiki_generated: true
+type: persistent scheduling model
+title: Talon Scheduled Work and Cron Semantics
+description: Persistent Talon cron jobs validate explicit schedules, claim occurrences durably before unattended execution, and deliver results to their recorded channel origin. This page covers lifecycle, local-time behavior, retention, and live or offline pairing-revocation controls.
+tags: [talon, scheduling, cron, persistence, delivery, pairing]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-29T08:06:56.235Z
+    at: 2026-09-30T08:06:28.871Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
@@ -22,83 +23,96 @@ sources:
     resource: repo://libs/talon/deepagents_talon/pairing.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
-    resource: repo://libs/talon/tests/test_host.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-29T08:06:56.235Z" }
+  - id: openwiki-source-f2859f71853cf2cbdb40aaa3
+    resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-30T08:06:28.871Z" }
 ---
-
 
 # Talon Scheduled Work and Cron Semantics
 
-> **Experimental and unattended.** Talon is experimental. Cron is persistent, unattended access to the installed assistant—not a sandbox or containment boundary. A scheduled invocation has no approval or authorization handler and no approval-operator authority; runtime approval interrupts for `trigger: "cron"` are automatically rejected. Do not schedule work that requires a person to approve a tool call or complete interactive authorization. Channel admission and tool policy still determine which inbound users can create jobs; they do not make a later cron execution safe by isolation.
+> **Experimental and unattended.** Talon is experimental. A cron job is persistent, unattended access to the installed assistant, not a sandbox. Scheduled runs have no approval or authorization handler or operator authority; the runtime automatically rejects approval interrupts whose trigger is `cron`. Do not schedule work that needs a person to approve a tool call or complete interactive authorization.
 
-Talon separates durable scheduling from host execution. `CronJobStore` persists a job and advances its occurrence; `PersistentCronScheduler` sweeps and claims due work; `TalonHost` invokes the agent and the configured channel delivers non-silent output to the recorded origin. The CLI wires this scheduler only when channels are configured.
+`CronJobStore` owns durable job state, `PersistentCronScheduler` claims and dispatches due work, and `TalonHost` runs the agent and delivers a non-silent result to the recorded origin. The normal host creates this scheduler only when channels are configured.
 
-## Origin identity, scope, and the non-conversation boundary
+## Job origin and management boundary
 
-Each job stores a durable `CronOrigin`: conversation ID, channel/provider, and optional source message ID. The runtime injects that trusted origin into cron tools rather than letting the model supply it. Create, list, edit, and remove are scoped by **conversation ID plus channel**; message ID is retained for identity/audit context but does not participate in the comparison. The same origin selects the destination channel and conversation for delivery.
+A job has a self-contained prompt, assistant ID, parsed schedule, repeat and enabled state, timestamps/outcome, optional `until`, and a durable `CronOrigin`. The origin records the conversation ID, provider channel, source message ID, creator sender ID, and (for applicable Discord threads) history chat. It is trusted metadata supplied by the runtime, not a model-selected destination. A cron run that creates another job inherits its creator sender ID.
 
-Cron is not an attended inbound conversation turn. It runs on a dedicated `<job-id>:talon-cron` thread and carries `trigger: "cron"`; it can receive a read-only origin history scope when that channel can be resolved, but the runtime disables its archive scope. Thus the scheduled prompt and execution do **not** create a transcript archive entry or an attended chat turn. A successfully delivered final reply is a separate host delivery action and may be recorded by a history-capable host as delivered output.
+The agent gets `create_job`, `list_jobs`, `edit_job`, and `remove_job`. Creation persists the prompt that will be used later, so it must contain all fire-time instructions. List, edit, and removal are scoped to **conversation ID plus channel**; source message ID is retained but not part of this comparison. `enabled=False` pauses a job, and an empty `until` in an edit clears the bound. `deliver_to` selects `channel` or `thread` only where an adapter distinguishes a public/channel thread from its parent.
 
-The agent-facing tools are `create_job`, `list_jobs`, `edit_job`, and `remove_job`. A created job contains a self-contained prompt, so it must include all instruction needed at fire time. `edit_job(..., enabled=False)` pauses a job; an empty `until` clears that bound.
+## Accepted schedules and time boundaries
 
-## Schedule language and local-time rules
+Schedule text is limited to 200 characters. The parser accepts:
 
-Schedule text is limited to 200 characters. Supported forms are:
-
-| Form | Semantics |
+| Form | Meaning |
 | --- | --- |
-| `in <N>m` or `in <N>h` | One-shot relative interval, at least one minute. |
-| `every <N>m` or `every <N>h` | Recurring relative interval, at least one minute. |
+| `in <N>m` or `in <N>h` | One-shot relative interval; at least one minute. |
+| `every <N>m` or `every <N>h` | Recurring relative interval; at least one minute. |
 | `at YYYY-MM-DD HH:MM <IANA-zone>` | One-shot explicit local wall-clock time. |
-| `daily at HH:MM <IANA-zone>` | Recurring local wall-clock time. |
-| `cron <minute> <hour> <day-of-month> <month> <day-of-week> <IANA-zone>` | Recurring five-field cron in that zone. |
+| `daily at HH:MM <IANA-zone>` | Recurring local wall-clock schedule. |
+| `cron <minute> <hour> <day-of-month> <month> <day-of-week> <IANA-zone>` | Recurring five-field cron in an explicit zone. |
 | `cron @hourly`, `@daily`, `@weekly`, `@monthly`, `@yearly`, `@annually`, or `@midnight` plus a zone | Supported cron macro. |
 
-Wall-clock, `until`, and cron forms require an explicit IANA zone. Cron has minute, hour, day-of-month, month, and day-of-week fields; it accepts ranges, steps, lists, month/week-day aliases, and limited `L`, `W`, and `#` calendar extensions. When neither textual day field begins with `*`, day-of-month and day-of-week use Vixie-style OR; otherwise both predicates must match. Parsed expressions and resolved zones use bounded 128-entry caches because the input originates with the agent.
+Cron supports ranges, steps, lists, month and weekday aliases, and limited `L`, `W`, and `#` day extensions. When neither textual day field begins with `*`, day-of-month and day-of-week use Vixie-style OR; otherwise both predicates must match. Parsed expressions and resolved zone names are each held in bounded 128-entry caches because they derive from agent input.
 
-Local candidates preserve wall-clock semantics across DST. A nonexistent local time advances to the first valid minute; an ambiguous time uses its earlier occurrence. Several cron candidates skipped into one DST gap coalesce to one fire. `until` is recurring-only and inclusive; a due occurrence has five minutes of late-claim grace, after which it is dropped rather than delivered after the requested window.
+Wall-clock schedules, `until`, and cron evaluate local candidates in the explicit IANA zone. A nonexistent spring-forward time advances to the first valid minute; an ambiguous fall-back time selects the earlier occurrence. Cron candidates that snap into the same DST gap coalesce to one fire. Interval jobs instead preserve phase from their previous occurrence and skip ahead after downtime rather than replaying a backlog.
 
-## Durable lifecycle and dispatch
+`until` is a local `YYYY-MM-DD HH:MM <IANA-zone>` bound, valid only for recurring jobs. It is inclusive: the occurrence at the bound may be claimed, with a five-minute tick-latency grace. If a due occurrence is later than that grace, it is disabled and dropped rather than delivered after the requested window. Creation and edits reject a bound that precedes the first possible fire.
 
-`jobs.json` is a versioned, self-contained JSON store containing prompt, assistant, origin, structured schedule, enable/repeat state, timestamps, outcome/error, `until`, and claim timestamp. Writes use restrictive directory/file permissions and atomic replacement. An unreadable or unsupported store is logged and treated as empty, so operators should protect and back up the file.
+## Persist-before-run lifecycle
+
+`jobs.json` is a versioned JSON envelope. It is deliberately a single-writer, read-all/write-all store: its directory and file are tightened to `0700` and `0600`, respectively, and a write fsyncs a temporary file then atomically replaces the store. A malformed, unreadable, or wrong-version store is logged and treated as empty—an availability safeguard with a job-loss consequence, so protect and back up the cron directory.
 
 ```mermaid
 flowchart TD
-    Create["Create validates and persists a job"] --> Scan["Scheduler sweep then due-job scan"]
-    Scan --> Claim["Store persists claim and advanced next state"]
-    Claim --> Run["Host runs dedicated cron thread"]
-    Run --> Outcome["Store records ok or error"]
-    Outcome --> Silent{"Empty or SILENT output"}
-    Silent -->|"yes"| Sweep["Later scheduler sweep"]
-    Silent -->|"no"| Deliver["Send to stored origin"]
-    Deliver -->|"failure"| Error["Store records delivery error"]
-    Deliver -->|"success"| Sweep
-    Error --> Sweep
-    Sweep --> Remove{"Finished with no error or unresolved claim"}
-    Remove -->|"yes"| Deleted["Remove record"]
-    Remove -->|"no"| Retained["Retain for inspection or explicit pruning"]
+    Create["Validate and persist job"] --> Sweep["Sweep finished records"]
+    Sweep --> Due["Find enabled due jobs"]
+    Due --> Claim["Persist claim and advanced next state"]
+    Claim --> Run["Run dedicated cron thread"]
+    Run --> Result{"Run succeeded"}
+    Result -->|"no"| Failed["Record error"]
+    Result -->|"yes"| Ok["Record ok"]
+    Ok --> Quiet{"Empty or SILENT"}
+    Quiet -->|"yes"| Later["Later sweep"]
+    Quiet -->|"no"| Deliver["Deliver to recorded origin"]
+    Deliver -->|"failure"| Failed
+    Deliver -->|"success"| Later
+    Failed --> Later
+    Later --> Retain{"Finished with error or unresolved claim"}
+    Retain -->|"yes"| Keep["Retain until pruning"]
+    Retain -->|"no"| Delete["Remove record"]
 ```
 
-*The store advances and persists the occurrence before the host executes it; delivery and cleanup are later transitions.*
+*Each occurrence is durably claimed and advanced before invocation; delivery and retention are later state transitions.*
 
-At each default 60-second tick, the scheduler sweeps finished records, obtains due jobs, and processes them sequentially. It calls `advance_next_run` before invocation. This is an at-most-once claim for an occurrence: a crash after claiming can lose that delivery, but does not make the same occurrence claimable again. One-shots and exhausted repeats disable before the run. A recurring job consumes its repeat count at claim time. Interval schedules retain phase and skip ahead after downtime rather than replaying a backlog.
+On each 60-second default tick, the scheduler first removes eligible finished records, obtains due jobs, and processes them sequentially. For each job it calls `advance_next_run` **before** calling the host. A one-shot and a recurring job whose repeat cap is exhausted are disabled before their run; a recurring repeat count is consumed at claim time. This is at-most-once claiming: a crash after the persisted claim can lose that occurrence, but cannot make it claimable again.
 
-The scheduler records `ok` before delivery. It suppresses empty output and output beginning or ending with `[SILENT]`. An invocation error, or a delivery exception after an otherwise successful result, becomes an `error` outcome. Disabled/expired jobs without an error or unresolved claim are removed on a later sweep; failed final runs and interrupted claims remain inspectable until `prune_completed(retain_for=...)` removes eligible completed records. A failed scan is logged and retried on the normal tick interval.
+After a successful invocation, the scheduler records `ok`; empty output and output beginning or ending with `[SILENT]` are not delivered. An invocation exception records `error`. A delivery exception changes an already-recorded success to `error` with a delivery-failure message. Unexpected tick failures are logged and the ticker waits for its normal interval before retrying.
 
-## Host execution, delivery, and cancellation
+A later sweep removes completed or expired records only if they have neither an error nor an unresolved `claimed_at`. Failed final runs and claims interrupted before an outcome remain inspectable; `prune_completed(retain_for=...)` can remove disabled completed records after the selected retention window.
 
-The host serializes runs of a job on its dedicated cron thread and bounds a scheduled run to 30 minutes. A timeout triggers interrupted-checkpoint recovery so a later run is not left behind an incomplete tool call. The host supplies cron metadata, including the durable origin channel and conversation, but withholds approvals, authorization, progress messaging, and operator authority. Scheduled subagent work is inline, so its result belongs to the job invocation instead of a future attended turn.
+## Execution, history, and delivery
 
-For non-silent output, the host finds a channel matching the stored provider and sends to the stored conversation ID with retry behavior. A missing matching channel is logged and dropped rather than treated as a delivery exception by the CLI callback. This makes origin identity both a tool-scope boundary and a delivery address; it does not admit a new sender or recreate the original inbound request.
+The host uses a per-job `<job-id>:talon-cron` thread and lock, bounds the run to 30 minutes, and invokes recovery after a timeout so a partial tool-call checkpoint does not poison a later run. It passes the stored origin as cron metadata while withholding approval, authorization, progress messaging, and operator authority.
 
-Revoking a paired sender through the running host is an active safety intervention: it cancels that sender's current conversation work, pauses jobs whose stored origin is that sender's DM, and cancels in-flight runs of those jobs. A revoked scheduled run is surfaced as a scheduler error and delivers nothing. Pausing can fail (for example, a store error), in which case the host reports that operators must inspect logs.
+Cron is not an attended inbound turn. When a matching channel and history-enabled runtime are available, it receives a read-only scope for the resolved origin history. Its execution archive scope is disabled, so the scheduled prompt and agent execution create no transcript archive entry and cannot delete conversations. If a final non-silent reply is successfully delivered, the host separately records that delivery when the runtime supports delivery history.
 
-By contrast, `deepagents-talon pairing pause-jobs <channel> <conversation_id>` is explicitly an offline operational command: stop Talon first. The cron store is single-writer in normal operation, and the CLI command does not coordinate with a running host. Use host-side revocation for live intervention; use the CLI pause command only while the host is stopped.
+The delivery target is resolved from the stored provider and conversation. A result can go to the parent channel or thread according to `deliver_to`; the host uses retrying channel send behavior. Origin identity is therefore both the cron management scope and the delivery address—it does not admit a new sender or recreate the original attended request.
 
-## Safe changes and focused tests
+## Pairing revocation and operations
 
-Preserve strict parsing/serialization, local-date DST candidate construction, and the **persist-before-run** claim ordering. Keep origin injection trusted and management scoped to conversation plus channel. Do not add an approval or authorization path to cron. Treat execution status, channel delivery, retention, and archive behavior as distinct boundaries.
+Live revocation through a running host actively cancels the revoked sender's current conversation work, finds jobs whose stored provider and creator sender ID match, pauses every enabled match, and cancels matching in-flight scheduled runs. A cancelled revoked run is converted to a scheduler error and is not delivered. If the store operation fails, the host reports that operators must inspect logs.
 
-Focused coverage includes `libs/talon/tests/cron/test_jobs.py` for persistence, schedule state, scope, and recurrence; `test_scheduler.py` for claim/run/delivery/error behavior and ticker survival; `libs/talon/tests/test_host.py` for timeout, non-overlap, dedicated-thread execution, delivery, and revocation; and `libs/talon/tests/unit_tests/test_scheduled_history.py` for origin-history access and the no-archive execution boundary. See [Talon channel admission](./talon-channel-admission.md), [Permissions and Human-in-the-Loop](./permissions-hitl.md), [State and persistence](./state-persistence.md), and [Talon runtime integration](../integrations/talon.md).
-md), [State and persistence](./state-persistence.md), and [Talon runtime integration](../integrations/talon.md).
+The offline counterpart is:
+
+```text
+deepagents-talon pairing pause-jobs <channel> <sender_id>
+```
+
+Run it only while Talon is stopped. The running host is the cron store's only normal writer, and the command does not coordinate with it. CLI `pairing revoke` only revokes the pairing and reports still-enabled matching jobs with this follow-up command; use host-side revocation for immediate cancellation and pausing.
+
+## Change guidance and focused tests
+
+Preserve strict schedule and store validation, trusted origin injection, conversation-plus-channel management scope, and the **persist-before-run** ordering. Do not introduce an interactive approval or authorization path for cron. Treat execution status, delivery, history access, archive writes, retention, and channel admission as separate boundaries.
+
+Focused tests include `libs/talon/tests/cron/test_jobs.py` for persistence, scope, recurrence, and permissions; `libs/talon/tests/cron/test_until.py` for bound parsing, grace, expiry, and retention; `libs/talon/tests/cron/test_scheduler.py` for claim/run/delivery/error and ticker survival; and `libs/talon/tests/unit_tests/test_scheduled_history.py` for origin-history access, no execution archive entry, delivery history, and thread targets. See [runtime behavior](../architecture/runtime-behavior.md), [state persistence](./state-persistence.md), [Talon channel admission](./talon-channel-admission.md), and [Talon integration](../integrations/talon.md).

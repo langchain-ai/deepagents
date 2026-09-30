@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:063966d52aab8c87bec60b7ea3314c440bfeddf5e09ee5d3ce50dece2ee56b1b",
+  "pageVersion": "sha256:573acde473cfc76a2ba635f556a7635e88ce0390647c975ee167e9c7f8782711",
   "claims": [
     {
       "id": "claim_5a4ee44bdfc94fe0b737b4c36af91fa8",
@@ -22,7 +22,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:101ba4f4f963220c5e0093fc867437c5ee4c4470a7973722cf4f6b8812a25183"
+          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
@@ -36,13 +36,13 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/__main__.py",
-          "version": "repo-file-v1:sha256:61aa3052c12f1e04d6211589ce0b97614b65a53927334b32c55c232550d967d8"
+          "version": "repo-file-v1:sha256:47d54647236442a5fdd163436ee4eb7c7495092db9c82bc922732e4af30ca494"
         }
       ]
     },
     {
       "id": "claim_0f2564ec9867472490655b215c20302f",
-      "statement": "Talon namespaces assistant state by a validated assistant ID under `~/.deepagents/<assistant-id>` unless configured otherwise, creates restrictive home directories, and keeps checkpoint, conversation-reset, and per-conversation model-selection state inside that home.",
+      "statement": "Talon namespaces assistant state by a validated assistant ID under `~/.deepagents/<assistant-id>` unless configured otherwise, creates restrictive home directories, and keeps checkpoint, conversation-reset, and assistant-wide model-selection state inside that home.",
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/config.py",
@@ -70,14 +70,18 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/channels/slack.py",
-          "version": "repo-file-v1:sha256:8a2d1775bbf36e54b84f1d6d31cbb84a9d34efff6b750f55c7258a6d5b304db2"
+          "version": "repo-file-v1:sha256:e2ad605aa61a19fc6720a3598fa3bacf5cbf375886a5c027f2f2911732893c8d"
         }
       ]
     },
     {
       "id": "claim_833130df020a4e6ab07864de59278881",
-      "statement": "A `/model` selection is per conversation, persists in host state, is restricted to a credentialed provider catalog plus the default model, and swaps a lazily built selected model and its context-aware summarizer into main-agent turns.",
+      "statement": "A `/model` selection is assistant-wide, persists in host state, is restricted to a credentialed provider catalog plus the default model, and swaps a lazily built selected model and its context-aware summarizer into main-agent turns.",
       "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py",
+          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+        },
         {
           "resource": "repo://libs/talon/deepagents_talon/model_selection.py",
           "version": "repo-file-v1:sha256:56bf44869c501d01c39635de8ddeaf2e12cc17ee3288764feb20a1896a9bcd64"
@@ -94,7 +98,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/__main__.py",
-          "version": "repo-file-v1:sha256:61aa3052c12f1e04d6211589ce0b97614b65a53927334b32c55c232550d967d8"
+          "version": "repo-file-v1:sha256:47d54647236442a5fdd163436ee4eb7c7495092db9c82bc922732e4af30ca494"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
@@ -122,7 +126,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:ee610710af638563b172ff929f9178aad240a5ac069c4c435745d1eb7ae88bd3"
+          "version": "repo-file-v1:sha256:185ce36e9ecfd942acf1446b4db24643b41f62f2aa147baf30794faaecad5a1b"
         }
       ]
     },
@@ -132,7 +136,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/pairing.py",
-          "version": "repo-file-v1:sha256:c877096b64ec0ea63b3ad0a5e4c2f0004231e6f76ed3f393ba441b41c7a16240"
+          "version": "repo-file-v1:sha256:4842314f8d8531379ea6c663242f2748f8a954dd69314075f1b19e59354fb1d2"
         }
       ]
     },
@@ -182,21 +186,73 @@
     },
     {
       "id": "claim_a6c13a787dc741c8bcdce93ae9e23ab7",
-      "statement": "`/smart-model` controls the assistant-wide model used by `ask_for_help`, independently of per-conversation `/model`; the help tool is restricted to an operator main conversation and requires a channel approval before it sends the question to that model.",
+      "statement": "`/smart-model` controls the assistant-wide model used by `ask_for_help`, independently of assistant-wide `/model`; the help tool is restricted to an operator main conversation and requires a channel approval before it sends the question to that model.",
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:ee610710af638563b172ff929f9178aad240a5ac069c4c435745d1eb7ae88bd3"
+          "version": "repo-file-v1:sha256:185ce36e9ecfd942acf1446b4db24643b41f62f2aa147baf30794faaecad5a1b"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/commands.py",
           "version": "repo-file-v1:sha256:df0a3647739b4e879e20367c8d0540ecbf21bb700884e08770f3c79da43e6157"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py",
+          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
+          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+        }
+      ]
+    },
+    {
+      "id": "claim_6b94742294b443bab2adf7676d2b4e69",
+      "statement": "Slack uses Socket Mode, acknowledges envelopes before handling them, deduplicates recent event IDs, and treats a DM as one conversation while mapping each mentioned channel thread to its own conversation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py",
+          "version": "repo-file-v1:sha256:e2ad605aa61a19fc6720a3598fa3bacf5cbf375886a5c027f2f2911732893c8d"
+        }
+      ]
+    },
+    {
+      "id": "claim_605339d5c97a44df9c4bb44407e57e18",
+      "statement": "The host starts the agent runtime before adapters and the scheduler, unwinds already-started components after startup failure, and on shutdown cancels work before stopping channels, scheduler, and runtime.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py",
+          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+        }
+      ]
+    },
+    {
+      "id": "claim_f086e1d628444e3cbeecff33344d6409",
+      "statement": "A scheduler is attached only when at least one channel exists, and a scheduled result is delivered only through the channel serving its recorded origin; otherwise it is dropped.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py",
+          "version": "repo-file-v1:sha256:47d54647236442a5fdd163436ee4eb7c7495092db9c82bc922732e4af30ca494"
+        }
+      ]
+    },
+    {
+      "id": "claim_0213083fe9f2467c8c67e61c9150d4da",
+      "statement": "Pairing state uses locked atomic updates, and the CLI warns that `pairing pause-jobs` must run while Talon is stopped because the live host is the cron store's only writer.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py",
+          "version": "repo-file-v1:sha256:47d54647236442a5fdd163436ee4eb7c7495092db9c82bc922732e4af30ca494"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/pairing.py",
+          "version": "repo-file-v1:sha256:4842314f8d8531379ea6c663242f2748f8a954dd69314075f1b19e59354fb1d2"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-29T08:06:56.235Z"
+    "at": "2026-09-30T08:06:28.871Z"
   }
 }

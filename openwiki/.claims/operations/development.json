@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:660aa8dcb6c75d71c543e3f5e5e13d0258ae7d757a624c958d28ac94b9221072",
+  "pageVersion": "sha256:1fd745f6660e07fcdfa0ceca99f294ede500b06a52d31ce4b13125a494a18883",
   "claims": [
     {
       "id": "claim_a64f733f2f92431a84333168dbfe4826",
@@ -62,11 +62,11 @@
     },
     {
       "id": "claim_4a0fef756f594209901908160d4144b9",
-      "statement": "The release-please-managed manifest records independent current release baselines: libs/deepagents 0.7.19, libs/acp 0.0.12, libs/code 0.1.78, libs/talon 0.0.8, daytona 0.0.8, modal 0.0.6, runloop 0.0.7, vercel 0.0.2, and quickjs 0.3.7.",
+      "statement": "The release-please-managed manifest records independent current release baselines: libs/deepagents 0.7.20, libs/acp 0.0.12, libs/code 0.1.79, libs/talon 0.0.8, daytona 0.0.8, modal 0.0.6, runloop 0.0.7, vercel 0.0.2, and quickjs 0.3.8.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json#L1-L10",
-          "version": "repo-lines-v1:sha256:4a8bc690a8ab567a8459b4134662ee273e2a99c556137c1bfb6bf016c17abf78:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyNjlhNWVjYTI2YzRjODcxYTg1ZmE1ZDU0MmMzZGIwMGQ1NTg1OTE3NmEyZjczY2Y4NjRlMjdhYWFkZjMzNTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+          "version": "repo-lines-v1:sha256:84454c24afee97949c5f4fdf0d13782ebdc1c11d8cd7d7d7e69e6b3ab9a3ae75:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5Y2NiZWZjOGNlY2FkNjU3MjAzODI0OTUzODIwOWM2OWRjYjc1ZmVkMzMyMWY1ODVmNWUzZDhhZGM1MDY3ZDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
         }
       ]
     },
@@ -178,11 +178,11 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L14",
-          "version": "repo-lines-v1:sha256:3752bc448df2e880caf677db9ef01c4a0dd03cbf9a3dfe4154f20a5384ea4339:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
+          "version": "repo-lines-v1:sha256:1f18a3e889fc90c036912e697966241cab583d89e80ddfa6d15125d5b93f4793:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml#L1-L9",
-          "version": "repo-lines-v1:sha256:1214dc6d8fd7c5d34a720255f4b841e1b3f03fcd2d38eea5443e3ebd347cb119:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzAyYTgxYzM4MzZlZGVmMmQwYmExMWQyMzUzZmI2ZGFiYzc3NzE1MGE3Y2E4M2VhMGQ5ZTlhNzAzMTNmZWFiYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDc2ZDA3ZjI2ZjI5ZWJlOWViNDkxNGI3YzZkYzg5ZTlmMzE5ZTUyM2QwYWIwY2I5MDdlNGRjMTQ5ZmY1N2UwNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjRkOTI5OTJkYTU3M2NjYTRlNTk5ZmE1N2JmMzgzMmZlZDI0OGNhMzk5ZGU4MGEzMjY5MDdmNTA3MmVkNzkwYyJ9"
+          "version": "repo-lines-v1:sha256:5e99437f7ff981a3e9e7194d806f1bb709f0c6924d9b374b55c66ca6956bf07d:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzAyYTgxYzM4MzZlZGVmMmQwYmExMWQyMzUzZmI2ZGFiYzc3NzE1MGE3Y2E4M2VhMGQ5ZTlhNzAzMTNmZWFiYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDc2ZDA3ZjI2ZjI5ZWJlOWViNDkxNGI3YzZkYzg5ZTlmMzE5ZTUyM2QwYWIwY2I5MDdlNGRjMTQ5ZmY1N2UwNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjRkOTI5OTJkYTU3M2NjYTRlNTk5ZmE1N2JmMzgzMmZlZDI0OGNhMzk5ZGU4MGEzMjY5MDdmNTA3MmVkNzkwYyJ9"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml#L5-L10",
@@ -202,19 +202,19 @@
     },
     {
       "id": "claim_1f8e58134c694527ba0414e3bbf64d04",
-      "statement": "The current deepagents-code source version is 0.1.78 in both project metadata and its release-please-managed version marker, its changelog records that release, and its exact deepagents dependency pin is 0.7.19.",
+      "statement": "The current deepagents-code source version is 0.1.79 in both project metadata and its release-please-managed version marker, its changelog records that release, and its exact deepagents dependency pin is 0.7.20.",
       "evidence": [
         {
-          "resource": "repo://libs/code/CHANGELOG.md#L3-L19",
-          "version": "repo-lines-v1:sha256:04419ab714c3bcf703327a6d94da98b1e7c35e7849d6eb48d86a6eb57c29e1d3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjOGYwMmUwNDMxYTM0NWVjZTlhMzE4ZjBjMzJlZTgyYjEyZDNiYzQwOWVhZmQzMjc2YWQxNzRkZDcyYjIyYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMWIyYWE2YTNlMWFiNjlkNmU3ZWNkNzE5MjU1OTcxMDEzZGYyMmI5MTliYmYwZTRkNDE2YTgyMmQ3MWI1YzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwMDdmYzRhZmJlZWUxMjZjYjVmZjZmZWQ3MGRmMTQ4ZmUxNTJmMDEwMjAzYWQzNDc3MGRhZTQ2ZDg4ZmVjZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyNTdiY2JjMzE4ZDY0NGM2MmQ4Y2M5ZGY1ZjZhZjIxYjM3ZmFjOWZlMWFiZWJmNDQ1OGI2ZDBhY2QyNThhNzEifQ"
+          "resource": "repo://libs/code/CHANGELOG.md#L3-L16",
+          "version": "repo-lines-v1:sha256:c80c98329906bbee7c1f1090e8c9747292742fa0a7d2c26d915375e0480516d2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjOGYwMmUwNDMxYTM0NWVjZTlhMzE4ZjBjMzJlZTgyYjEyZDNiYzQwOWVhZmQzMjc2YWQxNzRkZDcyYjIyYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwMDdmYzRhZmJlZWUxMjZjYjVmZjZmZWQ3MGRmMTQ4ZmUxNTJmMDEwMjAzYWQzNDc3MGRhZTQ2ZDg4ZmVjZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2ZmNiOGIxYmQ0MGMyNDYxM2M0NDRjNTZiYWI4ZDUwYTRmODc3ODhmNjkwZTczODAyNWU1YWVmZWFjNGY0MzkifQ"
         },
         {
           "resource": "repo://libs/code/deepagents_code/_version.py#L1-L5",
-          "version": "repo-lines-v1:sha256:9ab6deab3d0dabcac4c2b559789f12d4fb6efd0a2352806f85a8123b6523b03d:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjQ2YmI3NTQ0ODhlOWY3ZDU4N2QyYjg4NzJkN2U3MDIyZWM0MTFlYzQyYzJlM2RiMzZjNDBlYTUyYmE4YjNkOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmI2ZWE3OTUxOWMxYWE2NDk5MWMzNDA0NjQxNGVkMzZmZDNlNzg1NWJmNWRhMDIyMjgyMjAyOTBjY2IxYTM3OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiN2ZkYmVmZDliNTdhOGU2YjAxNDdhYzVkMDZjYjBjYWM3NWRiNmQ2ZThmMjUyNWQxNmQ1YWQ1YmNkZGZiYWEzMyJ9"
+          "version": "repo-lines-v1:sha256:304c83b5c8f05f3bd98fb2202231c815e2f9c5cad4245e182c611a2feb79b52e:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjQ2YmI3NTQ0ODhlOWY3ZDU4N2QyYjg4NzJkN2U3MDIyZWM0MTFlYzQyYzJlM2RiMzZjNDBlYTUyYmE4YjNkOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmJiNmY1N2Y5YWNlODQ5OGY2YmE4M2Q2MTk0ZTBkOWI0NWM5NjIzMDU4N2FjNjdlYzIwNDY2Mzk2NWUwMmFiOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiN2ZkYmVmZDliNTdhOGU2YjAxNDdhYzVkMDZjYjBjYWM3NWRiNmQ2ZThmMjUyNWQxNmQ1YWQ1YmNkZGZiYWEzMyJ9"
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L31",
-          "version": "repo-lines-v1:sha256:3632ab7a2506ee9d54a804af30ce282865bf3c3250012cc7a24dff86d496fd43:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyOWYwZTdlZjJhYTFmODFhYTM5OTYxNGRmNDc4N2Y2OTgxMTljMTJhMjg5ODMwZGJhZGE2MzRlNTk2ODBmZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM1ZjllYWJkNDhjMDVmZmFlMmE2ZjViZWE2YjE3NDczODBmZjlhYWIzODJlYzQ4NmEwNTc2NjRmYjQxYTYzMjcifQ"
+          "version": "repo-lines-v1:sha256:d9231ac1fe2be2107d064f1512fd71262d88ecee0fb03e4e98cad56219a48751:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyOWYwZTdlZjJhYTFmODFhYTM5OTYxNGRmNDc4N2Y2OTgxMTljMTJhMjg5ODMwZGJhZGE2MzRlNTk2ODBmZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM1ZjllYWJkNDhjMDVmZmFlMmE2ZjViZWE2YjE3NDczODBmZjlhYWIzODJlYzQ4NmEwNTc2NjRmYjQxYTYzMjcifQ"
         }
       ]
     },
@@ -329,10 +329,84 @@
           "version": "repo-lines-v1:sha256:9abf2c2cd5ad17ae2a2442b281234c2eb1e1b52f52d227fa43737c239a10ee42:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3MTlmNzhmZDc1ZjgyOTAwOThhMDAwOGM4ODNkNGVlNzc0ZGI0NTE5OTk3MDdjZTNlZTVjMGY0MjhiNGVkNmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhNTdkOTAwMTc4NWIxOTNlMDYxZDRkN2EyNjM0MGU3MWUyMWM4MWNlZGVkMWE1NGE3ZGQ4ZWY0MjNkNTYzOGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQzN2RiODFmMTM4YTdhYTc0OGQzOWFhODNiYjZjYWU3MjRmMDExOTI5MzM3ZGY1ZGRhZTc4YTBkNTQ3NDJkOWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwODMyMzgyMzMyMDFkMGE0ZDdkOTY5NjJjOWFhOTU0YWE1NTc4MmRlNWFjOWQzNjAwYTllYjI0YTFkYjg3OWIifQ"
         }
       ]
+    },
+    {
+      "id": "claim_36f26be34f4341c096b45e49e68cefb4",
+      "statement": "The label taxonomy combines work type, package or integration identity, optional technical topics, author provenance, priority, PR size, and automation, triage, or CI state; PR type labels support routing while release-please still reads Conventional Commits for releases.",
+      "evidence": [
+        {
+          "resource": "repo://.github/LABELS.md#L3-L25",
+          "version": "repo-lines-v1:sha256:7e69ddb0d1eb0ec9bb9e61c702cee9e5dd308bd1b54de9fa8f2afd5d3be79ff5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5NTJlY2FiMGQzMTdiNzEzNzE2MTEzOTNlMjZiYjVjMDg4NjZjYTlkN2U1OGZmM2JlOTQ3ZDc1YzEwODRkMGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzNDJjNjRkNDY5ZWM1ZmIwZGI4NmVkMGYwYTY4ZThkNzMwNzJmN2Q0NjkyYjQ3OTM1MjNkMjFlYzQ2ZWJiOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFiMTBhMmRmNmU5MzRiYjQ3NWFkMzI2YzAyODI2ZThjMmVlYjRiZGIzNWFhZmZjZWM1MTg5ZGE5NWQ0YWZhYTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY1MzRhMzg2YjcxMjJmNWRmZTI1OTZlMGMyN2ZmMGViMzdmMDI4YzExNzNjYmEyMDYwNmMxN2JhYzA4Mjg1NzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ff310cf770e04c988f215206a37a9790",
+      "statement": "The shared labeling configuration maps Conventional Commit types, breaking markers, title scopes, aliases, and changed-file prefixes to labels; package and integration labels are additive while recognized title edits replace stale managed type labels.",
+      "evidence": [
+        {
+          "resource": "repo://.github/LABELS.md#L109-L131",
+          "version": "repo-lines-v1:sha256:dd9ab6a89e63d29ca00b032aa76c04868b40c161e1f7904e2df640cb2ff2f76d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2OTQ5NDcxNGI5ZmFkM2U0YTRkYjdiNTZhOWMxOTNiNzU2ODE5YmM2MjQwMjUyZTE4NWEwZTZjZjdhMzQwZDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU0OTA2NTExZmVmMGNiZTgwN2ZhYWIwZjJjMWVkYzNlMzZjYjlhNjRlNmQxNmVmMDYwN2EyMWEwMWFhNzI4YjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNjYjEyZWJlYjE0NWExYTI5YzVjY2E1NGU5MGRiZmI0MmYxMTAxMmZmODM2Njk1NjUyNzMxZjQwYWVmZGE0MzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUyMWVlOTU0YjY1Mjk2NzViYmFmMGU0NWI2OTY1N2VkMTMzODViYzQ2YWM0YzhhODAxNzIyOTRmODM2NWMzNDAifQ"
+        },
+        {
+          "resource": "repo://.github/LABELS.md#L34-L53",
+          "version": "repo-lines-v1:sha256:18307b0a1526d300505315edf30510a4d742fd41b5ce85033ceb135c8ca9b7bf:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxZjNkNzQ1ZGNkODNmNWMzNTc0NGY4ZjgyNTZkYTVkODFkOTFiNTIzMzliZjU4MmU3ZTgyZThjYTAwNDU5NWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIxNzY4OTEwNjhjNjg1ZGMwNTAzZGIyMzZjMGYwMDA4ZjgyYzhlN2YyNzZlZjY1OTVhOTk2MGRiNTZiYzgwYmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2N2I0ZTVmZTNhYThlMTkwNDJjNzI5NDgwOWFjZjc2NDI2ZjlmYjI4NGNjNjczZjUyZTA4ZGVjODk1MmFlM2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVmZDk1NTAzYWFkMzNkMzI3ZmU4MzY0OWEzZmYzNDM5N2I3Nzk2NzU5NGE2ZjY0NzBlMzViODU0YTEwZmY5YjcifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/labeling/pr-labeler-config.json#L103-L199",
+          "version": "repo-lines-v1:sha256:4785b9aff86530e3a52e151f7f091a03693a0752f5862e5c93a3422a3c0c761f:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIxMTc2MmIxODRlMDIxMjcxMDMyZjVkOWI1ZjhkNzlhYjk4MGIyYmQ2NGE1OWNhOTk1ZWVhNjRiNWQ0MzI2NTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE2MWQzYjgyZTYzMzZhNThkYzc5MmExNGU1YWYxNzk5YTFlZjNmOWI2YWM2YzA5MDRhNjA2YzYzYTJhMmFkZWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzMTc3YjcwNmYyMDA1NjY4ZTU3MGQxNWMzNDEzZmY3NjJkMzU3NDdjOGZjZjRjZDk2NGUyMDYzMDk3ZWE3NTUifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/labeling/pr-labeler-config.json#L44-L63",
+          "version": "repo-lines-v1:sha256:001d03e6b5707f2dfee2bcc14baa05781136bd9351b06c9edd81582f7f1e248e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5N2IxM2I4ZDNlOTZiMmUwNjc2NGZmZTM3MDkxNzc4NTM3ZmU5ZmIzZjI3ZmVjNmI0MWYzNjNjZGM5NmNjYTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0MzI2ZGI1ZTRjOTYyZjk1Njk0ODgwOTE1NDJhNDlhNjg1MTMyYTBkMDU5ZTYyODBhMGRhZWQ4MjBmNWZhOGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE2NjEwZGRkZTcwZDBlYzljNzlkODBmNDU1OTAyNzUwMWE5ZjUwYTE2MWNkNjhmZmMwZmZjMGMxNWMzMTJiZTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU5ZTEyYTBkYjE1ZjBhNDc2ZTc5YmQ3NmNkMjdjYmRmNWNkOWU1ZjY1NWEwNzA5ZjgzYWVhNjkyNWJlNDVmODIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5846b9b273b5429b9f7eb56b5345b700",
+      "statement": "New issues receive priority:triage unless already prioritized; the issue workflow classifies topics only when opened and synchronizes only Area-mapped package/integration labels on opening and editing, leaving unrelated manual labels intact.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/auto-label-by-package.yml#L115-L208",
+          "version": "repo-lines-v1:sha256:18823262b7e74561f23531c77ccb30b3981b2bbe987070d089cf70f112a15881:eyJzZWxlY3RlZExpbmVDb3VudCI6OTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzZjcxODJlNWJmOTdkMmQ5YWM4Njk3MWQ4ZGE0MTAxNjNkY2I2YTViNzUxMjM1Y2I1YjBiNjYyZTFlMTUxNTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MjJjNDJjZDE5YzZkMDNkODA4YzQ1MjcyMDU1MjgyNWI3ZWExYzViNDkxYjIxODUxMWNhYzc0MTVjZjlkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU4ZmRmYzYzMjcyNDkwNTZiZWY3MTBlMmMyZGQwNmYzZWIxYTFiMzNhMDllODYzNjZiMjk0NTdlOGZhYzU0NDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/auto-label-by-package.yml#L29-L65",
+          "version": "repo-lines-v1:sha256:01295eac1f6003e801c870c82e17d8f0db04254bf8eea6eb56da2006464d11eb:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxZmJiNjFmZDQ4MDI0Njg4ZWRmZDUwODRmOWJmMDI5YmM3OTExNThjOTY5MjgwMTI2NWFlZWNkNGI1MzYxZDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmNDQ1NzdjMGYwNTk5MjljNTFkYzc5MmQwM2E0ZmY5MzU5ZDQ4M2ExNWViNDNhZjhlOWY0Y2M2ZDIwZDI4NmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5MWE1OGNhYzYwYzRiNGUzM2IxYjU0ZjUyYzQ0MmI1OGE3OTI3MjBiZTUxZjc2ZDIyZWJjY2RjN2E2N2RkMWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhlZTdlZjQ4NWMyNzU2OThhY2IzM2Y2NzMxZTUxZTcwMWYxYWRmMGE4MDAzYTllM2RmN2RhZThmYzUxMDBjYjAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ccb4f53b6be14ce69982ff73e8fdda99",
+      "statement": "Priority synchronization parses closing links to linked issues, chooses urgent over high over backlog, propagates only urgent or high to a PR, and removes stale current or retired priority labels; it responds to PR and issue events and provides a bounded manual backfill.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/sync_priority_labels.yml#L1-L14",
+          "version": "repo-lines-v1:sha256:6e7da3284a6d7dfbdaa1a7303e2d4fff92f55e9fd655d2941c6f97821034da16:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlZTJhMGE3Yjg1MzYxY2Y4NjlkZDg0NWRiNGU0N2NjNzczNzE0ZDFhM2Y2NTViYzc1YWZjOTdmMDBlYmY4ZGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1NGI0NTUzMWE2OTA1MzBmOWIwNThkYWJmNjc5OTUxMzY0MDlhMzEzZTIyMzQ5ZmVlZDU2MjNjYWYzYmNhNjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVlNmFlNGZmMjg4Mjk2MTJlMGY3NjdiMWJhNmMwMTdjMDIxOTQxOWFmNjJhMTU1N2I1Yjk0Yjk2OWRhMGJkYTMifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/sync_priority_labels.yml#L383-L545",
+          "version": "repo-lines-v1:sha256:5c4ce99fdd8a26cf8dee0d44426394d55fb6bcea53a7095219b9dec2d511fc8c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwM2RhZTQ4N2Y5Zjc1Yjk0MzI1NzE4MDVmOTExMTJmOWQ2NjBjN2M4NWVmM2NhNDc5MGNjOTBjNjIwNWJjYzUxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3ZTlhYWRiZjI1MTJjNGI0N2QxYzAxY2YwMDlkMWNhODE0OTk0NGY2NDNhOTljNTM4MjAyN2U0ZGRjMzM3YjQ4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1YTA3NWYwMWE1Yjk4NTg0MGQ3NDE0NDc5ZGI1NmE0OTVhYWIzNDQ3NGFhOGQ2MjkyOWRiMmU2YTk2MDdhZmZhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NTIyYzQyY2QxOWM2ZDAzZDgwOGM0NTI3MjA1NTI4MjViN2VhMWM1YjQ5MWIyMTg1MTFjYWM3NDE1Y2Y5ZDliIn0"
+        },
+        {
+          "resource": "repo://.github/workflows/sync_priority_labels.yml#L53-L187",
+          "version": "repo-lines-v1:sha256:bd087a651ae41f6603d78ceaf70689ea4fbeb45174ef531751b89ee37c2a9f74:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjZjkxNWMzMDIyODAyZDM3M2YyMDRmNmE0MzI3Y2U1ZDhiMjViMTBlNzY5ODU2YTUyZjU2ZTc5ZWU1NTU2MzJkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkNmM1NmNkYzhjMjY1M2YyNjIzYTI4ZGM1MDI4YzVhNmIyNWUxMTljNGQ4YjIwMGEwMTJlZDI0ZDY5NzQ5NDgyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1ODViMDNlOTIwYjhlZDZlZGIyMTJiYmJhZTFhNzkzMGM2ZWYwMDExNDkwYjgyMDJkYTc2Yzg5MzYwZTFiMDljIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4ODI2MWRlOGMzNDY5YjBmMjQzMjNkOTU3NzgwM2U1Mzg1ZGViMDhhYmRkYmRkNzQ2NGFjMDUyZGI2ZjA1OWRmIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_b2c24cc526a74626a23ee5ecd752993a",
+      "statement": "The priority workflow uses pull_request_target specifically without checking out or executing PR-head code, and its per-item concurrency accepts concurrent linked-issue writers because each job re-derives the complete desired PR priority state for eventual convergence.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/sync_priority_labels.yml#L18-L50",
+          "version": "repo-lines-v1:sha256:27aa990ded2d6b9703c1ea41954c55fe8dc3a27a8bf2c437ae383b2044f44651:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5NmRjNDgxNDlmNWE4M2QxZWQ2ZGJiMzliYmM3ZTJiOTAyYWEzZDM0ZDZiZDVhZTRiMjkxYjY4ZGYwY2E3OWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkODFhY2VhYTE1YmJjYmQ0MDIzMDk1ZjgyMTlhM2FlYzdlYTUyNDZmOGZiNDI3NzExODhlNThmYTk2ZWE1MzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVlNmFlNGZmMjg4Mjk2MTJlMGY3NjdiMWJhNmMwMTdjMDIxOTQxOWFmNjJhMTU1N2I1Yjk0Yjk2OWRhMGJkYTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhkZTNkMGQ4MTA1MDVmN2Q4YjQ4ZmIyZTE3OGE5NGY3MTQxYWZjMjZmNzdlZTVlNzJkMWJjMGZkNDE1OTk4OWEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-29T08:06:56.235Z"
+    "at": "2026-09-30T08:06:28.871Z"
   }
 }

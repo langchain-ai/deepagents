@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:ac5ec10cd66dbe9d962053d8411217a2893bd77a4917c877e3a0aac2bb414be7",
+  "pageVersion": "sha256:2f4b3706a871fd95f408ada9df4ff0cca8d093f95d4c6ba0e05bb5309cf8d119",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -79,10 +79,48 @@
           "version": "repo-lines-v1:sha256:fbf61f4af9cf49ff30603e8a3800fe2564e59941dbedafae0316fa8ec2bc73a8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3ODJlZmZkZmNkNWY5YjQ2OTIxNTFhY2NiNmI0NDUyYTA3NjdlMjFlMTFlNTNmODRhYmRlYTYyMmFkM2FiNjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3NWZjZGE4NDVmNWRjZGQ3ZmI2MTNlZWMwODhjNTA0Y2ZmMTE5NWFiMGIwMmM0OGY5MzE4NThmYWU4M2Y3ZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyMTA2ZGE4ZDU4NWJiYzY3MTZlYjFlMzE1NzVkY2Y3MDJjMWQ2MmRjYTI0ZTVkM2JlNmRiYTk3ZmU5N2Q3OTYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_caf8c42c3d904ac0bcefb0a19d532137",
+      "statement": "Repository tests should be network-free and deterministic under `tests/unit_tests/`, with `tests/integration_tests/` reserved for networked integration contracts; unaccepted pytest warnings fail the suite.",
+      "evidence": [
+        {
+          "resource": "repo://AGENTS.md#L77-L95",
+          "version": "repo-lines-v1:sha256:b63372845dddf71fc708720e93a2605f9091d82b8e0c04ccd692bb8b789fd51b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NmI4NzJmN2YwNGIyNTNhMTkxZWIxZGExNWE2MDI0ZjdjZjE5NTNmZDNhYjM4MWU1MjkwYmU0YTYyNDAxNTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3Yzk1ZGExNmJkMzBjMTJlZTcwNzBkZGI1YTBjMjg4YTQwMzMyMDM0NTExZDE3OTBiM2NmMWIwZTE3YWMwMWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhOTA4ZDNmNzM2NGVkZmYyOWY5NDI5ZWVkMzIxNDRiNTUzZGQxYTc0M2YzMjFjMWM3NGY2NzZmMjEzYjY3ZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYzMzRmZjEzNjg4MzgzMTMzODRlZmUzZDZmM2RkOTE5NWRjMTg2NzFjMjlkNmQzZmZlNjllMTEzNTVkMmIxOWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9adba37ceb2c48a391327c50daeff35d",
+      "statement": "A new partner package must be wired into repository surfaces including issue forms, dependency automation, package labels, CI, release management, and relevant integration and secret matrices in addition to owning its own environment, manifest, Makefile, and tests.",
+      "evidence": [
+        {
+          "resource": "repo://libs/partners/AGENTS.md#L1-L25",
+          "version": "repo-lines-v1:sha256:34a9fbced5f655cc34c107caf5dc9b1eff12b3d491d5a6cba1f509d51e1585ad:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUwYzczZWNhNjUzMzllM2E5NDJjMzViY2MzOGMxN2NjNTJmOGYxOTk3YmNjNzdiZDUwMjc1MDNlMWExZTUwODYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmNzBlMzM5NGQ0OTRiOTRlYzNjNDliNDBmZTVmZjFmNmNlOTcwZTJlMjJkYWMzYzJkMjc4NDhmZWRjMTgxZDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8b19207a41a940c8a0abc5b905652a41",
+      "statement": "Repository automation is organized under `.github` into workflows, composite actions, scripts, issue templates, and release/labeling documentation; labeling workflows apply package, integration, priority, and PR metadata labels, while helper-script tests mirror their production domain layout.",
+      "evidence": [
+        {
+          "resource": "repo://.github/LAYOUT.md#L1-L18",
+          "version": "repo-lines-v1:sha256:6e8baab71361153e6cd60051a4a1a29668c96331b7c8a4f87891682362c471b1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzMGYwYmZhNTRkYTZlNGNjMWJkNTI0MjAyNzRlNjE5MjczMGNkMGFiZWFkNDU4NTg5M2NiMjVlOGI1NjJhMGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliMDg5YmZmZjMxMDQ0M2VhZWZkYjBlM2M0YzFiZGEwMzRjODNhOWI2ODQxNjgxNjhmZGRiNjczMDQyYzU0NDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5OTE4MDdiNWJjMDU2OTJiNTY3ZWI3YjVlZTg3YjEwMjlkMWU5YzllMzA0NjE5M2FhZDQ5MGRmMGYxNzg5OWMifQ"
+        },
+        {
+          "resource": "repo://.github/LAYOUT.md#L31-L43",
+          "version": "repo-lines-v1:sha256:7757dab8dffa87673702b973d7aeea7ebfeee2134a9ed7f1aa4ecf15afe2da6a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4YjkyNmI0NjY0NWVjYTNkZDRkMzBjNDE2MDIyYTU5ZjAyNmRlOGQ0Mzk4MTk0YTA3NGE3NTcwNzI5MTZmYTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjMjllYTI5ZWZjNmE2Yzk1ZGRmMTAzYzNlYmI2ODhjZmVkZDM0MzY5ZjRjOGJhYmFjMGU4YTcxYTcxMjY5YjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJmOGU5MGIwMGFhZTNmNjA3MDI4YWM3NDlhYmE1MWQ3MDViM2Y2YzI3NGQwNWMxMTAxNjY0NmQ2OGRlMTk0MmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyYjZkMDhjZmEwNGZjYjU5NDRmNGVlYzQ2Yzk1ZjIxODUwMDVkOTIzZTY3ZjE4NWZmZGY5NTk0YzRmMDE2Y2YifQ"
+        },
+        {
+          "resource": "repo://.github/LAYOUT.md#L61-L97",
+          "version": "repo-lines-v1:sha256:cd45b58ccf99033cfade8023bb3ae647ca30105e5d2ad14b51af8ddf900ab3d3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE0YmRlMWI4MmJjMDBjOGJhMTYzZmY0ZmMyMjhiNTY0NGIxZTE1NGVlNjRjMTU4NzBhMDkxOWY2ZjRkOWVkZjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3MWY3ZDMzOTc5OTlhYzYwNTM5NWYwYjQwYzkzNDMzMzE1MDU5MDlmOGI1Y2ZmYjY2NmI2OWUyYjM1OTYzMTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJlZGI5YzNjYmQ1ZmRhZDBiNmM2NGIyMjMwOGEzZjYzZmEwODY5MmM4NjMwNDUwYzUxNDFhOTkyMjI4MGM1NTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4YWMyODU0YWY4ZWZmM2IzNDQ1Nzg0OTRiMTBjNjAxNDZiZGM0OTU1YzcwYWMxNmU2MDkzYmI2YmQyYTUyYWQifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-29T08:06:56.235Z"
+    "at": "2026-09-30T08:06:28.871Z"
   }
 }

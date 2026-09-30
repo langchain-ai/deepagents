@@ -117,7 +117,7 @@ async def _aoffload_messages(messages: Sequence[Any], backend: BackendProtocol, 
 
 
 def _offload_tool_result(result: ToolMessage | Command, backend: BackendProtocol, prefix: str, cache: dict[str, str]) -> ToolMessage | Command:
-    """Apply `_offload_messages` to a `read_file` tool result."""
+    """Apply `_offload_messages` to a tool result."""
     if isinstance(result, ToolMessage):
         return _offload_messages([result], backend, prefix, cache)[0]
     if isinstance(result.update, dict) and isinstance(result.update.get("messages"), list):

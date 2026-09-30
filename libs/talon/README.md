@@ -570,35 +570,6 @@ operator to paste the full callback URL. The authorization link and callback byp
 the model context and traces. Newly discovered tools are available on the next channel
 turn after login completes.
 
-For a server that assigns a public client ID without a secret or dynamic registration,
-add an `oauth` object to its HTTP configuration:
-
-```json
-{
-  "auth": "oauth",
-  "url": "https://openapi.doordash.com/mcp/consumer",
-  "oauth": {
-    "client_id": "your-assigned-client-id",
-    "callback_url": "http://127.0.0.1:6359/callback",
-    "callback_port": 6359,
-    "scopes": ["mcp:consumer:write"]
-  },
-  "disabledTools": ["*"]
-}
-```
-
-Talon uses S256 PKCE and no client secret. Explicit `scopes` require `client_id`;
-omit `scopes` to use dynamic registration. `callback_url` must be a canonical HTTP
-loopback URL with an explicit non-default port and path, matching the server's
-registered redirect URI. URLs that the OAuth client would rewrite (such as an
-uppercase hostname or port 80) are rejected.
-`callback_port` is optional when the URL includes a port; if both are supplied they
-must match. A port alone uses `http://localhost:<port>/callback`. Talon does not
-start a localhost listener: paste the full browser callback URL even if the browser
-reports a connection error. Keep tools disabled until login and connector review
-are complete; login does not change tool filters. Changing explicit OAuth settings
-isolates stored credentials and requires a new login.
-
 Run `deepagents-talon mcp config` to print the resolved config path. The terminal-only
 `deepagents-talon mcp login <server>` flow remains available as an alternative.
 

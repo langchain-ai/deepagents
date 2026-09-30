@@ -1267,13 +1267,13 @@ async def test_public_client_flow_without_dynamic_registration(
             "client_id": "assigned-client",
             "callback_url": callback_url,
             "callback_port": 6359,
-            "scopes": ["mcp:consumer:write"],
+            "scopes": ["mcp:write"],
         }
     )
-    storage = FileTokenStorage("doordash", server_url="https://example.com/mcp", oauth=oauth)
+    storage = FileTokenStorage("remote", server_url="https://example.com/mcp", oauth=oauth)
     await prepare_oauth_login(server_url="https://example.com/mcp", storage=storage, oauth=oauth)
     provider = build_oauth_provider(
-        server_name="doordash",
+        server_name="remote",
         server_url="https://example.com/mcp",
         storage=storage,
         interactive=True,
@@ -1354,7 +1354,7 @@ async def test_public_client_flow_without_dynamic_registration(
 def _assert_public_authorization(authorization: dict[str, list[str]], callback_url: str) -> None:
     assert authorization["client_id"] == ["assigned-client"]
     assert authorization["redirect_uri"] == [callback_url]
-    assert authorization["scope"] == ["mcp:consumer:write"]
+    assert authorization["scope"] == ["mcp:write"]
     assert authorization["code_challenge_method"] == ["S256"]
 
 

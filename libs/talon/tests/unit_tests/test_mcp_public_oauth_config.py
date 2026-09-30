@@ -19,29 +19,29 @@ def test_public_oauth_configuration_keeps_tools_disabled(tmp_path: Path) -> None
     store = MCPConfigStore(path, lambda: updates.append(True), auto_approve=False)
     view, update = store.tools()
     server = {
-        "url": "https://openapi.doordash.com/mcp/consumer",
+        "url": "https://example.com/mcp",
         "auth": "oauth",
         "oauth": {
             "client_id": "assigned-client",
             "callback_url": "http://127.0.0.1:6359/callback",
             "callback_port": 6359,
-            "scopes": ["mcp:consumer:write"],
+            "scopes": ["mcp:write"],
         },
         "disabledTools": ["*"],
     }
     result = update.invoke(
         {
-            "server_name": "doordash",
+            "server_name": "remote",
             "server": server,
             "expected_revision": view.invoke({})["revision"],
         }
     )
     assert result["status"] == "updated"
-    assert json.loads(path.read_text())["mcpServers"]["doordash"] == server
+    assert json.loads(path.read_text())["mcpServers"]["remote"] == server
     assert updates == [True]
     redacted = view.invoke({})
     assert "assigned-client" not in json.dumps(redacted)
-    assert "oauth" in redacted["mcpServers"]["doordash"]
+    assert "oauth" in redacted["mcpServers"]["remote"]
 
 
 @pytest.mark.parametrize(
@@ -72,7 +72,7 @@ def test_invalid_public_oauth_update_is_actionable_and_safe(
     view, update = store.tools()
     result = update.invoke(
         {
-            "server_name": "doordash",
+            "server_name": "remote",
             "server": {"url": "https://example.com/mcp", "auth": "oauth", "oauth": oauth},
             "expected_revision": view.invoke({})["revision"],
         }
@@ -132,17 +132,17 @@ def test_public_oauth_storage_isolated_from_other_clients(
         {"client_id": "first"},
         {"client_id": "second"},
         {"client_id": "first", "callback_url": "http://127.0.0.1:6359/callback"},
-        {"client_id": "first", "scopes": ["mcp:consumer:write"]},
+        {"client_id": "first", "scopes": ["mcp:write"]},
     ]
     paths = {
         FileTokenStorage(
-            "doordash", server_url="https://example.com/mcp", oauth=parse_oauth_config(config)
+            "remote", server_url="https://example.com/mcp", oauth=parse_oauth_config(config)
         ).path
         for config in configurations
     }
     assert len(paths) == len(configurations)
-    default = FileTokenStorage("doordash", server_url="https://example.com/mcp")
+    default = FileTokenStorage("remote", server_url="https://example.com/mcp")
     explicit_default = FileTokenStorage(
-        "doordash", server_url="https://example.com/mcp", oauth=parse_oauth_config(None)
+        "remote", server_url="https://example.com/mcp", oauth=parse_oauth_config(None)
     )
     assert default.path == explicit_default.path

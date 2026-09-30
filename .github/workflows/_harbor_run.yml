@@ -980,9 +980,15 @@ jobs:
           case "$HARBOR_AGENT_IMPL" in
             codex|claude-code|hermes|pi) agent_model="${HARBOR_MODEL%%:*}/${HARBOR_MODEL#*:}" ;;
           esac
+          diagnostic_args=()
+          if [ "$HARBOR_AGENT_IMPL" = hermes ]; then
+            diagnostic_args=(--agent-env 'HERMES_HOME=/tmp/hermes'
+              --artifact /tmp/hermes/logs/install.log)
+          fi
           uv run harbor run \
             --yes \
             "${agent_args[@]}" \
+            "${diagnostic_args[@]}" \
             "${dataset_args[@]}" \
             -n "$HARBOR_CONCURRENCY" \
             --n-attempts "$HARBOR_ROLLOUTS_PER_TASK" \

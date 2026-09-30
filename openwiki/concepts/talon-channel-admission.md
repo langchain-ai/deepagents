@@ -3,10 +3,9 @@ type: channel admission policy
 title: Talon Channel Admission and Pairing
 description: Talon’s channel exposure policies, provider-specific pairing and reaction admission, and the host actions that revoke a sender’s active and scheduled work.
 tags: [talon, channels, admission-control, pairing, security, reactions]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-29T08:06:56.235Z
 sources:
+  - id: openwiki-source-6a038e6e1a11f450bcafce54
+    resource: repo://libs/talon/deepagents_talon/__main__.py
   - id: openwiki-source-0ad7ce4799b63dc215741642
     resource: repo://libs/talon/deepagents_talon/channels/base.py
   - id: openwiki-source-a8e2e928218febcb386206bf
@@ -27,7 +26,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_pairing_slack.py
   - id: openwiki-source-8614e79d8a8371505c879e50
     resource: repo://libs/talon/tests/unit_tests/test_pairing.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-29T08:06:56.235Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-30T08:06:28.871Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-30T08:06:28.871Z
 ---
 
 Talon adapters are the boundary between provider events and a host-owned agent runtime. An adapter normalizes a provider event into a `ChannelMessage` or `ChannelReaction`, applies its admission rules, and calls a handler registered by `TalonHost`. The host then owns commands, conversation identity, turn replacement, runtime invocation, and delivery back to the originating conversation.
@@ -87,7 +89,7 @@ An unadmitted sender can create a pairing request. Discord and Telegram offer a 
 
 An approved paired sender is admitted **in any chat the bot can see**, not only in the recorded DM. The same is true of reactions from a paired sender. The saved DM is used for the pairing offer/approval notification and legacy scheduled-job matching; it is not a post-approval conversation fence.
 
-This is therefore a substantial delegation of normal agent invocation. Pairing never grants Talon control-plane authority: environment-configured operator IDs remain authoritative, and a paired sender cannot manage pairing or obtain operator-only model or approval privileges merely by being paired. `*_ALLOWLIST_USERS` and operator IDs are environment-authoritative pairing senders: they are admitted in DMs, never receive a code, and cannot be removed through pairing revocation.
+This is therefore a substantial delegation of normal agent invocation. Pairing never grants Talon control-plane authority: it does not make the sender an operator, allow them to manage pairing, or change the host's operator checks and tool-approval policy. In particular, exposure and pairing are not containment boundaries—an admitted sender can invoke the agent with the host's configured credentials and local access. `*_ALLOWLIST_USERS` and operator IDs are environment-authoritative pairing senders: they are admitted in DMs, never receive a code, and cannot be removed through pairing revocation.
 
 ### Approval and revocation
 

@@ -22,6 +22,8 @@ sources:
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
     resource: repo://libs/talon/deepagents_talon/model_selection.py
+  - id: openwiki-source-26b7e102f81f5c7bcfdc2424
+    resource: repo://libs/talon/deepagents_talon/pairing.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-267468fe937003d4716fe6c2
@@ -36,10 +38,14 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_context_doctor.py
   - id: openwiki-source-817808ec0e85107297729a56
     resource: repo://libs/talon/tests/unit_tests/test_model_selection.py
+  - id: openwiki-source-8614e79d8a8371505c879e50
+    resource: repo://libs/talon/tests/unit_tests/test_pairing.py
+  - id: openwiki-source-f2859f71853cf2cbdb40aaa3
+    resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-29T08:06:56.235Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-29T08:06:56.235Z" }
+    at: 2026-09-30T08:06:28.871Z
+generated: { by: "openwiki/0.4.2", at: "2026-09-30T08:06:28.871Z" }
 ---
 
 # Talon Host Runtime Behavior
@@ -112,7 +118,15 @@ A selected model is bound in the `ACTIVE_MODEL` turn context variable. Outer `Mo
 
 The approval file is a bounded, non-symlink regular JSON document with validated exact names and byte-revision compare-and-swap updates. An `ApprovalSnapshot` freezes policy for an invocation and compiles interrupts only for enabled names; updates apply on a later invocation. The runtime batches tool interrupts, audits action names and counts rather than arguments, resumes aligned decisions, and caps approval rounds.
 
-An attended channel turn can receive channel approval and authorization handlers. **Cron and background-delivery requests are unattended:** the host supplies neither interactive handler, and the runtime clears approval-operator authority. A protected-tool interrupt without an eligible handler is auto-rejected, so unattended work fails closed instead of waiting for a human. Detached background workers also clear authorization and approval authority, so they cannot carry it past their owner turn.
+An attended channel turn can receive channel approval and authorization handlers. **Cron and background-delivery requests are unattended:** the host supplies neither interactive handler, and the runtime clears approval-operator authority. A protected-tool interrupt without an eligible handler is auto-rejected, so unattended work fails closed instead of waiting for a human. Detached background workers also clear authorization and approval authority, so they cannot carry it past their owner turn. Scheduled and detached work therefore lacks interactive approval and authorization; it must be safe to reject rather than rely on a later human response.
+
+## Sender pairing and revocation
+
+Pairing is an opt-in admission mechanism for Discord, Slack, and Telegram; it is incompatible with open exposure. An unknown direct-message sender receives an eight-character, one-hour code bound to its provider and sender. Only an environment-configured operator can list, approve, or revoke pairing in a direct message (or use the CLI), so a requester cannot submit guesses to the bot. Approval consumes the code and admits that paired sender in any visible chat, but does not grant operator controls such as `/pair` or approval-policy changes. Environment-listed senders remain authoritative and cannot be revoked through pairing.
+
+The pairing store uses a locked read-modify-write and atomic replacement. It validates bounded regular-file JSON, refuses symlinks, and fails closed on unreadable or invalid state; cached admission reads include the inode, so a replacement-based revocation takes effect rather than being hidden by cache.
+
+Revocation is operational containment, not merely future-message admission. The host cancels work in the sender's direct message and every non-idle conversation where that sender initiated a turn; this also stops background work associated with such a conversation even when another sender spoke later. When the scheduler exposes a `CronJobStore`, it disables every job created by the sender on that provider and cancels any of those jobs currently running. A revoked scheduled run repairs its dedicated graph thread and raises a scheduler-visible failure, producing no delivery. If bounded cancellation cannot finish, the host tells the operator to restart.
 
 ## Background subagents and follow-up delivery
 
@@ -144,6 +158,8 @@ This flow shows that claiming advances the occurrence before agent execution, wh
 
 The host uses a dedicated `<job-id>:talon-cron` thread and holds its conversation lock for each run, preventing overlap. A scheduled-run timeout invokes interruption recovery before it reaches the scheduler. Scheduled requests have no approval or authorization handlers and run subagent delegations inline rather than leaving detached work for a later turn. Inline delegation disables recursion and detached-job management tools, queues behind a separate concurrency limit, has a bounded timeout, converts failures to sanitized output, and clamps returned text.
 
+A scheduled turn may read the origin chat's history only when history is enabled and the origin identifies a reachable channel. The request carries that trusted history scope, while the cron thread's archive session is read-only: it is not indexed as a conversational entry and cannot delete conversations. On successful non-silent delivery, the host records the final reply under the origin history chat (the parent chat for a public thread). `deliver_to` selects the origin thread or, for threaded adapters, its top-level channel; it does not change the history scope.
+
 ## Focused change checks
 
-When changing this area, preserve candidate-before-replacement graph construction and capture graph, approval, selected model, and host generation per turn. Do not transfer attended authority into cron, detached workers, or background delivery. Repair a cancelled thread before reuse; treat host-confirmed delivery as the semantic-history boundary; and requeue background results only when unintended loss prevented delivery. Focused tests exercise graph refresh isolation, approvals and interruption repair, shell hardening, global model persistence and selected-model summarization, host timeout/replacement/delivery/requeue behavior, scheduled delegation, and scheduler resilience.
+When changing this area, preserve candidate-before-replacement graph construction and capture graph, approval, selected model, and host generation per turn. Do not transfer attended authority into cron, detached workers, or background delivery. Repair a cancelled thread before reuse; treat host-confirmed delivery as the semantic-history boundary; and requeue background results only when unintended loss prevented delivery. Focused tests exercise graph refresh isolation, approvals and interruption repair, shell hardening, global model persistence and selected-model summarization, host timeout/replacement/delivery/requeue behavior, pairing code and revocation containment, origin-scoped scheduled history and delivery targeting, scheduled delegation, and scheduler resilience.

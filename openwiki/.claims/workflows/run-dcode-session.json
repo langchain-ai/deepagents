@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:689837527b229b735b2b203effa37f9df4dd0edbd759f96e21727d13c45a25fc",
+  "pageVersion": "sha256:50017480d298822b7a0a7551eb167d6c37357a407ac496e83b74d9b498e887f6",
   "claims": [
     {
       "id": "claim_477654aa6598456fa3add53b5c307cf3",
@@ -146,7 +146,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/tests/unit_tests/test_app.py",
-          "version": "repo-file-v1:sha256:4b7efd37213f68b4066fe199863e18431e44aa571124e90d2c4398d756ca20b0"
+          "version": "repo-file-v1:sha256:8879a92021cc7cc7073dd2dfa9472ec3dbdd2a358ac5dea14baed8c194d47b43"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_main.py",
@@ -231,10 +231,62 @@
           "version": "repo-lines-v1:sha256:317c58a2b8013c2df5af465c809d914559a6df5b0d9e1a946a9b932a2b1d6ea0:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkM2MyMzcwN2ZjOTc1ZGVlZjEzOWI2OWQ1MmM5NjBjMTU1ZjJmOGM1ZjYwMDYxYTM0YmUyNjYzZjNhMzcyMTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI5ZTVjNzU3YmVjYzlkZTllNTRlNWJlYWZiZjlmMWRjOGVjMzdmNmM1MTkzYjA3YmFkMGIxMWY3ZGQ0MGU1MDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFlMzQ0MDFhZmY3NzZmM2E1MTA1ZTRjMTg0NWU2MjFjYjFkOTY5NmVjOWRkYTI3M2JiNDA2OGNjOGUxZjAwZGYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_9032b1620ee7409bacf6f16c24cef9e4",
+      "statement": "CLI model parameters must be JSON objects, take precedence over configured provider values, and cannot control provider-native retries because dcode owns the retry budget through `--max-retries` or configuration.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L6734-L6808",
+          "version": "repo-lines-v1:sha256:3024247868f72dee259f770536438b1676f9749ac7e7e2d8efe59ff5a832ec0d:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiMzllNDY2MzE3MTdmNzQ2OGNmYzM3ZDViZmE0YzNkN2EzZTIwOTU0ZTg2YjdjZTdjZmZkMWQ3YTRlZmE2MGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1NTU3YTcwOWU1YzE2ZWUwNmY4ZDQ0YTVkYjZkYTVlZDI3ZTIzNDFlMGE2YTk5Y2Y4M2Y2YTBkZGUxZmUzNzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ2ZTcyZGE2MzVhZmExOTM1NGNlNDkzOTgzODg0YjJhZGJlMDUyYjM4NTk4N2NmM2JhMjUwODFkNjUxMjk1ZDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYzNGYzMDA0YTcxNWRiMTdmOTcyNDIzYTNjOTQ2Y2Q1NWY3ZTFiMmU1YzQ0YWUyMjg4MmEwM2QzNzdkNDZlZjEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L5401-L5457",
+          "version": "repo-lines-v1:sha256:9e1459f2f3de27ad92fdb085f282095e9b9e8b4e21535aade1d4b580c28e6c72:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1ZGMzMGI2MmMzYzhlNWM0NzJlZDZmMWQ0ZDAzZTdkZjkxNzM5ZWQzNDI2ZmJlMjQ5YTE4NzU4YzhkMmY3YzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5MTQ1MzFhN2M4YzRjMGY1MmVkMzg5MjhiMjllOTcwNTYwZTUzZmE1ODBlMzdmYjBlY2UwNzMxZmRiMDg0ZTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiODYwODE2ZDg1ODE1ODUzYjEwODgyNGMwZTk1MTI0NGFjYTBmZTFhZmVkZTg3NWRlNjUxYzQ5NzBiZGY4MjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3NGQxZGU5MGIzMDRhNzdiY2Y2MTNiNWM4Y2UwNDAxZDliNDFlMjU4YmRmMWYyMDkyMTQyMDAwYzE4NDI1ZWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ff5d3e148347424683ada3ad27403261",
+      "statement": "Reasoning effort choices are derived from a reasoning-capable model profile; Anthropic models in `between_tools` thinking mode expose only low, medium, and high effort levels.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/reasoning_effort.py#L26-L127",
+          "version": "repo-lines-v1:sha256:b26177ccc9e0728dba70f1a525c2b7706b04eb1668b05b9d5e6e03a533096d9d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3Y2JmZDc5ZmVkYjE2YjY4ODUxMTYyODgxNjI1YzcwNDlhOGU0NTc1ZjAyMjEyNGM2MGQxYjBkNDZkMDliNDBmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhZWRiOGVmYzI5ZjE1ZWZkNGViNjVhZjA4NTRlYjYwMTUzZTBhZTVlMjliMTA4Mzk3YzhlNTQwODljZTRkYTQzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxMmNhNWRlOTU4ZGJhOTc1OWE4M2NmYmU0MGE4NmIyNGUxNWE5ZDlmMGE0ZTViNGFjMWU4ZTZmZDAzYjlmNzE4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5YmYxN2IxNTk5M2VkODZmMDQ5NWQwMjIyMWJjOGFhNmEwMWFlMDdlZTVkYjczN2QzMDZhMDkxMmNkZWJjZjUzIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_425d95ad0d8243cf8ec776d4630167a9",
+      "statement": "MCP middleware normalizes empty optional string arguments, converts timeout into a warning that retrying may duplicate server-side work, and turns detected expired authentication into an actionable tool error.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_middleware.py#L39-L170",
+          "version": "repo-lines-v1:sha256:805278d59c77acda0e1a7368de8fd2d44a836bd26e7a6a0c5e44c729fb671e76:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI4YWE4MjNmODU4ZTk5ZjkxOTgxYWViOWVhYjg4OTJjNjMxZTAzOTNiNGVlNjJhN2E1NzA4YjRmNWU4ZTMwZDhmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzYzNmYTQ1ODBkOGQwZDQ0MWQxMDgzNmM1MjkxYTZlZmIxZDcwODJjMThhMDU3ODE0MWM2NDZlZGY2NTMwZGYwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyYjdjMzcyNWY5ZjhkNjAxMGJlMjg3NDkxYWQ4ODYwNTY2NzY3MmJiZmNhZDJmYzA3ZmYwZGU1ZjAyN2UyMjE5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwNDM0Mzk5YWI4NjBkMjliZmY1ZWUzMTgyNWY1ZDJlNGRmNDdiZWFhNmFhYmM0NmMxODJkODMwMzIyNmJhMGJhIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_47a5f68b132c4fd494648b392ea1e4cd",
+      "statement": "Session cost is graph-owned and checkpointed; it streams an absolute cumulative `session_cost` event so clients render the total without maintaining their own lifetime accounting.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L1-L30",
+          "version": "repo-lines-v1:sha256:6cf1ea9c6264920720dccdc8e838bfe17b5c2491878b32e14248f5d3a7303188:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwODAzMjIwMzFmMjYwODc3MjY4NmYwZTdmYjg5ZGFhNDkzODI0ZGFkMmViNjRlN2M1NTQ1N2RmMzMyMGQwODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1NzU4ZjQ5ZDYzMWE4ZTc3MGQzNDRmNDI1N2UyZmIxYjQ5N2Q4NTE1Nzk1YWEzMWY3YjgwYzgyNTc2N2U2ZDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhNmQ4MGU0Mzg2NDEyMTY3MGU1M2M2OTA2MDUwMmYxMmYxZGVlZGE3YTBhNjgxZjdhMmI3NmM0OTZjZWIwOTAifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L3280-L3327",
+          "version": "repo-lines-v1:sha256:0e25248096b1daa6f4763c9d63f9219cc8feb156e07145aa4200cc8f1f079502:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYWJjZDBjYzY5MTNkNGY1MWViMjFlNGY1YWZjMmU5MGY4NmQzNmE0NTBiYjQyY2IwNWM2ZjNlMGQ3MDZmOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1MDYwNjAwYjY2ZjIwMTVlNTc2Mzg5OWUwZjg5MTViOWJmNDk0Nzk0ODZjMjYzYWVhMjA0NWQxMGMxYjlmZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkMzZkY2ViNGZhNjhlZDY4YmI3MDg2ZmNiZWYyNzE0OTk0ZDE1OTA4YmVhZTdkZDA2MWRkNzM4ZDM1YjRlNGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/textual_adapter.py#L1386-L1442",
+          "version": "repo-lines-v1:sha256:3dcd7c6a21d33c2e9126fc147fca03a9094bd10fbdc3dc236da81271bb3f23c8:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxOTQzZDgwMWJjNjcxOGViM2QzNDQ5MTJmNzQ1OWQ5MzFlODU4MzA5MjFiMWU0YmNmODg2NjcyMDg1ZjllNDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJkMmYxYjg2Njg0MjYwMGNlZmZjNmVhNDJhMmM4YmIyZjRmNjlmYWUwNjc0ZTlmM2IyNDg3Y2UwMTA3ZDNhYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjViNTdlNjI1MDgzYjQxMjFlNGU5Nzk0ZDkwZTc5MDE0OWY0NTIyNjdlMDkzODM0NDUzMGZjNWQzOWYyNWE5OGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA0ZTAwZjc5Y2UxY2U0YmZiY2RhMmFmYTM0ZGIwNzdkNTRiODkxNmNkZmZlMzU4Y2VjOTAxNTIyNGIwZjRjOTQifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-29T08:06:56.235Z"
+    "at": "2026-09-30T08:06:28.871Z"
   }
 }

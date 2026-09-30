@@ -262,10 +262,11 @@ class ApprovalAgent(BlockingAgent):
 
 
 class AuthorizationAgent(BlockingAgent):
-    def __init__(self, *, terminal: bool = False) -> None:
+    def __init__(self, *, terminal: bool = False, redirect_uri: str | None = None) -> None:
         super().__init__()
         self.callbacks: list[str] = []
         self.terminal = terminal
+        self.redirect_uri = redirect_uri
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         self.requests.append(request)
@@ -276,6 +277,7 @@ class AuthorizationAgent(BlockingAgent):
             server_name="notion",
             invocation_id="tool-call-1",
             expires_at=asyncio.get_running_loop().time() + 30,
+            redirect_uri=self.redirect_uri,
         )
         await request.authorization_handler(
             AuthorizationURL(
@@ -409,9 +411,14 @@ async def test_channel_authorization_intercepts_bound_callback_outside_model(
     ]
 
 
-async def test_slack_labeled_callback_completes_authorization(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "redirect_uri", ["http://localhost:3000/callback", "http://127.0.0.1:6359/callback"]
+)
+async def test_slack_labeled_callback_completes_authorization(
+    tmp_path: Path, redirect_uri: str
+) -> None:
     channel = RecordingChannel(provider="slack")
-    agent = AuthorizationAgent()
+    agent = AuthorizationAgent(redirect_uri=redirect_uri)
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
     await host.start()
 
@@ -428,7 +435,7 @@ async def test_slack_labeled_callback_completes_authorization(tmp_path: Path) ->
             "ts": "1700000000.000200",
             "thread_ts": "1700000000.000100",
             "user": "operator",
-            "text": "<http://localhost:3000/callback?code=example&amp;state=state|localhost/callback?code=…&amp;state=…>",
+            "text": f"<{redirect_uri}?code=example&amp;state=state|callback>",
         },
         bot_id="bot",
     )
@@ -444,12 +451,61 @@ async def test_slack_labeled_callback_completes_authorization(tmp_path: Path) ->
     await _wait_for_sent_count(channel, 3)
     await host.stop()
 
-    assert agent.callbacks == ["http://localhost:3000/callback?code=example&state=state"]
+    assert agent.callbacks == [f"{redirect_uri}?code=example&state=state"]
     assert [request.text for request in agent.requests] == ["login"]
     assert channel.sent[-2:] == [
         (conversation_id, "MCP server `notion` is authorized."),
         (conversation_id, "authorization:completed"),
     ]
+
+
+async def test_custom_callback_requires_matching_endpoint_and_operator(tmp_path: Path) -> None:
+    channel = RecordingChannel(provider="telegram")
+    redirect_uri = "http://127.0.0.1:6359/callback"
+    agent = AuthorizationAgent(redirect_uri=redirect_uri)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    await host.receive_message(
+        channel, ChannelMessage(conversation_id="chat", text="login", sender_id="operator")
+    )
+    await _wait_for_sent_count(channel, 1)
+    callback = f"{redirect_uri}?code=secret-code&state=secret-state"
+    for conversation, sender, text in (
+        ("other-chat", "operator", callback),
+        ("chat", "attacker", callback),
+        ("chat", "operator", callback.replace(":6359", ":6360")),
+        ("chat", "operator", callback.replace("/callback", "/wrong")),
+        ("chat", "operator", callback.replace("127.0.0.1", "localhost")),
+    ):
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id=conversation, text=text, sender_id=sender)
+        )
+        assert agent.callbacks == []
+    await host.receive_message(
+        channel, ChannelMessage(conversation_id="chat", text=callback, sender_id="operator")
+    )
+    await _wait_for_sent_count(channel, 8)
+    await host.stop()
+    assert agent.callbacks == [callback]
+    assert [request.text for request in agent.requests] == ["login"]
+
+
+async def test_unsolicited_custom_callback_never_reaches_model(tmp_path: Path) -> None:
+    channel = RecordingChannel(provider="telegram")
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id="chat",
+            text="http://127.0.0.1:6359/callback?code=secret-code&state=secret-state",
+            sender_id="operator",
+        ),
+    )
+    await host.stop()
+    assert agent.requests == []
+    assert channel.sent == [("chat", "No matching MCP authorization request is pending.")]
 
 
 async def test_terminal_channel_authorization_suppresses_redundant_agent_result(

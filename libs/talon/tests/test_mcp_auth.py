@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import gzip
+import hashlib
 import ipaddress
 import json
 import logging
@@ -40,6 +42,7 @@ from deepagents_talon.mcp_auth import (
     prepare_oauth_login,
 )
 from deepagents_talon.mcp_config import WORKSPACE_ENV, locked_path
+from deepagents_talon.mcp_oauth import parse_oauth_config
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -1239,3 +1242,111 @@ async def test_device_registration_bounds_slow_name_resolution(
         ticker.cancel()
     assert time.monotonic() - started < 1.0
     assert ticks > 0
+
+
+@pytest.mark.parametrize("mismatched_state", [False, True])
+async def test_public_client_flow_without_dynamic_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, oauth_network, *, mismatched_state: bool
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    callback_url = "http://127.0.0.1:6359/callback"
+    oauth = parse_oauth_config(
+        {
+            "client_id": "assigned-client",
+            "callback_url": callback_url,
+            "callback_port": 6359,
+            "scopes": ["mcp:consumer:write"],
+        }
+    )
+    storage = FileTokenStorage("doordash", server_url="https://example.com/mcp", oauth=oauth)
+    await prepare_oauth_login(server_url="https://example.com/mcp", storage=storage, oauth=oauth)
+    provider = build_oauth_provider(
+        server_name="doordash",
+        server_url="https://example.com/mcp",
+        storage=storage,
+        interactive=True,
+        oauth=oauth,
+    )
+    authorization: dict[str, list[str]] = {}
+    requests: list[httpx.Request] = []
+    metadata = _oauth_metadata(
+        scopes_supported=["advertised-but-not-requested"],
+        code_challenge_methods_supported=["S256"],
+    )
+    del metadata["registration_endpoint"]
+
+    async def redirect(url: str) -> None:
+        authorization.update(parse_qs(urlparse(url).query))
+
+    async def callback() -> AuthorizationCodeResult:
+        state = "mismatched" if mismatched_state else authorization["state"][0]
+        return AuthorizationCodeResult(code="authorization-code", state=state)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.headers.get("Authorization") == "Bearer renewed":
+            return httpx.Response(200)
+        if request.url.path == "/mcp":
+            return httpx.Response(
+                401,
+                headers={
+                    "WWW-Authenticate": 'Bearer resource_metadata="https://example.com/resource"'
+                },
+            )
+        if request.url.path == "/resource":
+            return httpx.Response(
+                200,
+                json={
+                    "resource": "https://example.com/mcp",
+                    "authorization_servers": ["https://auth.example/tenant"],
+                },
+            )
+        if request.url.path == "/.well-known/oauth-authorization-server/tenant":
+            return httpx.Response(200, json=metadata)
+        if request.url.path == "/tenant/access-token":
+            return httpx.Response(200, json={"access_token": "renewed", "expires_in": 3600})
+        pytest.fail(f"Unexpected OAuth request path: {request.url.path}")
+
+    provider.context.redirect_handler = redirect
+    provider.context.callback_handler = callback
+    async with httpx2.AsyncClient(transport=oauth_network(handle), auth=provider) as client:
+        if mismatched_state:
+            with pytest.raises(OAuthFlowError, match="State parameter mismatch") as caught:
+                await client.get("https://example.com/mcp")
+            assert "mismatched" not in format_login_error(caught.value)
+            assert await storage.get_tokens() is None
+            assert not any(request.url.path == "/tenant/access-token" for request in requests)
+        else:
+            assert (await client.get("https://example.com/mcp")).status_code == 200
+            exchange = next(
+                request for request in requests if request.url.path == "/tenant/access-token"
+            )
+            fields = parse_qs(exchange.content.decode())
+            assert fields["client_id"] == ["assigned-client"]
+            assert fields["redirect_uri"] == [callback_url]
+            assert "client_secret" not in fields
+            assert "Authorization" not in exchange.headers
+            digest = hashlib.sha256(fields["code_verifier"][0].encode()).digest()
+            challenge = base64.urlsafe_b64encode(digest).rstrip(b"=").decode()
+            assert authorization["code_challenge"] == [challenge]
+            tokens = await storage.get_tokens()
+            assert tokens is not None
+            assert tokens.access_token == "renewed"  # noqa: S105
+    _assert_public_authorization(authorization, callback_url)
+    assert not any("register" in request.url.path for request in requests)
+    await _assert_public_client_registration(storage)
+
+
+def _assert_public_authorization(authorization: dict[str, list[str]], callback_url: str) -> None:
+    assert authorization["client_id"] == ["assigned-client"]
+    assert authorization["redirect_uri"] == [callback_url]
+    assert authorization["scope"] == ["mcp:consumer:write"]
+    assert authorization["code_challenge_method"] == ["S256"]
+
+
+async def _assert_public_client_registration(storage: FileTokenStorage) -> None:
+    client_info = await storage.get_client_info()
+    assert client_info is not None
+    assert client_info.client_secret is None
+    expected_method = "none"
+    assert client_info.token_endpoint_auth_method == expected_method

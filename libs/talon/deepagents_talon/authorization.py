@@ -18,6 +18,7 @@ class AuthorizationBinding:
     server_name: str
     invocation_id: str
     expires_at: float
+    redirect_uri: str | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)

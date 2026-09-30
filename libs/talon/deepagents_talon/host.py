@@ -64,7 +64,10 @@ from deepagents_talon.interfaces import (
     ToolApprovalDecision,
     ToolApprovalRequest,
 )
-from deepagents_talon.mcp_auth import extract_oauth_callback_url
+from deepagents_talon.mcp_auth import (
+    extract_loopback_oauth_callback_url,
+    extract_oauth_callback_url,
+)
 from deepagents_talon.media import (
     MarkdownMediaRef,
     build_inbound_text,
@@ -1699,7 +1702,7 @@ class TalonHost:
         provider: str,
         agent_conversation_id: str,
     ) -> bool:
-        callback_url = _callback_url(message.text)
+        callback_url = extract_loopback_oauth_callback_url(message.text)
         pending = self._pending_authorizations.get(agent_conversation_id)
         if pending is None:
             flow = self._authorization_flows.get(agent_conversation_id)
@@ -1737,11 +1740,15 @@ class TalonHost:
                 msg = "MCP authorization request expired"
                 pending.future.set_exception(TimeoutError(msg))
             return True
+        callback_url = extract_oauth_callback_url(
+            message.text, redirect_uri=pending.binding.redirect_uri
+        )
         if callback_url is None:
             await send_with_retry(
                 lambda: channel.send_message(
                     message.conversation_id,
-                    "Paste the full callback URL to finish MCP authorization, or send `/stop`.",
+                    "Paste the full callback URL matching this MCP authorization request, "
+                    "or send `/stop`.",
                 )
             )
             return True
@@ -2051,10 +2058,6 @@ def _prepare_inbound_message(message: ChannelMessage) -> ChannelMessage:
         message_id=message.message_id,
         metadata={**message.metadata, "media_text_augmented": True},
     )
-
-
-def _callback_url(text: str) -> str | None:
-    return extract_oauth_callback_url(text)
 
 
 def _command_name(text: str) -> str | None:

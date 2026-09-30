@@ -850,6 +850,10 @@ def test_reaction_thumbsup_all_approves() -> None:
             "http://localhost:3118/callback?code=abc&state=xyz",
         ),
         (
+            "<http://127.0.0.1:6359/callback?code=abc&amp;state=xyz|callback>",
+            "http://127.0.0.1:6359/callback?code=abc&state=xyz",
+        ),
+        (
             "<https://x.dev/a?b=1&amp;c=2|https://x.dev/a?b=1&amp;c=2>",
             "https://x.dev/a?b=1&c=2",
         ),

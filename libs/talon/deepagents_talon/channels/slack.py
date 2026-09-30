@@ -59,7 +59,7 @@ from deepagents_talon.interfaces import (
     ReactionHandler,
     SendResult,
 )
-from deepagents_talon.mcp_auth import extract_oauth_callback_url
+from deepagents_talon.mcp_auth import extract_loopback_oauth_callback_url
 from deepagents_talon.observability import log_debug_event
 from deepagents_talon.pairing import SenderPairing, pairing_from_env
 
@@ -1338,7 +1338,7 @@ def _decode_mrkdwn(text: str) -> str:
         if (
             not label
             or url in {label, f"mailto:{label}"}
-            or extract_oauth_callback_url(url.replace("&amp;", "&"))
+            or extract_loopback_oauth_callback_url(url.replace("&amp;", "&"))
         ):
             return url
         return f"{label} ({url})"

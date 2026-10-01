@@ -1,14 +1,14 @@
 "use strict";
 
-async function downloadMedia(page, message) {
+async function downloadMedia(page, message, maxBytes = 64 * 1024 * 1024) {
   if (!message.hasMedia) {
     return undefined;
   }
-  const media = await page.evaluate(downloadBrowserMedia, message.id._serialized);
+  const media = await page.evaluate(downloadBrowserMedia, { messageId: message.id._serialized, maxBytes });
   return media || undefined;
 }
 
-async function downloadBrowserMedia(messageId) {
+async function downloadBrowserMedia({ messageId, maxBytes }) {
   const messages = window.require("WAWebCollections").Msg;
   const message =
     messages.get(messageId) ||
@@ -16,6 +16,7 @@ async function downloadBrowserMedia(messageId) {
   if (!message || !message.mediaData || message.mediaData.mediaStage === "REUPLOADING") {
     return null;
   }
+  if (!Number.isFinite(message.size) || message.size < 0 || message.size > maxBytes) return null;
   if (message.mediaData.mediaStage !== "RESOLVED") {
     await message.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1 });
   }
@@ -46,6 +47,7 @@ async function downloadBrowserMedia(messageId) {
         signal: new AbortController().signal,
         downloadQpl,
       });
+    if (decrypted.byteLength > maxBytes) return null;
     return {
       data: await window.WWebJS.arrayBufferToBase64Async(decrypted),
       mimetype: message.mimetype,

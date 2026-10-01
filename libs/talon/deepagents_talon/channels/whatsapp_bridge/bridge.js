@@ -26,7 +26,9 @@ const port = Number(process.env.WHATSAPP_BRIDGE_PORT || "3000");
 const sessionDir = path.resolve(process.env.WHATSAPP_SESSION_DIR || path.join(process.cwd(), ".whatsapp"));
 const mediaDir = path.resolve(process.env.WHATSAPP_MEDIA_DIR || path.join(sessionDir, "..", "media"));
 const bridgeToken = process.env.WHATSAPP_BRIDGE_TOKEN || "";
-const maxMediaBytes = Number(process.env.WHATSAPP_MAX_MEDIA_BYTES) || 64 * 1024 * 1024;
+const configuredMediaBytes = Number(process.env.WHATSAPP_MAX_MEDIA_BYTES);
+const maxMediaBytes = Number.isFinite(configuredMediaBytes) && configuredMediaBytes > 0
+  ? Math.min(configuredMediaBytes, 64 * 1024 * 1024) : 64 * 1024 * 1024;
 const webVersionCacheUrl =
   process.env.WHATSAPP_WEB_VERSION_CACHE_URL ||
   "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1026029003.html";
@@ -43,6 +45,32 @@ const pendingMessages = new Map();
 const MAX_PENDING_MESSAGES = 128;
 const PREPARATION_TTL_MS = 120000;
 let preparingMessages = 0;
+const activePreparations = new Map();
+const inboundDir = path.join(mediaDir, "inbound");
+const MAX_RETAINED_BYTES = 256 * 1024 * 1024;
+const MEDIA_TTL_MS = 24 * 60 * 60 * 1000;
+
+function retainedBytes() {
+  let total = 0;
+  for (const entry of fs.readdirSync(inboundDir, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const file = path.join(inboundDir, entry.name);
+    const stat = fs.statSync(file);
+    if (stat.mtimeMs + MEDIA_TTL_MS <= Date.now()) fs.unlinkSync(file);
+    else total += stat.size;
+  }
+  return total;
+}
+
+function discardFiles(paths) {
+  for (const file of paths) {
+    try {
+      fs.unlinkSync(file);
+    } catch (error) {
+      if (error.code !== "ENOENT") console.error("Inbound media cleanup failed:", error.message);
+    }
+  }
+}
 
 function expirePendingMessages() {
   for (const [token, pending] of pendingMessages) {
@@ -74,6 +102,16 @@ if (!bridgeToken) {
 
 fs.mkdirSync(sessionDir, { recursive: true });
 fs.mkdirSync(mediaDir, { recursive: true });
+fs.mkdirSync(inboundDir, { recursive: true });
+const cleanupTimer = setInterval(() => {
+  expirePendingMessages();
+  try {
+    retainedBytes();
+  } catch (error) {
+    console.error("Media cleanup failed:", error.message);
+  }
+}, 30000);
+cleanupTimer.unref();
 cleanStaleLocks(sessionDir);
 
 const chromePath = process.env.CHROME_PATH || process.env.WHATSAPP_CHROME_PATH || findChrome();
@@ -223,7 +261,8 @@ async function enqueueMessage(message, fromSelf) {
   expirePendingMessages();
   const control = /^\/(?:stop|new|reset-all-history)(?:\s|$)/i.test(message.body || "");
   const queueLimit = MAX_PENDING_MESSAGES + (control ? 16 : 0);
-  if (queue.length >= queueLimit || (!control && pendingMessages.size >= MAX_PENDING_MESSAGES)) {
+  const pendingCount = pendingMessages.size + activePreparations.size;
+  if (queue.length >= queueLimit || (!control && pendingCount >= MAX_PENDING_MESSAGES)) {
     console.error("WhatsApp input not accepted: pending envelope capacity exhausted");
     return;
   }
@@ -382,34 +421,42 @@ async function safeGetContact(message) {
   }
 }
 
-async function downloadMessageMedia(message) {
+// Writes are synchronous: the final capacity check and write cannot interleave.
+function canStoreMedia(size, pending) {
+  return size !== null && size <= maxMediaBytes && !pending.cancelled &&
+    pending.expires > Date.now() && retainedBytes() + size <= MAX_RETAINED_BYTES;
+}
+
+async function downloadMessageMedia(message, pending) {
+  let filePath;
   if (!message.hasMedia) {
     return [];
   }
   try {
     const messageId = serializedId(message.id) || String(Date.now());
     const expectedSize = messageMediaSize(message);
-    if (expectedSize !== null && expectedSize > maxMediaBytes) {
+    if (!canStoreMedia(expectedSize, pending)) {
       console.log(
-        `[bridge] Skipping oversized media; bytes=${expectedSize} maxBytes=${maxMediaBytes}`,
+        `[bridge] Skipping media outside active input or storage limits; bytes=${expectedSize} maxBytes=${maxMediaBytes}`,
       );
       return [];
     }
-    const media = await downloadMedia(client.pupPage, message);
+    const media = await downloadMedia(client.pupPage, message, maxMediaBytes);
     if (!media || !media.data) {
       return [];
     }
     const extension = mediaExtension(media.mimetype, message.type);
     const fileName = `${Date.now()}_${messageId.replace(/[^A-Za-z0-9]/g, "_")}.${extension}`;
-    const filePath = path.join(mediaDir, fileName);
+    filePath = path.join(inboundDir, `${randomUUID()}_${fileName}`);
     const size = decodedBase64Size(media.data);
-    if (size > maxMediaBytes) {
+    if (!canStoreMedia(size, pending)) {
       console.log(
-        `[bridge] Skipping oversized media; bytes=${size} maxBytes=${maxMediaBytes}`,
+        `[bridge] Skipping media outside active input or storage limits; bytes=${size} maxBytes=${maxMediaBytes}`,
       );
       return [];
     }
-    fs.writeFileSync(filePath, Buffer.from(media.data, "base64"), { mode: 0o600 });
+    fs.writeFileSync(filePath, Buffer.from(media.data, "base64"), { mode: 0o600, flag: "wx" });
+    pending.paths.push(filePath);
     return [
       {
         path: filePath,
@@ -418,6 +465,7 @@ async function downloadMessageMedia(message) {
       },
     ];
   } catch (error) {
+    if (filePath) discardFiles([filePath]);
     console.error("Media download failed:", error.message || error);
     return [];
   }
@@ -428,7 +476,7 @@ async function prepareEntry(pending) {
   const [chat, contact, quote] = await Promise.all([
     safeGetChat(message), safeGetContact(message), quotedMessageContext(message),
   ]);
-  const media = await downloadMessageMedia(message);
+  const media = await downloadMessageMedia(message, pending);
   return {
     ...entry,
     preparation_token: null,
@@ -475,6 +523,7 @@ function messageMediaSize(message) {
   const data = message && message._data ? message._data : {};
   const candidates = [data.size, data.fileSize];
   for (const candidate of candidates) {
+    if (candidate === null || candidate === undefined || candidate === "") continue;
     const parsed = Number(candidate);
     if (Number.isFinite(parsed) && parsed >= 0) {
       return parsed;
@@ -635,11 +684,23 @@ async function handle(req, res) {
       return;
     }
 
+    if (req.method === "POST" && req.url === "/discard") {
+      const body = await readJson(req);
+      const pending = pendingMessages.get(body.preparation_token) || activePreparations.get(body.preparation_token);
+      if (pending && pending.entry.chat_id === body.chat_id && pending.entry.message_id === body.message_id) {
+        pending.cancelled = true;
+        pendingMessages.delete(body.preparation_token);
+        discardFiles(pending.paths || []);
+      }
+      sendJson(res, 200, { success: true });
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/prepare") {
       const body = await readJson(req);
       expirePendingMessages();
       const pending = pendingMessages.get(body.preparation_token);
-      if (!pending || pending.entry.chat_id !== body.chat_id || pending.entry.message_id !== body.message_id) {
+      if (!pending || pending.completed || pending.entry.chat_id !== body.chat_id || pending.entry.message_id !== body.message_id) {
         sendJson(res, 404, { error: "Unknown or expired input" });
         return;
       }
@@ -648,11 +709,29 @@ async function handle(req, res) {
         return;
       }
       pendingMessages.delete(body.preparation_token);
+      // The bearer-authenticated Python caller admits this exact envelope.
+      // Keep the slot until browser work settles, even if its caller cancels.
+      pending.paths = [];
+      activePreparations.set(body.preparation_token, pending);
+      const abandon = () => {
+        if (!res.writableFinished) {
+          pending.cancelled = true;
+          discardFiles(pending.paths);
+        }
+      };
+      res.on("close", abandon);
       preparingMessages += 1;
       try {
         sendJson(res, 200, await prepareEntry(pending));
       } finally {
         preparingMessages -= 1;
+        activePreparations.delete(body.preparation_token);
+        if (!pending.cancelled && pending.paths.length) {
+          pending.completed = true;
+          pendingMessages.set(body.preparation_token, pending);
+        }
+        res.removeListener("close", abandon);
+        if (pending.cancelled || pending.expires <= Date.now()) discardFiles(pending.paths);
       }
       return;
     }

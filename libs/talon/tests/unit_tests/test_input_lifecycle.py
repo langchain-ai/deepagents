@@ -356,6 +356,9 @@ async def test_whatsapp_prepares_only_authorized_envelopes(tmp_path: Path) -> No
 
     class Transport(RecordingTransport):
         async def post(self, path: str, payload: dict[str, object]) -> object:
+            if path == "/discard":
+                assert payload["preparation_token"] == rejected["preparation_token"]
+                return {"success": True}
             assert path == "/prepare"
             assert payload == {
                 "preparation_token": "allowed-token",

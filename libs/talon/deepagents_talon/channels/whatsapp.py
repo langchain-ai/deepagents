@@ -601,14 +601,21 @@ class WhatsAppChannel:
         token = message.metadata.get("preparation_token")
         if not isinstance(token, str):
             return message
-        payload = await self._transport.post(
-            "/prepare",
-            {
-                "preparation_token": token,
-                "chat_id": message.conversation_id,
-                "message_id": message.message_id,
-            },
-        )
+        if not _allows_whatsapp_message(self.config.exposure, message):
+            await self._discard_message(message)
+            msg = "WhatsApp input is not admitted by exposure policy"
+            raise _WhatsAppBridgeError(msg)
+        try:
+            payload = await self._transport.post(
+                "/prepare",
+                self._preparation_identity(message, token),
+            )
+            return self._prepared_message(payload, message)
+        except BaseException:
+            await self._discard_message(message)
+            raise
+
+    def _prepared_message(self, payload: object, message: ChannelMessage) -> ChannelMessage:
         prepared = _parse_message(payload)
         if (prepared.conversation_id, prepared.message_id, prepared.sender_id) != (
             message.conversation_id,
@@ -618,6 +625,23 @@ class WhatsAppChannel:
             msg = "WhatsApp preparation returned a different input identity"
             raise _WhatsAppBridgeError(msg)
         return _enforce_inbound_media_cap(prepared, max_bytes=self.config.max_media_bytes)
+
+    @staticmethod
+    def _preparation_identity(message: ChannelMessage, token: str) -> dict[str, object]:
+        return {
+            "preparation_token": token,
+            "chat_id": message.conversation_id,
+            "message_id": message.message_id,
+        }
+
+    async def _discard_message(self, message: ChannelMessage) -> None:
+        token = message.metadata.get("preparation_token")
+        if not isinstance(token, str) or not token:
+            return
+        try:
+            await self._transport.post("/discard", self._preparation_identity(message, token))
+        except _WhatsAppBridgeError:
+            logger.warning("Failed to discard WhatsApp input; bridge expiry will reclaim it")
 
     async def _poll_messages(self) -> None:
         while not self._stopped.is_set():
@@ -663,6 +687,7 @@ class WhatsAppChannel:
                         )
                         log_debug_event(logger, "whatsapp.inbound.message.dispatched")
                     else:
+                        await self._discard_message(message)
                         log_debug_event(
                             logger,
                             "whatsapp.inbound.message.rejected",

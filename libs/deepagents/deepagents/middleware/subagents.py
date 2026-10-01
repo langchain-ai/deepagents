@@ -34,7 +34,6 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._skill_tools import _SKILL_TOOLS_DISCLOSED_KEY
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
-from deepagents.middleware.skills import SkillToolResolver
 from deepagents.middleware.summarization import (
     SUMMARIZATION_EVENT_KEY,
     SUMMARIZATION_SESSION_ID_KEY,
@@ -118,13 +117,6 @@ class SubAgent(TypedDict):
 
             List of paths to skill directories
             (e.g., `["/skills/user/", "/skills/project/"]`).
-        skill_tools: Tools this subagent sees only after reading a skill that
-            lists them in `metadata.include_tools`.
-
-            A list of tools or a `SkillToolResolver`, as for
-            `create_deep_agent`. Never inherited from the main agent. Requires
-            `skills`, and is forbidden under `mode="fork"`, which inherits the
-            parent's.
         permissions: Filesystem permission rules for this subagent.
 
             If omitted, inherits the parent agent's permissions. If provided,
@@ -162,9 +154,6 @@ class SubAgent(TypedDict):
 
     skills: NotRequired[list[str]]
     """Skill source paths for `SkillsMiddleware`. Forbidden under `mode="fork"`."""
-
-    skill_tools: NotRequired[Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver]
-    """Tools disclosed once a skill listing them is read, as a list or a `SkillToolResolver`. Requires `skills`; forbidden under `mode="fork"`."""
 
     permissions: NotRequired[list[FilesystemPermission]]
     """List of `FilesystemPermission` rules for this subagent.
@@ -228,8 +217,8 @@ class SubAgent(TypedDict):
 
     Under `fork`, the subagent receives the parent's effective conversation
     history and state, and mirrors the parent's prompt-producing middleware so
-    it rebuilds the same system prompt. It cannot define `skills` or
-    `skill_tools`, which would diverge from the parent's. `tools` isn't restricted the same way -- a fork's
+    it rebuilds the same system prompt. It cannot define `skills`, which would
+    diverge from the parent's. `tools` isn't restricted the same way -- a fork's
     own tools work normally; the tradeoff is cache misses.
     """
 
@@ -332,9 +321,6 @@ def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
         raise ValueError(msg)
     if mode == "fork" and spec.get("skills"):
         msg = f"SubAgent '{spec['name']}' cannot set skills under mode='fork'; the parent's skills are inherited instead."
-        raise ValueError(msg)
-    if mode == "fork" and spec.get("skill_tools"):
-        msg = f"SubAgent '{spec['name']}' cannot set skill_tools under mode='fork'; the parent's skill tools are inherited instead."
         raise ValueError(msg)
 
 

@@ -405,38 +405,20 @@ class TestConstruction:
     """`skill_tools` mistakes raise when the agent or middleware is built."""
 
     def test_duplicate_names_raise(self) -> None:
-        with pytest.raises(ValueError, match=r"^skill_tools contains duplicate tool name\(s\): create_customer_request$"):
-            create_deep_agent(model=_model(), skills=[SKILLS_SOURCE], skill_tools=[create_customer_request, registered_create_customer_request])
-        with pytest.raises(ValueError, match=r"^skill_tools contains duplicate tool name\(s\): create_customer_request$"):
-            SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], skill_tools=[create_customer_request, create_customer_request])
+        msg = r"^skill_tools contains duplicate tool name\(s\): create_customer_request$"
+        for duplicate in (registered_create_customer_request, create_customer_request):
+            with pytest.raises(ValueError, match=msg):
+                SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], skill_tools=[create_customer_request, duplicate])
 
     def test_dict_entries_raise(self) -> None:
         msg = r"^skill_tools entries must be BaseTool instances or callables; provider-native tool dicts are not supported$"
         web_search = {"type": "web_search_20250305", "name": "web_search"}
         with pytest.raises(TypeError, match=msg):
-            create_deep_agent(model=_model(), skills=[SKILLS_SOURCE], skill_tools=[web_search])  # ty: ignore[invalid-argument-type]
-        with pytest.raises(TypeError, match=msg):
             SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], skill_tools=[web_search])  # ty: ignore[invalid-argument-type]
-
-    def test_skill_tools_without_skills_raise(self) -> None:
-        with pytest.raises(ValueError, match=r"^skill_tools requires skills$"):
-            create_deep_agent(model=_model(), skill_tools=[create_customer_request])
-        spec: SubAgent = {"name": "worker", "description": "d", "skill_tools": [create_customer_request]}
-        with pytest.raises(ValueError, match=r"^skill_tools requires skills$"):
-            create_deep_agent(model=_model(), subagents=[spec])
-
-    def test_empty_skills_list_still_mounts_skills(self) -> None:
-        create_deep_agent(model=_model(), skills=[], skill_tools=[create_customer_request])
-
-    def test_fork_with_its_own_skill_tools_raises(self) -> None:
-        spec: SubAgent = {"name": "worker", "description": "d", "mode": "fork", "skill_tools": [create_customer_request]}
-        msg = r"^SubAgent 'worker' cannot set skill_tools under mode='fork'; the parent's skill tools are inherited instead\.$"
-        with pytest.raises(ValueError, match=msg):
-            create_deep_agent(model=_model(), skills=[SKILLS_SOURCE], subagents=[spec])
 
     def test_skill_tools_are_never_registered(self) -> None:
         middleware = SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], skill_tools=[create_customer_request])
-        agent = create_deep_agent(model=_model(), skills=[SKILLS_SOURCE], skill_tools=[create_customer_request])
+        agent = create_deep_agent(model=_model(), skills=[SKILLS_SOURCE], middleware=[middleware])
 
         # `create_agent` collects `getattr(middleware, "tools", [])` into the tool node.
         assert getattr(middleware, "tools", []) == []
@@ -499,7 +481,7 @@ class TestSubagents:
             "description": "Files requests.",
             "model": worker_model,
             "skills": [SKILLS_SOURCE],
-            "skill_tools": [list_customer_requests],
+            "middleware": [SkillsMiddleware(backend=skills_backend(tmp_path), sources=[SKILLS_SOURCE], skill_tools=[list_customer_requests])],
         }
 
         invoke(skills_agent(tmp_path, _model(_task("worker")), subagents=[worker]), {"messages": [HumanMessage("go")]}, mode)

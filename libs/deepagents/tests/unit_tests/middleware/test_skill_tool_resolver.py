@@ -24,7 +24,6 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deepagents.backends.state import StateBackend
-from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware, disclosed_skill_tool_names
 from deepagents.middleware.summarization import SummarizationMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -389,22 +388,7 @@ class TestConstruction:
     def test_a_bare_tool_raises(self) -> None:
         msg = r"^skill_tools must be a list of tools or a resolver function, got StructuredTool; wrap a single tool in a list$"
         with pytest.raises(TypeError, match=msg):
-            create_deep_agent(model=_model(), skills=[SKILLS_SOURCE], skill_tools=create_issue)  # ty: ignore[invalid-argument-type]
-        with pytest.raises(TypeError, match=msg):
             SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], skill_tools=create_issue)  # ty: ignore[invalid-argument-type]
-
-    def test_resolver_without_skills_raises(self) -> None:
-        with pytest.raises(ValueError, match=r"^skill_tools requires skills$"):
-            create_deep_agent(model=_model(), skill_tools=linear_resolver())
-        spec: SubAgent = {"name": "worker", "description": "d", "skill_tools": linear_resolver()}
-        with pytest.raises(ValueError, match=r"^skill_tools requires skills$"):
-            create_deep_agent(model=_model(), subagents=[spec])
-
-    def test_resolver_on_a_fork_raises(self) -> None:
-        spec: SubAgent = {"name": "worker", "description": "d", "mode": "fork", "skill_tools": linear_resolver()}
-        msg = r"^SubAgent 'worker' cannot set skill_tools under mode='fork'; the parent's skill tools are inherited instead\.$"
-        with pytest.raises(ValueError, match=msg):
-            create_deep_agent(model=_model(), skills=[SKILLS_SOURCE], subagents=[spec])
 
 
 def _task(subagent_type: str, call_id: str = "t1") -> AIMessage:
@@ -447,7 +431,13 @@ class TestSubagents:
         parent = linear_resolver()
         own = RecordingResolver({"linear": [list_issues]})
         worker_model = _model(ai(read("r1", path=LINEAR_PATH)), ai(call(CREATE_ISSUE, "c1", title="x")))
-        worker: SubAgent = {"name": "worker", "description": "d", "model": worker_model, "skills": [SKILLS_SOURCE], "skill_tools": own}
+        worker: SubAgent = {
+            "name": "worker",
+            "description": "d",
+            "model": worker_model,
+            "skills": [SKILLS_SOURCE],
+            "middleware": [SkillsMiddleware(backend=skills_backend(tmp_path), sources=[SKILLS_SOURCE], skill_tools=own)],
+        }
 
         invoke(skills_agent(tmp_path, _model(_task("worker")), skill_tools=parent, subagents=[worker]), {"messages": [HumanMessage("go")]}, mode)
 

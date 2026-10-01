@@ -195,7 +195,12 @@ Example:
         return tools_by_integration.get(name, [])
 
 
-    agent = create_deep_agent(model=model, skills=["/skills/"], skill_tools=resolve_skill_tools)
+    agent = create_deep_agent(
+        model=model,
+        backend=backend,
+        skills=["/skills/"],
+        middleware=[SkillsMiddleware(backend=backend, sources=["/skills/"], skill_tools=resolve_skill_tools)],
+    )
     ```
 """
 
@@ -907,10 +912,26 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
     ## Placement
 
-    `create_deep_agent` places this middleware for you. When composing
-    `create_agent` by hand, put it after summarization and any model fallback
-    or routing middleware, so it sees the compacted conversation and the model
-    actually called, and before prompt caching:
+    `create_deep_agent` places this middleware for you when you pass `skills`.
+    To give skills tools there, pass this middleware with `skill_tools` in
+    `middleware` too. It replaces the default one in place, so the
+    general-purpose subagent and forks get it as well:
+
+    ```python
+    create_deep_agent(
+        model,
+        backend=backend,
+        skills=["/skills/"],
+        middleware=[SkillsMiddleware(backend=backend, sources=["/skills/"], skill_tools=[...])],
+    )
+    ```
+
+    A declarative subagent does the same with its own `skills` and
+    `middleware`.
+
+    When composing `create_agent` by hand, put it after summarization and any
+    model fallback or routing middleware, so it sees the compacted conversation
+    and the model actually called, and before prompt caching:
 
     ```python
     create_agent(

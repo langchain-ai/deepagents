@@ -22,6 +22,7 @@ from langchain_openai import ChatOpenAI
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
+from deepagents.middleware.skills import SkillsMiddleware
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -57,9 +58,15 @@ def skills_backend(root: Path) -> FilesystemBackend:
 
 
 def skills_agent(root: Path, model: BaseChatModel | str, **kwargs: Any) -> CompiledStateGraph:
-    """Build a deep agent over the skills under `root`, with `create_customer_request` as a skill tool."""
-    kwargs.setdefault("skill_tools", [create_customer_request])
-    return create_deep_agent(model=model, backend=skills_backend(root), skills=[SKILLS_SOURCE], **kwargs)
+    """Build a deep agent over the skills under `root`, with `create_customer_request` as a skill tool.
+
+    `skill_tools` goes into a `SkillsMiddleware` that replaces the default one,
+    as callers pass skill tools to `create_deep_agent`.
+    """
+    backend = skills_backend(root)
+    skills = SkillsMiddleware(backend=backend, sources=[SKILLS_SOURCE], skill_tools=kwargs.pop("skill_tools", [create_customer_request]))
+    middleware = [*kwargs.pop("middleware", ()), skills]
+    return create_deep_agent(model=model, backend=backend, skills=[SKILLS_SOURCE], middleware=middleware, **kwargs)
 
 
 @tool

@@ -34,6 +34,16 @@ class AdmissionTransport:
         return [self.envelope]
 
     async def post(self, path: str, payload: dict[str, object]) -> object:
+        if path == "/release":
+            assert payload["inputs"] == [
+                {
+                    "preparation_token": self.envelope["preparation_token"],
+                    "chat_id": self.envelope["chat_id"],
+                    "message_id": self.envelope["message_id"],
+                }
+            ]
+            self.posts.append(path)
+            return {"success": True}
         assert payload["preparation_token"] == self.envelope["preparation_token"]
         self.posts.append(path)
         if path == "/prepare":
@@ -95,7 +105,7 @@ async def test_poll_admits_before_preparing(
     with pytest.raises(asyncio.CancelledError):
         await polling
     assert bool(delivered) is allowed
-    assert transport.posts == (["/prepare"] if allowed else ["/discard"])
+    assert transport.posts == (["/prepare", "/release"] if allowed else ["/release"])
 
 
 async def test_cancelled_preparation_discards_capability(tmp_path: Path) -> None:

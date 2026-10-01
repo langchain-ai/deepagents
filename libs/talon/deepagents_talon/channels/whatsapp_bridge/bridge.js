@@ -74,7 +74,7 @@ function discardFiles(paths) {
 
 function expirePendingMessages() {
   for (const [token, pending] of pendingMessages) {
-    if (pending.expires <= Date.now()) pendingMessages.delete(token);
+    if (!pending.claimed && pending.expires <= Date.now()) pendingMessages.delete(token);
   }
 }
 const sentMessageIds = new Set();
@@ -427,7 +427,7 @@ async function safeGetContact(message) {
 // Writes are synchronous: the final capacity check and write cannot interleave.
 function canStoreMedia(size, pending) {
   return size !== null && size <= maxMediaBytes && !pending.cancelled &&
-    pending.expires > Date.now() && retainedBytes() + size <= MAX_RETAINED_BYTES;
+    (pending.claimed || pending.expires > Date.now()) && retainedBytes() + size <= MAX_RETAINED_BYTES;
 }
 
 async function downloadMessageMedia(message, pending) {
@@ -678,7 +678,35 @@ async function handle(req, res) {
 
     if (req.method === "GET" && req.url === "/messages") {
       expirePendingMessages();
-      sendJson(res, 200, queue.splice(0, queue.length));
+      const messages = queue.splice(0, queue.length).filter((entry) => {
+        if (!entry.preparation_token) return true;
+        const pending = pendingMessages.get(entry.preparation_token);
+        if (!pending) return false;
+        pending.claimed = true;
+        return true;
+      });
+      sendJson(res, 200, messages);
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/release") {
+      const body = await readJson(req);
+      if (!Array.isArray(body.inputs) || body.inputs.length > MAX_PENDING_MESSAGES) {
+        sendJson(res, 400, { error: "Invalid release batch" });
+        return;
+      }
+      for (const input of body.inputs) {
+        if (!input || typeof input !== "object") continue;
+        const pending = pendingMessages.get(input.preparation_token) || activePreparations.get(input.preparation_token);
+        if (pending && pending.entry.chat_id === input.chat_id && pending.entry.message_id === input.message_id) {
+          pendingMessages.delete(input.preparation_token);
+          if (!pending.completed) {
+            pending.cancelled = true;
+            discardFiles(pending.paths || []);
+          }
+        }
+      }
+      sendJson(res, 200, { success: true });
       return;
     }
 
@@ -702,40 +730,32 @@ async function handle(req, res) {
     if (req.method === "POST" && req.url === "/prepare") {
       const body = await readJson(req);
       expirePendingMessages();
-      const pending = pendingMessages.get(body.preparation_token);
-      if (!pending || pending.completed || pending.entry.chat_id !== body.chat_id || pending.entry.message_id !== body.message_id) {
+      const pending = pendingMessages.get(body.preparation_token) || activePreparations.get(body.preparation_token);
+      if (!pending || pending.cancelled || pending.entry.chat_id !== body.chat_id || pending.entry.message_id !== body.message_id) {
         sendJson(res, 404, { error: "Unknown or expired input" });
         return;
       }
-      if (preparingMessages >= 4) {
+      if (!pending.preparation && preparingMessages >= 4) {
         sendJson(res, 429, { error: "Media preparation capacity exhausted; retry later" });
         return;
       }
-      pendingMessages.delete(body.preparation_token);
-      // The bearer-authenticated Python caller admits this exact envelope.
-      // Keep the slot until browser work settles, even if its caller cancels.
-      pending.paths = [];
-      activePreparations.set(body.preparation_token, pending);
-      const abandon = () => {
-        if (!res.writableFinished) {
-          pending.cancelled = true;
-          discardFiles(pending.paths);
-        }
-      };
-      res.on("close", abandon);
-      preparingMessages += 1;
-      try {
-        sendJson(res, 200, await prepareEntry(pending));
-      } finally {
-        preparingMessages -= 1;
-        activePreparations.delete(body.preparation_token);
-        if (!pending.cancelled && pending.paths.length) {
-          pending.completed = true;
-          pendingMessages.set(body.preparation_token, pending);
-        }
-        res.removeListener("close", abandon);
-        if (pending.cancelled || pending.expires <= Date.now()) discardFiles(pending.paths);
+      pending.claimed = true;
+      if (!pending.preparation) {
+        pendingMessages.delete(body.preparation_token);
+        pending.paths = [];
+        activePreparations.set(body.preparation_token, pending);
+        preparingMessages += 1;
+        pending.preparation = prepareEntry(pending)
+          .then((entry) => { pending.completed = true; return entry; })
+          .catch((error) => { pending.preparation = null; throw error; })
+          .finally(() => {
+            preparingMessages -= 1;
+            activePreparations.delete(body.preparation_token);
+            if (pending.cancelled) discardFiles(pending.paths);
+            else pendingMessages.set(body.preparation_token, pending);
+          });
       }
+      sendJson(res, 200, await pending.preparation);
       return;
     }
 

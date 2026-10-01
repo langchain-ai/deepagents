@@ -356,9 +356,8 @@ async def test_whatsapp_prepares_only_authorized_envelopes(tmp_path: Path) -> No
 
     class Transport(RecordingTransport):
         async def post(self, path: str, payload: dict[str, object]) -> object:
-            if path == "/discard":
-                assert payload["preparation_token"] == rejected["preparation_token"]
-                return {"success": True}
+            if path == "/release":
+                return await super().post(path, payload)
             assert path == "/prepare"
             assert payload == {
                 "preparation_token": "allowed-token",
@@ -382,7 +381,74 @@ async def test_whatsapp_prepares_only_authorized_envelopes(tmp_path: Path) -> No
     await channel.start()
     try:
         assert (await received.get()).text == "allowed"
-        assert len(transport.posts) == 1
+        assert [path for path, _ in transport.posts].count("/prepare") == 1
         assert received.empty()
     finally:
         await channel.stop()
+    released = [
+        entry["preparation_token"]
+        for path, payload in transport.posts
+        if path == "/release"
+        for entry in payload["inputs"]
+    ]
+    assert set(released) == {"allowed-token", "rejected-token"}
+
+
+class OwnedPreparation:
+    def __init__(self) -> None:
+        self.ready = asyncio.Event()
+        self.released = asyncio.Event()
+
+    async def __call__(self, message: ChannelMessage) -> ChannelMessage:
+        await self.ready.wait()
+        return message
+
+    def release(self) -> None:
+        self.released.set()
+
+
+@pytest.mark.parametrize("command", ["/stop", "/new", "/reset-all-history"])
+async def test_discard_releases_preparing_and_queued_inputs(tmp_path: Path, command: str) -> None:
+    host, channel, agent = make_host(tmp_path)
+    preparations = [OwnedPreparation(), OwnedPreparation()]
+    await host.start()
+    try:
+        for index, prepare in enumerate(preparations):
+            await dispatch_message(
+                channel.handler,
+                ChannelMessage("chat", str(index)),
+                provider="test",
+                prepare=prepare,
+            )
+        await channel.receive(command)
+        assert all(prepare.released.is_set() for prepare in preparations)
+        assert agent.requests.empty()
+    finally:
+        await host.stop()
+
+
+@pytest.mark.parametrize("reason", ["help", "capacity", "completed", "shutdown"])
+async def test_host_releases_owned_preparation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    host, channel, agent = make_host(tmp_path)
+    prepare = OwnedPreparation()
+    if reason == "capacity":
+        monkeypatch.setattr("deepagents_talon.host._MAX_CONVERSATION_INPUTS", 0)
+    if reason == "completed":
+        prepare.ready.set()
+    await host.start()
+    try:
+        await dispatch_message(
+            channel.handler,
+            ChannelMessage("chat", "/help" if reason == "help" else "hello"),
+            provider="test",
+            prepare=prepare,
+        )
+        if reason == "completed":
+            assert (await agent.requests.get()).text == "hello"
+        if reason == "shutdown":
+            await host.stop()
+        await prepare.released.wait()
+    finally:
+        await host.stop()

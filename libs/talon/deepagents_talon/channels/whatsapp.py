@@ -265,6 +265,18 @@ class _BridgeTransport:
             raise _WhatsAppBridgeError(msg, retryable=retryable) from error
 
 
+@dataclass
+class _WhatsAppPreparation:
+    channel: WhatsAppChannel
+    message: ChannelMessage
+
+    async def __call__(self, message: ChannelMessage) -> ChannelMessage:
+        return await self.channel._prepare_message(message)  # noqa: SLF001  # Channel-owned preparation.
+
+    def release(self) -> None:
+        self.channel._release_message(self.message)  # noqa: SLF001  # Channel-owned cleanup.
+
+
 class WhatsAppChannel:
     """Channel adapter for WhatsApp via a local Node bridge."""
 
@@ -296,6 +308,7 @@ class WhatsAppChannel:
         self._stopped = asyncio.Event()
         self._status = ChannelStatus(provider="whatsapp", connected=False, detail="disconnected")
         self._failed_health_checks = 0
+        self._releases: dict[str, dict[str, object]] = {}
 
     def set_message_handler(self, handler: MessageHandler) -> None:
         """Register the host callback for inbound messages.
@@ -409,6 +422,10 @@ class WhatsAppChannel:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._poll = None
         self._health = None
+        try:
+            await self._flush_releases()
+        except _WhatsAppBridgeError:
+            logger.warning("Failed to release WhatsApp inputs during shutdown")
         await self._stop_bridge()
         self._status = ChannelStatus(provider="whatsapp", connected=False, detail="disconnected")
         log_debug_event(logger, "whatsapp.channel.stopped")
@@ -597,6 +614,22 @@ class WhatsAppChannel:
         await self._start_bridge()
         self._failed_health_checks = 0
 
+    def _release_message(self, message: ChannelMessage) -> None:
+        token = message.metadata.get("preparation_token")
+        if isinstance(token, str):
+            self._releases[token] = {
+                "preparation_token": token,
+                "chat_id": message.conversation_id,
+                "message_id": message.message_id,
+            }
+
+    async def _flush_releases(self) -> None:
+        while self._releases:
+            batch = dict(list(self._releases.items())[:128])
+            await self._post_result("/release", {"inputs": list(batch.values())})
+            for token in batch:
+                self._releases.pop(token, None)
+
     async def _prepare_message(self, message: ChannelMessage) -> ChannelMessage:
         token = message.metadata.get("preparation_token")
         if not isinstance(token, str):
@@ -646,6 +679,7 @@ class WhatsAppChannel:
     async def _poll_messages(self) -> None:
         while not self._stopped.is_set():
             try:
+                await self._flush_releases()
                 payload = await self._transport.get("/messages")
                 messages = _parse_messages(payload)
                 if messages:
@@ -683,11 +717,11 @@ class WhatsAppChannel:
                             self._handler,
                             checked,
                             provider="WhatsApp",
-                            prepare=self._prepare_message,
+                            prepare=_WhatsAppPreparation(self, checked),
                         )
                         log_debug_event(logger, "whatsapp.inbound.message.dispatched")
                     else:
-                        await self._discard_message(message)
+                        self._release_message(message)
                         log_debug_event(
                             logger,
                             "whatsapp.inbound.message.rejected",
@@ -702,6 +736,7 @@ class WhatsAppChannel:
                         accepted_count=accepted,
                         rejected_count=len(messages) - accepted,
                     )
+                await self._flush_releases()
             except _WhatsAppBridgeError:
                 logger.exception("Failed to poll WhatsApp bridge messages")
                 log_debug_event(logger, "whatsapp.poll.failed")

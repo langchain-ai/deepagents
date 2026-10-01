@@ -103,20 +103,6 @@ async def test_failed_switch_preserves_previous(
     assert available is not None
 
 
-async def test_successful_switch_releases_previous(
-    owned_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def switch(thread_id: str) -> None:
-        owned_app._lc_thread_id = thread_id
-
-    monkeypatch.setattr(
-        owned_app, "_resume_owned_thread", AsyncMock(side_effect=switch)
-    )
-    await owned_app._resume_thread("target")
-    assert try_acquire("target") is None
-    assert try_acquire("current") is not None
-
-
 async def test_explicit_conflict_does_not_load_history(
     owned_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:

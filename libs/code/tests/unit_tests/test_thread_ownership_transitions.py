@@ -125,6 +125,7 @@ async def test_overlapping_switch_does_not_release_destination(
     assert app._lc_thread_id == "target"
     assert held_lease("target") is lease
     assert held_lease("current") is None
+    assert try_acquire("current") is not None
 
 
 @pytest.mark.usefixtures("isolated_state")

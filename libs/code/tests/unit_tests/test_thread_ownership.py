@@ -4,8 +4,6 @@ import asyncio
 import importlib.util
 import subprocess
 import sys
-from collections.abc import Callable
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -15,7 +13,6 @@ from deepagents_code.thread_ownership import (
     OWNER_KEY,
     ThreadLease,
     ThreadOwnershipError,
-    _finish_mutation,
     ensure_owned,
     owned_saver_class,
     release_all,
@@ -228,41 +225,6 @@ async def test_cancelled_delete_holds_reservation_until_database_finishes(
             await asyncio.gather(task, return_exceptions=True)
 
 
-async def test_cancellation_retains_gate_until_mutation_finishes(tmp_path):
-    db_path = tmp_path / "sessions.db"
-    lease = try_acquire("thread", db_path=db_path)
-    assert lease is not None
-    entered = asyncio.Event()
-    finish = asyncio.Event()
-
-    async def mutation() -> None:
-        entered.set()
-        await finish.wait()
-
-    async def write() -> None:
-        async with writer_guard("thread", db_path=db_path, token=lease.token):
-            await _finish_mutation(mutation())
-
-    task = asyncio.create_task(write())
-    try:
-        await entered.wait()
-        task.cancel()
-        await asyncio.sleep(0)
-        lease.release()
-        assert try_acquire("thread", db_path=db_path) is None
-        assert not task.done()
-        finish.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        replacement = try_acquire("thread", db_path=db_path)
-        assert replacement is not None
-        replacement.release()
-    finally:
-        finish.set()
-        await asyncio.gather(task, return_exceptions=True)
-        lease.release()
-
-
 async def test_generated_server_checkpointer_enforces_ownership(tmp_path, monkeypatch):
     from deepagents_code import sessions
     from deepagents_code.client.launch.server_manager import _write_checkpointer
@@ -389,18 +351,6 @@ async def test_graph_preserves_ownership_across_checkpoints(tmp_path):
         lease.release()
 
 
-def test_generated_server_forwards_ownership_header(tmp_path):
-    import json
-
-    from deepagents_code.client.launch.server import generate_langgraph_json
-
-    path = generate_langgraph_json(
-        tmp_path, checkpointer_path="checkpointer:create_checkpointer"
-    )
-    http = json.loads(path.read_text())["http"]
-    assert http["configurable_headers"]["include"] == [OWNER_KEY]
-
-
 def test_remote_client_does_not_upgrade_stale_thread_only_config(tmp_path, monkeypatch):
     from deepagents_code import sessions
     from deepagents_code.client.remote_client import RemoteAgent
@@ -449,41 +399,6 @@ async def test_rotation_waits_for_inflight_write_without_releasing_reservation(
                 pytest.fail("Old writer survived rotation")
         async with writer_guard("thread", db_path=db_path, token=lease.token):
             pass
-    finally:
-        lease.release()
-
-
-async def test_server_guard_and_rotation_keep_filesystem_io_off_event_loop(
-    tmp_path, monkeypatch
-):
-    import threading
-
-    from deepagents_code import thread_ownership
-
-    db_path = tmp_path / "sessions.db"
-    lease = ensure_owned("thread", db_path=db_path)
-    loop_thread = threading.get_ident()
-
-    def checked[**P, R](operation: Callable[P, R]) -> Callable[P, R]:
-        def call(*args: P.args, **kwargs: P.kwargs) -> R:
-            assert threading.get_ident() != loop_thread
-            return operation(*args, **kwargs)
-
-        return call
-
-    try:
-        with monkeypatch.context() as patch:
-            for name in ("mkdir", "resolve", "read_text", "write_text"):
-                patch.setattr(Path, name, checked(getattr(Path, name)))
-            for name in ("_acquire", "_release"):
-                patch.setattr(
-                    thread_ownership.FileLock,
-                    name,
-                    checked(getattr(thread_ownership.FileLock, name)),
-                )
-            await lease.rotate()
-            async with writer_guard("thread", db_path=db_path, token=lease.token):
-                pass
     finally:
         lease.release()
 

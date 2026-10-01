@@ -128,3 +128,19 @@ test("propagates media resolution failures", async () => {
   message.downloadMedia = async () => { throw error; };
   await assert.rejects(downloadMedia(browserPage(message), inbound), error);
 });
+
+for (const size of [undefined, null, -1, Infinity, 65 * 1024 * 1024]) {
+  test(`browser rejects unusable declared size ${size} before media resolution`, async () => {
+    const message = voiceMessage("PENDING");
+    message.size = size;
+    message.downloadMedia = () => assert.fail("unexpected resolution");
+    const page = browserPage(message, { download: () => assert.fail("unexpected download") });
+    assert.equal(await downloadMedia(page, inbound), undefined);
+  });
+}
+
+test("browser checks decrypted size before base64 serialization", async () => {
+  const message = voiceMessage();
+  message.size = 1;
+  assert.equal(await downloadMedia(browserPage(message), inbound, 1), undefined);
+});

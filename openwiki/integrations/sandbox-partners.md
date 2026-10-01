@@ -1,11 +1,12 @@
 ---
-type: execution integration guide
-title: Sandbox Providers, QuickJS, and Execution Boundaries
-description: Explains dcode's optional remote sandbox-provider lifecycle and the separate QuickJS JavaScript execution middleware, including subagent dispatch, replay identity, streaming events, and cost ownership.
-tags: [sandbox, providers, quickjs, dcode, talon, execution-boundaries]
+type: sandbox provider integration guide
+title: Sandbox Provider Integrations
+description: Explains dcode and Talon remote sandbox-provider discovery, provisioning, ownership, and routing, and distinguishes those execution capabilities from host-resident integrations and QuickJS middleware.
+tags: [sandbox, providers, dcode, talon, execution-boundaries, quickjs]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-01T08:06:30.386Z
 sources:
-  - id: openwiki-source-d4716b8ae162796c2c7ad991
-    resource: repo://libs/code/deepagents_code/_js_cost.py
   - id: openwiki-source-9f207ab48c42b84dcfd05f43
     resource: repo://libs/code/deepagents_code/integrations/sandbox_config.py
   - id: openwiki-source-bcf1f68e7989964d2fcec7aa
@@ -18,22 +19,10 @@ sources:
     resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-8574be7f7f29e3e1dd328837
-    resource: repo://libs/code/tests/unit_tests/test_js_cost_tracking.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-d4463137befa776cd47750d4
     resource: repo://libs/deepagents/deepagents/backends/sandbox.py
-  - id: openwiki-source-f774b021a408b0156ed93a4b
-    resource: repo://libs/partners/quickjs/langchain_quickjs/_repl.py
-  - id: openwiki-source-a0668a30e4f0ac9f77cd0048
-    resource: repo://libs/partners/quickjs/langchain_quickjs/_subagent.py
-  - id: openwiki-source-e93ea9e1f8eb3113683abb76
-    resource: repo://libs/partners/quickjs/langchain_quickjs/middleware.py
-  - id: openwiki-source-d862ab24102a8ba167eaa561
-    resource: repo://libs/partners/quickjs/tests/unit_tests/test_subagent_events.py
-  - id: openwiki-source-7f225a40788309863f345e08
-    resource: repo://libs/partners/quickjs/tests/unit_tests/test_subagent_replay.py
   - id: openwiki-source-81698d033a5726401d48b135
     resource: repo://libs/talon/deepagents_talon/config.py
   - id: openwiki-source-580d91c607e0a09e0659e565
@@ -42,13 +31,10 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-57a0613315e23277d358df76
     resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-30T08:06:28.871Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-30T08:06:28.871Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-01T08:06:30.386Z" }
 ---
 
-# Sandbox Providers, QuickJS, and Execution Boundaries
+# Sandbox Provider Integrations
 
 This page covers two deliberately different integration boundaries:
 
@@ -96,7 +82,7 @@ pip install 'deepagents-code[agentcore,daytona,modal,runloop,vercel]'
 pip install 'deepagents-code[all-sandboxes]'
 ```
 
-`deepagents-code` 0.1.79 requires Python `>=3.12,<4.0`, pins `deepagents==0.7.20`, and includes `langchain-quickjs>=0.3.4,<0.4.0` as a base dependency. The retained `quickjs` extra is empty, so it is only compatible with older install commands; it does not install an additional package.
+`deepagents-code` 0.1.79 requires Python `>=3.12,<4.0`, pins `deepagents==0.7.21`, and includes `langsmith[sandbox]>=0.14.2` and `langchain-quickjs>=0.3.4,<0.4.0` as base dependencies. The retained `quickjs` extra is empty, so it is only compatible with older install commands; it does not install an additional package.
 
 `create_sandbox()` resolves metadata before construction, rejects unsupported snapshot requests and snapshot-plus-attached-ID combinations, and merges configured parameters with call parameters taking precedence. A supplied host setup file is expanded against the workspace environment and run as `bash -c` after acquisition. The context deletes only an environment it created. If setup or the body fails, cleanup still runs; cleanup errors are reported without concealing the original exception.
 

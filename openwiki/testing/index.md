@@ -1,3 +1,3 @@
 # Files
 
-- [Testing by Runtime Boundary](testing-guide.md) - Route regression coverage to the narrowest deterministic boundary for dcode, Deep Agents, QuickJS, and Talon. Use fakes, temporary state, and focused package targets before networked integration or real-model evaluation.
+- [Testing Guide](testing-guide.md) - Place regressions at the narrowest deterministic package boundary, then exercise lifecycle and provider composition with explicit fakes. Focus coverage on Deep Agents filesystem behavior and Talon channels, MCP/OAuth, messaging, and scheduling.

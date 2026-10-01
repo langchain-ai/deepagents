@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:db22bf2b4f35ca37f31f0a557794a225d67d0df401ac36bdebc51a4b3530d11a",
+  "pageVersion": "sha256:6081919f6a70e3075b15e25f758e040196d03e9e6a7556eb404fb3da0b8a00f6",
   "claims": [
     {
       "id": "claim_3ff3a7f4932e49e0a21ef2208e6a78d7",
@@ -8,7 +8,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:3568c7e2a6b7748681087a10cc73f0e634018103e9528e58f3b2512682f6a919"
+          "version": "repo-file-v1:sha256:5ac41de160b0ce4fe4ad7d621a26d2f2deffa6cf77b489638c310b725c666343"
         }
       ]
     },
@@ -18,7 +18,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:3568c7e2a6b7748681087a10cc73f0e634018103e9528e58f3b2512682f6a919"
+          "version": "repo-file-v1:sha256:5ac41de160b0ce4fe4ad7d621a26d2f2deffa6cf77b489638c310b725c666343"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp_middleware.py",
@@ -40,7 +40,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/subagents.py",
-          "version": "repo-file-v1:sha256:400e9779f6ba22a1b71c5dc084cc23c08e324707646fe251718c3b7fee7f92af"
+          "version": "repo-file-v1:sha256:b839d65ab603eed8c63b6adbc48faeff4f5b2bdd2fd7f77674ee670ebba42235"
         },
         {
           "resource": "repo://libs/talon/tests/test_async_subagents.py",
@@ -54,7 +54,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:2c8fb07ca518d3a64c7da3ef628bb57cc3a50d6682744f5c461671e85d0a0359"
+          "version": "repo-file-v1:sha256:1029097ee5c1a209e2ca6e715b447488256c18a2715a800dc4f70f6984306ed4"
         }
       ]
     },
@@ -106,11 +106,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
-          "version": "repo-file-v1:sha256:bd02aa59741b1ce04e932d0479de4c0ea7771c168d5f161a0950e9b14ee8866f"
+          "version": "repo-file-v1:sha256:ff53c2008a80763de36488d087c77957cd5163e04f469c438baa2efe078fda83"
         }
       ]
     },
@@ -120,7 +120,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/channels/base.py",
-          "version": "repo-file-v1:sha256:fa3adec448fe716bd1838ca9ac84d8ec09669a6c64075aad49bc11a3cdefc65d"
+          "version": "repo-file-v1:sha256:37ab7fc4047b5c313f590f2eb0cd4423009f596bf4223d92d49ed2ef644a0966"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/interfaces.py",
@@ -152,11 +152,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
-          "version": "repo-file-v1:sha256:bd02aa59741b1ce04e932d0479de4c0ea7771c168d5f161a0950e9b14ee8866f"
+          "version": "repo-file-v1:sha256:ff53c2008a80763de36488d087c77957cd5163e04f469c438baa2efe078fda83"
         }
       ]
     },
@@ -166,7 +166,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         },
         {
           "resource": "repo://libs/talon/tests/test_runtime.py",
@@ -184,7 +184,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         },
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_model_selection.py",
@@ -407,10 +407,58 @@
           "version": "repo-lines-v1:sha256:0f582952ac643dee5fd067666a1e50729e28d0032d75dc96da7e90cf2f2dae39:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5ODhkM2VlZWYwOGJlYWU0ZDAxZWQ0MmViNGNlOGM4MjhlOTYxZjc1MGE3MmI0YzMwMzMxNzVlMGIxYTNiOWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhhMjRmYjQ2Yzg0ZWM0NDBmMTQ4ZTQzZWI4NGRjMzM5ZjgyMzU0NjJkMDhkNzk3ZTliYjEyZWM4YzY0ZTRkNmMifQ"
         }
       ]
+    },
+    {
+      "id": "claim_1b03d47062124468bdf01658dffa0e56",
+      "statement": "dcode's built-in offload API serializes each thread, rehydrates and validates its checkpoint, rejects active or changed work before commit, and permits only summarization and cost state channels rather than messages; it supports resumable hook rounds, explicit cancellation, and a handoff mode that leaves the source thread uncompacted.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L534-L665",
+          "version": "repo-lines-v1:sha256:948ccbcfc302d0dd2cdbd17be48935dfbf6422740d5015618cb0d1498e62a02b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNmY1OWM2ZjYwNDQ2ZmMxNzhlMDg0NmNlMWEyMTc5MjkzNzhlY2Y5NTZmMzVmNTgwZDM3YmQzZDRkMjQ4MTE2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2ZGJiZTNlNDFhNmE3MDliZjE2OGFmMzcyMTE4NDFiMjJhMTI1YzRkNjY3MzAwZjRjZjc4MjlmY2FhODE0OWJjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjYTlhMDljN2RiM2E2ZGY0NmY5MGE2ZWMwMWExMmFhZTg3N2YxMDQ0N2RjOWM0YjVmNWEyMjYyN2E3ZTQzMDAxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5ZDA3ZTI3MWIwNjkwZWEzZTFlYjRhNjAzM2M2NDZjZmQyYzZhZDg3MmEzZDUwYmM5YjFmOTBjODI0YWU1MTlhIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1021-L1245",
+          "version": "repo-lines-v1:sha256:6ceee889c57590e9d557637222f265225728bd34ed9d0d3ff0c7ac80999fe824:eyJzZWxlY3RlZExpbmVDb3VudCI6MjI1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MTk1NGRhYjdiZjdkY2E2ZGFjZGRiZWQ0M2JlZjViYjY2MGQ3NmE5NmQ3ZTUwZDJmNDBkNmQ5ZjEzNDMzZGRhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhNGJhM2FmY2E2YzgyNDZiOWU5MDkzNzE2MDBmOWUxZjBiYTE2ODAzNjc5NjI3YjdmOTExNGQxOTczNDkxMDFjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlZjkwNGQ4OGRlN2ZiZTIwZDQ2ZTA5NzA0ZjFlNWY4ZmNkMzI1N2RlNjAzN2EwNDFhMzQ5NGQ5ZTgxZjZlOWFjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIwMWZjZGIyYzczYWYzODBiYTNiZDYzYjNhZGI4YTEzYzk0YzIxZTUwZmIwZDc4NmU1ZWIxNzQyOGRmOGU1NDEwIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1324-L1374",
+          "version": "repo-lines-v1:sha256:ffe42e185251ea72acb5c0f375162734081861b76808cabfba7941e28b38b510:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmMWU0OTEzODBlMDc2MWM3NTNhYjEzMDg1OWJhNDc3ZTgyYTA1YWJhZmJlMmMzNmQ5MTcxOTdkNjE4M2VlYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhZmJhMDUyN2MzOTUzYzRiNmUwZTViNTczOWJhODM2MTJmODA1M2JjZGM5NDY2NzMwMTkzY2QxZDU5MGI0MDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImExNTZmN2RiYmIyNzg5NjE1Mjc5MTIxMDY0MTljYWRjMDUzMWYwNjIwY2EyZDkwNmE4MWUzNjJlOGZjMWRhMDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_offload_api.py",
+          "version": "repo-file-v1:sha256:37a9277fc6b6f92737ba57b3721f08d4e64f98deda880f7471c162d9bfc4171b"
+        }
+      ]
+    },
+    {
+      "id": "claim_14fee7cc35004ee79fb7b935d95d9011",
+      "statement": "dcode binds its server offload operation to the same composite backend as the interactive agent; local filesystem routing protects conversation archives and large results, prefers a hardened persistent conversation-history directory, explicitly reports temporary fallback storage as ephemeral, and performs best-effort retention and thread-deletion cleanup.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py#L3226-L3361",
+          "version": "repo-lines-v1:sha256:2a0dc8cf53d2d292fe21c73e9e5a20ff77f6bcedef7112dd8e8e54f0784d55ac:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1YmI1ZjM1YzZmZWRkZmE3MGJiZjU3OGQ0YmQ4NmNhNDUzZmJkMmI5NjcxZmY2MDZhMTUxZjhkNmJlMmViNDA2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMGMxZjE4OGYxNDJlZDdhODI0NjgwYjIwNzE3MmM1NTE5YmM2MTRhNDhmZGE3Y2YxNjdlZGI4ZGRmNzk5NTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3Zjg1MTQzOTAxNGI2ZTJmMTU1ODNjMzY1MDBhM2Y2ZmI5ODA2NjYxNjYwZjlmYTExYTBlOWM0ZWNkODA0ZTBiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2ZGM4ZGFjNGJjNmMzMDY0Nzg3N2U0ZWZkMzc1Nzc1YjZiOWVlNTZlNjEwMTg3MmY0YzExNWUyZGZlZTJmNTk5In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload.py#L286-L466",
+          "version": "repo-lines-v1:sha256:c844c1b12182949936e6b03c7fd739a46b9fc9a9e718da1dde13091ffd499600:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlZGU3NWM1OGEzNzExNGYwMWQ3MTcxM2Q1NmU5NzBjNjliOWM0M2E4YzJmZmEwODQyMmFlOWY2ZWNhYjE5MTBmIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxOTFkMzdmOWIxOTFjOWExN2YyNWIwZTA3MmYyMjY0YjA5Mjk0YmU5MTg2MGIxZTk0MTViN2M0NzdkZGFhNDljIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2MTc2ZjM3MjQ2MTQzMWYzZjg4YjYwNzNhZDY5NDcyYWVlNGFhZDRmOTQ5MTVmZDI5YTk4ZDNjZTA1ZWEyZGU4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload.py#L65-L252",
+          "version": "repo-lines-v1:sha256:59efc56ca9e320038d48657ded2e6e2881b93943cd8963dfaa090529de2f7ef3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTg4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3NmQ1ODhlMTYyOGNiY2Q2ZThkNDY3YmI3NjBkYjJiMmYwOTlhZjU5N2E3N2Q4NTE4YmFiMzhmYTQ2MGExNTJhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3OWMyOGRmYWFlZDE4ZTRjYTkwYTQ2YTIzNmU3ZWI1YWZlODA2NGQzMGVkYjJmN2UzNjZhYmViODI5MzdkZmQxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyODMwYWQyZDY4ZmZiZmQ2YzFjNDgwMDcxZDZiMDQ1NmJiMWMxMjdmZjQ3YWQ0NTQ3YWFiZjdmMDVkNjE4OGY2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyMDFlNDBhOGEyOGZmMDIwNjEwMGJiZmVhNGU2MGZmYjQ3MGExMGNmNDgwNzMwNDkyNjIyZGVjNjhjODc3ZTE0In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L594-L608",
+          "version": "repo-lines-v1:sha256:c209a5ab51b32d866978a8695b522df0777f2bf91d10fbd60ebab87103f9f1a6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5M2NiZTZlYTlmOThmNmEyNWNiMzQ5YmYxMTFjN2QyOWZhMmIwNjcyYmVhODE0NDNkYTE4ZjM0NzdjYjQxMTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgzNTBkMWQ3ZmQ4NzM4NTE2ZmQwOTlhMWU1NmZjYjVhOTI1Njg1NTA3ZTI5ODBmYzYzNWVkN2NiMGU2NjM5MWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk5OGNjYzU1NzY4MjQ4NDBhNmU5Y2Y3NzgzMmNlNzRiOGJmNTM5OGNjYjI2OWM0ZDE5NDM4ODllMjlhZmM5ZTQifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_offload.py",
+          "version": "repo-file-v1:sha256:f336c8b63f7c73faeec3631b1c8dae7c35be2e3d2555c0e33c0e3bb9809c30d0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-30T08:06:28.871Z"
+    "at": "2026-10-01T08:06:30.386Z"
   }
 }

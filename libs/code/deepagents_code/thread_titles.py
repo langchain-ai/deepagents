@@ -57,12 +57,19 @@ def _normalize_name(name: str) -> str:
     return validate_thread_name(name.rstrip(". "))
 
 
-async def generate_thread_name(model_spec: str, messages: Sequence[BaseMessage]) -> str:
+async def generate_thread_name(
+    model_spec: str,
+    messages: Sequence[BaseMessage],
+    *,
+    model_params: dict[str, object] | None = None,
+) -> str:
     """Generate a safe name using the selected model without conversation callbacks.
 
     Args:
         model_spec: Configured provider/model specification.
         messages: Conversation to name; only user and assistant text is sent.
+        model_params: Active conversation model overrides when inheriting its model,
+            including connection settings such as `base_url`.
 
     Returns:
         A single-line name of at most 50 characters.
@@ -78,7 +85,10 @@ async def generate_thread_name(model_spec: str, messages: Sequence[BaseMessage])
         raise ValueError(msg)
     async with asyncio.timeout(10):
         result = await asyncio.to_thread(
-            create_model, model_spec, bind_preserved_thinking=False
+            create_model,
+            model_spec,
+            extra_kwargs=model_params,
+            bind_preserved_thinking=False,
         )
         response = await result.model.ainvoke(
             [("system", _TITLE_PROMPT), ("human", conversation)],

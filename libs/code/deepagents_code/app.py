@@ -19280,13 +19280,25 @@ class DeepAgentsApp(App):
                 return
             await self._save_thread_name(thread_id, name)
             return
-        spec = load_thread_config().rename_model or self._effective_model_spec()
+        rename_model = load_thread_config().rename_model
+        spec = rename_model or self._effective_model_spec()
         if not spec:
             self.notify("Select a model before generating a thread name.")
             return
-        self._start_thread_name_generation(thread_id, spec, automatic=False)
+        self._start_thread_name_generation(
+            thread_id,
+            spec,
+            automatic=False,
+            model_params=None if rename_model else self._model_params_override,
+        )
 
-    def _maybe_auto_name_thread(self, thread_id: str, model_spec: str | None) -> None:
+    def _maybe_auto_name_thread(
+        self,
+        thread_id: str,
+        model_spec: str | None,
+        *,
+        model_params: dict[str, object] | None = None,
+    ) -> None:
         """Schedule one opt-in naming attempt after the first completed response."""
         from deepagents_code.model_config import load_thread_config
 
@@ -19300,10 +19312,20 @@ class DeepAgentsApp(App):
         ):
             return
         self._auto_named_threads.add(thread_id)
-        self._start_thread_name_generation(thread_id, spec, automatic=True)
+        self._start_thread_name_generation(
+            thread_id,
+            spec,
+            automatic=True,
+            model_params=None if config.rename_model else model_params,
+        )
 
     def _start_thread_name_generation(
-        self, thread_id: str, model_spec: str, *, automatic: bool
+        self,
+        thread_id: str,
+        model_spec: str,
+        *,
+        automatic: bool,
+        model_params: dict[str, object] | None = None,
     ) -> None:
         """Keep generation detached from chat streaming and bound to its thread."""
         if thread_id in self._thread_name_tasks:
@@ -19311,7 +19333,12 @@ class DeepAgentsApp(App):
                 self.notify("A thread name is already being generated.")
             return
         task = asyncio.create_task(
-            self._generate_thread_name(thread_id, model_spec, automatic=automatic),
+            self._generate_thread_name(
+                thread_id,
+                model_spec,
+                automatic=automatic,
+                model_params=dict(model_params) if model_params is not None else None,
+            ),
             name=f"thread-name:{thread_id}",
             context=contextvars.Context(),
         )
@@ -19322,7 +19349,12 @@ class DeepAgentsApp(App):
             self.notify("Generating a thread name...")
 
     async def _generate_thread_name(
-        self, thread_id: str, model_spec: str, *, automatic: bool
+        self,
+        thread_id: str,
+        model_spec: str,
+        *,
+        automatic: bool,
+        model_params: dict[str, object] | None = None,
     ) -> None:
         """Generate off the message pump, then persist or offer a proposal."""
         from langchain_core.messages import AIMessage, HumanMessage
@@ -19351,7 +19383,9 @@ class DeepAgentsApp(App):
                     or not any(isinstance(message, AIMessage) for message in messages)
                 ):
                     return
-                name = await generate_thread_name(model_spec, messages)
+                name = await generate_thread_name(
+                    model_spec, messages, model_params=model_params
+                )
                 if automatic:
                     if await rename_thread(thread_id, name, only_if_unnamed=True):
                         self._refresh_thread_name_selectors()
@@ -19788,6 +19822,7 @@ class DeepAgentsApp(App):
             for item in self._message_store.get_all_messages()
         )
         title_model_spec = self._effective_model_spec()
+        title_model_params = dict(self._model_params_override or {})
         if self._first_invocation_at is None:
             self._first_invocation_at = time.monotonic()
 
@@ -19998,7 +20033,9 @@ class DeepAgentsApp(App):
                 and graph_input is None
                 and title_thread_id
             ):
-                self._maybe_auto_name_thread(title_thread_id, title_model_spec)
+                self._maybe_auto_name_thread(
+                    title_thread_id, title_model_spec, model_params=title_model_params
+                )
             # Close the final step's group once the turn ends with no trailing
             # assistant text to trigger the boundary path. Grouping is cosmetic,
             # so a failure here must not abort the turn — but log it, since

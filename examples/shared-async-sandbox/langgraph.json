@@ -1,0 +1,8 @@
+{
+  "dependencies": ["../../libs/deepagents"],
+  "graphs": {
+    "parent": "./graph.py:parent",
+    "worker": "./graph.py:worker"
+  },
+  "env": ".env"
+}

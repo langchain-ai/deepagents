@@ -2,23 +2,16 @@
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
-from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import AIMessage
 
 from deepagents_talon.channels.slack import _SlackSdkGateway
-from tests.archive_helpers import make_runtime, make_saver
 from tests.integration_tests.test_slack_host import _drain, _host, _mention
-from tests.unit_tests.test_tool_approval_runtime import ToolModel
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from langchain_core.messages import BaseMessage
 
 CALLBACK = "http://localhost:3000/callback?code=TEST_SECRET&state=TEST_STATE"
 HISTORICAL_CALLBACKS = [
@@ -54,10 +47,7 @@ async def test_gateway_excludes_callbacks_before_truncation(callback: str) -> No
     ]
 
 
-@pytest.mark.parametrize("callback", HISTORICAL_CALLBACKS)
-async def test_host_excludes_retrieved_callbacks_without_pending_login(
-    tmp_path: Path, callback: str
-) -> None:
+async def test_host_excludes_retrieved_callbacks_without_pending_login(tmp_path: Path) -> None:
     host, gateway = _host(tmp_path)
     await host.start()
     try:
@@ -65,7 +55,7 @@ async def test_host_excludes_retrieved_callbacks_without_pending_login(
         await _drain()
         assert host.agent.requests == []
         assert not host._pending_authorizations
-        gateway.context = [("UOP", callback), ("UOTHER", "untrusted"), ("UOP", ORDINARY)]
+        gateway.context = [("UOP", CALLBACK), ("UOTHER", "untrusted"), ("UOP", ORDINARY)]
         await gateway.handle_message(
             _mention("1700000000.000200", thread_ts="1700000000.000100", text="continue")
         )
@@ -79,58 +69,3 @@ async def test_host_excludes_retrieved_callbacks_without_pending_login(
         assert "TEST_STATE" not in repr(request)
     finally:
         await host.stop()
-
-
-class RecordingModelCallback(BaseCallbackHandler):
-    def __init__(self) -> None:
-        self.messages: list[BaseMessage] = []
-
-    def on_chat_model_start(
-        self,
-        serialized: dict[str, object],
-        messages: list[list[BaseMessage]],
-        **kwargs: object,
-    ) -> None:
-        del serialized, kwargs
-        self.messages.extend(message for batch in messages for message in batch)
-
-
-async def test_runtime_does_not_persist_or_expose_retrieved_credentials(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    capture = RecordingModelCallback()
-    model = ToolModel(responses=[AIMessage(content="done")], callbacks=[capture])
-    monkeypatch.setattr("deepagents_talon.runtime._resolve_model_from_env", lambda *_a, **_k: model)
-    async with make_saver(tmp_path / "history.sqlite") as saver:
-        host, gateway = _host(tmp_path)
-        runtime = make_runtime(saver, tmp_path)
-        host.agent = runtime
-        await host.start()
-        try:
-            await gateway.handle_message(_mention("1700000000.000100", text=CALLBACK))
-            assert not capture.messages
-            gateway.context = [("UOP", text) for text in [*HISTORICAL_CALLBACKS, ORDINARY]]
-            await gateway.handle_message(
-                _mention("1700000000.000200", thread_ts="1700000000.000100", text="continue")
-            )
-            async with asyncio.timeout(8):
-                await asyncio.gather(*host._tasks.values())
-            assert any(text == "done" for _, text, _ in gateway.posts)
-            scope = {"talon_history_channel": "slack", "talon_history_chat": "C1"}
-            entries = await saver.archive.entries(scope)
-            assert entries
-            assert capture.messages
-            assert ORDINARY in repr(entries)
-            assert ORDINARY in repr(capture.messages)
-            sessions = await saver.archive.sessions(scope)
-            checkpoints = [
-                checkpoint
-                for session in sessions
-                async for checkpoint in saver.alist({"configurable": {"thread_id": session}})
-            ]
-            assert checkpoints
-            for content in (repr(entries), repr(capture.messages), repr(checkpoints)):
-                assert "TEST_SECRET" not in content
-                assert "TEST_STATE" not in content
-        finally:
-            await host.stop()

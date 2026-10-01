@@ -393,6 +393,26 @@ class RemoteAgent:
             )
         return self._graph
 
+    async def aget_model_metadata(self) -> ModelMetadata:
+        """Read the launch model's metadata without binding a conversation thread.
+
+        Returns:
+            Provider-independent metadata cached by the server at startup.
+
+        Raises:
+            RuntimeError: If the metadata request times out.
+        """
+        from deepagents_code.model_metadata import ModelMetadata
+
+        try:
+            response = await asyncio.wait_for(
+                self._get_graph().client.http.get("/dcode/model"), timeout=60
+            )
+        except TimeoutError as exc:
+            msg = "Startup model metadata timed out. Restart the server and retry."
+            raise RuntimeError(msg) from exc
+        return ModelMetadata.from_payload(response)
+
     async def aresolve_model(
         self,
         config: Mapping[str, Any],
@@ -400,7 +420,7 @@ class RemoteAgent:
         *,
         extra_kwargs: dict[str, Any] | None = None,
     ) -> ModelMetadata:
-        """Read startup metadata or validate a proposed switch on the server.
+        """Read a thread's metadata or validate a proposed switch on the server.
 
         Returns:
             Validated metadata, without a provider model in the client process.

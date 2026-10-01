@@ -6425,9 +6425,7 @@ class DeepAgentsApp(App):
             )
 
             try:
-                result = await agent.aresolve_model(
-                    {"configurable": {"thread_id": self._lc_thread_id}}
-                )
+                result = await agent.aget_model_metadata()
             except Exception as exc:
                 logger.exception("Failed to read startup model metadata")
                 await asyncio.to_thread(server_proc.stop)

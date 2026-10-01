@@ -24,6 +24,53 @@ def _request(payload: object) -> Request:
     return Request({"type": "http", "path_params": {"thread_id": "thread"}}, receive)
 
 
+@pytest.mark.parametrize("reason", ["bound_elsewhere", "policy_drift", "config_drift"])
+async def test_startup_metadata_works_despite_thread_workspace_conflicts(
+    reason: str,
+) -> None:
+    import httpx
+
+    from deepagents_code.offload_api import app
+
+    metadata = ModelMetadata("test", "custom", 4096, frozenset({"video"}))
+    with (
+        patch(
+            "deepagents_code.server_graph.get_server_runtime",
+            AsyncMock(return_value=SimpleNamespace(model_metadata=metadata)),
+        ),
+        patch(
+            "deepagents_code.model_api.require_thread_workspace",
+            AsyncMock(side_effect=WorkspaceConflictError(reason)),
+        ),
+        patch("deepagents_code.config.create_model") as create,
+    ):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            startup = await client.get("/dcode/model")
+            switch = await client.post(
+                "/dcode/threads/thread/model",
+                json={"workspace": {}, "model_spec": "custom:new"},
+            )
+    assert startup.status_code == 200
+    assert startup.json() == metadata.to_payload()
+    assert switch.status_code == 409
+    assert reason in switch.json()["detail"]
+    create.assert_not_called()
+
+
+@pytest.mark.parametrize("error", [None, RuntimeError("unavailable"), SystemExit(1)])
+async def test_startup_metadata_unavailable(error: BaseException | None) -> None:
+    from deepagents_code.model_api import startup_model_metadata
+
+    with patch(
+        "deepagents_code.server_graph.get_server_runtime",
+        AsyncMock(return_value=SimpleNamespace(model_metadata=None), side_effect=error),
+    ):
+        response = await startup_model_metadata(_request({}))
+    assert response.status_code == 503
+
+
 @pytest.mark.parametrize("spec", [None, "custom:test"])
 async def test_server_returns_only_metadata(spec: str | None) -> None:
     metadata = ModelMetadata("test", "custom", 4096, frozenset({"video"}))

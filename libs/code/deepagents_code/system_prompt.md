@@ -160,9 +160,10 @@ When referencing code, use format: `file_path:line_number`
 
 ---
 
-{model_identity_section}{working_dir_section}### Skills Directory
+{model_identity_section}{working_dir_section}### Skill Paths
 
-Your skills are stored at: `{skills_path}`
-Skills may contain scripts or supporting files.
+Skills can come from multiple sources. The agent-specific skills directory is `{skills_path}`.
+Source directories are informational, not bases for constructing skill paths. To load a listed skill, copy its `-> Read` path verbatim into `read_file`; never join a source directory with a skill name or substitute another source directory.
+Resolve scripts and supporting files relative to the directory containing that skill's listed `SKILL.md`, following its instructions.
 
 {tool_approval_guidance}{web_search_tool_guidance}

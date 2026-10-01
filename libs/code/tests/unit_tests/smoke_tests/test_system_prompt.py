@@ -112,6 +112,14 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
 
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir(parents=True)
+    user_skill = tmp_path / "claude_skills" / "release-check"
+    user_skill.mkdir(parents=True)
+    (user_skill / "SKILL.md").write_text(
+        "---\nname: release-check\n"
+        "description: Check a release before publishing.\n---\n"
+        "Check the release notes.\n",
+        encoding="utf-8",
+    )
 
     with (
         patch("deepagents_code.agent.credentials") as mock_s,

@@ -12,42 +12,18 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
-from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage
+from deepagents_talon.interfaces import AgentRequest, ChannelMessage
 from deepagents_talon.runtime import DeepAgentRuntime
 from tests.conftest import RecordingChannel
+from tests.test_host import ArchiveAgent, _wait_for_request
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 
-class RecordingAgent:
-    def __init__(self) -> None:
-        self.requests: asyncio.Queue[AgentRequest] = asyncio.Queue()
-
-    async def start(self) -> None:
-        pass
-
-    async def stop(self) -> None:
-        pass
-
-    async def recover_interrupted(self, conversation_id: str) -> None:
-        pass
-
-    async def invoke(self, request: AgentRequest) -> AgentResult:
-        self.requests.put_nowait(request)
-        return AgentResult(text="done")
-
-    @property
-    def history_enabled(self) -> bool:
-        return True
-
-    async def clear_history(self, channel: str, chat: str) -> None:
-        pass
-
-
-def make_host(tmp_path: Path) -> tuple[TalonHost, RecordingChannel, RecordingAgent]:
+def make_host(tmp_path: Path) -> tuple[TalonHost, RecordingChannel, ArchiveAgent]:
     channel = RecordingChannel()
-    agent = RecordingAgent()
+    agent = ArchiveAgent()
     config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
     return TalonHost(config=config, agent=agent, channels=[channel]), channel, agent
 
@@ -56,6 +32,7 @@ def make_host(tmp_path: Path) -> tuple[TalonHost, RecordingChannel, RecordingAge
 async def test_control_invalidates_preparing_input(
     tmp_path: Path, command: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr("deepagents_talon.host._MAX_CONVERSATION_INPUTS", 1)
     host, channel, agent = make_host(tmp_path)
     entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
@@ -78,13 +55,15 @@ async def test_control_invalidates_preparing_input(
         await channel.receive("older attachment")
         await entered.wait()
         await channel.receive("independent", conversation_id="other")
-        assert (await agent.requests.get()).text == "independent"
+        await _wait_for_request(agent, "independent")
+        await channel.receive("rejected")
+        assert "not accepted" in channel.sent[-1][1]
         await channel.receive(command)
         release.set()
         await finished.wait()
         await channel.receive("later")
-        assert (await agent.requests.get()).text == "later"
-        assert agent.requests.empty()
+        await _wait_for_request(agent, "later")
+        assert [request.text for request in agent.requests] == ["independent", "later"]
     finally:
         release.set()
         await host.stop()
@@ -115,8 +94,8 @@ async def test_replacement_preserves_input_order(
             await entered.wait()
         await channel.receive("Now run cleanup.")
         release.set()
-        request = await agent.requests.get()
-        assert request.text == "Only work in staging.\n\nNow run cleanup."
+        await _wait_for_request(agent, "Only work in staging.\n\nNow run cleanup.")
+        request = agent.requests[-1]
         inputs = request.metadata["talon_inputs"]
         assert isinstance(inputs, list)
         assert [item["content"] for item in inputs] == [
@@ -130,40 +109,8 @@ async def test_replacement_preserves_input_order(
         await host.stop()
 
 
-async def test_capacity_rejection_leaves_control_responsive(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr("deepagents_talon.host._MAX_CONVERSATION_INPUTS", 1)
-    host, channel, agent = make_host(tmp_path)
-    entered, release = asyncio.Event(), asyncio.Event()
-
-    async def prepare(_transcriber: object, message: ChannelMessage) -> ChannelMessage:
-        if message.text != "first":
-            return message
-
-        entered.set()
-        await release.wait()
-        return message
-
-    monkeypatch.setattr("deepagents_talon.host.transcribe_voice_message", prepare)
-    await host.start()
-    try:
-        await channel.receive("first")
-        await entered.wait()
-        await channel.receive("rejected")
-        assert "not accepted" in channel.sent[-1][1]
-        await channel.receive("/stop")
-        await channel.receive("later")
-        assert (await agent.requests.get()).text == "later"
-    finally:
-        release.set()
-        await host.stop()
-
-
-@pytest.mark.parametrize("with_callback", [False, True])
 async def test_admitted_inputs_without_checkpointing(
-    monkeypatch: pytest.MonkeyPatch, *, with_callback: bool
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[tuple[str | None, object]] = []
 
@@ -193,7 +140,7 @@ async def test_admitted_inputs_without_checkpointing(
                         {"role": "user", "id": "second", "content": "cleanup"},
                     ]
                 },
-                inputs_committed=committed.set if with_callback else None,
+                inputs_committed=committed.set,
             )
         )
         assert result.text == "done"

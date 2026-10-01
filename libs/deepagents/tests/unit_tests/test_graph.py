@@ -3050,6 +3050,19 @@ class TestSubagentMiddlewareIsolation:
         assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in helper_spec["middleware"])
 
 
+def _build_stacks(model: str | BaseChatModel | None = None, **kwargs: Any) -> tuple[list[AgentMiddleware], dict[str, list[AgentMiddleware]]]:
+    """Return the main stack and each subagent's stack by name."""
+    fake_agent = MagicMock()
+    fake_agent.with_config.return_value = "compiled-agent"
+    with (
+        patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+        patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+    ):
+        create_deep_agent(model=model or GenericFakeChatModel(messages=iter([])), **kwargs)
+    subagents = {spec["name"]: spec["middleware"] for spec in mock_subagents.call_args.kwargs["subagents"]}
+    return mock_create.call_args.kwargs["middleware"], subagents
+
+
 class TestSkillsMiddlewarePlacement:
     """`SkillsMiddleware` sits innermost, just outside prompt caching, in every stack.
 
@@ -3059,15 +3072,7 @@ class TestSkillsMiddlewarePlacement:
 
     def _build(self, model: str | BaseChatModel | None = None, **kwargs: Any) -> tuple[list[AgentMiddleware], dict[str, list[AgentMiddleware]]]:
         """Return the main stack and each subagent's stack by name."""
-        fake_agent = MagicMock()
-        fake_agent.with_config.return_value = "compiled-agent"
-        with (
-            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
-            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
-        ):
-            create_deep_agent(model=model or GenericFakeChatModel(messages=iter([])), skills=["/skills/"], **kwargs)
-        subagents = {spec["name"]: spec["middleware"] for spec in mock_subagents.call_args.kwargs["subagents"]}
-        return mock_create.call_args.kwargs["middleware"], subagents
+        return _build_stacks(model, skills=["/skills/"], **kwargs)
 
     @staticmethod
     def _skills_slot(stack: list[AgentMiddleware]) -> int:
@@ -3128,3 +3133,117 @@ class TestSkillsMiddlewarePlacement:
         skills = self._skills_slot(stack)
         assert stack.index(inherited) < skills
         assert stack.index(own) < skills
+
+
+class TestCustomMiddlewareFillsUnmountedSlot:
+    """A custom optional middleware lands where its default would, argument or not.
+
+    Skills, Memory and HITL defaults are only mounted when their argument is
+    passed. A custom middleware with the default's name takes the default's
+    slot either way, so each stack matches the one built with the argument.
+    """
+
+    @staticmethod
+    def _layout(stack: list[AgentMiddleware], custom: AgentMiddleware) -> list[str]:
+        """Return the stack's names, with `custom` itself marked."""
+        return ["<custom>" if m is custom else m.name for m in stack]
+
+    @pytest.mark.parametrize(
+        ("name", "argument"),
+        [
+            ("SkillsMiddleware", {"skills": ["/skills/"]}),
+            ("MemoryMiddleware", {"memory": ["/AGENTS.md"]}),
+            ("HumanInTheLoopMiddleware", {"interrupt_on": {"write_file": True}}),
+        ],
+    )
+    def test_main_and_general_purpose_stacks_match_the_ones_built_with_the_argument(self, name: str, argument: dict[str, Any]) -> None:
+        custom = _named_mw(name)
+        user_mw = [custom, _named_mw("NovelMW")]
+
+        with_main, with_subagents = _build_stacks(middleware=user_mw, **argument)
+        without_main, without_subagents = _build_stacks(middleware=user_mw)
+
+        assert self._layout(without_main, custom) == self._layout(with_main, custom)
+        assert self._layout(without_subagents["general-purpose"], custom) == self._layout(with_subagents["general-purpose"], custom)
+
+    @pytest.mark.parametrize(
+        ("name", "argument"),
+        [
+            ("SkillsMiddleware", {"skills": ["/skills/"]}),
+            ("MemoryMiddleware", {"memory": ["/AGENTS.md"]}),
+        ],
+    )
+    def test_fork_stack_matches_the_one_built_with_the_parent_argument(self, name: str, argument: dict[str, Any]) -> None:
+        custom = _named_mw(name)
+        user_mw = [custom, _named_mw("NovelMW")]
+        fork: SubAgent = {"name": "worker", "description": "d", "mode": "fork"}
+
+        _, with_subagents = _build_stacks(middleware=user_mw, subagents=[fork], **argument)
+        _, without_subagents = _build_stacks(middleware=user_mw, subagents=[fork])
+
+        assert self._layout(without_subagents["worker"], custom) == self._layout(with_subagents["worker"], custom)
+
+    def test_declarative_subagent_stack_matches_the_one_built_with_its_skills(self) -> None:
+        custom = _named_mw("SkillsMiddleware")
+        own_mw = [custom, _named_mw("NovelMW")]
+        worker: SubAgent = {"name": "worker", "description": "d", "middleware": own_mw}
+
+        _, with_subagents = _build_stacks(subagents=[{**worker, "skills": ["/skills/"]}])
+        _, without_subagents = _build_stacks(subagents=[worker])
+
+        assert self._layout(without_subagents["worker"], custom) == self._layout(with_subagents["worker"], custom)
+
+    def test_custom_middleware_replaces_a_same_named_profile_extra_instead_of_filling_the_slot_too(self) -> None:
+        custom = _named_mw("HumanInTheLoopMiddleware")
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("slotextra", HarnessProfile(extra_middleware=[_named_mw("HumanInTheLoopMiddleware")]))
+            with patch("deepagents.graph.resolve_model", return_value=GenericFakeChatModel(messages=iter([]))):
+                main, _ = _build_stacks(model="slotextra:some-model", middleware=[custom])
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+        assert self._layout(main, custom).count("<custom>") == 1
+
+    @pytest.mark.parametrize("name", ["SkillsMiddleware", "MemoryMiddleware", "HumanInTheLoopMiddleware"])
+    def test_profile_exclusion_of_an_unmounted_default_still_matches_nothing(self, name: str) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("slotexclusion", HarnessProfile(excluded_middleware=frozenset({name})))
+            with (
+                patch("deepagents.graph.resolve_model", return_value=GenericFakeChatModel(messages=iter([]))),
+                pytest.raises(ValueError, match="matched no middleware"),
+            ):
+                create_deep_agent(model="slotexclusion:some-model")
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+    def test_main_stack_reserves_the_subagent_slot_without_inline_subagents(self) -> None:
+        custom = _named_mw("SubAgentMiddleware")
+        user_mw = [custom, _named_mw("NovelMW")]
+
+        def build(*, general_purpose: bool) -> list[AgentMiddleware]:
+            original = dict(_HARNESS_PROFILES)
+            try:
+                register_harness_profile(
+                    "subagentslot",
+                    HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=general_purpose)),
+                )
+                fake_agent = MagicMock()
+                fake_agent.with_config.return_value = "compiled-agent"
+                with (
+                    patch("deepagents.graph.resolve_model", return_value=GenericFakeChatModel(messages=iter([]))),
+                    patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+                ):
+                    create_deep_agent(model="subagentslot:some-model", middleware=user_mw)
+            finally:
+                _HARNESS_PROFILES.clear()
+                _HARNESS_PROFILES.update(original)
+            return mock_create.call_args.kwargs["middleware"]
+
+        with_subagents = build(general_purpose=True)
+        without_subagents = build(general_purpose=False)
+
+        assert self._layout(without_subagents, custom) == self._layout(with_subagents, custom)

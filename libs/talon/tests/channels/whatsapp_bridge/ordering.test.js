@@ -88,22 +88,6 @@ test("envelopes are ordered before downloads and stop is available during stalle
   assert.deepEqual((await bridge.request("GET", "/messages")).payload, []);
 });
 
-test("deferred requests validate identity and remain retryable until release", async () => {
-  let downloads = 0;
-  const bridge = harness(async () => { downloads += 1; return null; });
-  await bridge.enqueue(message("older", "attachment", true), false);
-  const entry = bridge.queue[0];
-  assert.equal((await bridge.request("POST", "/prepare", { ...entry, chat_id: "wrong" })).status, 404);
-  assert.equal(downloads, 0);
-  assert.equal((await bridge.request("POST", "/prepare", entry)).status, 200);
-  assert.equal((await bridge.request("POST", "/prepare", entry)).status, 200);
-  assert.equal(downloads, 1);
-  await bridge.request("POST", "/release", { inputs: [{ ...entry, chat_id: "wrong" }] });
-  assert.equal((await bridge.request("POST", "/prepare", entry)).status, 200);
-  await bridge.request("POST", "/release", { inputs: [entry] });
-  assert.equal((await bridge.request("POST", "/prepare", entry)).status, 404);
-});
-
 test("envelope overload is bounded before media or context work starts", async () => {
   const bridge = harness(async () => assert.fail("unexpected download"));
   for (let index = 0; index < 200; index += 1) {
@@ -112,7 +96,7 @@ test("envelope overload is bounded before media or context work starts", async (
   assert.equal(bridge.queue.length, 128);
 });
 
-test("concurrent retries share preparation even after the original response is lost", async () => {
+test("preparation validates identity, shares concurrent retries, and releases ownership", async () => {
   const entered = barrier();
   const release = barrier();
   let downloads = 0;
@@ -124,6 +108,8 @@ test("concurrent retries share preparation even after the original response is l
   });
   await bridge.enqueue(message("slow", "attachment", true), false);
   const [entry] = (await bridge.request("GET", "/messages")).payload;
+  assert.equal((await bridge.request("POST", "/prepare", { ...entry, chat_id: "wrong" })).status, 404);
+  assert.equal(downloads, 0);
   const lost = bridge.request("POST", "/prepare", entry);
   await entered.promise;
   bridge.advance(180000);
@@ -135,6 +121,10 @@ test("concurrent retries share preparation even after the original response is l
   assert.equal(result.payload.media_paths.length, 1);
   assert.deepEqual(await bridge.request("POST", "/prepare", entry), result);
   assert.equal(downloads, 1);
+  await bridge.request("POST", "/release", { inputs: [{ ...entry, chat_id: "wrong" }] });
+  assert.deepEqual(await bridge.request("POST", "/prepare", entry), result);
+  await bridge.request("POST", "/release", { inputs: [entry] });
+  assert.equal((await bridge.request("POST", "/prepare", entry)).status, 404);
 });
 
 test("releasing rejected envelopes restores capacity without downloading media", async () => {

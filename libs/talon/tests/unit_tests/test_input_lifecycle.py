@@ -57,25 +57,6 @@ def make_host(tmp_path: Path) -> tuple[TalonHost, RecordingChannel, RecordingAge
     return TalonHost(config=config, agent=agent, channels=[channel]), channel, agent
 
 
-async def test_burst_preserves_both_inputs(tmp_path: Path) -> None:
-    host, channel, agent = make_host(tmp_path)
-    await host.start()
-    try:
-        await channel.receive("Only work in staging.")
-        await channel.receive("Now run cleanup.")
-        request = await agent.requests.get()
-        assert request.text == "Only work in staging.\n\nNow run cleanup."
-        inputs = request.metadata["talon_inputs"]
-        assert isinstance(inputs, list)
-        assert [item["content"] for item in inputs] == [
-            "Only work in staging.",
-            "Now run cleanup.",
-        ]
-        assert len({item["id"] for item in inputs}) == 2
-    finally:
-        await host.stop()
-
-
 @pytest.mark.parametrize("command", ["/stop", "/new", "/reset-all-history"])
 async def test_control_invalidates_preparing_input(tmp_path: Path, command: str) -> None:
     host, channel, agent = make_host(tmp_path)
@@ -113,7 +94,8 @@ async def test_control_invalidates_preparing_input(tmp_path: Path, command: str)
         await host.stop()
 
 
-async def test_preparation_survives_replacement_in_order(tmp_path: Path) -> None:
+@pytest.mark.parametrize("stalled", [False, True])
+async def test_replacement_preserves_input_order(tmp_path: Path, *, stalled: bool) -> None:
     host, channel, agent = make_host(tmp_path)
     entered, release = asyncio.Event(), asyncio.Event()
     calls = 0
@@ -129,14 +111,23 @@ async def test_preparation_survives_replacement_in_order(tmp_path: Path) -> None
     try:
         await dispatch_message(
             channel.handler,
-            ChannelMessage("chat", "first"),
+            ChannelMessage("chat", "Only work in staging."),
             provider="test",
             prepare=prepare,
         )
-        await entered.wait()
-        await channel.receive("second")
+        if stalled:
+            await entered.wait()
+        await channel.receive("Now run cleanup.")
         release.set()
-        assert (await agent.requests.get()).text == "first\n\nsecond"
+        request = await agent.requests.get()
+        assert request.text == "Only work in staging.\n\nNow run cleanup."
+        inputs = request.metadata["talon_inputs"]
+        assert isinstance(inputs, list)
+        assert [item["content"] for item in inputs] == [
+            "Only work in staging.",
+            "Now run cleanup.",
+        ]
+        assert len({item["id"] for item in inputs}) == 2
         assert calls == 1
     finally:
         release.set()

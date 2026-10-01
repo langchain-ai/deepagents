@@ -653,7 +653,7 @@ class WhatsAppChannel:
         return _enforce_inbound_media_cap(prepared, max_bytes=self.config.max_media_bytes)
 
     async def _dispatch_batch(self, messages: list[ChannelMessage]) -> int:
-        remaining = list(messages)
+        remaining = iter(messages)
         accepted = 0
         try:
             inputs = [
@@ -667,8 +667,8 @@ class WhatsAppChannel:
             ]
             if inputs:
                 await self._post_result("/claim", {"inputs": inputs})
-            while remaining:
-                accepted += await self._dispatch_message(remaining.pop(0))
+            for message in remaining:
+                accepted += await self._dispatch_message(message)
         finally:
             for message in remaining:
                 self._release_message(message)

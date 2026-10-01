@@ -959,32 +959,20 @@ class DeepAgentRuntime:
             values = getattr(snapshot, "values", {})
             committed = {message.id for message in values.get("messages", [])}
             messages = [message for message in messages if message.get("id") not in committed]
-        if request.inputs_committed is not None and callable(getattr(graph, "aupdate_state", None)):
-            await self._checkpoint_inputs(request, messages)
+        update_state = getattr(graph, "aupdate_state", None)
+        if request.inputs_committed is not None and callable(update_state):
+            if messages:
+                config: dict[str, object] = {"configurable": {"thread_id": request.conversation_id}}
+                if (scope := _HISTORY_SCOPE.get()) is not None:
+                    config["metadata"] = {
+                        **scope,
+                        "talon_history_read_only": _ARCHIVE_SCOPE.get() is None,
+                    }
+                # Commit before summarization can erase input identities.
+                await update_state(config, {"messages": messages})
             request.inputs_committed()
             return []
         return messages
-
-    async def _checkpoint_inputs(
-        self,
-        request: AgentRequest,
-        messages: list[dict[str, object]],
-    ) -> None:
-        """Commit before computation so summarization cannot erase admission receipts."""
-        if not messages:
-            return
-        graph = self._invocation_graph.get() or self._graph
-        update_state = getattr(graph, "aupdate_state", None)
-        if not callable(update_state):
-            msg = "Deep Agents graph does not expose input checkpointing"
-            raise TypeError(msg)
-        config: dict[str, object] = {"configurable": {"thread_id": request.conversation_id}}
-        if (scope := _HISTORY_SCOPE.get()) is not None:
-            config["metadata"] = {
-                **scope,
-                "talon_history_read_only": _ARCHIVE_SCOPE.get() is None,
-            }
-        await update_state(config, {"messages": messages})
 
     async def _invoke_until_text(
         self,

@@ -177,14 +177,45 @@ for (const unfinished of [4, 128]) {
       assert.equal(started.length, index + 1);
       if (unfinished === 128) await bridge.request("POST", "/release", { inputs: [entry] });
     }
-    await bridge.enqueue(message("later", "hello"), false);
+    if (unfinished === 128) bridge.advance(600001);
+    await bridge.enqueue(message("stop", "/stop"), false);
+    assert.equal((await bridge.request("GET", "/messages")).payload[0].text, "/stop");
+    let lookups = 0;
+    const text = message("later", "hello");
+    text.getChat = text.getContact = async () => { lookups += 1; return null; };
+    await bridge.enqueue(text, false);
     const [later] = (await bridge.request("GET", "/messages")).payload;
     const result = await bridge.request("POST", "/prepare", later);
-    assert.equal(result.status, unfinished === 128 ? 429 : 200);
+    assert.equal(result.status, 200);
+    assert.equal(result.payload.text, "hello");
+    assert.equal(result.payload.reply_context_status, "not_reply");
+    assert.equal(lookups, unfinished === 128 ? 0 : 2);
+    assert.equal(started.length, unfinished);
+    let overflow;
+    if (unfinished === 128) {
+      const reply = message("reply", "quoted text");
+      reply.hasQuotedMsg = true;
+      reply.getChat = reply.getContact = reply.getQuotedMessage = text.getChat;
+      await bridge.enqueue(reply, false);
+      const [quoted] = (await bridge.request("GET", "/messages")).payload;
+      const prepared = await bridge.request("POST", "/prepare", quoted);
+      assert.equal(prepared.status, 200);
+      assert.equal(prepared.payload.text, "quoted text");
+      assert.equal(prepared.payload.reply_context_status, "lookup_failed");
+      assert.equal(lookups, 0);
+      await bridge.enqueue(message("overflow", "attachment", true), false);
+      [overflow] = (await bridge.request("GET", "/messages")).payload;
+      assert.equal((await bridge.request("POST", "/prepare", overflow)).status, 429);
+      assert.equal(started.length, unfinished);
+    }
     await bridge.request("POST", "/release", { inputs });
     release.release();
     await Promise.all(requests);
     assert.equal((await bridge.request("POST", "/prepare", inputs[0])).status, 404);
-    assert.equal((await bridge.request("POST", "/prepare", later)).status, 200);
+    assert.deepEqual(await bridge.request("POST", "/prepare", later), result);
+    if (overflow) {
+      assert.equal((await bridge.request("POST", "/prepare", overflow)).status, 200);
+      assert.equal(started.length, unfinished + 1);
+    }
   });
 }

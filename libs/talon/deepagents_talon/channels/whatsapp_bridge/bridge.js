@@ -669,8 +669,15 @@ async function handle(req, res) {
         return;
       }
       if (!pending.preparation && preparingMessages >= MAX_PENDING_MESSAGES) {
-        sendJson(res, 429, { error: "Media preparation capacity exhausted; retry later" });
-        return;
+        if (pending.message.hasMedia) {
+          sendJson(res, 429, { error: "Media preparation capacity exhausted; retry later" });
+          return;
+        }
+        pending.preparation = Promise.resolve({
+          ...pending.entry,
+          preparation_token: null,
+          reply_context_status: pending.message.hasQuotedMsg ? "lookup_failed" : "not_reply",
+        });
       }
       if (!pending.preparation) {
         preparingMessages += 1;

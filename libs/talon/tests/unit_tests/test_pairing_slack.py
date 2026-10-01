@@ -71,12 +71,14 @@ def _message(sender: str, text: str, *, channel_id: str | None = None, is_dm: bo
     )
 
 
-def _talon(sender: str, text: str) -> tuple[_SlackInboundCommand, CapturingResponder]:
+def _talon(
+    sender: str, text: str, *, channel_id: str | None = None
+) -> tuple[_SlackInboundCommand, CapturingResponder]:
     responder = CapturingResponder()
     name, _, argument = text.partition(" ")
     command = _SlackInboundCommand(
         command=name,
-        channel_id=OPERATOR_DM if sender == OPERATOR else COWORKER_DM,
+        channel_id=channel_id or (OPERATOR_DM if sender == OPERATOR else COWORKER_DM),
         sender_id=sender,
         trigger_id="trig-1",
         responder=responder,
@@ -243,7 +245,8 @@ async def test_paired_coworker_is_admitted_in_any_chat(tmp_path: Path) -> None:
     assert [reaction.conversation_id for reaction in reactions] == ["C1:1.1", COWORKER_DM]
 
 
-async def test_operator_pairs_a_coworker_with_talon_pair(tmp_path: Path) -> None:
+@pytest.mark.parametrize("channel_id", [OPERATOR_DM, "C1"])
+async def test_operator_pairs_a_coworker_with_talon_pair(tmp_path: Path, channel_id: str) -> None:
     config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
     channel, gateway = _slack(_pairing(config.home), tmp_path)
     agent = BlockingAgent()
@@ -252,9 +255,9 @@ async def test_operator_pairs_a_coworker_with_talon_pair(tmp_path: Path) -> None
     await gateway.handle_message(_message(COWORKER, "let me in"))
     code = format_code(_issued_code(gateway))
 
-    refused, refused_responder = _talon(COWORKER, f"pair approve {code}")
+    refused, refused_responder = _talon(COWORKER, f"pair approve {code}", channel_id=channel_id)
     await gateway.handle_command(refused)
-    approve, responder = _talon(OPERATOR, f"pair approve {code}")
+    approve, responder = _talon(OPERATOR, f"pair approve {code}", channel_id=channel_id)
     await gateway.handle_command(approve)
     await gateway.handle_message(_message(COWORKER, "hello agent"))
     await _wait_for_request(agent)

@@ -893,9 +893,14 @@ class SlackChannel:
             return _UNAUTHORIZED_MESSAGE
         if not known:
             return _COMMAND_UNAVAILABLE_MESSAGE
-        if not inbound.is_dm:
-            # A slash command carries no thread, so in a channel it would act on a
-            # conversation that never holds an agent thread.
+        parts = (inbound.argument or "").split()
+        approving = (
+            inbound.command == "pair"
+            and bool(parts)
+            and parts[0].lower() == "approve"
+            and inbound.sender_id in self._exposure.operator_ids
+        )
+        if not inbound.is_dm and not approving:
             return _COMMAND_DM_ONLY_MESSAGE
         return None
 

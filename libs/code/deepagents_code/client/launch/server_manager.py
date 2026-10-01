@@ -130,7 +130,6 @@ def _write_checkpointer(work_dir: Path) -> None:
     """
     from deepagents_code.sessions import get_db_path
 
-    # Set the env var that the generated module will read at import time.
     os.environ[f"{SERVER_ENV_PREFIX}DB_PATH"] = str(get_db_path())
 
     db_path_var = f"{SERVER_ENV_PREFIX}DB_PATH"
@@ -149,7 +148,8 @@ async def create_checkpointer():
     (set by the app before server startup) rather than hard-coded, so
     the checkpointer module works without code generation.
     """
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from pathlib import Path
+    from deepagents_code.thread_ownership import owned_saver_class
 
     db_path = os.environ.get("{db_path_var}")
     if not db_path:
@@ -157,7 +157,8 @@ async def create_checkpointer():
             "{db_path_var} not set. The app must set this "
             "env var before server startup."
         )
-    async with AsyncSqliteSaver.from_conn_string(db_path) as saver:
+    saver_class = owned_saver_class(db_path=Path(db_path))
+    async with saver_class.from_conn_string(db_path) as saver:
         yield saver
 '''
     (work_dir / "checkpointer.py").write_text(content)
@@ -446,6 +447,7 @@ async def start_server_and_get_agent(
         await server.start()
         await server.wait_for_graph_ready("agent")
         agent = RemoteAgent(
+            local_ownership=True,
             url=server.url,
             graph_name="agent",
         )

@@ -1260,6 +1260,7 @@ if TYPE_CHECKING:
     )
     from deepagents_code.resume_state import GoalProposalKind, GoalStatus
     from deepagents_code.skills.load import ExtendedSkillMetadata
+    from deepagents_code.thread_ownership import ThreadLease
     from deepagents_code.tool_catalog import ToolCatalog, UnavailableServer
     from deepagents_code.tui.modals.cold_cache import ColdCacheChoice
     from deepagents_code.tui.modals.plugin_manager.models import (
@@ -3931,6 +3932,7 @@ class DeepAgentsApp(App):
         if server_kwargs is not None:
             server_kwargs["cwd"] = self._cwd
         self._server_kwargs = server_kwargs
+        self._thread_leases: dict[str, ThreadLease] = {}
         if self._agent is not None:
             from deepagents_code.client.remote_client import RemoteAgent as _RemoteAgent
 
@@ -6168,6 +6170,66 @@ class DeepAgentsApp(App):
             f"Thread {thread_id} cannot be resumed because {reason}.\n\n{explanation}"
         )
 
+    def _reserve_thread(self, thread_id: str) -> None:
+        """Reserve a locally managed thread before reading or adopting it."""
+        if self._server_kwargs is None and self._server_proc is None:
+            return
+        from deepagents_code.thread_ownership import ensure_owned
+
+        self._thread_leases[thread_id] = ensure_owned(thread_id)
+
+    def _release_thread(self, thread_id: str | None) -> None:
+        """Release an abandoned thread while retaining the active reservation."""
+        if thread_id and (lease := self._thread_leases.pop(thread_id, None)):
+            lease.release()
+
+    async def _claim_recent_thread(self, agent_name: str | None) -> str | None:
+        """Select and reserve the newest available local thread atomically.
+
+        Returns:
+            The reserved thread, or None when no history exists.
+
+        Raises:
+            ThreadOwnershipError: Every matching thread is occupied.
+        """
+        from deepagents_code.sessions import get_recent_thread_ids
+        from deepagents_code.thread_ownership import ThreadOwnershipError, try_acquire
+
+        candidates = await get_recent_thread_ids(agent_name)
+        for skipped, thread_id in enumerate(candidates):
+            lease = try_acquire(thread_id)
+            if lease is None:
+                continue
+            self._thread_leases[thread_id] = lease
+            if skipped:
+                self.notify(
+                    f"Skipped {skipped} thread(s) open elsewhere; "
+                    f"resuming {thread_id}.",
+                    markup=False,
+                )
+            return thread_id
+        if candidates:
+            msg = (
+                "All matching previous threads are open elsewhere. "
+                "Close one there to resume."
+            )
+            raise ThreadOwnershipError(msg)
+        return None
+
+    async def _blocked_resume_choice(self, reason: str) -> None:
+        """Offer a fresh thread or exit without bypassing another writer."""
+        from deepagents_code.sessions import generate_thread_id
+        from deepagents_code.tui.modals.resume_blocked import ResumeBlockedScreen
+
+        choice = await self._push_screen_result_future(ResumeBlockedScreen(reason))
+        if choice != "new":
+            self.exit()
+            return
+        self._lc_thread_id = generate_thread_id()
+        self._initial_resume_requested = False
+        self._resuming = False
+        self._sync_status_connection()
+
     async def _resolve_resume_thread(self) -> None:
         """Resolve a `-r` resume intent into a concrete thread ID.
 
@@ -6188,7 +6250,9 @@ class DeepAgentsApp(App):
             get_thread_agent,
             thread_exists,
         )
+        from deepagents_code.thread_ownership import ThreadOwnershipError
 
+        candidate: str | None = None
         try:
             resume = self._resume_thread_intent
             self._resume_thread_intent = None  # consumed
@@ -6205,7 +6269,11 @@ class DeepAgentsApp(App):
                 agent_filter = (
                     self._assistant_id if self._assistant_id != default_agent else None
                 )
-                candidate = await get_most_recent(agent_filter)
+                candidate = (
+                    await self._claim_recent_thread(agent_filter)
+                    if self._server_kwargs is not None or self._server_proc is not None
+                    else await get_most_recent(agent_filter)
+                )
                 if not candidate:
                     self._lc_thread_id = generate_thread_id()
                     self._initial_resume_requested = False
@@ -6232,6 +6300,7 @@ class DeepAgentsApp(App):
                 self.notify(hint, severity="warning", timeout=6, markup=False)
                 return
 
+            self._reserve_thread(candidate)
             if blocked := await self._thread_resume_block(candidate):
                 from deepagents_code.tui.modals.resume_blocked import (
                     ResumeBlockedScreen,
@@ -6306,6 +6375,15 @@ class DeepAgentsApp(App):
                     self._assistant_id = agent_name
                     if self._server_kwargs:
                         self._server_kwargs["assistant_id"] = agent_name
+        except ThreadOwnershipError as exc:
+            await self._blocked_resume_choice(str(exc))
+        except OSError as exc:
+            self.notify(
+                f"Could not secure thread ownership: {exc}",
+                severity="error",
+                markup=False,
+            )
+            self.exit(return_code=1)
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
@@ -6317,6 +6395,8 @@ class DeepAgentsApp(App):
                 severity="warning",
             )
         finally:
+            if candidate and (self._lc_thread_id != candidate or self._exiting):
+                self._release_thread(candidate)
             # Sync the resolved (or fresh) thread id into session state before
             # signaling completion. This must run in `finally` so an early
             # return — a fallback to a new thread, or the user aborting the
@@ -6327,7 +6407,7 @@ class DeepAgentsApp(App):
             # state hasn't been assigned yet, correctness instead relies on
             # `_init_session_state` reading the now-final `_lc_thread_id` when
             # it constructs the state.
-            if self._session_state:
+            if self._session_state and self._lc_thread_id is not None:
                 self._session_state.thread_id = self._lc_thread_id
             # Signal before restoring the tip: resolution is complete at this
             # point, and the tip is cosmetic follow-up work. Awaiting it first
@@ -6349,6 +6429,18 @@ class DeepAgentsApp(App):
         if self._resume_thread_intent:
             await self._resolve_resume_thread()
             if self._exiting:
+                return
+
+        if self._lc_thread_id:
+            try:
+                self._reserve_thread(self._lc_thread_id)
+            except (OSError, RuntimeError) as exc:
+                self.notify(
+                    f"Could not secure thread ownership: {exc}",
+                    severity="error",
+                    markup=False,
+                )
+                self.exit(return_code=1)
                 return
 
         # Run deferred model creation. runtime_state.model_name / model_provider
@@ -10084,29 +10176,39 @@ class DeepAgentsApp(App):
                 "updated_at": datetime.now(UTC).isoformat(),
             },
         }
-        await remote.aensure_thread(config)
-        await remote.abind_workspace(config, cwd)
-        values = {
-            "messages": [HumanMessage(content=text)],
-            "_model_spec": context.get("model"),
-            "_model_params": context.get("model_params", {}),
-        }
-        await remote.aupdate_state(config, values, as_node="model")
-        # Seeding as model schedules after-model middleware. Mark that work
-        # complete without running it so the child is immediately offloadable.
-        await remote.aupdate_state(config, None, as_node="__end__")
-        # The HTTP state API drops config metadata, so mirror the server's
-        # registration metadata into checkpoints when storage is shared.
-        # With separate server storage, keep a local seed so the picker, resume
-        # policy, and explicit /threads -r lookup can still find this summary.
-        if not await thread_exists(child_id):
-            await save_thread_seed(child_id, values, agent_name=agent_name, cwd=cwd)
-        else:
-            await set_thread_metadata(child_id, agent_name=agent_name, cwd=cwd)
-        return child_id
+        seeded = False
+        try:
+            await remote.aensure_thread(config)
+            await remote.abind_workspace(config, cwd)
+            values = {
+                "messages": [HumanMessage(content=text)],
+                "_model_spec": context.get("model"),
+                "_model_params": context.get("model_params", {}),
+            }
+            await remote.aupdate_state(config, values, as_node="model")
+            # Seeding as model schedules after-model middleware. Mark that work
+            # complete without running it so the child is immediately offloadable.
+            await remote.aupdate_state(config, None, as_node="__end__")
+            # The HTTP state API drops config metadata, so mirror the server's
+            # registration metadata into checkpoints when storage is shared.
+            # With separate server storage, keep a local seed so the picker, resume
+            # policy, and explicit /threads -r lookup can still find this summary.
+            if not await thread_exists(child_id):
+                await save_thread_seed(child_id, values, agent_name=agent_name, cwd=cwd)
+            else:
+                await set_thread_metadata(child_id, agent_name=agent_name, cwd=cwd)
+            seeded = True
+            return child_id
+        finally:
+            if not seeded:
+                from deepagents_code.thread_ownership import held_lease
+
+                if lease := held_lease(child_id):
+                    lease.release()
 
     async def _switch_to_handoff(self, thread_id: str, child_id: str) -> None:
         """Open the child thread unless new work would be stranded on the source."""
+        self._reserve_thread(child_id)
         if (
             self._pending_messages
             or self._pending_shell_messages
@@ -10120,6 +10222,8 @@ class DeepAgentsApp(App):
             )
         elif self._lc_thread_id == thread_id and not self._exiting:
             await self._resume_thread(child_id)
+        if self._lc_thread_id != child_id:
+            self._release_thread(child_id)
 
     def _offload_context(self, thread_id: str | None) -> CLIContext:
         """Build the runtime context for a server offload of `thread_id`.
@@ -17577,6 +17681,15 @@ class DeepAgentsApp(App):
                     # Finish cancellation (including thread-switch rollback)
                     # before clearing the transcript and starting a new thread.
                     await asyncio.gather(handoff, return_exceptions=True)
+            new_thread_id = _new_thread_id() if self._session_state else None
+            if new_thread_id is not None:
+                try:
+                    self._reserve_thread(new_thread_id)
+                except (OSError, RuntimeError) as exc:
+                    await self._mount_message(
+                        AppMessage(f"Could not start a new thread: {exc}")
+                    )
+                    return
             # Sample before `_clear_messages` below empties the store: this
             # describes the thread being left, not the fresh one. See
             # `_store_has_server_output`.
@@ -17601,9 +17714,13 @@ class DeepAgentsApp(App):
             # Clear status message (e.g., "Interrupted" from previous session)
             self._update_status("")
             # Reset thread to start fresh conversation
-            if self._session_state:
-                new_thread_id = self._session_state.reset_thread()
+            if self._session_state and new_thread_id is not None:
+                previous_thread_id = self._lc_thread_id
+                self._session_state.previous_thread_id = self._session_state.thread_id
+                self._session_state.thread_id = new_thread_id
+                self._session_state.approval_mode_key = None
                 self._lc_thread_id = new_thread_id
+                self._release_thread(previous_thread_id)
                 # `_rubric_model` deliberately survives `/clear`, but the
                 # grader reads its selection from thread state -- which the
                 # fresh thread does not have yet. Carry it over, and on a
@@ -25450,6 +25567,41 @@ class DeepAgentsApp(App):
         preloaded_payload: _ThreadHistoryPayload | None = None,
         persist_default_agent: bool = True,
     ) -> bool:
+        """Retain the outgoing reservation until the agent transition succeeds.
+
+        Returns:
+            Whether the agent transition completed.
+        """
+        previous = self._lc_thread_id
+        if resume_thread_id:
+            try:
+                self._reserve_thread(resume_thread_id)
+            except (OSError, RuntimeError) as exc:
+                await self._mount_message(AppMessage(str(exc)))
+                self._agent_switching = False
+                return False
+        try:
+            switched = await self._restart_server_for_owned_agent_swap(
+                agent_name,
+                resume_thread_id=resume_thread_id,
+                preloaded_payload=preloaded_payload,
+                persist_default_agent=persist_default_agent,
+            )
+            if switched and previous != self._lc_thread_id:
+                self._release_thread(previous)
+            return switched
+        finally:
+            if resume_thread_id and resume_thread_id != self._lc_thread_id:
+                self._release_thread(resume_thread_id)
+
+    async def _restart_server_for_owned_agent_swap(
+        self,
+        agent_name: str,
+        *,
+        resume_thread_id: str | None = None,
+        preloaded_payload: _ThreadHistoryPayload | None = None,
+        persist_default_agent: bool = True,
+    ) -> bool:
         """Restart the langgraph server with a new `assistant_id`.
 
         Runs in three phases so failures are attributable:
@@ -25507,7 +25659,7 @@ class DeepAgentsApp(App):
                 A fresh `RemoteAgent`, exposed as `Any`.
             """
             return self._configure_remote_agent(
-                _RemoteAgent(url=url, graph_name="agent")
+                _RemoteAgent(url=url, graph_name="agent", local_ownership=True)
             )
 
         previous_agent = self._assistant_id
@@ -25620,6 +25772,7 @@ class DeepAgentsApp(App):
                         self._session_state.thread_id = resume_thread_id
                         self._session_state.approval_mode_key = None
                         next_thread_id = resume_thread_id
+                    self._reserve_thread(next_thread_id)
                     self._lc_thread_id = next_thread_id
                     self._update_welcome_banner(
                         next_thread_id,
@@ -25678,6 +25831,8 @@ class DeepAgentsApp(App):
                 self._server_kwargs["assistant_id"] = agent_name
 
             try:
+                for lease in tuple(self._thread_leases.values()):
+                    await asyncio.wait_for(lease.rotate(), timeout=30)
                 server_proc.update_env(
                     **{f"{SERVER_ENV_PREFIX}ASSISTANT_ID": agent_name},
                 )
@@ -29337,6 +29492,8 @@ class DeepAgentsApp(App):
             self._sync_status_connection()
 
             try:
+                for lease in tuple(self._thread_leases.values()):
+                    await asyncio.wait_for(lease.rotate(), timeout=restart_timeout)
                 await self._restart_server_process(
                     server_proc,
                     timeout=restart_timeout,
@@ -29406,7 +29563,7 @@ class DeepAgentsApp(App):
 
             def _build_agent(url: str) -> Any:  # noqa: ANN401  # union narrowed elsewhere
                 return self._configure_remote_agent(
-                    _RemoteAgent(url=url, graph_name="agent")
+                    _RemoteAgent(url=url, graph_name="agent", local_ownership=True)
                 )
 
             # A failed refresh must not reach the UI as "zero servers": the
@@ -29629,6 +29786,35 @@ class DeepAgentsApp(App):
         return None
 
     async def _confirm_then_resume_cross_agent_thread(
+        self, target: _ThreadsResumeTarget
+    ) -> None:
+        """Reserve before a cross-agent confirmation or history load."""
+        if (
+            self._thread_switching
+            or self._agent_switching
+            or getattr(self, "_thread_reservation_switching", False)
+        ):
+            await self._mount_message(AppMessage("Thread switch already in progress."))
+            return
+        self._thread_reservation_switching = True
+        try:
+            previous = self._lc_thread_id
+            try:
+                self._reserve_thread(target.thread_id)
+            except (OSError, RuntimeError) as exc:
+                await self._mount_message(AppMessage(str(exc)))
+                return
+            try:
+                await self._confirm_then_resume_owned_cross_agent_thread(target)
+            finally:
+                if self._lc_thread_id != target.thread_id:
+                    self._release_thread(target.thread_id)
+                elif previous != target.thread_id:
+                    self._release_thread(previous)
+        finally:
+            self._thread_reservation_switching = False
+
+    async def _confirm_then_resume_owned_cross_agent_thread(
         self,
         target: _ThreadsResumeTarget,
     ) -> None:
@@ -30742,6 +30928,33 @@ class DeepAgentsApp(App):
         await self._reload_hooks()
 
     async def _resume_thread(self, thread_id: str) -> None:
+        """Reserve the destination and preserve ownership on failed switches."""
+        if (
+            self._thread_switching
+            or self._agent_switching
+            or getattr(self, "_thread_reservation_switching", False)
+        ):
+            await self._mount_message(AppMessage("Thread switch already in progress."))
+            return
+        self._thread_reservation_switching = True
+        try:
+            previous = self._lc_thread_id
+            try:
+                self._reserve_thread(thread_id)
+            except (OSError, RuntimeError) as exc:
+                await self._mount_message(AppMessage(str(exc)))
+                return
+            try:
+                await self._resume_owned_thread(thread_id)
+            finally:
+                if self._lc_thread_id != thread_id:
+                    self._release_thread(thread_id)
+                elif previous != thread_id:
+                    self._release_thread(previous)
+        finally:
+            self._thread_reservation_switching = False
+
+    async def _resume_owned_thread(self, thread_id: str) -> None:
         """Resume a previously saved thread.
 
         Fetches the selected thread history, then atomically switches UI state.
@@ -30875,6 +31088,10 @@ class DeepAgentsApp(App):
                 # Switch to the selected thread
                 self._session_state.thread_id = thread_id
                 self._lc_thread_id = thread_id
+                from deepagents_code.client.remote_client import RemoteAgent
+
+                if isinstance(self._agent, RemoteAgent):
+                    self._agent.bind_thread_ownership(thread_id)
 
                 self._update_welcome_banner(
                     thread_id,
@@ -30959,6 +31176,10 @@ class DeepAgentsApp(App):
                 # Restore previous thread IDs so the user can retry
                 self._session_state.thread_id = prev_session_thread
                 self._lc_thread_id = prev_thread_id
+                from deepagents_code.client.remote_client import RemoteAgent
+
+                if isinstance(self._agent, RemoteAgent):
+                    self._agent.bind_thread_ownership(prev_session_thread)
                 # Also restore the back-pointer. A raise after it was set (the
                 # session-start hook) would otherwise leave `previous == current`,
                 # making a later bare `/threads -r` a no-op with nowhere to step
@@ -31906,6 +32127,10 @@ async def run_textual_app(
         # would be discarded on exit). Unconditional — not gated on
         # `_server_proc` — because a failed startup queues a path without ever
         # producing a tracked process to hang the notice on.
+        if app._server_kwargs is not None or app._server_proc is not None:
+            from deepagents_code.thread_ownership import release_all
+
+            release_all()
         emit_preserved_log_notices()
 
     return AppResult(

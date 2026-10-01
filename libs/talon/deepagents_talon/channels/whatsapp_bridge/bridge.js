@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const http = require("http");
+const { randomUUID } = require("crypto");
 const path = require("path");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
@@ -38,6 +39,25 @@ let botId = null;
 let botIds = [];
 let bridgeMediaSends = 0;
 const queue = [];
+const pendingMessages = new Map();
+const MAX_PENDING_MESSAGES = 128;
+const PREPARATION_TTL_MS = 120000;
+const preparingMessages = new Set();
+
+function expirePendingMessages() {
+  for (const [token, pending] of pendingMessages) {
+    if (!pending.claimed && pending.expires <= Date.now()) pendingMessages.delete(token);
+  }
+  pruneQueuedMessages();
+}
+
+function pruneQueuedMessages() {
+  for (let index = queue.length - 1; index >= 0; index -= 1) {
+    const token = queue[index].preparation_token;
+    const pending = pendingMessages.get(token);
+    if (token && (!pending || pending.claimed)) queue.splice(index, 1);
+  }
+}
 const sentMessageIds = new Set();
 const sentMessages = new Map();
 const sentBodies = new SentBodyReservations();
@@ -132,7 +152,7 @@ client.on("message_reaction", (reaction) => {
   try {
     const entry = reactionEntry(reaction, botId, botIds);
     if (entry) {
-      queue.push(entry);
+      if (queue.length < MAX_PENDING_MESSAGES + 16) queue.push(entry);
       console.log('[bridge] talon_event {"event":"whatsapp.bridge.reaction.queued"}');
     }
   } catch (error) {
@@ -209,25 +229,21 @@ async function enqueueMessage(message, fromSelf) {
     return;
   }
 
-  const [chat, contact] = await Promise.all([safeGetChat(message), safeGetContact(message)]);
-  const media = await downloadMessageMedia(message);
-  const mediaType = classifyMedia(message, media);
-  if (message.hasMedia && media.length === 0) {
-    console.log(
-      `[bridge] Message media unavailable; type=${message.type || "unknown"} mediaType=${mediaType}`,
-    );
+  expirePendingMessages();
+  const control = /^\/(?:stop|new|reset-all-history)(?:\s|$)/i.test(message.body || "");
+  const queueLimit = MAX_PENDING_MESSAGES + (control ? 16 : 0);
+  if (queue.length >= queueLimit || (!control && pendingMessages.size >= MAX_PENDING_MESSAGES)) {
+    console.error("WhatsApp input not accepted: pending envelope capacity exhausted");
+    return;
   }
+  // Admission order is fixed before any context lookup or media download.
+  const media = [];
+  const mediaType = classifyMedia(message, media);
   const senderId = messageSenderId(message, fromSelf, botId, messageFrom);
-  const senderName =
-    (contact && (contact.pushname || contact.name || contact.shortName)) ||
-    data.notifyName ||
-    data.senderName ||
-    senderId ||
-    null;
-  const chatName = (chat && chat.name) || data.chatName || chatId;
-  const isGroup =
-    chat && typeof chat.isGroup === "boolean" ? chat.isGroup : chatId.endsWith("@g.us");
-  const quote = await quotedMessageContext(message);
+  const senderName = data.notifyName || data.senderName || senderId || null;
+  const chatName = data.chatName || chatId;
+  const isGroup = chatId.endsWith("@g.us");
+  const quote = { participant: null, messageId: null, status: "deferred" };
 
   const entry = {
     text: message.body || "",
@@ -287,6 +303,11 @@ async function enqueueMessage(message, fromSelf) {
   console.log(
     `[bridge] Queued message; fromSelf=${fromSelf} hasMedia=${entry.hasMedia} chatType=${entry.chatType}`,
   );
+  if (!control) {
+    const token = randomUUID();
+    entry.preparation_token = token;
+    pendingMessages.set(token, { message, entry, expires: Date.now() + PREPARATION_TTL_MS });
+  }
   queue.push(entry);
 }
 
@@ -409,6 +430,28 @@ async function downloadMessageMedia(message) {
     console.error("Media download failed:", error.message || error);
     return [];
   }
+}
+
+async function prepareEntry(pending) {
+  const { message, entry } = pending;
+  const [chat, contact, quote] = await Promise.all([
+    safeGetChat(message), safeGetContact(message), quotedMessageContext(message),
+  ]);
+  const media = await downloadMessageMedia(message);
+  return {
+    ...entry,
+    preparation_token: null,
+    media_type: classifyMedia(message, media),
+    mediaType: classifyMedia(message, media),
+    chat_name: (chat && chat.name) || entry.chat_name,
+    user_name: (contact && (contact.pushname || contact.name || contact.shortName)) || entry.user_name,
+    quoted_participant: quote.participant,
+    quoted_message_id: quote.messageId,
+    reply_context_status: quote.status,
+    media_paths: media.map((item) => item.path),
+    media_mime_types: media.map((item) => item.mimeType),
+    media_file_names: media.map((item) => item.fileName),
+  };
 }
 
 function classifyMedia(message, media) {
@@ -591,12 +634,84 @@ async function handle(req, res) {
     }
 
     if (req.method === "GET" && req.url === "/messages") {
-      sendJson(res, 200, queue.splice(0, queue.length));
+      expirePendingMessages();
+      const messages = queue.slice();
+      // Token-bearing envelopes remain retrievable until the receiver claims them.
+      for (let index = queue.length - 1; index >= 0; index -= 1) {
+        if (!queue[index].preparation_token) queue.splice(index, 1);
+      }
+      sendJson(res, 200, messages);
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/claim") {
+      const body = await readJson(req);
+      expirePendingMessages();
+      if (!Array.isArray(body.inputs) || body.inputs.length > MAX_PENDING_MESSAGES) {
+        sendJson(res, 400, { error: "Invalid claim batch" });
+        return;
+      }
+      const inputs = body.inputs.map((input) => {
+        const pending = input && pendingMessages.get(input.preparation_token);
+        return pending && pending.entry.chat_id === input.chat_id && pending.entry.message_id === input.message_id
+          ? pending : null;
+      });
+      if (inputs.some((pending) => !pending)) {
+        sendJson(res, 404, { error: "Unknown or expired input" });
+        return;
+      }
+      for (const pending of inputs) pending.claimed = true;
+      pruneQueuedMessages();
+      sendJson(res, 200, { success: true });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/release") {
+      const body = await readJson(req);
+      if (!Array.isArray(body.inputs) || body.inputs.length > MAX_PENDING_MESSAGES) {
+        sendJson(res, 400, { error: "Invalid release batch" });
+        return;
+      }
+      for (const input of body.inputs) {
+        const pending = pendingMessages.get(input.preparation_token);
+        if (pending && pending.entry.chat_id === input.chat_id && pending.entry.message_id === input.message_id) {
+          pendingMessages.delete(input.preparation_token);
+        }
+      }
+      pruneQueuedMessages();
+      sendJson(res, 200, { success: true });
       return;
     }
 
     if (req.method === "POST" && status !== "connected") {
       sendJson(res, 503, { success: false, error: "WhatsApp bridge is not connected" });
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/prepare") {
+      const body = await readJson(req);
+      expirePendingMessages();
+      const pending = pendingMessages.get(body.preparation_token);
+      if (!pending || pending.entry.chat_id !== body.chat_id || pending.entry.message_id !== body.message_id) {
+        sendJson(res, 404, { error: "Unknown or expired input" });
+        return;
+      }
+      const active = [...preparingMessages].filter(
+        (input) => pendingMessages.has(input.entry.preparation_token),
+      ).length;
+      if (!pending.preparation && (active >= 4 || preparingMessages.size >= MAX_PENDING_MESSAGES)) {
+        sendJson(res, 429, { error: "Media preparation capacity exhausted; retry later" });
+        return;
+      }
+      pending.claimed = true;
+      pruneQueuedMessages();
+      if (!pending.preparation) {
+        preparingMessages.add(pending);
+        pending.preparation = prepareEntry(pending)
+          .catch((error) => { pending.preparation = null; throw error; })
+          .finally(() => { preparingMessages.delete(pending); });
+      }
+      sendJson(res, 200, await pending.preparation);
       return;
     }
 

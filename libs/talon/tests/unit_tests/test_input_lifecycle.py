@@ -272,3 +272,48 @@ async def test_committed_input_releases_capacity_before_model_finishes(
     finally:
         release.set()
         await host.stop()
+
+
+class OwnedPreparation:
+    def __init__(self) -> None:
+        self.ready = asyncio.Event()
+        self.released = asyncio.Event()
+
+    async def __call__(self, message: ChannelMessage) -> ChannelMessage:
+        await self.ready.wait()
+        return message
+
+    def release(self) -> None:
+        self.released.set()
+
+
+@pytest.mark.parametrize(
+    "reason", ["/stop", "/new", "/reset-all-history", "help", "capacity", "completed", "shutdown"]
+)
+async def test_host_releases_owned_preparations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: str
+) -> None:
+    host, channel, agent = make_host(tmp_path)
+    preparations = [OwnedPreparation(), OwnedPreparation()]
+    if reason == "capacity":
+        monkeypatch.setattr("deepagents_talon.host._MAX_CONVERSATION_INPUTS", 0)
+    await host.start()
+    try:
+        for index, prepare in enumerate(preparations):
+            if reason == "completed":
+                prepare.ready.set()
+            await dispatch_message(
+                channel.handler,
+                ChannelMessage("chat", "/help" if reason == "help" else str(index)),
+                provider="test",
+                prepare=prepare,
+            )
+        if reason.startswith("/"):
+            await channel.receive(reason)
+        if reason == "shutdown":
+            await host.stop()
+        for prepare in preparations:
+            await prepare.released.wait()
+        assert bool(agent.requests) == (reason == "completed")
+    finally:
+        await host.stop()

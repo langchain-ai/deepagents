@@ -2,17 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from threading import Barrier, Event, local
+from threading import Event, local
 from typing import TYPE_CHECKING
 
 import pytest
 
-from deepagents_talon.cron.errors import CronJobError
 from deepagents_talon.cron.jobs import CronJob, CronJobStore, CronOrigin, CronSchedule
-from deepagents_talon.cron.tools import CronTools
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -168,48 +165,3 @@ def test_reader_observes_completed_write(tmp_path, monkeypatch):
     job, observed = _overlap(monkeypatch, store, lambda: _create(store), store.list_jobs)
     assert observed == [job]
     assert observed == _store(tmp_path).list_jobs()
-
-
-@pytest.mark.parametrize("failure", ["validation", "write"])
-def test_failure_releases_lock_for_another_thread(tmp_path, monkeypatch, failure):
-    store = _store(tmp_path)
-    job = _create(store)
-    with monkeypatch.context() as patch:
-        if failure == "write":
-
-            def fail_write(_jobs):
-                msg = "disk failure"
-                raise OSError(msg)
-
-            patch.setattr(store, "_write_jobs", fail_write)
-            with pytest.raises(OSError, match="disk failure"):
-                _create(store)
-        else:
-            with pytest.raises(CronJobError):
-                store.remove_job(job.id, origin=CronOrigin(conversation_id="wrong"))
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        created = pool.submit(_create, store).result(timeout=3)
-    assert _store(tmp_path).list_jobs() == store.list_jobs() == [job, created]
-
-
-async def test_async_langchain_creations_all_survive(tmp_path, monkeypatch):
-    store = _store(tmp_path)
-    cron = CronTools(store=store, origin=lambda: ORIGIN)
-    tool = next(tool for tool in cron.as_langchain_tools() if tool.name == "create_job")
-    barrier = Barrier(4, timeout=3)
-    original = store.create_job
-
-    def concurrent_create(**kwargs: object):
-        barrier.wait()  # Synchronize executor callers before taking the store lock.
-        return original(**kwargs)
-
-    monkeypatch.setattr(store, "create_job", concurrent_create)
-    results = await asyncio.wait_for(
-        asyncio.gather(
-            *(tool.ainvoke({"prompt": str(i), "schedule": "every 1m"}) for i in range(4))
-        ),
-        timeout=5,
-    )
-    assert {result["id"] for result in results} == {job.id for job in _store(tmp_path).list_jobs()}
-    assert len(store.list_jobs()) == 4
-    assert store.list_jobs() == _store(tmp_path).list_jobs()

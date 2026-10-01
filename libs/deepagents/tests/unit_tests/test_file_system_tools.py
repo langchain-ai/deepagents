@@ -4,9 +4,12 @@ At the moment these tests are written against the state backend, but we will nee
 to extend them to other backends as well.
 """
 
+from pathlib import Path
+
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
+from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.state import StateBackend
 from deepagents.graph import create_deep_agent
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -351,9 +354,9 @@ def test_grep_finds_written_file() -> None:
     assert "/project/main.py" in grep_message.content, "Grep should reference the file containing 'import'"
 
 
-def test_parallel_edit_file_calls() -> None:
-    """Reject the second parallel edit to the same file."""
-    fake_model = GenericFakeChatModel(
+def _parallel_edit_model() -> GenericFakeChatModel:
+    """Write `/multi.txt`, then edit it twice in one model response."""
+    return GenericFakeChatModel(
         messages=iter(
             [
                 AIMessage(
@@ -400,8 +403,11 @@ def test_parallel_edit_file_calls() -> None:
         )
     )
 
+
+def test_parallel_edit_file_calls() -> None:
+    """Reject the second parallel edit to the same file."""
     agent = create_deep_agent(
-        model=fake_model,
+        model=_parallel_edit_model(),
         checkpointer=InMemorySaver(),
     )
 
@@ -413,6 +419,34 @@ def test_parallel_edit_file_calls() -> None:
     edits = [message for message in result["messages"] if isinstance(message, ToolMessage) and message.name == "edit_file"]
     assert [message.status for message in edits] == ["success", "error"]
     assert result["files"]["/multi.txt"]["content"] == "line 1\nline two\nline three"
+
+
+def test_parallel_edit_file_calls_filesystem_backend(tmp_path: Path) -> None:
+    """Apply both parallel edits to the same file outside `StateBackend`."""
+    agent = create_deep_agent(
+        model=_parallel_edit_model(),
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+    )
+
+    result = agent.invoke({"messages": [HumanMessage(content="Edit file in parallel")]})
+
+    edits = [message for message in result["messages"] if isinstance(message, ToolMessage) and message.name == "edit_file"]
+    assert [message.status for message in edits] == ["success", "success"]
+    assert (tmp_path / "multi.txt").read_text() == "line 1\nline 2\nline three"
+
+
+async def test_parallel_edit_file_calls_filesystem_backend_async(tmp_path: Path) -> None:
+    """Apply both parallel edits to the same file outside `StateBackend` (async)."""
+    agent = create_deep_agent(
+        model=_parallel_edit_model(),
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+    )
+
+    result = await agent.ainvoke({"messages": [HumanMessage(content="Edit file in parallel")]})
+
+    edits = [message for message in result["messages"] if isinstance(message, ToolMessage) and message.name == "edit_file"]
+    assert [message.status for message in edits] == ["success", "success"]
+    assert (tmp_path / "multi.txt").read_text() == "line 1\nline 2\nline three"
 
 
 def test_path_traversal_returns_error_message() -> None:

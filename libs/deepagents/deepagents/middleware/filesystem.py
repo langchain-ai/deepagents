@@ -10,11 +10,12 @@ import mimetypes
 import threading
 import uuid
 import warnings
+import weakref
 from binascii import Error as BinasciiError
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Final, Literal, NotRequired, cast
+from typing import Annotated, Any, Final, Literal, NotRequired, TypeVar, cast
 
 import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
@@ -32,7 +33,7 @@ from langchain.agents.middleware.types import (
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.exceptions import ModelInvalidRequestError
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolCall, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
@@ -195,33 +196,64 @@ def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessag
     return ToolMessage(content=content, name=name, tool_call_id=tool_call_id, status="error")
 
 
-def _parallel_file_mutation_error(request: ToolCallRequest) -> ToolMessage | None:
-    """Reject later same-path file mutations in one model response."""
-    tool_call = request.tool_call
-    if tool_call["name"] not in _FILE_MUTATION_TOOLS:
-        return None
+def _mutation_path(tool_call: ToolCall) -> str | None:
+    """Return the normalized target path of a file-mutation tool call."""
     path = tool_call["args"].get("file_path")
-    if not isinstance(path, str):
+    if tool_call["name"] not in _FILE_MUTATION_TOOLS or not isinstance(path, str):
         return None
     try:
-        file_path = validate_path(path)
+        return validate_path(path)
     except ValueError:
         return None
+
+
+def _parallel_file_mutation_error(request: ToolCallRequest, file_path: str) -> ToolMessage | None:
+    """Reject later same-path file mutations in one model response."""
+    tool_call = request.tool_call
     messages = request.state.get("messages") if isinstance(request.state, Mapping) else None
     ai_message = next((message for message in reversed(messages or []) if isinstance(message, AIMessage)), None)
     for call in ai_message.tool_calls if ai_message else []:
         if call["id"] == tool_call["id"]:
             return None
-        path = call["args"].get("file_path")
-        if call["name"] not in _FILE_MUTATION_TOOLS or not isinstance(path, str):
-            continue
-        try:
-            duplicate = validate_path(path) == file_path
-        except ValueError:
-            continue
-        if duplicate:
+        if _mutation_path(call) == file_path:
             return _tool_error(tool_call["name"], tool_call["id"], "Error: parallel file mutations to the same path are not allowed.")
     return None
+
+
+_LockT = TypeVar("_LockT", threading.Lock, asyncio.Lock)
+
+
+class _PathLocks:
+    """Per-path locks that are dropped once no caller holds a reference."""
+
+    def __init__(self) -> None:
+        self._guard = threading.Lock()
+        self._locks: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
+        self._alocks: weakref.WeakValueDictionary[str, asyncio.Lock] = weakref.WeakValueDictionary()
+
+    @contextlib.contextmanager
+    def hold(self, path: str | None) -> Iterator[None]:
+        """Hold the lock for `path`, or nothing when `path` is `None`."""
+        if path is None:
+            yield
+            return
+        with self._get(self._locks, path, threading.Lock):
+            yield
+
+    @contextlib.asynccontextmanager
+    async def ahold(self, path: str | None) -> AsyncIterator[None]:
+        """Async variant of `hold`."""
+        if path is None:
+            yield
+            return
+        async with self._get(self._alocks, path, asyncio.Lock):
+            yield
+
+    def _get(self, locks: weakref.WeakValueDictionary[str, _LockT], path: str, factory: Callable[[], _LockT]) -> _LockT:
+        with self._guard:
+            if (lock := locks.get(path)) is None:
+                lock = locks[path] = factory()
+            return lock
 
 
 def _is_read_file_media_result(message: AnyMessage) -> bool:
@@ -1880,6 +1912,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         else:  # None -- user did not specify, defaults to all tools opted-in
             self._enabled_tools = None
         self._permissions = list(_permissions or [])
+        self._mutation_locks = _PathLocks()
 
         # Shared executor for enforcing GLOB_TIMEOUT on the sync glob tool.
         # Timed-out worker threads keep running until the backend call returns,
@@ -3698,9 +3731,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Tool-execution exceptions (including `ToolException`) propagate
             through this wrapper unhandled by design.
         """
-        if error := _parallel_file_mutation_error(request):
+        path = _mutation_path(request.tool_call)
+        if path is not None and _routes_to_state_backend(self.backend, path) and (error := _parallel_file_mutation_error(request, path)):
             return error
-        tool_result = handler(request)
+        with self._mutation_locks.hold(path):
+            tool_result = handler(request)
         if self._offload_binary_content and request.tool_call["name"] == "read_file":
             tool_result = _offload_tool_result(tool_result, self.backend, self._blobs_prefix, {})
 
@@ -3727,9 +3762,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             Tool-execution exceptions (including `ToolException`) propagate
                 through this wrapper unhandled by design.
         """
-        if error := _parallel_file_mutation_error(request):
+        path = _mutation_path(request.tool_call)
+        if path is not None and _routes_to_state_backend(self.backend, path) and (error := _parallel_file_mutation_error(request, path)):
             return error
-        tool_result = await handler(request)
+        async with self._mutation_locks.ahold(path):
+            tool_result = await handler(request)
         if self._offload_binary_content and request.tool_call["name"] == "read_file":
             tool_result = await _aoffload_tool_result(tool_result, self.backend, self._blobs_prefix, {})
 

@@ -995,7 +995,7 @@ async def test_whatsapp_prepares_only_authorized_envelopes(tmp_path: Path) -> No
 
     class Transport(RecordingTransport):
         async def post(self, path: str, payload: dict[str, object]) -> object:
-            if path in {"/claim", "/release"}:
+            if path == "/release":
                 return await super().post(path, payload)
             assert path == "/prepare"
             assert payload == {
@@ -1033,10 +1033,9 @@ async def test_whatsapp_prepares_only_authorized_envelopes(tmp_path: Path) -> No
     assert set(released) == {"allowed-token", "rejected-token"}
 
 
-@pytest.mark.parametrize("stage", ["claim", "dispatch"])
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_whatsapp_releases_untransferred_batch_on_interruption(
-    tmp_path: Path, stage: str, *, cancel: bool
+    tmp_path: Path, *, cancel: bool
 ) -> None:
     envelopes = [
         {
@@ -1062,8 +1061,6 @@ async def test_whatsapp_releases_untransferred_batch_on_interruption(
     class Transport(RecordingTransport):
         async def post(self, path: str, payload: dict[str, object]) -> object:
             self.posts.append((path, payload))
-            if path == "/claim" and stage == "claim":
-                await interrupt()
             if path == "/prepare":
                 return {**envelopes[int(payload["message_id"])], "preparation_token": None}
             return {"success": True}

@@ -37,7 +37,6 @@ function harness(download) {
   vm.runInContext('status = "connected";', context);
   return {
     enqueue: vm.runInContext("enqueueMessage", context),
-    queue: vm.runInContext("queue", context),
     advance(ms) { vm.runInContext(`Date.now = () => ${Date.now() + ms}`, context); },
     async request(method, url, body = {}) {
       const req = new EventEmitter();
@@ -132,48 +131,33 @@ test("envelope overload is bounded and release restores capacity without downloa
   assert.equal((await bridge.request("GET", "/messages")).payload[0].message_id, "legitimate");
 });
 
-test("explicitly claimed inputs survive the TTL while unclaimed inputs expire", async () => {
-  const bridge = harness(async () => null);
-  await bridge.enqueue(message("waiting", "queued behind transcription", true), false);
-  const [claimed] = (await bridge.request("GET", "/messages")).payload;
-  assert.equal((await bridge.request("POST", "/claim", { inputs: [claimed] })).status, 200);
-  await bridge.enqueue(message("unclaimed", "abandoned", true), false);
-  bridge.advance(180000);
-  assert.deepEqual((await bridge.request("GET", "/messages")).payload, []);
-  assert.equal((await bridge.request("POST", "/prepare", claimed)).status, 200);
-});
+for (const state of ["queued", "polled", "prepared"]) {
+  test(`expiry restores capacity after the host abandons ${state} inputs`, async () => {
+    const bridge = harness(async () => null);
+    for (let index = 0; index < 128; index += 1) {
+      await bridge.enqueue(message(String(index), "hello"), false);
+    }
+    let inputs = [];
+    if (state !== "queued") {
+      inputs = (await bridge.request("GET", "/messages")).payload;
+      assert.equal(inputs.length, 128);
+      assert.deepEqual((await bridge.request("GET", "/messages")).payload, []);
+    }
+    if (state === "prepared") {
+      for (const entry of inputs) {
+        assert.equal((await bridge.request("POST", "/prepare", entry)).status, 200);
+      }
+    }
+    bridge.advance(600001);
+    await bridge.enqueue(message("later", "still usable"), false);
+    const received = (await bridge.request("GET", "/messages")).payload;
+    assert.deepEqual(received.map((entry) => entry.message_id), ["later"]);
+    if (inputs.length) assert.equal((await bridge.request("POST", "/prepare", inputs[0])).status, 404);
+  });
+}
 
-test("a lost full poll response remains retrievable and cannot exhaust capacity permanently", async () => {
-  const bridge = harness(async () => assert.fail("unexpected download"));
-  for (let index = 0; index < 128; index += 1) {
-    await bridge.enqueue(message(String(index), "attachment", true), false);
-  }
-  const lost = await bridge.request("GET", "/messages");
-  assert.equal(lost.payload.length, 128);
-  assert.deepEqual(await bridge.request("GET", "/messages"), lost);
-  bridge.advance(3600000);
-  await bridge.enqueue(message("later", "still usable"), false);
-  const received = (await bridge.request("GET", "/messages")).payload;
-  assert.deepEqual(received.map((entry) => entry.message_id), ["later"]);
-});
-
-test("claims validate the entire batch and are idempotent", async () => {
-  const bridge = harness(async () => assert.fail("unexpected download"));
-  await bridge.enqueue(message("first", "one"), false);
-  await bridge.enqueue(message("second", "two"), false);
-  const inputs = (await bridge.request("GET", "/messages")).payload;
-  const invalid = [inputs[0], { ...inputs[1], chat_id: "wrong" }];
-  assert.equal((await bridge.request("POST", "/claim", { inputs: invalid })).status, 404);
-  assert.deepEqual((await bridge.request("GET", "/messages")).payload, inputs);
-  assert.equal((await bridge.request("POST", "/claim", { inputs })).status, 200);
-  assert.equal((await bridge.request("POST", "/claim", { inputs })).status, 200);
-  assert.deepEqual((await bridge.request("GET", "/messages")).payload, []);
-  await bridge.request("POST", "/release", { inputs });
-  assert.equal((await bridge.request("POST", "/claim", { inputs })).status, 404);
-});
-
-for (const abandoned of [4, 128]) {
-  test(`released preparations free active slots with ${abandoned} unfinished downloads`, async () => {
+for (const unfinished of [4, 128]) {
+  test(`preparation stays bounded with ${unfinished} unfinished downloads`, async () => {
     const started = [];
     const release = barrier();
     const bridge = harness(async (_page, inbound) => {
@@ -182,21 +166,25 @@ for (const abandoned of [4, 128]) {
       return null;
     });
     const requests = [];
-    for (let index = 0; index < abandoned; index += 1) {
+    const inputs = [];
+    for (let index = 0; index < unfinished; index += 1) {
       await bridge.enqueue(message(String(index), "attachment", true), false);
       const [entry] = (await bridge.request("GET", "/messages")).payload;
+      inputs.push(entry);
       requests.push(bridge.request("POST", "/prepare", entry));
       // Allow preparation to reach the blocked download before releasing ownership.
       await new Promise(setImmediate);
       assert.equal(started.length, index + 1);
-      await bridge.request("POST", "/release", { inputs: [entry] });
+      if (unfinished === 128) await bridge.request("POST", "/release", { inputs: [entry] });
     }
     await bridge.enqueue(message("later", "hello"), false);
     const [later] = (await bridge.request("GET", "/messages")).payload;
     const result = await bridge.request("POST", "/prepare", later);
-    assert.equal(result.status, abandoned === 128 ? 429 : 200);
+    assert.equal(result.status, unfinished === 128 ? 429 : 200);
+    await bridge.request("POST", "/release", { inputs });
     release.release();
     await Promise.all(requests);
+    assert.equal((await bridge.request("POST", "/prepare", inputs[0])).status, 404);
     assert.equal((await bridge.request("POST", "/prepare", later)).status, 200);
   });
 }

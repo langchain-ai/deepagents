@@ -41,12 +41,12 @@ let bridgeMediaSends = 0;
 const queue = [];
 const pendingMessages = new Map();
 const MAX_PENDING_MESSAGES = 128;
-const PREPARATION_TTL_MS = 120000;
-const preparingMessages = new Set();
+const PREPARATION_TTL_MS = 10 * 60 * 1000;
+let preparingMessages = 0;
 
 function expirePendingMessages() {
   for (const [token, pending] of pendingMessages) {
-    if (!pending.claimed && pending.expires <= Date.now()) pendingMessages.delete(token);
+    if (pending.expires <= Date.now()) pendingMessages.delete(token);
   }
   pruneQueuedMessages();
 }
@@ -54,8 +54,7 @@ function expirePendingMessages() {
 function pruneQueuedMessages() {
   for (let index = queue.length - 1; index >= 0; index -= 1) {
     const token = queue[index].preparation_token;
-    const pending = pendingMessages.get(token);
-    if (token && (!pending || pending.claimed)) queue.splice(index, 1);
+    if (token && !pendingMessages.has(token)) queue.splice(index, 1);
   }
 }
 const sentMessageIds = new Set();
@@ -635,34 +634,7 @@ async function handle(req, res) {
 
     if (req.method === "GET" && req.url === "/messages") {
       expirePendingMessages();
-      const messages = queue.slice();
-      // Token-bearing envelopes remain retrievable until the receiver claims them.
-      for (let index = queue.length - 1; index >= 0; index -= 1) {
-        if (!queue[index].preparation_token) queue.splice(index, 1);
-      }
-      sendJson(res, 200, messages);
-      return;
-    }
-
-    if (req.method === "POST" && req.url === "/claim") {
-      const body = await readJson(req);
-      expirePendingMessages();
-      if (!Array.isArray(body.inputs) || body.inputs.length > MAX_PENDING_MESSAGES) {
-        sendJson(res, 400, { error: "Invalid claim batch" });
-        return;
-      }
-      const inputs = body.inputs.map((input) => {
-        const pending = input && pendingMessages.get(input.preparation_token);
-        return pending && pending.entry.chat_id === input.chat_id && pending.entry.message_id === input.message_id
-          ? pending : null;
-      });
-      if (inputs.some((pending) => !pending)) {
-        sendJson(res, 404, { error: "Unknown or expired input" });
-        return;
-      }
-      for (const pending of inputs) pending.claimed = true;
-      pruneQueuedMessages();
-      sendJson(res, 200, { success: true });
+      sendJson(res, 200, queue.splice(0));
       return;
     }
 
@@ -696,20 +668,15 @@ async function handle(req, res) {
         sendJson(res, 404, { error: "Unknown or expired input" });
         return;
       }
-      const active = [...preparingMessages].filter(
-        (input) => pendingMessages.has(input.entry.preparation_token),
-      ).length;
-      if (!pending.preparation && (active >= 4 || preparingMessages.size >= MAX_PENDING_MESSAGES)) {
+      if (!pending.preparation && preparingMessages >= MAX_PENDING_MESSAGES) {
         sendJson(res, 429, { error: "Media preparation capacity exhausted; retry later" });
         return;
       }
-      pending.claimed = true;
-      pruneQueuedMessages();
       if (!pending.preparation) {
-        preparingMessages.add(pending);
+        preparingMessages += 1;
         pending.preparation = prepareEntry(pending)
           .catch((error) => { pending.preparation = null; throw error; })
-          .finally(() => { preparingMessages.delete(pending); });
+          .finally(() => { preparingMessages -= 1; });
       }
       sendJson(res, 200, await pending.preparation);
       return;

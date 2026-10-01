@@ -656,17 +656,6 @@ class WhatsAppChannel:
         remaining = iter(messages)
         accepted = 0
         try:
-            inputs = [
-                {
-                    "preparation_token": message.metadata["preparation_token"],
-                    "chat_id": message.conversation_id,
-                    "message_id": message.message_id,
-                }
-                for message in messages
-                if isinstance(message.metadata.get("preparation_token"), str)
-            ]
-            if inputs:
-                await self._post_result("/claim", {"inputs": inputs})
             for message in remaining:
                 accepted += await self._dispatch_message(message)
         finally:

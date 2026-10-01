@@ -180,7 +180,9 @@ async def test_guild_threads_share_history_without_sharing_context(
                 limit=20,
             )
             assert {entry["preview"] for entry in sessions} == {"first", "second", "channel"}
-            assert listed[1] == ["first"]
+            # Admitted inputs are archived before the agent runs.
+            assert listed[0] == ["first"]
+            assert set(listed[1]) == {"first", "second"}
             assert len({item["session_id"] for item in sessions}) == 3
             checkpoints = [
                 await runtime._graph.aget_state(
@@ -192,10 +194,10 @@ async def test_guild_threads_share_history_without_sharing_context(
                 sum(isinstance(message, HumanMessage) for message in state.values["messages"]) == 1
                 for state in checkpoints
             )
-            assert listed[2] == []
-            assert listed[3] == []
-            assert listed[4] == []
-            assert set(listed[5]) == {"first", "second"}
+            assert listed[2] == ["other"]
+            assert listed[3] == ["dm"]
+            assert listed[4] == ["private"]
+            assert set(listed[5]) == {"first", "second", "channel"}
             assert [chat for chat, _ in gateway.sent_text] == [
                 "thread-1",
                 "thread-2",

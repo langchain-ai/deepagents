@@ -199,6 +199,27 @@ MessageHandler = Callable[[ChannelMessage], Awaitable[None]]
 ReactionHandler = Callable[[ChannelReaction], Awaitable[None]]
 
 
+@runtime_checkable
+class DeferredMessageHandler(Protocol):
+    """Optional handler that admits envelopes before asynchronous preparation.
+
+    !!! warning "Experimental"
+        This input admission protocol may change with Talon's runtime lifecycle.
+    """
+
+    async def admit_message(
+        self,
+        message: ChannelMessage,
+        prepare: Callable[[ChannelMessage], Awaitable[ChannelMessage]],
+    ) -> None:
+        """Admit an input and take ownership of its preparation.
+
+        Args:
+            message: Authorized, unprepared channel envelope.
+            prepare: Deferred context and media preparation.
+        """
+
+
 class ChannelAdapter(Protocol):
     """Transport integration managed by the Talon host."""
 

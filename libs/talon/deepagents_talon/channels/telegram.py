@@ -701,7 +701,7 @@ class TelegramChannel:
             if self.config.pairing is not None:
                 await self.config.pairing.offer(message, self.send_message)
             return
-        message = await self._prepare_inbound_media(message)
+
         log_debug_event(
             logger,
             "telegram.inbound.message.dispatching",
@@ -709,7 +709,9 @@ class TelegramChannel:
             media_type=message.metadata.get("media_type"),
             text_chars=len(message.text),
         )
-        await dispatch_message(self._handler, message, provider="Telegram")
+        await dispatch_message(
+            self._handler, message, provider="Telegram", prepare=self._prepare_inbound_media
+        )
         log_debug_event(logger, "telegram.inbound.message.dispatched")
 
     def _admits(self, message: ChannelMessage) -> bool:

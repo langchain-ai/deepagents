@@ -233,8 +233,27 @@ class _BackgroundRoute:
 @dataclass(slots=True)
 class _PendingInput:
     message: ChannelMessage
+    prepare: Callable[[ChannelMessage], Awaitable[ChannelMessage]] | None
     identity: str = field(default_factory=lambda: str(uuid.uuid4()))
     task: asyncio.Task[ChannelMessage] | None = None
+
+
+@dataclass
+class _HostMessageHandler:
+    host: TalonHost
+    channel: ChannelAdapter
+
+    async def __call__(self, message: ChannelMessage) -> None:
+        await self.host.receive_message(self.channel, message)
+
+    async def admit_message(
+        self,
+        message: ChannelMessage,
+        prepare: Callable[[ChannelMessage], Awaitable[ChannelMessage]],
+    ) -> None:
+        await self.host._admit_input(  # noqa: SLF001  # Same-module host callback adapter.
+            self.channel, _PendingInput(message, prepare)
+        )
 
 
 @dataclass(slots=True)
@@ -464,7 +483,7 @@ class TalonHost:
 
     def _bind_channel(self, channel: ChannelAdapter) -> None:
         channel.set_message_handler(
-            lambda message, current=channel: self.receive_message(current, message),
+            _HostMessageHandler(self, channel),
         )
         if isinstance(channel, ReactionChannelAdapter):
             channel.set_reaction_handler(
@@ -513,7 +532,10 @@ class TalonHost:
             channel: Channel that delivered the message.
             message: Inbound message to process.
         """
-        item = _PendingInput(message)
+        await self._admit_input(channel, _PendingInput(message, None))
+
+    async def _admit_input(self, channel: ChannelAdapter, item: _PendingInput) -> None:
+        message = item.message
         provider = await _channel_provider(channel)
         command = _command_name(message.text)
         channel_conversation_id = message.conversation_id
@@ -990,6 +1012,8 @@ class TalonHost:
 
     async def _prepare_input(self, pending: _PendingInput) -> ChannelMessage:
         message = pending.message
+        if pending.prepare is not None:
+            message = await pending.prepare(message)
         message = await transcribe_voice_message(self.voice_transcriber, message)
         return _prepare_inbound_message(message)
 

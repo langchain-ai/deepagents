@@ -10,6 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 
+from deepagents_talon.channels.base import dispatch_message
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, ChannelMessage
@@ -28,15 +29,16 @@ def make_host(tmp_path: Path) -> tuple[TalonHost, RecordingChannel, ArchiveAgent
     return TalonHost(config=config, agent=agent, channels=[channel]), channel, agent
 
 
+@pytest.mark.parametrize("deferred", [False, True])
 @pytest.mark.parametrize("command", ["/stop", "/new", "/reset-all-history"])
 async def test_control_invalidates_preparing_input(
-    tmp_path: Path, command: str, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, command: str, monkeypatch: pytest.MonkeyPatch, *, deferred: bool
 ) -> None:
     monkeypatch.setattr("deepagents_talon.host._MAX_CONVERSATION_INPUTS", 1)
     host, channel, agent = make_host(tmp_path)
     entered, release, finished = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
-    async def prepare(_transcriber: object, message: ChannelMessage) -> ChannelMessage:
+    async def prepare(message: ChannelMessage) -> ChannelMessage:
         if message.text != "older attachment":
             return message
 
@@ -49,10 +51,19 @@ async def test_control_invalidates_preparing_input(
         finished.set()
         return message
 
-    monkeypatch.setattr("deepagents_talon.host.transcribe_voice_message", prepare)
+    if not deferred:
+        monkeypatch.setattr(
+            "deepagents_talon.host.transcribe_voice_message",
+            lambda _transcriber, message: prepare(message),
+        )
     await host.start()
     try:
-        await channel.receive("older attachment")
+        await dispatch_message(
+            channel.handler,
+            ChannelMessage("chat", "older attachment"),
+            provider="test",
+            prepare=prepare if deferred else None,
+        )
         await entered.wait()
         await channel.receive("independent", conversation_id="other")
         await _wait_for_request(agent, "independent")
@@ -69,15 +80,16 @@ async def test_control_invalidates_preparing_input(
         await host.stop()
 
 
+@pytest.mark.parametrize("deferred", [False, True])
 @pytest.mark.parametrize("stalled", [False, True])
 async def test_replacement_preserves_input_order(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, stalled: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, stalled: bool, deferred: bool
 ) -> None:
     host, channel, agent = make_host(tmp_path)
     entered, release = asyncio.Event(), asyncio.Event()
     calls = 0
 
-    async def prepare(_transcriber: object, message: ChannelMessage) -> ChannelMessage:
+    async def prepare(message: ChannelMessage) -> ChannelMessage:
         nonlocal calls
         if message.text != "Only work in staging.":
             return message
@@ -86,10 +98,19 @@ async def test_replacement_preserves_input_order(
         await release.wait()
         return message
 
-    monkeypatch.setattr("deepagents_talon.host.transcribe_voice_message", prepare)
+    if not deferred:
+        monkeypatch.setattr(
+            "deepagents_talon.host.transcribe_voice_message",
+            lambda _transcriber, message: prepare(message),
+        )
     await host.start()
     try:
-        await channel.receive("Only work in staging.")
+        await dispatch_message(
+            channel.handler,
+            ChannelMessage("chat", "Only work in staging."),
+            provider="test",
+            prepare=prepare if deferred else None,
+        )
         if stalled:
             await entered.wait()
         await channel.receive("Now run cleanup.")

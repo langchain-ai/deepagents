@@ -945,35 +945,38 @@ class SlackChannel:
             if self.config.pairing is not None:
                 await self._offer_pairing(message, inbound)
             return
-        if not inbound.is_dm and inbound.thread_ts:
-            try:
-                replies = await self._gateway.thread_context(
-                    inbound.channel_id, inbound.thread_ts, inbound.ts
-                )
-                senders = self._exposure.operator_ids | self.config.allowed_user_ids
-                context = "\n".join(
-                    f"{sender}: {text}"
-                    for sender, text in replies
-                    if sender in senders and not _contains_oauth_callback(text)
-                )
-            except (SlackApiError, OSError, TimeoutError, ValueError):
-                logger.warning("Could not read Slack thread context", exc_info=True)
-                context = "[Slack thread history unavailable; ask for context before acting.]"
-            if context:
-                message = ChannelMessage(
-                    conversation_id=message.conversation_id,
-                    text=message.text,
-                    sender_id=message.sender_id,
-                    message_id=message.message_id,
-                    metadata={**message.metadata, "slack_thread_context": context},
-                )
-        message = await self._prepare_inbound_media(message, inbound.files)
+
+        async def prepare(message: ChannelMessage) -> ChannelMessage:
+            if not inbound.is_dm and inbound.thread_ts:
+                try:
+                    replies = await self._gateway.thread_context(
+                        inbound.channel_id, inbound.thread_ts, inbound.ts
+                    )
+                    senders = self._exposure.operator_ids | self.config.allowed_user_ids
+                    context = "\n".join(
+                        f"{sender}: {text}"
+                        for sender, text in replies
+                        if sender in senders and not _contains_oauth_callback(text)
+                    )
+                except (SlackApiError, OSError, TimeoutError, ValueError):
+                    logger.warning("Could not read Slack thread context", exc_info=True)
+                    context = "[Slack thread history unavailable; ask for context before acting.]"
+                if context:
+                    message = ChannelMessage(
+                        conversation_id=message.conversation_id,
+                        text=message.text,
+                        sender_id=message.sender_id,
+                        message_id=message.message_id,
+                        metadata={**message.metadata, "slack_thread_context": context},
+                    )
+            return await self._prepare_inbound_media(message, inbound.files)
+
         log_debug_event(
             logger,
             "slack.inbound.message.dispatching",
             has_media=bool(message.metadata.get("has_media")),
         )
-        await dispatch_message(self._handler, message, provider="Slack")
+        await dispatch_message(self._handler, message, provider="Slack", prepare=prepare)
         log_debug_event(logger, "slack.inbound.message.dispatched")
 
     async def _offer_pairing(self, message: ChannelMessage, inbound: _SlackInboundMessage) -> None:

@@ -4,18 +4,16 @@
 
 ## [0.1.80](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.79...deepagents-code==0.1.80) (2026-10-01)
 
-
 ### Features
 
-* **code:** emit a `cache_expiring` hook before prompt-cache expiry ([#6638](https://github.com/langchain-ai/deepagents/issues/6638)) ([30975d0](https://github.com/langchain-ai/deepagents/commit/30975d02b9a18e5d6c1dede8bf02313cc024ea70))
-
+- Emit a `cache_expiring` hook before the prompt cache expires ([#6638](https://github.com/langchain-ai/deepagents/pull/6638)).
 
 ### Bug Fixes
 
-* **code:** fix product and command names in skill guides ([#6637](https://github.com/langchain-ai/deepagents/issues/6637)) ([cc95cc8](https://github.com/langchain-ai/deepagents/commit/cc95cc8f0e7e51b44d416ceaafd67a6a4fdefeee))
-* **code:** preserve transcript position when opening pickers ([#6635](https://github.com/langchain-ai/deepagents/issues/6635)) ([8508cb9](https://github.com/langchain-ai/deepagents/commit/8508cb9329a92ccf93fbace8fa78670a39fc3371))
-* **code:** share cache-expiring notifications with the TUI ([#6639](https://github.com/langchain-ai/deepagents/issues/6639)) ([e1940f5](https://github.com/langchain-ai/deepagents/commit/e1940f5f86ed37f4a19a970707aab61343e07e2a))
-* **code:** use listed skill paths instead of inferring locations ([#6711](https://github.com/langchain-ai/deepagents/issues/6711)) ([1342568](https://github.com/langchain-ai/deepagents/commit/13425688e6a8e8508b1905dba5330c38032520e3))
+- Keep the transcript at its current position when opening pickers ([#6635](https://github.com/langchain-ai/deepagents/pull/6635)).
+- Share cache-expiring notifications with the TUI ([#6639](https://github.com/langchain-ai/deepagents/pull/6639)).
+- Use listed skill paths instead of inferring their locations ([#6711](https://github.com/langchain-ai/deepagents/pull/6711)).
+- Correct product and command names in skill guides ([#6637](https://github.com/langchain-ai/deepagents/pull/6637)).
 
 ## [0.1.79](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.78...deepagents-code==0.1.79) (2026-09-29)
 

@@ -1620,7 +1620,13 @@ def _positive_int(value: str) -> int:
 
 
 def _same_origin_scope(left: CronOrigin, right: CronOrigin) -> bool:
-    return left.conversation_id == right.conversation_id and left.channel == right.channel
+    return left.channel == right.channel and _origin_scope(left) == _origin_scope(right)
+
+
+def _origin_scope(origin: CronOrigin) -> str:
+    if origin.channel == "slack" and origin.conversation_id.startswith(("C", "G")):
+        return origin.conversation_id.split(":", maxsplit=1)[0]
+    return origin.conversation_id
 
 
 def _coerce_utc(value: datetime | None = None) -> datetime:

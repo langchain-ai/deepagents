@@ -46,7 +46,7 @@ let preparingMessages = 0;
 
 function expirePendingMessages() {
   for (const [token, pending] of pendingMessages) {
-    if (pending.expires <= Date.now()) pendingMessages.delete(token);
+    if (!pending.claimed && pending.expires <= Date.now()) pendingMessages.delete(token);
   }
 }
 const sentMessageIds = new Set();
@@ -626,7 +626,30 @@ async function handle(req, res) {
 
     if (req.method === "GET" && req.url === "/messages") {
       expirePendingMessages();
-      sendJson(res, 200, queue.splice(0, queue.length));
+      const messages = queue.splice(0, queue.length).filter((entry) => {
+        if (!entry.preparation_token) return true;
+        const pending = pendingMessages.get(entry.preparation_token);
+        if (!pending) return false;
+        pending.claimed = true;
+        return true;
+      });
+      sendJson(res, 200, messages);
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/release") {
+      const body = await readJson(req);
+      if (!Array.isArray(body.inputs) || body.inputs.length > MAX_PENDING_MESSAGES) {
+        sendJson(res, 400, { error: "Invalid release batch" });
+        return;
+      }
+      for (const input of body.inputs) {
+        const pending = pendingMessages.get(input.preparation_token);
+        if (pending && pending.entry.chat_id === input.chat_id && pending.entry.message_id === input.message_id) {
+          pendingMessages.delete(input.preparation_token);
+        }
+      }
+      sendJson(res, 200, { success: true });
       return;
     }
 
@@ -643,17 +666,18 @@ async function handle(req, res) {
         sendJson(res, 404, { error: "Unknown or expired input" });
         return;
       }
-      if (preparingMessages >= 4) {
+      if (!pending.preparation && preparingMessages >= 4) {
         sendJson(res, 429, { error: "Media preparation capacity exhausted; retry later" });
         return;
       }
-      pendingMessages.delete(body.preparation_token);
-      preparingMessages += 1;
-      try {
-        sendJson(res, 200, await prepareEntry(pending));
-      } finally {
-        preparingMessages -= 1;
+      pending.claimed = true;
+      if (!pending.preparation) {
+        preparingMessages += 1;
+        pending.preparation = prepareEntry(pending)
+          .catch((error) => { pending.preparation = null; throw error; })
+          .finally(() => { preparingMessages -= 1; });
       }
+      sendJson(res, 200, await pending.preparation);
       return;
     }
 

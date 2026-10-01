@@ -38,6 +38,7 @@ function harness(download) {
   return {
     enqueue: vm.runInContext("enqueueMessage", context),
     queue: vm.runInContext("queue", context),
+    advance(ms) { vm.runInContext(`Date.now = () => ${Date.now() + ms}`, context); },
     async request(method, url, body = {}) {
       const req = new EventEmitter();
       Object.assign(req, { method, url, headers: { authorization: "Bearer test" } });
@@ -87,7 +88,7 @@ test("envelopes are ordered before downloads and stop is available during stalle
   assert.deepEqual((await bridge.request("GET", "/messages")).payload, []);
 });
 
-test("deferred requests must match the admitted conversation and are single use", async () => {
+test("deferred requests validate identity and remain retryable until release", async () => {
   let downloads = 0;
   const bridge = harness(async () => { downloads += 1; return null; });
   await bridge.enqueue(message("older", "attachment", true), false);
@@ -95,8 +96,12 @@ test("deferred requests must match the admitted conversation and are single use"
   assert.equal((await bridge.request("POST", "/prepare", { ...entry, chat_id: "wrong" })).status, 404);
   assert.equal(downloads, 0);
   assert.equal((await bridge.request("POST", "/prepare", entry)).status, 200);
-  assert.equal((await bridge.request("POST", "/prepare", entry)).status, 404);
+  assert.equal((await bridge.request("POST", "/prepare", entry)).status, 200);
   assert.equal(downloads, 1);
+  await bridge.request("POST", "/release", { inputs: [{ ...entry, chat_id: "wrong" }] });
+  assert.equal((await bridge.request("POST", "/prepare", entry)).status, 200);
+  await bridge.request("POST", "/release", { inputs: [entry] });
+  assert.equal((await bridge.request("POST", "/prepare", entry)).status, 404);
 });
 
 test("envelope overload is bounded before media or context work starts", async () => {
@@ -105,4 +110,51 @@ test("envelope overload is bounded before media or context work starts", async (
     await bridge.enqueue(message(String(index), "attachment", true), false);
   }
   assert.equal(bridge.queue.length, 128);
+});
+
+test("concurrent retries share preparation even after the original response is lost", async () => {
+  const entered = barrier();
+  const release = barrier();
+  let downloads = 0;
+  const bridge = harness(async () => {
+    downloads += 1;
+    entered.release();
+    await release.promise;
+    return { data: Buffer.from("test").toString("base64"), mimetype: "image/png" };
+  });
+  await bridge.enqueue(message("slow", "attachment", true), false);
+  const [entry] = (await bridge.request("GET", "/messages")).payload;
+  const lost = bridge.request("POST", "/prepare", entry);
+  await entered.promise;
+  bridge.advance(180000);
+  const retry = bridge.request("POST", "/prepare", entry);
+  release.release();
+  await lost;
+  const result = await retry;
+  assert.equal(result.status, 200);
+  assert.equal(result.payload.media_paths.length, 1);
+  assert.deepEqual(await bridge.request("POST", "/prepare", entry), result);
+  assert.equal(downloads, 1);
+});
+
+test("releasing rejected envelopes restores capacity without downloading media", async () => {
+  const bridge = harness(async () => assert.fail("unexpected download"));
+  for (let index = 0; index < 128; index += 1) {
+    await bridge.enqueue(message(String(index), "rejected", true), false);
+  }
+  const inputs = (await bridge.request("GET", "/messages")).payload;
+  assert.equal((await bridge.request("POST", "/release", { inputs })).status, 200);
+  assert.equal((await bridge.request("POST", "/release", { inputs })).status, 200);
+  await bridge.enqueue(message("legitimate", "hello"), false);
+  assert.equal((await bridge.request("GET", "/messages")).payload[0].message_id, "legitimate");
+});
+
+test("delivered inputs survive the TTL while unclaimed inputs expire", async () => {
+  const bridge = harness(async () => null);
+  await bridge.enqueue(message("waiting", "queued behind transcription", true), false);
+  const [claimed] = (await bridge.request("GET", "/messages")).payload;
+  await bridge.enqueue(message("unclaimed", "abandoned", true), false);
+  bridge.advance(180000);
+  assert.deepEqual((await bridge.request("GET", "/messages")).payload, []);
+  assert.equal((await bridge.request("POST", "/prepare", claimed)).status, 200);
 });

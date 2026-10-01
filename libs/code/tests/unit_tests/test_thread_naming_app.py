@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-from textual.widgets import Input
+from textual.widgets import Input, Static
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.model_config import ThreadConfig
@@ -446,9 +446,10 @@ async def test_auto_name_refreshes_open_thread_selector(
         selector = ThreadSelectorScreen(filter_cwd=None)
         naming_app.push_screen(selector)
         await pilot.pause()
-        assert selector._threads[0].get("thread_name") is None
+        name_cell = "ThreadOption .thread-cell-thread_name"
+        assert str(selector.query_one(name_cell, Static).render()) == ""
         await naming_app._generate_thread_name(
             "original", "provider:chat", automatic=True
         )
         await pilot.pause()
-        assert selector._threads[0]["thread_name"] == "Cache repair"
+        assert str(selector.query_one(name_cell, Static).render()) == "Cache repair"

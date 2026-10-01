@@ -325,11 +325,6 @@ class TestThreadSelectorNavigateAndSelect:
 class TestThreadNames:
     """Named threads remain distinct from initial prompts and searchable."""
 
-    @pytest.mark.parametrize("name", [None, "", "Fix login"])
-    def test_name_cell_does_not_fall_back_to_prompt(self, name: str | None) -> None:
-        thread: ThreadInfo = {**MOCK_THREADS[0], "thread_name": name}
-        assert _format_column_value(thread, "thread_name") == (name or "")
-
     async def test_filter_finds_name_and_renders_literal_markup(self) -> None:
         threads: list[ThreadInfo] = [
             {**MOCK_THREADS[0], "thread_name": "[bold]Login[/bold]"},
@@ -354,15 +349,6 @@ class TestThreadNames:
                 assert [t["thread_id"] for t in screen._filtered_threads] == [
                     "abc12345"
                 ]
-
-    def test_rename_refreshes_cached_cell_without_a_new_checkpoint(self) -> None:
-        with _patch_columns():
-            screen = ThreadSelectorScreen(filter_cwd=None)
-        screen._filtered_threads = [{**MOCK_THREADS[0], "thread_name": "Before"}]
-        screen._compute_column_widths()
-        screen._filtered_threads[0]["thread_name"] = "After"
-        screen._compute_column_widths()
-        assert screen._cell_text["abc12345", "thread_name"] == "After"
 
 
 class TestThreadSelectorTabSort:

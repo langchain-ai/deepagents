@@ -12,6 +12,7 @@ import logging
 import os
 import signal
 import tempfile
+import uuid
 from collections import defaultdict
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -230,6 +231,13 @@ class _BackgroundRoute:
 
 
 @dataclass(slots=True)
+class _PendingInput:
+    message: ChannelMessage
+    identity: str = field(default_factory=lambda: str(uuid.uuid4()))
+    task: asyncio.Task[ChannelMessage] | None = None
+
+
+@dataclass(slots=True)
 class _PendingToolApproval:
     future: asyncio.Future[ToolApprovalDecision]
     provider: str
@@ -268,6 +276,10 @@ class _ReactionAudit:
     resolution: str
 
 
+_MAX_CONVERSATION_INPUTS = 64
+_MAX_PENDING_INPUTS = 1024
+
+
 class TalonHost:
     """Long-running process host for one Talon assistant.
 
@@ -300,6 +312,8 @@ class TalonHost:
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
         self._generations: defaultdict[str, int] = defaultdict(int)
         self._blocked: set[str] = set()
+        self._pending_inputs: dict[str, list[_PendingInput]] = {}
+        self._preparations: set[asyncio.Task[ChannelMessage]] = set()
         self._conversation_resets = _load_conversation_resets(config.conversation_state_path)
         self._model_selections = _load_model_selections(config.model_state_path)
         self._smart_model_override = _load_smart_model_override(config.smart_model_state_path)
@@ -361,6 +375,7 @@ class TalonHost:
             (task is not None and not task.done())
             or conversation_id in self._conversation_tasks
             or conversation_id in self._blocked
+            or conversation_id in self._pending_inputs
             or conversation_id in self._background_routes
             or conversation_id in self._pending_tool_approvals
             or conversation_id in self._pending_authorizations
@@ -498,6 +513,7 @@ class TalonHost:
             channel: Channel that delivered the message.
             message: Inbound message to process.
         """
+        item = _PendingInput(message)
         provider = await _channel_provider(channel)
         command = _command_name(message.text)
         channel_conversation_id = message.conversation_id
@@ -538,6 +554,20 @@ class TalonHost:
                 ):
                     return
 
+                pending_inputs = self._pending_inputs.get(agent_conversation_id, [])
+                if (
+                    len(pending_inputs) >= _MAX_CONVERSATION_INPUTS
+                    or sum(map(len, self._pending_inputs.values())) >= _MAX_PENDING_INPUTS
+                    or len(self._preparations) >= _MAX_PENDING_INPUTS
+                    or agent_conversation_id in self._blocked
+                ):
+                    await channel.send_message(
+                        message.conversation_id,
+                        "Input was not accepted: pending work is full or blocked. "
+                        "Use /stop or retry after the current turn finishes.",
+                    )
+                    return
+                self._pending_inputs.setdefault(agent_conversation_id, []).append(item)
                 await self._replace_agent_turn(
                     _BackgroundRoute(
                         channel=channel,
@@ -958,6 +988,51 @@ class TalonHost:
         self._background_retries[owner] = _BackgroundRetry(attempts, now + delay)
         return True
 
+    async def _prepare_input(self, pending: _PendingInput) -> ChannelMessage:
+        message = pending.message
+        message = await transcribe_voice_message(self.voice_transcriber, message)
+        return _prepare_inbound_message(message)
+
+    async def _prepare_inputs(
+        self,
+        conversation_id: str,
+    ) -> tuple[list[_PendingInput], list[ChannelMessage]]:
+        pending = list(self._pending_inputs.get(conversation_id, ()))
+        messages = []
+        for item in pending:
+            if item.task is None:
+                item.task = asyncio.create_task(self._prepare_input(item))
+                self._preparations.add(item.task)
+                item.task.add_done_callback(self._finish_preparation)
+            try:
+                messages.append(await asyncio.shield(item.task))
+            except Exception:
+                item.task = None
+                raise
+        return pending, messages
+
+    def _discard_inputs(self, conversation_id: str) -> None:
+        for pending in self._pending_inputs.pop(conversation_id, ()):
+            if pending.task is not None:
+                pending.task.cancel()
+
+    def _finish_preparation(self, task: asyncio.Task[ChannelMessage]) -> None:
+        self._preparations.discard(task)
+        if not task.cancelled():
+            task.exception()
+
+    def _finish_inputs(self, conversation_id: str, pending: list[_PendingInput]) -> None:
+        identities = {item.identity for item in pending}
+        remaining = [
+            item
+            for item in self._pending_inputs.get(conversation_id, ())
+            if item.identity not in identities
+        ]
+        if remaining:
+            self._pending_inputs[conversation_id] = remaining
+        else:
+            self._pending_inputs.pop(conversation_id, None)
+
     async def _run_agent_turn(
         self,
         route: _BackgroundRoute,
@@ -966,9 +1041,32 @@ class TalonHost:
         channel = route.channel
         agent_conversation_id = turn.conversation_id
         message = route.message
-        if not route.metadata.get("background_delivery"):
-            message = await transcribe_voice_message(self.voice_transcriber, message)
-        message = _prepare_inbound_message(message)
+        try:
+            pending, messages = await self._prepare_inputs(agent_conversation_id)
+        except Exception:
+            logger.exception("Input preparation failed for %s", agent_conversation_id)
+            await channel.send_message(
+                message.conversation_id,
+                "Input preparation failed. Your pending inputs are retained; "
+                "send another message to retry, or /stop to discard them.",
+            )
+            return
+        await self._run_prepared_turn(route, turn, pending, messages)
+
+    async def _run_prepared_turn(
+        self,
+        route: _BackgroundRoute,
+        turn: _Turn,
+        pending: list[_PendingInput],
+        messages: list[ChannelMessage],
+    ) -> None:
+        channel = route.channel
+        agent_conversation_id = turn.conversation_id
+        message = route.message
+        if messages:
+            message = replace(messages[-1], text="\n\n".join(item.text for item in messages))
+        else:
+            message = _prepare_inbound_message(message)
         metadata: dict[str, object] = {
             "channel": turn.provider,
             "sender_id": message.sender_id,
@@ -992,6 +1090,8 @@ class TalonHost:
         content = build_model_content(message.text, dict(message.metadata))
         if content != message.text:
             metadata["model_content"] = content
+
+        _set_input_metadata(metadata, pending, messages)
 
         operator = not unattended and _is_operator(channel, route.message)
 
@@ -1050,7 +1150,9 @@ class TalonHost:
                 tool_approval_operator=operator,
                 message_handler=message_handler,
                 model=turn.model,
+                inputs_committed=lambda: self._finish_inputs(agent_conversation_id, pending),
             )
+            self._finish_inputs(agent_conversation_id, pending)
             suppress_result = agent_conversation_id in self._terminal_authorizations
         except Exception:  # noqa: BLE001  # _invoke_agent logged the traceback for operators
             result = AgentResult(text=_AGENT_FAILURE_MESSAGE)
@@ -1278,6 +1380,7 @@ class TalonHost:
         tool_approval_operator: bool = False,
         message_handler: ProgressMessageHandler | None = None,
         model: str | None = None,
+        inputs_committed: Callable[[], None] | None = None,
     ) -> AgentResult:
         metadata = {
             **metadata,
@@ -1301,6 +1404,7 @@ class TalonHost:
                         authorization_handler=authorization_handler,
                         message_handler=message_handler,
                         model=model,
+                        inputs_committed=inputs_committed,
                     ),
                 )
         except asyncio.CancelledError:
@@ -1427,6 +1531,7 @@ class TalonHost:
         await send_with_retry(lambda: channel.send_message(target_conversation_id, message))
 
     async def _cancel_conversation_tasks(self, conversation_id: str) -> _CancelOutcome:
+        self._discard_inputs(conversation_id)
         task = self._tasks.get(conversation_id)
         outcome = _CancelOutcome.NONE
         if task is not None and not task.done():
@@ -1526,10 +1631,13 @@ class TalonHost:
         return _conversation_key(channel_key, conversation_id)
 
     async def _cancel_all(self) -> None:
+        for conversation_id in list(self._pending_inputs):
+            self._discard_inputs(conversation_id)
         tasks = {
             task
             for task in [
                 *self._tasks.values(),
+                *self._preparations,
                 *(task for tasks in self._conversation_tasks.values() for task in tasks),
             ]
             if not task.done()
@@ -2456,3 +2564,22 @@ def _log_tool_approval_reaction(
 
 def _approval_log_raw_ids(env: Mapping[str, str]) -> bool:
     return env.get(_APPROVAL_LOG_RAW_IDS_ENV, "").lower() == "true"
+
+
+def _set_input_metadata(
+    metadata: dict[str, object],
+    pending: list[_PendingInput],
+    messages: list[ChannelMessage],
+) -> None:
+    # Only the host supplies these identities; never trust channel metadata.
+    metadata.pop("talon_inputs", None)
+    if pending:
+        metadata["talon_inputs"] = [
+            {
+                "role": "user",
+                "id": item.identity,
+                "content": build_model_content(prepared.text, dict(prepared.metadata)),
+                "additional_kwargs": {"talon_history_source": "user"},
+            }
+            for item, prepared in zip(pending, messages, strict=True)
+        ]

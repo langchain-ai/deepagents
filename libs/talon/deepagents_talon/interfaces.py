@@ -138,6 +138,8 @@ class AgentRequest:
         message_handler: Optional callback for progress updates to the originating chat.
         authorization_handler: Optional callback used for authorization events
             that must be handled outside model context.
+        inputs_committed: Optional notification after all admitted inputs in this
+            request have been durably checkpointed.
         model: `provider:model` spec the conversation selected with `/model`, or
             `None` for the runtime's default. Set only by the host, never from
             channel metadata.
@@ -160,6 +162,12 @@ class AgentRequest:
     )
 
     message_handler: ProgressMessageHandler | None = field(
+        default=None,
+        kw_only=True,
+        repr=False,
+        compare=False,
+    )
+    inputs_committed: Callable[[], None] | None = field(
         default=None,
         kw_only=True,
         repr=False,

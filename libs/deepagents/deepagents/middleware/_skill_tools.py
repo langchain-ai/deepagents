@@ -226,9 +226,8 @@ def _plan_disclosure(
 ) -> _Disclosure:
     """Classify what each read skill's include names produce, anchoring each tool at the earliest read producing it.
 
-    An include name matching a request tool exactly is claimed by it. Any other
-    produces what the resolver returned for it (`resolved`), and each returned
-    tool is classified by name against the request's tools.
+    An include name that matches a request tool's name produces that tool. Any
+    other produces what the resolver returned for it (`resolved`).
     """
     disclosure = _Disclosure()
     present = {_tool_name(t): t for t in request_tools}
@@ -253,11 +252,12 @@ def _classify(
 ) -> None:
     """Add `tool`, produced by `include_name` at read `index`, unless an earlier read already did.
 
-    A request tool of the same name stands for `tool`, even when it's a
-    different object: outer middleware such as tool search binds copies, and
-    the tools node runs the request's tool whichever object the resolver
-    returned. A provider-native dict can only be a request tool claiming its
-    own name, which the model already sees.
+    If the request already has a tool with this name, that tool wins, because
+    it's the one that runs. A deferred one is disclosed early. Any other adds
+    nothing, since the model already sees it.
+
+    Tools are matched by name, not by object, because outer middleware such as
+    tool search can replace the request's tools with copies.
     """
     if not isinstance(tool, BaseTool) or tool.name in disclosure.anchors:
         return

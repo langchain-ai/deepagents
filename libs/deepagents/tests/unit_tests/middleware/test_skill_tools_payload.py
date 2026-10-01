@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
-from langchain.agents.middleware import ModelFallbackMiddleware, ProviderToolSearchMiddleware
+from langchain.agents.middleware import ModelFallbackMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain_anthropic.chat_models import _supports_mid_conversation_system_messages
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, tool
@@ -50,6 +51,7 @@ from tests.unit_tests.middleware.skill_tools_support import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
     from pathlib import Path
 
     from langchain_core.language_models import BaseChatModel
@@ -515,22 +517,35 @@ def test_resolver_returning_a_deferred_request_tool_discloses_it_inline_and_keep
     assert _disclosed_names("anthropic", stub.bodies[1]) == ["search_tickets"]
 
 
+class _CopiesRequestTools(AgentMiddleware):
+    """Binds a copy of every request tool, as tool search does for deferred tools."""
+
+    @staticmethod
+    def _copied(request: ModelRequest) -> ModelRequest:
+        return request.override(tools=[t.model_copy() if isinstance(t, BaseTool) else t for t in request.tools])
+
+    def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+        return handler(self._copied(request))
+
+    async def awrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]) -> ModelResponse:
+        return await handler(self._copied(request))
+
+
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
-def test_resolver_returning_a_deferred_tool_that_tool_search_copied_discloses_it(
+def test_resolver_returning_a_deferred_tool_that_outer_middleware_copied_discloses_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: str
 ) -> None:
     write_skill(tmp_path, "linear", "support")
     model, stub = _stub(provider, monkeypatch, [[read("r1", path=LINEAR_PATH)], "done"])
     resolver = RecordingResolver({"support": [search_tickets]})
-    # Tool search binds a copy of each deferred tool, so the request never holds `search_tickets` itself.
-    middleware = [ProviderToolSearchMiddleware()]
+    middleware = [_CopiesRequestTools()]
     agent = skills_agent(tmp_path, model, tools=[search_tickets], skill_tools=resolver, middleware=middleware, checkpointer=InMemorySaver())
-    config: RunnableConfig = {"configurable": {"thread_id": "tool-search-copy"}}
+    config: RunnableConfig = {"configurable": {"thread_id": "copied-tool"}}
 
     invoke(agent, {"messages": [HumanMessage("go")]}, mode, config)
 
     assert _disclosed_names(provider, stub.bodies[1]) == ["search_tickets"]
-    # Disclosed as the deferred tool it is, never gated.
+    # Disclosed as a deferred tool, so never gated.
     assert disclosed_skill_tool_names(agent.get_state(config).values) == frozenset()
 
 

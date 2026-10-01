@@ -261,7 +261,10 @@ async function enqueueMessage(message, fromSelf) {
   expirePendingMessages();
   const control = /^\/(?:stop|new|reset-all-history)(?:\s|$)/i.test(message.body || "");
   const queueLimit = MAX_PENDING_MESSAGES + (control ? 16 : 0);
-  const pendingCount = pendingMessages.size + activePreparations.size;
+  let pendingCount = activePreparations.size;
+  for (const pending of pendingMessages.values()) {
+    if (!pending.completed) pendingCount += 1;
+  }
   if (queue.length >= queueLimit || (!control && pendingCount >= MAX_PENDING_MESSAGES)) {
     console.error("WhatsApp input not accepted: pending envelope capacity exhausted");
     return;

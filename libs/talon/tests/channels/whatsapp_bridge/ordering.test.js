@@ -126,6 +126,27 @@ test("envelope overload is bounded before media or context work starts", async (
 
 const inertMedia = { data: Buffer.from("test").toString("base64"), mimetype: "image/png" };
 
+test("completed attachments release admission capacity but remain discardable", async () => {
+  const bridge = harness(async () => inertMedia);
+  let completed;
+  for (let index = 0; index < 128; index++) {
+    await bridge.enqueue(message(String(index), "", true), false);
+    [completed] = (await bridge.request("GET", "/messages")).payload;
+    assert.equal((await bridge.request("POST", "/prepare", completed)).status, 200);
+  }
+  assert.equal(bridge.files.size, 128);
+  for (let index = 0; index < 128; index++) {
+    await bridge.enqueue(message(`text-${index}`, "hello"), false);
+    const entries = (await bridge.request("GET", "/messages")).payload;
+    assert.deepEqual(entries.map((entry) => entry.message_id), [`text-${index}`]);
+  }
+  await bridge.enqueue(message("overflow", "hello"), false);
+  assert.deepEqual((await bridge.request("GET", "/messages")).payload, []);
+  assert.equal((await bridge.request("POST", "/prepare", completed)).status, 404);
+  await bridge.request("POST", "/discard", completed);
+  assert.equal(bridge.files.size, 127);
+});
+
 test("discard prevents downloads and releases pending capacity", async () => {
   const bridge = harness(async () => assert.fail("unexpected download"));
   for (let index = 0; index < 128; index++) await bridge.enqueue(message(String(index), "", true), false);

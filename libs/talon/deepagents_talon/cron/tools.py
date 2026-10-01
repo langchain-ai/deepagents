@@ -96,7 +96,7 @@ Returns:
 
 
 class CronTools:
-    """Conversation-scoped tools for managing cron jobs.
+    """Tools scoped to Slack channels, public Discord parent channels, or conversations.
 
     Args:
         store: Persistent job store.
@@ -250,7 +250,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
 
     @tool
     def list_jobs() -> list[dict[str, Any]] | dict[str, str]:
-        """List scheduled jobs created from this conversation.
+        """List jobs in this Slack/public Discord channel, or this private conversation.
 
         Returns:
             Scoped job details, or an error dictionary when no origin is active.

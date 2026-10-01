@@ -129,6 +129,78 @@ def test_tools_are_scoped_to_current_conversation(tmp_path) -> None:
         tools.remove_job(other_job.id)
 
 
+@pytest.mark.parametrize(
+    ("origin", "viewer"),
+    [
+        (CronOrigin("C1:1.0", "slack"), CronOrigin("C1:2.0", "slack")),
+        (CronOrigin("C1:1.0", "slack"), CronOrigin("C1", "slack")),
+        (CronOrigin("G1:1.0", "slack"), CronOrigin("G1:2.0", "slack")),
+        (CronOrigin("G1:1.0", "slack"), CronOrigin("G1", "slack")),
+        (CronOrigin("101", "discord", history_chat="100"), CronOrigin("100", "discord")),
+        (CronOrigin("100", "discord"), CronOrigin("101", "discord", history_chat="100")),
+        (
+            CronOrigin("101", "discord", history_chat="100"),
+            CronOrigin("102", "discord", history_chat="100"),
+        ),
+    ],
+)
+@pytest.mark.parametrize("deliver_to", ["channel", "thread"])
+def test_jobs_are_shared_across_channel_threads(tmp_path, origin, viewer, deliver_to) -> None:
+    store = _store(tmp_path)
+    created = store.create_job(
+        prompt="report",
+        schedule=CronSchedule.parse("every 1h"),
+        origin=origin,
+        deliver_to=deliver_to,
+    )
+    tools = CronTools(store=_store(tmp_path), origin=lambda: viewer)
+
+    assert [job["id"] for job in tools.list_jobs()] == [created.id]
+    tools.edit_job(created.id, enabled=False)
+    updated = store.get_job(created.id)
+    assert updated is not None
+    assert updated.enabled is False
+    assert updated.origin == origin
+    assert updated.deliver_to == deliver_to
+    assert tools.remove_job(created.id)["id"] == created.id
+    assert store.list_jobs() == []
+
+
+@pytest.mark.parametrize(
+    ("owner", "viewer"),
+    [
+        (CronOrigin("C1:1.0", "slack"), CronOrigin("C2:1.0", "slack")),
+        (CronOrigin("C1:1.0", "slack"), CronOrigin("G1:1.0", "slack")),
+        (CronOrigin("C1:1.0", "slack"), CronOrigin("C1:1.0", "discord")),
+        (CronOrigin("D1:1.0", "slack"), CronOrigin("D1:2.0", "slack")),
+        (CronOrigin("D1", "slack"), CronOrigin("D2", "slack")),
+        (CronOrigin("C1:1.0", "discord"), CronOrigin("C1:2.0", "discord")),
+        (
+            CronOrigin("101", "discord", history_chat="100"),
+            CronOrigin("201", "discord", history_chat="200"),
+        ),
+        (CronOrigin("101", "discord"), CronOrigin("100", "discord")),
+        (CronOrigin("100", "discord"), CronOrigin("101", "discord")),
+        (CronOrigin("101", "discord"), CronOrigin("102", "discord", history_chat="100")),
+        (CronOrigin("101", "discord", history_chat="100"), CronOrigin("102", "discord")),
+        (CronOrigin("101", "discord", history_chat="C1"), CronOrigin("C1", "slack")),
+    ],
+)
+def test_cron_jobs_remain_isolated_outside_shared_channel(tmp_path, owner, viewer) -> None:
+    store = _store(tmp_path)
+    created = store.create_job(
+        prompt="report", schedule=CronSchedule.parse("every 1h"), origin=owner
+    )
+    tools = CronTools(store=store, origin=lambda: viewer)
+
+    assert tools.list_jobs() == []
+    with pytest.raises(CronJobError):
+        tools.edit_job(created.id, enabled=False)
+    with pytest.raises(CronJobError):
+        tools.remove_job(created.id)
+    assert store.get_job(created.id) == created
+
+
 def test_deliver_to_defaults_to_channel_and_persists_edits(tmp_path) -> None:
     store = _store(tmp_path)
     tools = CronTools(store=store, origin=lambda: CronOrigin(conversation_id="C1:1.2"))

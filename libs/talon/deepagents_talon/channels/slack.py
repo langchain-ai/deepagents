@@ -531,7 +531,10 @@ class _SlackSdkGateway:
                 if not isinstance(item, dict) or item.get("ts") == before_ts:
                     continue
                 sender = optional_str(item.get("user"))
-                text = _decode_mrkdwn(str(item.get("text") or ""))
+                raw_text = str(item.get("text") or "")
+                if _contains_oauth_callback(raw_text):
+                    continue
+                text = _decode_mrkdwn(raw_text)
                 if sender and text and not item.get("bot_id"):
                     messages.append((sender, text[:1000]))
             messages = messages[-_THREAD_CONTEXT_MESSAGES:]
@@ -949,7 +952,9 @@ class SlackChannel:
                 )
                 senders = self._exposure.operator_ids | self.config.allowed_user_ids
                 context = "\n".join(
-                    f"{sender}: {text}" for sender, text in replies if sender in senders
+                    f"{sender}: {text}"
+                    for sender, text in replies
+                    if sender in senders and not _contains_oauth_callback(text)
                 )
             except (SlackApiError, OSError, TimeoutError, ValueError):
                 logger.warning("Could not read Slack thread context", exc_info=True)
@@ -1315,6 +1320,18 @@ def _convert_event(event: dict, *, bot_id: str | None) -> _SlackInboundMessage |
         text=text.strip(),
         is_dm=is_dm,
         files=_convert_files(event.get("files")),
+    )
+
+
+def _contains_oauth_callback(text: str) -> bool:
+    """Exclude whole historical messages before truncation can hide credentials.
+
+    Scan URLs within prose and Slack mentions using the interception recognizer.
+    This intentionally does not validate or complete a pending authorization.
+    """
+    return any(
+        extract_loopback_oauth_callback_url(candidate) is not None
+        for candidate in re.findall(r"http://[^\s<>\"'`]+", _decode_mrkdwn(text), re.IGNORECASE)
     )
 
 

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import json
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 from textual.widgets import Input
@@ -55,6 +57,91 @@ async def test_invalid_manual_name_is_not_saved(
     rename.assert_not_awaited()
 
 
+@pytest.mark.parametrize("automatic", [False, True])
+@pytest.mark.parametrize("rename_model", ["", "openai:test-titles", "openai:test-chat"])
+async def test_naming_uses_the_selected_models_endpoint(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    rename_model: str,
+    *,
+    automatic: bool,
+) -> None:
+    """Inherit the chat endpoint only when no dedicated naming model is set."""
+    requests: list[tuple[str, str]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append((str(request.url), json.loads(request.content)["model"]))
+        return httpx.Response(
+            200,
+            json={
+                "id": "title-completion",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "test-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "Cache repair"},
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(naming_app, "_effective_model_spec", lambda: "openai:test-chat")
+    naming_app._model_params_override = {"base_url": "https://chat.example/v1"}
+    monkeypatch.setattr(
+        "deepagents_code.model_config.load_thread_config",
+        lambda: ThreadConfig(
+            {}, True, "updated_at", "cwd", auto_rename=True, rename_model=rename_model
+        ),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.apply_stored_credentials", lambda _: None
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.resolve_provider_credential", lambda _: None
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.has_provider_credentials", lambda _: True
+    )
+    rename = AsyncMock(return_value=True)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(
+            "deepagents_code.config._get_provider_kwargs",
+            lambda *_args, **_kwargs: {
+                "api_key": "test-only-placeholder",
+                "base_url": "https://configured.example/v1",
+                "http_async_client": client,
+                "use_responses_api": False,
+            },
+        )
+        async with naming_app.run_test() as pilot:
+            if automatic:
+                naming_app._maybe_auto_name_thread(
+                    "original",
+                    "openai:test-chat",
+                    model_params=naming_app._model_params_override,
+                )
+            else:
+                await naming_app._handle_command("/rename")
+            # A later model switch must not redirect the queued naming request.
+            naming_app._model_params_override["base_url"] = "https://later.example/v1"
+            await asyncio.gather(*naming_app._thread_name_tasks.values())
+            await pilot.pause()
+            if not automatic:
+                assert isinstance(naming_app.screen, ThreadNameScreen)
+                await pilot.press("enter")
+                await pilot.pause()
+            assert rename.await_args is not None
+            assert rename.await_args.args == ("original", "Cache repair")
+
+    endpoint = "configured" if rename_model else "chat"
+    model = rename_model.removeprefix("openai:") if rename_model else "test-chat"
+    assert requests == [(f"https://{endpoint}.example/v1/chat/completions", model)]
+
+
 async def test_generated_name_can_be_edited_and_confirmed(
     naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -99,7 +186,7 @@ async def test_generation_does_not_offer_on_switched_thread(
 ) -> None:
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def generate(*_args: object) -> str:
+    async def generate(*_args: object, **_kwargs: object) -> str:
         started.set()
         await release.wait()
         return "Old conversation"
@@ -126,7 +213,7 @@ async def test_auto_name_is_conditional_and_context_isolated(
     contexts: list[str] = []
     specs: list[object] = []
 
-    async def generate(*args: object) -> str:
+    async def generate(*args: object, **_kwargs: object) -> str:
         await asyncio.sleep(0)
         contexts.append(context.get())
         specs.append(args[0])
@@ -215,11 +302,14 @@ async def test_auto_naming_waits_for_completed_response(
 ) -> None:
     started, release = asyncio.Event(), asyncio.Event()
     adapter = MagicMock(stream_completed=False)
+    model_params = {"base_url": "https://chat.example/v1"}
+    naming_app._model_params_override = model_params
 
     async def execute(*_args: object, **_kwargs: object) -> None:
         started.set()
         await release.wait()
         adapter.stream_completed = completed
+        model_params["base_url"] = "https://later.example/v1"
 
     monkeypatch.setattr(naming_app, "_ui_adapter", adapter)
     monkeypatch.setattr(naming_app, "_agent", MagicMock())
@@ -238,7 +328,11 @@ async def test_auto_naming_waits_for_completed_response(
         release.set()
         await task
         if completed:
-            schedule.assert_called_once_with("original", "provider:chat")
+            schedule.assert_called_once_with(
+                "original",
+                "provider:chat",
+                model_params={"base_url": "https://chat.example/v1"},
+            )
         else:
             schedule.assert_not_called()
 
@@ -248,7 +342,7 @@ async def test_manual_name_cancels_pending_proposal(
 ) -> None:
     started = asyncio.Event()
 
-    async def generate(*_args: object) -> str:
+    async def generate(*_args: object, **_kwargs: object) -> str:
         started.set()
         await asyncio.Event().wait()
         return "Stale proposal"
@@ -297,7 +391,9 @@ async def test_auto_name_ignores_internal_human_messages(
         "deepagents_code.sessions.rename_thread", AsyncMock(return_value=True)
     )
     await naming_app._generate_thread_name("original", "provider:chat", automatic=True)
-    generate.assert_awaited_once_with("provider:chat", visible)
+    assert generate.await_count == 1
+    assert generate.await_args is not None
+    assert generate.await_args.args[1] == visible
 
 
 async def test_stale_load_cannot_overwrite_manual_name(

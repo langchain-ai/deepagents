@@ -1,4 +1,4 @@
-"""Workspace-bound model metadata resolution in the server process."""
+"""Launch metadata and workspace-bound model resolution in the server process."""
 
 from __future__ import annotations
 
@@ -17,6 +17,29 @@ if TYPE_CHECKING:
     from starlette.requests import Request
 
 logger = logging.getLogger(__name__)
+
+
+async def startup_model_metadata(_request: Request) -> JSONResponse:
+    """Read launch metadata without binding or validating a conversation thread.
+
+    Args:
+        _request: The startup metadata request.
+
+    Returns:
+        Cached launch model properties or an availability error.
+    """
+    from deepagents_code.server_graph import get_server_runtime
+
+    try:
+        runtime = await get_server_runtime()
+        if runtime.model_metadata is not None:
+            return JSONResponse(runtime.model_metadata.to_payload())
+    except (Exception, SystemExit):
+        logger.exception("Server startup model metadata is unavailable")
+    return JSONResponse(
+        {"detail": "Startup model metadata is unavailable. Restart the server."},
+        status_code=503,
+    )
 
 
 async def model_metadata(request: Request) -> JSONResponse:

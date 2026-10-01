@@ -30,7 +30,7 @@ from deepagents_code.hooks.server_middleware import (
     HookTransportInterruptError,
     operation_hook_responses,
 )
-from deepagents_code.model_api import model_metadata
+from deepagents_code.model_api import model_metadata, startup_model_metadata
 from deepagents_code.offload import _handoff_archive_prefix
 from deepagents_code.offload_middleware import (
     OffloadStateUpdate,
@@ -1378,6 +1378,7 @@ async def cancel_offload(request: Request) -> JSONResponse:
 app = Starlette(
     lifespan=_lifespan,
     routes=[
+        Route("/dcode/model", startup_model_metadata, methods=["GET"]),
         Route(
             "/dcode/threads/{thread_id:str}/model",
             model_metadata,

@@ -21103,10 +21103,76 @@ class TestPrewarmAwait:
     `_DeadlockError` from the import system.
     """
 
+    @pytest.mark.parametrize("missing_package", [False, True])
+    async def test_server_error_marker_restores_startup_recovery(
+        self,
+        missing_package: bool,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from deepagents_code._startup_error import (
+            emit_startup_failure,
+            startup_error_from_output,
+        )
+        from deepagents_code.model_config import (
+            MissingCredentialsError,
+            MissingProviderPackageError,
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+        from deepagents_code.tui.widgets.messages import ErrorMessage
+
+        error = (
+            MissingProviderPackageError(
+                "Provider package missing",
+                provider="fireworks",
+                package="langchain-fireworks",
+            )
+            if missing_package
+            else MissingCredentialsError(
+                "Credentials missing", provider="fireworks", env_var="FIREWORKS_API_KEY"
+            )
+        )
+        emit_startup_failure(error)
+        recovered = startup_error_from_output(capsys.readouterr().err, "server exited")
+        app = DeepAgentsApp()
+        retry = AsyncMock()
+        monkeypatch.setattr(app, "_retry_startup_with_model", retry)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": "fireworks:test"}
+            app.on_deep_agents_app_server_start_failed(
+                DeepAgentsApp.ServerStartFailed(error=recovered)
+            )
+            await pilot.pause()
+
+            widget = app._startup_failure_widget
+            assert isinstance(widget, ErrorMessage)
+            assert ("/install fireworks" if missing_package else "/auth") in str(
+                widget._content
+            )
+            with patch(
+                "deepagents_code.model_config.get_provider_auth_status",
+                return_value=ProviderAuthStatus(
+                    state=ProviderAuthState.CONFIGURED,
+                    provider="fireworks",
+                    source=ProviderAuthSource.STORED,
+                ),
+            ):
+                retried = await app._maybe_retry_startup_after_auth_change()
+            if missing_package:
+                assert retried is False
+                retry.assert_not_awaited()
+            else:
+                assert retried is True
+                retry.assert_awaited_once_with("fireworks:test", extra_kwargs=None)
+
     @pytest.mark.parametrize("unavailable", [False, True])
     async def test_startup_resolves_metadata_from_server(
         self, unavailable: bool, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from deepagents_code.client.remote_client import RemoteAgent
         from deepagents_code.model_metadata import ModelMetadata
 
         app = DeepAgentsApp(thread_id="t")
@@ -21115,10 +21181,17 @@ class TestPrewarmAwait:
         app._default_assistant_id = "agent"
         app._mcp_preload_kwargs = None
         result = ModelMetadata("test", "anthropic", 123_456, frozenset({"video"}))
-        remote = MagicMock()
-        remote.aresolve_model = AsyncMock(
-            return_value=result,
+        remote = RemoteAgent("http://test")
+        graph = MagicMock()
+        graph.client.http.get = AsyncMock(
+            return_value=result.to_payload(),
             side_effect=ConnectionError("server unavailable") if unavailable else None,
+        )
+        monkeypatch.setattr(remote, "_get_graph", lambda: graph)
+        monkeypatch.setattr(
+            remote,
+            "abind_workspace",
+            AsyncMock(side_effect=RuntimeError("thread bound to another workspace")),
         )
         server = MagicMock()
         post = MagicMock()
@@ -21143,9 +21216,6 @@ class TestPrewarmAwait:
 
         create.assert_not_called()
         save_agent.assert_called_once_with("agent")
-        remote.aresolve_model.assert_awaited_once_with(
-            {"configurable": {"thread_id": "t"}}
-        )
         message = post.call_args.args[0]
         if unavailable:
             assert app._server_proc is None

@@ -15,13 +15,14 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
-from langchain.agents.middleware import ModelFallbackMiddleware
+from langchain.agents.middleware import ModelFallbackMiddleware, ProviderToolSearchMiddleware
 from langchain_anthropic.chat_models import _supports_mid_conversation_system_messages
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents.middleware._skill_tools import _ANTHROPIC_INLINE_TOOL_MODELS
+from deepagents.middleware.skills import disclosed_skill_tool_names
 from deepagents.middleware.summarization import SummarizationMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 from tests.unit_tests.middleware.skill_tools_support import (
@@ -512,6 +513,25 @@ def test_resolver_returning_a_deferred_request_tool_discloses_it_inline_and_keep
         [declared] = [t for t in body["tools"] if t["name"] == "search_tickets"]
         assert declared["defer_loading"] is True
     assert _disclosed_names("anthropic", stub.bodies[1]) == ["search_tickets"]
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+def test_resolver_returning_a_deferred_tool_that_tool_search_copied_discloses_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: str
+) -> None:
+    write_skill(tmp_path, "linear", "support")
+    model, stub = _stub(provider, monkeypatch, [[read("r1", path=LINEAR_PATH)], "done"])
+    resolver = RecordingResolver({"support": [search_tickets]})
+    # Tool search binds a copy of each deferred tool, so the request never holds `search_tickets` itself.
+    middleware = [ProviderToolSearchMiddleware()]
+    agent = skills_agent(tmp_path, model, tools=[search_tickets], skill_tools=resolver, middleware=middleware, checkpointer=InMemorySaver())
+    config: RunnableConfig = {"configurable": {"thread_id": "tool-search-copy"}}
+
+    invoke(agent, {"messages": [HumanMessage("go")]}, mode, config)
+
+    assert _disclosed_names(provider, stub.bodies[1]) == ["search_tickets"]
+    # Disclosed as the deferred tool it is, never gated.
+    assert disclosed_skill_tool_names(agent.get_state(config).values) == frozenset()
 
 
 def test_tool_two_read_skills_produce_is_anchored_at_the_earliest_remaining_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:

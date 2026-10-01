@@ -140,22 +140,31 @@ def other_search_tickets(query: str) -> str:
     return f"other tickets for {query}"
 
 
-def test_resolved_tool_whose_name_is_taken_is_shadowed(tmp_path: Path, mode: str, caplog: pytest.LogCaptureFixture) -> None:
+@tool("ls")
+def other_ls(path: str) -> str:
+    """List files somewhere else."""
+    return f"other files in {path}"
+
+
+def test_resolved_tool_whose_name_is_taken_stands_for_the_request_tool(tmp_path: Path, mode: str) -> None:
     write_skill(tmp_path, "crm", "support")
-    resolver = RecordingResolver({"support": [other_search_tickets, list_issues]})
+    resolver = RecordingResolver({"support": [other_search_tickets, other_ls, list_issues]})
     gate = _RecordsDisclosedNames()
-    model = _model(ai(read("r1")), ai(call("search_tickets", "s1", query="x")))
+    model = _model(ai(read("r1")), ai(call("search_tickets", "s1", query="x"), call("ls", "l1", path="/")))
     agent = skills_agent(tmp_path, model, tools=[search_tickets], skill_tools=resolver, middleware=[gate])
 
-    with caplog.at_level(logging.DEBUG, logger="deepagents.middleware"):
-        result = invoke(agent, {"messages": [HumanMessage("go")]}, mode)
+    result = invoke(agent, {"messages": [HumanMessage("go")]}, mode)
 
-    assert _bound(model.call_history[1], "search_tickets") == [search_tickets]
+    # The deferred `search_tickets` is disclosed, and the bound `ls` left alone.
+    [disclosed] = _bound(model.call_history[1], "search_tickets")
+    assert disclosed.description == search_tickets.description
+    assert "defer_loading" not in (disclosed.extras or {})
+    assert _bound(model.call_history[1], "ls") == _bound(model.call_history[0], "ls")
     assert bound_tool_names(model.call_history[1])[-1] == LIST_ISSUES
     assert tool_messages(result, "search_tickets")[0].content == "tickets for x"
-    assert "Skill tool 'search_tickets' from 'support' is shadowed by a request tool of the same name" in caplog.messages
-    # At the read, then at the `search_tickets` call: only `LIST_ISSUES` is gated.
-    assert gate.seen == [frozenset(), frozenset({LIST_ISSUES})]
+    assert tool_messages(result, "ls")[0].content == "['/skills/']"
+    # At the read, then at each call of the second turn: only `LIST_ISSUES` is gated.
+    assert gate.seen == [frozenset(), frozenset({LIST_ISSUES}), frozenset({LIST_ISSUES})]
 
 
 def _ran_via(calls: list[str], call_id: str) -> str:

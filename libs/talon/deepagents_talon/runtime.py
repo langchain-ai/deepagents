@@ -952,6 +952,8 @@ class DeepAgentRuntime:
         if not isinstance(inputs, list):
             return None
         messages = [dict(item) for item in inputs if isinstance(item, dict)]
+        if self.checkpointer is False:
+            return messages
         graph = self._invocation_graph.get() or self._graph
         get_state = getattr(graph, "aget_state", None)
         if callable(get_state):

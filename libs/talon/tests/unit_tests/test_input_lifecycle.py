@@ -161,6 +161,48 @@ async def test_capacity_rejection_leaves_control_responsive(
         await host.stop()
 
 
+@pytest.mark.parametrize("with_callback", [False, True])
+async def test_admitted_inputs_without_checkpointing(
+    monkeypatch: pytest.MonkeyPatch, *, with_callback: bool
+) -> None:
+    seen: list[tuple[str | None, object]] = []
+
+    async def model(state: MessagesState) -> dict[str, list[AIMessage]]:
+        seen.extend((message.id, message.content) for message in state["messages"])
+        return {"messages": [AIMessage(content="done")]}
+
+    builder = StateGraph(MessagesState)
+    builder.add_node("model", model)
+    builder.add_edge(START, "model")
+    builder.add_edge("model", END)
+    graph = builder.compile(checkpointer=False)
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
+    runtime = DeepAgentRuntime(
+        model="test:model", checkpointer=False, include_web_tools=False, skills=(), memory=()
+    )
+    committed = asyncio.Event()
+    await runtime.start()
+    try:
+        result = await runtime.invoke(
+            AgentRequest(
+                "chat",
+                "staging only\n\ncleanup",
+                metadata={
+                    "talon_inputs": [
+                        {"role": "user", "id": "first", "content": "staging only"},
+                        {"role": "user", "id": "second", "content": "cleanup"},
+                    ]
+                },
+                inputs_committed=committed.set if with_callback else None,
+            )
+        )
+        assert result.text == "done"
+        assert seen == [("first", "staging only"), ("second", "cleanup")]
+        assert not committed.is_set()
+    finally:
+        await runtime.stop()
+
+
 async def test_checkpointed_input_is_not_replayed(monkeypatch: pytest.MonkeyPatch) -> None:
     entered, release = asyncio.Event(), asyncio.Event()
 

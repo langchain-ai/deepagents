@@ -564,7 +564,7 @@ requires-dist = [
     { name = "av", marker = "extra == 'video'", specifier = ">=18.0.0,<19.0.0" },
     { name = "langchain", specifier = ">=1.4.3,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.7.5,<2.0.0" },
-    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.7.9,<2.0.0" },
+    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.8.0,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.6.6,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.0,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.8" },
@@ -1006,7 +1006,7 @@ wheels = [
 
 [[package]]
 name = "langchain-aws"
-version = "1.7.9"
+version = "1.8.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "boto3" },
@@ -1014,9 +1014,9 @@ dependencies = [
     { name = "numpy" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ea/5f/f9e5f406ce7f079c536f1ae82ddc6e20d5b93689125ce355aa993221ef66/langchain_aws-1.7.9.tar.gz", hash = "sha256:2af21da1af458c6e7d43e58d26978711e15b81a6f9916da38d882d4ca7b58213", size = 779952, upload-time = "2026-09-22T01:04:08.811Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9a/f9/7fc564afa32bb452f383bb5cc0244530ad330ffcecef157a534512138c40/langchain_aws-1.8.0.tar.gz", hash = "sha256:fac880f42a6904c30bbc59971e25fd27b732ec0a114baf24b5dca1a39c6d401a", size = 784117, upload-time = "2026-09-30T17:56:22.113Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7c/67/ec05afc5b9d3e0e1671a372d244390d566d735e1d74543149036051b2f3e/langchain_aws-1.7.9-py3-none-any.whl", hash = "sha256:a0803d4ac4db8481e044e6814dd5cc1572a3e9a238694e64c7959492e7abbe13", size = 242669, upload-time = "2026-09-22T01:04:07.464Z" },
+    { url = "https://files.pythonhosted.org/packages/82/d3/28a3cc7acf4ed7a7de840ccfb17eb5ee8400a392494938c34f488cebbdc4/langchain_aws-1.8.0-py3-none-any.whl", hash = "sha256:554e5367684339192b615e3bb597d3f318313cc1c53084d6ea6dfddbe143b16b", size = 244440, upload-time = "2026-09-30T17:56:20.589Z" },
 ]
 
 [[package]]

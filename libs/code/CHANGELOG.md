@@ -2,6 +2,19 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.80](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.79...deepagents-code==0.1.80) (2026-10-01)
+
+### Features
+
+- Emit a `cache_expiring` hook before the prompt cache expires ([#6638](https://github.com/langchain-ai/deepagents/pull/6638)).
+
+### Bug Fixes
+
+- Keep the transcript at its current position when opening pickers ([#6635](https://github.com/langchain-ai/deepagents/pull/6635)).
+- Share cache-expiring notifications with the TUI ([#6639](https://github.com/langchain-ai/deepagents/pull/6639)).
+- Use listed skill paths instead of inferring their locations ([#6711](https://github.com/langchain-ai/deepagents/pull/6711)).
+- Correct product and command names in skill guides ([#6637](https://github.com/langchain-ai/deepagents/pull/6637)).
+
 ## [0.1.79](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.78...deepagents-code==0.1.79) (2026-09-29)
 
 ### Bug Fixes

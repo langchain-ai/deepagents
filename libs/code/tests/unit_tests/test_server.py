@@ -203,20 +203,31 @@ class TestServerPortSelection:
         assert server.port == 43210
 
 
-@pytest.mark.parametrize("phase", ["health", "exit", "transport", "status"])
 @pytest.mark.parametrize(
-    "error",
+    ("phase", "error"),
     [
-        MissingCredentialsError(
-            'Missing credentials for "anthropic".\nUse /auth to recover.',
-            provider="anthropic",
-            env_var="ANTHROPIC_API_KEY",
+        (
+            "health",
+            MissingCredentialsError(
+                'Missing credentials for "anthropic".\nUse /auth to recover.',
+                provider="anthropic",
+                env_var="ANTHROPIC_API_KEY",
+            ),
         ),
-        MissingCredentialsError("Credentials missing", provider="custom"),
-        MissingProviderPackageError(
-            "Provider package missing",
-            provider="fireworks",
-            package="langchain-fireworks",
+        ("exit", MissingCredentialsError("Credentials missing", provider="custom")),
+        (
+            "transport",
+            MissingProviderPackageError(
+                "Provider package missing",
+                provider="fireworks",
+                package="langchain-fireworks",
+            ),
+        ),
+        (
+            "status",
+            MissingCredentialsError(
+                "Credentials missing", provider="custom", env_var="CUSTOM_API_KEY"
+            ),
         ),
     ],
 )

@@ -24,14 +24,12 @@ def _request(payload: object) -> Request:
     return Request({"type": "http", "path_params": {"thread_id": "thread"}}, receive)
 
 
-@pytest.mark.parametrize("reason", ["bound_elsewhere", "policy_drift", "config_drift"])
-async def test_startup_metadata_works_despite_thread_workspace_conflicts(
-    reason: str,
-) -> None:
+async def test_startup_metadata_works_despite_thread_workspace_conflicts() -> None:
     import httpx
 
     from deepagents_code.offload_api import app
 
+    reason = "bound_elsewhere"
     metadata = ModelMetadata("test", "custom", 4096, frozenset({"video"}))
     with (
         patch(

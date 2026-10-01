@@ -1626,6 +1626,8 @@ def _same_origin_scope(left: CronOrigin, right: CronOrigin) -> bool:
 def _origin_scope(origin: CronOrigin) -> str:
     if origin.channel == "slack" and origin.conversation_id.startswith(("C", "G")):
         return origin.conversation_id.split(":", maxsplit=1)[0]
+    if origin.channel == "discord":
+        return origin.history_chat or origin.conversation_id
     return origin.conversation_id
 
 

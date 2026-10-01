@@ -297,8 +297,6 @@ remote graph's internal calls.
 
 The WhatsApp channel uses a local Node bridge packaged with this library. The Python adapter talks to the bridge over loopback only.
 
-Messages enter the host in arrival order, before attachment downloads. Delivery is best effort: each poll drains the bridge queue, so lost poll responses and process restarts can lose inputs. Preparation tokens and cached results expire ten minutes after arrival, or earlier when the host releases them. If an input expires, use `/stop` to discard pending work before resending it. The bridge caps both retained inputs and unfinished preparations at 128, including released downloads that are still running. Externally managed bridges must be updated alongside Talon.
-
 ```bash
 cd deepagents_talon/channels/whatsapp_bridge
 npm install

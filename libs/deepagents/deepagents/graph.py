@@ -202,6 +202,28 @@ def _merge_fs_interrupt_on(
     return merged
 
 
+class _Slot(AgentMiddleware[Any, Any, Any]):
+    """Holds an unmounted optional default's place in a stack.
+
+    A custom middleware named `fills` replaces it in `_apply_custom_middleware`,
+    so it lands where the default would have been. An unfilled slot is dropped
+    there. Its own `name` is private, so profile `excluded_middleware` never
+    matches it.
+    """
+
+    def __init__(self, fills: str) -> None:
+        self.fills = fills
+
+    @property
+    def name(self) -> str:
+        return f"_Slot[{self.fills}]"
+
+
+def _slot_name(middleware: AgentMiddleware[Any, Any, Any]) -> str:
+    """Return the name a custom middleware must have to replace `middleware`."""
+    return middleware.fills if isinstance(middleware, _Slot) else middleware.name
+
+
 def _apply_custom_middleware(
     base: list[AgentMiddleware[Any, Any, Any]],
     custom: Sequence[AgentMiddleware[Any, Any, Any]],
@@ -210,15 +232,18 @@ def _apply_custom_middleware(
 ) -> list[AgentMiddleware[Any, Any, Any]]:
     """Merge custom middleware into the base stack by name.
 
-    - If its `.name` matches a name still present in `base`: replace in-place,
-      preserving stack order.
+    - If its `.name` matches a name still present in `base`, or a `_Slot` it
+      fills: replace in-place, preserving stack order.
     - Otherwise: a brand-new entry lands after the last `core_names` member (so it
       precedes the profile/prompt-caching/memory tail), or at the end when
       `core_names` is unset.
+
+    Unfilled slots are dropped, as are slots sharing a name with a real entry
+    (e.g. a profile extra), which a same-named custom middleware replaces instead.
     """
-    if not custom:
-        return list(base)
-    current_names = {m.name for m in base}
+    real_names = {m.name for m in base if not isinstance(m, _Slot)}
+    base = [m for m in base if not (isinstance(m, _Slot) and m.fills in real_names)]
+    current_names = {_slot_name(m) for m in base}
     replacements: dict[str, AgentMiddleware[Any, Any, Any]] = {}
     to_append: list[AgentMiddleware[Any, Any, Any]] = []
     for m in custom:
@@ -226,10 +251,8 @@ def _apply_custom_middleware(
             replacements[m.name] = m
         else:
             to_append.append(m)
-    result = list(base)
-    for i, m in enumerate(result):
-        if m.name in replacements:
-            result[i] = replacements[m.name]
+    result = [replacements.get(_slot_name(m), m) for m in base]
+    result = [m for m in result if not isinstance(m, _Slot)]
     if to_append and core_names is not None:
         # Land new middleware after the last core entry, ahead of the tail.
         pos = max((i for i, m in enumerate(result) if m.name in core_names), default=len(result) - 1) + 1
@@ -402,8 +425,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Middleware passed here therefore runs before it: it doesn't see
             freshly loaded `skills_metadata` in `before_agent` /
             `before_model`, and can't edit the skills section of the system
-            prompt in `wrap_model_call`. Passing a middleware whose `name` is
-            `"SkillsMiddleware"` still replaces it in place.
+            prompt in `wrap_model_call`.
+
+            A middleware whose `name` matches one of the defaults above
+            replaces it in place. A custom `SubAgentMiddleware`,
+            `SkillsMiddleware`, `MemoryMiddleware` or
+            `HumanInTheLoopMiddleware` takes its default's place even when the
+            default isn't mounted: one passed without `skills` still sits just
+            before prompt caching.
 
             After assembly, any entries in the profile's
             `excluded_middleware` are filtered from the final stack. Class
@@ -717,10 +746,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
             elif subagent_skills and not is_forked:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
+            else:
+                subagent_middleware.append(_Slot(SkillsMiddleware.__name__))
 
             append_prompt_caching_middleware(subagent_middleware)
             if is_forked and memory is not None:
                 subagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory, add_cache_control=True))
+            elif is_forked:
+                subagent_middleware.append(_Slot(MemoryMiddleware.__name__))
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -820,9 +853,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         gp_middleware.extend(_profile.materialize_extra_middleware())
         if skills is not None:
             gp_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+        else:
+            gp_middleware.append(_Slot(SkillsMiddleware.__name__))
 
         append_prompt_caching_middleware(gp_middleware)
-        _gp_original_name_to_index = {m.name: i for i, m in enumerate(gp_middleware)}
+        _gp_original_name_to_index = {_slot_name(m): i for i, m in enumerate(gp_middleware)}
         gp_middleware = _apply_excluded_middleware(
             gp_middleware,
             _profile,
@@ -892,6 +927,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             state_schema=state_schema,
         )
         deepagent_middleware.append(sub_agent_middleware)
+    else:
+        deepagent_middleware.append(_Slot(SubAgentMiddleware.__name__))
     deepagent_middleware.extend(
         [
             create_summarization_middleware(model, backend),
@@ -917,6 +954,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # routing middleware). Kept out of `_main_core_names` so novel user
         # middleware still lands ahead of it.
         deepagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+    else:
+        deepagent_middleware.append(_Slot(SkillsMiddleware.__name__))
     append_prompt_caching_middleware(deepagent_middleware)
     if memory is not None:
         # MemoryMiddleware applies the cache_control breakpoint only when the
@@ -928,12 +967,16 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 add_cache_control=True,
             )
         )
+    else:
+        deepagent_middleware.append(_Slot(MemoryMiddleware.__name__))
     main_interrupt_on = _merge_fs_interrupt_on(
         _build_interrupt_on_from_permissions(permissions or []),
         interrupt_on,
     )
     if main_interrupt_on is not None:
         deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on))
+    else:
+        deepagent_middleware.append(_Slot(HumanInTheLoopMiddleware.__name__))
     deepagent_middleware.append(UnsupportedContentMiddleware())
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,

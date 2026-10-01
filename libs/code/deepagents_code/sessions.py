@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import sqlite3
 import time
@@ -36,6 +37,7 @@ _initial_prompt_cache: dict[str, tuple[str | None, str | None]] = {}
 _MAX_INITIAL_PROMPT_CACHE = 4096
 _recent_threads_cache: dict[tuple[str | None, int], list[ThreadInfo]] = {}
 _MAX_RECENT_THREADS_CACHE_KEYS = 16
+MAX_THREAD_NAME_LENGTH = 50
 _DEFAULT_SQLITE_TIMEOUT = 5.0
 """Seconds to wait out a locked database; matches the `sqlite3` default."""
 
@@ -211,6 +213,9 @@ class ThreadInfo(TypedDict):
 
     initial_prompt: NotRequired[str | None]
     """First human message in the thread."""
+
+    thread_name: NotRequired[str | None]
+    """User-assigned or generated thread name."""
 
     message_count: NotRequired[int]
     """Number of messages in the thread."""
@@ -388,7 +393,7 @@ async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
         return await cursor.fetchone() is not None
 
 
-_THREADS_LIST_INDEX = "idx_dcode_threads_list_v2"
+_THREADS_LIST_INDEX = "idx_dcode_threads_list_v3"
 """Covering index that makes the `list_threads` GROUP BY an index-only scan.
 
 LangGraph's `SqliteSaver` stores each checkpoint's full state blob inline in the
@@ -428,10 +433,12 @@ async def _ensure_threads_list_index(conn: aiosqlite.Connection) -> None:
             "checkpoint_id, "
             "json_extract(metadata, '$.agent_name'), "
             "json_extract(metadata, '$.git_branch'), "
-            "json_extract(metadata, '$.cwd'))"
+            "json_extract(metadata, '$.cwd'), "
+            "json_extract(metadata, '$.thread_name'))"
         )
         # Replace the older index, which did not cover the creation timestamp.
         await conn.execute("DROP INDEX IF EXISTS idx_dcode_threads_list")
+        await conn.execute("DROP INDEX IF EXISTS idx_dcode_threads_list_v2")
         await conn.commit()
     except Exception:
         logger.warning(
@@ -514,7 +521,8 @@ async def list_threads(
                    MIN(COALESCE(json_extract(metadata, '$.created_at'),
                                 json_extract(metadata, '$.updated_at'))) as created_at,
                    MAX(json_extract(metadata, '$.git_branch')) as git_branch,
-                   MAX(json_extract(metadata, '$.cwd')) as cwd
+                   MAX(json_extract(metadata, '$.cwd')) as cwd,
+                   MAX(json_extract(metadata, '$.thread_name')) as thread_name
             FROM checkpoints
             {where_sql}
             GROUP BY thread_id
@@ -534,9 +542,22 @@ async def list_threads(
                     created_at=r[4],
                     git_branch=r[5],
                     cwd=r[6],
+                    thread_name=r[7],
                 )
                 for r in rows
             ]
+
+        if threads and await _table_exists(conn, "dcode_thread_names"):
+            async with conn.execute(
+                "SELECT thread_id, name FROM dcode_thread_names "
+                "WHERE thread_id IN (SELECT value FROM json_each(?))",
+                (json.dumps([thread["thread_id"] for thread in threads]),),
+            ) as cursor:
+                names = {row[0]: row[1] for row in await cursor.fetchall()}
+            for thread in threads:
+                thread["thread_name"] = names.get(
+                    thread["thread_id"], thread.get("thread_name")
+                )
 
         # Fetch message counts if requested
         if include_message_count and threads:
@@ -1656,6 +1677,106 @@ async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
             return [r[0] for r in rows]
 
 
+def validate_thread_name(name: str) -> str:
+    """Validate a thread name.
+
+    Args:
+        name: Proposed name.
+
+    Returns:
+        Trimmed name.
+
+    Raises:
+        ValueError: If empty, overlong, or containing nonprintable characters.
+    """
+    if any(not char.isprintable() for char in name):
+        msg = "Thread names must be a single line without control characters"
+        raise ValueError(msg)
+    name = name.strip()
+    if not name or len(name) > MAX_THREAD_NAME_LENGTH:
+        msg = "Thread names must contain between 1 and 50 characters"
+        raise ValueError(msg)
+    return name
+
+
+async def get_thread_name(thread_id: str) -> str | None:
+    """Read a thread's durable name independently of checkpoint revisions.
+
+    Args:
+        thread_id: Thread to look up.
+
+    Returns:
+        Saved name, or `None` for unnamed threads.
+    """
+    async with _connect() as conn:
+        if await _table_exists(conn, "dcode_thread_names"):
+            async with conn.execute(
+                "SELECT name FROM dcode_thread_names WHERE thread_id = ?", (thread_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return row[0]
+        if not await _table_exists(conn, "checkpoints"):
+            return None
+        async with conn.execute(
+            "SELECT json_extract(metadata, '$.thread_name') FROM checkpoints "
+            "WHERE thread_id = ? "
+            "AND json_extract(metadata, '$.thread_name') IS NOT NULL "
+            "ORDER BY checkpoint_id DESC LIMIT 1",
+            (thread_id,),
+        ) as cursor:
+            row = await cursor.fetchone()
+            return row[0] if row else None
+
+
+async def rename_thread(
+    thread_id: str, name: str, *, only_if_unnamed: bool = False
+) -> bool:
+    """Atomically name an existing thread without mutating its conversation.
+
+    Args:
+        thread_id: Thread to name.
+        name: Nonempty, printable, single-line name of at most 50 characters.
+        only_if_unnamed: Preserve a previously generated or manually assigned name.
+
+    Returns:
+        Whether an existing thread was renamed.
+    """
+    name = validate_thread_name(name)
+    async with _connect() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        if not await _table_exists(conn, "checkpoints"):
+            return False
+        await conn.execute(
+            "CREATE TABLE IF NOT EXISTS dcode_thread_names "
+            "(thread_id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL)"
+        )
+        async with conn.execute(
+            "INSERT INTO dcode_thread_names (thread_id, name) "
+            "SELECT ?, ? WHERE EXISTS "
+            "(SELECT 1 FROM checkpoints WHERE thread_id = ?) "
+            "AND (? = 0 OR NOT EXISTS (SELECT 1 FROM checkpoints "
+            "WHERE thread_id = ? "
+            "AND json_extract(metadata, '$.thread_name') IS NOT NULL)) "
+            "ON CONFLICT(thread_id) DO UPDATE SET name = excluded.name WHERE ? = 0",
+            (thread_id, name, thread_id, only_if_unnamed, thread_id, only_if_unnamed),
+        ) as cursor:
+            if not cursor.rowcount:
+                return False
+        await conn.execute(
+            "UPDATE checkpoints SET metadata = json_set(metadata, '$.thread_name', ?) "
+            "WHERE thread_id = ? AND checkpoint_id = "
+            "(SELECT MAX(checkpoint_id) FROM checkpoints WHERE thread_id = ?)",
+            (name, thread_id, thread_id),
+        )
+        await conn.commit()
+    for rows in _recent_threads_cache.values():
+        for thread in rows:
+            if thread["thread_id"] == thread_id:
+                thread["thread_name"] = name
+    return True
+
+
 async def delete_thread(thread_id: str) -> bool:
     """Delete thread checkpoints, side-question costs, and offloaded history.
 
@@ -1688,6 +1809,10 @@ async def delete_thread(thread_id: str) -> bool:
         deleted = False
         async with _connect() as conn:
             await delete_cost(conn, thread_id)
+            if await _table_exists(conn, "dcode_thread_names"):
+                await conn.execute(
+                    "DELETE FROM dcode_thread_names WHERE thread_id = ?", (thread_id,)
+                )
             if await _table_exists(conn, "checkpoints"):
                 cursor = await conn.execute(
                     "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
@@ -1985,6 +2110,7 @@ async def list_threads_command(
 
     table = Table(title=title, show_header=True, header_style=f"bold {theme.PRIMARY}")
     table.add_column("Thread ID", style="bold")
+    table.add_column("Name", max_width=50, no_wrap=True)
     table.add_column("Agent")
     table.add_column("Messages", justify="right")
     if verbose:
@@ -2000,6 +2126,7 @@ async def list_threads_command(
     for t in threads:
         row: list[str] = [
             t["thread_id"],
+            escape_markup(t.get("thread_name") or ""),
             t["agent_name"] or "unknown",
             str(t.get("message_count", 0)),
         ]

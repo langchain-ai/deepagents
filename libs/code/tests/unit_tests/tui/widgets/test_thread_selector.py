@@ -322,6 +322,49 @@ class TestThreadSelectorNavigateAndSelect:
     """Tests for navigating then selecting a specific thread."""
 
 
+class TestThreadNames:
+    """Named threads remain distinct from initial prompts and searchable."""
+
+    @pytest.mark.parametrize("name", [None, "", "Fix login"])
+    def test_name_cell_does_not_fall_back_to_prompt(self, name: str | None) -> None:
+        thread: ThreadInfo = {**MOCK_THREADS[0], "thread_name": name}
+        assert _format_column_value(thread, "thread_name") == (name or "")
+
+    async def test_filter_finds_name_and_renders_literal_markup(self) -> None:
+        threads: list[ThreadInfo] = [
+            {**MOCK_THREADS[0], "thread_name": "[bold]Login[/bold]"},
+            {**MOCK_THREADS[1]},
+        ]
+        with _patch_list_threads(threads), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(160, 45)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                names = screen.query(".thread-cell-thread_name").results(Static)
+                assert [str(cell.render()) for cell in names] == [
+                    "Name",
+                    "[bold]Login[/bold]",
+                    "",
+                ]
+                screen.query_one("#thread-filter", Input).value = "Login"
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                assert [t["thread_id"] for t in screen._filtered_threads] == [
+                    "abc12345"
+                ]
+
+    def test_rename_refreshes_cached_cell_without_a_new_checkpoint(self) -> None:
+        with _patch_columns():
+            screen = ThreadSelectorScreen(filter_cwd=None)
+        screen._filtered_threads = [{**MOCK_THREADS[0], "thread_name": "Before"}]
+        screen._compute_column_widths()
+        screen._filtered_threads[0]["thread_name"] = "After"
+        screen._compute_column_widths()
+        assert screen._cell_text["abc12345", "thread_name"] == "After"
+
+
 class TestThreadSelectorTabSort:
     """Tests for sort toggling and focus traversal in the selector."""
 

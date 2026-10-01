@@ -466,11 +466,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `invoke(files={...})`. With `FilesystemBackend`, skills are loaded
             from disk relative to the backend's `root_dir`. Later sources
             override earlier ones for skills with the same name (last one wins).
-
-            To give skills their own tools, also pass a
-            [`SkillsMiddleware`][deepagents.middleware.skills.SkillsMiddleware]
-            with `skill_tools` in `middleware`. It replaces the default one in
-            place, so the general-purpose subagent and forks get it too.
         memory: List of memory file paths (`AGENTS.md` files) to load
             (e.g., `["/memory/AGENTS.md"]`).
 

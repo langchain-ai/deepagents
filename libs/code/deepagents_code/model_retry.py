@@ -62,6 +62,7 @@ __all__ = [
     "aretry_model_call",
     "build_attempt_event",
     "build_retry_event",
+    "format_first_token_timeout_status",
     "format_retry_status",
     "legacy_retry_index",
     "model_attempt_from_event",
@@ -113,6 +114,7 @@ _RETRY_STATUS_FALLBACK = "Retrying model request"
 # `Retry-After` hints of `_MAX_RETRY_AFTER_SECONDS` each would stall a turn for
 # five minutes behind a spinner. One full honoured hint still fits.
 _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS = 60.0
+_MAX_FIRST_TOKEN_TIMEOUT_RETRIES = 1
 # What the product says when an attempt is superseded. Every surface renders
 # some part of this set, so the wording lives with the event builders rather
 # than being spelled once per client.
@@ -377,6 +379,15 @@ def _is_transient_sdk_error(exc: Exception) -> bool:
     )
 
 
+def _is_first_token_timeout(exc: BaseException) -> bool:
+    """Return whether `exc` is a zero-chunk OpenAI stream timeout."""
+    return (
+        type(exc).__module__.partition(".")[0] == "langchain_openai"
+        and type(exc).__name__ == "StreamChunkTimeoutError"
+        and getattr(exc, "chunks_received", None) == 0
+    )
+
+
 def _is_http_transport_error(exc: BaseException) -> bool:
     """Return whether `exc` is a transient HTTP response transport failure."""
     # Optional dependency: httpx ships with the HTTP-based providers but keep the
@@ -506,6 +517,8 @@ def _is_retryable_model_error(exc: Exception) -> bool:
         if id(current) in seen:
             continue
         seen.add(id(current))
+        if _is_first_token_timeout(current):
+            return True
         retryable = _direct_model_error_retryability(current, raised=raised)
         if retryable is not None:
             if retryable:
@@ -534,6 +547,19 @@ def format_retry_status(attempt: int, max_retries: int) -> str:
         A short status line, e.g. `"Retrying model request 1/5"`.
     """
     return f"Retrying model request {attempt}/{max_retries}"
+
+
+def format_first_token_timeout_status(
+    attempt: int,
+    max_retries: int,
+    model: str,
+    elapsed: float,
+) -> str:
+    """Return status text for a first-token timeout retry."""
+    return (
+        f"Waiting for first token from {model} timed out after {elapsed:.1f}s; "
+        f"retrying {attempt}/{max_retries} (stream_chunk_timeout)"
+    )
 
 
 def _log_give_up(exc: Exception, attempts: int, max_retries: int) -> None:
@@ -571,6 +597,7 @@ def _retry_call[ResultT](
     max_retries: int,
     on_retry: Callable[[int, int, Exception], None],
     retry_guard: Callable[[Exception, int, float], bool] | None = None,
+    first_token_timeout_retry_limit: int | None = None,
 ) -> ResultT:
     """Run one synchronous call under the shared retry policy.
 
@@ -581,6 +608,7 @@ def _retry_call[ResultT](
         GraphBubbleUp: If the graph signals control flow.
         RuntimeError: If the retry loop exits unexpectedly.
     """
+    first_token_timeout_retries = 0
     for attempt in range(max_retries + 1):
         try:
             return call()
@@ -597,6 +625,15 @@ def _retry_call[ResultT](
                 # should end the turn as an error, not as a reply the model
                 # never made.
                 raise
+            if (
+                first_token_timeout_retry_limit is not None
+                and _is_first_token_timeout(exc)
+                and first_token_timeout_retries >= first_token_timeout_retry_limit
+            ):
+                _log_give_up(exc, attempt + 1, max_retries)
+                raise
+            if _is_first_token_timeout(exc):
+                first_token_timeout_retries += 1
             # Drawn once: the backoff carries jitter, so re-deriving it for the
             # guard would authorise one delay and then sleep a different one.
             delay = _retry_delay_seconds(attempt, exc)
@@ -615,6 +652,7 @@ async def _aretry_call[ResultT](
     max_retries: int,
     on_retry: Callable[[int, int, Exception], None],
     retry_guard: Callable[[Exception, int, float], bool] | None = None,
+    first_token_timeout_retry_limit: int | None = None,
 ) -> ResultT:
     """Run one asynchronous call under the shared retry policy.
 
@@ -627,6 +665,7 @@ async def _aretry_call[ResultT](
     """
     import asyncio
 
+    first_token_timeout_retries = 0
     for attempt in range(max_retries + 1):
         try:
             return await call()
@@ -641,6 +680,15 @@ async def _aretry_call[ResultT](
                 _log_give_up(exc, attempt + 1, max_retries)
                 # Always re-raise (see `_retry_call`).
                 raise
+            if (
+                first_token_timeout_retry_limit is not None
+                and _is_first_token_timeout(exc)
+                and first_token_timeout_retries >= first_token_timeout_retry_limit
+            ):
+                _log_give_up(exc, attempt + 1, max_retries)
+                raise
+            if _is_first_token_timeout(exc):
+                first_token_timeout_retries += 1
             # Drawn once: the backoff carries jitter, so re-deriving it for the
             # guard would authorise one delay and then sleep a different one.
             delay = _retry_delay_seconds(attempt, exc)
@@ -842,6 +890,18 @@ def retry_status_from_event(event: Mapping[Any, object]) -> str:
     if counts is None:
         logger.warning("Ignoring malformed model_retry payload: %r", dict(event))
         return _RETRY_STATUS_FALLBACK
+    if event.get("reason") == "first_token_timeout":
+        model = event.get("model")
+        elapsed = event.get("elapsed")
+        if (
+            isinstance(model, str)
+            and model
+            and isinstance(elapsed, (int, float))
+            and not isinstance(elapsed, bool)
+            and math.isfinite(elapsed)
+            and elapsed >= 0
+        ):
+            return format_first_token_timeout_status(*counts, model, float(elapsed))
     return format_retry_status(*counts)
 
 
@@ -905,6 +965,7 @@ def build_retry_event(
     call_id: str | None = None,
     failed_attempt: int | None = None,
     output_may_have_started: bool = False,
+    first_token_timeout: tuple[str, float] | None = None,
 ) -> dict[str, object]:
     """Build the custom-stream payload announcing a model retry.
 
@@ -918,6 +979,7 @@ def build_retry_event(
         output_may_have_started: Whether the superseded attempt may have put
             message output beyond server control. Conservative by design: the
             tracker flags before forwarding a chunk.
+        first_token_timeout: Optional model and elapsed timeout details.
 
     Returns:
         A stream-writer payload consumed by the client renderers.
@@ -938,6 +1000,14 @@ def build_retry_event(
         event["call_id"] = call_id
         event["failed_attempt"] = failed_attempt
         event["output_may_have_started"] = output_may_have_started
+    if first_token_timeout is not None:
+        model, elapsed = first_token_timeout
+        event["reason"] = "first_token_timeout"
+        event["model"] = model
+        event["elapsed"] = elapsed
+        event["message"] = format_first_token_timeout_status(
+            attempt, max_retries, model, elapsed
+        )
     return event
 
 
@@ -1117,12 +1187,26 @@ class CodeModelRetryMiddleware(AgentMiddleware):
         call_id: str,
         has_streamed: bool,
     ) -> None:
+        first_token_timeout = None
+        if _is_first_token_timeout(exc):
+            model = getattr(request, "model", None)
+            model_name = getattr(exc, "model_name", None) or getattr(
+                model, "model", None
+            )
+            if not isinstance(model_name, str) or not model_name:
+                model_name = type(model).__name__
+            provider = getattr(model, "_model_provider", None)
+            lane = f"{provider}:{model_name}" if provider else model_name
+            elapsed = getattr(exc, "timeout_s", None)
+            if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool):
+                first_token_timeout = (lane, float(elapsed))
         event = build_retry_event(
             attempt,
             max_retries,
             call_id=call_id,
             failed_attempt=attempt - 1,
             output_may_have_started=has_streamed and self.stream_output_is_visible,
+            first_token_timeout=first_token_timeout,
         )
         # The user-facing event stays deliberately vague, but the log must name
         # the cause: only the last exception is re-raised, so an attempt logged
@@ -1185,6 +1269,7 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             retry_guard=_delay_budget_guard(
                 _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS, label="Interactive model"
             ),
+            first_token_timeout_retry_limit=_MAX_FIRST_TOKEN_TIMEOUT_RETRIES,
         )
 
     async def awrap_model_call(
@@ -1230,4 +1315,5 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             retry_guard=_delay_budget_guard(
                 _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS, label="Interactive model"
             ),
+            first_token_timeout_retry_limit=_MAX_FIRST_TOKEN_TIMEOUT_RETRIES,
         )

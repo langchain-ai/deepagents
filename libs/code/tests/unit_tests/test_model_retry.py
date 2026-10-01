@@ -42,6 +42,7 @@ from deepagents_code.model_retry import (
     _retry_after_seconds,
     build_attempt_event,
     build_retry_event,
+    format_first_token_timeout_status,
     format_retry_status,
     model_attempt_from_event,
     model_retry_from_event,
@@ -57,6 +58,17 @@ _VALUE_ERROR = ValueError("bad request")
 _DROPPED = "connection dropped"
 _RETRY_AFTER_30 = "30"
 _RETRY_AFTER_1 = "1"
+
+
+class StreamChunkTimeoutError(TimeoutError):
+    def __init__(self, timeout_s: float, chunks_received: int = 0) -> None:
+        super().__init__("first token timeout")
+        self.timeout_s = timeout_s
+        self.model_name = "local-gguf"
+        self.chunks_received = chunks_received
+
+
+StreamChunkTimeoutError.__module__ = "langchain_openai.chat_models._client_utils"
 
 
 class _StatusError(Exception):
@@ -121,6 +133,48 @@ def test_predicate_retries_only_bare_openai_api_error(
     exc: Exception, *, retryable: bool
 ) -> None:
     assert _is_retryable_model_error(exc) is retryable
+
+
+def test_zero_chunk_stream_timeout_is_retryable_but_streamed_timeout_is_unchanged() -> (
+    None
+):
+    assert _is_retryable_model_error(StreamChunkTimeoutError(120.0)) is True
+    assert (
+        _is_retryable_model_error(StreamChunkTimeoutError(120.0, chunks_received=1))
+        is True
+    )
+
+
+def test_first_token_timeout_status_includes_lane_wait_and_setting() -> None:
+    event = build_retry_event(
+        1,
+        5,
+        first_token_timeout=("openai:local-gguf", 120.0),
+    )
+    assert retry_status_from_event(event) == format_first_token_timeout_status(
+        1, 5, "openai:local-gguf", 120.0
+    )
+    assert "stream_chunk_timeout" in str(event["message"])
+
+
+def test_first_token_timeout_retries_once_with_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+    delays: list[float] = []
+
+    def handler(_request: ModelRequest) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        raise StreamChunkTimeoutError(120.0)
+
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", delays.append)
+    middleware = CodeModelRetryMiddleware(max_retries=5)
+    with pytest.raises(StreamChunkTimeoutError):
+        middleware.wrap_model_call(_req(model_retries=5), _handler(handler))
+    assert calls == 2
+    assert len(delays) == 1
+    assert delays[0] > 0
 
 
 class _RetryingStreamingModel(BaseChatModel):

@@ -29,6 +29,7 @@ from deepagents_code.config import (
     ModelResult,
     _apply_default_langsmith_project,
     _apply_stored_langsmith_tracing,
+    _apply_stream_chunk_timeout,
     _create_model_via_init,
     _disable_orphaned_tracing,
     _get_provider_kwargs,
@@ -4819,6 +4820,33 @@ models = ["my-model"]
         assert result.model is mock_instance
         assert result.model_name == "my-model"
         assert result.provider == "meta.custom"
+
+    @pytest.mark.parametrize(
+        ("kwargs", "supported", "expected"),
+        [
+            ({"base_url": "http://localhost:8000/v1"}, True, None),
+            ({"base_url": "http://localhost:8000/v1"}, False, "missing"),
+            ({"stream_chunk_timeout": 45.0}, True, 45.0),
+            ({}, True, "missing"),
+        ],
+    )
+    def test_stream_chunk_timeout_resolution(
+        self,
+        kwargs: dict[str, object],
+        supported: bool,
+        expected: object,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Custom lanes disable the default without overriding explicit values."""
+        monkeypatch.setattr(
+            "deepagents_code.config._supports_stream_chunk_timeout",
+            lambda _provider: supported,
+        )
+        _apply_stream_chunk_timeout("openai", None, kwargs)
+        if expected == "missing":
+            assert "stream_chunk_timeout" not in kwargs
+        else:
+            assert kwargs["stream_chunk_timeout"] == expected
 
 
 class TestCreateModelExtraKwargs:

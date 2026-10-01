@@ -6312,8 +6312,20 @@ def _create_model_from_class(
         )
         raise ModelConfigError(msg)
 
+    constructor_kwargs = kwargs
+    if "stream_chunk_timeout" in kwargs:
+        import inspect
+
+        parameters = inspect.signature(cls).parameters
+        if "stream_chunk_timeout" not in parameters and not any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        ):
+            constructor_kwargs = dict(kwargs)
+            constructor_kwargs.pop("stream_chunk_timeout")
+
     try:
-        return cls(model=model_name, **kwargs)
+        return cls(model=model_name, **constructor_kwargs)
     except Exception as e:
         msg = f"Failed to instantiate '{class_path}' for '{provider}:{model_name}': {e}"
         raise ModelConfigError(msg) from e
@@ -6424,6 +6436,39 @@ def _create_model_via_init(
         spec = f"{provider}:{model_name}" if provider else model_name
         msg = f"Failed to initialize model '{spec}': {e}"
         raise ModelConfigError(msg) from e
+
+
+def _supports_stream_chunk_timeout(provider: str) -> bool:
+    """Return whether a standard provider constructor accepts the timeout."""
+    try:
+        from langchain.chat_models import base
+
+        package, class_name, _ = base._BUILTIN_PROVIDERS[provider]
+        cls = getattr(importlib.import_module(package), class_name)
+        import inspect
+
+        parameters = inspect.signature(cls).parameters
+    except (ImportError, AttributeError, KeyError, TypeError, ValueError):
+        return False
+    return "stream_chunk_timeout" in parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in parameters.values()
+    )
+
+
+def _apply_stream_chunk_timeout(
+    provider: str,
+    class_path: str | None,
+    kwargs: dict[str, Any],
+) -> None:
+    """Set the first-token timeout default for custom model lanes."""
+    if "stream_chunk_timeout" not in kwargs and (class_path or kwargs.get("base_url")):
+        kwargs["stream_chunk_timeout"] = None
+    if "stream_chunk_timeout" not in kwargs:
+        return
+    if class_path or _supports_stream_chunk_timeout(provider):
+        return
+    kwargs.pop("stream_chunk_timeout")
 
 
 @dataclass(frozen=True)
@@ -6811,6 +6856,7 @@ def create_model(
 
     # Check if this provider uses a custom BaseChatModel class
     class_path = config.get_class_path(provider) if provider else None
+    _apply_stream_chunk_timeout(provider, class_path, kwargs)
 
     if provider == CODEX_PROVIDER:
         # Codex models are constructed directly via `_ChatOpenAICodex` so the

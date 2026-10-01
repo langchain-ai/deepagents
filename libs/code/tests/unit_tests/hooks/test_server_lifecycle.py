@@ -63,6 +63,7 @@ from deepagents_code.hooks.server_middleware import (
     _invocation_id,
     _invoke_hook,
     _session_gate,
+    _SessionHookGate,
     _tool_result_error,
     operation_hook_responses,
 )
@@ -99,6 +100,7 @@ class _PublicHookState(AgentState[Any]):
     against `ServerHooksState` so it cannot silently drift.
     """
 
+    _hooks_session_gate: NotRequired[_SessionHookGate | None]
     _hooks_stop_continuation_count: NotRequired[int]
     _hooks_pre_tool_outcomes: NotRequired[dict[str, Any]]
     _hooks_pending_post_tools: NotRequired[dict[str, int | None]]
@@ -126,6 +128,10 @@ def _hook_state_subagent(*, name: str, content: str) -> CompiledSubAgent:
 
     def finish(_state: _PublicHookState) -> dict[str, Any]:
         return {
+            "_hooks_session_gate": {
+                "snapshot_id": name,
+                "events": frozenset({HookEvent.PRE_TOOL_USE.value}),
+            },
             "_hooks_stop_continuation_count": 1,
             "_hooks_pre_tool_outcomes": {name: {"behavior": "none", "context": []}},
             "_hooks_pending_post_tools": {name: 1},
@@ -472,6 +478,137 @@ async def test_post_tool_resumes_do_not_reexecute_parallel_tools(
         assert f"recorded {value}" in tool_results[f"call-{value}"]
         assert f"reviewed call-{value}" in tool_results[f"call-{value}"]
     assert agent.get_state(config).values.get("_hooks_pending_post_tools") == {}
+
+
+@pytest.mark.parametrize("async_mode", [False, True])
+@pytest.mark.parametrize(
+    "resume_context", ["missing", "snapshot", "events", "matching"]
+)
+async def test_pre_tool_resume_requires_original_hook_context(
+    tmp_path: Path, async_mode: bool, resume_context: str
+) -> None:
+    executed: list[str] = []
+
+    @tool
+    def side_effect() -> str:
+        """Record a visible side effect."""
+        executed.append("called")
+        return "done"
+
+    model = _ToolCallingFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "side_effect", "args": {}, "id": "call-1"}],
+                ),
+                AIMessage(content="done"),
+            ]
+        )
+    )
+    agent = create_agent(
+        model=model,
+        tools=[side_effect],
+        middleware=[ServerHooksMiddleware(cwd=tmp_path)],
+        context_schema=CLIContextSchema,
+        checkpointer=InMemorySaver(),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "gate-resume"}}
+    context = CLIContextSchema(
+        hooks_snapshot_id="snap",
+        hooks_server_events=[HookEvent.PRE_TOOL_USE.value, HookEvent.PRE_COMPACT.value],
+    )
+
+    async def invoke(
+        value: dict[str, list[HumanMessage]] | Command,
+        ctx: CLIContextSchema | None,
+    ) -> dict[str, Any]:
+        if async_mode:
+            return await agent.ainvoke(value, config=config, context=ctx)
+        return agent.invoke(value, config=config, context=ctx)
+
+    result = await invoke({"messages": [HumanMessage(content="run tool")]}, context)
+    request = parse_hook_interrupt_payload(result["__interrupt__"][0].value)
+    assert request is not None
+    assert not executed
+    response = HookInvocationResponse(
+        protocol_version=1,
+        invocation_id=request.invocation_id,
+        snapshot_id=request.snapshot_id,
+        decision=PreToolUseDecision(
+            event=HookEvent.PRE_TOOL_USE,
+            permission=PermissionEffect(behavior="deny", reason="blocked"),
+        ),
+    )
+    resumed_context = CLIContextSchema(
+        hooks_snapshot_id="other" if resume_context == "snapshot" else "snap",
+        hooks_server_events=(
+            [HookEvent.PRE_COMPACT.value]
+            if resume_context == "events"
+            else list(reversed(context.hooks_server_events))
+        ),
+    )
+    command = Command(resume=build_hook_resume_value(response))
+    if resume_context == "matching":
+        result = await invoke(command, resumed_context)
+        assert any(
+            isinstance(message, ToolMessage) and "blocked" in str(message.content)
+            for message in result["messages"]
+        )
+    else:
+        with pytest.raises(RuntimeError, match=r"hooks_snapshot_id.*every resume"):
+            await invoke(
+                command, None if resume_context == "missing" else resumed_context
+            )
+    assert not executed
+
+
+@pytest.mark.parametrize("initial_hooks", [False, True])
+async def test_hook_free_turn_after_completed_turn(
+    tmp_path: Path, initial_hooks: bool
+) -> None:
+    executed: list[str] = []
+
+    @tool
+    def side_effect() -> str:
+        """Record a visible side effect."""
+        executed.append("called")
+        return "done"
+
+    model = _ToolCallingFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(content="first turn complete"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "side_effect", "args": {}, "id": "call-1"}],
+                ),
+                AIMessage(content="second turn complete"),
+            ]
+        )
+    )
+    agent = create_agent(
+        model=model,
+        tools=[side_effect],
+        middleware=[ServerHooksMiddleware(cwd=tmp_path)],
+        context_schema=CLIContextSchema,
+        checkpointer=InMemorySaver(),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "fresh-turn"}}
+    context = CLIContextSchema(
+        hooks_snapshot_id="snap",
+        hooks_server_events=[HookEvent.PRE_TOOL_USE.value],
+    )
+    await agent.ainvoke(
+        {"messages": [HumanMessage(content="first turn")]},
+        config=config,
+        context=context if initial_hooks else None,
+    )
+    result = await agent.ainvoke(
+        {"messages": [HumanMessage(content="run tool without hooks")]}, config=config
+    )
+    assert "__interrupt__" not in result
+    assert executed == ["called"]
 
 
 def _request(event: PreToolUseEvent | None = None) -> HookInvocationRequest:
@@ -1015,6 +1152,7 @@ def test_subagent_start_deny_returns_error_tool_message(
         "type": "tool_call",
     }
     request.tool = None
+    request.state = {}
     request.runtime.context = {
         "hooks_snapshot_id": "snap",
         "hooks_server_events": ["SubagentStart"],

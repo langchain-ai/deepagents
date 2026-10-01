@@ -356,7 +356,7 @@ async def test_whatsapp_prepares_only_authorized_envelopes(tmp_path: Path) -> No
 
     class Transport(RecordingTransport):
         async def post(self, path: str, payload: dict[str, object]) -> object:
-            if path == "/release":
+            if path in {"/claim", "/release"}:
                 return await super().post(path, payload)
             assert path == "/prepare"
             assert payload == {
@@ -452,3 +452,64 @@ async def test_host_releases_owned_preparation(
         await prepare.released.wait()
     finally:
         await host.stop()
+
+
+@pytest.mark.parametrize("stage", ["claim", "dispatch"])
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_whatsapp_releases_untransferred_batch_on_interruption(
+    tmp_path: Path, stage: str, *, cancel: bool
+) -> None:
+    envelopes = [
+        {
+            "chat_id": "self",
+            "message_id": str(index),
+            "user_id": "self",
+            "text": "hello",
+            "from_self": True,
+            "self_chat": True,
+            "preparation_token": f"token-{index}",
+        }
+        for index in range(3)
+    ]
+    entered = asyncio.Event()
+
+    async def interrupt() -> None:
+        entered.set()
+        if cancel:
+            await asyncio.Event().wait()
+        msg = "interrupted batch"
+        raise RuntimeError(msg)
+
+    class Transport(RecordingTransport):
+        async def post(self, path: str, payload: dict[str, object]) -> object:
+            self.posts.append((path, payload))
+            if path == "/claim" and stage == "claim":
+                await interrupt()
+            if path == "/prepare":
+                return {**envelopes[int(payload["message_id"])], "preparation_token": None}
+            return {"success": True}
+
+    transport = Transport(envelopes)
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path, poll_interval_seconds=60), transport=transport
+    )
+
+    async def receive(_message: ChannelMessage) -> None:
+        await interrupt()
+
+    channel.set_message_handler(receive)
+    await channel.start()
+    try:
+        await entered.wait()
+        if not cancel:
+            with pytest.raises(RuntimeError, match="interrupted batch"):
+                await channel._poll
+    finally:
+        await channel.stop()
+    released = {
+        entry["preparation_token"]
+        for path, payload in transport.posts
+        if path == "/release"
+        for entry in payload["inputs"]
+    }
+    assert released == {"token-0", "token-1", "token-2"}

@@ -149,12 +149,42 @@ test("releasing rejected envelopes restores capacity without downloading media",
   assert.equal((await bridge.request("GET", "/messages")).payload[0].message_id, "legitimate");
 });
 
-test("delivered inputs survive the TTL while unclaimed inputs expire", async () => {
+test("explicitly claimed inputs survive the TTL while unclaimed inputs expire", async () => {
   const bridge = harness(async () => null);
   await bridge.enqueue(message("waiting", "queued behind transcription", true), false);
   const [claimed] = (await bridge.request("GET", "/messages")).payload;
+  assert.equal((await bridge.request("POST", "/claim", { inputs: [claimed] })).status, 200);
   await bridge.enqueue(message("unclaimed", "abandoned", true), false);
   bridge.advance(180000);
   assert.deepEqual((await bridge.request("GET", "/messages")).payload, []);
   assert.equal((await bridge.request("POST", "/prepare", claimed)).status, 200);
+});
+
+test("a lost full poll response remains retrievable and cannot exhaust capacity permanently", async () => {
+  const bridge = harness(async () => assert.fail("unexpected download"));
+  for (let index = 0; index < 128; index += 1) {
+    await bridge.enqueue(message(String(index), "attachment", true), false);
+  }
+  const lost = await bridge.request("GET", "/messages");
+  assert.equal(lost.payload.length, 128);
+  assert.deepEqual(await bridge.request("GET", "/messages"), lost);
+  bridge.advance(3600000);
+  await bridge.enqueue(message("later", "still usable"), false);
+  const received = (await bridge.request("GET", "/messages")).payload;
+  assert.deepEqual(received.map((entry) => entry.message_id), ["later"]);
+});
+
+test("claims validate the entire batch and are idempotent", async () => {
+  const bridge = harness(async () => assert.fail("unexpected download"));
+  await bridge.enqueue(message("first", "one"), false);
+  await bridge.enqueue(message("second", "two"), false);
+  const inputs = (await bridge.request("GET", "/messages")).payload;
+  const invalid = [inputs[0], { ...inputs[1], chat_id: "wrong" }];
+  assert.equal((await bridge.request("POST", "/claim", { inputs: invalid })).status, 404);
+  assert.deepEqual((await bridge.request("GET", "/messages")).payload, inputs);
+  assert.equal((await bridge.request("POST", "/claim", { inputs })).status, 200);
+  assert.equal((await bridge.request("POST", "/claim", { inputs })).status, 200);
+  assert.deepEqual((await bridge.request("GET", "/messages")).payload, []);
+  await bridge.request("POST", "/release", { inputs });
+  assert.equal((await bridge.request("POST", "/claim", { inputs })).status, 404);
 });

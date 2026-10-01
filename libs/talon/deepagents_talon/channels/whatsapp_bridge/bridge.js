@@ -48,6 +48,15 @@ function expirePendingMessages() {
   for (const [token, pending] of pendingMessages) {
     if (!pending.claimed && pending.expires <= Date.now()) pendingMessages.delete(token);
   }
+  pruneQueuedMessages();
+}
+
+function pruneQueuedMessages() {
+  for (let index = queue.length - 1; index >= 0; index -= 1) {
+    const token = queue[index].preparation_token;
+    const pending = pendingMessages.get(token);
+    if (token && (!pending || pending.claimed)) queue.splice(index, 1);
+  }
 }
 const sentMessageIds = new Set();
 const sentMessages = new Map();
@@ -626,14 +635,34 @@ async function handle(req, res) {
 
     if (req.method === "GET" && req.url === "/messages") {
       expirePendingMessages();
-      const messages = queue.splice(0, queue.length).filter((entry) => {
-        if (!entry.preparation_token) return true;
-        const pending = pendingMessages.get(entry.preparation_token);
-        if (!pending) return false;
-        pending.claimed = true;
-        return true;
-      });
+      const messages = queue.slice();
+      // Token-bearing envelopes remain retrievable until the receiver claims them.
+      for (let index = queue.length - 1; index >= 0; index -= 1) {
+        if (!queue[index].preparation_token) queue.splice(index, 1);
+      }
       sendJson(res, 200, messages);
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/claim") {
+      const body = await readJson(req);
+      expirePendingMessages();
+      if (!Array.isArray(body.inputs) || body.inputs.length > MAX_PENDING_MESSAGES) {
+        sendJson(res, 400, { error: "Invalid claim batch" });
+        return;
+      }
+      const inputs = body.inputs.map((input) => {
+        const pending = input && pendingMessages.get(input.preparation_token);
+        return pending && pending.entry.chat_id === input.chat_id && pending.entry.message_id === input.message_id
+          ? pending : null;
+      });
+      if (inputs.some((pending) => !pending)) {
+        sendJson(res, 404, { error: "Unknown or expired input" });
+        return;
+      }
+      for (const pending of inputs) pending.claimed = true;
+      pruneQueuedMessages();
+      sendJson(res, 200, { success: true });
       return;
     }
 
@@ -649,6 +678,7 @@ async function handle(req, res) {
           pendingMessages.delete(input.preparation_token);
         }
       }
+      pruneQueuedMessages();
       sendJson(res, 200, { success: true });
       return;
     }
@@ -671,6 +701,7 @@ async function handle(req, res) {
         return;
       }
       pending.claimed = true;
+      pruneQueuedMessages();
       if (!pending.preparation) {
         preparingMessages += 1;
         pending.preparation = prepareEntry(pending)

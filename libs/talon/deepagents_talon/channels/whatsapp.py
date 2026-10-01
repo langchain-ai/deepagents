@@ -652,6 +652,64 @@ class WhatsAppChannel:
             raise _WhatsAppBridgeError(msg)
         return _enforce_inbound_media_cap(prepared, max_bytes=self.config.max_media_bytes)
 
+    async def _dispatch_batch(self, messages: list[ChannelMessage]) -> int:
+        remaining = list(messages)
+        accepted = 0
+        try:
+            inputs = [
+                {
+                    "preparation_token": message.metadata["preparation_token"],
+                    "chat_id": message.conversation_id,
+                    "message_id": message.message_id,
+                }
+                for message in messages
+                if isinstance(message.metadata.get("preparation_token"), str)
+            ]
+            if inputs:
+                await self._post_result("/claim", {"inputs": inputs})
+            while remaining:
+                accepted += await self._dispatch_message(remaining.pop(0))
+        finally:
+            for message in remaining:
+                self._release_message(message)
+        return accepted
+
+    async def _dispatch_message(self, message: ChannelMessage) -> bool:
+        if message.metadata.get("event_type") == "reaction":
+            return await self._dispatch_reaction(message)
+        if _allows_whatsapp_message(self.config.exposure, message):
+            checked = _enforce_inbound_media_cap(
+                message,
+                max_bytes=self.config.max_media_bytes,
+            )
+            log_debug_event(
+                logger,
+                "whatsapp.inbound.message.dispatching",
+                has_media=bool(checked.metadata.get("has_media")),
+                media_type=checked.metadata.get("media_type"),
+                quoted_message_id_present=(checked.metadata.get("quoted_message_id") is not None),
+                quoted_participant_present=(checked.metadata.get("quoted_participant") is not None),
+                reply_context_status=checked.metadata.get("reply_context_status"),
+                text_chars=len(checked.text),
+            )
+            await dispatch_message(
+                self._handler,
+                checked,
+                provider="WhatsApp",
+                prepare=_WhatsAppPreparation(self, checked),
+            )
+            log_debug_event(logger, "whatsapp.inbound.message.dispatched")
+            return True
+        self._release_message(message)
+        log_debug_event(
+            logger,
+            "whatsapp.inbound.message.rejected",
+            exposure=self.config.exposure.mode.value,
+            has_media=bool(message.metadata.get("has_media")),
+            text_chars=len(message.text),
+        )
+        return False
+
     async def _poll_messages(self) -> None:
         while not self._stopped.is_set():
             try:
@@ -664,47 +722,10 @@ class WhatsAppChannel:
                         "whatsapp.poll.batch.received",
                         message_count=len(messages),
                     )
-                accepted = 0
-                for message in messages:
-                    if message.metadata.get("event_type") == "reaction":
-                        accepted += await self._dispatch_reaction(message)
-                        continue
-                    if _allows_whatsapp_message(self.config.exposure, message):
-                        accepted += 1
-                        checked = _enforce_inbound_media_cap(
-                            message,
-                            max_bytes=self.config.max_media_bytes,
-                        )
-                        log_debug_event(
-                            logger,
-                            "whatsapp.inbound.message.dispatching",
-                            has_media=bool(checked.metadata.get("has_media")),
-                            media_type=checked.metadata.get("media_type"),
-                            quoted_message_id_present=(
-                                checked.metadata.get("quoted_message_id") is not None
-                            ),
-                            quoted_participant_present=(
-                                checked.metadata.get("quoted_participant") is not None
-                            ),
-                            reply_context_status=checked.metadata.get("reply_context_status"),
-                            text_chars=len(checked.text),
-                        )
-                        await dispatch_message(
-                            self._handler,
-                            checked,
-                            provider="WhatsApp",
-                            prepare=_WhatsAppPreparation(self, checked),
-                        )
-                        log_debug_event(logger, "whatsapp.inbound.message.dispatched")
-                    else:
-                        self._release_message(message)
-                        log_debug_event(
-                            logger,
-                            "whatsapp.inbound.message.rejected",
-                            exposure=self.config.exposure.mode.value,
-                            has_media=bool(message.metadata.get("has_media")),
-                            text_chars=len(message.text),
-                        )
+                try:
+                    accepted = await self._dispatch_batch(messages)
+                finally:
+                    await self._flush_releases()
                 if messages:
                     log_debug_event(
                         logger,
@@ -712,7 +733,6 @@ class WhatsAppChannel:
                         accepted_count=accepted,
                         rejected_count=len(messages) - accepted,
                     )
-                await self._flush_releases()
             except _WhatsAppBridgeError:
                 logger.exception("Failed to poll WhatsApp bridge messages")
                 log_debug_event(logger, "whatsapp.poll.failed")

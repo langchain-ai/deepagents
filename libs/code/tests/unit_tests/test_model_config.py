@@ -1304,6 +1304,44 @@ class TestThreadConfigCoalesced:
         assert cfg.scope == "cwd"
 
 
+@pytest.mark.parametrize(
+    ("content", "auto_rename", "rename_model", "tab_title"),
+    [
+        ("", False, "", "{app_name}"),
+        (
+            (
+                '[threads]\nauto_rename = true\nrename_model = "provider:model"\n'
+                '[terminal]\ntab_title = "{app_name} - {thread_name}"\n'
+            ),
+            True,
+            "provider:model",
+            "{app_name} - {thread_name}",
+        ),
+        (
+            (
+                '[threads]\nauto_rename = "yes"\nrename_model = 2\n'
+                "[terminal]\ntab_title = false\n"
+            ),
+            False,
+            "",
+            "{app_name}",
+        ),
+    ],
+)
+def test_thread_naming_config(
+    tmp_path: Path, content: str, auto_rename: bool, rename_model: str, tab_title: str
+) -> None:
+    from deepagents_code.model_config import load_terminal_tab_title, load_thread_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(content)
+    config = load_thread_config(path)
+    assert config.auto_rename is auto_rename
+    assert config.rename_model == rename_model
+    assert config.columns["thread_name"] is True
+    assert load_terminal_tab_title(path) == tab_title
+
+
 class TestResolveEnvVar:
     """Tests for resolve_env_var prefix override."""
 

@@ -42,6 +42,24 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
 
+## Thread names and terminal titles
+
+Use `/rename My thread name` to name the current conversation (up to 50 characters, on one line). Run `/rename` without a name to generate a suggestion from the conversation, then confirm or edit it before saving. Names persist across sessions and appear in a dedicated **Name** column in `/threads` and `dcode threads list`; unnamed threads leave that column empty. The thread selector also searches names.
+
+To generate a name automatically after the first assistant response, enable `auto_rename` in `~/.deepagents/config.toml`. Generation runs in the background and does not replace an existing name. `rename_model` defaults to the currently selected model; set it to a configured model specification to use a different model for naming.
+
+```toml
+[threads]
+auto_rename = false
+rename_model = ""
+columns = { thread_name = true }
+
+[terminal]
+tab_title = "{app_name}"
+```
+
+The terminal title template supports `{app_name}`, `{thread_name}`, `{cwd}`, and `{branch}`. For example, set `tab_title = "{app_name} - {thread_name}"` to show the current thread name or `tab_title = "{app_name} [{branch}]"` to show its branch. The title follows the active thread and is restored on exit.
+
 ## 🔒 Security model
 
 By default, `dcode` trusts the directory you run it in. Human-in-the-loop approval gates model-requested tool calls, but project artifacts are read before any approval prompt.

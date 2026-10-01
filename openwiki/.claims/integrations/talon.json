@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:573acde473cfc76a2ba635f556a7635e88ce0390647c975ee167e9c7f8782711",
+  "pageVersion": "sha256:46dfb20162552ba768b6411dbb6a97da5938cfbdd2e5c63eeb10ffe511512028",
   "claims": [
     {
       "id": "claim_5a4ee44bdfc94fe0b737b4c36af91fa8",
@@ -22,11 +22,11 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         }
       ]
     },
@@ -56,7 +56,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/channels/base.py",
-          "version": "repo-file-v1:sha256:fa3adec448fe716bd1838ca9ac84d8ec09669a6c64075aad49bc11a3cdefc65d"
+          "version": "repo-file-v1:sha256:37ab7fc4047b5c313f590f2eb0cd4423009f596bf4223d92d49ed2ef644a0966"
         }
       ]
     },
@@ -70,7 +70,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/channels/slack.py",
-          "version": "repo-file-v1:sha256:e2ad605aa61a19fc6720a3598fa3bacf5cbf375886a5c027f2f2911732893c8d"
+          "version": "repo-file-v1:sha256:5d2539bb7ed8f3acd5c28c5597b041782ad81eb87ea54b6c5059de468e69592c"
         }
       ]
     },
@@ -80,7 +80,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/model_selection.py",
@@ -88,7 +88,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         }
       ]
     },
@@ -102,7 +102,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:3568c7e2a6b7748681087a10cc73f0e634018103e9528e58f3b2512682f6a919"
+          "version": "repo-file-v1:sha256:5ac41de160b0ce4fe4ad7d621a26d2f2deffa6cf77b489638c310b725c666343"
         }
       ]
     },
@@ -126,7 +126,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:185ce36e9ecfd942acf1446b4db24643b41f62f2aa147baf30794faaecad5a1b"
+          "version": "repo-file-v1:sha256:58f45cce4a6fa395411056430f10e056b1ac65fed47c913952ce7e7ae5f06062"
         }
       ]
     },
@@ -146,11 +146,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/mcp.py",
-          "version": "repo-file-v1:sha256:3568c7e2a6b7748681087a10cc73f0e634018103e9528e58f3b2512682f6a919"
+          "version": "repo-file-v1:sha256:5ac41de160b0ce4fe4ad7d621a26d2f2deffa6cf77b489638c310b725c666343"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         }
       ]
     },
@@ -190,7 +190,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:185ce36e9ecfd942acf1446b4db24643b41f62f2aa147baf30794faaecad5a1b"
+          "version": "repo-file-v1:sha256:58f45cce4a6fa395411056430f10e056b1ac65fed47c913952ce7e7ae5f06062"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/commands.py",
@@ -198,11 +198,11 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         }
       ]
     },
@@ -212,7 +212,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/channels/slack.py",
-          "version": "repo-file-v1:sha256:e2ad605aa61a19fc6720a3598fa3bacf5cbf375886a5c027f2f2911732893c8d"
+          "version": "repo-file-v1:sha256:5d2539bb7ed8f3acd5c28c5597b041782ad81eb87ea54b6c5059de468e69592c"
         }
       ]
     },
@@ -222,7 +222,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         }
       ]
     },
@@ -249,10 +249,78 @@
           "version": "repo-file-v1:sha256:4842314f8d8531379ea6c663242f2748f8a954dd69314075f1b19e59354fb1d2"
         }
       ]
+    },
+    {
+      "id": "claim_9a12861782e24acfbd586788c42827cb",
+      "statement": "A new message in an active conversation cancels the existing turn, records an interruption marker after the latest committed checkpoint, and starts the new message on the same thread; a cancellation that exceeds 30 seconds blocks the new turn and requires a host restart for recovery.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/README.md",
+          "version": "repo-file-v1:sha256:58f45cce4a6fa395411056430f10e056b1ac65fed47c913952ce7e7ae5f06062"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py",
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
+        }
+      ]
+    },
+    {
+      "id": "claim_0f32ce3881ad4796a68b05288b088a0d",
+      "statement": "ConversationSaver archives channel conversations so they survive restarts and context compaction; `/new` retains earlier sessions, while `/reset-all-history` deletes only the current chat's archive sessions and checkpoints and does not delete cron jobs, memory, media, traces, or backups.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/README.md",
+          "version": "repo-file-v1:sha256:58f45cce4a6fa395411056430f10e056b1ac65fed47c913952ce7e7ae5f06062"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py",
+          "version": "repo-file-v1:sha256:47d54647236442a5fdd163436ee4eb7c7495092db9c82bc922732e4af30ca494"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
+        }
+      ]
+    },
+    {
+      "id": "claim_2ad55d2362ab402db8acca64356da9cf",
+      "statement": "Talon loads local and remote subagent definitions at startup; explicit reload validates and activates changes only for subsequent turns, retaining the previous valid configuration after an invalid edit and leaving running tasks on their original graph.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/README.md",
+          "version": "repo-file-v1:sha256:58f45cce4a6fa395411056430f10e056b1ac65fed47c913952ce7e7ae5f06062"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
+        }
+      ]
+    },
+    {
+      "id": "claim_d8798ed92518499aba9d25df6d76fcea",
+      "statement": "Tool approval policy is a per-assistant `tools.json` mapping of exact tool names to prompt requirements; updates use atomic compare-and-swap, become active on the next invocation, and invalid policy fails closed.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/README.md",
+          "version": "repo-file-v1:sha256:58f45cce4a6fa395411056430f10e056b1ac65fed47c913952ce7e7ae5f06062"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py",
+          "version": "repo-file-v1:sha256:286355f9ca364dc32ea117fabdeee4e2724531b50f84a6c6a5e99469b682a9e5"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-30T08:06:28.871Z"
+    "at": "2026-10-01T08:06:30.386Z"
   }
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:60d731e06f047d32889d20b50ee57a62bdf791dfc7d05c48d43f65cb28d5e33b",
+  "pageVersion": "sha256:dfa3f5934a85930e5b2bf01abd8f9048b26fed25908035b9419944c779275a49",
   "claims": [
     {
       "id": "claim_02a3292b94514936b7fbbbe869876251",
@@ -36,7 +36,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         }
       ]
     },
@@ -46,7 +46,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         }
       ]
     },
@@ -66,11 +66,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/subagents.py",
-          "version": "repo-file-v1:sha256:400e9779f6ba22a1b71c5dc084cc23c08e324707646fe251718c3b7fee7f92af"
+          "version": "repo-file-v1:sha256:b839d65ab603eed8c63b6adbc48faeff4f5b2bdd2fd7f77674ee670ebba42235"
         }
       ]
     },
@@ -80,7 +80,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         }
       ]
     },
@@ -90,11 +90,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
-          "version": "repo-file-v1:sha256:bd02aa59741b1ce04e932d0479de4c0ea7771c168d5f161a0950e9b14ee8866f"
+          "version": "repo-file-v1:sha256:ff53c2008a80763de36488d087c77957cd5163e04f469c438baa2efe078fda83"
         }
       ]
     },
@@ -104,11 +104,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
-          "version": "repo-file-v1:sha256:bd02aa59741b1ce04e932d0479de4c0ea7771c168d5f161a0950e9b14ee8866f"
+          "version": "repo-file-v1:sha256:ff53c2008a80763de36488d087c77957cd5163e04f469c438baa2efe078fda83"
         }
       ]
     },
@@ -122,7 +122,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         },
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
@@ -140,7 +140,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         },
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
@@ -158,11 +158,11 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
-          "version": "repo-file-v1:sha256:bd02aa59741b1ce04e932d0479de4c0ea7771c168d5f161a0950e9b14ee8866f"
+          "version": "repo-file-v1:sha256:ff53c2008a80763de36488d087c77957cd5163e04f469c438baa2efe078fda83"
         }
       ]
     },
@@ -182,7 +182,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py",
@@ -200,11 +200,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
-          "version": "repo-file-v1:sha256:bd02aa59741b1ce04e932d0479de4c0ea7771c168d5f161a0950e9b14ee8866f"
+          "version": "repo-file-v1:sha256:ff53c2008a80763de36488d087c77957cd5163e04f469c438baa2efe078fda83"
         }
       ]
     },
@@ -224,7 +224,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/interfaces.py",
@@ -232,7 +232,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:c0b85b985d65fbc9166c1beb3b7057bb0bb0235405e3d34d047c7dae17c436cb"
+          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
         }
       ]
     },
@@ -242,7 +242,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/cron/jobs.py",
-          "version": "repo-file-v1:sha256:a416b8ee877e927a9b39a374a0753cfaae37b1b9ea0f8a78467e1a95cce6edc7"
+          "version": "repo-file-v1:sha256:13c985c4a53c000e59cd7f2146a7020c5e720ad6a8131edcea87082029484c58"
         }
       ]
     },
@@ -252,15 +252,15 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:185ce36e9ecfd942acf1446b4db24643b41f62f2aa147baf30794faaecad5a1b"
+          "version": "repo-file-v1:sha256:58f45cce4a6fa395411056430f10e056b1ac65fed47c913952ce7e7ae5f06062"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:193cc474781d25c8ad550c3db65a59937532d82f48844c22b424346c2653797f"
+          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:2c8fb07ca518d3a64c7da3ef628bb57cc3a50d6682744f5c461671e85d0a0359"
+          "version": "repo-file-v1:sha256:1029097ee5c1a209e2ca6e715b447488256c18a2715a800dc4f70f6984306ed4"
         }
       ]
     },
@@ -331,10 +331,30 @@
           "version": "repo-file-v1:sha256:e5d74e3f28cf605b59ca922d1e6195cbaa5237add9bd42e7b1cfa06b74210db9"
         }
       ]
+    },
+    {
+      "id": "claim_c9dab41ed52a434590c0641d57601f69",
+      "statement": "Deep Agents Code resolves configuration across user, project, session, and runtime scopes using a process-wide generation; configuration changes take effect through an in-app write or `/reload`, parsing failures preserve the last usable tier, and the application does not watch files for edits.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/ARCHITECTURE.md",
+          "version": "repo-file-v1:sha256:1044d5960a89cb0a26efdc7ff02036cba8f13332e6c4c6b1e08f443c49796aed"
+        }
+      ]
+    },
+    {
+      "id": "claim_d4eb1819340b4e53b2d27e967d4fa374",
+      "statement": "When `load_sessions` is enabled, AgentServerACP advertises and implements ACP session loading by verifying persisted checkpoint metadata and working-directory identity before replaying the session.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/deepagents_acp/server.py",
+          "version": "repo-file-v1:sha256:0fb5127f574feec00009b236b5963c819dc18658f2ef49b5a7d03738f195e0ae"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-30T08:06:28.871Z"
+    "at": "2026-10-01T08:06:30.386Z"
   }
 }

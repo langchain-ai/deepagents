@@ -1,19 +1,31 @@
 ---
 type: architecture source map
-title: System Ownership Map
-description: Change-oriented map of public entrypoints, lifecycle owners, package surfaces, and focused regression seams for Deep Agents, dcode, Talon, ACP, and partner integrations.
-tags: [deepagents, source-map, architecture, dcode, talon, acp, evaluations]
+title: System Source Map
+description: Change-oriented map of public entrypoints, lifecycle owners, package surfaces, and focused regression seams for Deep Agents, dcode, Talon, ACP, filesystem blob offload, and partner integrations.
+tags: [deepagents, source-map, architecture, dcode, talon, acp, offload, evaluations]
 sources:
   - id: openwiki-source-ffc41789c892ca61e2829a4c
     resource: repo://libs/acp/deepagents_acp/server.py
   - id: openwiki-source-3396dda6599f7426e19ed526
     resource: repo://libs/code/deepagents_code/__init__.py
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
+    resource: repo://libs/code/deepagents_code/client/remote_client.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
+  - id: openwiki-source-ea1089f0d7536fbc96c64866
+    resource: repo://libs/code/deepagents_code/offload_api.py
+  - id: openwiki-source-9b6cab59e92c8914079f0f53
+    resource: repo://libs/code/deepagents_code/offload.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
+  - id: openwiki-source-6a586415ef68cbe7c7967a41
+    resource: repo://libs/code/tests/unit_tests/test_offload_api.py
+  - id: openwiki-source-b3af62e14b5dc835d32e7ee0
+    resource: repo://libs/code/tests/unit_tests/test_offload.py
   - id: openwiki-source-fd64c1b88759a3b897a5452c
     resource: repo://libs/deepagents/deepagents/__init__.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
@@ -82,13 +94,13 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_pairing.py
   - id: openwiki-source-57a0613315e23277d358df76
     resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-01T08:06:30.386Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-30T08:06:28.871Z
-generated: { by: "openwiki/0.4.2", at: "2026-09-30T08:06:28.871Z" }
+    at: 2026-10-01T08:06:30.386Z
 ---
 
-# System Ownership Map
+# System Source Map
 
 This is a **change map**, not a source-tree inventory. Begin at the public boundary, then modify the owner of the relevant lifecycle, policy, or protocol contract. For execution details, see [overview](./overview.md), [dcode architecture](./code-agent.md), [runtime behavior](./runtime-behavior.md), [sandbox partners](../integrations/sandbox-partners.md), and the [testing guide](../testing/testing-guide.md).
 
@@ -99,6 +111,7 @@ This is a **change map**, not a source-tree inventory. Begin at the public bound
 | SDK graph composition | `deepagents.create_deep_agent` | `libs/deepagents/deepagents/graph.py` | `libs/deepagents/tests/unit_tests/test_graph.py`, then subagent or permission tests |
 | dcode command startup | `deepagents-code` / `dcode` -> `deepagents_code:cli_main` | `libs/code/deepagents_code/main.py` | `libs/code/tests/unit_tests/test_main.py` |
 | dcode server workspace policy | LangGraph `server_graph:make_graph` | `libs/code/deepagents_code/server_graph.py` | `libs/code/tests/unit_tests/test_server_graph.py` |
+| dcode filesystem blob offload | `/offload` / `/handoff` on the built-in dcode server | HTTP coordination in `offload_api.py`; compaction in `offload_middleware.py`; storage routes in `agent.py` and `offload.py` | `libs/code/tests/unit_tests/test_offload_api.py`, `test_offload.py`, then `integration_tests/test_offload_server_side.py` |
 | ACP protocol projection | `AgentServerACP` | `libs/acp/deepagents_acp/server.py` | `libs/acp/tests/test_agent.py` |
 | Talon host | `deepagents-talon` -> `deepagents_talon.__main__:main` | CLI bootstraps, `TalonHost` routes and owns lifetime, runtime composes the graph | `libs/talon/tests/test_host.py`, `test_runtime.py` |
 | Channel transport contract | `ChannelAdapter` and request/result records | `deepagents_talon/interfaces.py`, shared policy in `channels/base.py` | `libs/talon/tests/channels/test_base.py` plus provider tests |
@@ -128,6 +141,32 @@ The `deepagents` package root is the stable Python import surface: it exports `c
 `dcode` is a product host rather than a second graph owner. Both console aliases call the lazily exported `cli_main`; the lazy export keeps terminal startup imports out of ordinary package imports and turns an unresolvable Deep Agents home into a message and exit status 2. Its policy gate blocks policy-aware commands when managed configuration is unhealthy, but deliberately leaves `config`, `doctor`, and `auth path` available for diagnosis.
 
 The server graph owns server-scoped resources and workspace isolation. It constructs and caches workspace-bound runtimes, rejects workspace policy and extension-trust drift on each access, rebuilds on runtime-identity changes without policy drift, and permits a process-wide sandbox to be claimed by only one workspace. Do not “fix” a workspace issue in the interactive client if the invariant belongs in this server-side binding and cache.
+
+### dcode filesystem blob offload
+
+`/offload` is a **server-owned** compaction transaction, not a client-side checkpoint edit. `RemoteAgent.aoffload` first ensures the thread and its workspace binding, posts one operation ID, and loops only to fulfill hook interrupts. The Starlette boundary rehydrates the checkpoint itself, rejects active, interrupted, or pending graph work, rechecks the checkpoint immediately before commit, and uses a per-thread lock plus an operation registry so conflicting, duplicate, and cancellation requests have defined outcomes. It writes only the allowlisted summarization and cost channels—never `messages`—then persists the archive through the same backend that the live agent uses. `/handoff` deliberately archives and returns a full-context summary for a new thread while leaving the source thread uncompacted.
+
+```mermaid
+sequenceDiagram
+  participant UI as dcode UI
+  participant Client as RemoteAgent
+  participant API as offload API
+  participant Runtime as cached server runtime
+  participant Store as checkpoint and archive backend
+  UI->>Client: /offload
+  Client->>API: operation ID and context
+  API->>Store: read idle checkpoint
+  API->>Runtime: summarize with shared policy
+  Runtime-->>API: state update and staged archive
+  API->>Store: commit allowed channels
+  API->>Store: append archive and link path
+  API-->>Client: complete result
+  Client-->>UI: render result
+```
+
+This sequence shows the normal server-side compaction path. Hook interrupts return to the client for fulfillment and restart the operation with accumulated responses; a changed checkpoint is rejected rather than overwritten.
+
+Local mode maps large tool-result blobs and conversation archives through `CompositeBackend` routes. The normal artifacts directory is hardened; if it cannot be used, a stable virtual prefix routes large results to a private temporary directory. Conversation archives prefer `DEEPAGENTS_HOME` under `conversation_history` with a private subdirectory and writable probe, fall back to private temporary storage when necessary, and report that fallback as ephemeral. Retention cleanup deletes only expired regular Markdown archives, while session deletion removes both the per-thread archive and source-owned handoff snapshots. Preserve these routes when changing extensions: `agent.py` reserves them before extension routes are validated, so an extension cannot shadow the history or artifacts storage boundary.
 
 ## Talon: bootstrap, host protocols, and runtime boundaries
 
@@ -179,6 +218,7 @@ Sandbox integrations are independent partner distributions that depend on the De
 
 - **SDK composition:** `libs/deepagents/tests/unit_tests/test_graph.py`; add `test_subagents.py` or `test_permissions.py` for those contracts.
 - **dcode startup or policy:** `libs/code/tests/unit_tests/test_main.py`; use `test_server_graph.py` and `test_offload_api.py` when server resources or routes change.
+- **dcode blob offload:** start with `libs/code/tests/unit_tests/test_offload_api.py` for request, checkpoint, conflict, cancellation, hook, and commit behavior; use `test_offload.py` for local storage, retention, cleanup, and UI behavior; then `libs/code/integration_tests/test_offload_server_side.py` for the built-in server path.
 - **Talon host and protocol:** `libs/talon/tests/test_host.py`, `test_runtime.py`, `test_config.py`, and `unit_tests/test_configuration_hardening.py`.
 - **Talon integration boundaries:** `tests/channels/test_base.py`, `unit_tests/test_pairing.py`, `tests/test_mcp_middleware.py`, `tests/test_async_subagents.py`, `unit_tests/test_model_selection.py`, `unit_tests/test_history_backends.py`, or `unit_tests/test_sandbox.py`, selected by owner.
 - **ACP, partners, and evaluations:** start with each package's local tests; use evaluations to measure end-to-end product behavior rather than as the first test for an SDK primitive.

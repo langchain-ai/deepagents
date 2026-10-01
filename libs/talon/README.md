@@ -498,28 +498,6 @@ while continuing to work. Updates do not end the turn; the final reply is sent
 normally. The destination is fixed by the host, and sending is disabled once the
 originating turn finishes or is superseded. Runs without a channel cannot send updates.
 
-Incoming messages are admitted before attachment downloads, context retrieval, or voice
-transcription. Replacing an active turn preserves its uncommitted inputs in arrival order;
-`/stop`, `/new`, and `/reset-all-history` discard earlier pending preparation as well as
-active work. A later message can start another turn. Pending input is held in memory
-until checkpointed; it does not survive a host crash before that checkpoint.
-
-The host accepts at most 64 uncommitted inputs per conversation and 1,024 across the
-assistant. Excess inputs receive an explicit rejection; control commands remain available.
-Failed preparation retains the input for retry on the next message, or cancellation with
-`/stop`.
-
-The bundled WhatsApp bridge now returns envelopes from `/messages` and prepares media
-through authenticated `POST /prepare` requests bound to the envelope token, chat, and
-message ID. Update externally managed bridges alongside Talon to get ordering guarantees;
-legacy bridges still work but cannot provide ordering before their downloads. The bridge
-holds at most 128 pending envelopes, reserves 16 extra queue slots for cancellation
-commands and reactions, and allows four concurrent preparations. Excess envelopes are
-rejected with a bridge log entry. Unclaimed preparation tokens expire after two minutes;
-expired preparation is reported as a failure without starting the agent. Use `/stop`
-and resend the original input if its token expired. These admission limits do not impose
-an aggregate retained-media storage quota.
-
 Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
 `/mcp-reload`, `/context-doctor`, `/model`, and `/smart-model`), and using MCP configuration and OAuth through chat. Help does
 not interrupt current work or consume a pending approval or sign-in response.

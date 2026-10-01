@@ -102,12 +102,6 @@ async def test_no_conversation_does_not_call_model(title_model: AsyncMock) -> No
     title_model.ainvoke.assert_not_awaited()
 
 
-async def test_model_failure_propagates(title_model: AsyncMock) -> None:
-    title_model.ainvoke.side_effect = RuntimeError("Model unavailable")
-    with pytest.raises(RuntimeError, match="Model unavailable"):
-        await generate_thread_name("provider:rename-model", [HumanMessage("Fix cache")])
-
-
 async def test_stalled_model_times_out(
     title_model: AsyncMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:

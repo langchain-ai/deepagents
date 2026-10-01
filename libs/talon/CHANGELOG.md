@@ -2,59 +2,38 @@
 
 ## [0.0.9](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.8...deepagents-talon==0.0.9) (2026-10-01)
 
-
 ### Features
 
-* **talon:** add `/context-doctor` command ([#6557](https://github.com/langchain-ai/deepagents/issues/6557)) ([60c0228](https://github.com/langchain-ai/deepagents/commit/60c0228aad14d042080743ead04e135994d3fa75))
-* **talon:** add `/model` command for per-chat model switching ([#6577](https://github.com/langchain-ai/deepagents/issues/6577)) ([40873ba](https://github.com/langchain-ai/deepagents/commit/40873baa880133ae19ea921239ad9142c1972f4f))
-* **talon:** add approved one-off `ask_for_help` consultations ([#6605](https://github.com/langchain-ai/deepagents/issues/6605)) ([15d8f47](https://github.com/langchain-ai/deepagents/commit/15d8f471d8c6ba6868fc6d94beb7fad89ef7406f))
-* **talon:** add cron expressions and `until` expiry to scheduled jobs ([#6526](https://github.com/langchain-ai/deepagents/issues/6526)) ([71ae3f6](https://github.com/langchain-ai/deepagents/commit/71ae3f69b161fdb0d009fe91e112e9aa39369a4d))
-* **talon:** add general-purpose safety preflight skill ([#6587](https://github.com/langchain-ai/deepagents/issues/6587)) ([86923e1](https://github.com/langchain-ai/deepagents/commit/86923e160c18a6c090045ef1d60a17bd0d65760d))
-* **talon:** add sender pairing for DM access ([#6579](https://github.com/langchain-ai/deepagents/issues/6579)) ([135e849](https://github.com/langchain-ai/deepagents/commit/135e849484d15974a5dbc997828c9889b2d098fd))
-* **talon:** add Slack channel adapter ([#6575](https://github.com/langchain-ai/deepagents/issues/6575)) ([15bd7fd](https://github.com/langchain-ai/deepagents/commit/15bd7fdcfb5b6a02a650a5faa7aced0faf6dd6d8))
-* **talon:** admit paired senders in every chat ([#6592](https://github.com/langchain-ai/deepagents/issues/6592)) ([6744083](https://github.com/langchain-ai/deepagents/commit/6744083d1978b187fce1de0226aad3c5c9a647dc))
-* **talon:** allow outbound Slack user mentions ([#6602](https://github.com/langchain-ai/deepagents/issues/6602)) ([b329965](https://github.com/langchain-ai/deepagents/commit/b32996518f9bad4d156d19e35915d51ead7e6019))
-* **talon:** batch concurrent tool approvals ([#6435](https://github.com/langchain-ai/deepagents/issues/6435)) ([1660147](https://github.com/langchain-ai/deepagents/commit/16601472424400ab4a90608d7d95e8fc61f23267))
-* **talon:** deliver thread cron results to the channel by default ([#6632](https://github.com/langchain-ai/deepagents/issues/6632)) ([07628a5](https://github.com/langchain-ai/deepagents/commit/07628a59010348aca443087a19c477f148997b5b))
-* **talon:** opt-in sandboxed execution via `DEEPAGENTS_TALON_SANDBOX` ([#6574](https://github.com/langchain-ai/deepagents/issues/6574)) ([b5f22b0](https://github.com/langchain-ai/deepagents/commit/b5f22b01aff7cfe328d632de086c31247c2b1081))
-* **talon:** register chat commands as Discord slash commands ([#6303](https://github.com/langchain-ai/deepagents/issues/6303)) ([f36b641](https://github.com/langchain-ai/deepagents/commit/f36b641ce3e1f44dbd47835d6dc9f5bb1c82324a))
-* **talon:** run a scheduled job's subagents inline ([#6425](https://github.com/langchain-ai/deepagents/issues/6425)) ([c3a041e](https://github.com/langchain-ai/deepagents/commit/c3a041e3d8f593e4e4c9bfc273d52264ceff165b))
-* **talon:** send Slack mention pairing codes in DMs ([#6584](https://github.com/langchain-ai/deepagents/issues/6584)) ([a31b310](https://github.com/langchain-ai/deepagents/commit/a31b31009b3f7fad90cc567cd794def20e280bd3))
-* **talon:** share public Discord thread history by guild channel ([#6606](https://github.com/langchain-ai/deepagents/issues/6606)) ([936a37e](https://github.com/langchain-ai/deepagents/commit/936a37ef7b85a5ea3a2dca989e3e3a218fb96700))
-* **talon:** support explicit public MCP OAuth clients ([#6670](https://github.com/langchain-ai/deepagents/issues/6670)) ([7475059](https://github.com/langchain-ai/deepagents/commit/7475059432e9eda77b8b9a5bc7178f5f3a532bd9))
-* **talon:** support sender pairing on Slack ([#6582](https://github.com/langchain-ai/deepagents/issues/6582)) ([90cd463](https://github.com/langchain-ai/deepagents/commit/90cd463830418f79dc994f7b84c01f6256409435))
-
+- Add a Slack channel adapter, with support for outbound user mentions. ([#6575](https://github.com/langchain-ai/deepagents/pull/6575), [#6602](https://github.com/langchain-ai/deepagents/pull/6602))
+- Add sender pairing for DM access and Slack, including DM delivery of pairing codes for Slack mentions. Paired senders are admitted in every chat. ([#6579](https://github.com/langchain-ai/deepagents/pull/6579), [#6582](https://github.com/langchain-ai/deepagents/pull/6582), [#6584](https://github.com/langchain-ai/deepagents/pull/6584), [#6592](https://github.com/langchain-ai/deepagents/pull/6592))
+- Add `/model` for per-chat model switching. ([#6577](https://github.com/langchain-ai/deepagents/pull/6577))
+- Add cron expressions and `until` expiry for scheduled jobs, run their subagents inline, and deliver results from thread-based jobs to the channel by default. ([#6526](https://github.com/langchain-ai/deepagents/pull/6526), [#6425](https://github.com/langchain-ai/deepagents/pull/6425), [#6632](https://github.com/langchain-ai/deepagents/pull/6632))
+- Add opt-in sandboxed execution via `DEEPAGENTS_TALON_SANDBOX`. ([#6574](https://github.com/langchain-ai/deepagents/pull/6574))
+- Register chat commands as Discord slash commands and share public thread history by guild channel. ([#6303](https://github.com/langchain-ai/deepagents/pull/6303), [#6606](https://github.com/langchain-ai/deepagents/pull/6606))
+- Add approved, one-off `ask_for_help` consultations. ([#6605](https://github.com/langchain-ai/deepagents/pull/6605))
+- Batch approvals for concurrent tool calls. ([#6435](https://github.com/langchain-ai/deepagents/pull/6435))
+- Add a `/context-doctor` command. ([#6557](https://github.com/langchain-ai/deepagents/pull/6557))
+- Add a general-purpose safety preflight skill. ([#6587](https://github.com/langchain-ai/deepagents/pull/6587))
+- Support explicitly configured public MCP OAuth clients. ([#6670](https://github.com/langchain-ai/deepagents/pull/6670))
 
 ### Bug Fixes
 
-* **talon:** accept any Slack slash command name ([#6589](https://github.com/langchain-ai/deepagents/issues/6589)) ([31ae532](https://github.com/langchain-ai/deepagents/commit/31ae53291c23854912d3237c20e108445c6b6f11))
-* **talon:** accept labeled Slack OAuth callbacks ([#6593](https://github.com/langchain-ai/deepagents/issues/6593)) ([0359577](https://github.com/langchain-ai/deepagents/commit/035957706fc34545ae1e7485aa03f8415694cd71))
-* **talon:** avoid retranscribing voice on background follow-ups ([#6682](https://github.com/langchain-ai/deepagents/issues/6682)) ([1614a38](https://github.com/langchain-ai/deepagents/commit/1614a389ea48c12182c167d3ecf69224a69d4043))
-* **talon:** declare the packages talon imports directly ([#6436](https://github.com/langchain-ai/deepagents/issues/6436)) ([c63eba4](https://github.com/langchain-ai/deepagents/commit/c63eba426b28f1d1685e40767f087dcc3f34334c))
-* **talon:** deliver narration before running tools ([#6681](https://github.com/langchain-ai/deepagents/issues/6681)) ([a8bf07b](https://github.com/langchain-ai/deepagents/commit/a8bf07bf604524e98530034027414254ae215f78))
-* **talon:** enumerate selectable gateway models ([#6595](https://github.com/langchain-ai/deepagents/issues/6595)) ([5b29445](https://github.com/langchain-ai/deepagents/commit/5b29445dd387bb9e8b8c3fed8f7382a91a990e06))
-* **talon:** exclude OAuth callbacks from Slack thread context ([#6687](https://github.com/langchain-ai/deepagents/issues/6687)) ([f566a09](https://github.com/langchain-ai/deepagents/commit/f566a09da6141935ee564caa01c921da08f34036))
-* **talon:** improve subagent research handoffs ([#6674](https://github.com/langchain-ai/deepagents/issues/6674)) ([ab57eab](https://github.com/langchain-ai/deepagents/commit/ab57eab7e51121a2677d0c5b5aa396487ed2b9ee))
-* **talon:** include preceding Slack replies on thread mentions ([#6634](https://github.com/langchain-ai/deepagents/issues/6634)) ([0e5f6f8](https://github.com/langchain-ai/deepagents/commit/0e5f6f893b91bed16837f2cd7966049c7cafc650))
-* **talon:** index only visible conversation text ([#6358](https://github.com/langchain-ai/deepagents/issues/6358)) ([f6850e9](https://github.com/langchain-ai/deepagents/commit/f6850e9d25854b5679010c08f02adae99e6b8a2c))
-* **talon:** keep legacy Slack thread archives writable ([#6679](https://github.com/langchain-ai/deepagents/issues/6679)) ([166b0e0](https://github.com/langchain-ai/deepagents/commit/166b0e0ce1e424bb24f49ee5c48155458b4b1dce))
-* **talon:** let scheduled jobs read their origin chat's history ([#6583](https://github.com/langchain-ai/deepagents/issues/6583)) ([e70cf09](https://github.com/langchain-ai/deepagents/commit/e70cf09267d93ce54f381d77fb577a76adac6300))
-* **talon:** persist history vector deduplication ([#6357](https://github.com/langchain-ai/deepagents/issues/6357)) ([b3d4967](https://github.com/langchain-ai/deepagents/commit/b3d4967bdcda5b42e976b3e97c357deea82d63ac))
-* **talon:** persist model selection across conversations ([#6603](https://github.com/langchain-ai/deepagents/issues/6603)) ([156a682](https://github.com/langchain-ai/deepagents/commit/156a6824e53c3f483dca75d08e0d084c0788b3a3))
-* **talon:** preserve MIME types when downloading WhatsApp voice messages ([#6590](https://github.com/langchain-ai/deepagents/issues/6590)) ([e739e4d](https://github.com/langchain-ai/deepagents/commit/e739e4d66c367f91b430062ee841055ac311c57c))
-* **talon:** retry provider overload and connection errors ([#6580](https://github.com/langchain-ai/deepagents/issues/6580)) ([b3f1a39](https://github.com/langchain-ai/deepagents/commit/b3f1a3919fe39853ee29acee1fb49b077507428f))
-* **talon:** retry statusless provider overload errors ([#6304](https://github.com/langchain-ai/deepagents/issues/6304)) ([f8acbd0](https://github.com/langchain-ai/deepagents/commit/f8acbd0ae24278d35aeb1fa014056084a58f70d2))
-* **talon:** serialize cron store mutations ([#6688](https://github.com/langchain-ai/deepagents/issues/6688)) ([67b0bef](https://github.com/langchain-ai/deepagents/commit/67b0bef01082bf94e8641bf4e1a94a71b3f6ebc9))
-* **talon:** share Slack channel conversation archives across threads ([#6665](https://github.com/langchain-ai/deepagents/issues/6665)) ([6bf7665](https://github.com/langchain-ai/deepagents/commit/6bf76658f88af8328d9a9625d2c6444e01896248))
-* **talon:** stop swallowing a turn's cancel during typing cleanup ([#6594](https://github.com/langchain-ai/deepagents/issues/6594)) ([eff90de](https://github.com/langchain-ai/deepagents/commit/eff90dec8c6bfe9636da064c7c9310b660d89b32))
-* **talon:** store offloaded artifacts in the assistant home ([#6530](https://github.com/langchain-ai/deepagents/issues/6530)) ([74d768b](https://github.com/langchain-ai/deepagents/commit/74d768bd45dd4eca977dc320ebfe5838f1691682))
-* **talon:** transcribe inbound audio attachments ([#6680](https://github.com/langchain-ai/deepagents/issues/6680)) ([184f547](https://github.com/langchain-ai/deepagents/commit/184f547e12f57df358eb49536a02cbe672f95888))
-* **talon:** validate archive pagination arguments ([#6442](https://github.com/langchain-ai/deepagents/issues/6442)) ([f84d963](https://github.com/langchain-ai/deepagents/commit/f84d96358a111872fba3f9b69c5b08ad1565c083))
-
+- Retry provider overload and connection errors, including overload errors without a status code. ([#6580](https://github.com/langchain-ai/deepagents/pull/6580), [#6304](https://github.com/langchain-ai/deepagents/pull/6304))
+- Transcribe inbound audio attachments, preserve MIME types for downloaded WhatsApp voice messages, and avoid retranscribing voice on background follow-ups. ([#6680](https://github.com/langchain-ai/deepagents/pull/6680), [#6590](https://github.com/langchain-ai/deepagents/pull/6590), [#6682](https://github.com/langchain-ai/deepagents/pull/6682))
+- List selectable gateway models and persist model selection across conversations. ([#6595](https://github.com/langchain-ai/deepagents/pull/6595), [#6603](https://github.com/langchain-ai/deepagents/pull/6603))
+- Preserve Slack conversation context across threads, include preceding replies when mentioned in a thread, and keep legacy thread archives writable. ([#6665](https://github.com/langchain-ai/deepagents/pull/6665), [#6634](https://github.com/langchain-ai/deepagents/pull/6634), [#6679](https://github.com/langchain-ai/deepagents/pull/6679))
+- Allow scheduled jobs to read their origin chat’s history and serialize changes to the cron store. ([#6583](https://github.com/langchain-ai/deepagents/pull/6583), [#6688](https://github.com/langchain-ai/deepagents/pull/6688))
+- Accept any Slack slash command name and labeled Slack OAuth callbacks, while excluding OAuth callbacks from thread context. ([#6589](https://github.com/langchain-ai/deepagents/pull/6589), [#6593](https://github.com/langchain-ai/deepagents/pull/6593), [#6687](https://github.com/langchain-ai/deepagents/pull/6687))
+- Deliver narration before running tools and preserve turn cancellation during typing cleanup. ([#6681](https://github.com/langchain-ai/deepagents/pull/6681), [#6594](https://github.com/langchain-ai/deepagents/pull/6594))
+- Index only visible conversation text and persist history-vector deduplication. ([#6358](https://github.com/langchain-ai/deepagents/pull/6358), [#6357](https://github.com/langchain-ai/deepagents/pull/6357))
+- Improve subagent research handoffs. ([#6674](https://github.com/langchain-ai/deepagents/pull/6674))
+- Store offloaded artifacts in the assistant home. ([#6530](https://github.com/langchain-ai/deepagents/pull/6530))
+- Validate archive pagination arguments. ([#6442](https://github.com/langchain-ai/deepagents/pull/6442))
+- Declare packages that Talon imports directly as dependencies. ([#6436](https://github.com/langchain-ai/deepagents/pull/6436))
 
 ### Performance Improvements
 
-* **talon:** reduce archive replay transactions ([#6320](https://github.com/langchain-ai/deepagents/issues/6320)) ([89bd48f](https://github.com/langchain-ai/deepagents/commit/89bd48f7d531c9affafa3f0dc096083cbc5969dd))
+- Reduce transactions when replaying conversation archives. ([#6320](https://github.com/langchain-ai/deepagents/pull/6320))
 
 ## [0.0.8](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.7...deepagents-talon==0.0.8) (2026-09-11)
 

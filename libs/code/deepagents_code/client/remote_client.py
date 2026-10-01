@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from deepagents_code.client.session_cost import SessionCost
     from deepagents_code.cost_tracking import CostBreakdown
     from deepagents_code.mcp_tools import MCPServerInfo
+    from deepagents_code.model_metadata import ModelMetadata
     from deepagents_code.offload_middleware import OffloadResult
     from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
 
@@ -396,6 +397,57 @@ class RemoteAgent:
                 headers=self._headers,
             )
         return self._graph
+
+    async def aresolve_model(
+        self,
+        config: Mapping[str, Any],
+        model_spec: str | None = None,
+        *,
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> ModelMetadata:
+        """Read startup metadata or validate a proposed switch on the server.
+
+        Returns:
+            Validated metadata, without a provider model in the client process.
+
+        Raises:
+            RuntimeError: If the metadata request times out.
+        """
+        from langgraph_sdk.errors import APIStatusError
+
+        from deepagents_code.model_metadata import ModelMetadata
+
+        async def resolve() -> ModelMetadata:
+            workspace = await self._workspace_for_thread(config)
+            thread_id = _require_thread_id(config)
+            try:
+                response = await self._get_graph().client.http.post(
+                    f"/dcode/threads/{thread_id}/model",
+                    json={
+                        "workspace": workspace,
+                        "model_spec": model_spec,
+                        "extra_kwargs": extra_kwargs,
+                    },
+                )
+            except APIStatusError as exc:
+                body = exc.body
+                detail = body.get("detail") if isinstance(body, dict) else None
+                msg = (
+                    detail
+                    if isinstance(detail, str)
+                    else (
+                        "Model metadata is unavailable from this server. "
+                        "Update or restart the server and retry."
+                    )
+                )
+                raise RuntimeError(msg) from exc
+            return ModelMetadata.from_payload(response)
+
+        try:
+            return await asyncio.wait_for(resolve(), timeout=60)
+        except TimeoutError as exc:
+            msg = "Timed out resolving model metadata. Restart the server and retry."
+            raise RuntimeError(msg) from exc
 
     async def abtw(
         self,

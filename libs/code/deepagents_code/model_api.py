@@ -1,0 +1,108 @@
+"""Workspace-bound model metadata resolution in the server process."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from starlette.responses import JSONResponse
+
+from deepagents_code.model_config import ModelConfigError
+from deepagents_code.model_metadata import ModelMetadata
+from deepagents_code.workspace import WorkspaceConflictError, require_thread_workspace
+
+if TYPE_CHECKING:
+    from starlette.requests import Request
+
+logger = logging.getLogger(__name__)
+
+
+async def model_metadata(request: Request) -> JSONResponse:
+    """Resolve metadata without committing a model switch or running inference.
+
+    Returns:
+        Model properties or a validation/availability error.
+    """
+    from deepagents_code.server_graph import (
+        _resolve_bound_workspace_config,
+        _workspace_runtime,
+    )
+
+    try:
+        body = await request.json()
+        if not isinstance(body, dict) or body.keys() - {
+            "workspace",
+            "model_spec",
+            "extra_kwargs",
+        }:
+            return JSONResponse(
+                {"detail": "Invalid model metadata request."}, status_code=422
+            )
+        spec = body.get("model_spec")
+        params = body.get("extra_kwargs")
+        if (spec is not None and (not isinstance(spec, str) or not spec)) or (
+            params is not None and not isinstance(params, dict)
+        ):
+            return JSONResponse(
+                {"detail": "Invalid model specification or parameters."},
+                status_code=422,
+            )
+        binding = await require_thread_workspace(
+            request.path_params["thread_id"], body.get("workspace")
+        )
+        if spec is None and params is not None:
+            return JSONResponse(
+                {"detail": "Model parameters require a model specification."},
+                status_code=422,
+            )
+        if spec is None:
+            runtime = await _workspace_runtime(binding)
+            metadata = runtime.model_metadata
+            if metadata is None:
+                return JSONResponse(
+                    {"detail": "Model metadata is unavailable."}, status_code=503
+                )
+        else:
+            config = await _resolve_bound_workspace_config(binding)
+
+            def resolve() -> ModelMetadata:
+                from deepagents_code.config import (
+                    _preview_dotenv_environ,
+                    create_model,
+                    use_environment,
+                )
+
+                environ = _preview_dotenv_environ(start_path=Path(binding.cwd))
+                with use_environment(environ):
+                    result = create_model(
+                        spec,
+                        extra_kwargs=params,
+                        profile_overrides=config.profile_overrides,
+                        cli_max_retries=config.cli_max_retries,
+                    )
+                return ModelMetadata(
+                    result.model_name,
+                    result.provider,
+                    result.context_limit,
+                    result.unsupported_modalities,
+                )
+
+            metadata = await asyncio.to_thread(resolve)
+        return JSONResponse(metadata.to_payload())
+    except WorkspaceConflictError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+    except (ModelConfigError, TypeError, ValueError) as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+    except (Exception, SystemExit):
+        logger.exception("Server model metadata resolution failed")
+        return JSONResponse(
+            {
+                "detail": (
+                    "The server could not resolve model metadata. "
+                    "Check the server log and retry."
+                )
+            },
+            status_code=503,
+        )

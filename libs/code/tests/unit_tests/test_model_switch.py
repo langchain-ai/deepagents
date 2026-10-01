@@ -92,6 +92,7 @@ def mock_create_model() -> Iterator[Mock]:
     }
 
     def fake_create_model(
+        _config: object,
         model_spec: str,
         *,
         extra_kwargs: dict[str, object] | None = None,
@@ -115,7 +116,7 @@ def mock_create_model() -> Iterator[Mock]:
         )
 
     with patch(
-        "deepagents_code.config.create_model",
+        "deepagents_code.client.remote_client.RemoteAgent.aresolve_model",
         side_effect=fake_create_model,
     ) as mock:
         yield mock
@@ -314,6 +315,13 @@ class TestModelSwitchErrorHandling:
             original_init(self, message, **kwargs)
 
         with (
+            patch.object(
+                RemoteAgent,
+                "aresolve_model",
+                AsyncMock(
+                    side_effect=RuntimeError("Missing credentials: ANTHROPIC_API_KEY")
+                ),
+            ),
             patch(
                 "deepagents_code.model_config.get_provider_auth_status",
                 return_value=ProviderAuthStatus(
@@ -439,10 +447,9 @@ class TestModelSwitchErrorHandling:
         assert runtime_state.model_provider == "anthropic"
         assert runtime_state.model_context_limit == 200_000
         mock_create_model.assert_called_once_with(
+            {"configurable": {"thread_id": app._lc_thread_id}},
             "anthropic:claude-sonnet-4-5",
             extra_kwargs={"temperature": 0.7},
-            profile_overrides={"max_input_tokens": 180_000},
-            cli_max_retries=None,
         )
 
     async def test_remote_agent_sets_model_params_override(self) -> None:
@@ -705,6 +712,13 @@ api_key_env = "FIREWORKS_API_KEY"
             original_err_init(self, message, **kwargs)
 
         with (
+            patch.object(
+                RemoteAgent,
+                "aresolve_model",
+                AsyncMock(
+                    side_effect=RuntimeError("Missing credentials: FIREWORKS_API_KEY")
+                ),
+            ),
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
             patch.dict("os.environ", {}, clear=True),
             patch.object(ErrorMessage, "__init__", capture_err),
@@ -849,6 +863,13 @@ class TestModelSwitchBareModelName:
             original_init(self, message, **kwargs)
 
         with (
+            patch.object(
+                RemoteAgent,
+                "aresolve_model",
+                AsyncMock(
+                    side_effect=RuntimeError("Missing credentials: OPENAI_API_KEY")
+                ),
+            ),
             patch("deepagents_code.config.detect_provider", return_value="openai"),
             patch(
                 "deepagents_code.model_config.get_provider_auth_status",

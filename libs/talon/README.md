@@ -311,13 +311,6 @@ uv run deepagents-talon --whatsapp
 
 The bridge prints a QR code during pairing. By default, inbound exposure is `self`, so only messages from the paired account trigger the agent. Configure `DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=allowlist` with `DEEPAGENTS_TALON_WHATSAPP_ALLOWLIST_CHATS` or `DEEPAGENTS_TALON_WHATSAPP_MENTION_PATTERNS` to allow specific chats. `DEEPAGENTS_TALON_WHATSAPP_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure. Outbound WhatsApp messages include a `deepagents bot` header by default so self-message conversations clearly distinguish agent replies from operator messages. Set `DEEPAGENTS_TALON_WHATSAPP_BOT_HEADER` to customize that label. Markdown image/video references in assistant replies may attach files only when they are relative paths inside `DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR`, or inside `DEEPAGENTS_TALON_WORKSPACE` when no outbound media directory is configured. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB), but WhatsApp is clamped to `67108864` (64 MiB) because the bridge library materializes downloads in memory before writing them.
 
-The bundled bridge queues lightweight envelopes and downloads media only after Python's exposure policy admits the message. External bridges must implement the same deferred `/prepare` protocol (single-use `preparation_token`, `chat_id`, and `message_id`) and `/discard` cancellation endpoint; upgrade them together with Talon. Legacy bridges that download before polling cannot provide this admission guarantee.
-
-Inbound WhatsApp media with missing or invalid size metadata is skipped. The bridge accepts up to 128 pending or preparing envelopes, with 16 extra queue slots for control messages and reactions, and runs at most four preparations concurrently. Overload drops new envelopes or returns HTTP 429 for preparation; send the message again after capacity frees up. Pending capabilities expire after two minutes. Rejected and cancelled requests are discarded; in-flight downloads retain their concurrency slot until they settle and cannot write after cancellation or expiry.
-
-New inbound files live in the bridge media directory's `inbound/` subdirectory, capped at 256 MiB in aggregate and at most 64 MiB per file (or the configured smaller limit). Capacity is checked before download and again before writing. Full storage skips attachments while preserving message text. Files expire after 24 hours, with cleanup every 30 seconds and before downloads/writes; failed and abandoned writes are removed immediately. Older files outside `inbound/` remain subject to the existing data-retention policy. WhatsApp's browser library materializes decrypted media, so these limits bound concurrency and retained files, not Chromium's total memory usage.
-
-
 Inbound voice transcription is opt-in:
 
 ```bash
@@ -504,28 +497,6 @@ The agent can call `send_message(text)` to post a progress update to the same ch
 while continuing to work. Updates do not end the turn; the final reply is sent
 normally. The destination is fixed by the host, and sending is disabled once the
 originating turn finishes or is superseded. Runs without a channel cannot send updates.
-
-Incoming messages are admitted before attachment downloads, context retrieval, or voice
-transcription. Replacing an active turn preserves its uncommitted inputs in arrival order;
-`/stop`, `/new`, and `/reset-all-history` discard earlier pending preparation as well as
-active work. A later message can start another turn. Pending input is held in memory
-until checkpointed; it does not survive a host crash before that checkpoint.
-
-The host accepts at most 64 uncommitted inputs per conversation and 1,024 across the
-assistant. Excess inputs receive an explicit rejection; control commands remain available.
-Failed preparation retains the input for retry on the next message, or cancellation with
-`/stop`.
-
-The bundled WhatsApp bridge now returns envelopes from `/messages` and prepares media
-through authenticated `POST /prepare` requests bound to the envelope token, chat, and
-message ID. Update externally managed bridges alongside Talon to get ordering guarantees;
-legacy bridges still work but cannot provide ordering before their downloads. The bridge
-holds at most 128 pending envelopes, reserves 16 extra queue slots for cancellation
-commands and reactions, and allows four concurrent preparations. Excess envelopes are
-rejected with a bridge log entry. Unclaimed preparation tokens expire after two minutes;
-expired preparation is reported as a failure without starting the agent. Use `/stop`
-and resend the original input if its token expired. These admission limits do not impose
-an aggregate retained-media storage quota.
 
 Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
 `/mcp-reload`, `/context-doctor`, `/model`, and `/smart-model`), and using MCP configuration and OAuth through chat. Help does

@@ -77,15 +77,23 @@ async def test_acp_defaults_classifier_after_provider_resolution(tmp_path) -> No
             return None
 
     @asynccontextmanager
-    async def get_checkpointer() -> AsyncIterator[Checkpointer]:
+    async def get_checkpointer(*, owned: bool = False) -> AsyncIterator[Checkpointer]:
+        assert owned
         yield Checkpointer()
 
     class AgentServer:
         def __init__(self, build_agent, **_kwargs: object) -> None:
             self.build_agent = build_agent
 
+        def _session_config(self, session_id: str) -> dict[str, dict[str, str]]:
+            return {"configurable": {"thread_id": session_id}}
+
+    from deepagents_code.thread_ownership import held_lease
+
     async def run_agent(server: AgentServer) -> None:
         server.build_agent(SimpleNamespace(model=None, cwd=str(tmp_path)))
+        server._session_config("acp-retained")
+        assert held_lease("acp-retained") is not None
         await asyncio.sleep(0)
 
     def create_cli_agent(**kwargs: object) -> tuple[object, object]:
@@ -108,6 +116,10 @@ async def test_acp_defaults_classifier_after_provider_resolution(tmp_path) -> No
             new=AsyncMock(return_value=([], None, None)),
         ),
         patch("deepagents_code.sessions.get_checkpointer", new=get_checkpointer),
+        patch(
+            "deepagents_code.sessions.get_db_path",
+            return_value=tmp_path / "sessions.db",
+        ),
         patch("deepagents_code.acp.AgentServerACP", new=AgentServer),
     ):
         credentials.has_tavily = False
@@ -121,4 +133,56 @@ async def test_acp_defaults_classifier_after_provider_resolution(tmp_path) -> No
         )
 
     assert exit_code == 0
+    assert held_lease("acp-retained", db_path=tmp_path / "sessions.db") is None
     assert classifier_models == ["openai:gpt-5.6-luna"]
+
+
+async def test_acp_sessions_use_fenced_persistence(tmp_path, monkeypatch) -> None:
+    from deepagents_acp.server import AgentServerACP
+    from langgraph.graph import END, START, StateGraph
+    from pydantic import BaseModel
+
+    from deepagents_code.main import _owned_acp_server_class
+    from deepagents_code.sessions import get_checkpointer
+    from deepagents_code.thread_ownership import ThreadOwnershipError, try_acquire
+
+    monkeypatch.setattr(
+        "deepagents_code.sessions.get_db_path", lambda: tmp_path / "sessions.db"
+    )
+    first_leases = {}
+    second_leases = {}
+
+    class State(BaseModel):
+        messages: list[str] = []
+
+    async with get_checkpointer(owned=True) as saver:
+        graph = StateGraph(State)
+        graph.add_node("echo", lambda state: state)
+        graph.add_edge(START, "echo")
+        graph.add_edge("echo", END)
+        agent = graph.compile(checkpointer=saver)
+        first = _owned_acp_server_class(AgentServerACP, first_leases)(
+            agent, load_sessions=True
+        )
+        second = _owned_acp_server_class(AgentServerACP, second_leases)(
+            agent, load_sessions=True
+        )
+        try:
+            created = await first.new_session(cwd=str(tmp_path))
+            thread_id = created.session_id
+            assert try_acquire(thread_id) is None
+            with pytest.raises(ThreadOwnershipError, match="open elsewhere"):
+                await second.load_session(cwd=str(tmp_path), session_id=thread_id)
+            old_config = first._session_config(thread_id)
+            first._forget_session(thread_id)
+            monkeypatch.setattr(second, "_replay_session", AsyncMock())
+            await second.load_session(cwd=str(tmp_path), session_id=thread_id)
+            assert try_acquire(thread_id) is None
+            await agent.aupdate_state(
+                second._session_config(thread_id), {}, as_node="__start__"
+            )
+            with pytest.raises(ThreadOwnershipError, match="ownership changed"):
+                await agent.aupdate_state(old_config, {}, as_node="__start__")
+        finally:
+            for lease in (*first_leases.values(), *second_leases.values()):
+                lease.release()

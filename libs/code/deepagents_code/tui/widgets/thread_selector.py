@@ -85,7 +85,7 @@ _COLUMN_ORDER = (
 )
 _COLUMN_WIDTHS: dict[str, int | None] = {
     "thread_id": _COL_TID,
-    "thread_name": 24,
+    "thread_name": None,
     "agent_name": _COL_AGENT,
     "messages": _COL_MSGS,
     "created_at": _COL_TIMESTAMP,
@@ -220,6 +220,8 @@ def _apply_column_width(
         column_widths: Effective column widths for the current table state.
     """
     width = column_widths.get(key)
+    if key == "thread_name":
+        cell.display = width != 0
     if width is not None:
         cell.styles.width = width
         if key in _AUTO_WIDTH_COLUMNS:
@@ -875,6 +877,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     ThreadSelectorScreen .thread-cell-thread_id {
         width: 10;
+    }
+
+    ThreadSelectorScreen .thread-cell-thread_name {
+        width: 1fr;
+        max-width: 24;
+        overflow-x: hidden;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
     }
 
     ThreadSelectorScreen .thread-cell-agent_name {
@@ -1700,6 +1710,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         # Derive auto-widths from the pre-formatted values.
         widths = dict(_COLUMN_WIDTHS)
+        # Give the prompt all remaining space when no visible thread has a name.
+        if not any(
+            cell_text.get((t["thread_id"], "thread_name"))
+            for t in self._filtered_threads
+        ):
+            widths["thread_name"] = 0
         for key in _AUTO_WIDTH_COLUMNS:
             if key not in visible:
                 continue

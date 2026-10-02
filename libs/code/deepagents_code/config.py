@@ -6033,6 +6033,47 @@ def _apply_scoped_endpoint(
         kwargs.pop("base_url", None)
 
 
+_PROVIDER_NATIVE_BASE_URLS: dict[str, str] = {
+    "anthropic": "https://api.anthropic.com",
+    "baseten": "https://inference.baseten.co/v1",
+    "cohere": "https://api.cohere.com",
+    "deepseek": "https://api.deepseek.com/v1",
+    "fireworks": "https://api.fireworks.ai/inference",
+    "google_genai": "https://generativelanguage.googleapis.com/",
+    "groq": "https://api.groq.com",
+    "mistralai": "https://api.mistral.ai/v1",
+    "nvidia": "https://integrate.api.nvidia.com/v1",
+    "openai": "https://api.openai.com/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "perplexity": "https://api.perplexity.ai",
+    "together": "https://api.together.xyz/v1/",
+    "xai": "https://api.x.ai/v1/",
+}
+"""Native endpoints that must bypass integration and SDK environment fallbacks.
+
+These are constructor URLs verified against the provider sources, not request
+URLs: Fireworks appends `/v1/chat/completions` to an explicit base URL. Providers
+with deployment-specific endpoints (such as Azure) have no fixed native URL.
+"""
+
+
+def _google_genai_uses_vertexai(kwargs: dict[str, Any]) -> bool:
+    """Match the integration's backend selection before choosing a native URL.
+
+    Returns:
+        Whether Google will derive a Vertex endpoint from project and location.
+    """
+    if kwargs.get("vertexai") is not None:
+        return bool(kwargs["vertexai"])
+    # The integration reads the process environment for backend selection.
+    selector = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower()
+    if selector in {"true", "1", "yes"}:
+        return True
+    if selector in {"false", "0", "no"}:
+        return False
+    return kwargs.get("credentials") is not None or kwargs.get("project") is not None
+
+
 def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None:
     """Pair stored credentials with their endpoint without mutating the process."""
     from deepagents_code.model_config import (
@@ -6072,10 +6113,11 @@ def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None
     kwargs.pop("base_url", None)
     # Omitting the kwarg lets the integration/SDK reread the process's gateway
     # env vars, which a workspace-scoped construction must leave untouched.
-    if provider == "anthropic":
-        kwargs["base_url"] = "https://api.anthropic.com"
-    elif provider == "openai":
-        kwargs["base_url"] = "https://api.openai.com/v1"
+    if provider == "google_genai" and _google_genai_uses_vertexai(kwargs):
+        # Vertex has regional endpoints; the Gemini URL is not its default.
+        return
+    if native_url := _PROVIDER_NATIVE_BASE_URLS.get(provider):
+        kwargs["base_url"] = native_url
     custom_headers = PROVIDER_CUSTOM_HEADERS_ENV.get(provider)
     if custom_headers:
         kwargs["default_headers"] = {}
@@ -6323,6 +6365,28 @@ def _create_model_from_class(
         raise ModelConfigError(msg) from e
 
 
+def _create_perplexity_model(model_name: str, kwargs: dict[str, Any]) -> BaseChatModel:
+    """Apply the endpoint to SDK clients before any requests can be made.
+
+    `ChatPerplexity` does not expose `base_url`; passing it to the integration
+    would send it as a completion parameter while its SDK rereads the process
+    environment. Client construction is local, so set each instance's endpoint
+    before returning the model. Explicitly supplied clients retain their settings.
+
+    Returns:
+        Model with the resolved endpoint on both SDK clients.
+    """
+    from langchain.chat_models import init_chat_model
+
+    kwargs = dict(kwargs)
+    base_url = kwargs.pop("base_url")
+    model = init_chat_model(model_name, model_provider="perplexity", **kwargs)
+    for attribute in ("client", "async_client"):
+        if not kwargs.get(attribute):
+            getattr(model, attribute).base_url = base_url
+    return model
+
+
 def _create_model_via_init(
     model_name: str,
     provider: str,
@@ -6358,6 +6422,8 @@ def _create_model_via_init(
 
     try:
         if provider:
+            if provider == "perplexity" and kwargs.get("base_url"):
+                return _create_perplexity_model(model_name, kwargs)
             return init_chat_model(model_name, model_provider=provider, **kwargs)
         return init_chat_model(model_name, **kwargs)
     except ImportError as e:

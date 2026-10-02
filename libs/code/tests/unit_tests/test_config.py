@@ -1704,6 +1704,184 @@ class TestWorkspaceStoredCredentials:
         assert kwargs["api_key"] == "caller-key"
         assert "base_url" not in kwargs
 
+    @pytest.mark.parametrize(
+        "endpoint_source", ["native", "stored", "prefixed", "config", "caller"]
+    )
+    async def test_stored_google_key_uses_its_endpoint_in_sdk_client(
+        self, monkeypatch: pytest.MonkeyPatch, endpoint_source: str
+    ) -> None:
+        """Google cannot reread a gateway after scoped endpoint resolution."""
+        import os
+
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        from deepagents_code.config import use_environment
+
+        endpoint = "https://selected.example"
+        config = ModelConfig(
+            providers=(
+                {"google_genai": {"base_url": endpoint}}
+                if endpoint_source == "config"
+                else {}
+            )
+        )
+        monkeypatch.setattr(ModelConfig, "load", classmethod(lambda _cls: config))
+        monkeypatch.setattr(
+            model_config.auth_store,
+            "get_stored_key",
+            lambda provider: "stored-key" if provider == "google_genai" else None,
+        )
+        monkeypatch.setattr(
+            model_config.auth_store,
+            "get_stored_base_url",
+            lambda _provider: endpoint if endpoint_source == "stored" else None,
+        )
+        monkeypatch.setenv("GOOGLE_API_KEY", "inherited-key")
+        monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://gateway.example")
+        environment = {
+            "GOOGLE_API_KEY": "inherited-key",
+            "GOOGLE_GEMINI_BASE_URL": "https://gateway.example",
+        }
+        if endpoint_source == "prefixed":
+            environment["DEEPAGENTS_CODE_GOOGLE_GEMINI_BASE_URL"] = endpoint
+        extra_kwargs: dict[str, Any] = {"vertexai": False}
+        if endpoint_source == "caller":
+            extra_kwargs["base_url"] = endpoint
+
+        with use_environment(environment):
+            result = create_model("google_genai:gemini-test", extra_kwargs=extra_kwargs)
+
+        model = result.model
+        assert isinstance(model, ChatGoogleGenerativeAI)
+        assert model.client is not None
+        try:
+            expected = (
+                "https://generativelanguage.googleapis.com/"
+                if endpoint_source == "native"
+                else endpoint
+            )
+            assert model.client._api_client._http_options.base_url == expected
+            assert model.client._api_client.api_key == "stored-key"
+            assert os.environ["GOOGLE_GEMINI_BASE_URL"] == "https://gateway.example"
+            assert os.environ["GOOGLE_API_KEY"] == "inherited-key"
+        finally:
+            model.client.close()
+            await model.client.aio.aclose()
+
+    @pytest.mark.parametrize(
+        ("provider", "endpoint_env", "native_endpoint"),
+        [
+            ("groq", "GROQ_BASE_URL", "https://api.groq.com"),
+            ("groq", "GROQ_API_BASE", "https://api.groq.com"),
+            ("fireworks", "FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference"),
+            ("fireworks", "FIREWORKS_API_BASE", "https://api.fireworks.ai/inference"),
+            ("perplexity", "PERPLEXITY_BASE_URL", "https://api.perplexity.ai"),
+        ],
+    )
+    @pytest.mark.parametrize("stored_endpoint", [None, "https://stored.example/v1"])
+    async def test_stored_optional_provider_key_uses_its_endpoint_in_sdk_clients(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        endpoint_env: str,
+        native_endpoint: str,
+        stored_endpoint: str | None,
+    ) -> None:
+        """Both sync and async SDK clients bypass inherited gateway fallbacks."""
+        import os
+
+        from deepagents_code.config import use_environment
+
+        pytest.importorskip(f"langchain_{provider}")
+        monkeypatch.setattr(
+            ModelConfig, "load", classmethod(lambda _cls: ModelConfig())
+        )
+        monkeypatch.setattr(
+            model_config.auth_store, "get_stored_key", lambda _provider: "stored-key"
+        )
+        monkeypatch.setattr(
+            model_config.auth_store,
+            "get_stored_base_url",
+            lambda _provider: stored_endpoint,
+        )
+        key_env = model_config.PROVIDER_API_KEY_ENV[provider]
+        monkeypatch.setenv(key_env, "inherited-key")
+        monkeypatch.setenv(endpoint_env, "https://gateway.example/v1")
+        with use_environment(
+            {key_env: "inherited-key", endpoint_env: "https://gateway.example/v1"}
+        ):
+            model = create_model(f"{provider}:test-model").model
+
+        attributes = (
+            ("_sdk_client", "_async_sdk_client")
+            if provider == "fireworks"
+            else ("client", "async_client")
+        )
+        sync_client, async_client = (getattr(model, name) for name in attributes)
+        if provider == "groq":
+            sync_client, async_client = sync_client._client, async_client._client
+        try:
+            for client in (sync_client, async_client):
+                assert str(client.base_url).rstrip("/") == (
+                    stored_endpoint or native_endpoint
+                )
+                assert client.api_key == "stored-key"
+            assert os.environ[endpoint_env] == "https://gateway.example/v1"
+            assert os.environ[key_env] == "inherited-key"
+        finally:
+            sync_client.close()
+            await async_client.close()
+
+    @pytest.mark.parametrize("selector", ["parameter", "environment", "project"])
+    async def test_stored_google_key_preserves_vertex_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch, selector: str
+    ) -> None:
+        """Selecting Vertex must not force Google's Gemini Developer API URL."""
+        from google.auth.credentials import AnonymousCredentials
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        from deepagents_code.config import use_environment
+
+        monkeypatch.setattr(
+            ModelConfig, "load", classmethod(lambda _cls: ModelConfig())
+        )
+        monkeypatch.setattr(
+            model_config.auth_store, "get_stored_key", lambda _provider: "stored-key"
+        )
+        monkeypatch.setattr(
+            model_config.auth_store, "get_stored_base_url", lambda _provider: None
+        )
+        monkeypatch.setattr(
+            "google.genai._api_client.load_auth",
+            lambda **_kwargs: (AnonymousCredentials(), "test-project"),
+        )
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+        monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://gateway.example")
+        monkeypatch.delenv("GOOGLE_VERTEX_BASE_URL", raising=False)
+        monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+        extra_kwargs: dict[str, Any] = {"location": "us-central1"}
+        if selector == "parameter":
+            extra_kwargs["vertexai"] = True
+        elif selector == "environment":
+            monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        else:
+            extra_kwargs["project"] = "test-project"
+
+        with use_environment({}):
+            model = create_model(
+                "google_genai:gemini-test", extra_kwargs=extra_kwargs
+            ).model
+
+        assert isinstance(model, ChatGoogleGenerativeAI)
+        assert model.client is not None
+        try:
+            assert model.client._api_client._http_options.base_url == (
+                "https://us-central1-aiplatform.googleapis.com/"
+            )
+        finally:
+            model.client.close()
+            await model.client.aio.aclose()
+
     @patch("langchain.chat_models.init_chat_model")
     def test_stored_anthropic_key_clears_endpoint_and_headers(
         self,

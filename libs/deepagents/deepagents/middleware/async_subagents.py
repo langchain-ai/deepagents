@@ -20,7 +20,7 @@ from typing import Annotated, Any, Literal, NotRequired, TypedDict
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT, TracePolicy, omit_payload
 from langchain.tools import ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
-from langchain_core.messages import AnyMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
@@ -268,18 +268,19 @@ _ASYNC_FORK_TASK_PREAMBLE = (
 )
 
 
-def _start_task_messages(spec: AsyncSubAgent, runtime: ToolRuntime, description: str) -> list[AnyMessage] | list[dict[str, str]]:
+def _start_task_messages(spec: AsyncSubAgent, runtime: ToolRuntime, description: str) -> list[dict[str, Any]]:
     """Snapshot the effective conversation for forks, or send only the task."""
     if spec.get("mode") != "fork":
         return [{"role": "user", "content": description}]
-    return deepcopy(
-        _fork_messages(
-            runtime.state.get("messages", []),
-            runtime.state.get(SUMMARIZATION_EVENT_KEY),
-            description,
-            preamble=_ASYNC_FORK_TASK_PREAMBLE,
-        )
+    messages = _fork_messages(
+        runtime.state.get("messages", []),
+        runtime.state.get(SUMMARIZATION_EVENT_KEY),
+        description,
+        preamble=_ASYNC_FORK_TASK_PREAMBLE,
     )
+    # Artifacts are local tool data, not model-facing conversation content, and
+    # may contain objects that cannot be copied or serialized by the remote SDK.
+    return deepcopy([message.model_dump(exclude={"artifact"}) for message in messages])
 
 
 def _describe_async_subagent(spec: AsyncSubAgent) -> str:

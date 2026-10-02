@@ -299,7 +299,7 @@ async def test_launch_context_snapshot(invocation: str, mode: str | None, *, sum
         AIMessage(content="Earlier answer"),
         HumanMessage(content=[{"type": "text", "text": "Investigate order 42"}]),
         AIMessage(content="", tool_calls=[{"name": "lookup", "args": {"order": 42}, "id": "lookup_call"}]),
-        ToolMessage(content="Order 42 is delayed", tool_call_id="lookup_call"),
+        ToolMessage(content="Order 42 is delayed", tool_call_id="lookup_call", artifact=b"raw report bytes"),
         AIMessage(
             content="Delegating",
             tool_calls=[
@@ -353,7 +353,8 @@ async def test_launch_context_snapshot(invocation: str, mode: str | None, *, sum
     assert set(body["input"]) == {"messages"}
     if mode == "fork":
         child_messages = body["input"]["messages"]
-        assert child_messages[:-1] == [message.model_dump(mode="json") for message in expected]
+        assert child_messages[:-1] == [message.model_dump(mode="json", exclude={"artifact"}) for message in expected]
+        assert "artifact" not in child_messages[-2]
         assert child_messages[-1]["type"] == "human"
         assert child_messages[-1]["content"].endswith("Explain the delay")
         assert "background subagent" in child_messages[-1]["content"]

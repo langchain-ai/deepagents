@@ -66,55 +66,40 @@ _ToolDisclosure = dict[str, Any]
 """A provider-native content block that makes one tool callable from its position on."""
 
 
-def _coerce_skill_tools(entries: Sequence[BaseTool | Callable[..., Any]]) -> dict[str, BaseTool]:
-    """Convert `skill_tools` entries as `create_agent` converts tools, keyed by name.
+def _normalize_skill_tools(skill_tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None) -> SkillToolResolver:
+    """Return the resolver `skill_tools` stands for.
+
+    A sequence is converted as `create_agent` converts tools, then resolved by
+    exact name.
 
     Raises:
-        TypeError: If an entry is a provider-native tool dict.
+        TypeError: If `skill_tools` is a bare tool or neither a sequence nor
+            callable, or if an entry is a provider-native tool dict.
         ValueError: If two entries share a name.
     """
-    tools: list[BaseTool] = []
-    for entry in entries:
+    if skill_tools is not None and not isinstance(skill_tools, Sequence):
+        if isinstance(skill_tools, BaseTool) or not callable(skill_tools):
+            msg = f"skill_tools must be a list of tools or a resolver function, got {type(skill_tools).__name__}; wrap a single tool in a list"
+            raise TypeError(msg)
+        return skill_tools
+    converted: list[BaseTool] = []
+    # ty keeps a callable-and-sequence intersection that no value inhabits.
+    for entry in cast("Sequence[BaseTool | Callable[..., Any]]", skill_tools or ()):
         if isinstance(entry, dict):
             msg = "skill_tools entries must be BaseTool instances or callables; provider-native tool dicts are not supported"
             raise TypeError(msg)
-        tools.append(entry if isinstance(entry, BaseTool) else create_tool(entry))
-    names = [t.name for t in tools]
+        converted.append(entry if isinstance(entry, BaseTool) else create_tool(entry))
+    names = [t.name for t in converted]
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
         msg = f"skill_tools contains duplicate tool name(s): {', '.join(duplicates)}"
         raise ValueError(msg)
-    return {t.name: t for t in tools}
+    tools = {t.name: t for t in converted}
 
+    def resolve_by_exact_name(name: str, runtime: Runtime[Any]) -> list[BaseTool]:  # noqa: ARG001  # resolver signature
+        return [tools[name]] if name in tools else []
 
-def _normalize_skill_tools(skill_tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None) -> SkillToolResolver:
-    """Return the resolver `skill_tools` stands for.
-
-    A sequence is converted and validated, then resolved by exact name.
-
-    Raises:
-        TypeError: If `skill_tools` is a bare tool or neither a sequence nor callable.
-    """
-    if skill_tools is None or isinstance(skill_tools, Sequence):
-        # ty keeps a callable-and-sequence intersection that no value inhabits.
-        tools = _coerce_skill_tools(cast("Sequence[BaseTool | Callable[..., Any]]", skill_tools or ()))
-        return functools.partial(_by_exact_name, tools)
-    if isinstance(skill_tools, BaseTool) or not callable(skill_tools):
-        msg = f"skill_tools must be a list of tools or a resolver function, got {type(skill_tools).__name__}; wrap a single tool in a list"
-        raise TypeError(msg)
-    return skill_tools
-
-
-def _by_exact_name(tools: Mapping[str, BaseTool], name: str, runtime: Runtime[Any]) -> list[BaseTool]:  # noqa: ARG001  # resolver signature
-    """Resolve `name` to the listed skill tool of that name, if any."""
-    return [tools[name]] if name in tools else []
-
-
-def _close(awaitable: object) -> None:
-    """Close `awaitable` if it can be, so discarding it unawaited raises no "never awaited" warning."""
-    close = getattr(awaitable, "close", None)
-    if callable(close):
-        close()
+    return resolve_by_exact_name
 
 
 def _resolve_include_name(resolver: SkillToolResolver, name: str, runtime: Runtime[Any]) -> list[BaseTool]:
@@ -125,7 +110,10 @@ def _resolve_include_name(resolver: SkillToolResolver, name: str, runtime: Runti
     """
     result = resolver(name, runtime)
     if inspect.isawaitable(result):
-        _close(result)
+        # Close it, so discarding it unawaited raises no "never awaited" warning.
+        close = getattr(result, "close", None)
+        if callable(close):
+            close()
         msg = f"skill_tools resolver returned an awaitable for {name!r}; an async resolver needs the agent's async entry point (e.g. `ainvoke`)"
         raise TypeError(msg)
     return _checked(name, result)
@@ -357,14 +345,15 @@ def _insert_disclosures(
 
 def _bind_disclosures(request_tools: Sequence[BaseTool | dict[str, Any]], disclosure: _Disclosure) -> list[BaseTool | dict[str, Any]]:
     """Return `request_tools` with deferred disclosures undeferred and gated ones appended."""
-    tools = [_undeferred(t) if isinstance(t, BaseTool) and disclosure.deferred.get(t.name) is t else t for t in request_tools]
+    tools: list[BaseTool | dict[str, Any]] = []
+    for tool in request_tools:
+        if isinstance(tool, BaseTool) and disclosure.deferred.get(tool.name) is tool:
+            # A copy without `defer_loading`, so its schema is sent up front.
+            extras = {key: value for key, value in (tool.extras or {}).items() if key != _DEFER_LOADING}
+            tools.append(tool.model_copy(update={"extras": extras}))
+        else:
+            tools.append(tool)
     return [*tools, *(disclosure.gated[name] for name in sorted(disclosure.gated))]
-
-
-def _undeferred(tool: BaseTool) -> BaseTool:
-    """Return a copy of `tool` without `defer_loading`, so its schema is sent up front."""
-    extras = {key: value for key, value in (tool.extras or {}).items() if key != _DEFER_LOADING}
-    return tool.model_copy(update={"extras": extras})
 
 
 def _discard_rejected_schemas(disclosure: _Disclosure, model: object) -> None:
@@ -397,19 +386,17 @@ def _inline_block_builder(model: object) -> Callable[[BaseTool], _ToolDisclosure
     chat_model = _unwrap_bound(model)
     if isinstance(chat_model, ChatAnthropic) and chat_model.model.startswith(_ANTHROPIC_INLINE_TOOL_MODELS):
         return _anthropic_tool_addition
-    if _is_inline_openai_model(chat_model):
-        return _openai_additional_tools
-    return None
-
-
-def _is_inline_openai_model(model: object) -> bool:
-    """Return whether `model` is a Responses API `ChatOpenAI` that accepts `additional_tools`."""
     chat_openai = _chat_openai_type()
     # Exact type, not subclasses: a subclass may lift system messages elsewhere
     # (e.g. into `instructions`) and reject a non-text block there.
-    if chat_openai is None or type(model) is not chat_openai:
-        return False
-    return model.use_responses_api is True and model.model_name.startswith(_OPENAI_INLINE_TOOL_MODELS)
+    if (
+        chat_openai is not None
+        and type(chat_model) is chat_openai
+        and chat_model.use_responses_api is True
+        and chat_model.model_name.startswith(_OPENAI_INLINE_TOOL_MODELS)
+    ):
+        return _openai_additional_tools
+    return None
 
 
 def _unwrap_bound(model: object) -> object:

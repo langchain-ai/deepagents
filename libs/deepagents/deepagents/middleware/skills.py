@@ -527,7 +527,16 @@ def _parse_skill_metadata(
         compatibility_str = compatibility_str[:MAX_SKILL_COMPATIBILITY_LENGTH]
 
     metadata = _validate_metadata(frontmatter_data.get("metadata", {}), skill_path)
-    _warn_malformed_include_tools(name, skill_path, metadata)
+    include_tools = metadata.get(_INCLUDE_TOOLS_KEY)
+    if include_tools is not None and ("[" in include_tools or "," in include_tools):
+        # A YAML list reaches here as its `str()` (e.g. `"['a', 'b']"`), whose
+        # names would never match a tool.
+        logger.warning(
+            "Skill '%s' (%s): metadata.include_tools should be a space-separated string of tool names; got %r",
+            name,
+            skill_path,
+            include_tools,
+        )
 
     return SkillMetadata(
         name=str(name),
@@ -566,23 +575,6 @@ def _validate_metadata(
             )
         return {}
     return {str(k): str(v) for k, v in raw.items()}
-
-
-def _warn_malformed_include_tools(name: str, skill_path: str, metadata: dict[str, str]) -> None:
-    """Warn when `metadata.include_tools` isn't a space-separated string of tool names.
-
-    A YAML list reaches here as its `str()` (e.g. `"['a', 'b']"`), whose names
-    would never match a tool. Logged rather than recorded in
-    `skills_load_errors`, which is rendered into the model's prompt.
-    """
-    value = metadata.get(_INCLUDE_TOOLS_KEY)
-    if value is not None and ("[" in value or "," in value):
-        logger.warning(
-            "Skill '%s' (%s): metadata.include_tools should be a space-separated string of tool names; got %r",
-            name,
-            skill_path,
-            value,
-        )
 
 
 def _format_skill_annotations(skill: SkillMetadata) -> str:
@@ -1171,10 +1163,6 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         # Always write the errors so warnings from an earlier load are cleared
         return SkillsStateUpdate(skills_metadata=skills, skills_load_errors=skills_load_errors)
 
-    def _skill_reads(self, request: ModelRequest[ContextT]) -> list[_SkillRead]:
-        """Return the reads of tool-naming skills in the messages this call sends."""
-        return _find_skill_reads(request.messages, request.state.get("skills_metadata") or [])
-
     def _disclose_skill_tools(
         self, request: ModelRequest[ContextT], reads: list[_SkillRead], resolved: Mapping[str, Sequence[BaseTool]]
     ) -> tuple[ModelRequest[ContextT], dict[str, str]]:
@@ -1193,10 +1181,6 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             return request.override(tools=_bind_disclosures(request.tools, disclosure)), record
         return request.override(messages=_insert_disclosures(request.messages, disclosure, build)), record
 
-    def _record_disclosed_skill_tools(self, response: ModelResponse[ResponseT], record: dict[str, str]) -> ExtendedModelResponse[ResponseT]:
-        """Record which skill tools `response`'s model call was shown, for the tool-time gate."""
-        return ExtendedModelResponse(model_response=response, command=Command(update={_SKILL_TOOLS_DISCLOSED_KEY: record}))
-
     def wrap_model_call(
         self,
         request: ModelRequest[ContextT],
@@ -1213,11 +1197,11 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 in state.
         """
         request = self.modify_request(request)
-        reads = self._skill_reads(request)
+        reads = _find_skill_reads(request.messages, request.state.get("skills_metadata") or [])
         names = _unclaimed_include_names(reads, request.tools)
         resolved = {name: _resolve_include_name(self._skill_tool_resolver, name, request.runtime) for name in names}
         request, record = self._disclose_skill_tools(request, reads, resolved)
-        return self._record_disclosed_skill_tools(handler(request), record)
+        return ExtendedModelResponse(model_response=handler(request), command=Command(update={_SKILL_TOOLS_DISCLOSED_KEY: record}))
 
     async def awrap_model_call(
         self,
@@ -1235,21 +1219,11 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 in state.
         """
         request = self.modify_request(request)
-        reads = self._skill_reads(request)
+        reads = _find_skill_reads(request.messages, request.state.get("skills_metadata") or [])
         names = _unclaimed_include_names(reads, request.tools)
         tools = await asyncio.gather(*(_aresolve_include_name(self._skill_tool_resolver, name, request.runtime) for name in names))
         request, record = self._disclose_skill_tools(request, reads, dict(zip(names, tools, strict=True)))
-        return self._record_disclosed_skill_tools(await handler(request), record)
-
-    def _disclosing_include_name(self, request: ToolCallRequest) -> str | None:
-        """Return the include name that disclosed the skill tool `request` calls, or `None`.
-
-        `None` for a registered tool, or one an outer middleware supplied, and for
-        any name the latest model call wasn't shown as a skill tool.
-        """
-        if request.tool is not None:
-            return None
-        return _disclosed_record(request.state).get(request.tool_call["name"])
+        return ExtendedModelResponse(model_response=await handler(request), command=Command(update={_SKILL_TOOLS_DISCLOSED_KEY: record}))
 
     def _with_disclosed_skill_tool(self, request: ToolCallRequest, include_name: str, tools: Sequence[BaseTool]) -> ToolCallRequest:
         """Return `request` running the tool it calls from `tools`, or unchanged to fail as invalid if that's missing."""
@@ -1274,8 +1248,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         Returns:
             The tool's result, or the tool node's invalid-tool error.
         """
-        include_name = self._disclosing_include_name(request)
-        if include_name is None:
+        include_name = _disclosed_record(request.state).get(request.tool_call["name"])
+        if request.tool is not None or include_name is None:
             return handler(request)
         tools = _resolve_include_name(self._skill_tool_resolver, include_name, get_runtime())
         return handler(self._with_disclosed_skill_tool(request, include_name, tools))
@@ -1294,8 +1268,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         Returns:
             The tool's result, or the tool node's invalid-tool error.
         """
-        include_name = self._disclosing_include_name(request)
-        if include_name is None:
+        include_name = _disclosed_record(request.state).get(request.tool_call["name"])
+        if request.tool is not None or include_name is None:
             return await handler(request)
         tools = await _aresolve_include_name(self._skill_tool_resolver, include_name, get_runtime())
         return await handler(self._with_disclosed_skill_tool(request, include_name, tools))

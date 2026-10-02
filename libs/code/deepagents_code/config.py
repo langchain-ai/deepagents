@@ -1052,7 +1052,7 @@ def _tracing_environment_values(environ: Mapping[str, str]) -> dict[str, str | N
     Returns:
         Selector values, with `None` denoting an unset variable.
     """
-    return {
+    values = {
         var: (
             _resolve_env_var_from(environ, var)
             if var in _PREFIX_RESOLVED_TRACING_ENV_VARS
@@ -1060,6 +1060,9 @@ def _tracing_environment_values(environ: Mapping[str, str]) -> dict[str, str | N
         )
         for var in _TRACING_RECONCILED_ENV_VARS
     }
+    if is_tracing_disabled(environ=environ):
+        values.update(dict.fromkeys(_TRACING_ENABLE_ENV_VARS, "false"))
+    return values
 
 
 def reconcile_tracing_environment(environ: Mapping[str, str]) -> None:
@@ -1686,6 +1689,9 @@ def apply_stored_langsmith_auth(*, replace_project: bool = False) -> None:
     from deepagents_code.model_config import apply_stored_service_credentials
 
     _apply_prefixed_langsmith_env()
+    if is_tracing_disabled():
+        os.environ.update(dict.fromkeys(_TRACING_ENABLE_ENV_VARS, "false"))
+        _clear_langsmith_env_caches()
     apply_stored_service_credentials()
     _apply_stored_langsmith_tracing(replace_project=replace_project)
     _disable_orphaned_tracing()
@@ -4481,6 +4487,15 @@ def langsmith_key_shadowed_by_empty_override() -> LangsmithShadowResult:
     return LangsmithShadowResult(store_unreadable=store_unreadable)
 
 
+def is_tracing_disabled(*, environ: Mapping[str, str] | None = None) -> bool:
+    """Return whether the app-specific tracing override explicitly opts out."""
+    from deepagents_code._env_vars import classify_env_bool
+
+    env = active_environment() if environ is None else environ
+    raw = env.get("DEEPAGENTS_CODE_LANGSMITH_TRACING")
+    return raw is not None and bool(raw.strip()) and classify_env_bool(raw) is False
+
+
 def is_langsmith_redaction_enabled() -> bool:
     """Return whether LangSmith secret redaction is enabled for agent traces."""
     from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
@@ -4945,6 +4960,8 @@ def _tracing_enabled_from(env: Mapping[str, str]) -> bool:
     """
     from deepagents_code._env_vars import classify_env_bool
 
+    if is_tracing_disabled(environ=env):
+        return False
     for var in _TRACING_BRIDGED_ENABLE_ENV_VARS:
         raw = _resolve_env_var_from(env, var)
         if raw is not None and classify_env_bool(raw):
@@ -4970,6 +4987,8 @@ def _tracing_explicitly_disabled_from(env: Mapping[str, str]) -> bool:
     from deepagents_code._env_vars import classify_env_bool
     from deepagents_code.model_config import _ENV_PREFIX
 
+    if is_tracing_disabled(environ=env):
+        return True
     if _tracing_enabled_from(env):
         return False
 
@@ -5174,10 +5193,10 @@ class TracingStatus:
     """
 
     enabled: bool
-    """Whether a tracing flag is truthy in the environment."""
+    """Whether tracing is enabled and not explicitly disabled for the app."""
 
     explicitly_disabled: bool
-    """Whether a tracing flag is explicitly set to a falsy value (vs. unset)."""
+    """Whether app-specific or canonical tracing flags explicitly disable tracing."""
 
     has_credentials: bool
     """Whether an API key or profile credential is resolvable."""

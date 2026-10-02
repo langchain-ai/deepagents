@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
+    from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
 
     from deepagents_code.output import OutputFormat
@@ -81,6 +82,79 @@ async def test_prestarted_server_releases_initial_thread_after_transition(
             assert held_lease("current") is None
             assert try_acquire("current") is not None
             assert try_acquire("target") is None
+
+
+@pytest.mark.usefixtures("isolated_state")
+@pytest.mark.parametrize("failure", [None, "stop", "start", "cancel"])
+async def test_cwd_server_replacement_fences_previous_writes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str | None
+) -> None:
+    from langgraph.checkpoint.base import empty_checkpoint
+
+    from deepagents_code.client.launch import server_manager
+    from deepagents_code.client.remote_client import RemoteAgent
+    from deepagents_code.thread_ownership import ThreadOwnershipError, owned_saver_class
+
+    app = DeepAgentsApp(thread_id="current", server_kwargs={})
+    app._reserve_thread("current")
+    lease = held_lease("current")
+    assert lease is not None
+    old_client = RemoteAgent("http://old", local_ownership=True)
+    new_client = RemoteAgent("http://new", local_ownership=True)
+    config = {"configurable": {"thread_id": "current", "checkpoint_ns": ""}}
+    old_config: RunnableConfig = {
+        "configurable": old_client._prepare_mutation(config)["configurable"]
+    }
+    app._agent = old_client
+    old_server = MagicMock()
+    if failure == "stop":
+        old_server.stop.side_effect = RuntimeError("old server survived")
+    app._server_proc = old_server
+    app._mcp_preload_kwargs = None
+    start = AsyncMock(return_value=(new_client, MagicMock(), None))
+    if failure == "start":
+        start.side_effect = RuntimeError("replacement failed")
+    elif failure == "cancel":
+        start.side_effect = asyncio.CancelledError()
+    monkeypatch.setattr(server_manager, "start_server_and_get_agent", start)
+    for name in (
+        "_sync_status_connection",
+        "_preserve_launch_relative_server_paths",
+        "on_deep_agents_app_server_ready",
+        "notify",
+    ):
+        monkeypatch.setattr(app, name, MagicMock())
+    monkeypatch.setattr(app, "_switch_process_cwd", AsyncMock())
+
+    async with owned_saver_class(db_path=sessions.get_db_path()).from_conn_string(
+        str(sessions.get_db_path())
+    ) as saver:
+        await saver.aput(old_config, empty_checkpoint(), {}, {})
+        if failure == "cancel":
+            with pytest.raises(asyncio.CancelledError):
+                await app._replace_server_after_cwd_switch(tmp_path)
+        else:
+            result = await app._replace_server_after_cwd_switch(tmp_path)
+            assert result == ("abort" if failure == "start" else "continue")
+
+        assert held_lease("current") is lease
+        assert try_acquire("current") is None
+        with pytest.raises(ThreadOwnershipError, match="ownership changed"):
+            await saver.aput(old_config, empty_checkpoint(), {}, {})
+
+        active_client = new_client
+        if failure in {"start", "cancel"}:
+            assert app._agent is old_client
+            assert app._server_proc is old_server
+            active_client = old_client
+        current_config: RunnableConfig = {
+            "configurable": active_client._prepare_mutation(config)["configurable"]
+        }
+        checkpoint = empty_checkpoint()
+        saved = await saver.aput(current_config, checkpoint, {}, {})
+        restored = await saver.aget_tuple(saved)
+        assert restored is not None
+        assert restored.checkpoint["id"] == checkpoint["id"]
 
 
 @pytest.mark.usefixtures("isolated_state")

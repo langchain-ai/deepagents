@@ -6190,6 +6190,11 @@ class DeepAgentsApp(App):
         if thread_id and (lease := self._thread_leases.pop(thread_id, None)):
             lease.release()
 
+    async def _rotate_thread_ownership(self, *, restart_timeout: float = 30.0) -> None:
+        """Drain checkpoint writes and fence the server being replaced."""
+        for lease in tuple(self._thread_leases.values()):
+            await asyncio.wait_for(lease.rotate(), timeout=restart_timeout)
+
     async def _claim_recent_thread(self, agent_name: str | None) -> str | None:
         """Select and reserve the newest available local thread atomically.
 
@@ -25838,8 +25843,7 @@ class DeepAgentsApp(App):
                 self._server_kwargs["assistant_id"] = agent_name
 
             try:
-                for lease in tuple(self._thread_leases.values()):
-                    await asyncio.wait_for(lease.rotate(), timeout=30)
+                await self._rotate_thread_ownership()
                 server_proc.update_env(
                     **{f"{SERVER_ENV_PREFIX}ASSISTANT_ID": agent_name},
                 )
@@ -29499,8 +29503,7 @@ class DeepAgentsApp(App):
             self._sync_status_connection()
 
             try:
-                for lease in tuple(self._thread_leases.values()):
-                    await asyncio.wait_for(lease.rotate(), timeout=restart_timeout)
+                await self._rotate_thread_ownership(restart_timeout=restart_timeout)
                 await self._restart_server_process(
                     server_proc,
                     timeout=restart_timeout,
@@ -30394,6 +30397,7 @@ class DeepAgentsApp(App):
         from deepagents_code.client.launch.server_manager import (
             start_server_and_get_agent,
         )
+        from deepagents_code.client.remote_client import RemoteAgent
         from deepagents_code.main import _preload_session_mcp_server_info
 
         previous_cwd = Path(self._cwd)
@@ -30410,6 +30414,7 @@ class DeepAgentsApp(App):
             await self._switch_process_cwd(cwd)
 
             self._server_kwargs["cwd"] = self._cwd
+            await self._rotate_thread_ownership()
             coros: list[Any] = [
                 start_server_and_get_agent(**self._server_kwargs)  # ty: ignore[invalid-argument-type]
             ]
@@ -30489,6 +30494,11 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
             self._agent = previous_agent
+            if isinstance(previous_agent, RemoteAgent):
+                # New requests may use the restored server, but its in-flight
+                # requests must retain the old, fenced ownership tokens.
+                for lease in tuple(self._thread_leases.values()):
+                    previous_agent.bind_thread_ownership(lease.thread_id)
             self._server_proc = previous_server
             self._mcp_server_info = previous_mcp_info
             self._connecting = False

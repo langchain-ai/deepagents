@@ -1674,6 +1674,101 @@ class TestWorkspaceStoredCredentials:
             model.root_client.close()
             await model.root_async_client.close()
 
+    @pytest.mark.parametrize(
+        "endpoint_source", ["native", "stored", "prefixed", "config", "caller"]
+    )
+    @pytest.mark.parametrize(
+        "usage_override", ["default", "provider", "model", "caller", "stream_options"]
+    )
+    async def test_stored_openai_streaming_usage(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        endpoint_source: str,
+        usage_override: str,
+    ) -> None:
+        """Native streams report usage while endpoints and opt-outs stay honored."""
+        import httpx
+        from langchain_openai import ChatOpenAI
+
+        from deepagents_code.config import use_environment
+
+        endpoint = "https://selected.example/v1"
+        config = ModelConfig(providers={"openai": {}})
+        provider = config.providers["openai"]
+        if endpoint_source == "config":
+            provider["base_url"] = endpoint
+        if usage_override == "provider":
+            provider["params"] = {"stream_usage": False}
+        elif usage_override == "model":
+            provider["params"] = {"gpt-5.5": {"stream_usage": False}}
+        monkeypatch.setattr(ModelConfig, "load", classmethod(lambda _cls: config))
+        monkeypatch.setattr(
+            model_config.auth_store, "get_stored_key", lambda _provider: "stored-key"
+        )
+        monkeypatch.setattr(
+            model_config.auth_store,
+            "get_stored_base_url",
+            lambda _provider: endpoint if endpoint_source == "stored" else None,
+        )
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example/v1")
+        environment = {"OPENAI_BASE_URL": "https://gateway.example/v1"}
+        if endpoint_source == "prefixed":
+            environment["DEEPAGENTS_CODE_OPENAI_BASE_URL"] = endpoint
+        extra_kwargs: dict[str, object] = {"use_responses_api": False}
+        if endpoint_source == "caller":
+            extra_kwargs["base_url"] = endpoint
+        if usage_override == "caller":
+            extra_kwargs["stream_usage"] = False
+        elif usage_override == "stream_options":
+            extra_kwargs["model_kwargs"] = {"stream_options": {"include_usage": False}}
+
+        expected_usage = endpoint_source == "native" and usage_override == "default"
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            payload = json.loads(request.content)
+            assert payload["stream"] is True
+            assert payload.get("stream_options", {}).get("include_usage", False) is (
+                expected_usage
+            )
+            expected_endpoint = (
+                "https://api.openai.com/v1" if endpoint_source == "native" else endpoint
+            )
+            assert str(request.url) == expected_endpoint + "/chat/completions"
+            chunk: dict[str, object] = {
+                "choices": [{"delta": {"content": "Hello"}, "finish_reason": "stop"}]
+            }
+            if expected_usage:
+                chunk["usage"] = {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 1,
+                    "total_tokens": 3,
+                }
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(respond)
+            ) as http_async_client:
+                extra_kwargs.update(
+                    http_client=http_client, http_async_client=http_async_client
+                )
+                with use_environment(environment):
+                    model = create_model(
+                        "openai:gpt-5.5", extra_kwargs=extra_kwargs
+                    ).model
+                assert isinstance(model, ChatOpenAI)
+                for chunks in (
+                    list(model.stream("Hi")),
+                    [chunk async for chunk in model.astream("Hi")],
+                ):
+                    assert (
+                        any(chunk.usage_metadata for chunk in chunks) is expected_usage
+                    )
+
     @patch("langchain.chat_models.init_chat_model")
     def test_explicit_key_does_not_use_stored_endpoint(
         self,

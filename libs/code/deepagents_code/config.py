@@ -6006,6 +6006,13 @@ def _apply_scoped_endpoint(
         _apply_scoped_stored_endpoint(provider, kwargs)
         if extra_kwargs and "base_url" in extra_kwargs:
             kwargs["base_url"] = extra_kwargs["base_url"]
+        if (
+            provider == "openai"
+            and kwargs.get("base_url") == _PROVIDER_NATIVE_BASE_URLS["openai"]
+        ):
+            # An explicit URL disables LangChain's native streaming-usage default.
+            # Restore it after endpoint overrides, preserving explicit opt-outs.
+            kwargs.setdefault("stream_usage", True)
         return
     if "base_url" in extra_kwargs:
         return

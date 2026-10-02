@@ -90,13 +90,16 @@ async def test_server_returns_only_metadata(spec: str | None) -> None:
         ),
         patch(
             "deepagents_code.server_graph._workspace_runtime",
-            AsyncMock(return_value=SimpleNamespace(model_metadata=metadata)),
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    model_metadata=metadata, model_environment={}
+                )
+            ),
         ),
         patch(
             "deepagents_code.server_graph._resolve_bound_workspace_config",
             AsyncMock(return_value=config),
         ),
-        patch("deepagents_code.config._preview_dotenv_environ", return_value={}),
         patch("deepagents_code.config.create_model", return_value=result) as create,
     ):
         response = await model_metadata(
@@ -119,6 +122,55 @@ async def test_server_returns_only_metadata(spec: str | None) -> None:
             profile_overrides=config.profile_overrides,
             cli_max_retries=2,
         )
+
+
+@pytest.mark.parametrize("environment_available", [False, True])
+async def test_switch_metadata_uses_runtime_environment(
+    environment_available: bool,
+) -> None:
+    from deepagents_code.config import active_environment
+
+    runtime = SimpleNamespace(
+        model_environment={"MODEL_VERSION": "original"}
+        if environment_available
+        else None
+    )
+
+    def resolve(_spec: str, **_kwargs: object) -> ModelMetadata:
+        return ModelMetadata(active_environment()["MODEL_VERSION"], "custom")
+
+    with (
+        patch(
+            "deepagents_code.model_api.require_thread_workspace",
+            AsyncMock(return_value=SimpleNamespace(cwd="/workspace")),
+        ),
+        patch(
+            "deepagents_code.server_graph._workspace_runtime",
+            AsyncMock(return_value=runtime),
+        ),
+        patch(
+            "deepagents_code.server_graph._resolve_bound_workspace_config",
+            AsyncMock(
+                return_value=SimpleNamespace(
+                    profile_overrides=None, cli_max_retries=None
+                )
+            ),
+        ),
+        patch(
+            "deepagents_code.config._preview_dotenv_environ",
+            return_value={"MODEL_VERSION": "edited"},
+        ),
+        patch.dict("os.environ", {"MODEL_VERSION": "process"}),
+        patch("deepagents_code.config.create_model", side_effect=resolve) as create,
+    ):
+        response = await model_metadata(_request({"model_spec": "custom:test"}))
+
+    if environment_available:
+        assert response.status_code == 200
+        assert json.loads(bytes(response.body))["model_name"] == "original"
+    else:
+        assert response.status_code == 503
+        create.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -322,3 +374,49 @@ async def test_switch_does_not_read_client_provider_credentials(
         await app._switch_model("openai:test", persist=False)
     assert app._model_override == "openai:test"
     assert runtime_state.model_context_limit == 4096
+
+
+@pytest.mark.parametrize(
+    ("model_name", "client_provider", "server_provider"),
+    [
+        ("claude-test", "anthropic", "google_anthropic_vertex"),
+        ("gemini-test", "google_genai", "google_vertexai"),
+    ],
+)
+async def test_bare_switch_adopts_server_provider(
+    model_name: str,
+    client_provider: str,
+    server_provider: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    remote = RemoteAgent("http://test")
+    app._agent = remote
+    monkeypatch.setattr(app, "_mount_message", AsyncMock())
+    monkeypatch.setattr(app, "_restore_effort_override", AsyncMock())
+    monkeypatch.setattr(runtime_state, "model_name", model_name)
+    monkeypatch.setattr(runtime_state, "model_provider", client_provider)
+    monkeypatch.setattr(runtime_state, "model_context_limit", None)
+    monkeypatch.setattr(runtime_state, "model_unsupported_modalities", frozenset())
+
+    def resolve(_config: object, spec: str, **_kwargs: object) -> ModelMetadata:
+        if spec != model_name:
+            msg = "Only the server's inferred provider is available."
+            raise ModelConfigError(msg)
+        return ModelMetadata(model_name, server_provider, 4096)
+
+    monkeypatch.setattr(remote, "aresolve_model", AsyncMock(side_effect=resolve))
+    with (
+        patch("deepagents_code.config.detect_provider", return_value=client_provider),
+        patch(
+            "deepagents_code.model_config.save_recent_model", return_value=True
+        ) as save,
+        patch("deepagents_code.model_config.touch_recent_model"),
+    ):
+        await app._switch_model(model_name)
+
+    resolved_spec = f"{server_provider}:{model_name}"
+    assert app._model_override == resolved_spec
+    assert runtime_state.model_provider == server_provider
+    assert runtime_state.model_context_limit == 4096
+    save.assert_called_once_with(resolved_spec)

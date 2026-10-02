@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from starlette.responses import JSONResponse
@@ -80,25 +79,28 @@ async def model_metadata(request: Request) -> JSONResponse:
                 {"detail": "Model parameters require a model specification."},
                 status_code=422,
             )
+        runtime = await _workspace_runtime(binding)
         if spec is None:
-            runtime = await _workspace_runtime(binding)
             metadata = runtime.model_metadata
             if metadata is None:
                 return JSONResponse(
                     {"detail": "Model metadata is unavailable."}, status_code=503
                 )
         else:
+            if runtime.model_environment is None:
+                return JSONResponse(
+                    {"detail": "Model resolution environment is unavailable."},
+                    status_code=503,
+                )
             config = await _resolve_bound_workspace_config(binding)
 
             def resolve() -> ModelMetadata:
                 from deepagents_code.config import (
-                    _preview_dotenv_environ,
                     create_model,
                     use_environment,
                 )
 
-                environ = _preview_dotenv_environ(start_path=Path(binding.cwd))
-                with use_environment(environ):
+                with use_environment(runtime.model_environment):
                     result = create_model(
                         spec,
                         extra_kwargs=params,

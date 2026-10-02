@@ -31255,9 +31255,8 @@ class DeepAgentsApp(App):
                 messaging (which model couldn't be restored and what the session
                 is falling back to) rather than the interactive `/model` errors.
         """
-        from deepagents_code.config import detect_provider, runtime_state
+        from deepagents_code.config import runtime_state
         from deepagents_code.model_config import (
-            ModelSpec,
             save_recent_model,
             touch_recent_model,
         )
@@ -31314,22 +31313,8 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            parsed = ModelSpec.try_parse(model_spec)
-            if parsed:
-                provider: str | None = parsed.provider
-                model_name = parsed.model
-            else:
-                model_name = model_spec
-                provider = detect_provider(model_spec)
-
-            unchanged = model_name == runtime_state.model_name and (
-                not provider or provider == runtime_state.model_provider
-            )
-
-            # Build the provider:model spec for the configurable middleware.
+            # Provider inference belongs to the server's workspace environment.
             display = model_spec
-            if provider and not parsed:
-                display = f"{provider}:{model_name}"
 
             if self._status_bar:
                 self._status_bar.set_busy("Switching model")
@@ -31338,6 +31323,10 @@ class DeepAgentsApp(App):
                     {"configurable": {"thread_id": self._lc_thread_id}},
                     display,
                     extra_kwargs=extra_kwargs,
+                )
+                unchanged = (
+                    result.model_name == runtime_state.model_name
+                    and result.provider == runtime_state.model_provider
                 )
                 result.apply_to_runtime_state()
             except Exception as exc:
@@ -31355,9 +31344,12 @@ class DeepAgentsApp(App):
                 if self._status_bar:
                     self._status_bar.set_busy("")
 
+            resolved_spec = f"{result.provider}:{result.model_name}"
+            display = resolved_spec
+
             # Check if already using this exact model
             if unchanged:
-                current = f"{runtime_state.model_provider}:{runtime_state.model_name}"
+                current = resolved_spec
                 # Mirror the regular-switch path so `--model-params` semantics
                 # are consistent across same-model and different-model cases:
                 # passing params applies them, omitting params clears any
@@ -31384,7 +31376,6 @@ class DeepAgentsApp(App):
             # middleware swaps the model per-invocation — no graph recreation.
             self._model_override = display
             self._model_params_override = extra_kwargs
-            resolved_spec = f"{result.provider}:{result.model_name}"
             await self._restore_effort_override(resolved_spec)
 
             self._sync_status_model()
@@ -31411,11 +31402,7 @@ class DeepAgentsApp(App):
                 )
             if persist:
                 # Best-effort MRU update for the `/model` Recent section.
-                # `display` may be a bare model name when provider
-                # auto-detection fails; use the post-resolution spec so
-                # touch_recent_model always gets a valid "provider:model"
-                # string -- and so it is matched against `models.allowed` in
-                # the same canonical form `create_model` just approved.
+                # Use the canonical spec approved by the server's policy gate.
                 # Silent on failure — the debug log captures it when
                 # debug logging is enabled.
                 await asyncio.to_thread(touch_recent_model, resolved_spec)

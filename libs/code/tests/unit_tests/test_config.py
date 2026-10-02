@@ -4601,9 +4601,10 @@ class TestCreateModelAnthropicThinkingBinding:
         }
         assert kwargs["betas"] == ["thinking-binding-controls-2026-08-01"]
 
+    @pytest.mark.parametrize("model_name", ["claude-opus-5", "claude-sonnet-5-5"])
     @pytest.mark.parametrize("display", [None, "summarized", "omitted"])
     def test_preserves_reasoning_display_in_anthropic_payload(
-        self, display: str | None
+        self, display: str | None, model_name: str
     ) -> None:
         """Binding controls retain visible reasoning and explicit display choices."""
         from langchain_anthropic import ChatAnthropic
@@ -4615,7 +4616,7 @@ class TestCreateModelAnthropicThinkingBinding:
         }
         if display is not None:
             params["thinking"] = {"type": "adaptive", "display": display}
-        model = create_model("anthropic:claude-opus-5", extra_kwargs=params).model
+        model = create_model(f"anthropic:{model_name}", extra_kwargs=params).model
         assert isinstance(model, ChatAnthropic)
 
         payload = model._get_request_payload([HumanMessage("Say hello")])

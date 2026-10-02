@@ -2,6 +2,26 @@
 
 # Deep Agents Changelog
 
+## [0.7.21](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.20...deepagents==0.7.21) (2026-09-30)
+
+### Features
+
+- `FilesystemMiddleware` can now store blobs on the backend ([#6550](https://github.com/langchain-ai/deepagents/pull/6550)).
+
+## [0.7.20](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.19...deepagents==0.7.20) (2026-09-29)
+
+### Bug Fixes
+
+- Fixed binary content in `StateBackend.upload_files` being tagged as base64.
+
+## [0.7.19](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.18...deepagents==0.7.19) (2026-09-24)
+
+### Bug Fixes
+
+- Recover when `read_file` media is rejected.
+- Filter unsupported multimodal content through separate middleware.
+- Bound tool offload paths and abbreviate long IDs.
+
 ## [0.7.18](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.17...deepagents==0.7.18) (2026-09-22)
 
 ### Bug Fixes

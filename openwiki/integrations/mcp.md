@@ -1,119 +1,132 @@
 ---
 type: integration
-title: MCP Integration Across Products
-description: Talon's Model Context Protocol integration loads validated server definitions, isolates server availability, mediates OAuth and configuration changes, and refreshes tools safely between turns.
-tags: [mcp, talon, oauth, tools, configuration, security]
+title: MCP Servers, Trust, OAuth, and Tool Execution
+description: How dcode discovers, trust-gates, connects, and authenticates MCP servers, and how it normalizes, bounds, and reports MCP tool calls across primary and delegated agents.
+tags: [mcp, dcode, oauth, configuration, trust, security, tools]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-19T08:04:56.519Z
+    at: 2026-09-30T08:06:28.871Z
 sources:
-  - id: openwiki-source-31e40ff79779f51cafd03f01
-    resource: repo://libs/talon/deepagents_talon/mcp_auth.py
-  - id: openwiki-source-111101dcd1462ff54277b1fc
-    resource: repo://libs/talon/deepagents_talon/mcp_config.py
-  - id: openwiki-source-d98b6d615a63b95a7c893810
-    resource: repo://libs/talon/deepagents_talon/mcp_middleware.py
-  - id: openwiki-source-82cac27adeecff8a900a40fa
-    resource: repo://libs/talon/deepagents_talon/mcp.py
-  - id: openwiki-source-df8e616d4a20b5878bc1a05e
-    resource: repo://libs/talon/tests/test_mcp_auth.py
-  - id: openwiki-source-4c1a7e831a8cd578116d1f18
-    resource: repo://libs/talon/tests/test_mcp_middleware.py
-  - id: openwiki-source-9b2c01939550b673ef6b4bed
-    resource: repo://libs/talon/tests/test_mcp.py
-  - id: openwiki-source-e2be45e59936bfba43c18816
-    resource: repo://libs/talon/tests/unit_tests/test_mcp_config.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-19T08:04:56.519Z" }
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-cf199a6eaab544ebe004462c
+    resource: repo://libs/code/deepagents_code/client/commands/mcp.py
+  - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
+    resource: repo://libs/code/deepagents_code/config_manifest.py
+  - id: openwiki-source-a97cce048cd7efd394ae7dca
+    resource: repo://libs/code/deepagents_code/mcp_auth.py
+  - id: openwiki-source-216ca680d81dc35eb4d3e76e
+    resource: repo://libs/code/deepagents_code/mcp_config.py
+  - id: openwiki-source-20b5bbd05beabea1df7e2b53
+    resource: repo://libs/code/deepagents_code/mcp_disabled.py
+  - id: openwiki-source-71cf5dd9cb185a031e8f6442
+    resource: repo://libs/code/deepagents_code/mcp_login_service.py
+  - id: openwiki-source-e59c3d25feac176713c41be3
+    resource: repo://libs/code/deepagents_code/mcp_middleware.py
+  - id: openwiki-source-beed8c79cb357e3d2be2cf07
+    resource: repo://libs/code/deepagents_code/mcp_oauth_ui.py
+  - id: openwiki-source-6965904fdd8bf5439f5f9ea7
+    resource: repo://libs/code/deepagents_code/mcp_proxy.py
+  - id: openwiki-source-f6d553e7afdf54acac36e7d3
+    resource: repo://libs/code/deepagents_code/mcp_tools.py
+  - id: openwiki-source-4a7b6def251b42596a410ebc
+    resource: repo://libs/code/deepagents_code/model_config.py
+  - id: openwiki-source-3300d75e0c132882e2e3b4ce
+    resource: repo://libs/code/deepagents_code/tool_catalog.py
+  - id: openwiki-source-c899e0edba5a620390e98cb1
+    resource: repo://libs/code/deepagents_code/tui/widgets/mcp_login.py
+  - id: openwiki-source-aad6a47bab3ae4304630d3c9
+    resource: repo://libs/code/deepagents_code/tui/widgets/mcp_viewer.py
+  - id: openwiki-source-cbc51c5482225638bedb76c9
+    resource: repo://libs/code/tests/unit_tests/test_agent_mcp_timeout.py
+  - id: openwiki-source-26017a12b2a7ce9851b888a4
+    resource: repo://libs/code/tests/unit_tests/test_mcp_auth.py
+  - id: openwiki-source-07907fdeb54ce7ca01b238f2
+    resource: repo://libs/code/tests/unit_tests/test_mcp_middleware.py
+  - id: openwiki-source-1ce25590f75ba42bdd04fce2
+    resource: repo://libs/code/tests/unit_tests/test_mcp_tools.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-30T08:06:28.871Z" }
 ---
 
-# MCP Integration Across Products
+# MCP Servers, Trust, OAuth, and Tool Execution
 
-This page documents the Talon implementation of Model Context Protocol (MCP) integration. Talon treats the configured file as an operator-selected source of executable local commands, remote endpoints, headers, and OAuth settings. It validates it before connecting, exposes server state rather than failing the entire tool set for one unavailable server, and makes configuration changes go through a redacted, revision-checked management interface. MCP tools, credentials, and their connection lifecycle are Talon-specific.
+MCP configuration is executable integration input: a stdio entry can start a local command and a remote entry can make requests or interpolate values into headers. dcode therefore keeps **discovery provenance and trust**, **disabled-server policy**, **connection lifecycle**, **OAuth login**, and **per-call execution failures** as separate concerns. An explicit configuration is an operator-selected layer, not a way for a repository file to self-authorize.
 
-## Configuration and loading boundary
+## Discovery, precedence, and trust
 
-Talon reads exactly one configuration: `DEEPAGENTS_TALON_MCP_CONFIG` from `TalonConfig.env` takes precedence over the process environment; without it, the path is `~/.deepagents/.mcp.json`. A missing or non-file path means no configured MCP servers rather than a startup failure. A present document must be a JSON object with an `mcpServers` object and names limited to letters, numbers, `_`, and `-`; these document-level failures happen before any server connection.
+`resolve_and_load_mcp_tools()` is the runtime entry point. Unless `no_mcp` is set, it searches the selected profile's user `.mcp.json`, then `<project-root>/.deepagents/.mcp.json`, then `<project-root>/.mcp.json`, in ascending precedence. Definitions merge by server name, so later layers win; plugin layers and an explicit config can add later layers, with the explicit config highest. Its load errors are fatal, whereas auto-discovered bad files are reported as server-status errors while healthy servers continue.
 
-Each definition is resolved against `TalonConfig.env` first and then the process environment. Talon expands `${NAME}` and `${NAME:-default}` in command, URL, arguments, environment, and headers; an unset reference, malformed reference, or wrong field type is an error. This resolution produces the connection definition; the management read path deliberately does not expand values.
-
-A definition selects `stdio` when it has `command` and no declared transport, otherwise HTTP; `http` is implemented as `streamable_http`, while `sse` remains SSE. Stdio requires a non-empty command and string arguments, and rejects loader-influencing environment variables such as `LD_PRELOAD`, `PYTHONPATH`, and `BASH_ENV`. Remote servers require a URL. Only `auth: oauth` is supported, only for remote connections, and it cannot be combined with a static `Authorization` header.
-
-`allowedTools` and `disabledTools` are mutually exclusive non-empty string glob lists. Filters are evaluated after Talon prefixes a discovered tool as `<server>_<tool>` and can match either that prefix form or the original tool name.
+The winning definition retains `USER` or `PROJECT` provenance. Project trust is evaluated *after* precedence: whole-project trust or a matching, definition-bound persisted approval can enable a project server, but an explicit denial wins. Remote fixed-URL approvals may use the Git common directory and cover linked worktrees; local commands and environment-dependent remote definitions remain exact-worktree scoped. An unreadable trust policy fails closed for whole-project trust.
 
 ```mermaid
-sequenceDiagram
-    participant Runtime
-    participant Provider as MCPToolProvider
-    participant Config as MCP config
-    participant Server as MCP server
-    Runtime->>Provider: load or refresh
-    Provider->>Config: select, parse, and resolve
-    Config-->>Provider: validated server definitions
-    Provider->>Server: connect and list tools per server
-    Server-->>Provider: schemas or failure
-    Provider-->>Runtime: prefixed tools and server statuses
+flowchart TD
+    User["User configuration"] --> Merge["Merge by server name"]
+    Project["Project configurations"] --> Merge
+    Plugin["Plugin configurations"] --> Merge
+    Explicit["Explicit configuration"] --> Merge
+    Merge --> Trust{"Winning project server trusted"}
+    Trust -->|"no"| Skip["Do not activate"]
+    Trust -->|"yes or user"| Disabled{"Disabled by policy"}
+    Disabled -->|"yes"| Status["Disabled status"]
+    Disabled -->|"no"| Activate["Resolve and connect"]
 ```
-This shows the validated configuration-to-tool discovery path; a failure from one server is represented in its status while later servers are still considered.
+This flow shows that precedence selects the definition before project trust and disabled-server policy decide activation.
 
-`load_mcp_tools` discovers each server through a separate `MCPAdapter` and applies a 30-second discovery timeout per server. Discovered tools are tagged with `_deepagents_talon_mcp`, prefixed, filtered, and sorted by name. Success produces `ok` metadata including a copied input schema. Expected connection, OAuth, protocol, timeout, and validation failures become a per-server `error` or `unauthenticated` status with no tools, so healthy servers remain usable. `MCPServerInfo` enforces that only `ok` may omit an error and carry tools, and that a pending reconnect is only valid for a disabled server.
+The separate `[mcp].disabled_servers` store persists names in user configuration. A name disables every same-named definition and is filtered before connection, though metadata makes it visible in the UI. User and managed denies are combined; an unreadable managed deny policy disables all servers rather than allowing an uncertain configuration.
 
-## Provider capabilities and revision-safe refresh
+## Activation, connection, and status
 
-`MCPToolProvider` composes loaded MCP tools with management tools. When servers exist it adds `get_mcp_server_status`, which reports name, availability, and whether the configured server can authenticate without exposing the stored failure detail. It adds `authenticate_mcp_server` only if at least one loaded definition uses `auth: oauth`; unknown or no-longer-OAuth names fail rather than initiating arbitrary remote authorization. `reload_mcp_configuration` schedules a refresh and tells callers that replacement tools become available only after a successful reload. Running work retains its original tools; callers can inspect a subsequent agent tool listing to verify activation.
+`resolve_mcp_server_env` deep-copies one server definition and expands only braced `${VAR}` and `${VAR:-default}` references in `command`, `url`, `args`, `env`, and `headers`. Resolution is intentionally per-server at activation: malformed references or missing required values fail that server rather than invalidating siblings. dcode then validates the server shape, performs stdio/remote preflight, builds a FastMCP transport, connects and lists tools. Setup, connection, schema adaptation, and tool construction are isolated and concurrency-bounded per server. Failure details are redacted when the original configuration contained interpolation, preventing resolved secret values from being surfaced.
 
-Refresh is a revision counter protected by an async lock. A no-op refresh returns nothing when its requested revision is already applied. The loader snapshots the requested revision before loading: if another request arrives during the load, its newer revision remains pending and causes a later load. Concurrent refreshes serialize. Cancellation does not mark the revision applied and is retryable; a non-cancellation load failure is marked applied to prevent an automatic retry storm until another request or a forced reload occurs.
+Connected backends are mounted behind a FastMCP router. dcode adapts their tools to LangChain with provider-safe names and records the original server and tool identity in metadata. `MCPSessionManager` owns retained router/backend loads: it does not close an older adopted load just because a reload succeeds, preserving in-flight calls; cleanup is bounded and best-effort. `MCPServerInfo` is the loader-to-UI contract: only `ok` carries tools without an error, while unavailable states represent error, unauthenticated, disabled, or reconnect-pending servers for the tool catalog and `/mcp` viewer.
 
-## OAuth: credentials, safe discovery, and channel binding
+## Tool-call boundary: arguments, timeout, cancellation, and retry
 
-For normal loading, a remote `auth: oauth` server with no stored tokens is reported as `unauthenticated` before tool discovery. The operator can run `deepagents-talon mcp login <server>` to force an interactive remote OAuth flow; stdio is rejected. In an agent conversation, the proactive `authenticate_mcp_server` tool instead opens the session through the current channel. Existing usable credentials yield `already_authenticated`; `reauthenticate=true` makes the first token read appear absent, triggering a new grant without deleting the old credential beforehand. Once credentials persist, Talon schedules a refresh even if session teardown later fails.
+Tool adaptation applies `normalize_mcp_arguments` directly to the adapted coroutine, and agent middleware applies it again at the generic tool-call boundary. For an optional string-like parameter, an empty string is removed so the MCP server sees omission; required fields, `None`, and explicitly non-string typed fields remain unchanged. This protects servers that reject a model-supplied `""` identifier while leaving actual required-field and type validation to the server.
 
-OAuth tokens and client registration live outside the MCP configuration in `~/.deepagents/mcp-tokens`. The filename combines the server name and a hash of its server URL, so changing endpoints does not reuse a credential. Token storage uses owner-only directories and files, a lock for read-modify-write updates, and atomic replacement. It persists an absolute expiry so an expired token can be refreshed after restart; refresh responses that omit a refresh token retain the stored one, while a fresh authorization grant does not inherit it.
+Every marked MCP tool call receives `MCPToolMiddleware`; non-MCP tools pass through. The middleware obtains `mcp.tool_timeout` through the normal configuration resolver. The default is 120 seconds and accepted finite float values are bounded to 1–900 seconds; invalid values fall through to a lower-precedence source or the default. The option is available as `[mcp].tool_timeout` and `DEEPAGENTS_CODE_MCP_TOOL_TIMEOUT`.
 
-OAuth metadata, resource discovery, dynamic registration, device authorization, and refresh requests use a proxy-ignoring, SSRF-safe HTTPS client. Discovery and DNS resolution have separate time bounds, redirects are rejected, response bodies are size-limited, and discovered endpoints are validated before credential-bearing requests. Device flows require a public client and use an exact GitHub endpoint only for its preseeded client; Slack gets its registered callback configuration only for Slack hostnames.
+A timeout cancels the awaited local task and returns a failed `ToolMessage` naming the server, tool, and deadline. It deliberately warns that the operation may still be running at the server and that retrying may duplicate work—timeout is not proof that the remote side did nothing. `asyncio.CancelledError` is not converted to a tool error and propagates. Existing `ToolException` content is preserved. A nested `MCPReauthRequiredError` is converted to an actionable failed tool message that directs the user to login.
+
+The backend proxy has a related but distinct connection-recovery policy. On a closed/disconnected transport it serializes forced invalidation of that backend but **does not replay** the operation, because it may have completed; it returns an error asking the user to verify the outcome before retrying. If disconnect cleanup reveals a reauthentication failure, that actionable login error is returned instead.
+
+The middleware is attached both to the primary agent stack and each delegated subagent stack when MCP tools are present. In the primary stack it is ordered inside the server hooks wrapper, so timeout failures participate in `PostToolUseFailure`. Custom, general-purpose, and forked delegated agents therefore receive the same configured deadline and can recover rather than remaining stalled.
+
+## OAuth lifecycle and login
+
+`FileTokenStorage` isolates credentials by a path-safe server name and effective endpoint. It keeps token, client registration, OAuth metadata, and expiry in private atomically replaced files, and moves blocking storage work off the event loop. `_ExpiryAwareOAuthClientProvider` restores stored expiry/metadata and serializes refresh through a cross-process sidecar lock; after acquiring the lock it reloads state and avoids an unlocked refresh if locking fails.
 
 ```mermaid
 sequenceDiagram
-    participant Tool as MCP tool call
-    participant Middleware
+    participant Tool as MCP tool load
     participant Provider as OAuth provider
-    participant Channel
+    participant Store as Token storage
+    participant Lock as Refresh lock
     participant Auth as Authorization server
-    Tool->>Middleware: invoke with tool call ID
-    Middleware->>Provider: authorized MCP operation
-    Provider->>Channel: URL or device-code event bound to call
-    Channel-->>Provider: callback URL
-    Provider->>Auth: exchange or poll
-    Auth-->>Provider: tokens
-    Provider-->>Middleware: complete operation
+    Tool->>Provider: request with expired token
+    Provider->>Store: load token and expiry
+    Provider->>Lock: acquire token lock
+    Provider->>Store: reload state after lock
+    Provider->>Auth: refresh if still needed
+    Auth-->>Provider: token response
+    Provider->>Store: atomically persist token and expiry
+    Provider->>Lock: release lock
 ```
-This shows channel authorization: the authorization binding carries the current tool-call ID and expires, so a callback is associated with the invocation that initiated it.
+This is the refresh critical section: the post-lock reload prevents reuse of a refresh token another process may have rotated.
 
-Channel handlers require an active authorization handler, invocation ID, and attempt; scheduled jobs and background subagents without a channel fail with guidance to use interactive login. Callback parsing accepts only the configured localhost callback endpoint and requires both `code` and `state` (while preserving an optional issuer). Completion or failure events are sent to the channel handler, but delivery errors cannot undo OAuth state or expose it. The CLI flow prints the authorization URL and prompts for the same validated callback URL.
+Runtime loading is non-interactive. Missing OAuth credentials, failed refresh, and authentication challenges become an unauthenticated server result; the provider raises `MCPReauthRequiredError` rather than prompting in an agent execution path. The execution middleware converts that exception from a later tool call into the same actionable login guidance.
 
-## Invocation middleware and protocol failures
+`dcode mcp login` resolves an explicit config alone or follows normal precedence and trust-gated discovery. Re-login hides existing tokens from the authorization flow instead of deleting them, preserving a prior credential if the new authorization is abandoned or fails. CLI and Textual presentation share the `OAuthInteraction` boundary for browser, callback/paste-back, and device-code steps. After successful Textual login, the server is marked for reconnect because the running agent retains the old tool construction.
 
-The Talon MCP middleware applies only to tools marked `_deepagents_talon_mcp`; local tools pass through unchanged. Before invoking a marked tool it removes an empty string only when the corresponding schema property is optional and not explicitly non-string. Required string fields, schema-free fields, and explicitly non-string fields are retained. It then binds authorization context to the actual tool-call ID for the duration of the call and clears that context afterwards.
+## Operations and focused tests
 
-An MCP protocol `MCPError` becomes an error `ToolMessage` containing the protocol code and message. It intentionally excludes server-provided error `data`, which can be arbitrary or sensitive. Other exceptions propagate normally instead of being misreported as protocol errors. MCP elicitation is not treated as an approval: until Talon supplies elicitation UI, valid requests are resumed with a cancel response for every request key.
+Use `--no-mcp` to suppress all MCP loading, `--mcp-config PATH` to select an explicit configuration, and `--trust-project-mcp` only when project definitions should receive whole-project trust. Use `dcode mcp login <server>` or `/mcp login <server>` for authentication, then reconnect/restart to construct tools with the newly stored token. Keep a static `Authorization` header separate from OAuth configuration: it takes precedence over stored OAuth credentials.
 
-## Mediated configuration updates
-
-`MCPConfigStore` is bound to the selected configuration path. `get_mcp_configuration` returns a process-local HMAC-derived revision and a redacted view of managed server fields. Literal strings are replaced with `<redacted>`; supported transport/auth enum values and exact `${ENV_VAR}` references remain visible. Unmanaged fields are neither shown nor removed by an update, allowing operator annotations to survive a mediated edit.
-
-`update_mcp_server` adds, replaces, or removes one complete definition only when the supplied revision matches the bytes currently read. `<redacted>` can restore a string only at the same existing position. The store validates managed fields and environment-reference syntax without expanding variables or contacting a server, rejects symlinks and non-regular files, uses a bounded POSIX sidecar lock, and writes an owner-only replacement atomically. It returns generic read/write errors to avoid echoing configured values and schedules refresh only after a successful write; a stale revision or lock timeout is reported as a conflict.
-
-The update tool is normally approval-sensitive in the runtime. If it is auto-approved, reuse of any `<redacted>` value permits changes only to `allowedTools` or `disabledTools`; changes to command, transport, URL, headers, or another managed setting are rejected because they could redirect an unseen secret. A request that supplies new `${ENV_VAR}` references rather than restoring literal data can make such a change.
-
-Redaction and placement are safeguards for the management tools, not a confidentiality boundary. Talon warns when its configuration or token directory lies within the agent workspace, but the default execution-capable shell backend can read an absolute path outside that workspace. Keep real secrets in environment references, an OS credential store, or a location inaccessible to the agent process rather than relying on config-tool redaction.
-
-## Focused verification
-
-Talon tests cover configuration-path selection, whole-document validation before connection, per-server timeout and failure isolation, transport and tool filtering, and refresh races, cancellation, and failed-reload behavior. OAuth tests cover private atomic storage, persisted expiry and refresh-token preservation, forced reauthorization, callback validation and call binding, safe HTTPS discovery, SSRF and redirect rejection, response limits, and device-flow behavior. Middleware and real-adapter tests verify prefixed invocation, optional-empty argument normalization, redacted protocol errors, elicitation cancellation, and that refreshed tools do not break an in-flight tool call. Configuration-store tests cover redaction and restore, revision conflicts, approval gating, symlink resistance, atomic-write cleanup, lock contention, and the auto-approval secret-redirection guard.
+Focused tests cover config precedence/trust and per-server load isolation; argument normalization for optional, required, unknown, and typed fields; configured timeout output, cancellation propagation, and reauthentication conversion; no-replay disconnect recovery; and timeout propagation through custom/general-purpose and forked delegated agents. They also verify that timeout reaches `PostToolUseFailure` and resuming a hook does not rerun the timed-out call.
 
 ## Related pages
 
+- [Code agent architecture](/openwiki/architecture/code-agent.md)
 - [Configuration layering](/openwiki/concepts/config-layering.md)
-- [Permissions and human approval](/openwiki/concepts/permissions-hitl.md)
-- [Talon runtime](/openwiki/integrations/talon.md)
+- [Talon integration](/openwiki/integrations/talon.md)
 - [Security operations](/openwiki/operations/security.md)
-- [Testing guide](/openwiki/testing/testing-guide.md)

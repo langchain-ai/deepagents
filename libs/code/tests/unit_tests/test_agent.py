@@ -4736,6 +4736,24 @@ class TestCreateCliAgentInterpreterWiring:
             compaction_middleware
         )
 
+    def test_mcp_tools_wire_timeout_middleware(self, tmp_path: Path) -> None:
+        """MCP tools install the middleware that owns their call deadline."""
+        from langchain_core.tools import StructuredTool
+
+        mcp_tool = StructuredTool.from_function(
+            lambda: "ok",
+            name="linear_get_issue",
+            description="Get an issue",
+        )
+        mcp_tool.metadata = {
+            "_deepagents_code_mcp": True,
+            "_deepagents_code_mcp_server": "linear",
+        }
+
+        middleware = self._capture_middleware(tmp_path, mcp_tools=[mcp_tool])
+
+        assert any(item.name == "MCPToolMiddleware" for item in middleware)
+
     def test_auto_mode_omitted_with_sandbox(self, tmp_path: Path) -> None:
         """Auto is refused (no middleware) when a sandbox backend is active.
 
@@ -5406,8 +5424,9 @@ class TestCreateCliAgentInterpreterWiring:
             )
 
         _, kwargs = mock_create.call_args
-        middleware_types = [type(m) for m in kwargs["middleware"]]
-        assert CodeInterpreterMiddleware in middleware_types
+        assert any(
+            isinstance(m, CodeInterpreterMiddleware) for m in kwargs["middleware"]
+        )
 
     def test_no_interpreter_middleware_when_disabled(self, tmp_path: Path) -> None:
         from langchain_quickjs import CodeInterpreterMiddleware
@@ -5439,8 +5458,9 @@ class TestCreateCliAgentInterpreterWiring:
             )
 
         _, kwargs = mock_create.call_args
-        middleware_types = [type(m) for m in kwargs["middleware"]]
-        assert CodeInterpreterMiddleware not in middleware_types
+        assert not any(
+            isinstance(m, CodeInterpreterMiddleware) for m in kwargs["middleware"]
+        )
 
     def test_raises_when_sandbox_present(self, tmp_path: Path) -> None:
         mock_settings = self._build_mock_settings(tmp_path)

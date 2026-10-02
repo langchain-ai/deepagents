@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Repository Quickstart](quickstart.md) - Route a Deep Agents repository change to its owning package, related architecture or operations guidance, focused validation, and release unit. Includes current package baselines and the dcode SDK compatibility pin.
+- [Repository Quickstart and Change Routing](quickstart.md) - Task-oriented map for locating the Deep Agents SDK, dcode terminal client, ACP bridge, Talon host, integrations, tests, and release-managed packages. Start with the owner of the observable behavior and validate at its narrowest boundary.
 
 # Directories
 

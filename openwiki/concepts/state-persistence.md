@@ -1,117 +1,137 @@
 ---
-type: persistence boundaries
-title: State and Persistence
-description: Distinguishes LangGraph checkpointed state from Deep Agents backend storage and dcode's SQLite session operations. Covers thread identity, message-delta reconstruction, ephemeral caches, and cancellation-safe database lifecycle.
-tags: [state, persistence, checkpoints, sessions, sqlite, backends, dcode]
+type: persistence architecture
+title: State, Checkpoints, and Persistent Records
+description: Explains Talon's distinct ownership boundaries for graph checkpoints, chat-scoped conversation archives and vector indexes, assistant-home records, and cron jobs, including recovery and partial-failure behavior.
+tags: [talon, persistence, checkpoints, history, archives, scheduling, recovery]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-23T08:05:59.666Z
+    at: 2026-10-01T08:06:30.386Z
 sources:
-  - id: openwiki-source-68ae2141dbec1e0915410ac3
-    resource: repo://libs/ARCHITECTURE.md
-  - id: openwiki-source-2e03fee957625ca21a1c21af
-    resource: repo://libs/code/deepagents_code/main.py
-  - id: openwiki-source-0f8622164498a685abc913d5
-    resource: repo://libs/code/deepagents_code/sessions.py
-  - id: openwiki-source-0fb3334c2f2fc8575c82dca6
-    resource: repo://libs/code/deepagents_code/state_migration.py
-  - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
-    resource: repo://libs/code/tests/unit_tests/test_sessions.py
-  - id: openwiki-source-07f9eac13e71bcbdb4e6994b
-    resource: repo://libs/deepagents/deepagents/backends/state.py
-  - id: openwiki-source-21e2b0401425a427d8cea9c1
-    resource: repo://libs/deepagents/deepagents/backends/store.py
-  - id: openwiki-source-0fc0e47059e4d07e23e50be2
-    resource: repo://libs/deepagents/deepagents/graph.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-23T08:05:59.666Z" }
+  - id: openwiki-source-6a038e6e1a11f450bcafce54
+    resource: repo://libs/talon/deepagents_talon/__main__.py
+  - id: openwiki-source-995d5d95882808a64071f617
+    resource: repo://libs/talon/deepagents_talon/archive_saver.py
+  - id: openwiki-source-81698d033a5726401d48b135
+    resource: repo://libs/talon/deepagents_talon/config.py
+  - id: openwiki-source-f55101eb12af3c6ae9b9d823
+    resource: repo://libs/talon/deepagents_talon/cron/jobs.py
+  - id: openwiki-source-470e982344d3fb19aa4cd0a7
+    resource: repo://libs/talon/deepagents_talon/history_backends.py
+  - id: openwiki-source-2318fb8a25701a5cdae717fe
+    resource: repo://libs/talon/deepagents_talon/history_vector_backends.py
+  - id: openwiki-source-6801a88de6305bc8cbdd259f
+    resource: repo://libs/talon/deepagents_talon/host.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-811fef57cecdbee2ba06a7b5
+    resource: repo://libs/talon/deepagents_talon/store_archive.py
+  - id: openwiki-source-fcdff263e59dd54dfd953e9b
+    resource: repo://libs/talon/deepagents_talon/store_records.py
+  - id: openwiki-source-fdd0c2c3830b8e9a88502a57
+    resource: repo://libs/talon/README.md
+  - id: openwiki-source-c996df77875d3c6b30ca07cf
+    resource: repo://libs/talon/tests/unit_tests/test_archive_saver.py
+  - id: openwiki-source-c804dd581207efbddccb706e
+    resource: repo://libs/talon/tests/unit_tests/test_conversation_deletion.py
+  - id: openwiki-source-f2859f71853cf2cbdb40aaa3
+    resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
+  - id: openwiki-source-06d3e41642ffa8b7153931b6
+    resource: repo://libs/talon/tests/unit_tests/test_store_archive.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-01T08:06:30.386Z" }
 ---
 
-# State and Persistence
+# State, Checkpoints, and Persistent Records
 
-Persistence has distinct owners and scopes. A LangGraph **checkpointer** versions the state of a graph thread, including messages and interrupts. A Deep Agents **backend** owns files or memory and chooses whether those data are thread-local or shared. dcode's `sessions.db` is a local SQLite implementation of the checkpoint store plus a query surface for session selection. None of these implies that an in-process cache is durable.
+Talon persistence is deliberately split by purpose. A LangGraph checkpoint makes an agent thread resumable; a conversation archive makes selected, user-visible chat history retrievable; vector data accelerates retrieval but is derived; and the assistant home holds operational configuration and scheduler records. These stores do **not** form one transaction or share one retention and erasure lifecycle.
 
-```mermaid
-flowchart TD
-    Invoke["Invoke graph with thread ID"] --> Graph["Deep Agents graph"]
-    Graph --> Checkpoint["LangGraph checkpointer"]
-    Checkpoint --> ThreadState["Versioned state and messages"]
-    Graph --> StateBackend["StateBackend files channel"]
-    StateBackend --> ThreadState
-    Graph --> StoreBackend["StoreBackend namespace"]
-    StoreBackend --> BaseStore["LangGraph BaseStore"]
-    SQLite["dcode sessions.db"] --> Checkpoint
-    SQLite --> Listing["Thread metadata and display fields"]
-    Listing --> Cache["Bounded process cache"]
-```
-*Checkpoint state and `StateBackend` files are thread-scoped; a `StoreBackend` delegates cross-thread durability to its configured `BaseStore`; selector caches are process-local.*
-
-## Checkpoints, state schema, and thread identity
-
-LangGraph checkpoints and backend persistence answer different questions:
-
-- A checkpointer preserves graph state, conversation messages, interrupts, and the data needed to resume a particular `thread_id`.
-- A backend implements filesystem-like data and determines whether it remains only in state, is stored under a shared namespace, or is provided by another backend route.
-- `create_deep_agent()` accepts `checkpointer`, `store`, and `cache` independently and forwards them to LangChain's `create_agent`. A cache is an execution optimization, not a checkpoint or a backend persistence guarantee.
-
-`DeepAgentState` is the default schema unless a caller supplies `state_schema`. It replaces `AgentState.messages` with a `DeltaChannel` using `_messages_delta_reducer` and a snapshot every 50 writes. Consequently, long message histories are stored as deltas between periodic snapshots instead of repeatedly embedding the whole history. Custom graph state that needs the same message behavior should extend `DeepAgentState` rather than replacing it with an unrelated schema.
-
-A checkpoint may therefore omit an inline full `messages` list. Consumers that inspect checkpoint rows directly must either use the state loader or replay the stored message deltas with compatible reducer semantics; treating a missing inline value as an empty conversation is incorrect.
-
-## Files: thread state versus shared store
-
-`StateBackend` stores its `files` map in graph state. Within a graph node or tool it reads through `CONFIG_KEY_READ` with `fresh=True`, so queued writes are visible within the same superstep, and queues changed paths through `CONFIG_KEY_SEND`. The `files` channel merges partial updates and commits them at the node boundary. This gives backend users normal file operations without manually constructing graph state updates.
-
-That convenience is deliberately constrained: `StateBackend` requires a LangGraph execution context and is thread-scoped. With a durable checkpointer, its files survive and resume in that conversation thread; they are not a cross-thread filesystem. To seed files, provide `files` in the graph invocation rather than calling the backend outside the graph.
-
-`StoreBackend` instead uses a LangGraph `BaseStore`. It obtains an explicitly supplied store or the current graph's store, then maps every operation through a caller-provided namespace factory. Files under the same namespace can be shared across threads, while different namespaces isolate tenants or workspaces. The backend validates that namespace components are nonempty strings from a conservative character set, rejecting wildcards and other glob-like syntax before a store lookup. This is an isolation boundary, not merely a naming convention.
-
-The store route preserves the backend's filesystem contract: writes and edits put file data under the namespace, and deleting a directory searches all pages then batches deletion of the exact key and its nested-key prefix. Durability and transactional properties remain those of the selected `BaseStore`, not of `StoreBackend` itself.
-
-## dcode SQLite sessions
-
-The local dcode CLI constructs an `AsyncSqliteSaver` over its global `sessions.db`, calls `setup()` before it builds CLI agent graphs, and passes that saver as the agent checkpointer. The session database is consequently the durable source for local graph-thread state; a thread ID is the stable handle used to list, resume, or delete that checkpoint history. The implementation accepts both old short hexadecimal and newer UUID7-shaped IDs already present in the database rather than inferring validity from an ID format.
-
-Thread listing avoids deserializing every checkpoint blob. It aggregates root checkpoint metadata to return thread ID, agent name, update and creation times, latest checkpoint ID, Git branch, and working directory; optional `agent_name`, branch, and exact `cwd` filters apply to that metadata. It attempts to install a covering SQLite index so this common path can avoid reading large blobs. Failure to create the index—for example because the database is read-only or locked—does not change results, but can make listing slower.
-
-The UI-facing recent-thread, initial-prompt, and message-count caches are bounded in-memory conveniences. Count and prompt entries are valid only when their saved freshness token (normally the latest checkpoint ID) matches the listing row; recent-list entries are copied before return. They must never be treated as an authority for resume or deletion. A count can temporarily lag during an active superstep because it is intentionally checkpoint-granular.
-
-### Delta message counts
-
-A normal session listing uses an inline `messages` snapshot if the latest checkpoint contains one. If it does not, dcode reads `writes` and reconstructs the visible count. It processes only root-namespace writes for the thread, ordered by checkpoint, task, and write index; this intentionally excludes subgraph writes that reuse the parent thread ID. The fold honors overwrite and all-message removal semantics and uses an exact incremental reducer fallback for a targeted removal or a failed fast-path reduction. Decoding or reducing one bad thread is logged and omitted rather than preventing the entire thread selector from loading.
+> **Experimental and local-only boundary:** Talon is experimental, alpha-status software. It is not intended for production or enterprise use, and it is not a production or multi-tenant security boundary. In particular, channel access should be treated as access to the operator's agent, credentials, tools, and host resources; sandboxing is opt-in and does not cover every integration.
 
 ```mermaid
-flowchart TD
-    Rows["Listed thread metadata"] --> Fresh{"Fresh count cache"}
-    Fresh -->|yes| Cached["Use cached count"]
-    Fresh -->|no| Latest["Decode latest checkpoint"]
-    Latest --> Inline{"Inline messages present"}
-    Inline -->|yes| CountInline["Count visible messages"]
-    Inline -->|no| Writes["Read root messages writes"]
-    Writes --> Replay["Replay deltas in checkpoint task index order"]
-    Replay --> CountWrites["Count visible messages"]
-    CountInline --> Save["Cache by latest checkpoint ID"]
-    CountWrites --> Save
+sequenceDiagram
+    participant Runtime as Talon runtime
+    participant Saver as ConversationSaver
+    participant Checkpoint as LangGraph checkpoint store
+    participant Archive as Chat-scoped archive
+    participant Vectors as Optional vector index
+
+    Runtime->>Saver: root checkpoint with trusted scope
+    Saver->>Archive: register session ownership
+    Saver->>Checkpoint: persist checkpoint
+    Saver->>Archive: append changed message revisions
+    Saver->>Archive: acknowledge checkpoint
+    Archive->>Vectors: schedule derived indexing
 ```
-*The reconstruction path is a display-time interpretation of durable checkpoint data, not a replacement checkpoint format.*
+*An eligible interactive checkpoint is persisted before its transcript revisions; archive acknowledgement records completion across two independent stores.*
 
-## Cancellation-safe SQLite lifecycle and migration
+## Ownership map
 
-Every dcode session database connection goes through a centralized connection factory. It applies a compatibility patch needed by the LangGraph checkpoint dependency, creates `aiosqlite` connections with a timeout, and guards the opening sequence. The guard records the raw SQLite handle on the worker thread and queues an explicit close if cancellation lands while `aiosqlite` is opening it. On exit, dcode also joins the worker after close. Together these steps avoid an unreachable database handle and a worker attempting to schedule work on an already closed event loop during teardown.
+| Record | Owner and identity | Durability role |
+| --- | --- | --- |
+| Graph checkpoint and pending writes | LangGraph checkpointer, keyed by graph thread ID | Resume executable agent state. The default model host uses `checkpoints.sqlite`. |
+| Conversation archive | `StoreConversationArchive`, scoped by trusted channel and chat, with a session registration | Read, list, search, and erase chat history independently of graph-state mechanics. |
+| Semantic vectors | A separate vector store/index keyed to archive material and an embedding generation | Derived retrieval data; it can be rebuilt from retained transcript metadata. |
+| Assistant operational records | Per-assistant home | Holds checkpoint path, model and conversation selection state, channel state, policies, media, and cron state. |
+| Cron records | `<assistant home>/cron/jobs.json`, keyed by cron job ID | Durable job definitions, schedule progress, origin, delivery choice, and last-run outcome. |
 
-`get_checkpointer()` follows the same lifecycle rather than using `AsyncSqliteSaver.from_conn_string`: it owns the guarded connection, yields the saver only while it is open, and drains the worker in `finally`. Callers should retain the async context for the graph's lifetime and should not reuse the saver after it closes.
+Do not treat an archive as a backup of arbitrary graph state, or a vector index as the transcript authority. Likewise, deleting chat history does not imply deletion of cron jobs, assistant-home files, traces, or external backups.
 
-At startup, `migrate_legacy_state()` moves selected internal files from `~/.deepagents/` to `~/.deepagents/.state/`, including `sessions.db` and SQLite's optional `-wal` and `-shm` sidecars. The migration is best-effort and idempotent: it skips a missing source or existing destination, hardens the destination directory before moving files, and logs individual failures without blocking startup. When both copies exist, it does not overwrite either; an operator must inspect and resolve the conflict to avoid losing a session history.
+## Assistant home and default checkpoint path
 
-Deleting a dcode thread deletes its `checkpoints` and `writes` rows, commits that transaction, and evicts relevant in-memory listing entries. It then attempts to remove the separate local offloaded-history artifact. That cleanup is best-effort: its failure is logged and does not change the successful checkpoint-deletion result. Backups and retention procedures should consequently account for checkpoint SQLite data and any external conversation archive independently.
+`TalonConfig` validates the assistant ID before deriving a home, normally `~/.deepagents/<assistant_id>`. IDs are safe path components (1–128 letters, digits, underscores, hyphens, or dots, excluding `.` and `..`). Home creation and materialized state directories use mode `0700`; state-path access verifies that the resolved file is directly inside the expected assistant home. Keep this home outside an agent workspace and manage filesystem access separately.
 
-## Change and operations guidance
+The home is operational state, not just a database directory. Relevant records include:
 
-- Choose the persistence boundary first: use a checkpointer for resumable graph state, `StateBackend` for thread-local scratch files, and a correctly namespaced durable `BaseStore` for cross-thread files.
-- Do not bypass `CONFIG_KEY_READ`/`CONFIG_KEY_SEND` for `StateBackend`; it depends on LangGraph's channel timing and reducer to provide read-your-writes behavior.
-- Keep `DeepAgentState`'s message channel when extending state, and preserve the dcode write-replay ordering if changing session display code.
-- Treat thread metadata and caches as indexes into checkpoint authority. Deleting or migrating them does not itself establish a complete cross-resource transaction.
-- Preserve the guarded connection and worker-drain lifecycle in shutdown or cancellation changes. It exists to prevent leaked SQLite handles and closed-event-loop worker failures, not to alter query behavior.
+- `checkpoints.sqlite` for persistent LangGraph checkpoints;
+- `conversations.json`, `models.json`, and `smart-model.json` for active conversation generations and model choices;
+- `channels/`, `cron/`, tool policy, and inbound media directories; and
+- fingerprint-specific `history-vectors-<generation>.sqlite` files when local vector indexing is used.
 
-Focused coverage includes `test_sessions.py` for ID compatibility, metadata selection, inline and delta-backed message counts, deletion behavior, and checkpointer construction; `test_state_backend.py` for graph-context requirements and state-file compatibility; and `test_store_backend.py` for CRUD, namespace isolation, wildcard rejection, pagination, and recursive deletion.
+For a configured model host, the CLI opens an `AsyncSqliteSaver` at `checkpoint_path`, initializes it, opens history, and gives the graph a `ConversationSaver` that wraps the SQLite saver. The wrapper owns neither underlying connection: callers that embed Talon can provide the checkpointer and archive lifetimes, but must use `ConversationSaver` if they want the history tools and coordinated archive behavior.
 
-See [Backends](/openwiki/concepts/backends.md), [Context management](/openwiki/concepts/context-management.md), [Runtime behavior](/openwiki/architecture/runtime-behavior.md), [Cost and sessions](/openwiki/operations/cost-and-sessions.md), and [Run a dcode session](/openwiki/workflows/run-dcode-session.md).
+## Archive writes: a repairable two-store boundary
+
+`ConversationSaver` is the bridge between a LangGraph `BaseCheckpointSaver` and `StoreConversationArchive`. Synchronous write and administrative copy/prune APIs are deliberately unsupported so writes cannot silently bypass archival. A shared async lock serializes checkpoint/archive changes, reset, and selected deletion.
+
+Only a root graph checkpoint carrying trusted `talon_history_channel` and `talon_history_chat` metadata is archive-eligible. Nested graph namespaces and unscoped writes remain normal checkpoints but do not enter the archive. Before checkpoint mutation, the wrapper registers the thread's archive ownership; a session is bound to its first scope and cannot subsequently move to another chat. The narrowly defined compatibility exception preserves legacy Slack public-thread history when it is accessed through its parent channel scope.
+
+For an eligible write, the wrapper determines changed message revisions, persists the graph checkpoint, appends those revisions to the archive, then stores an archive acknowledgement for that checkpoint. There is no transaction spanning checkpoint and archive storage:
+
+- If checkpoint persistence fails, uncommitted messages are not archived.
+- If archive append fails after a successful checkpoint, the error propagates and the checkpoint remains a repair condition. Retrying the same checkpoint repairs the archive without duplicate revisions because archive chunks are revision-idempotent.
+- Cancellation is shielded until the in-progress checkpoint/archive operation finishes, then cancellation is re-raised. Reset or deletion therefore cannot race an unfinished append.
+
+Archive deletion follows the analogous retryable ordering: delete a backend thread first, then remove its archive registration. A failed step leaves the registration available for retry. Selected deletion rejects empty IDs, the current session, and running sessions; it only acts on sessions owned by the supplied chat scope. A batch can be partially complete, so retry the same requested IDs rather than assuming all-or-nothing erasure.
+
+## Archive store, recovery, and delivery visibility
+
+`StoreConversationArchive` stores transcript metadata through `StoreRecords`; metadata and vectors must be distinct `BaseStore` instances. It requires one active writer per namespace, read-after-write consistency, and no automatic TTL. Its bounded redo journal serializes access in-process, recovers a prior journal before records are exposed, writes the journal before an idempotent batch, and removes it only after successful replay. This makes partial batches restartable; it is neither a distributed lock nor a transaction with the checkpoint database.
+
+Archive setup recovers records before retrieval or indexing begins, and close waits for active vector work. Session scope is authoritative: archive entries and deletion cannot cross channels or chats. Retrieval itself is bounded—pages are at most 20 items and scans stop at 500 records rather than silently claiming a complete result beyond that budget.
+
+The archive distinguishes generated model output from a reply confirmed as delivered by the host. `record_delivery()` promotes the matching final reply (or records a delivery-specific entry) only after the host reports successful send, making it eligible for semantic indexing. If this post-delivery archive recording fails, the host logs it rather than changing the delivery result; delivery and history indexing are separate outcomes.
+
+## History backends and derived vector indexes
+
+`DEEPAGENTS_TALON_HISTORY_URI` selects archive metadata storage. If it is unset, history uses a separate SQLite connection to `checkpoints.sqlite`; SQLite or `file`, MongoDB, and PostgreSQL schemes are built in. Another scheme requires exactly one installed `deepagents_talon.history_backends` entry-point plugin. Archive records are namespaced by `("talon", assistant_id)`, allowing assistants to share a backend without sharing history.
+
+Talon validates URI syntax at configuration time. Metadata startup, archive startup, and plugin failures are converted to generalized configuration errors so connection strings and credentials are not reflected in the user-facing error. Backend plugins are operator-installed, trusted code, not an isolation boundary.
+
+Vector search is optional and independently configured. Metadata remains in the archive store while a vector backend—built in for the selected scheme or supplied by exactly one `deepagents_talon.history_vector_backends` plugin—holds embeddings. An embedding fingerprint guards reuse. If a retained index is incompatible, startup refuses it unless `DEEPAGENTS_TALON_HISTORY_REINDEX=1` is explicitly set; reindexing erases and rebuilds vectors while retaining transcripts, records durable progress, and resumes after interruption. Back up and erase transcript metadata independently from vectors, since vectors are reconstructible derived data.
+
+## Scheduled work and cron records
+
+`CronJobStore` persists an assistant-scoped, versioned `jobs.json`. A job records its assistant, prompt, schedule and repeat state, enablement, next/last/claim times, last status and error, delivery target, and origin. Origin contains the source conversation and channel plus optional sender and `history_chat`, allowing a scheduled Discord or Slack job to use the appropriate parent chat scope.
+
+Publication is an atomic-file-replacement protocol: Talon serializes the complete JSON envelope to a temporary file in the cron directory, flushes and fsyncs it, sets mode `0600`, replaces `jobs.json`, and fsyncs the directory. Reads cache the parsed contents by file identity. This is durable publication for the explicitly single-writer read-all/write-all design, not cross-process coordination.
+
+A scheduled invocation uses its own `:talon-cron` graph thread. When its origin has a trusted history scope, it may read that chat's archive; its graph writes are marked archive-read-only, so the unattended trace does not become transcript entries. It cannot delete history. The cron session registration is nevertheless retained so a chat reset can erase its owned checkpoint. If—and only if—the host successfully delivers a non-silent final result to the destination, it separately records that delivered reply into the origin chat's archive.
+
+## Operating and testing this boundary
+
+- Back up and set retention independently for checkpoints, assistant-home records, archive metadata, cron JSON, and vectors. A successful archive search does not prove a checkpoint can be resumed, and a checkpoint does not prove archive acknowledgement succeeded.
+- Keep one active archive writer per assistant namespace and one cron writer. Do not add cross-process writers without adding coordination at the storage layer.
+- Treat a checkpoint that lacks archive acknowledgement as repairable incomplete history. Preserve the checkpoint-first ordering and let an archive failure surface for retry.
+- Expect reset and selected deletion to be retryable but potentially partial. Stop active chat work before a full reset; do not conflate chat-history erasure with cron-job deletion.
+- Focus regression tests on boundary failures: checkpoint versus archive failure ordering and cancellation, scope reassignment and scoped deletion, redo-journal recovery, scan limits, legacy Slack scope compatibility, scheduled read-only history and successful-delivery recording, cron origin persistence, and atomic cron-file publication.
+
+See [Runtime behavior](/openwiki/architecture/runtime-behavior.md), [Backends](/openwiki/concepts/backends.md), [Talon scheduling](/openwiki/concepts/talon-scheduling.md), [Cost and sessions](/openwiki/operations/cost-and-sessions.md), and [Security](/openwiki/operations/security.md).

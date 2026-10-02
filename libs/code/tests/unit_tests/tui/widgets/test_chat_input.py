@@ -14,6 +14,7 @@ from textual.containers import Container
 from textual.widgets import Static
 from textual.widgets.text_area import Selection
 
+from deepagents_code.command_registry import ALWAYS_IMMEDIATE, HIDDEN_COMMANDS
 from deepagents_code.input import MediaTracker
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.tui.widgets import (
@@ -334,6 +335,79 @@ class _ImagePasteRecordingApp(App[None]):
         self.submitted.append(event)
 
 
+@pytest.mark.parametrize(
+    "command", [*sorted(ALWAYS_IMMEDIATE | HIDDEN_COMMANDS), "/RESTART"]
+)
+async def test_submission_pause_allows_recovery_commands(command: str) -> None:
+    """Recovery commands must reach the app through the Enter-key path."""
+    app = _RecordingApp()
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatInput)
+        chat.submission_block_reason = "Wait for the handoff to finish."
+        # A trailing space submits the exact name, including hidden commands
+        # and aliases, without accepting a fuzzy autocomplete suggestion.
+        chat.set_value_at_end(f"{command} ")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert len(app.submitted) == 1
+        assert app.submitted[0].value == command
+        assert app.submitted[0].mode == "command"
+        assert chat.value == ""
+        assert chat.submission_block_reason is not None
+
+
+@pytest.mark.parametrize(
+    "draft",
+    ["keep working", "/help ", "/restart later", "/quitter ", "!quit", "!!quit"],
+)
+async def test_submission_pause_blocks_ordinary_input(draft: str) -> None:
+    """Normal messages, other commands, and shell input remain editable."""
+    app = _RecordingApp()
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatInput)
+        chat.submission_block_reason = "Wait for the handoff to finish."
+        chat.set_value_at_end(draft)
+        await pilot.pause()
+        original = chat.value
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert not app.submitted
+        assert chat.value == original
+
+
+async def test_submission_pause_preserves_pastes_and_images(tmp_path: Path) -> None:
+    """Blocked Enter must keep attachment payloads usable on a later send."""
+    from PIL import Image
+
+    image_path = tmp_path / "draft.png"
+    Image.new("RGB", (4, 4), color="yellow").save(image_path)
+    pasted_text = "p" * 900
+    app = _ImagePasteRecordingApp()
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatInput)
+        chat.handle_external_paste(str(image_path))
+        chat.handle_external_paste(pasted_text)
+        await pilot.pause()
+        draft = chat.value
+        assert "[image 1]" in draft
+        assert "[Pasted text #1]" in draft
+        chat.submission_block_reason = "Wait for the handoff to finish."
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not app.submitted
+        assert chat.value == draft
+        assert len(app.tracker.get_images()) == 1
+        chat.submission_block_reason = None
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(app.submitted) == 1
+        assert app.submitted[0].value == f"[image 1] {pasted_text}"
+        assert len(app.tracker.get_images()) == 1
+
+
 async def _pause_for_strip(pilot: Pilot[None]) -> None:
     """Wait two frames so the prefix-strip text-change event propagates."""
     await pilot.pause()
@@ -354,16 +428,18 @@ class TestPromptIndicator:
             chat_input = app.query_one(ChatInput)
 
             input_box = chat_input.query_one("#input-box")
-            chat_input.mode = "shell_incognito"
+            await pilot.press("!", "!")
             await pilot.pause()
             assert input_box.border_title == "incognito"
             assert chat_input.has_class("mode-shell-incognito")
+            assert "incognito" in app.export_screenshot()
 
             chat_input.mode = "shell"
             await pilot.pause()
             assert input_box.border_title is None
             assert not chat_input.has_class("mode-shell-incognito")
             assert chat_input.has_class("mode-shell")
+            assert "incognito" not in app.export_screenshot()
 
 
 class TestShellSyntaxHighlighting:
@@ -1898,6 +1974,34 @@ class TestPromptSearchPanel:
             assert chat._prompt_search_filtered == ["second prompt"]
             # Seeding the filter does not consume or change the draft.
             assert chat._text_area.text == "second"
+
+    @pytest.mark.parametrize("prompts", [[], ["fix tests"]])
+    async def test_footer_tracks_available_actions(
+        self, tmp_path: Path, prompts: list[str]
+    ) -> None:
+        app = _RecordingApp()
+        async with app.run_test() as pilot:
+            chat = app.query_one(ChatInput)
+            chat._history.history_file = tmp_path / "history.jsonl"
+            self._seed_history(chat, prompts)
+            chat.open_prompt_search()
+            await pilot.pause()
+
+            for key, has_matches in (
+                ("z", False),
+                ("backspace", bool(prompts)),
+                ("z", False),
+            ):
+                await pilot.press(key)
+                await pilot.pause()
+                hint = str(app.query_one(".prompt-search-hint", Static).content)
+                assert ("navigate" in hint) is has_matches
+                assert ("Tab/Enter insert" in hint) is has_matches
+                assert "Ctrl+R full view" in hint
+                assert "Esc cancel" in hint
+
+            await pilot.press("escape")
+            assert chat.query_one(".input-row").display
 
     async def test_option_backspace_deletes_word_left(self, tmp_path) -> None:
         from deepagents_code.tui.widgets.prompt_search import PromptSearchInput

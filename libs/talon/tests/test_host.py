@@ -7,12 +7,14 @@ import logging
 from typing import TYPE_CHECKING, cast
 
 from deepagents_talon.background import BackgroundSubagents
+from deepagents_talon.channels.slack import _convert_event
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronSchedule
 from deepagents_talon.host import (
     _BACKGROUND_FOLLOW_UP,
     TalonHost,
     _BackgroundRoute,
+    _format_tool_approval_prompt,
     _save_conversation_resets,
 )
 from deepagents_talon.interfaces import (
@@ -260,10 +262,11 @@ class ApprovalAgent(BlockingAgent):
 
 
 class AuthorizationAgent(BlockingAgent):
-    def __init__(self, *, terminal: bool = False) -> None:
+    def __init__(self, *, terminal: bool = False, redirect_uri: str | None = None) -> None:
         super().__init__()
         self.callbacks: list[str] = []
         self.terminal = terminal
+        self.redirect_uri = redirect_uri
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         self.requests.append(request)
@@ -274,6 +277,7 @@ class AuthorizationAgent(BlockingAgent):
             server_name="notion",
             invocation_id="tool-call-1",
             expires_at=asyncio.get_running_loop().time() + 30,
+            redirect_uri=self.redirect_uri,
         )
         await request.authorization_handler(
             AuthorizationURL(
@@ -405,6 +409,103 @@ async def test_channel_authorization_intercepts_bound_callback_outside_model(
         ("chat", "MCP server `notion` is authorized."),
         ("chat", "authorization:completed"),
     ]
+
+
+@pytest.mark.parametrize(
+    "redirect_uri", ["http://localhost:3000/callback", "http://127.0.0.1:6359/callback"]
+)
+async def test_slack_labeled_callback_completes_authorization(
+    tmp_path: Path, redirect_uri: str
+) -> None:
+    channel = RecordingChannel(provider="slack")
+    agent = AuthorizationAgent(redirect_uri=redirect_uri)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    conversation_id = "C1:1700000000.000100"
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id=conversation_id, text="login", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    inbound = _convert_event(
+        {
+            "type": "app_mention",
+            "channel": "C1",
+            "ts": "1700000000.000200",
+            "thread_ts": "1700000000.000100",
+            "user": "operator",
+            "text": f"<{redirect_uri}?code=example&amp;state=state|callback>",
+        },
+        bot_id="bot",
+    )
+    assert inbound is not None
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id=inbound.conversation_id,
+            text=inbound.text,
+            sender_id=inbound.sender_id,
+        ),
+    )
+    await _wait_for_sent_count(channel, 3)
+    await host.stop()
+
+    assert agent.callbacks == [f"{redirect_uri}?code=example&state=state"]
+    assert [request.text for request in agent.requests] == ["login"]
+    assert channel.sent[-2:] == [
+        (conversation_id, "MCP server `notion` is authorized."),
+        (conversation_id, "authorization:completed"),
+    ]
+
+
+async def test_custom_callback_requires_matching_endpoint_and_operator(tmp_path: Path) -> None:
+    channel = RecordingChannel(provider="telegram")
+    redirect_uri = "http://127.0.0.1:6359/callback"
+    agent = AuthorizationAgent(redirect_uri=redirect_uri)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    await host.receive_message(
+        channel, ChannelMessage(conversation_id="chat", text="login", sender_id="operator")
+    )
+    await _wait_for_sent_count(channel, 1)
+    callback = f"{redirect_uri}?code=secret-code&state=secret-state"
+    for conversation, sender, text in (
+        ("other-chat", "operator", callback),
+        ("chat", "attacker", callback),
+        ("chat", "operator", callback.replace(":6359", ":6360")),
+        ("chat", "operator", callback.replace("/callback", "/wrong")),
+        ("chat", "operator", callback.replace("127.0.0.1", "localhost")),
+    ):
+        await host.receive_message(
+            channel, ChannelMessage(conversation_id=conversation, text=text, sender_id=sender)
+        )
+        assert agent.callbacks == []
+    await host.receive_message(
+        channel, ChannelMessage(conversation_id="chat", text=callback, sender_id="operator")
+    )
+    await _wait_for_sent_count(channel, 8)
+    await host.stop()
+    assert agent.callbacks == [callback]
+    assert [request.text for request in agent.requests] == ["login"]
+
+
+async def test_unsolicited_custom_callback_never_reaches_model(tmp_path: Path) -> None:
+    channel = RecordingChannel(provider="telegram")
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id="chat",
+            text="http://127.0.0.1:6359/callback?code=secret-code&state=secret-state",
+            sender_id="operator",
+        ),
+    )
+    await host.stop()
+    assert agent.requests == []
+    assert channel.sent == [("chat", "No matching MCP authorization request is pending.")]
 
 
 async def test_terminal_channel_authorization_suppresses_redundant_agent_result(
@@ -597,6 +698,49 @@ async def test_host_interrupts_active_turn_and_continues_same_conversation(tmp_p
 
     assert [request.text for request in agent.requests] == ["block", "second"]
     assert agent.recoveries == ["test:chat"]
+    assert channel.sent == [("chat", "reply:second")]
+
+
+class SlowToStopTypingChannel(RecordingChannel):
+    """Typing indicator that takes a moment to stop once cancelled."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.typing_started = asyncio.Event()
+        self.typing_stopping = asyncio.Event()
+
+    async def send_typing(self, conversation_id: str) -> None:
+        await super().send_typing(conversation_id)
+        self.typing_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.typing_stopping.set()
+            await asyncio.sleep(0.05)
+            raise
+
+
+async def test_message_arriving_as_a_turn_finishes_starts_its_own_turn(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Fail fast instead of waiting out the real 30 seconds if the cancel is lost.
+    monkeypatch.setattr("deepagents_talon.host._CANCEL_TIMEOUT_SECONDS", 1.0)
+    channel = SlowToStopTypingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await channel.typing_started.wait()
+    agent.released.set()
+    # The first turn's model call is done and it is stopping its typing indicator.
+    await channel.typing_stopping.wait()
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
+    await _wait_for_request(agent, "second")
+    await _wait_for_sent_count(channel, 1)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["block", "second"]
     assert channel.sent == [("chat", "reply:second")]
 
 
@@ -1032,6 +1176,32 @@ async def test_turn_cancelled_awaiting_delivery_requeues_its_background_results(
         await host.stop()
 
 
+@pytest.mark.parametrize("suppressed", [False, True])
+async def test_turn_cancelled_stopping_typing_requeues_unsuppressed_results(
+    tmp_path: Path, *, suppressed: bool
+) -> None:
+    channel = SlowToStopTypingChannel()
+    agent = BackgroundResultAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+    try:
+        if suppressed:
+            host._terminal_authorizations.add("test:chat")
+        await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+        await channel.typing_started.wait()
+        turn = host._tasks["test:chat"]
+        agent.released.set()
+        await channel.typing_stopping.wait()
+        turn.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.wait_for(turn, 2)
+
+        assert agent.background.requeued == ([] if suppressed else ["subagent-1"])
+        assert channel.sent == []
+    finally:
+        await host.stop()
+
+
 async def test_delivered_turn_does_not_requeue_its_background_results(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = BackgroundResultAgent()
@@ -1212,6 +1382,16 @@ async def test_host_passes_inbound_video_path_in_text(tmp_path: Path) -> None:
     assert "unsupported" not in request.text
     assert request.metadata["media_type"] == "video"
     assert request.metadata["media_paths"] == [str(video)]
+
+
+def test_approval_prompt_preserves_angle_brackets_for_other_channels() -> None:
+    approval = ToolApprovalRequest(
+        conversation_id="chat",
+        interrupt_id="interrupt",
+        action_requests=[{"name": "execute", "args": {"command": "sort < input.txt"}}],
+    )
+
+    assert '"command": "sort < input.txt"' in _format_tool_approval_prompt(approval)
 
 
 async def test_host_routes_tool_approval_reply_to_pending_run(tmp_path: Path) -> None:
@@ -1884,7 +2064,7 @@ async def test_one_locked_conversation_does_not_stall_delivery_for_others(
             agent.background.pending.add(owner)
             host._background_routes[owner] = _BackgroundRoute(
                 channel=channel,
-                message=ChannelMessage(owner, "research"),
+                message=ChannelMessage(owner, "research", metadata={"history_chat": "100"}),
                 conversation_root=owner,
                 conversation_id=owner,
                 provider="test",
@@ -1904,6 +2084,8 @@ async def test_one_locked_conversation_does_not_stall_delivery_for_others(
 
         assert "waiting" in host._tasks
         assert "stuck" not in host._tasks
+        await host._tasks["waiting"]
+        assert agent.requests[0].metadata["history_chat"] == "100"
     finally:
         release.set()
         await asyncio.gather(holder, return_exceptions=True)

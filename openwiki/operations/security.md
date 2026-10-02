@@ -1,209 +1,137 @@
 ---
 type: security operations guide
-title: Security Boundaries and Secrets
-description: Operating guidance for agent authority, workspace and offload trust boundaries, and least-privilege GitHub automation. It distinguishes controls expressed in workflow YAML from externally configured GitHub, App, environment, and host protections.
-tags: [security, operations, trust-boundaries, secrets, approvals, mcp, github-actions]
+title: Security Boundaries and Operational Risks
+description: Practical threat model and deployment safeguards for Talon channels, host execution, MCP configuration and OAuth, approvals, state, and optional sandbox routing.
+tags: [security, operations, talon, channels, mcp, oauth, sandboxing]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-23T08:05:59.666Z
+    at: 2026-10-01T08:06:30.386Z
 sources:
-  - id: openwiki-source-2b395728f3412b772048ad1f
-    resource: repo://.github/scripts/labeling/semif-topic-classifier.js
-  - id: openwiki-source-6ac03f1bfd66c4bc4a761a5c
-    resource: repo://.github/scripts/labeling/sync-topic-labels.js
-  - id: openwiki-source-9b32b94dc673575be27eaced
-    resource: repo://.github/scripts/labeling/topic-classifier.js
-  - id: openwiki-source-ea29da8749b893917f11666d
-    resource: repo://.github/scripts/release/release-notes.js
-  - id: openwiki-source-7eb504c4813c7bcde7464787
-    resource: repo://.github/scripts/tests/labeling/semif-topic-classifier.test.js
-  - id: openwiki-source-e882cef9841f4f6291ddcb36
-    resource: repo://.github/scripts/tests/labeling/topic-classifier.test.js
-  - id: openwiki-source-f4eea0fab8d793f88bb9f835
-    resource: repo://.github/scripts/tests/workflows/test_openwiki_workflow.py
-  - id: openwiki-source-ce9e844e8d33dbc3e766d8f1
-    resource: repo://.github/scripts/tests/workflows/test_workflow_secret_scoping.py
-  - id: openwiki-source-8d4ac162fca0a57f00bb83b7
-    resource: repo://.github/SECRETS.md
-  - id: openwiki-source-fa750a379507f8fc66395df2
-    resource: repo://.github/workflows/_eval.yml
-  - id: openwiki-source-7330cb37457ccdb62d7c41c7
-    resource: repo://.github/workflows/auto-label-by-package.yml
-  - id: openwiki-source-164e2da859b5277df81c7d94
-    resource: repo://.github/workflows/ci.yml
-  - id: openwiki-source-6d4b4e707b8d60b6ccfa3425
-    resource: repo://.github/workflows/openwiki-update.yml
-  - id: openwiki-source-4541a26c837a99dc39a0ee0c
-    resource: repo://.github/workflows/release_notes.yml
-  - id: openwiki-source-88c8fb547983f8768347b62e
-    resource: repo://.github/workflows/sync_topic_labels.yml
-  - id: openwiki-source-18abc7e59899514f067032b2
-    resource: repo://libs/code/deepagents_code/auto_mode.py
-  - id: openwiki-source-074ce96a8baea27a6c43328b
-    resource: repo://libs/code/deepagents_code/client/launch/server.py
-  - id: openwiki-source-216ca680d81dc35eb4d3e76e
-    resource: repo://libs/code/deepagents_code/mcp_config.py
-  - id: openwiki-source-c101168dc0286ff6c29ed37f
-    resource: repo://libs/code/deepagents_code/model_retry.py
-  - id: openwiki-source-ea1089f0d7536fbc96c64866
-    resource: repo://libs/code/deepagents_code/offload_api.py
-  - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
-    resource: repo://libs/code/deepagents_code/workspace.py
-  - id: openwiki-source-1d73b3e2b56b5f0d27273379
-    resource: repo://libs/code/README.md
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
+  - id: openwiki-source-8763dd662d69eb266f3bcaf0
+    resource: repo://libs/talon/deepagents_talon/authorization.py
+  - id: openwiki-source-0ad7ce4799b63dc215741642
+    resource: repo://libs/talon/deepagents_talon/channels/base.py
+  - id: openwiki-source-a8e2e928218febcb386206bf
+    resource: repo://libs/talon/deepagents_talon/channels/discord.py
+  - id: openwiki-source-553e668943289ec108603518
+    resource: repo://libs/talon/deepagents_talon/channels/slack.py
   - id: openwiki-source-3d157a5857f325aceaade7f1
     resource: repo://libs/talon/deepagents_talon/channels/whatsapp.py
+  - id: openwiki-source-81698d033a5726401d48b135
+    resource: repo://libs/talon/deepagents_talon/config.py
+  - id: openwiki-source-6801a88de6305bc8cbdd259f
+    resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-31e40ff79779f51cafd03f01
     resource: repo://libs/talon/deepagents_talon/mcp_auth.py
   - id: openwiki-source-111101dcd1462ff54277b1fc
     resource: repo://libs/talon/deepagents_talon/mcp_config.py
+  - id: openwiki-source-983a454564593f4639e342ed
+    resource: repo://libs/talon/deepagents_talon/mcp_oauth.py
+  - id: openwiki-source-26b7e102f81f5c7bcfdc2424
+    resource: repo://libs/talon/deepagents_talon/pairing.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-580d91c607e0a09e0659e565
+    resource: repo://libs/talon/deepagents_talon/sandbox.py
   - id: openwiki-source-267468fe937003d4716fe6c2
     resource: repo://libs/talon/deepagents_talon/tool_approvals.py
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-23T08:05:59.666Z" }
+  - id: openwiki-source-dd5c04bfd1023074008a1256
+    resource: repo://libs/talon/tests/unit_tests/test_mcp_public_oauth_config.py
+  - id: openwiki-source-57a0613315e23277d358df76
+    resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-01T08:06:30.386Z" }
 ---
 
-# Security Boundaries and Secrets
+# Security Boundaries and Operational Risks
 
-## Authority model and deployment boundary
+## Start with the actual boundary
 
-Deep Agents follows a **trust the LLM** model: an agent can perform what its exposed tools permit. Prompts, model selection, and a tool's redacted presentation are not enforcement points. Establish authority at tool exposure, approvals, the execution backend, OS identity, network policy, and deployment environment. The application operator—not this library—secures the service that invokes an agent, its credentials, persistence, and external integrations.
+> **Talon is experimental alpha software, not a production-grade security boundary.** It is not intended for production or enterprise use and does not provide complete production-grade HITL policy, channel-administrator controls, sandbox execution isolation, or multi-tenant boundaries. Treat channel access as access to the operator's configured agent, model credentials, MCP tools, and—unless execution is sandboxed—local-host resources.
 
-```mermaid
-flowchart TD
-    Input["User input or tool result"] --> Model["Model selects a tool call"]
-    Model --> Gate{"Approval or policy"}
-    Gate -->|"Deny"| Stop["Do not dispatch"]
-    Gate -->|"Allow"| Tool["Exposed tool"]
-    Tool --> Backend["Selected backend"]
-    Backend --> Host["Host process"]
-    Backend --> Sandbox["Sandbox or remote environment"]
-```
-
-*An approval can stop dispatch, while the selected backend determines where an allowed action executes.*
-
-Related: [runtime behavior](../architecture/runtime-behavior.md), [GitHub Action](../integrations/github-action.md), [development](development.md), and [Run a dcode Session](../workflows/run-dcode-session.md).
-
-## Filesystem policy is not execution containment
-
-`FilesystemPermission` is an ordered, first-match policy for filesystem-tool operations. Its `allow`, `deny`, and `interrupt` modes respectively proceed, return a permission-denied error, or delegate an approval decision to `HumanInTheLoopMiddleware`. Permission patterns must be absolute and cannot contain traversal or home-directory shorthand.
-
-This governs filesystem tools, not arbitrary host reads. `FilesystemMiddleware` refuses unscoped permissions with an execution-capable backend because it has no equivalent execute-tool permission enforcement. Do not use filesystem rules as a shell, host, or secret-confidentiality boundary; use a sandbox/VM/container or an OS identity and readable-path set that excludes sensitive material.
-
-## dcode: project, local server, and workspace boundaries
-
-dcode trusts the directory from which it runs; it reads project artifacts before a human-approval prompt. Treat an untrusted checkout as untrusted executable influence and use a remote sandbox rather than a trusted workstation.
-
-Its local server chooses an ephemeral port and binds `127.0.0.1`; its subprocess environment sets `LANGGRAPH_AUTH_TYPE=noop`. The HTTP interface consequently depends on loopback exposure and host-process isolation rather than server authentication. A shared local host is not automatically a private trust zone.
-
-For server-hosted threads, a workspace is a durable, server-authoritative binding. `cwd` must be an existing canonical absolute directory. The server resolves project policy instead of accepting client policy claims, records workspace identity plus durable policy and runtime fingerprints transactionally, and rejects an attempt to move a thread or change its durable policy. Runtime-only identity changes such as model settings may refresh the runtime fingerprint without rebinding the workspace. Binding context and fingerprint checks on later execution prevent a client from silently selecting another workspace or policy.
-
-### Offload is a server-owned credential boundary
-
-`/dcode/threads/{thread_id}/offload` validates a deliberately narrow request shape before running compaction. At the HTTP boundary, it removes client-supplied endpoint, proxy, transport, and injected-client keys from `model_params`; more importantly, it discards request model selection and restores the model and parameters recorded in the thread checkpoint. A local client cannot use offload to redirect the server's credentialed provider traffic or choose another credentialed model. The server still needs the normal loopback/host isolation boundary.
-
-The route also rejects unknown workspace request fields and client claims that contain project workspace policy. Its conflict diagnostics contain allowlisted policy details, not paths, prompts, model parameters, or credentials. See [runtime behavior](../architecture/runtime-behavior.md) for the offload lifecycle and settlement semantics.
-
-### Auto review, scratch artifacts, and retry budgets
-
-Auto mode is **policy and review**, not a sandbox. `AutoModeHITLMiddleware` treats its classifier deadline as a security-control budget: it requires positive finite construction and inference budgets, gives model construction a separate 30-second budget, and uses the configured inference budget (20 seconds by default) for a structured decision batch. Construction is cached and shielded so an expired wait does not spawn duplicate builds; an inference failure is retried only when the shared model retry policy classifies it as transient, and classifier retry sleeps may consume at most one quarter of its deadline. These controls prevent a stalled or rate-limited reviewer from silently turning into an indefinite approval path; they do not make untrusted tool arguments safe.
-
-The middleware's `create_temp_artifact` and `delete_temp_artifact` tools are approval-gated. Creation uses an exclusively allocated file under the OS temp directory, rejects an unsafe suffix, non-regular file, wrong owner, or broad POSIX mode, and records allocation, device, inode, thread, and current-turn identity. Cleanup accepts only an artifact in that current request and rechecks the prefix and device/inode before unlinking. Use these tools for short-lived command inputs such as a PR body; do not replace them with model-selected paths or treat an OS temp file as persistent secret storage.
-
-Model retries wrap the model node rather than the entire agent turn, so a transient provider failure does not replay completed tools. The retry policy accepts designated transient status, transport, SDK, and `ModelError` cases; it honors a valid `Retry-After` only up to 60 seconds, otherwise uses jittered exponential backoff capped at 10 seconds, and re-raises non-transient or exhausted failures rather than fabricating a model reply. For calls under a deadline, a cumulative-delay guard refuses a retry whose sleep would overrun the caller's budget.
-
-### MCP environment expansion and OAuth storage
-
-dcode expands `${VAR}` and `${VAR:-default}` in MCP `command`, `url`, `args`, `env`, and `headers`; malformed braced references and an unset required value fail resolution. This is configuration interpolation, not secret mediation: expansion can still pass a credential to a command or remote endpoint.
-
-`FileTokenStorage` writes MCP OAuth token state under the selected profile's state directory. Token values are sensitive; do not place credential values in configuration, prompts, logs, or diagnostics.
-
-## Talon: operator authority and mediated administration
-
-Talon is experimental alpha software and explicitly lacks production-grade complete HITL policy, channel administrator controls, sandbox execution isolation, and multi-tenant boundaries. A channel participant with agent access must therefore be treated as holding the operator's effective agent, model, MCP, and local-host authority.
-
-WhatsApp defaults to `self` exposure for the paired account. `allowlist` narrows triggering chats or mentions. `open` requires the explicit `DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK` acknowledgement and permits arbitrary senders; do not use it where that effective operator authority is unacceptable.
-
-### Invocation snapshots and approval policy
-
-`ToolApprovalStore` stores exact tool-name booleans and produces an immutable `ApprovalSnapshot` for an invocation. Updates validate the policy, use a lock and revision compare-and-swap, and a successful change applies only to the next invocation. Changing policy is separately operator-authorized: `update_tool_approvals` requires both a trusted operator marker and an active snapshot. A `false` value disables prompting; it does not establish authorization.
-
-`MCPConfigStore` redaction, revision checks, locking, and placement warnings mediate its configuration-tool path but do not conceal credentials from a Talon agent using the default local shell. Talon MCP OAuth storage holds cleartext bearer and refresh tokens with owner-only filesystem hardening, locking, and atomic writes; that hardening is not a defense against a shell backend that can read the files. Keep secrets outside paths readable by the agent process and prefer `${ENV_VAR}` references to literals.
-
-## GitHub Actions: intent, credentials, and external authority
-
-`.github/SECRETS.md` is an inventory of intended non-`GITHUB_TOKEN` scopes, not a secret store. Selecting `environment:` in YAML does **not** prove that environment secrets, deployment restrictions, protection rules, branch policy, or GitHub App installation permissions exist. Workflow `permissions` describes the ambient `GITHUB_TOKEN`; it does not cap a separately minted App installation token. Verify the environment, App installation, repository policy, and provider-side scopes independently.
-
-Use the narrowest environment and inject a credential only into its consuming step. The standard CI token is read-only for checks, contents, and pull requests. The issue-labeling job alone elevates its job token to `issues: write`; its model credentials are absent from workflow and job environments and appear only in **Apply topic labels**. Reusable eval runs keep read-only contents permission, select `evals`, and declare provider credentials as optional.
-
-### Issue topic classification: untrusted text and bounded output
-
-The issue workflow runs on `opened` and `edited`, but topic classification runs only on `opened`: an edit must not re-add a topic a maintainer removed. It obtains allowed `topic:*` names from the local manifest and descriptions from repository labels, skips topics without descriptions, and turns classifier failures into a warning with no label mutation. Package-label synchronization separately derives only managed package/integration labels from the issue form and leaves labels outside that set alone.
-
-The classifier treats title and body as untrusted data, truncates the input to 20,000 characters, tells either provider to ignore embedded instructions, and accepts only the supplied allowlist. The Groq path requires JSON and filters, deduplicates, and caps results at three. The Semif path sends batches of at most 32 scored questions to the System One endpoint, validates each probability, applies a 0.8 cutoff, ranks across batches, and also caps results at three. Both paths have a 15-second abortable request budget. The configured provider chooses which injected key is consumed; the workflow currently supplies both potential provider keys only to this one classification step.
+Admission, redaction, approval prompts, restrictive file modes, and workspace-placement warnings each solve narrower problems. None prevents a host-executing agent from using authority already available to the Talon process. Use a dedicated OS identity, least-privilege credentials, host filesystem permissions, network egress controls, and a sandbox provider whose deployment policy has been reviewed.
 
 ```mermaid
 flowchart TD
-    Event["Issue opened"] --> Labels["Load allowed topic labels and descriptions"]
-    Labels --> Provider{"Configured provider"}
-    Provider -->|"groq"| Groq["Groq JSON classifier"]
-    Provider -->|"semif"| Semif["System One scored batches"]
-    Groq --> Filter["Allowlist deduplicate and cap at three"]
-    Semif --> Filter
-    Filter --> Apply["Add new topic labels only"]
-    Provider -->|"failure"| Warn["Warn and make no topic change"]
+    Input["Channel message or model instruction"] --> Admit{"Channel admission"}
+    Admit -->|"reject"| Drop["Drop or offer pairing"]
+    Admit -->|"admit"| Host["Talon host and agent runtime"]
+    Host --> Prompt{"Named tool prompt policy"}
+    Prompt --> Execute{"Tool or execution route"}
+    Execute --> Local["Local host shell and filesystem"]
+    Execute --> Sandbox["Configured remote sandbox"]
+    Host --> MCP["Host-side MCP and OAuth"]
+    Host --> State["Assistant state and history"]
 ```
 
-*Issue text reaches a credentialed model endpoint only in the scoped classifier step; output is constrained before labels are mutated.*
+*Channel admission decides who can invoke the agent; execution routing and the process identity determine what that invocation can reach.*
 
-#### Manifest synchronization and live dry runs
+## Channel exposure is an invocation gate
 
-The classifier's allowlist is the checked-in `.github/topic-labels.json` manifest, rather than arbitrary provider output or a live label-list response. The daily sync discovers valid nonempty `topic:*` repository labels and merges them with the existing sorted manifest; it refuses to overwrite the manifest when discovery returns none, so label disappearance does not silently retire a classification choice. Its App token can write contents and pull requests only for the manifest refresh path.
+Talon's shared exposure policy defaults to `self`. In `self`, an adapter accepts a host-recognized self message or a configured operator ID. `allowlist` accepts configured conversation IDs or glob-style mention patterns; those patterns match message text and are not sender authentication. `open` accepts every message, but startup requires the provider-specific `*_OPEN_ACK=allow-arbitrary-senders` acknowledgement and logs that arbitrary senders can reach operator credentials and local-host access.
 
-A maintainer can dispatch `sync_topic_labels.yml` with `classifier_issue` to run a live Semif classification without mutating labels or the manifest. This job has read-only contents and issues permissions, validates a positive safe-integer issue number, writes only the classifier's validated diagnostic JSON to `classifier-scores.json` with mode `0600`, and uploads it as an artifact. Treat the artifact as sensitive issue-derived operational output and limit access/retention through GitHub artifact policy.
+For WhatsApp, the paired account defaults to `self`. `DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=allowlist` can limit triggering chats or mentions. `DEEPAGENTS_TALON_WHATSAPP_EXPOSURE=open` additionally requires `DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK=allow-arbitrary-senders`; do not use it to mediate untrusted users.
 
-### Curated release notes: trusted automation, untrusted PR data
+Adapters make this decision before expensive work and before host dispatch. For example, Slack constructs a normalized message, rejects an unadmitted event before fetching thread context or preparing media, and may offer pairing only after rejection. A successful admission is **not** a constrained user session or administrator role: it lets the sender influence the operator-authorized agent.
 
-`release_notes.yml` uses `pull_request_target` for ready release PRs and `issue_comment` for manual commands. It checks out the automation from `main` into `trusted-source` with no persisted credentials; it does not check out or execute release-PR code. Validation accepts only an open, same-repository, `main`-targeting release-please branch whose component is present in the registry and agrees with the release title. A manual `@release-bot draft` or `apply` command additionally requires repository write, maintain, or admin permission; insider association only limits feedback and is not the privileged authorization check.
+### Pairing is revocable invocation access, not operator authority
 
-The draft job prepares PR content through the API at the validated head SHA, then invokes a fixed model endpoint without model tools, shell, or filesystem access to the untrusted text. Only the key selected by `RELEASE_BOT_MODEL` is in that drafting process. Repository mutations use the short-lived App token in specific helper steps. Apply revalidates and prepares state, creates a non-force Git Data API commit on the release branch, publishes the preview/metadata, and dispatches the required check for the resulting head.
+Optional sender pairing is supported for Discord, Slack, and Telegram, not WhatsApp, and cannot be enabled with `open` exposure. Pending requests are sender- and provider-bound, use a cryptographically generated code with a one-hour lifetime, and are approved through operator surfaces. The private assistant-home store uses a sidecar lock and atomic replacement; unreadable or invalid pairing state fails closed for paired access, although environment-configured admission remains available.
 
-The helper is deliberately fail-closed at its content boundary. A release branch and title must agree on a registered component, excluding fork lookalikes before a changelog path is derived. Bot metadata parsing requires an exact marker at byte zero, exactly one of each known field, and both the configured bot login and immutable numeric ID. Draft instructions are length-bounded and stripped of mentions and metadata/heading tokens before being echoed. Trusted state is kept outside the drafting helper's work directory; after generation, output must be nontrivial and contain neither release-bot metadata nor a version heading, and the PR head/component/version are checked again before publication. These validations prevent model or PR text from being promoted into trusted control metadata.
+A paired sender may invoke the agent in every chat visible to the adapter, but cannot administer Talon controls such as pairing or tool-approval policy. Revoke configured IDs in configuration; revoke a paired sender through the live host when immediate containment matters, because host revocation also cancels tracked work and pauses that sender's jobs.
 
-The YAML requests contents, issues, and pull-request write scopes when minting that App token, but the effective token remains subject to the App's external installation configuration. Likewise, `release-bot` is an intended secret boundary, not proof that its environment restrictions or provider secrets exist.
+## Host execution is the high-power default
 
-### OpenWiki automation: containment and mediation
+Without `DEEPAGENTS_TALON_SANDBOX`, Talon builds a `LocalShellBackend` with `virtual_mode=False`. The shell child does not inherit the full process environment: Talon passes only allowed session variables, sets a fixed safe `PATH`, and scrubs credential markers and known loader, interpreter, and shell-startup hooks. This reduces accidental environment leakage, but it is not filesystem confinement. A command can read or modify paths reachable by the Talon process, including by absolute path.
 
-The scheduled or manually dispatched OpenWiki refresh runs with a read-only `GITHUB_TOKEN`, checks out without persisted credentials, generates documentation, then mints a dedicated repository-scoped App token requesting contents and pull-request write permission. The workflow gives that token only to publication and merge steps. This ordering limits token exposure to generated content, but it is workflow **intent**; GitHub environment and App configuration remain an external authority boundary.
+This is why `FilesystemPermission` rules, mediated configuration tools, and putting a sensitive file outside `DEEPAGENTS_TALON_WORKSPACE` cannot protect a secret from a host-executing Talon agent. Filesystem middleware provides permission checks for filesystem tools while an execution-capable backend adds `execute`; Talon's MCP configuration code explicitly treats placement as a warning, not secrecy. Moving a file out of the workspace removes a relative-path route and model-working-tree exposure, not the absolute-path route. If the agent must not read a secret, keep it in a key store or directory inaccessible to the Talon process, preferably under a separate identity.
 
-```mermaid
-flowchart TD
-    Start["Scheduled or manual trigger"] --> Checkout["Read-only checkout without persisted credentials"]
-    Checkout --> Generate["Generate OpenWiki update"]
-    Generate --> Token["Mint dedicated App token"]
-    Token --> Stage["Restore workflow and stage allowed paths"]
-    Stage --> Changed{"Staged changes exist"}
-    Changed -->|"No"| Close["Close matching obsolete update PR"]
-    Changed -->|"Yes"| Publish["Force-push update branch and create or reuse PR"]
-    Publish --> Validate["Validate PR identity and recorded SHA"]
-    Validate --> Merge["Squash merge at recorded SHA"]
-```
+## MCP configuration: mediated change, not confidentiality
 
-*The workflow's intended handoff separates generation from the App-token publication path; externally configured environment and App permissions govern the actual credentials.*
+`MCPConfigStore` exposes `get_mcp_configuration` and `update_mcp_server` for an operator-selected file. The view redacts stored strings except transport/auth enums and exact `${ENV_VAR}` references, and does not expand those references. Updates use an HMAC-derived revision, a sidecar lock, validation, and atomic replacement; a successful write requests reload, and the new capability becomes available only after a successful reload before a subsequent turn. Running tasks keep their prior capabilities.
 
-Before staging, the workflow restores its own YAML and stages only `openwiki` and `AGENTS.md`. An empty diff closes only a matching repository-owned update PR; otherwise it force-pushes the update branch before creating or reusing its PR. Every merge attempt verifies base, repository-owned head, recorded SHA, open state, and no reported conflict, then requests a SHA-pinned squash merge. Only HTTP `405` is retried, at 15-second intervals for at most 60 attempts.
+Redaction supports safer model-facing inspection and editing, but is **not** a secret boundary. With the default local shell, the agent can read or overwrite a readable absolute configuration path outside these tools, bypassing redaction, CAS, `O_NOFOLLOW`, and a configuration-update approval. Do not present configuration redaction or workspace placement warnings as protection from a host-executing agent.
 
-## Operational checklist
+The managed schema limits fields and validates server shape. It permits `${NAME}` references in command, URL, arguments, environment, and headers, rejects malformed references, and validates remote OAuth settings. When an unapproved update tries to preserve a `<redacted>` value, it may change only tool filters: changing another managed setting could redirect an unseen stored credential to a command or endpoint selected by the model. A deliberately approved change can still execute a local command or send credentials to a remote endpoint, so treat MCP server definitions and reloads as privileged operational changes.
 
-1. Before opening an untrusted project or channel, choose a real execution boundary: remote sandbox, VM/container, or dedicated low-privilege identity.
-2. Treat filesystem permissions, MCP redaction, and approval prompts as mediation controls, not host containment.
-3. Keep dcode's loopback server away from untrusted local peers. Do not allow offload callers to supply provider routing or model identity.
-4. For Talon, prefer `self` or a restrictive allowlist; keep tokens outside agent-readable paths.
-5. For CI, scope credentials to the narrowest environment and consuming step, then audit broader repository/organization fallbacks and external App/environment policy.
-6. Preserve label-classifier input/output constraints: untrusted text instruction handling, provider-specific credential scope, allowlists, timeout, scoring validation, and add-only topic behavior. Keep manifest sync additive and treat the live dry-run artifact as issue-derived data.
-7. Preserve Auto classifier construction/inference deadlines, bounded retry sleep, approval-gated artifact provenance, and device/inode checks; these are safeguards around authority, not containment.
-8. Preserve release-note trusted-source checkout, validated API reads, manual permission check, selected-key-only drafting step, strict bot metadata/output validation, and non-force apply path.
-9. Preserve OpenWiki delayed token minting, publication allowlist, PR ownership checks, SHA pinning, and bounded retry. Run `.github/scripts/tests/workflows/test_workflow_secret_scoping.py`, the classifier tests, and release-note tests when changing these boundaries.
+### OAuth credentials and interactive authorization
+
+MCP OAuth credentials are stored in cleartext JSON under `~/.deepagents/mcp-tokens`. The filename incorporates the server URL and, for non-default public-client settings, the OAuth configuration identity; this separates credentials for distinct endpoints or client configurations. The storage directory is hardened to mode `0700`, files to `0600`, and updates are lock-protected and atomically replaced. Refreshes retain a prior refresh token when a refresh response omits one; a fresh authorization records the new grant rather than carrying an old refresh token forward.
+
+These file protections reduce accidental exposure and concurrent-write loss. They do **not** protect tokens from Talon's default shell backend or another process with the same effective authority. Use OS- or deployment-level secret isolation for credentials the runtime must not disclose.
+
+For an attended channel OAuth code flow, the runtime creates a task-local binding with server name, invocation ID, expiry, and expected redirect URI. The host delivers the authorization URL outside model context, records the provider, conversation, initiating sender, and agent conversation, then accepts a callback only from that same binding context before passing it to the OAuth provider. Device-code instructions likewise go through the host rather than model text. Scheduled jobs and background-result turns receive no authorization handler and fail rather than waiting for a nonexistent user.
+
+Explicit public OAuth configuration accepts only `client_id`, `callback_url`, and `scopes`; it has no client secret field. A custom callback must be a canonical HTTP loopback URL with an explicit valid port and path and no credentials, query, or fragment. Scopes require an explicit client ID. These checks constrain configuration and diagnostics, but the selected MCP server and OAuth scope remain an operator trust decision.
+
+## Approval policy is not authorization or containment
+
+Each assistant can maintain `tools.json`, an exact tool-name-to-boolean prompt policy. Missing policy files receive defaults for selected sensitive operations. `true` means the named call should prompt; `false` and an absent key mean no prompt, **not** permission, availability, or authorization. The store validates bounded regular JSON without duplicate or wildcard names, locks and compare-and-swaps revisions, and atomically writes updates.
+
+Every invocation receives an immutable approval snapshot. A saved policy applies to the next invocation, so an in-flight graph retains its original prompt policy. Updating the policy additionally requires a trusted operator marker and an active snapshot; the pre-edit policy governs the policy-edit tool itself. Do not use `tools.json` as an ACL for shell commands, MCP internals, opaque remote graphs, or same-UID processes.
+
+## Sandboxing changes execution routing, not the whole trust plane
+
+Set `DEEPAGENTS_TALON_SANDBOX` to opt into a `deepagents-code` remote sandbox provider. Talon opens or attaches to it for the host lifetime. An owned sandbox is cleaned up on exit; `DEEPAGENTS_TALON_SANDBOX_ID` attaches an existing sandbox that Talon does not delete. If configured sandbox startup fails, Talon raises an error instead of silently falling back to host execution.
+
+In sandbox mode, Talon's composite backend routes default filesystem operations and every `execute` call to the remote sandbox. It retains virtual host filesystem routes only for the assistant `skills/` and `memory/` directories; this keeps `tools.json` and other assistant state out of sandbox tool reach. Memory paths outside that assistant memory directory are ignored because they would otherwise be created on the host but read from the sandbox.
+
+This is partial isolation, not a multi-tenant boundary. MCP and web tools, channel media handling, provider credentials, and host-side state remain in the Talon process. Select a provider based on its actual image, network, filesystem, identity, retention, and egress controls; provider protocol conformance alone does not establish containment.
+
+## State and retained-data operations
+
+Talon validates assistant IDs, namespaces state under a per-assistant home, creates the home and state directories with mode `0700`, and rejects configured state paths that resolve outside the home. This protects against accidental path traversal and inappropriate access by other OS users, not the Talon process itself, same-UID processes, or host administrators.
+
+Conversation checkpoints and archives retain prompts, messages, tool arguments and results according to their configured lifecycle. The default archive has no automatic expiry. Secure backups and remote history databases, define retention and deletion procedures, and assess egress before enabling remote embedding: remote adapters send archived text and queries to their provider. Local activity logs redact and truncate tool values, but may still contain sensitive application data; enable them only where log access is controlled.
+
+## Deployment safeguards and focused verification
+
+1. **Keep Talon out of production trust roles.** Do not expose it as a multi-tenant service or assume its HITL, channel rules, or sandboxing form a production security boundary.
+2. **Minimize callers.** Start at `self`, use narrow static allowlists, and make `open` exceptional. Treat mention patterns as text triggers, not identity checks. Verify pairing approvals out of band and revoke paired access through the running host.
+3. **Separate authority.** Run Talon under a dedicated OS account with narrowly scoped model, channel, database, and provider credentials. Limit network egress and protect the assistant home, backups, logs, and history store.
+4. **Treat MCP as code and egress.** Review stdio commands, arguments, URLs, headers, OAuth scopes, and tool filters. Prefer `${ENV_VAR}` references over literal credentials, but do not confuse them or config redaction with isolation.
+5. **Use a real sandbox deliberately.** Test the selected provider's network, identity, data retention, and cleanup behavior. Confirm that sandbox startup failure halts deployment and that only `skills/` and `memory/` remain host-routed.
+6. **Test the failure paths.** Cover pre-dispatch Slack rejection and pairing-store failure; CAS and inactive policy snapshots; MCP redaction-restoration and unsafe auto-approved-update rejection; cleartext token modes, atomic writes, endpoint/configuration isolation, and malformed-file diagnostics; OAuth callback sender/conversation binding and unattended authorization failure; and sandbox startup without host fallback.
+
+See [Talon channel admission](/openwiki/concepts/talon-channel-admission.md), [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [MCP](/openwiki/integrations/mcp.md), [sandbox providers](/openwiki/integrations/sandbox-partners.md), and [the Talon runtime](/openwiki/integrations/talon.md) for component-level behavior.

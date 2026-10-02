@@ -721,13 +721,13 @@ class DebugConsoleScreen(ModalScreen[None]):
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape", "close", "Close", show=False),
         Binding(DEBUG_TOGGLE_KEY, "close", "Close", show=False, priority=True),
-        Binding("ctrl+l", "clear_view", "Clear view", show=False, priority=True),
+        Binding("ctrl+x,ctrl+l", "clear_view", "Clear view", show=False, priority=True),
         # Not `priority`: a priority `c` would pre-empt type-to-search in the
         # open level dropdown (e.g. typing "c" to reach CRITICAL). The log view
         # has no `c` binding, so it still bubbles up to this copy action.
         Binding("c", "copy", "Copy", show=False),
     ]
-    """The toggle-key close (`ctrl+backslash`) and `ctrl+l` clear-view are
+    """The toggle-key close (`ctrl+backslash`) and clear-view shortcuts are
     `priority`. Escape close and `c` copy are deliberately *not* `priority`:
     Escape must reach the open level dropdown's overlay first so it closes only
     the menu (a priority Escape would tear down the whole console instead), and
@@ -842,10 +842,10 @@ class DebugConsoleScreen(ModalScreen[None]):
             cost_breakdown_provider: Optional callable that builds the detailed
                 token and cost breakdown shown in a dedicated modal. An empty
                 string hides the breakdown button.
-            cleared_upto: Absolute emission index a prior `Ctrl+L` cleared up to.
+            cleared_upto: Absolute emission index a prior clear advanced to.
                 The console starts rendering from here so a clear persists across
                 close/reopen; records emitted after it still appear.
-            on_clear: Invoked with the new clear cursor whenever `Ctrl+L` clears
+            on_clear: Invoked with the new clear cursor whenever a shortcut clears
                 the view, letting the owner persist it for the next open.
             click_to_copy: Initial state of the "Click to copy" checkbox,
                 restored from the persisted preference.
@@ -858,7 +858,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         self._cost_breakdown_provider = cost_breakdown_provider
         self._records: list[InMemoryLogRecord] = []
         # Absolute index of the next unrendered log record (incremental writes),
-        # seeded from any persisted clear so reopening honors the last Ctrl+L.
+        # seeded from any persisted clear so reopening honors the last reset.
         self._rendered_upto = cleared_upto
         self._on_clear = on_clear
         # One-shot guard so the "buffer unavailable" notice is written only once.
@@ -1234,7 +1234,7 @@ class DebugConsoleScreen(ModalScreen[None]):
             The formatted key-hint line.
         """
         return Content.styled(
-            f"Esc close {get_glyphs().separator} Ctrl+L clear view "
+            f"Esc close {get_glyphs().separator} Ctrl+X clear "
             f"{get_glyphs().separator} c copy visible logs "
             f"{get_glyphs().separator} Enter copy line",
             "dim italic",

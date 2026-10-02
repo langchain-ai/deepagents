@@ -50,11 +50,15 @@ class ChatCommand:
             for platform command registration. At most `MAX_SUMMARY_CHARS`.
         hidden: Whether to leave the command out of `/help` and out of platform
             registration. A hidden command still runs when typed.
+        argument: Description of the command's one optional free-text argument,
+            for platforms that register arguments as typed options. `None` when
+            the command takes no argument.
     """
 
     name: str
     summary: str
     hidden: bool = False
+    argument: str | None = None
 
     @property
     def text(self) -> str:
@@ -75,6 +79,23 @@ CHAT_COMMANDS: tuple[ChatCommand, ...] = (
         # has no confirmation step to catch a mistaken invocation.
         hidden=True,
     ),
+    ChatCommand("context-doctor", "Audit injected context and its estimated token cost."),
+    ChatCommand(
+        "pair",
+        "Operator only: list, approve, or revoke paired DM senders.",
+        # Takes arguments, which a bare platform registration cannot carry.
+        hidden=True,
+    ),
+    ChatCommand(
+        "model",
+        "Show this chat's model, list available models, or switch models.",
+        argument="A provider to list, a provider:model to switch to, or default.",
+    ),
+    ChatCommand(
+        "smart-model",
+        "Show or set the model used by ask_for_help across all chats.",
+        argument="A provider:model, off, or default to restore the configured model.",
+    ),
 )
 """Every command the host dispatches, in the order `/help` lists them."""
 
@@ -83,6 +104,10 @@ NEW = CHAT_COMMANDS[1].text
 STOP = CHAT_COMMANDS[2].text
 MCP_RELOAD = CHAT_COMMANDS[3].text
 RESET_ALL_HISTORY = CHAT_COMMANDS[4].text
+CONTEXT_DOCTOR = CHAT_COMMANDS[5].text
+PAIR = CHAT_COMMANDS[6].text
+MODEL = CHAT_COMMANDS[7].text
+SMART_MODEL = CHAT_COMMANDS[8].text
 
 COMMANDS_BY_NAME: Mapping[str, ChatCommand] = MappingProxyType(
     {command.name: command for command in CHAT_COMMANDS},

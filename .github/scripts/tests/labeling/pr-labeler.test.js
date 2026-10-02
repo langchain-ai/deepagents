@@ -98,7 +98,7 @@ test('pr_labeler.yml consumes the shared helper, not an inline alias map', () =>
 // The org labels are applied by pr_labeler.yml directly rather than derived
 // from config (see its `org:external` branch), so they are not reachable from
 // any config map and have to be named here.
-const WORKFLOW_APPLIED_LABELS = ['org:external', 'org:internal'];
+const WORKFLOW_APPLIED_LABELS = ['org:external', 'org:internal', 'priority:triage'];
 
 function creatableLabels() {
   const { config, h } = prLabeler.loadAndInit({}, 'o', 'r', core);

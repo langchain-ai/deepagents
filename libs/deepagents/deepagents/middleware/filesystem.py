@@ -9,11 +9,12 @@ import contextvars
 import mimetypes
 import threading
 import uuid
+import warnings
 from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, cast
+from typing import Annotated, Any, Final, Literal, NotRequired, cast
 
 import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
@@ -23,16 +24,19 @@ from langchain.agents.middleware.types import (
     ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
     ResponseT,
     TracePolicy,
     omit_payload,
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
+from langchain_core.exceptions import ModelInvalidRequestError
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.channels.delta import DeltaChannel
+from langgraph.channels.untracked_value import UntrackedValue
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 from pydantic import BaseModel, Field
@@ -66,7 +70,6 @@ from deepagents.backends.sandbox import BaseSandbox
 from deepagents.backends.utils import (
     _EXTENSION_TO_FILE_TYPE,
     _GLOB_WILDCARD_CHARS,
-    _OPENAI_FILE_MIME_TYPES,
     _VIDEO_EXTRA_EXTENSIONS,
     MAX_VIDEO_INPUT_BYTES,
     FileType,
@@ -80,6 +83,15 @@ from deepagents.backends.utils import (
     sanitize_tool_call_id as sanitize_tool_call_id,
     truncate_if_too_long,
     validate_path,
+)
+from deepagents.middleware._blob_offload import (
+    _BLOB_PAYLOADS_KEY,
+    _ahydrate_messages,
+    _aoffload_human_messages,
+    _aoffload_tool_result,
+    _hydrate_messages,
+    _offload_human_messages,
+    _offload_tool_result,
 )
 from deepagents.middleware._message_eviction import (
     _TOO_LARGE_TOOL_MSG,
@@ -146,17 +158,6 @@ def __getattr__(name: str) -> str:
     raise AttributeError(msg)
 
 
-# `ChatOpenAI`, `AzureChatOpenAI`, and `ChatGoogleGenerativeAI` accept non-PDF
-try:
-    from langchain_openai import AzureChatOpenAI as _AzureChatOpenAI, ChatOpenAI as _ChatOpenAI
-except ImportError:
-    _OPENAI_FILE_MODEL_TYPES: tuple[type[Any], ...] = ()
-else:
-    _OPENAI_FILE_MODEL_TYPES = (_AzureChatOpenAI, _ChatOpenAI)
-
-if TYPE_CHECKING:
-    from langchain.chat_models import BaseChatModel
-
 _FS_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 """wcmatch flags enabling brace expansion and `**` globstar recursion."""
 
@@ -186,13 +187,7 @@ _VIDEO_SAMPLING_RATE: Final = 0.5
 """Seconds between sampled frames when extracting stills from a video."""
 
 _MULTIMODAL_BLOCK_TYPES: Final = frozenset(_EXTENSION_TO_FILE_TYPE.values())
-"""Content block types `read_file` may emit that require multimodal model support.
-
-Derived from `_EXTENSION_TO_FILE_TYPE`'s values (`"text"` never appears there,
-since it's `_get_file_type`'s default for unmapped extensions).
-"""
-
-_PDF_MIME_TYPE: Final = "application/pdf"
+"""Content block types `read_file` may emit that require multimodal model support."""
 
 
 def _tool_error(name: str, tool_call_id: str | None, content: str) -> ToolMessage:
@@ -265,125 +260,17 @@ def _move_media_results_after_tool_results(messages: list[AnyMessage]) -> list[A
     return reordered
 
 
-_PROFILE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_inputs", "audio": "audio_inputs", "video": "video_inputs"}
-"""`ModelProfile` field gating each media block type."""
-
-_TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE: Final = {"image": "image_tool_message"}
-"""Extra `ModelProfile` field that can gate a block type specifically within a `ToolMessage`."""
-
-
-def _file_block_supported(
-    block: ContentBlock,
-    *,
-    model: "BaseChatModel | None",
-    profile: Mapping[str, Any],
-    in_tool_message: bool,
-) -> bool:
-    """Check whether a file block is supported by the model and endpoint."""
-    if "base64" not in block:
-        return True
-    if block.get("mime_type") == _PDF_MIME_TYPE:
-        if in_tool_message and profile.get("pdf_tool_message") is False:
-            return False
-        return profile.get("pdf_inputs") is not False
-    return block.get("mime_type") in _OPENAI_FILE_MIME_TYPES and isinstance(model, _OPENAI_FILE_MODEL_TYPES) and bool(model.use_responses_api)
-
-
-def _multimodal_block_supported(
-    block: ContentBlock,
-    *,
-    model: "BaseChatModel | None",
-    profile: Mapping[str, Any],
-    in_tool_message: bool,
-) -> bool:
-    """Check whether the profile and provider accept the block.
-
-    Missing `ModelProfile` fields default to supported, since profile coverage is
-    incomplete. Only an explicit `False` rejects a block type.
-    """
-    block_type = block["type"]
-    if block_type == "file":
-        return _file_block_supported(
-            block,
-            model=model,
-            profile=profile,
-            in_tool_message=in_tool_message,
-        )
-
-    field = _PROFILE_FIELD_BY_BLOCK_TYPE.get(block_type)
-    if field is None:
-        return True
-    if in_tool_message:
-        tool_field = _TOOL_MESSAGE_FIELD_BY_BLOCK_TYPE.get(block_type)
-        if tool_field and profile.get(tool_field) is False:
-            return False
-    return profile.get(field) is not False
-
-
-def _unsupported_multimodal_placeholder(block: ContentBlock, message: AnyMessage) -> ContentBlock:
-    """Build the text block replacing a multimodal block the model can't accept."""
-    mime_type = block.get("mime_type", "unknown")
-    path = message.additional_kwargs.get("read_file_path", "the requested file")
-    return cast(
-        "ContentBlock",
-        {
-            "type": "text",
-            "text": f"[read_file: {path} was not attached because this model does not support {block['type']} content ({mime_type}).]",
-        },
-    )
-
-
-def _scrub_message_multimodal_content(
-    message: AnyMessage,
-    *,
-    model: "BaseChatModel | None",
-    profile: Mapping[str, Any],
-) -> AnyMessage:
-    """Return `message` unchanged, or a copy with unsupported blocks replaced by placeholders."""
-    if not isinstance(message, (ToolMessage, HumanMessage)):
-        return message
-
-    in_tool_message = isinstance(message, ToolMessage)
-    blocks = message.content_blocks
-    new_blocks = [
-        block
-        if block["type"] not in _MULTIMODAL_BLOCK_TYPES
-        or _multimodal_block_supported(
-            block,
-            model=model,
-            profile=profile,
-            in_tool_message=in_tool_message,
-        )
-        else _unsupported_multimodal_placeholder(block, message)
-        for block in blocks
+def _replace_rejected_file_content(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Replace only multimodal reads since the latest model response."""
+    last_response = next((index for index in range(len(messages) - 1, -1, -1) if isinstance(messages[index], AIMessage)), -1)
+    return [
+        message.model_copy(update={"content": "Unsupported content. The file may be invalid, too large, or of an unsupported mime-type."})
+        if index > last_response
+        and (_is_read_file_media_result(message) or (isinstance(message, ToolMessage) and message.name == "read_file"))
+        and any(block["type"] in _MULTIMODAL_BLOCK_TYPES for block in message.content_blocks)
+        else message
+        for index, message in enumerate(messages)
     ]
-    if new_blocks == blocks:
-        return message
-    return message.model_copy(update={"content": new_blocks})
-
-
-def _scrub_unsupported_multimodal_content(messages: list[AnyMessage], model: "BaseChatModel | None") -> list[AnyMessage]:
-    """Replace multimodal content blocks `model.profile` marks unsupported.
-
-    Some providers return a non-retryable 400 when sent a content block they
-    don't support (e.g. a `file` block whose `mime_type` isn't
-    `application/pdf`, produced when `read_file` reads a `.docx`), which would
-    otherwise end the thread. Swapping the unsupported block for a text
-    placeholder here before the request reaches the model.
-
-    A `model` with no `profile` (including `None` `model`, e.g. in tests) is
-    treated as an empty profile rather than skipped: `ModelProfile` is often
-    absent for models `langchain_anthropic` doesn't have a static entry for
-    (e.g. `ChatAnthropic(model="claude-3-5-sonnet-latest")`), and the
-    provider-based binary document gate doesn't depend on profile data at all —
-    skipping the whole scrub in that case would silently leave the exact
-    `.docx`-on-Anthropic bug this fixes unfixed for those models. An empty
-    profile still defaults every per-field check to "supported."
-    """
-    profile = model.profile if model is not None else None
-    if not isinstance(profile, dict):
-        profile = {}
-    return [_scrub_message_multimodal_content(message, model=model, profile=profile) for message in messages]
 
 
 def _handle_video_read(
@@ -1288,6 +1175,17 @@ class FilesystemState(AgentState):
     """Files in the filesystem. Uses DeltaChannel with snapshots every ~50 pregel steps to bound read depth."""
 
 
+class _BlobPayloadState(AgentState):
+    """State for `offload_binary_content`."""
+
+    _blob_payloads: NotRequired[Annotated[dict[str, str], UntrackedValue(dict, guard=False), PrivateStateAttr]]
+    """Payloads of offloaded blobs loaded in this run; never checkpointed."""
+
+
+class _FilesystemBlobPayloadState(FilesystemState, _BlobPayloadState):
+    """`FilesystemState` with `_BlobPayloadState`."""
+
+
 def _uses_state_backend(backend: BackendProtocol) -> bool:
     """Return whether a backend stores any files in agent state."""
     if isinstance(backend, StateBackend):
@@ -1295,6 +1193,27 @@ def _uses_state_backend(backend: BackendProtocol) -> bool:
     if not isinstance(backend, CompositeBackend):
         return False
     return _uses_state_backend(backend.default) or any(_uses_state_backend(route) for route in backend.routes.values())
+
+
+def _routes_to_state_backend(backend: BackendProtocol, path: str) -> bool:
+    """Return whether `path` resolves to a `StateBackend` through composite routing."""
+    if isinstance(backend, CompositeBackend):
+        routed, routed_path, _ = _route_for_path(default=backend.default, sorted_routes=backend.sorted_routes, path=path)
+        return _routes_to_state_backend(routed, routed_path)
+    return isinstance(backend, StateBackend)
+
+
+def _command_messages(command: Command | None) -> list[Any]:
+    update = command.update if command is not None else None
+    return list(update.get("messages", [])) if isinstance(update, dict) else []
+
+
+def _with_update(command: Command | None, updates: dict[str, Any]) -> Command | None:
+    """Return `command` with `updates` merged into its state update."""
+    if not updates:
+        return command
+    update = {**cast("dict[str, Any]", command.update), **updates} if command is not None else updates
+    return replace(command, update=update) if command is not None else Command(update=update)
 
 
 GREP_GLOB_DESCRIPTION = (
@@ -1789,6 +1708,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
     This middleware also automatically evicts large tool results to the file system when
     they exceed a token threshold, preventing context window saturation.
 
+    When using `create_agent` directly, add
+    [`UnsupportedContentMiddleware`][deepagents.middleware.unsupported_content.UnsupportedContentMiddleware]
+    last in the `middleware` list, so `read_file` results the model can't accept are
+    replaced with a text notice. `create_deep_agent` adds it automatically.
+
     Args:
         backend: Backend for file storage and optional execution.
 
@@ -1849,6 +1773,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         max_execute_timeout: int = 3600,
         grep_max_count: int | None = 1000,
         tools: list[FsToolName] | Literal["all"] | None = None,
+        offload_binary_content: bool = False,
         _permissions: list[FilesystemPermission] | None = None,
     ) -> None:
         """Initialize the filesystem middleware.
@@ -1882,6 +1807,16 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 in any list. Backend capability checks for `execute` and
                 `delete` still apply; listing them when the backend does not
                 support them is a no-op.
+            offload_binary_content: Keep binary `read_file` content and inline
+                `HumanMessage` media out of message history.
+
+                Payloads are written to `blobs/` under the artifacts root and
+                state keeps a content-addressed reference; model requests are
+                rehydrated from the backend. `HumanMessage` payloads added
+                since the last model response are replaced at the next model
+                call, so the original input write stays in checkpoint history.
+                Useful with sandbox backends. Has no effect when `blobs/`
+                routes to a `StateBackend`.
             _permissions: Optional filesystem permission rules enforced directly
                 by this middleware's tool implementations.
 
@@ -1909,7 +1844,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             raise TypeError(msg)
         self.state_schema = cast(
             "type[FilesystemState]",
-            FilesystemState if _uses_state_backend(self.backend) else AgentState,
+            _FilesystemBlobPayloadState if _uses_state_backend(self.backend) else _BlobPayloadState,
         )
         if _permissions and supports_execution(self.backend) and not _all_paths_scoped_to_routes(_permissions, self.backend):
             msg = (
@@ -1924,6 +1859,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         _root = artifacts_root.rstrip("/")
         self._large_tool_results_prefix = f"{_root}/large_tool_results"
         self._conversation_history_prefix = f"{_root}/conversation_history"
+        self._blobs_prefix = f"{_root}/blobs"
+        if offload_binary_content and _routes_to_state_backend(self.backend, f"{self._blobs_prefix}/"):
+            msg = f"`offload_binary_content` has no effect: `{self._blobs_prefix}/` routes to a `StateBackend`, which keeps files in checkpointed state."
+            warnings.warn(msg, stacklevel=2)
+            offload_binary_content = False
+        self._offload_binary_content = offload_binary_content
 
         # Store configuration (private - internal implementation details)
         self._custom_system_prompt = system_prompt
@@ -3315,9 +3256,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             eviction threshold, its content is written to the backend and the
             message is tagged in state via `ExtendedModelResponse`.
 
-        It also scrubs unsupported multimodal blocks, replacing them with text
-        placeholders to avoid non-retryable provider errors.
-
         Args:
             request: The model request being processed.
             handler: The handler function to call with the modified request.
@@ -3329,20 +3267,39 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         request_messages = _move_media_results_after_tool_results(list(request.messages))
-        request_messages = _scrub_unsupported_multimodal_content(request_messages, request.model)
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 
+        state_command = None
         eviction_result = self._evict_and_truncate_messages(request)
         if eviction_result is not None:
             messages, state_command = eviction_result
             request = request.override(messages=messages)
+        if self._offload_binary_content:
+            cached = request.state.get(_BLOB_PAYLOADS_KEY) or {}
+            payloads = dict(cached)
+            offloaded = _offload_human_messages(
+                request.state.get("messages", []), _command_messages(state_command), self.backend, self._blobs_prefix, payloads
+            )
+            request = request.override(messages=_hydrate_messages(request.messages, self.backend, self._blobs_prefix, payloads))
+            updates: dict[str, Any] = {"messages": offloaded} if offloaded else {}
+            if payloads.keys() != cached.keys():
+                updates[_BLOB_PAYLOADS_KEY] = payloads
+            state_command = _with_update(state_command, updates)
+        try:
             response = handler(request)
-            if state_command is not None:
-                return ExtendedModelResponse(model_response=response, command=state_command)
-            return response
-
-        return handler(request)
+        except ModelInvalidRequestError:
+            messages = _replace_rejected_file_content(request.messages)
+            if messages == request.messages:
+                raise
+            response = handler(request.override(messages=messages))
+            replacements = [message for original, message in zip(request.messages, messages, strict=True) if message is not original]
+            update = dict(cast("dict[str, Any]", state_command.update)) if state_command is not None else {}
+            update["messages"] = [*update.get("messages", []), *replacements]
+            state_command = replace(state_command, update=update) if state_command is not None else Command(update=update)
+        if state_command is not None:
+            return ExtendedModelResponse(model_response=response, command=state_command)
+        return response
 
     async def awrap_model_call(
         self,
@@ -3365,20 +3322,39 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request = self._filter_unsupported_tools_and_apply_prompt(request)
 
         request_messages = _move_media_results_after_tool_results(list(request.messages))
-        request_messages = _scrub_unsupported_multimodal_content(request_messages, request.model)
         if request_messages != list(request.messages):
             request = request.override(messages=request_messages)
 
+        state_command = None
         eviction_result = await self._aevict_and_truncate_messages(request)
         if eviction_result is not None:
             messages, state_command = eviction_result
             request = request.override(messages=messages)
+        if self._offload_binary_content:
+            cached = request.state.get(_BLOB_PAYLOADS_KEY) or {}
+            payloads = dict(cached)
+            offloaded = await _aoffload_human_messages(
+                request.state.get("messages", []), _command_messages(state_command), self.backend, self._blobs_prefix, payloads
+            )
+            request = request.override(messages=await _ahydrate_messages(request.messages, self.backend, self._blobs_prefix, payloads))
+            updates: dict[str, Any] = {"messages": offloaded} if offloaded else {}
+            if payloads.keys() != cached.keys():
+                updates[_BLOB_PAYLOADS_KEY] = payloads
+            state_command = _with_update(state_command, updates)
+        try:
             response = await handler(request)
-            if state_command is not None:
-                return ExtendedModelResponse(model_response=response, command=state_command)
-            return response
-
-        return await handler(request)
+        except ModelInvalidRequestError:
+            messages = _replace_rejected_file_content(request.messages)
+            if messages == request.messages:
+                raise
+            response = await handler(request.override(messages=messages))
+            replacements = [message for original, message in zip(request.messages, messages, strict=True) if message is not original]
+            update = dict(cast("dict[str, Any]", state_command.update)) if state_command is not None else {}
+            update["messages"] = [*update.get("messages", []), *replacements]
+            state_command = replace(state_command, update=update) if state_command is not None else Command(update=update)
+        if state_command is not None:
+            return ExtendedModelResponse(model_response=response, command=state_command)
+        return response
 
     def _process_large_message(
         self,
@@ -3725,6 +3701,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if error := _parallel_file_mutation_error(request):
             return error
         tool_result = handler(request)
+        if self._offload_binary_content and request.tool_call["name"] == "read_file":
+            tool_result = _offload_tool_result(tool_result, self.backend, self._blobs_prefix, {})
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return tool_result
@@ -3752,6 +3730,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if error := _parallel_file_mutation_error(request):
             return error
         tool_result = await handler(request)
+        if self._offload_binary_content and request.tool_call["name"] == "read_file":
+            tool_result = await _aoffload_tool_result(tool_result, self.backend, self._blobs_prefix, {})
 
         if self._tool_token_limit_before_evict is None or request.tool_call["name"] in TOOLS_EXCLUDED_FROM_EVICTION:
             return tool_result

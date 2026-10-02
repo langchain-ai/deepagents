@@ -28,7 +28,12 @@ from textual.strip import Strip
 from textual.widgets import Input, Static, TextArea
 
 from deepagents_code import theme
-from deepagents_code.command_registry import CommandEntry, get_slash_commands
+from deepagents_code.command_registry import (
+    ALWAYS_IMMEDIATE,
+    HIDDEN_COMMANDS,
+    CommandEntry,
+    get_slash_commands,
+)
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
     MODE_PREFIXES,
@@ -1975,6 +1980,7 @@ class ChatInputResizeHandle(Static):
     """
 
     ALLOW_SELECT = False
+    incognito: reactive[bool] = reactive(False)
 
     class DragStarted(Message):
         """Message sent when a resize drag begins."""
@@ -2011,13 +2017,15 @@ class ChatInputResizeHandle(Static):
         self._drag_start_y: int | None = None
         self._highlighted = False
 
-    def render(self) -> str:
-        """Render the border line beneath the drag target.
+    def render(self) -> Content:
+        """Render the border line and active incognito label.
 
         Returns:
-            A charset-compatible horizontal rule spanning the handle.
+            A charset-compatible rule with the active mode label.
         """
-        return get_glyphs().box_horizontal * self.size.width
+        label = Content.styled(" incognito ", "bold") if self.incognito else Content("")
+        line = get_glyphs().box_horizontal * max(0, self.size.width - label.cell_length)
+        return Content.assemble(label, line)
 
     def _set_highlighted(self, *, highlighted: bool) -> None:
         """Publish top-border hover changes."""
@@ -2325,6 +2333,8 @@ class ChatInput(Vertical):
         self._completion_view: _CompletionViewAdapter | None = None
         self._slash_controller: SlashCommandController | None = None
         self._thread_controller: ThreadCompletionController | None = None
+        self.submission_block_reason: str | None = None
+        """Pause ordinary submissions while allowing editing and recovery commands."""
 
         # Collapsed paste storage: paste_id → full content.  When a large paste
         # arrives, the full text is stored here and a compact
@@ -3151,6 +3161,25 @@ class ChatInput(Vertical):
             return True
         return True
 
+    def _can_bypass_submission_pause(self, value: str) -> bool:
+        """Recognize the app's urgent commands before mutating draft or media.
+
+        Returns:
+            Whether the draft is an exact always-immediate command.
+        """
+        if self.mode == "normal":
+            if self._is_existing_path_payload(value):
+                return False
+        elif self.mode != "command":
+            return False
+
+        # Command mode normally strips the slash, but completion can restore it
+        # before submission. Match the full command, including either form.
+        prefix = MODE_PREFIXES.get(self.mode, "")
+        if prefix and not value.startswith(prefix):
+            value = prefix + value
+        return value.lower() in ALWAYS_IMMEDIATE | HIDDEN_COMMANDS
+
     def _submit_value(self, value: str) -> None:
         """Prepend mode prefix, save to history, post message, and reset input.
 
@@ -3161,6 +3190,12 @@ class ChatInput(Vertical):
             value: The stripped text to submit (without mode prefix).
         """
         if not value:
+            return
+
+        if self.submission_block_reason and not self._can_bypass_submission_pause(
+            value
+        ):
+            self.notify(self.submission_block_reason, timeout=3, markup=False)
             return
 
         if self._completion_manager:
@@ -3251,8 +3286,8 @@ class ChatInput(Vertical):
     def on_chat_text_area_submitted(self, event: ChatTextArea.Submitted) -> None:
         """Handle text submission.
 
-        Always posts the Submitted event - the app layer decides whether to
-        process immediately or queue based on agent status.
+        Unless submission is paused, the app layer decides whether to process
+        immediately or queue based on agent status.
         """
         self._submit_value(event.value)
 
@@ -3726,6 +3761,8 @@ class ChatInput(Vertical):
                 self._sync_resize_handle_color()
                 return
             prompt.update(glyph or ">")
+            if self._resize_handle is not None:
+                self._resize_handle.incognito = mode == "shell_incognito"
             if self._input_box is not None:
                 self._input_box.border_title = (
                     "incognito" if mode == "shell_incognito" else None

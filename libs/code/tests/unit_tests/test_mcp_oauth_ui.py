@@ -8,18 +8,29 @@ end-to-end without touching `builtins.input`, `print`, or stdin.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from mcp.client.auth import OAuthClientProvider
+from prompt_toolkit.application import create_app_session, get_app_or_none
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 
 from deepagents_code._env_vars import DEBUG
-from deepagents_code.mcp_auth import FileTokenStorage
+from deepagents_code.mcp_auth import FileTokenStorage, format_login_failure
+from deepagents_code.mcp_oauth_ui import (
+    MCPLoginAbortedError,
+    _wait_for_browser_authorization,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from fastmcp.client.transports import StreamableHttpTransport
+    from prompt_toolkit.input import PipeInput
 
     from deepagents_code.mcp_oauth_ui import OAuthInteraction
 
@@ -338,6 +349,115 @@ class TestLoginWithoutStdio:
             assert secret not in message
         for message in ui.notices:
             assert secret not in message
+
+
+@pytest.fixture
+def browser_terminal(monkeypatch: pytest.MonkeyPatch) -> Iterator[PipeInput]:
+    """Provide an interactive terminal without touching the real terminal."""
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+    output = DummyOutput()
+    monkeypatch.setattr(
+        "prompt_toolkit.output.defaults.create_output", lambda **_: output
+    )
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
+        yield pipe
+
+
+class TestBrowserAuthorizationWait:
+    """Browser authorization releases terminal input on every exit path."""
+
+    @pytest.mark.parametrize("key", ["\x1b", "\x03", "\x04", None])
+    async def test_terminal_abort_cancels_callback(
+        self, browser_terminal: PipeInput, key: str | None
+    ) -> None:
+        """Abort keystrokes and EOF stop the callback and its terminal listener."""
+        tasks = asyncio.all_tasks()
+        started = asyncio.Event()
+        finished = asyncio.Event()
+
+        async def wait() -> None:
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finished.set()
+
+        task = asyncio.create_task(_wait_for_browser_authorization(wait))
+        await started.wait()
+        if key is None:
+            browser_terminal.close()
+        else:
+            browser_terminal.send_text(key)
+        with pytest.raises(MCPLoginAbortedError):
+            await asyncio.wait_for(task, timeout=3)
+        assert finished.is_set()
+        assert asyncio.all_tasks() == tasks
+        assert get_app_or_none() is None
+
+    @pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
+    async def test_callback_exit_releases_terminal(
+        self, browser_terminal: PipeInput, outcome: str
+    ) -> None:
+        """Completion, callback errors, and external cancellation leave no reader."""
+        del browser_terminal
+        tasks = asyncio.all_tasks()
+        finished = asyncio.Event()
+        started = asyncio.Event()
+        result: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+
+        async def wait() -> str:
+            started.set()
+            try:
+                return await result
+            finally:
+                finished.set()
+
+        task = asyncio.create_task(_wait_for_browser_authorization(wait))
+        async with asyncio.timeout(3):
+            await started.wait()
+            app = get_app_or_none()
+            assert app is not None
+            assert app.is_running
+            if outcome == "success":
+                result.set_result("authorized")
+                assert await task == "authorized"
+            elif outcome == "error":
+                result.set_exception(TimeoutError("browser timed out"))
+                with pytest.raises(TimeoutError, match="browser timed out"):
+                    await task
+            else:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        assert finished.is_set()
+        assert not app.is_running
+        assert get_app_or_none() is None
+        assert asyncio.all_tasks() == tasks
+
+    @pytest.mark.parametrize("stream", ["stdin", "stderr"])
+    async def test_non_terminal_skips_keyboard(
+        self, monkeypatch: pytest.MonkeyPatch, stream: str
+    ) -> None:
+        """Redirected input or output retains the plain callback wait."""
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("sys.stderr.isatty", lambda: True)
+        monkeypatch.setattr(f"sys.{stream}.isatty", lambda: False)
+        monkeypatch.setattr(
+            "prompt_toolkit.application.Application",
+            lambda **_: pytest.fail("non-terminal login must not read keys"),
+        )
+        wait = AsyncMock(return_value="authorized")
+        assert await _wait_for_browser_authorization(wait) == "authorized"
+        wait.assert_awaited_once()
+
+    @pytest.mark.parametrize("wrapped", [False, True])
+    def test_abort_failure_message_is_token_safe(self, wrapped: bool) -> None:
+        """Cancellation renders fixed text even inside an exception group."""
+        error: Exception = MCPLoginAbortedError("secret-access-token")
+        if wrapped:
+            error = ExceptionGroup("secret-group", [ExceptionGroup("nested", [error])])
+        assert format_login_failure(error) == "MCP login aborted."
 
 
 class TestCliOAuthInteraction:

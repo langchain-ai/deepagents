@@ -28,13 +28,15 @@ OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
 OUTBOUND_MEDIA_DIR_ENV = "DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR"
 WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 
-ASR_ELIGIBLE_MEDIA_TYPES = frozenset({"voice", "video"})
+ASR_ELIGIBLE_MEDIA_TYPES = frozenset({"voice", "video", "audio"})
 """Media types that may contain audio eligible for ASR transcription."""
 
 _LINK_PATTERN = re.compile(r"\[([^\]]+)]\(([^)]+)\)")
 _HEADING_PATTERN = re.compile(r"^#{1,6}\s+", flags=re.MULTILINE)
 _BOLD_PATTERN = re.compile(r"\*\*([^*]+)\*\*|__([^_]+)__")
 _ITALIC_PATTERN = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)|_([^_\n]+)_")
+_SAFE_SUFFIX_PATTERN = re.compile(r"\.[a-z0-9]{1,16}")
+_UNSAFE_FILENAME_PATTERN = re.compile(r"[^A-Za-z0-9_.-]+")
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +310,69 @@ def message_with_media_paths(
     return replace(message, metadata=metadata)
 
 
+def with_media_error(message: ChannelMessage, error: str) -> ChannelMessage:
+    """Return `message` marked as carrying media that could not be prepared.
+
+    Args:
+        message: Original channel message.
+        error: Reason the media was skipped, surfaced to the agent.
+
+    Returns:
+        Channel message whose metadata records the media failure.
+    """
+    metadata = dict(message.metadata)
+    metadata["has_media"] = False
+    metadata["media_error"] = error
+    return replace(message, metadata=metadata)
+
+
+def safe_suffix(filename: str, content_type: str | None) -> str:
+    """Return a conservative file suffix for a downloaded attachment.
+
+    Args:
+        filename: Provider-reported file name, which is untrusted.
+        content_type: Provider-reported MIME type, when known.
+
+    Returns:
+        A short lowercase alphanumeric suffix, or `.bin` when none is safe.
+    """
+    suffix = Path(filename).suffix.lower()
+    if _SAFE_SUFFIX_PATTERN.fullmatch(suffix):
+        return suffix
+    if content_type:
+        guessed = mimetypes.guess_extension(content_type)
+        if guessed:
+            return guessed
+    return ".bin"
+
+
+def safe_filename_part(value: str) -> str:
+    """Reduce an untrusted value to characters safe in a local file name.
+
+    Args:
+        value: Untrusted identifier or URL.
+
+    Returns:
+        A non-empty value containing only letters, digits, `_`, `.`, and `-`.
+    """
+    return _UNSAFE_FILENAME_PATTERN.sub("_", value).strip("._") or "file"
+
+
+def parse_content_length(value: str) -> int | None:
+    """Parse an HTTP `Content-Length` header value.
+
+    Args:
+        value: Raw header value.
+
+    Returns:
+        The declared length, or `None` when the header is malformed.
+    """
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
 def validate_media_size(path: Path, *, max_bytes: int) -> None:
     """Validate a local media file against the configured global cap.
 
@@ -524,7 +589,7 @@ def _is_retryable_error(error: str | None) -> bool:
 
 
 async def send_with_retry(
-    send_fn: Callable[[], Awaitable[SendResult | None]],
+    send_fn: Callable[[], Awaitable[SendResult]],
     *,
     max_retries: int = 2,
     base_delay: float = 2.0,
@@ -545,7 +610,7 @@ async def send_with_retry(
     Returns:
         The final `SendResult` from the send function.
     """
-    result = _normalize_send_result(await _safe_send(send_fn))
+    result = await _safe_send(send_fn)
     if result.success:
         return result
     if not (result.retryable or _is_retryable_error(result.error)):
@@ -553,7 +618,7 @@ async def send_with_retry(
     for attempt in range(1, max_retries + 1):
         delay = base_delay * (2 ** (attempt - 1))
         await asyncio.sleep(delay)
-        result = _normalize_send_result(await _safe_send(send_fn))
+        result = await _safe_send(send_fn)
         if result.success:
             return result
         if not (result.retryable or _is_retryable_error(result.error)):
@@ -561,7 +626,7 @@ async def send_with_retry(
     return result
 
 
-async def _safe_send(send_fn: Callable[[], Awaitable[SendResult | None]]) -> SendResult | None:
+async def _safe_send(send_fn: Callable[[], Awaitable[SendResult]]) -> SendResult:
     """Call ``send_fn`` and convert exceptions to failed `SendResult` objects.
 
     Args:
@@ -575,17 +640,3 @@ async def _safe_send(send_fn: Callable[[], Awaitable[SendResult | None]]) -> Sen
         return await send_fn()
     except Exception as exc:  # noqa: BLE001  # transport errors must not crash the host loop
         return SendResult(success=False, error=str(exc) or repr(exc), retryable=True)
-
-
-def _normalize_send_result(result: SendResult | None) -> SendResult:
-    """Normalize a send result, treating ``None`` as success for legacy adapters.
-
-    Args:
-        result: Return value from a channel send method, or ``None``.
-
-    Returns:
-        The original result, or a success result when the adapter returned ``None``.
-    """
-    if result is None:
-        return SendResult(success=True)
-    return result

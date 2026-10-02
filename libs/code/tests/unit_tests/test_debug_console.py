@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
+import pytest
 from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Select, Static
@@ -24,7 +25,6 @@ from deepagents_code.tui.widgets.debug_console import (
 )
 
 if TYPE_CHECKING:
-    import pytest
     from textual.strip import Strip
 
 
@@ -484,7 +484,11 @@ class TestDebugConsoleToggle:
             assert screen.focused is log
             assert app._auto_approve is False
 
-    async def test_clear_persists_across_reopen(self) -> None:
+    @pytest.mark.parametrize("key", ["ctrl+x", "ctrl+l"])
+    @pytest.mark.parametrize("open_filter", [False, True])
+    async def test_clear_persists_across_reopen(
+        self, key: str, open_filter: bool
+    ) -> None:
         logger.info("debug-console-persist-marker")
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         async with app.run_test() as pilot:
@@ -497,12 +501,19 @@ class TestDebugConsoleToggle:
                 "debug-console-persist-marker" in record.message
                 for record in log.records
             )
+            if open_filter:
+                select = screen.query_one("#debug-level-filter", Select)
+                select.focus()
+                await pilot.press("enter")
+                assert select.expanded
 
             buffer = get_log_buffer()
             assert buffer is not None
             expected = buffer.total_emitted
-            await pilot.press("ctrl+l")
+            await pilot.press(key)
             await pilot.pause()
+            assert app.screen is screen
+            assert not log.records
             assert app._debug_console_cleared_upto == expected
 
             # A record emitted after the clear must survive the reopen; only the

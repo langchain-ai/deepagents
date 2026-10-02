@@ -1,11 +1,42 @@
 """Progress messages scoped to the active Talon invocation."""
 
+from __future__ import annotations
+
 import logging
 from contextvars import ContextVar
+from typing import TYPE_CHECKING
 
+from langchain.agents.middleware import AgentMiddleware, AgentState
+from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
-from deepagents_talon.interfaces import ProgressMessageHandler
+from deepagents_talon.background import _IN_SUBAGENT
+
+if TYPE_CHECKING:
+    from langgraph.runtime import Runtime
+
+    from deepagents_talon.interfaces import ProgressMessageHandler
+
+
+class ProgressMessages(AgentMiddleware):
+    """Deliver main-agent narration before its tools execute."""
+
+    async def aafter_model(self, state: AgentState, runtime: Runtime) -> None:
+        """Forward visible tool-calling messages to the originating channel."""
+        del runtime
+        message = next(
+            (message for message in reversed(state["messages"]) if isinstance(message, AIMessage)),
+            None,
+        )
+        if (
+            not _IN_SUBAGENT.get()
+            and isinstance(message, AIMessage)
+            and message.tool_calls
+            and message.text.strip()
+            and not any(call["name"] == "send_message" for call in message.tool_calls)
+        ):
+            await _deliver_message(message.text)
+
 
 logger = logging.getLogger(__name__)
 MESSAGE_HANDLER: ContextVar[ProgressMessageHandler | None] = ContextVar(
@@ -24,6 +55,10 @@ async def send_message(text: str) -> str:
     Args:
         text: Message to send to the user.
     """
+    return await _deliver_message(text)
+
+
+async def _deliver_message(text: str) -> str:
     handler = MESSAGE_HANDLER.get()
     if handler is None:
         return "Message unavailable: this run has no originating channel."

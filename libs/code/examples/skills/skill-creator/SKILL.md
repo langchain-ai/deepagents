@@ -5,15 +5,15 @@ description: "Guide for creating effective skills that extend agent capabilities
 
 # Skill Creator
 
-### Skill Location for Deepagents
+### Skill Location for Deep Agents Code
 
-The deepagents CLI loads skills from four directories, listed here from lowest to highest precedence:
+Deep Agents Code loads skills from four directories, listed here from lowest to highest precedence:
 
 | # | Directory | Scope | Notes |
 |---|-----------|-------|-------|
-| 1 | `~/.deepagents/<agent>/skills/` | User (deepagents alias) | Default for `deepagents skills create` |
+| 1 | `~/.deepagents/<agent>/skills/` | User (deepagents alias) | Default for `dcode skills create` |
 | 2 | `~/.agents/skills/` | User | Shared across agent tools |
-| 3 | `.deepagents/skills/` | Project (deepagents alias) | Default for `deepagents skills create --project` |
+| 3 | `.deepagents/skills/` | Project (deepagents alias) | Default for `dcode skills create --project` |
 | 4 | `.agents/skills/` | Project | Shared across agent tools |
 
 `<agent>` is the agent configuration name (default: `agent`). When two directories contain a skill with the same name, the higher-precedence version wins — project skills override user skills.
@@ -281,7 +281,7 @@ Usage:
 scripts/init_skill.py <skill-name> --path <output-directory>
 ```
 
-For deepagents CLI, use any of the skill directories listed in "Skill Location for Deepagents" above:
+For Deep Agents Code, use any of the skill directories listed in "Skill Location for Deep Agents Code" above:
 
 ```bash
 # User skills (default)
@@ -300,19 +300,19 @@ The script:
 
 After initialization, customize or remove the generated SKILL.md and example files as needed.
 
-#### Option B: `deepagents skills create` (quick start)
+#### Option B: `dcode skills create` (quick start)
 
 The built-in CLI command creates a minimal skill with just a `SKILL.md` template — no resource directories. Use this for simple skills that only need instructions and no bundled scripts, references, or assets.
 
 ```bash
 # Create in user skills directory
-deepagents skills create <skill-name>
+dcode skills create <skill-name>
 
 # Create in project skills directory
-deepagents skills create <skill-name> --project
+dcode skills create <skill-name> --project
 ```
 
-Use `init_skill.py` when the skill will include bundled resources (`scripts/`, `references/`, `assets/`). Use `deepagents skills create` for a quick, minimal starting point.
+Use `init_skill.py` when the skill will include bundled resources (`scripts/`, `references/`, `assets/`). Use `dcode skills create` for a quick, minimal starting point.
 
 ### Step 4: Edit the Skill
 

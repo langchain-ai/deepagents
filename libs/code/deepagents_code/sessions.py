@@ -12,13 +12,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, NotRequired, TypedDict, cast
 
+from deepagents_code._constants import DEFAULT_THREAD_LIMIT
 from deepagents_code._paths import harden_state_dir
 from deepagents_code.goal_state_notice import is_internal_message
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
 
     import aiosqlite
+    from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
@@ -386,7 +388,7 @@ async def _table_exists(conn: aiosqlite.Connection, table: str) -> bool:
         return await cursor.fetchone() is not None
 
 
-_THREADS_LIST_INDEX = "idx_dcode_threads_list"
+_THREADS_LIST_INDEX = "idx_dcode_threads_list_v2"
 """Covering index that makes the `list_threads` GROUP BY an index-only scan.
 
 LangGraph's `SqliteSaver` stores each checkpoint's full state blob inline in the
@@ -421,11 +423,15 @@ async def _ensure_threads_list_index(conn: aiosqlite.Connection) -> None:
             f"CREATE INDEX IF NOT EXISTS {_THREADS_LIST_INDEX} ON checkpoints("
             "thread_id, "
             "json_extract(metadata, '$.updated_at'), "
+            "COALESCE(json_extract(metadata, '$.created_at'), "
+            "json_extract(metadata, '$.updated_at')), "
             "checkpoint_id, "
             "json_extract(metadata, '$.agent_name'), "
             "json_extract(metadata, '$.git_branch'), "
             "json_extract(metadata, '$.cwd'))"
         )
+        # Replace the older index, which did not cover the creation timestamp.
+        await conn.execute("DROP INDEX IF EXISTS idx_dcode_threads_list")
         await conn.commit()
     except Exception:
         logger.warning(
@@ -438,7 +444,7 @@ async def _ensure_threads_list_index(conn: aiosqlite.Connection) -> None:
 
 async def list_threads(
     agent_name: str | None = None,
-    limit: int = 20,
+    limit: int = DEFAULT_THREAD_LIMIT,
     include_message_count: bool = False,
     sort_by: str = "updated",
     branch: str | None = None,
@@ -505,7 +511,8 @@ async def list_threads(
                    json_extract(metadata, '$.agent_name') as agent_name,
                    MAX(json_extract(metadata, '$.updated_at')) as updated_at,
                    MAX(checkpoint_id) as latest_checkpoint_id,
-                   MIN(json_extract(metadata, '$.updated_at')) as created_at,
+                   MIN(COALESCE(json_extract(metadata, '$.created_at'),
+                                json_extract(metadata, '$.updated_at'))) as created_at,
                    MAX(json_extract(metadata, '$.git_branch')) as git_branch,
                    MAX(json_extract(metadata, '$.cwd')) as cwd
             FROM checkpoints
@@ -1511,6 +1518,36 @@ async def get_thread_updated_at(thread_id: str) -> str | None:
             return value if isinstance(value, str) and value else None
 
 
+async def refresh_thread_activity(thread_id: str, updated_at: datetime) -> None:
+    """Advance local discovery metadata after reading remote model activity.
+
+    Only the latest root checkpoint is updated, preserving historical metadata
+    and any newer timestamp already written by a shared server checkpointer.
+    Preserve its original timestamp separately so a lone discovery seed keeps
+    its creation time as remote activity advances.
+
+    Args:
+        thread_id: Thread whose remote state was read.
+        updated_at: Verified model-request time from the remote checkpoint.
+    """
+    async with _connect() as conn:
+        if not await _table_exists(conn, "checkpoints"):
+            return
+        timestamp = updated_at.isoformat()
+        await conn.execute(
+            "UPDATE checkpoints SET metadata = json_set(metadata, "
+            "'$.created_at', COALESCE(json_extract(metadata, '$.created_at'), "
+            "json_extract(metadata, '$.updated_at')), '$.updated_at', ?) "
+            "WHERE thread_id = ? AND checkpoint_ns = '' AND checkpoint_id = "
+            "(SELECT MAX(checkpoint_id) FROM checkpoints "
+            "WHERE thread_id = ? AND checkpoint_ns = '') "
+            "AND COALESCE(julianday(json_extract(metadata, '$.updated_at')), 0) "
+            "< julianday(?)",
+            (timestamp, thread_id, thread_id, timestamp),
+        )
+        await conn.commit()
+
+
 async def get_thread_agent(thread_id: str) -> str | None:
     """Get agent_name for a thread.
 
@@ -1602,10 +1639,10 @@ async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
 
 
 async def delete_thread(thread_id: str) -> bool:
-    """Delete thread checkpoints and any offloaded conversation history.
+    """Delete thread checkpoints, side-question costs, and offloaded history.
 
     Removes the thread's checkpoint/write rows, then makes a best-effort attempt
-    to remove the per-thread offloaded conversation-history archive under
+    to remove the per-thread compaction archive and handoff snapshots under
     `~/.deepagents` (local mode) so deletion does not leave orphaned history
     behind. History cleanup failures are logged, not raised, and do not affect
     the return value, which reflects only whether checkpoint rows were removed.
@@ -1613,8 +1650,11 @@ async def delete_thread(thread_id: str) -> bool:
     Returns:
         True if thread checkpoints were deleted, False if not found.
     """
+    from deepagents_code.btw_cost import delete_cost
+
     deleted = False
     async with _connect() as conn:
+        await delete_cost(conn, thread_id)
         if await _table_exists(conn, "checkpoints"):
             cursor = await conn.execute(
                 "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
@@ -1624,12 +1664,12 @@ async def delete_thread(thread_id: str) -> bool:
                 await conn.execute(
                     "DELETE FROM writes WHERE thread_id = ?", (thread_id,)
                 )
-            await conn.commit()
             if deleted:
                 _message_count_cache.pop(thread_id, None)
                 for key, rows in list(_recent_threads_cache.items()):
                     filtered = [row for row in rows if row["thread_id"] != thread_id]
                     _recent_threads_cache[key] = filtered
+        await conn.commit()
 
     from deepagents_code.offload import delete_offloaded_history
 
@@ -1657,7 +1697,72 @@ async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
         await _drain_aiosqlite_worker(conn)
 
 
-_DEFAULT_THREAD_LIMIT = 20
+async def save_thread_seed(
+    thread_id: str, values: Mapping[str, object], *, agent_name: str, cwd: str
+) -> None:
+    """Index a remote handoff locally with its initial summary and resume metadata.
+
+    Only seed an absent thread; never replace shared server checkpoints. Thread
+    history still loads from the connected agent, so subsequent remote turns
+    take precedence over this discovery snapshot.
+
+    Args:
+        thread_id: Newly seeded remote thread identifier.
+        values: Initial message and model state saved on the server.
+        agent_name: Agent that owns the new thread.
+        cwd: Workspace directory used for thread discovery.
+    """
+    from langgraph.checkpoint.base import empty_checkpoint
+
+    checkpoint = empty_checkpoint()
+    config: RunnableConfig = {
+        "configurable": {"thread_id": thread_id, "checkpoint_ns": ""},
+        "metadata": {
+            "agent_name": agent_name,
+            "cwd": cwd,
+            "updated_at": checkpoint["ts"],
+        },
+    }
+    async with get_checkpointer() as checkpointer:
+        if await checkpointer.aget_tuple(config) is not None:
+            return
+        checkpoint["channel_values"] = dict(values)
+        version = checkpointer.get_next_version(None, None)
+        checkpoint["channel_versions"] = dict.fromkeys(values, version)
+        await checkpointer.aput(
+            config,
+            checkpoint,
+            {"source": "update", "step": 0, "parents": {}},
+            checkpoint["channel_versions"],
+        )
+
+
+async def set_thread_metadata(thread_id: str, *, agent_name: str, cwd: str) -> None:
+    """Persist discovery and resume metadata on a newly checkpointed thread.
+
+    The remote state-update API does not forward config metadata. Stamp the
+    saved checkpoints before exposing a newly seeded thread to the user.
+
+    Args:
+        thread_id: Newly seeded thread identifier.
+        agent_name: Agent that owns the new thread.
+        cwd: Workspace directory used for thread discovery.
+
+    Raises:
+        RuntimeError: If the thread has no saved checkpoint.
+    """
+    from datetime import UTC
+
+    async with _connect() as conn:
+        async with conn.execute(
+            "UPDATE checkpoints SET metadata = json_set(metadata, "
+            "'$.agent_name', ?, '$.cwd', ?, '$.updated_at', ?) WHERE thread_id = ?",
+            (agent_name, cwd, datetime.now(UTC).isoformat(), thread_id),
+        ) as cursor:
+            if not cursor.rowcount:
+                msg = f"Thread {thread_id} has no saved checkpoint"
+                raise RuntimeError(msg)
+        await conn.commit()
 
 
 def get_thread_limit() -> int:
@@ -1672,7 +1777,7 @@ def get_thread_limit() -> int:
 
     raw = os.environ.get(RECENT_THREADS)
     if raw is None:
-        return _DEFAULT_THREAD_LIMIT
+        return DEFAULT_THREAD_LIMIT
     try:
         return max(1, int(raw))
     except ValueError:
@@ -1680,9 +1785,9 @@ def get_thread_limit() -> int:
             "Invalid %s value %r, using default %d",
             RECENT_THREADS,
             raw,
-            _DEFAULT_THREAD_LIMIT,
+            DEFAULT_THREAD_LIMIT,
         )
-        return _DEFAULT_THREAD_LIMIT
+        return DEFAULT_THREAD_LIMIT
 
 
 async def list_threads_command(

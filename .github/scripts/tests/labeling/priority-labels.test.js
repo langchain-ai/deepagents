@@ -286,7 +286,7 @@ function runDefaultPriorityStep(globals) {
   });
 }
 
-function issueApi({ labels = [], known = ['priority:backlog'] } = {}) {
+function issueApi({ labels = [], known = ['priority:triage'] } = {}) {
   const present = new Set(labels), exists = new Set(known);
   const calls = { created: [], added: [] };
   return {
@@ -310,15 +310,15 @@ function issueApi({ labels = [], known = ['priority:backlog'] } = {}) {
   };
 }
 
-test('a new issue with no priority gets the backlog default', async () => {
+test('a new issue with no priority enters the triage queue', async () => {
   const a = issueApi();
   await runDefaultPriorityStep(a.globals);
-  assert.deepEqual(a.calls.added, ['priority:backlog']);
-  assert.deepEqual(a.labels(), ['priority:backlog']);
+  assert.deepEqual(a.calls.added, ['priority:triage']);
+  assert.deepEqual(a.labels(), ['priority:triage']);
 });
 
 test('an issue that already carries a priority is left alone', async () => {
-  for (const existing of ['priority:high', 'priority:urgent', 'priority:backlog']) {
+  for (const existing of ['priority:high', 'priority:urgent', 'priority:backlog', 'priority:triage']) {
     const a = issueApi({ labels: [existing] });
     a.globals.context.payload.issue.labels = [];
     await runDefaultPriorityStep(a.globals);
@@ -331,8 +331,8 @@ test('the default priority label is created with the prefix color when absent', 
   const { labelColors } = require('../../labeling/pr-labeler.js').loadConfig();
   const a = issueApi({ known: [] });
   await runDefaultPriorityStep(a.globals);
-  assert.deepEqual(a.calls.created, [['priority:backlog', labelColors['priority:']]]);
-  assert.deepEqual(a.calls.added, ['priority:backlog']);
+  assert.deepEqual(a.calls.created, [['priority:triage', labelColors['priority:']]]);
+  assert.deepEqual(a.calls.added, ['priority:triage']);
 });
 
 // The workflow fires on [opened, edited]. Neither step removes a label, so

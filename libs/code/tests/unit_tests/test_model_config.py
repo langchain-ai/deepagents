@@ -5,7 +5,7 @@ import logging
 import sys
 import threading
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, suppress
 from dataclasses import replace
 from pathlib import Path
@@ -60,6 +60,8 @@ from deepagents_code.model_config import (
     save_recent_model,
     save_recent_startup_mode,
     save_thread_columns,
+    save_thread_relative_time,
+    save_thread_sort_order,
     suppress_warning_reason,
     touch_recent_model,
     unsuppress_warning,
@@ -3168,6 +3170,60 @@ class TestUnsuppressWarning:
         assert result is False
 
 
+_MIS_ENCODED_CONFIG = '[ui]\ntheme = "dark"\n'.encode("utf-16")
+
+
+class TestWritersReportMisEncodedConfig:
+    """Writers that parse `config.toml` themselves must report a non-UTF-8 file.
+
+    `tomllib` decodes the bytes itself, so the failure is a `UnicodeDecodeError`
+    rather than `TOMLDecodeError`. Raised from a `/threads` handler, it exits
+    the app instead of showing the failure toast.
+    """
+
+    @pytest.mark.parametrize(
+        "write",
+        [
+            pytest.param(
+                lambda path: unsuppress_warning("ripgrep", path),
+                id="unsuppress_warning",
+            ),
+            pytest.param(
+                lambda path: save_thread_columns(dict(THREAD_COLUMN_DEFAULTS), path),
+                id="save_thread_columns",
+            ),
+            pytest.param(
+                lambda path: save_thread_relative_time(False, path),
+                id="save_thread_relative_time",
+            ),
+            pytest.param(
+                lambda path: save_thread_sort_order("created_at", path),
+                id="save_thread_sort_order",
+            ),
+        ],
+    )
+    def test_returns_false_and_keeps_the_file(
+        self, tmp_path: Path, write: Callable[[Path], bool]
+    ) -> None:
+        """The writer reports failure and leaves the file untouched."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_bytes(_MIS_ENCODED_CONFIG)
+
+        assert write(config_path) is False
+        assert config_path.read_bytes() == _MIS_ENCODED_CONFIG
+
+    def test_suppress_reason_names_the_encoding(self, tmp_path: Path) -> None:
+        """The reason points at the encoding, not at file permissions."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_bytes(_MIS_ENCODED_CONFIG)
+
+        reason = suppress_warning_reason("ripgrep", config_path)
+
+        assert reason is not None
+        assert "UTF-8" in reason
+        assert config_path.read_bytes() == _MIS_ENCODED_CONFIG
+
+
 class TestMcpServerTrustLists:
     """Tests for the McpServerTrustLists value object itself."""
 
@@ -4665,6 +4721,52 @@ class TestAddEnabledProjectMcpServers:
         )
         assert not config_path.exists()
         assert list(tmp_path.glob("*.tmp")) == []
+
+
+class TestAddDisabledProjectMcpServers:
+    @pytest.mark.parametrize("existing", ['["old", "docs"]', '"old, docs"'])
+    def test_merges_denials_and_preserves_other_config(
+        self, tmp_path: Path, existing: str
+    ) -> None:
+        import tomllib
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\ndefault = "openai:example"\n'
+            f"[mcp]\ndisabled_project_servers = {existing}\n"
+            'disabled_servers = ["other"]\n'
+        )
+        original = tomllib.loads(config_path.read_text())
+
+        assert model_config.add_disabled_project_mcp_servers(
+            ["docs", " new ", "new", "", " "], config_path
+        )
+        saved = tomllib.loads(config_path.read_text())
+        assert saved["mcp"].pop("disabled_project_servers") == ["docs", "new", "old"]
+        original["mcp"].pop("disabled_project_servers")
+        assert saved == original
+
+    @pytest.mark.parametrize(
+        "contents",
+        [
+            "[invalid",
+            'mcp = "invalid"\n',
+            "[mcp]\ndisabled_project_servers = 42\n",
+            "[mcp.disabled_project_servers]\ninvalid = true\n",
+        ],
+    )
+    def test_refuses_malformed_policy(self, tmp_path: Path, contents: str) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(contents)
+        assert not model_config.add_disabled_project_mcp_servers(["docs"], config_path)
+        assert config_path.read_text() == contents
+
+    def test_parent_io_failure(self, tmp_path: Path) -> None:
+        blocker = tmp_path / "file"
+        blocker.write_text("")
+        assert not model_config.add_disabled_project_mcp_servers(
+            ["docs"], blocker / "config.toml"
+        )
 
 
 class TestLoadStartupMode:

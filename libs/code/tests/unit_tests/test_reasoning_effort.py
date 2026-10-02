@@ -14,7 +14,7 @@ from textual.app import App
 from textual.widgets import OptionList, Static
 
 from deepagents_code import model_config, reasoning_effort
-from deepagents_code.app import DeepAgentsApp
+from deepagents_code.app import DeepAgentsApp, _EffortContext
 from deepagents_code.config import runtime_state
 from deepagents_code.reasoning_effort import (
     current_effort_from_model_params,
@@ -213,3 +213,81 @@ async def test_effort_selector_dims_underlying_content() -> None:
         )
         await pilot.pause()
         assert 0 < app.screen.styles.background.a < 1
+
+
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "xhigh", "max"])
+async def test_between_tools_effort_selection(
+    effort: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = "anthropic:claude-sonnet-5-5"
+    app = DeepAgentsApp()
+    mount = AsyncMock()
+    monkeypatch.setattr(app, "_mount_message", mount)
+    runtime_state.model_provider = "anthropic"
+    runtime_state.model_name = "claude-sonnet-5-5"
+    app._model_params_override = {"thinking": {"type": "between_tools"}}
+
+    await app._set_effort_override(effort)
+
+    if effort in {"xhigh", "max"}:
+        assert app._model_params_override == {"thinking": {"type": "between_tools"}}
+        assert model_config.load_effort_for_model(spec) is None
+        assert mount.await_args is not None
+        assert isinstance(mount.await_args.args[0], ErrorMessage)
+        assert (
+            "Supported efforts: low, medium, high" in mount.await_args.args[0]._content
+        )
+    else:
+        assert app._model_params_override == {
+            "thinking": {"type": "between_tools"},
+            "reasoning_effort": effort,
+        }
+        assert model_config.load_effort_for_model(spec) == effort
+
+
+async def test_between_tools_preserves_saved_adaptive_effort() -> None:
+    spec = "anthropic:claude-sonnet-5-5"
+    model_config.save_effort_for_model(spec, "max")
+    app = DeepAgentsApp()
+    app._model_params_override = {"thinking": {"type": "between_tools"}}
+
+    await app._restore_effort_override(spec)
+
+    assert app._model_params_override == {"thinking": {"type": "between_tools"}}
+    assert model_config.load_effort_for_model(spec) == "max"
+    app._model_params_override = {"thinking": {"type": "adaptive"}}
+    await app._restore_effort_override(spec)
+    assert app._model_params_override["reasoning_effort"] == "max"
+
+
+def test_between_tools_config_filters_selector_and_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model_config.DEFAULT_CONFIG_PATH.write_text(
+        '[models.providers.anthropic.params."claude-sonnet-5-5"]\n'
+        'thinking = { type = "between_tools" }\n'
+    )
+    model_config.clear_caches()
+    app = DeepAgentsApp()
+    chat_input = Mock()
+    monkeypatch.setattr(app, "_chat_input", chat_input)
+    runtime_state.model_provider = "anthropic"
+    runtime_state.model_name = "claude-sonnet-5-5"
+
+    context = app._resolve_effort_context()
+    assert isinstance(context, _EffortContext)
+    assert context.efforts == ("low", "medium", "high")
+    app._sync_status_model()
+    chat_input.set_argument_hint_override.assert_called_with(
+        "/effort", "[low|medium|high|clear]"
+    )
+    app._model_params_override = {"thinking": {"type": "adaptive"}}
+    context = app._resolve_effort_context()
+    assert isinstance(context, _EffortContext)
+    assert context.efforts == (
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )

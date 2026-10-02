@@ -74,9 +74,22 @@ def _plugin_prompt(row: _PluginRow, *, status: str | None) -> Content:
     )
 
 
-def _install_details_options() -> list[Option]:
+def _install_details_options(
+    *, uninspected: bool = False, inspecting: bool = False
+) -> list[Option]:
+    options = (
+        [
+            Option(
+                "Inspect contents (downloads source)",
+                id="action:inspect",
+            )
+        ]
+        if uninspected and not inspecting
+        else []
+    )
     return [
-        Option("Install", id="action:install"),
+        *options,
+        Option("Install", id="action:install", disabled=inspecting),
         Option("Back to plugin list", id="details-back"),
     ]
 
@@ -128,12 +141,7 @@ def _will_install_lines(row: _PluginRow) -> list[str]:
             _unsupported_summary(row.unsupported_components),
         ]
     if row.skill_count is None:
-        return [
-            (
-                "Skills, MCP servers, and hooks if present "
-                "(agents/ and commands/ are not loaded)."
-            )
-        ]
+        return ["Contents not inspected. Choose Inspect contents to preview."]
     return [
         "No supported components (skills/MCP/hooks).",
         "agents/ and commands/ are not loaded by deepagents-code.",
@@ -194,7 +202,7 @@ def _status_lines(row: _PluginRow) -> list[Content]:
     return lines
 
 
-def _plugin_details_content(row: _PluginRow) -> Content:
+def _plugin_details_content(row: _PluginRow, *, inspecting: bool = False) -> Content:
     _, _, marketplace = row.plugin_id.partition("@")
     parts: list[Content | str] = [
         Content.styled("Plugin details", "bold"),
@@ -210,7 +218,12 @@ def _plugin_details_content(row: _PluginRow) -> Content:
     if row.author:
         parts.extend(["\n\n", Content.styled(f"By: {row.author}", "dim")])
     parts.extend(["\n\n", Content.styled("Will install:", "bold")])
-    for line in _will_install_lines(row):
+    lines = (
+        ["Downloading and inspecting contents..."]
+        if inspecting
+        else _will_install_lines(row)
+    )
+    for line in lines:
         parts.extend(["\n  ", Content.styled(line, "dim")])
     parts.extend(
         [

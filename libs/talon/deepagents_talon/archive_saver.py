@@ -7,6 +7,7 @@ Warning:
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, TypeVar, cast
 
 from langchain_core.messages import BaseMessage, HumanMessage, convert_to_messages
@@ -54,6 +55,7 @@ class ConversationSaver(BaseCheckpointSaver[V]):
         self.checkpointer = checkpointer
         self.archive = archive
         self._lock = asyncio.Lock()
+        self._active_sessions: dict[str, int] = {}
 
     @property
     def config_specs(self) -> list[ConfigurableFieldSpec]:
@@ -79,7 +81,27 @@ class ConversationSaver(BaseCheckpointSaver[V]):
             self.checkpointer.with_allowlist(extra_allowlist), archive=self.archive
         )
         clone._lock = self._lock
+        clone._active_sessions = self._active_sessions
         return clone
+
+    @asynccontextmanager
+    async def protect_session(self, session: str) -> AsyncIterator[None]:
+        """Protect a running graph from conversation-tool deletion.
+
+        Args:
+            session: Trusted graph thread identifier.
+
+        Yields:
+            Control while the session is protected.
+        """
+        async with self._lock:
+            self._active_sessions[session] = self._active_sessions.get(session, 0) + 1
+        try:
+            yield
+        finally:
+            self._active_sessions[session] -= 1
+            if not self._active_sessions[session]:
+                del self._active_sessions[session]
 
     async def aget_tuple(self, config: RunnableConfig) -> CheckpointTuple | None:
         """Read checkpoint state from the backend.
@@ -172,9 +194,11 @@ class ConversationSaver(BaseCheckpointSaver[V]):
             parent_id = str(config["configurable"].get("checkpoint_id", ""))
             acknowledged = await self.archive.checkpoint_acknowledged(session, parent_id)
             changed = "messages" in new_versions or "messages" not in checkpoint["channel_versions"]
+            # Keep ownership for erasure without archiving a scheduled run's transcript.
+            read_only = config.get("metadata", {}).get("talon_history_read_only") is True
             messages = (
                 await self._messages(config, checkpoint, acknowledged=acknowledged)
-                if changed or not acknowledged
+                if not read_only and (changed or not acknowledged)
                 else []
             )
         result = await self.checkpointer.aput(config, checkpoint, metadata, new_versions)
@@ -247,7 +271,7 @@ class ConversationSaver(BaseCheckpointSaver[V]):
             Deleted IDs and IDs not found in this chat.
 
         Raises:
-            ValueError: If IDs are empty or include the active session.
+            ValueError: If IDs are empty or include an active session.
         """
         if not session_ids or any(not session.strip() for session in session_ids):
             msg = "Provide one or more nonempty session IDs"
@@ -258,6 +282,9 @@ class ConversationSaver(BaseCheckpointSaver[V]):
         result: dict[str, list[str]] = {"deleted": [], "not_found": []}
         async with self._lock:
             owned = set(await self.archive.sessions(scope))
+            if owned.intersection(session_ids, self._active_sessions):
+                msg = "Cannot delete a running conversation; wait for it to finish first"
+                raise ValueError(msg)
             for session in dict.fromkeys(session_ids):
                 if session in owned:
                     await self._delete_session(session)

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a66d2640ffe64359217ff5c078c0e8aed8f78ddbcfa361181b7dce458e943e8f",
+  "pageVersion": "sha256:9dc716232161b9a99f1d37bf39326c8893e245b4778572605a4c889cef4fff90",
   "claims": [
     {
       "id": "claim_57467a4a05b54e5ea875422c516c790b",
@@ -103,20 +103,6 @@
       ]
     },
     {
-      "id": "claim_e22654a3ddb3465486435942bb4a7bc0",
-      "statement": "Profile bootstrap is lazy and coordinated: built-ins are registered before third-party entry points, concurrent callers wait while same-thread registration re-entry is allowed, built-in failure rolls both registries back and raises, and third-party plugin failures are isolated rather than disabling profiles globally.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/profiles/_builtin_profiles.py#L103-L177",
-          "version": "repo-lines-v1:sha256:b78b1d238cc1cf200e1fc11dd284c4e6faa82c767ca3f5706bb8a822c3bc55c4:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljMTJiZWVjZGI1ZDg4NDI2MGMzYzBjODEzNzkyMTdhYmQzNDFkMTA4YzdhOWUxN2M4ZjU2ZjIyZjhiMmU2NWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1MmZkYzc0YzFlMzY3YjllZGFlY2RmYWMxYzlkYmMzZDdhZTY4Nzk4YTk0YzBkZDExN2FlYWY0Yjg5YWFhOTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4YWU2MGEwOWE3ODRiNDdlYTA4NTMxNmJmZjkyYzY4MDExZGQ2NzBkODlmMjhkYWY1ZGE5YmI2YWU0MWJjNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYxN2I4MGNkZTA0YzJmMGM4YzkzMWQ0ODgyNzVkMmQ2ZDk4ZThkZjNjZWYzZjQ0YzhlZTQxMTMyNWI4OWY0YTQifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/profiles/_builtin_profiles.py#L180-L236",
-          "version": "repo-lines-v1:sha256:6763d2721d122a06d8b84a0daf7fe4e320b2d2fd8c8209781365cf44efcc5181:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUwYmVjN2VkNTY2Yjk0OTczOWY5MmU0NzNkMTFmMmE0NzMyM2EzYWE2NWJjZjUxNjNmM2UwYjgzZmU2MjFkZDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlNjY5N2Q3NmFkMDdkMmZkYzAyMjU4Y2YyY2Q3MWVhYzQyNWMxZTY0ZWI5MTY1MWNjNWY4NjBlZTJhYTAzMGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdjZmZmY2FkNjllY2Y0M2ViMzdkMzg1YzlmYmE4MGQ5ZDY3N2Y3ZTA1MDRmOGNmZjEwYzc5MWNmOWNjMTdkNTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        }
-      ]
-    },
-    {
       "id": "claim_845af0c7c3484f24972afa79cd9532bb",
       "statement": "HarnessProfile overlays agent assembly after a model is resolved, supporting prompt slots, tool-description overrides, excluded tools and middleware, runtime extra middleware, and general-purpose subagent configuration; HarnessProfileConfig is the serializable subset and rejects exporting runtime-only extra middleware.",
       "evidence": [
@@ -177,16 +163,6 @@
       ]
     },
     {
-      "id": "claim_8dc81ba3ca544d8ab3e2c878cdf57950",
-      "statement": "For a prebuilt model, harness resolution uses provider and identifier metadata, tries exact candidates before defaults, avoids treating a bare identifier as a registry key, and returns an empty HarnessProfile on a miss.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py#L1319-L1387",
-          "version": "repo-lines-v1:sha256:fdced4308cda4db0b06368e4df6383feb44fe29761ff0f284ad25fcb7c9d3b46:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhOTFkZjVmZTI4N2Y2YjdjYWRkMDI0OWE2MTk2ZDhiMzQzMTMyYzU2Y2VkMGFjYzdiMWI4NzJkMjhkMDliODciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0MjhhZDM0YTFmNzNlMjk3MzhmYjMxYjY4ZjMxMjhiMjViOGVmZjUwZWFjMjNiNDcwY2YzYWQwYWRmOTgyYzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        }
-      ]
-    },
-    {
       "id": "claim_bd08c7593048428e990409596776d2eb",
       "statement": "dcode create_model supports a configured custom class_path but constructs openai_codex through its OAuth-aware builder, applies dcode capability profile overrides to model.profile, and stamps the resolved retry budget on the concrete model with a non-fatal fallback for slotted models.",
       "evidence": [
@@ -215,46 +191,6 @@
       ]
     },
     {
-      "id": "claim_f2e6a18d07874022894d87afe7a49a47",
-      "statement": "Built-in provider profiles enable OpenAI Responses API, add NVIDIA attribution headers through a fresh factory result, and make OpenRouter check its integration version and provide environment-respecting attribution defaults plus an Azure-routing opt-out.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/profiles/provider/_nvidia.py#L21-L50",
-          "version": "repo-lines-v1:sha256:1ff950482ec5d396b303d3799d751a737eeaa6da558957077ce76df4b4127161:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIxNDg5ZDU2OGQxNjg4ODQzOWMxZTI3NGJmNjNlNjRiNzIyOTIzYzY4MWU2YzEyY2VjMjZhYjcxNTBiYzliNDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM3MmQ4ZWEzN2JiM2YzZjZlOWNkZGNkYzQ3MGU3ZGIyMjA1MDY5MWYwZmJlYWJkYWY3ODZiMTFkYmUwYmVhZGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/profiles/provider/_openai.py#L1-L24",
-          "version": "repo-lines-v1:sha256:2a6c0aa391be875462399e34e0e83ba8469f953aee8260f752ff9605409ff4f3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlZWY0NDA4NzMwYWE3NTE3NmMzMmQwZTAyYmRhNWViMjY5NTc4NzVhNThjNTlhYjU5NTk0NDQ0NDgxMzZhNjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/profiles/provider/_openrouter.py#L27-L130",
-          "version": "repo-lines-v1:sha256:8e0aced4bc165a702ac43906d17ccc69b55e749d63b428b9a13c0183ff7e8dc6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiNjUxZWJkMzFlOWJmNGJjMWJlMDRjYjZkYTgzNGZkMDYwZDU0MzMzYTEyZmQ1M2E2MjZjYjhiYTMzYmM3OTViIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMGMxZjE4OGYxNDJlZDdhODI0NjgwYjIwNzE3MmM1NTE5YmM2MTRhNDhmZGE3Y2YxNjdlZGI4ZGRmNzk5NTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNWMxYzQ2MmUyYTM5ZDc0NzU5ZjVlMWIxMjZmNzY4M2EyYjczMDExOGUxOGY1MTIyYjA4Y2VkZWViNjUwZTIzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
-        }
-      ]
-    },
-    {
-      "id": "claim_f0b7e14c1060424db6675f0bdcf03abe",
-      "statement": "Built-in harness registrations include a Sonnet 4.6 prompt suffix, per-model Codex prompt and TodoListMiddleware overlays, and Nemotron 3 Ultra registrations that are exercised for tool-call repair, available-tool gating, progress budgets, and response guards.",
-      "evidence": [
-        {
-          "resource": "repo://libs/deepagents/deepagents/profiles/harness/_anthropic_sonnet_4_6.py#L27-L52",
-          "version": "repo-lines-v1:sha256:9f792d875c34c8de1b80ddee9bacac1238c71512d2335f79a9a726cfc603c7d7:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5MDQwMDFhZGQxMmVhMjdlNjU5ZDc4YjYwNWJlMDI1YjM5NzhjZTcwODY5NzliYjBmMGVjMzdkMDE4NzIzYTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3YzQ3MzNjNTcxOTU4ZTdkYTI0YzNiNDk2YjBhYTI3YTZmYjBjYzg1ZGIzYWIxZTIwMzlkYWZkNTUxYzY5MWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/deepagents/profiles/harness/_openai_codex.py#L27-L88",
-          "version": "repo-lines-v1:sha256:16da2ac8104cd99834c2841b8c650fc550d851986f625192a165079e9590fdac:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0ODMxOTgwNzJkOTJlNTVlNjA2YmMwYWQ0ZTJjYWVmNGYzNDFlNTU0MzhjNzExZDE2MjY5MTNkYzYxYzU1ZjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI4MDNhYjVlNDc2NmIwMzA0OGM4ZmE4ZjViN2ZjMjVhNWRjMGExOTJlYmFiOWUwYmY1ZGU1NzlkYjIzYTBiZGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQxYWM0NTY1ZGY0NmNhZmFiNmVlYzQ2MTEzOTdkYzUxOTFjZmY1OTZhOTkwNThmZDllNGYyN2M2ODc0ZGQ2ZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_nemotron_ultra_profile.py#L521-L571",
-          "version": "repo-lines-v1:sha256:875cf015bf701f200df575cc1c9e844ed43227134427ff27c74dc3c5368ec323:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwNmMyYmI2ZTE2ODgyMGEzOTNiYjMwZjc1NDg2OGRhMDk0MTYzNDQxNjQ3ZTZkMjc2ODk3MmRkZmU0YjAyNDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhZTZiNmQwYzI4YzliZDdmNGU5YWQ5MGQ2ZGM3OWM0ZjAzZDIyMzU1OTMxNGM4YjJiOGI2ODJhYzEyOWNlMjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRiNTdiYjc1MzUxZDI1ZDk0NDVlZmY5NjE1ZWVkOWJhYjQyMjcxMjM0YWY2NmUwNTA1Y2YyNmU3NzZlZTQ2MzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY4MWUyNDFmZDA0MDM5MDc1ZTMwYzA1YzE3ZjNlMWYwZTRlYzBlNGFlMzBhMGIzMDY4NzZkNmM4ODA4YTEzY2QifQ"
-        },
-        {
-          "resource": "repo://libs/deepagents/tests/unit_tests/test_nemotron_ultra_profile.py#L83-L100",
-          "version": "repo-lines-v1:sha256:bf842d2481a1359f14bf31edc6a63c3877bf014616abc06d0201ba77a0ee9292:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkZDZmNWEwY2U0ZTFlYjA3NWM0YTFkMWY5YTJjZWU5OWYxYTk1MTQyYmFiNmJiZWEwOTM3NWZkMzYyNTg4ZTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY4OWU3MDRjMTA0MzNkYzA0NGNjN2Q4OWE0YjY4ZjQwMzQ2YTc2MzBkMWQyZDQ2ZjJkNDBlMjA2M2FhMjA4YjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2OWNhMWExZjFmNmY1YTJhNmU4Yjk2NzQ5N2RmYjg4N2NmNDI0NjE5NDU3ZjBhMzM1ZmY3MGZiNzY0M2IzODMifQ"
-        }
-      ]
-    },
-    {
       "id": "claim_91a4894b718a465e9a0aeff90e8114a6",
       "statement": "dcode wires ConfigurableModelMiddleware differently by execution role: the main agent persists model state and carries construction-time ModelResult metadata, subagent stacks disable persistence, and rubric grading enables strict runtime model resolution.",
       "evidence": [
@@ -271,10 +207,124 @@
           "version": "repo-lines-v1:sha256:90ffe0bc3de48ecc2815e5e52650a2b4006435e8e56f95d40fc7f276d1258f6f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3ZTFhMWRlNjcyNDA0YWY0ZTVhZDIyMWMyMDU4MDA0OGE2ZjgyM2RjMDNhYzJlYjJkOTUwOGUwMzVlMDdhNmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0MzNkMGVhOWVjZjJmMzljOWE1MDQwNzM5NWVlNDExNzJmZTY4MmM5Yzg4NWEzNTA4Zjc1YmRlZTE1MWVmZmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhhM2MyMzdjYTk1YzY3Mzg5YTk3ZTc3YWZlY2FmYzA2ZTFjNGFlZDRmZjhlMTE0NmIyYzNmZjAzNzI5OWZiNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFjODFmNDE1MDBkZjRiODk0MGU5YTMzZWI2YmI2Yjk0N2JmZDdhNzA3MTNhNzFkODRiMTFjMzdlY2Q4YWUxMTkifQ"
         }
       ]
+    },
+    {
+      "id": "claim_685192cf4cf0431cabc7a237e5e210d8",
+      "statement": "dcode builds effective capability profiles by merging upstream metadata with config.toml profile overrides and then a CLI profile override; each later layer wins by key, and CLI fields are applied to every profile entry.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L1721-L1737",
+          "version": "repo-lines-v1:sha256:240cc5e8f1fbac7208f2c60317aaa05231171a4b1ea48c353962e2a87d6ad939:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkODBlMjQ5NGI5OGFlY2UyNjlkYjE5M2NlYjRjYTdjNzhkZTA3NTM5ZjM3MWZiNTY5MzMxY2MwMTk1MWQ3ODQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmOWFlZDc5NDdkZDkwZmNmNGMyZDA3MTEzNWM5NGE5MTUyNmU5MjlhZTdjODM2OGRiZDYxZDU0ZWYxNDNhZGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljNjI0NGU3N2NlMWNhMmI0MGNiNWI1ZTNjNzRhYTkwYjBmOWE1MmY5NWYzYzIzYzE0OGQxNWM4NGEzMmExNzAifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L1740-L1767",
+          "version": "repo-lines-v1:sha256:19a9edadc9bbb35e20981174cad046f7aa0fbf3baa219399cac6b96dc5bfbbf9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZkNWY1NTg5MWY5YzA4ZDJjNTA5MWIyYmMxZGQzYTIyODQ1YWFiMDEyNWE1ZjU1YjI5YzIwZTYzODM3YmI1NGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjYzNlNGM4NjQ1NmZiNDhjYzg3ZDNhZmExMGUxMTBlMGYzYTRmMGI5YmVlYzFkOGZjY2U5NzdjYmI0NzY3MGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkyN2Y4ZWIwNTQ3MTQ0MWJkZWY5MGU3YzQ0YzI1ODAzMzVmNDUzOTJhZThjZjJkZThhNTBjYTE3MGNhODZjNmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b6f98413ec634d3c98b075c5620d44c6",
+      "statement": "Reasoning effort is configurable only for an effective profile whose reasoning_output is exactly true and whose reasoning_effort_levels is a list of strings; malformed profile fields are warned about and yield no selectable levels.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/reasoning_effort.py#L26-L62",
+          "version": "repo-lines-v1:sha256:df3f130a3b08b5eda009d23c5e8ca49781f90e0b1a58b3efba51fdb6e24d36a5:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjYmZkNzlmZWRiMTZiNjg4NTExNjI4ODE2MjVjNzA0OWE4ZTQ1NzVmMDIyMTI0YzYwZDFiMGQ0NmQwOWI0MGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxYzE3ODg4OWFkZDVjYTQzNmE5ZmU0YmVhY2RhMTI1NzcwZDEzZDg5NDNlMDZhNWE4NWQxYWEzYjMyNzE3N2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEyY2E1ZGU5NThkYmE5NzU5YTgzY2ZiZTQwYTg2YjI0ZTE1YTlkOWYwYTRlNWI0YWMxZThlNmZkMDNiOWY3MTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImExZDViMDZmZDUzYmMyOGY3NzZkYTk2Mzc2NmU5NWM5YTEwNjEwNTBmZTRmNzUyNzZmNWVhYzZiY2QyZmY4YzUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/reasoning_effort.py#L65-L97",
+          "version": "repo-lines-v1:sha256:df1ace60221fd62e91ec980395f1270664c4a7277c96ccb85ebd870d9976e9c7:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzN2QxZWFlNDI1ZDdhMWM5Mzg1ZjI5MGI0YzMyMjYxZmQ0ZWU5N2NmZTVkODE1YTU3MzU4MDI3MTk4ZTAwZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlZGI4ZWZjMjlmMTVlZmQ0ZWI2NWFmMDg1NGViNjAxNTNlMGFlNWUyOWIxMDgzOTdjOGU1NDA4OWNlNGRhNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwNTBhOTAxNThiMDNiNWM5MGJhZjdkOWE0OTE4NzhhNGY4YzRhNWY4YjNiYTIwYmNhMzdiYzg2MmI1MjNmOWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhMWM3YTZmMzhmYjFiYjgwY2ViZGJhZmE1OTZlMDUyZjFkMDlhN2U3OTQxOGU0ODU5NTZkNjM2N2VlMDhjZTcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_180cbee0e3054504a8454260e417b996",
+      "statement": "For an Anthropic model whose effective thinking configuration has type between_tools, dcode filters advertised reasoning effort choices to low, medium, and high; other providers and modes retain the profile-advertised levels.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/reasoning_effort.py#L100-L127",
+          "version": "repo-lines-v1:sha256:f12b22b095f043c9e7d8b4b57f342e310b779f02c74094ef6a24bc8241baf1c3:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlNzIzMWEzMjcyZTFlMzZjNjlmM2I3OGY5YmVkYTk3OGE3YmEwNjhiOWFhNWMxYzE1ZDE0NWI2Y2Y3NzMwM2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlZGI4ZWZjMjlmMTVlZmQ0ZWI2NWFmMDg1NGViNjAxNTNlMGFlNWUyOWIxMDgzOTdjOGU1NDA4OWNlNGRhNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ0NzhkNWIzZjA1ZTQ0YzU1N2JjM2E3ZjMxZGZhNGQyMDQzYjAxZmVkZjQxYTQ4OWUzNTEzZTAxNDgxZTg5OGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjliZjE3YjE1OTkzZWQ4NmYwNDk1ZDAyMjIxYmM4YWE2YTAxYWUwN2VlNWRiNzM3ZDMwNmEwOTEyY2RlYmNmNTMifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_reasoning_effort.py#L218-L293",
+          "version": "repo-lines-v1:sha256:5d2b559fc3014f638a9f2855078aefc71a994a57c14a123d5b306659a24003df:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzMGNlYzdiNmQxN2NjZTRkMWI1MTVkZjk2ZTc3ZjA4MTczMDcwMjQ3ODI2MjI0ZGUxMGQyYmU1OTNmOTE5MTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkwZjE0ZDA1MzJmNmYxYjgxNWNiODMwZGQ5ODdjNzhkZTk4ODIzOGFmYjQ1OTA4MjZlNTA0NTRiOWFkMzdiYjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_21568e16d6d14e518c29ce5f2533ddbf",
+      "statement": "dcode reads and removes canonical and provider-native effort parameter shapes while preserving unrelated settings, then stores a selected UI value as flat reasoning_effort; Fireworks with both recognized effort forms fails closed for current-value reporting but still counts as explicit.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/reasoning_effort.py#L211-L256",
+          "version": "repo-lines-v1:sha256:454f380002396ab838937d3d88f39208abb0e96655db48e9741459bbdafadee8:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhYWEwMmJiNWViNGU1NWY5YWE4YTRkMTE1NjI4YmRhY2M5YzQzODRlYTRiNGYzMzQ0MTEwMDkwODQwZmMyYjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiMTk5OTdiYTM1ODgxYmEzOTllZDg4NmY1YzJhMGY2MTA0MDYwNDU1NjBjOTM1YmNlNmE4NTk0ZTUyYTMyNWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MDE0OWUwNjlhZDY3ZWNjZjQ3MzY0NmZmMWM3NTAwNTBkMzI5ZDExMDAxOGRjNTc2Njg3OGVhZmExZDYwN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxN2U5Nzc2NDY4MmIyMDQ0OWNkNWYyYzcyMzJlZDYyNGY3ZmNlOTRmYTJmYmY2ZGRlZjU0NzhlZDQwY2Q1NDYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/reasoning_effort.py#L259-L348",
+          "version": "repo-lines-v1:sha256:795abd445beb3096b06dd56446bfc5f56ef6e6034b286f351b0ced1ba2ecfa50:eyJzZWxlY3RlZExpbmVDb3VudCI6OTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyYzhhNGJiYzNlNzc3M2Q1OTU3NDlkZDUxNWVmMzcwNjU0ZGVhMzZjMDg1NzcxMjdkZDdjODY5MjM0NTI0YTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwOTMyYTQzMjhmZWM5MzFkNWU4Yjk3Zjg5MjZkYjIxM2Q3NjM3OGEwZmVjNDQyNTUyMTg2YjJkMjE0MmViZjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZlYWUxODE0NzUzMzFiNjFjMTE3YzcyODkwMWU2MDgwYTk5OWI0ZGZjMTIyYmUxNzUwMDE1NWRjNjQyNmFjMTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJjMWEwYzBlYjA4NGVjNjdjMDQwYTI3YmVlNWVkMTkzZDk0ZjZiYzAxMGNmMGI2YjUyMDg1YjcwNmQ3NTMxMDcifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/reasoning_effort.py#L351-L367",
+          "version": "repo-lines-v1:sha256:f13afb6adb5d1789a7bda483e9c38477518d421c4c7013b220a3b4f6c1911138:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkNDkwMjZmZjMyZjYzNmNhN2FhOGI1YTExZTg5ZTFmNGQ5NDI0YjVjMDEyYmViNjlmNzgwZDQ0MzMxMDAzNWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiMWUyZGIyNmQwMGIzM2RhMDkxN2EzZTYyYTJjMzA0MTY4MzFkNzNmMzA0NGQxYWI0NDI0ZmNiNGI1MDMwZjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM2YWFiMTYyZTE3MzI1NTRlYjMzMzk2OWJlZDc1MjUwNjQ4NjJkMDUwODUzNmVjNTdlODNjOGRkYThkNmRlY2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_reasoning_effort.py#L51-L63",
+          "version": "repo-lines-v1:sha256:b63d32e6d62724e032f4578a096a2cdd4bfd99ac9e5d052ba56b3da84b558efb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmYjliYWJlMGQwNmEyOTlkNjdhNTEzYjJlMGJjN2VhNjM5MzFkZTU3ZjUzMTdmZGUyOTMzNTJhM2JkMzc4MDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiN2Q5MTFiZDExMmYwMDNlYjc4NTBlZDZlY2I3NDY1YzdlODg4M2MzN2NhOTJkOTc4N2JhNjAyZjAwNWJmZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczMWQzMjc3ZDlhYjYxNjFmZmFhZmRiM2E0MDk0YjIzZjI2Nzg1Yjc0ZDYxYmFiYzkzYWQxYjY1Y2UzYTMxZTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQzYjIxMThhN2E0NDRiNTU0NzdlYzk1YjZlOTQ3NDY3MTBiM2YyNWM0ZmE4YTE1OTE0NTcxODRjZTRlMjU4ZjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b53749cb7c534258a856ea961e01074f",
+      "statement": "dcode persists per-model user effort preferences under effort.by_model with lock-protected temporary-file replacement, and loading invalid or malformed stored data returns no preference with warnings or logging rather than raising into the UI.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L4322-L4405",
+          "version": "repo-lines-v1:sha256:e57598cff44c023318dc18ed3e074c4abcd303d889573929dc4c8498e3a812e0:eyJzZWxlY3RlZExpbmVDb3VudCI6ODQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkNjEzOGExY2I3NTRkZWIwZGQ4MGU1OGY2ZGI4YzEyOTQwMDNmNWZkYWMyN2Y3MmQyZmM5NjBjYmM5Nzg5YWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlN2M5NTdiY2I0NGZiNjczYzk4YjAwNTBhNzVkMzgwODJkYjgxZDkxOGRlMzEzYTNmMDdjMTIzNTMwNmQ3ZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY4YTE5YzQ5NGE0NDJkNGUyMzJhMzJkNGE0NzZmNjE1YjVlMDhkZjZiODkzMjhmNmJiNWI1ZjBkZDc1NjU2MjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIzNzE3Y2RlNjIzMWUxZWQ0MTk0OTczOGRmMjUyMGI3YTU1ZTVhNTU0YzYyNDllODIyN2RmMzNmNjdjOWEyNGUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L4408-L4493",
+          "version": "repo-lines-v1:sha256:abc5575eb4cb35bb932636bb9576296059bb054d7a5c4784fd0601fe3abd3631:eyJzZWxlY3RlZExpbmVDb3VudCI6ODYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1MzFmNzZkYjIzMWE4OTkzNWE4OTlkYzA4N2JmYWE3MTQzMGZlYzkzMTJkOWNlYTIyZTFjMjkwOWFkZmM3NzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxMDQyNGJkZTNhZDkxZmY4ZGFlYTgxYTRhYTUwNGIyZmU5ZDM3OTIzZjU5Mzc5MTUyZDU0M2Q3YjRkZWFmNzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczM2U4NDg3Yzg1ZGZkY2Y5ZmE3YjkzYzc0NmM5NDYyNWFlNDdlMTIwYzc5N2U3OTFlNzM3ZjllZDdmZmM3M2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYwZGQ1NTUxZWRkZDI0ZWQ3ZDM2YjJkMDFlYmYxMWVjZGJmNjNkNDMwN2U2ZDczMjAxMjY2NjA3Y2MxYzZhZTYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c5b3baf14d95450cbb551fd59977fcc7",
+      "statement": "On startup and after model resolution, dcode restores a saved effort only when session or resumed model parameters do not explicitly specify an effort; it clears unsupported saved labels best-effort, skips labels unavailable under the active mode, and leaves an applied session choice in place when persistence fails.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L19308-L19362",
+          "version": "repo-lines-v1:sha256:5f0050b495a89c1cba5832401b582b8a01f23ed7e50b5c41c327488b5882250c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE3NGQ2NTJjYWMyZTgzNmFkOTk1MzIzZTI2ZTNlNjBhMjZmOTUzMTcyMzgxMzM0MjRlNzU3ZDczYzVkNmUzMDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiOGQwMTJkOWFkZmMyN2EyOTk0M2VjOWEyZjI1ZGIzMzRmNmYxOWMwNTFkNjUxMjIwMTlkYWM3YmFlNzJhYjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjMTYxMzBlMDZjMjNjNmVkYjdjZWI3MTk1YjNkZTUwMDhhY2RjZWY5ZDQ2YzY0MjA2MDQ5M2RmZTMzMTgzOWMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L19458-L19545",
+          "version": "repo-lines-v1:sha256:a50dd36ff697b0722c067eba1f755ad09eebd95deb5f54633b34bbbdcb9fcafe:eyJzZWxlY3RlZExpbmVDb3VudCI6ODgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwM2JhZWM5YTU5MjA2OWY5MTI4OWM0ODFkNjFmMmZhYjU1OGM1MjFjMWFhYmRlYzUxOTY5N2E2ODlmYzUwMjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU0ZmFkMjRjNWQ1OWZmNzhlMWQ2YmE4Y2ZkNTY2MzUyMWNlYjI3ZmU1NDkxNzk2MmFmYzQxNDI2Y2M5ZWE2NTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzZmFmMmFiYWZjYmNjZjYwMGUyY2ViZjVmYzkyODQ4ZWEyNWE1OWNhOTRjMDU4NTU4OTU4ZTgzN2FjMjI2YTMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L5053-L5064",
+          "version": "repo-lines-v1:sha256:c719266d5bf7e19e7077c96dd13f044620c2f8ef68efeaeba0311d218fcbae70:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiMWRlYzljMmYxZTcyODIxZmQzZjQ4ZGM5Nzc3NTlmODMyMjQyZDc5MDk3MTgxZTgzNGY5YjU3OWI4NDJiMDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmODYxNzg3NTBhZWEzN2ViYTA3NTEyY2MwMzVhZTk0YmI4ZTUzOTcyYTExNzhkNDQxYjE1ZTk5YjZhM2VjMzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNjYjI4YmM4NjQ4ZmZjNWY1MDY4MjJiODM4NGVjYzYzZjcyMWNjODU0MmYyNDMxMDI0MWQxYzAxZGFhOTY5ZWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0MDE5MTdlYzRmYzQwNWVjYzFkYmJhY2EwYmE4ZmI2MmMxYzllYmRjOTU0NzBiYzQ2OGM4M2UxZjdhZjEzMjMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L6402-L6419",
+          "version": "repo-lines-v1:sha256:9b93cca5d2896ecebc400d50e8174cc98132313bb58be1c954798bff31830383:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1NzgwNWMzZmU3YWM2MzA3NGY2OWNkYjI1YjlhY2Q3YTg2NzkyZGZlNTQwODE4YWM0Zjg3NjRiNDllN2QxNGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0YWNlNWYxMzVkMDBkZDg2ZWRiYjM4NDNlMTE4ZGMyZDZjMjdkNjY5NjI5ZWMzODViMmU0NmViMTBkYzAxZjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJmMzJmODE4MzQ1M2I2M2FhZjkyMjJlNDdjZTE4ZmQyMjg2ZGZjMjU2OTE2MTRjNTQyZjEyZGUyNWMwYjhjMjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM3MGQwZDc3MjM2MmM0ODA0M2I2ZmI4ZTNkNzY1Yzg2NTZjMjMxMzI0ODUwYjkzNzc5ODRkOTZlOTVjYjM1ZDcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_860ae6a9046440fd8633558a44dfdc39",
+      "statement": "When OpenAI or Codex receives a high-priority flat reasoning_effort together with an existing reasoning mapping, dcode moves the value into reasoning.effort; an explicitly supplied high-priority native reasoning.effort takes precedence instead.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L6225-L6256",
+          "version": "repo-lines-v1:sha256:f077e5b78cba29906660a2079e3bc570e23846716ba99311e9c9730175c19da4:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlNDQwMDQ3M2RhMjA0NGU5ZjIwMzZhZTIyOWI1ODRjZDIyMDM2YTJmYjYxZDRmMzMxYzU3NWI4ZTFkODRiYTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjMmU5MTgzM2VlNWRiYWY2MjVjZDc3ZmVmOGI4YWU4YTQzN2UzMjRiNTU0ZjRlNTgwMmQ5NWUzNDkyYzc5NGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmOTc5NDk4NzJmN2RmMTFlNDkzMzI5NjdiM2ViZThiMTExZDQ4ZmMwM2UxOTk4OGQwNWRjZmE5NmIxMjEzODEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L6770-L6785",
+          "version": "repo-lines-v1:sha256:00bc8eadf22e338f46f79ac76726a2974c2eb1cf1bf602de7370177d460f63f8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2Y2QzNGMzMzQ0NmI2ZTMxYWI1ODJhYzdjNmJmYmVlMDVjMTM2MWE5MDIzNDI1NDNkOWM5YWM4ZmUyZGNhN2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0MGM5MmRjYzNiNjQ0ZTRhOWViN2RjYmQwZmQwZjE3MGEzZGQ4YTgyMGY3MjIxOWUyZjc3NDI0ZDMwYzg0NDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIzMDA5NzQ1NzllNjI5YjZlZjk5ZDg2MTQ5ZjU3YWZkOWJjN2Q4YTM3ZWRhOGZmYTU2NDY3ZDllYzllMTA1ZmEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-22T08:05:41.799Z"
+    "at": "2026-09-30T08:06:28.871Z"
   }
 }

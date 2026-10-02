@@ -12,7 +12,6 @@ exact name, or a name a resolver maps to tools.
 
 from __future__ import annotations
 
-import functools
 import inspect
 import logging
 from collections.abc import Sequence
@@ -34,6 +33,13 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
     from deepagents.middleware.skills import SkillMetadata, SkillToolResolver
+
+try:
+    from langchain_openai import ChatOpenAI as _ChatOpenAI
+except ImportError:
+    _CHAT_OPENAI_TYPE: type[ChatOpenAI] | None = None
+else:
+    _CHAT_OPENAI_TYPE = _ChatOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -384,12 +390,11 @@ def _inline_block_builder(model: object) -> Callable[[BaseTool], _ToolDisclosure
     chat_model = _unwrap_bound(model)
     if isinstance(chat_model, ChatAnthropic) and chat_model.model.startswith(_ANTHROPIC_INLINE_TOOL_MODELS):
         return _anthropic_tool_addition
-    chat_openai = _chat_openai_type()
     # Exact type, not subclasses: a subclass may lift system messages elsewhere
     # (e.g. into `instructions`) and reject a non-text block there.
     if (
-        chat_openai is not None
-        and type(chat_model) is chat_openai
+        _CHAT_OPENAI_TYPE is not None
+        and type(chat_model) is _CHAT_OPENAI_TYPE
         and chat_model.use_responses_api is True
         and chat_model.model_name.startswith(_OPENAI_INLINE_TOOL_MODELS)
     ):
@@ -403,16 +408,6 @@ def _unwrap_bound(model: object) -> object:
     Chained calls merge into one `RunnableBinding`, so one unwrap is enough.
     """
     return model.bound if isinstance(model, RunnableBinding) else model
-
-
-@functools.cache
-def _chat_openai_type() -> type[ChatOpenAI] | None:
-    """Return `ChatOpenAI`, or `None` when `langchain-openai` isn't installed."""
-    try:
-        from langchain_openai import ChatOpenAI  # noqa: PLC0415  # optional dependency
-    except ImportError:
-        return None
-    return ChatOpenAI
 
 
 def _anthropic_tool_addition(tool: BaseTool) -> _ToolDisclosure:

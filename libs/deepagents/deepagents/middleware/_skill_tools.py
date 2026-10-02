@@ -166,11 +166,6 @@ def _disclosed_record(state: Mapping[str, object]) -> dict[str, str]:
     return entries if len(entries) == len(record) else {}
 
 
-def _include_names(skill: SkillMetadata) -> list[str]:
-    """Return the include names a skill's frontmatter lists under `metadata.include_tools`."""
-    return (skill.get("metadata") or {}).get(_INCLUDE_TOOLS_KEY, "").split()
-
-
 @dataclass
 class _Disclosure:
     """The tools one model call discloses, and where each is anchored."""
@@ -208,7 +203,9 @@ _SkillRead = tuple[int, "SkillMetadata"]
 def _unclaimed_include_names(reads: Sequence[_SkillRead], request_tools: Sequence[BaseTool | dict[str, Any]]) -> list[str]:
     """Return each distinct include name the read skills list that no request tool claims, in read order."""
     present = {_tool_name(t) for t in request_tools}
-    return list(dict.fromkeys(name for _, skill in reads for name in _include_names(skill) if name not in present))
+    return list(
+        dict.fromkeys(name for _, skill in reads for name in (skill.get("metadata") or {}).get(_INCLUDE_TOOLS_KEY, "").split() if name not in present)
+    )
 
 
 def _plan_disclosure(
@@ -225,7 +222,7 @@ def _plan_disclosure(
     present = {_tool_name(t): t for t in request_tools}
     unresolved: set[str] = set()
     for index, skill in reads:
-        for include_name in _include_names(skill):
+        for include_name in (skill.get("metadata") or {}).get(_INCLUDE_TOOLS_KEY, "").split():
             produced = [present[include_name]] if include_name in present else resolved.get(include_name, [])
             if not produced and include_name not in unresolved:
                 unresolved.add(include_name)
@@ -288,7 +285,11 @@ def _find_skill_reads(messages: Sequence[AnyMessage], skills: Sequence[SkillMeta
     Any `offset` or `limit` counts, and so does a result whose content was later
     truncated or clipped, since only the call and the result's status are read.
     """
-    skills_by_path = {path: skill for skill in skills if _include_names(skill) and (path := _normalized_path(skill["path"])) is not None}
+    skills_by_path = {
+        path: skill
+        for skill in skills
+        if (skill.get("metadata") or {}).get(_INCLUDE_TOOLS_KEY, "").split() and (path := _normalized_path(skill["path"])) is not None
+    }
     if not skills_by_path:
         return []
     read_paths = {

@@ -248,6 +248,77 @@ class TestRemoteAgentReplicaForwarding:
 
 
 class TestRemoteAgentAstream:
+    @pytest.mark.parametrize("local_ownership", [False, True])
+    @pytest.mark.parametrize("resume", [False, True])
+    async def test_ownership_uses_header_with_workspace_context(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+        local_ownership: bool,
+        resume: bool,
+    ) -> None:
+        """The real SDK sends context-compatible runs with ownership fencing."""
+        import json
+
+        import httpx
+        from langgraph.pregel.remote import RemoteGraph
+        from langgraph.types import Command
+        from langgraph_sdk.client import LangGraphClient
+
+        from deepagents_code import sessions
+        from deepagents_code.thread_ownership import OWNER_KEY, held_lease, release_all
+
+        monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+        workspace = {"workspace_id": "test-workspace"}
+        config = _config()
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == f"/threads/{_TEST_THREAD_ID}/runs/stream"
+            payload = json.loads(request.content)
+            assert payload["context"] == {"workspace": workspace}
+            # langgraph-api rejects nonempty configurable together with context.
+            assert not payload["config"].get("configurable")
+            lease = held_lease(_TEST_THREAD_ID)
+            if local_ownership:
+                assert lease is not None
+                assert request.headers[OWNER_KEY] == lease.token
+            else:
+                assert lease is None
+                assert OWNER_KEY not in request.headers
+            assert request.headers["x-custom"] == "preserved"
+            if resume:
+                assert payload["command"]["resume"] == "approved"
+            else:
+                assert payload["input"] == {"messages": []}
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=b'event: updates\ndata: {"agent": {"done": true}}\n\n',
+            )
+
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(respond),
+                base_url="http://test",
+                headers={"x-custom": "preserved"},
+            ) as client:
+                agent = RemoteAgent("http://test", local_ownership=local_ownership)
+                agent._graph = RemoteGraph("agent", client=LangGraphClient(client))
+                agent._workspaces[_TEST_THREAD_ID] = workspace
+                result = [
+                    event
+                    async for event in agent.astream(
+                        Command(resume="approved") if resume else {"messages": []},
+                        config=config,
+                        stream_mode=["updates"],
+                        subgraphs=True,
+                    )
+                ]
+            assert result == [((), "updates", {"agent": {"done": True}})]
+            assert config == _config()
+        finally:
+            release_all()
+
     async def test_updates_with_interrupt_converted(self) -> None:
         """Interrupt dicts in updates events are converted to Interrupt."""
         from langgraph.types import Interrupt

@@ -708,6 +708,13 @@ class RemoteAgent:
 
         graph = self._get_graph()
         config = self._prepare_mutation(config)
+        ownership_headers = self._ownership_headers(config)
+        if ownership_headers:
+            from deepagents_code.thread_ownership import OWNER_KEY
+
+            # Runs cannot contain both configurable values and workspace context.
+            # The server injects this configured header into the run config instead.
+            config["configurable"].pop(OWNER_KEY)
         dropped_count = 0
 
         # Mirror this server-side run to an extra LangSmith project when
@@ -734,6 +741,7 @@ class RemoteAgent:
             subgraphs=subgraphs,
             config=config,
             context=payload,
+            headers=ownership_headers,
             **extra_stream_kwargs,
         ):
             logger.debug("RemoteGraph event mode=%s ns=%s", mode, ns)

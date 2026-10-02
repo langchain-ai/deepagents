@@ -1626,6 +1626,19 @@ class TestGetSystemPromptFilesystemTools:
         assert "`write_file` over" in prompt
 
 
+@pytest.mark.parametrize("interactive", [True, False])
+@pytest.mark.parametrize("cli_name", ["dcode", "deepagents-code", "dcode-dev"])
+def test_plugin_discovery_uses_invoked_cli_name(
+    interactive: bool, cli_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Plugin queries target the invoked installation in either execution mode."""
+    monkeypatch.setattr("deepagents_code.agent.invoked_name", lambda: cli_name)
+    prompt = get_system_prompt("test-agent", interactive=interactive, has_tavily=False)
+
+    assert f"`{cli_name} plugin list --json`" in prompt
+    assert f"`{cli_name} plugin marketplace list --json`" in prompt
+
+
 class TestGetSystemPromptPlaceholderValidation:
     """Tests for unreplaced placeholder detection."""
 

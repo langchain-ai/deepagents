@@ -1897,14 +1897,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
     @staticmethod
     def _threads_match(old: list[ThreadInfo], new: list[ThreadInfo]) -> bool:
-        """Check whether two thread lists have the same IDs and checkpoints in order.
+        """Check whether thread IDs, checkpoints, and names match in order.
 
         Args:
             old: Previous thread list.
             new: Fresh thread list.
 
         Returns:
-            True if both lists have identical thread/checkpoint ID pairs.
+            True if both lists have identical thread IDs, checkpoints, and names.
         """
         if len(old) != len(new):
             return False
@@ -1912,6 +1912,8 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             if a["thread_id"] != b["thread_id"]:
                 return False
             if a.get("latest_checkpoint_id") != b.get("latest_checkpoint_id"):
+                return False
+            if a.get("thread_name") != b.get("thread_name"):
                 return False
         return True
 

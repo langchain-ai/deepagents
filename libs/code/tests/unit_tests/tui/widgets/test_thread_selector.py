@@ -961,6 +961,38 @@ class TestThreadSelectorCheckpointDetailErrors:
 class TestThreadSelectorPrefetchedRows:
     """Tests for rendering with prefetched rows from startup cache."""
 
+    @pytest.mark.parametrize(
+        ("cached_name", "fresh_name"),
+        [(None, "Cache repair"), ("Cached name", "New name"), ("Cached name", None)],
+    )
+    async def test_name_changes_refresh_cached_column_layout(
+        self, cached_name: str | None, fresh_name: str | None
+    ) -> None:
+        """Name-only refreshes update both the text and the column visibility."""
+        cached: ThreadInfo = {
+            **MOCK_THREADS[0],
+            "latest_checkpoint_id": "cp_1",
+            "thread_name": cached_name,
+        }
+        with _patch_list_threads([cached.copy()]) as list_threads, _patch_columns():
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test(size=(160, 45)) as pilot:
+                screen = ThreadSelectorScreen(initial_threads=[cached], filter_cwd=None)
+                app.push_screen(screen)
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+
+                list_threads.return_value = [{**cached, "thread_name": fresh_name}]
+                screen.refresh_threads()
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+
+                for cell in screen.query(".thread-cell-thread_name").results(Static):
+                    assert cell.display is bool(fresh_name)
+                    assert bool(cell.size.width) is bool(fresh_name)
+                name = screen.query_one("ThreadOption .thread-cell-thread_name", Static)
+                assert str(name.render()) == (fresh_name or "")
+
     async def test_prefetched_prompt_is_preserved_during_refresh(self) -> None:
         """Refreshing prefetched rows should not blank the prompt column first."""
         prefetched: list[ThreadInfo] = [

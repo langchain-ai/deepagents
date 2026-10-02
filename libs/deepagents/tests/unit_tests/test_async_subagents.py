@@ -1,19 +1,24 @@
 """Tests for async subagent middleware functionality."""
 
+import base64
 import json
 import warnings
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, TypeVar
 from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from langchain.agents import create_agent
 from langchain.tools import ToolRuntime
 from langchain_core._api import LangChainBetaWarning
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 
+from deepagents.backends import FilesystemBackend
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
@@ -23,6 +28,8 @@ from deepagents.middleware.async_subagents import (
     _resolve_headers,
     _tasks_reducer,
 )
+from deepagents.middleware.filesystem import FilesystemMiddleware
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 def _make_spec(name: str = "test-agent", **overrides: Any) -> AsyncSubAgent:
@@ -364,6 +371,84 @@ async def test_launch_context_snapshot(invocation: str, mode: str | None, *, sum
     else:
         assert body["input"]["messages"] == [{"role": "user", "content": "Explain the delay"}]
     assert runtime.state["async_tasks"] == {}
+
+
+@pytest.mark.filterwarnings("ignore:.*forked subagents.*:langchain_core._api.LangChainBetaWarning")
+@pytest.mark.parametrize("invocation", ["sync", "async"])
+@pytest.mark.parametrize("resumed", [False, True])
+async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, *, resumed: bool) -> None:
+    image = b"\x89PNG\r\n\x1a\n uploaded image"
+    media = [
+        {"type": "image", "mime_type": "image/png", "base64": base64.b64encode(image).decode("ascii")},
+        {"type": "file", "mime_type": "application/pdf", "base64": base64.b64encode(b"%PDF-1.4 report").decode("ascii")},
+    ]
+    (tmp_path / "photo.png").write_bytes(image)
+    responses = [AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "read"}])]
+    if resumed:
+        responses.append(AIMessage(content="Media received"))
+    responses.extend(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "start_async_task", "args": {"description": "Review the media", "subagent_type": "alpha"}, "id": "launch"}],
+            ),
+            AIMessage(content="Launched"),
+        ]
+    )
+    model = GenericFakeChatModel(messages=iter(responses))
+    agent = create_agent(
+        model,
+        middleware=[
+            FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True), offload_binary_content=True),
+            AsyncSubAgentMiddleware(async_subagents=[_make_spec("alpha", mode="fork")]),
+        ],
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "parent"}}
+    payload = {"messages": [HumanMessage(content=deepcopy(media))]}
+    if resumed:
+        if invocation == "sync":
+            agent.invoke(payload, config)
+        else:
+            await agent.ainvoke(payload, config)
+        assert "_blob_payloads" not in agent.get_state(config).values
+        (tmp_path / "photo.png").write_bytes(b"source changed after offloading")
+        payload = {"messages": [HumanMessage(content="Delegate the review")]}
+
+    bodies: list[dict[str, Any]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/threads":
+            return httpx.Response(200, json={"thread_id": "child"})
+        assert request.url.path == "/threads/child/runs"
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"run_id": "run", "status": "pending"})
+
+    transport = httpx.MockTransport(handle)
+    if invocation == "sync":
+        with (
+            httpx.Client(base_url="http://remote", transport=transport) as http_client,
+            patch("deepagents.middleware.async_subagents.get_sync_client", return_value=SyncLangGraphClient(http_client)),
+        ):
+            result = agent.invoke(payload, config)
+    else:
+        async with httpx.AsyncClient(base_url="http://remote", transport=transport) as http_client:
+            with patch("deepagents.middleware.async_subagents.get_client", return_value=LangGraphClient(http_client)):
+                result = await agent.ainvoke(payload, config)
+
+    assert result["async_tasks"]["child"]["status"] == "running"
+    assert len(bodies) == 1
+    assert set(bodies[0]["input"]) == {"messages"}
+    child_messages = bodies[0]["input"]["messages"]
+    assert child_messages[0]["content"] == media
+    child_tool = next(message for message in child_messages if message["type"] == "tool")
+    assert child_tool["content"] == [media[0]]
+    assert "deepagents_blob" not in json.dumps(child_messages)
+    assert model.call_history[-2]["messages"][0].content == media
+    parent_messages = agent.get_state(config).values["messages"]
+    parent_tool = next(message for message in parent_messages if message.type == "tool")
+    for message in (parent_messages[0], parent_tool):
+        assert all("deepagents_blob" in block and "base64" not in block for block in message.content)
 
 
 class TestCheckTool:

@@ -28,6 +28,7 @@ from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 from langgraph_sdk.schema import Run
 from pydantic import BaseModel, Field
 
+from deepagents.middleware._blob_offload import _BLOB_PAYLOADS_KEY, _restore_payloads
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.subagents import _fork_messages
 from deepagents.middleware.summarization import SUMMARIZATION_EVENT_KEY
@@ -278,6 +279,10 @@ def _start_task_messages(spec: AsyncSubAgent, runtime: ToolRuntime, description:
         description,
         preamble=_ASYNC_FORK_TASK_PREAMBLE,
     )
+    # FilesystemMiddleware caches the media shown to the parent model in this
+    # run, including blobs loaded after a resume. Remote children need those
+    # payloads inline because they cannot resolve the parent's blob references.
+    messages = _restore_payloads(messages, runtime.state.get(_BLOB_PAYLOADS_KEY) or {})
     # Artifacts are local tool data, not model-facing conversation content, and
     # may contain objects that cannot be copied or serialized by the remote SDK.
     return deepcopy([message.model_dump(exclude={"artifact"}) for message in messages])

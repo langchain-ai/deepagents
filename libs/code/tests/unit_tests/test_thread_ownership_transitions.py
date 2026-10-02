@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import sqlite3
 from contextlib import closing
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from pathlib import Path
 
+    from langgraph.pregel import Pregel
+
     from deepagents_code.output import OutputFormat
 
 
@@ -26,6 +28,59 @@ def isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
     yield
     release_all()
+
+
+@pytest.mark.usefixtures("isolated_state")
+@pytest.mark.parametrize("transition", ["clear", "switch", "failed_switch"])
+async def test_prestarted_server_releases_initial_thread_after_transition(
+    monkeypatch: pytest.MonkeyPatch, transition: str
+) -> None:
+    from deepagents_code.app import TextualSessionState
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    remote = RemoteAgent("http://test:0", local_ownership=True)
+    graph = MagicMock()
+    graph._validate_client.return_value.threads.create = AsyncMock()
+    remote._graph = graph
+    await remote.aensure_thread({"configurable": {"thread_id": "current"}})
+    initial = held_lease("current")
+    assert initial is not None
+    # The app accepts RemoteAgent at runtime but still annotates agent as Pregel.
+    app = DeepAgentsApp(
+        agent=cast("Pregel", remote), thread_id="current", server_proc=MagicMock()
+    )
+    app._session_state = TextualSessionState(thread_id="current")
+    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+    monkeypatch.setattr(app, "_run_session_start_hook", AsyncMock(return_value=True))
+    monkeypatch.setattr("deepagents_code.app._new_thread_id", lambda: "target")
+
+    def switch(thread_id: str) -> None:
+        if transition == "failed_switch":
+            msg = "history failed"
+            raise RuntimeError(msg)
+        app._lc_thread_id = thread_id
+
+    monkeypatch.setattr(app, "_resume_owned_thread", AsyncMock(side_effect=switch))
+    async with app.run_test():
+        if transition == "clear":
+            await app._handle_command("/clear")
+        elif transition == "failed_switch":
+            with pytest.raises(RuntimeError, match="history failed"):
+                await app._resume_thread("target")
+        else:
+            await app._resume_thread("target")
+
+        if transition == "failed_switch":
+            assert app._lc_thread_id == "current"
+            assert held_lease("current") is initial
+            assert try_acquire("current") is None
+            assert try_acquire("target") is not None
+        else:
+            assert app._lc_thread_id == "target"
+            assert held_lease("current") is None
+            assert try_acquire("current") is not None
+            assert try_acquire("target") is None
 
 
 @pytest.mark.usefixtures("isolated_state")

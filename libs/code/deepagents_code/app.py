@@ -3933,6 +3933,13 @@ class DeepAgentsApp(App):
             server_kwargs["cwd"] = self._cwd
         self._server_kwargs = server_kwargs
         self._thread_leases: dict[str, ThreadLease] = {}
+        if (
+            self._server_kwargs is None
+            and self._server_proc is not None
+            and self._lc_thread_id
+        ):
+            # Pre-started servers skip the startup worker that records this lease.
+            self._reserve_thread(self._lc_thread_id)
         if self._agent is not None:
             from deepagents_code.client.remote_client import RemoteAgent as _RemoteAgent
 

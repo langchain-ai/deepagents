@@ -6070,8 +6070,12 @@ def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None
         kwargs["base_url"] = stored_base_url
         return
     kwargs.pop("base_url", None)
+    # Omitting the kwarg lets the integration/SDK reread the process's gateway
+    # env vars, which a workspace-scoped construction must leave untouched.
     if provider == "anthropic":
         kwargs["base_url"] = "https://api.anthropic.com"
+    elif provider == "openai":
+        kwargs["base_url"] = "https://api.openai.com/v1"
     custom_headers = PROVIDER_CUSTOM_HEADERS_ENV.get(provider)
     if custom_headers:
         kwargs["default_headers"] = {}

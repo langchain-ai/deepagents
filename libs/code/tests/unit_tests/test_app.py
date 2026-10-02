@@ -20933,157 +20933,69 @@ class TestPrewarmAwait:
     `_DeadlockError` from the import system.
     """
 
-    async def test_start_server_background_awaits_prewarm_before_create_model(
-        self,
+    @pytest.mark.parametrize("unavailable", [False, True])
+    async def test_startup_resolves_metadata_from_server(
+        self, unavailable: bool, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Locks the call-order invariant that fixes the deadlock.
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.model_metadata import ModelMetadata
 
-        A future refactor that moves the `await _await_prewarm_imports()`
-        after `create_model` (or drops it) silently re-introduces the
-        production crash. This is the only test that catches that.
-        """
-        from deepagents_code import config as cli_config
-
-        call_order: list[str] = []
-        create_model_kwargs: dict[str, Any] = {}
-
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-        app._model_kwargs = {
-            "model_spec": "anthropic:claude-opus-4-7",
-            "cli_max_retries": None,
-        }
-        app._server_kwargs = None
+        app = DeepAgentsApp(thread_id="t")
+        app._model_kwargs = {"model_spec": "anthropic:test"}
+        app._server_kwargs = {"model_name": "anthropic:test"}
+        app._default_assistant_id = "agent"
         app._mcp_preload_kwargs = None
-        app._resume_thread_intent = None
-        app._assistant_id = None
-
-        async def record_prewarm() -> None:
-            call_order.append("prewarm")
-            await asyncio.sleep(0)  # yield so any out-of-order calls would land first
-
-        def record_create_model(*_: Any, **kwargs: Any) -> MagicMock:
-            call_order.append("create_model")
-            create_model_kwargs.update(kwargs)
-            result = MagicMock()
-            result.apply_to_runtime_state = MagicMock()
-            result.provider = "anthropic"
-            result.model_name = "claude-opus-4-7"
-            return result
-
-        with (
-            patch.object(app, "_await_prewarm_imports", side_effect=record_prewarm),
-            patch.object(cli_config, "create_model", side_effect=record_create_model),
-            patch("deepagents_code.model_config.save_recent_model"),
-            patch.object(app, "post_message"),
-            # `_start_server_background` continues past `create_model` into
-            # server + MCP setup we don't care about for an ordering test.
-            contextlib.suppress(Exception),
-        ):
-            await app._start_server_background()
-
-        assert call_order[:2] == ["prewarm", "create_model"], (
-            f"prewarm must precede create_model; got {call_order}"
+        result = ModelMetadata("test", "anthropic", 123_456, frozenset({"video"}))
+        remote = RemoteAgent("http://test")
+        graph = MagicMock()
+        graph.client.http.get = AsyncMock(
+            return_value=result.to_payload(),
+            side_effect=ConnectionError("server unavailable") if unavailable else None,
         )
-        assert create_model_kwargs["cli_max_retries"] is None
-
-    async def test_start_server_background_persists_default_not_session_id(
-        self,
-    ) -> None:
-        """`save_recent_agent` must receive the user-chosen default.
-
-        Locks the parity invariant: when `-r` resume has overridden the
-        session id but the user's default is unchanged, the next bare
-        relaunch must still return to the default — not the resumed
-        thread's owning agent. Without this assertion a future refactor
-        that swaps the argument back to `_assistant_id` is invisible.
-        """
-        from deepagents_code import config as cli_config
-
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
-        app._server_kwargs = None
-        app._mcp_preload_kwargs = None
-        app._resume_thread_intent = None
-        # Simulate post-resume state: session ran in `coder`, but the user's
-        # chosen default is `agent`.
-        app._assistant_id = "coder"
-        app._default_assistant_id = "agent"
-
-        def fake_create_model(*_: Any, **__: Any) -> MagicMock:
-            result = MagicMock()
-            result.apply_to_runtime_state = MagicMock()
-            result.provider = "anthropic"
-            result.model_name = "claude-opus-4-7"
-            return result
-
+        monkeypatch.setattr(remote, "_get_graph", lambda: graph)
+        monkeypatch.setattr(
+            remote,
+            "abind_workspace",
+            AsyncMock(side_effect=RuntimeError("thread bound to another workspace")),
+        )
+        server = MagicMock()
+        post = MagicMock()
+        monkeypatch.setattr(app, "post_message", post)
+        monkeypatch.setattr(app, "_ensure_managed_ripgrep", AsyncMock())
+        monkeypatch.setattr(app, "_await_prewarm_imports", AsyncMock())
+        monkeypatch.setattr(app, "_restore_effort_override", AsyncMock())
         with (
-            patch.object(app, "_await_prewarm_imports", AsyncMock()),
-            patch.object(cli_config, "create_model", side_effect=fake_create_model),
-            patch("deepagents_code.model_config.save_recent_model"),
+            patch("deepagents_code.config.create_model") as create,
             patch(
-                "deepagents_code.model_config.save_recent_agent",
-                return_value=True,
-            ) as save_agent_mock,
-            patch.object(app, "post_message"),
-            contextlib.suppress(Exception),
-        ):
-            await app._start_server_background()
-
-        save_agent_mock.assert_called_once_with("agent")
-
-    async def test_start_server_background_persists_agent_before_create_model(
-        self,
-    ) -> None:
-        """`save_recent_agent` must run BEFORE `create_model`.
-
-        Locks the reorder that fixes the silent-persistence-loss bug:
-        if `create_model` raises a `ModelConfigError` (e.g., missing API
-        key), the user's intent to use this agent must already be
-        persisted. A regression that moves the save back below
-        `create_model` plus a credential miss silently drops the write
-        with no test signal.
-        """
-        from deepagents_code import config as cli_config
-        from deepagents_code.model_config import ModelConfigError
-
-        call_order: list[str] = []
-
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-        app._model_kwargs = {"model_spec": "anthropic:claude-opus-4-7"}
-        app._server_kwargs = None
-        app._mcp_preload_kwargs = None
-        app._resume_thread_intent = None
-        app._assistant_id = None
-        app._default_assistant_id = "agent"
-
-        def record_save_agent(name: str) -> bool:
-            call_order.append(f"save_recent_agent:{name}")
-            return True
-
-        def record_create_model(*_: Any, **__: Any) -> MagicMock:
-            call_order.append("create_model")
-            msg = "no credentials"
-            raise ModelConfigError(msg)
-
-        with (
-            patch.object(app, "_await_prewarm_imports", AsyncMock()),
-            patch.object(cli_config, "create_model", side_effect=record_create_model),
-            patch(
-                "deepagents_code.model_config.save_recent_agent",
-                side_effect=record_save_agent,
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                AsyncMock(return_value=(remote, server, None)),
             ),
-            patch("deepagents_code.model_config.save_recent_model"),
-            patch.object(app, "post_message"),
-            patch.object(app, "notify"),
+            patch(
+                "deepagents_code.model_config.save_recent_agent", return_value=True
+            ) as save_agent,
+            patch("deepagents_code.model_config.save_recent_model") as save_model,
+            patch("deepagents_code.model_config.touch_recent_model"),
+            patch.object(ModelMetadata, "apply_to_runtime_state") as apply,
         ):
             await app._start_server_background()
 
-        # Save must have happened, and must precede create_model in the
-        # call sequence — guarding the reorder fix.
-        assert "save_recent_agent:agent" in call_order
-        assert call_order.index("save_recent_agent:agent") < call_order.index(
-            "create_model"
-        ), f"save_recent_agent must precede create_model; got {call_order}"
+        create.assert_not_called()
+        save_agent.assert_called_once_with("agent")
+        message = post.call_args.args[0]
+        if unavailable:
+            assert app._server_proc is None
+            server.stop.assert_called_once_with()
+            assert isinstance(message, DeepAgentsApp.ServerStartFailed)
+            apply.assert_not_called()
+            save_model.assert_not_called()
+            assert app._model_kwargs is not None
+        else:
+            assert app._server_proc is server
+            server.stop.assert_not_called()
+            assert isinstance(message, DeepAgentsApp.ServerReady)
+            apply.assert_called_once_with()
+            save_model.assert_called_once_with("anthropic:test")
+            assert app._model_kwargs is None
 
     async def test_discover_skills_awaits_prewarm_before_thread_offload(
         self,

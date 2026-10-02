@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from html import escape
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
@@ -42,7 +43,7 @@ async def test_gateway_excludes_callbacks_before_truncation(callback: str) -> No
         ],
     }
     assert await gateway.thread_context("C1", "1", "4") == [
-        ("UOP", ORDINARY),
+        ("UOP", escape(ORDINARY, quote=False)),
         ("UOP", "neighbor"),
     ]
 

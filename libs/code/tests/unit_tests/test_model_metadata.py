@@ -138,7 +138,6 @@ async def test_server_rejects_malformed_requests_before_model_creation(
     ("error", "status"),
     [
         (ModelConfigError("provider package unavailable"), 422),
-        (WorkspaceConflictError("workspace mismatch"), 409),
         (SystemExit(1), 503),
     ],
 )

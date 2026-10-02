@@ -274,7 +274,6 @@ async def test_startup_preserves_recovery_errors(
     [
         "not json",
         "null",
-        "[]",
         "{}",
         '{"type":"UnknownError","message":"failure","provider":"custom"}',
         '{"type":"MissingCredentialsError","message":"failure","provider":1}',

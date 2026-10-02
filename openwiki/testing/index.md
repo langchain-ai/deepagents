@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Place regressions at the narrowest deterministic package boundary, then exercise lifecycle and provider composition with explicit fakes. Focus coverage on Deep Agents filesystem behavior and Talon channels, MCP/OAuth, messaging, and scheduling.
+- [Testing Guide](testing-guide.md) - Focused regression guidance for Talon persistence, scheduling, Slack admission and OAuth boundaries, and dcode prompt and Textual UI contracts. Keep unit tests deterministic, network-free, and centered on observable behavior.

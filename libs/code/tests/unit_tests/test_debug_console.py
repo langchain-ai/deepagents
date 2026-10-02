@@ -8,15 +8,19 @@ from unittest.mock import MagicMock
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.containers import VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Button, Checkbox, Select, Static
 
 import deepagents_code.tui.modals.cost_breakdown as cost_breakdown_mod
+import deepagents_code.tui.modals.mcp_servers as mcp_servers_mod
 import deepagents_code.tui.widgets.debug_console as debug_console_mod
 from deepagents_code._debug_buffer import InMemoryLogRecord, get_log_buffer
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.cost_tracking import _empty_cost_breakdown
+from deepagents_code.mcp_tools import MCPServerInfo
 from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
+from deepagents_code.tui.modals.mcp_servers import MCPServersScreen
 from deepagents_code.tui.widgets.debug_console import (
     DebugConsoleScreen,
     SnapshotField,
@@ -418,6 +422,69 @@ class TestDebugConsoleScreen:
 
 
 class TestDebugConsoleToggle:
+    async def test_mcp_details_keyboard_flow_and_live_updates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        copied: list[str] = []
+        monkeypatch.setattr(
+            mcp_servers_mod,
+            "copy_text_to_clipboard",
+            lambda _app, text: (copied.append(text) or True, None),
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
+        async with app.run_test(size=(110, 44)) as pilot:
+            await pilot.pause()
+            app._mcp_server_info = [
+                MCPServerInfo(name=f"server-{index}", transport="stdio")
+                for index in range(80)
+            ]
+            await pilot.press("ctrl+backslash")
+            await pilot.pause()
+            console = cast("DebugConsoleScreen", app.screen)
+            snapshot = _widget_text(
+                console.query_one(".debug-console-snapshot", Static)
+            )
+            assert _snapshot_dict(app._build_debug_snapshot())["MCP servers"] == "80"
+            assert "server-0" not in snapshot
+            assert console.query_one("#debug-log").region.bottom < app.size.height
+
+            await pilot.press("tab")
+            assert console.focused is console.query_one("#debug-mcp-servers", Button)
+            await pilot.press("shift+tab")
+            assert console.focused is console.query_one("#debug-log")
+            await pilot.press("tab", "enter")
+            await pilot.pause()
+            assert isinstance(app.screen, MCPServersScreen)
+            modal = app.screen
+            body = modal.query_one("#mcp-servers-body", Static)
+            assert "server-79 (ok)" in _widget_text(body)
+            await pilot.press("pagedown")
+            await pilot.pause()
+            assert modal.query_one(VerticalScroll).scroll_y > 0
+            await pilot.press("shift+tab")
+            assert not app._auto_approve
+
+            app._mcp_server_info = [
+                MCPServerInfo(name="[bold]server\n\x1b", transport="stdio")
+            ]
+            await pilot.pause(delay=0.6)
+            assert _widget_text(body) == "[bold]server (ok)"
+            await pilot.press("c")
+            assert copied == ["[bold]server (ok)"]
+            app._mcp_server_info = []
+            await pilot.pause(delay=0.6)
+            assert _widget_text(body) == "No MCP servers configured"
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is console
+            assert console.focused is console.query_one("#debug-mcp-servers", Button)
+            await pilot.press("enter")
+            await pilot.pause()
+            assert isinstance(app.screen, MCPServersScreen)
+            assert "No MCP servers configured" in _widget_text(
+                app.screen.query_one("#mcp-servers-body", Static)
+            )
+
     async def test_missing_history_hides_breakdown_but_keeps_total(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         async with app.run_test(size=(140, 65)) as pilot:

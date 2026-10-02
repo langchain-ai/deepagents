@@ -52,6 +52,8 @@ if TYPE_CHECKING:
     from textual import events
     from textual.app import ComposeResult
 
+    from deepagents_code.mcp_tools import MCPServerInfo
+
 logger = logging.getLogger(__name__)
 
 DEBUG_TOGGLE_KEY = "ctrl+backslash"
@@ -89,12 +91,14 @@ _FILTER_SELECT_ID = "debug-level-filter"
 _CLICK_TO_COPY_ID = "debug-click-to-copy"
 """Id of the checkbox that opts click-to-copy in for the console."""
 _COST_BREAKDOWN_ID = "debug-cost-breakdown"
+_MCP_SERVERS_ID = "debug-mcp-servers"
 _CLICK_TO_COPY_DEFAULT = False
 """Whether click-to-copy is enabled before the user toggles the checkbox."""
 _MIN_HANGING_VALUE_WIDTH = 10
 """Minimum readable value-column width for hanging snapshot rows."""
 _FOCUS_CYCLE = (
-    f"#{_COST_BREAKDOWN_ID}, #{_FILTER_SELECT_ID}, #{_CLICK_TO_COPY_ID}, #debug-log"
+    f"#{_COST_BREAKDOWN_ID}, #{_MCP_SERVERS_ID}, "
+    f"#{_FILTER_SELECT_ID}, #{_CLICK_TO_COPY_ID}, #debug-log"
 )
 """Tab-cycle selector spanning the toolbar controls and the log view."""
 FilterValue = Literal[
@@ -758,7 +762,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         margin-bottom: 1;
     }
 
-    DebugConsoleScreen .debug-console-cost-breakdown {
+    DebugConsoleScreen .debug-console-details {
         width: auto;
         min-width: 0;
         height: 1;
@@ -769,8 +773,8 @@ class DebugConsoleScreen(ModalScreen[None]):
         background: transparent;
     }
 
-    DebugConsoleScreen .debug-console-cost-breakdown:hover,
-    DebugConsoleScreen .debug-console-cost-breakdown:focus {
+    DebugConsoleScreen .debug-console-details:hover,
+    DebugConsoleScreen .debug-console-details:focus {
         color: $text;
         background: $surface-lighten-1;
         text-style: bold;
@@ -826,6 +830,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         *,
         snapshot_provider: Callable[[], Sequence[SnapshotField]] | None = None,
         cost_breakdown_provider: Callable[[], str] | None = None,
+        mcp_servers_provider: Callable[[], Sequence[MCPServerInfo]] | None = None,
         cleared_upto: int = 0,
         on_clear: Callable[[int], None] | None = None,
         click_to_copy: bool = _CLICK_TO_COPY_DEFAULT,
@@ -842,6 +847,7 @@ class DebugConsoleScreen(ModalScreen[None]):
             cost_breakdown_provider: Optional callable that builds the detailed
                 token and cost breakdown shown in a dedicated modal. An empty
                 string hides the breakdown button.
+            mcp_servers_provider: Live metadata for the read-only MCP server modal.
             cleared_upto: Absolute emission index a prior clear advanced to.
                 The console starts rendering from here so a clear persists across
                 close/reopen; records emitted after it still appear.
@@ -856,6 +862,7 @@ class DebugConsoleScreen(ModalScreen[None]):
         self._snapshot = list(snapshot)
         self._snapshot_provider = snapshot_provider
         self._cost_breakdown_provider = cost_breakdown_provider
+        self._mcp_servers_provider = mcp_servers_provider
         self._records: list[InMemoryLogRecord] = []
         # Absolute index of the next unrendered log record (incremental writes),
         # seeded from any persisted clear so reopening honors the last reset.
@@ -916,7 +923,14 @@ class DebugConsoleScreen(ModalScreen[None]):
                 yield Button(
                     "View token & cost breakdown",
                     id=_COST_BREAKDOWN_ID,
-                    classes="debug-console-cost-breakdown",
+                    classes="debug-console-details",
+                    variant="default",
+                )
+            if self._mcp_servers_provider is not None:
+                yield Button(
+                    "View MCP servers",
+                    id=_MCP_SERVERS_ID,
+                    classes="debug-console-details",
                     variant="default",
                 )
             with Horizontal(classes="debug-console-toolbar"):
@@ -1133,7 +1147,14 @@ class DebugConsoleScreen(ModalScreen[None]):
         return overlay.display and overlay.region.contains(offset.x, offset.y)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        """Open the detailed token and cost breakdown modal."""
+        """Open read-only session details."""
+        if event.button.id == _MCP_SERVERS_ID:
+            event.stop()
+            if self._mcp_servers_provider is not None:
+                from deepagents_code.tui.modals.mcp_servers import MCPServersScreen
+
+                self.app.push_screen(MCPServersScreen(self._mcp_servers_provider))
+            return
         if event.button.id != _COST_BREAKDOWN_ID:
             return
         event.stop()

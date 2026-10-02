@@ -15,7 +15,7 @@ from textual.app import App
 from textual.widgets import OptionList, Static
 
 from deepagents_code import model_config, reasoning_effort
-from deepagents_code.app import DeepAgentsApp, _EffortContext
+from deepagents_code.app import DeepAgentsApp, _EffortContext, _GoalApplication
 from deepagents_code.config import runtime_state
 from deepagents_code.reasoning_effort import (
     current_effort_from_model_params,
@@ -242,6 +242,63 @@ async def test_effort_selected_during_offload_applies_before_queued_prompt(
         assert model_config.load_effort_for_model("openai:gpt-5.5") == "xhigh"
         assert not app._deferred_actions
         assert not app._pending_messages
+
+
+@pytest.mark.parametrize("next_turn", ["prompt", "continuation", "failed_application"])
+async def test_effort_selected_during_goal_reconciliation_applies_before_next_turn(
+    next_turn: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp(agent=MagicMock())
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
+    app._model_params_override = {"reasoning_effort": "low"}
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    next_turn_efforts: list[object] = []
+
+    async def persist(**_kwargs: object) -> bool:
+        started.set()
+        await finish.wait()
+        if next_turn == "failed_application":
+            msg = "goal persistence failed"
+            raise RuntimeError(msg)
+        return True
+
+    def send(_message: str, **_kwargs: object) -> None:
+        assert app._model_params_override is not None
+        next_turn_efforts.append(app._model_params_override["reasoning_effort"])
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        monkeypatch.setattr(app, "_persist_goal_rubric_state", persist)
+        monkeypatch.setattr(app, "_sync_goal_rubric_state_from_thread", AsyncMock())
+        monkeypatch.setattr(app, "_send_to_agent", AsyncMock(side_effect=send))
+        app._queued_goal_application = _GoalApplication(
+            "ship login", "- tests pass", "create"
+        )
+        worker = app.run_worker(app._cleanup_agent_task())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert app._agent_reconciling
+
+        await app.action_open_effort_selector()
+        await pilot.pause()
+        await pilot.press("end", "enter")
+        await pilot.pause()
+        if next_turn != "continuation":
+            app.post_message(ChatInput.Submitted("next prompt", "normal"))
+            await pilot.pause()
+            assert len(app._pending_messages) == 1
+        assert app._model_params_override == {"reasoning_effort": "low"}
+        assert not next_turn_efforts
+
+        finish.set()
+        await worker.wait()
+
+        assert next_turn_efforts == ["xhigh"]
+        assert model_config.load_effort_for_model("openai:gpt-5.5") == "xhigh"
+        assert not app._deferred_actions
+        assert not app._pending_messages
+        assert not app._agent_reconciling
 
 
 @pytest.mark.parametrize("outcome", ["apply", "interrupt", "model_change"])

@@ -20015,6 +20015,20 @@ class DeepAgentsApp(App):
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
+    async def _drain_deferred_during_cleanup(self) -> None:
+        """Apply queued actions without letting a failure skip turn cleanup."""
+        try:
+            await self._maybe_drain_deferred()
+        except Exception:
+            logger.exception("Failed to drain deferred actions during agent cleanup")
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "A deferred action failed after task completion. "
+                        "You may need to retry the operation.",
+                    ),
+                )
+
     async def _cleanup_agent_task(
         self,
         *,
@@ -20083,19 +20097,7 @@ class DeepAgentsApp(App):
                         goal_grade=goal_grade,
                     )
 
-                try:
-                    await self._maybe_drain_deferred()
-                except Exception:
-                    logger.exception(
-                        "Failed to drain deferred actions during agent cleanup"
-                    )
-                    with suppress(Exception):
-                        await self._mount_message(
-                            ErrorMessage(
-                                "A deferred action failed after task completion. "
-                                "You may need to retry the operation.",
-                            ),
-                        )
+                await self._drain_deferred_during_cleanup()
 
                 application = self._queued_goal_application
                 if application is not None:
@@ -20133,7 +20135,13 @@ class DeepAgentsApp(App):
                     else:
                         self._queued_goal_application = None
             finally:
-                self._agent_reconciling = False
+                try:
+                    # Selections can arrive during the goal-application awaits.
+                    # Apply them before releasing queued input or continuations.
+                    if self._deferred_actions:
+                        await self._drain_deferred_during_cleanup()
+                finally:
+                    self._agent_reconciling = False
 
             # Queued user input normally takes precedence over a synthetic
             # continuation. A failed creation write is the exception: its hidden

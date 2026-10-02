@@ -85,6 +85,9 @@ class _SubagentRecord:
     duration_ms: int | None = None
     """Measured duration once finished; None while still running."""
 
+    replayed: bool = False
+    """Whether timing must span multiple attempts, including approval waits."""
+
     error: str | None = None
     """Failure reason, set only when status is error."""
 
@@ -367,9 +370,12 @@ class SubagentPanel(Vertical):
         self._refresh()
 
     def _handle_start(self, sub_id: str, eval_key: str, event: dict[str, Any]) -> None:
-        """Create/replace a running record and (re-)show the panel."""
+        """Create a running record without resetting replayed dispatches."""
         phase = self._ensure_phase(eval_key)
         self._active_eval_id = eval_key
+        if record := phase.records.get(sub_id):
+            record.replayed = True
+            return
 
         record = _SubagentRecord(
             id=sub_id,
@@ -434,9 +440,13 @@ class SubagentPanel(Vertical):
             # dropped on the wire) carries the failure string — synthesize a
             # minimal record so it still surfaces instead of vanishing silently.
             record = self._adopt_orphan_finish(sub_id, eval_key, event)
+        if record.status != "running":
+            return
         record.status = "done" if outcome == "complete" else "error"
         duration = event.get("duration_ms")
-        if isinstance(duration, (int, float)):
+        if record.replayed or not isinstance(duration, (int, float)):
+            record.duration_ms = int(record.elapsed_seconds() * 1000)
+        else:
             record.duration_ms = int(duration)
         if outcome == "error":
             raw_err = event.get("error")

@@ -325,6 +325,29 @@ class TestThreadSelectorNavigateAndSelect:
 class TestThreadNames:
     """Named threads remain distinct from initial prompts and searchable."""
 
+    @pytest.mark.parametrize("name", [None, "Cache repair"])
+    async def test_prompt_remains_visible_at_80_columns(self, name: str | None) -> None:
+        threads: list[ThreadInfo] = [
+            {**MOCK_THREADS[0], "thread_name": name},
+            {**MOCK_THREADS[1]},
+        ]
+        with _patch_list_threads(threads), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(80, 30)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                for width in (80, 160, 80):
+                    await pilot.resize_terminal(width, 30)
+                    await pilot.pause()
+                    rows = app.screen.query(".thread-option")
+                    assert len(rows) == len(threads)
+                    for row in rows:
+                        prompt = row.query_one(".thread-cell-initial_prompt", Static)
+                        visible = prompt.content_region.intersection(row.content_region)
+                        assert visible.width >= len("Fix")
+                        if name is None:
+                            assert visible.width >= len("Hello world")
+
     async def test_filter_finds_name_and_renders_literal_markup(self) -> None:
         threads: list[ThreadInfo] = [
             {**MOCK_THREADS[0], "thread_name": "[bold]Login[/bold]"},

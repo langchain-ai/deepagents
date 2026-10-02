@@ -140,8 +140,9 @@ from deepagents.backends.utils import to_posix_path
 from deepagents.middleware._skill_tools import (
     _INCLUDE_TOOLS_KEY,
     _SKILL_TOOLS_DISCLOSED_KEY,
-    _aresolve_include_name,
+    _acall_resolver,
     _bind_disclosures,
+    _call_resolver,
     _discard_rejected_schemas,
     _disclosed_record,
     _find_skill_reads,
@@ -149,7 +150,6 @@ from deepagents.middleware._skill_tools import (
     _insert_disclosures,
     _normalize_skill_tools,
     _plan_disclosure,
-    _resolve_include_name,
     _SkillRead,
     _unclaimed_include_names,
 )
@@ -1197,7 +1197,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         request = self.modify_request(request)
         reads = _find_skill_reads(request.messages, request.state.get("skills_metadata") or [])
         names = _unclaimed_include_names(reads, request.tools)
-        resolved = {name: _resolve_include_name(self._skill_tool_resolver, name, request.runtime) for name in names}
+        resolved = {name: _call_resolver(self._skill_tool_resolver, name, request.runtime) for name in names}
         request, record = self._disclose_skill_tools(request, reads, resolved)
         return ExtendedModelResponse(model_response=handler(request), command=Command(update={_SKILL_TOOLS_DISCLOSED_KEY: record}))
 
@@ -1219,7 +1219,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         request = self.modify_request(request)
         reads = _find_skill_reads(request.messages, request.state.get("skills_metadata") or [])
         names = _unclaimed_include_names(reads, request.tools)
-        tools = await asyncio.gather(*(_aresolve_include_name(self._skill_tool_resolver, name, request.runtime) for name in names))
+        tools = await asyncio.gather(*(_acall_resolver(self._skill_tool_resolver, name, request.runtime) for name in names))
         request, record = self._disclose_skill_tools(request, reads, dict(zip(names, tools, strict=True)))
         return ExtendedModelResponse(model_response=await handler(request), command=Command(update={_SKILL_TOOLS_DISCLOSED_KEY: record}))
 
@@ -1249,7 +1249,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         include_name = _disclosed_record(request.state).get(request.tool_call["name"])
         if request.tool is not None or include_name is None:
             return handler(request)
-        tools = _resolve_include_name(self._skill_tool_resolver, include_name, get_runtime())
+        tools = _call_resolver(self._skill_tool_resolver, include_name, get_runtime())
         return handler(self._with_disclosed_skill_tool(request, include_name, tools))
 
     async def awrap_tool_call(
@@ -1269,7 +1269,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         include_name = _disclosed_record(request.state).get(request.tool_call["name"])
         if request.tool is not None or include_name is None:
             return await handler(request)
-        tools = await _aresolve_include_name(self._skill_tool_resolver, include_name, get_runtime())
+        tools = await _acall_resolver(self._skill_tool_resolver, include_name, get_runtime())
         return await handler(self._with_disclosed_skill_tool(request, include_name, tools))
 
 

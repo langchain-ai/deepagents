@@ -106,7 +106,7 @@ def _normalize_skill_tools(tools: Sequence[BaseTool | Callable[..., Any]] | Skil
     return resolve_by_exact_name
 
 
-def _resolve_include_name(resolver: SkillToolResolver, name: str, runtime: Runtime[Any]) -> list[BaseTool]:
+def _call_resolver(resolver: SkillToolResolver, name: str, runtime: Runtime[Any]) -> list[BaseTool]:
     """Resolve `name` on a sync hook.
 
     Raises:
@@ -123,7 +123,7 @@ def _resolve_include_name(resolver: SkillToolResolver, name: str, runtime: Runti
     return _checked(name, result)
 
 
-async def _aresolve_include_name(resolver: SkillToolResolver, name: str, runtime: Runtime[Any]) -> list[BaseTool]:
+async def _acall_resolver(resolver: SkillToolResolver, name: str, runtime: Runtime[Any]) -> list[BaseTool]:
     """Resolve `name` on an async hook, awaiting the resolver if it's async.
 
     Raises:

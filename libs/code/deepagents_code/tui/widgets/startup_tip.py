@@ -31,7 +31,6 @@ _TIPS: dict[str, int] = {
     "Use /copy to copy the latest message": 3,
     "Press Ctrl+R to search and reuse submitted prompts": 2,
     "Use /cost to see a breakdown of estimated spend": 1,
-    "Click the footer cost to open the token and cost breakdown": 1,
     "Use /tools to list the tools available to the agent": 1,
     "Use /plugins to inspect a plugin's contents before installing": 1,
     "Open /mcp and press Enter on a remote server to sign in again": 1,

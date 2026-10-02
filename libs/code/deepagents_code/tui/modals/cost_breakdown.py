@@ -13,14 +13,28 @@ from textual.widgets import Static
 
 from deepagents_code.clipboard import copy_text_to_clipboard
 from deepagents_code.config import get_glyphs
+from deepagents_code.tui.modals._cost_breakdown import (
+    format_cost_breakdown_table as format_cost_breakdown_table,
+)
 from deepagents_code.unicode_security import sanitize_control_chars
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from textual.app import ComposeResult
+    from textual.app import App, ComposeResult
 
 logger = logging.getLogger(__name__)
+
+
+def open_cost_breakdown(app: App, provider: Callable[[], str]) -> None:
+    """Open the live breakdown without stacking duplicate modals."""
+    if any(isinstance(screen, CostBreakdownScreen) for screen in app.screen_stack):
+        return
+    breakdown = provider()
+    if not breakdown:
+        app.notify("Cost breakdown unavailable for this session", markup=False)
+        return
+    app.push_screen(CostBreakdownScreen(breakdown, provider))
 
 
 class CostBreakdownScreen(ModalScreen[None]):

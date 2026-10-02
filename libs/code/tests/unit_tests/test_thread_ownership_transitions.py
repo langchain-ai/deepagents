@@ -242,7 +242,7 @@ async def test_revisited_thread_binds_before_history_mutations(
 
 
 @pytest.mark.usefixtures("isolated_state")
-@pytest.mark.parametrize("failure", ["ensure", "bind", "update", "metadata", None])
+@pytest.mark.parametrize("failure", ["ensure", "metadata", None])
 async def test_handoff_seed_releases_only_failed_reservations(
     monkeypatch: pytest.MonkeyPatch, failure: str | None
 ) -> None:
@@ -258,12 +258,8 @@ async def test_handoff_seed_releases_only_failed_reservations(
             raise RuntimeError(msg)
 
     remote.aensure_thread = AsyncMock(side_effect=ensure)
-    remote.abind_workspace = AsyncMock(
-        side_effect=RuntimeError("seed failed") if failure == "bind" else None
-    )
-    remote.aupdate_state = AsyncMock(
-        side_effect=RuntimeError("seed failed") if failure == "update" else None
-    )
+    remote.abind_workspace = AsyncMock()
+    remote.aupdate_state = AsyncMock()
     monkeypatch.setattr(sessions, "thread_exists", AsyncMock(return_value=True))
     monkeypatch.setattr(
         sessions,

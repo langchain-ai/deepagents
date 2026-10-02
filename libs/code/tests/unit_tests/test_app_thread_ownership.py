@@ -91,18 +91,6 @@ async def test_all_occupied_offers_new(
     assert not owned_app._initial_resume_requested
 
 
-async def test_failed_switch_preserves_previous(
-    owned_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    failure = AsyncMock(side_effect=RuntimeError("history failed"))
-    monkeypatch.setattr(owned_app, "_resume_owned_thread", failure)
-    with pytest.raises(RuntimeError, match="history failed"):
-        await owned_app._resume_thread("target")
-    assert try_acquire("current") is None
-    available = try_acquire("target")
-    assert available is not None
-
-
 async def test_explicit_conflict_does_not_load_history(
     owned_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:

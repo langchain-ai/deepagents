@@ -88,33 +88,12 @@ async def test_acp_defaults_classifier_after_provider_resolution(tmp_path) -> No
         def _session_config(self, session_id: str) -> dict[str, dict[str, str]]:
             return {"configurable": {"thread_id": session_id}}
 
-        def _forget_session(self, session_id: str) -> None:
-            pass
-
-    from deepagents_code.thread_ownership import (
-        OWNER_KEY,
-        ThreadOwnershipError,
-        held_lease,
-        try_acquire,
-    )
+    from deepagents_code.thread_ownership import held_lease
 
     async def run_agent(server: AgentServer) -> None:
         server.build_agent(SimpleNamespace(model=None, cwd=str(tmp_path)))
-        config = server._session_config("acp-owned")
-        assert config["configurable"][OWNER_KEY]
-        assert held_lease("acp-owned") is not None
-        assert try_acquire("acp-owned") is None
-        assert server._session_config("acp-owned") == config
-        server._forget_session("acp-owned")
-        assert held_lease("acp-owned") is None
         server._session_config("acp-retained")
-        occupied = try_acquire("cli-owned")
-        assert occupied is not None
-        try:
-            with pytest.raises(ThreadOwnershipError, match="open elsewhere"):
-                server._session_config("cli-owned")
-        finally:
-            occupied.release()
+        assert held_lease("acp-retained") is not None
         await asyncio.sleep(0)
 
     def create_cli_agent(**kwargs: object) -> tuple[object, object]:

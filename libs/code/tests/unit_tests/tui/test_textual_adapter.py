@@ -3692,14 +3692,75 @@ class TestExecuteTaskTextualTextThenToolSpinner:
                 adapter=adapter,
             )
 
-        # The spinner is a stable turn-level indicator: it shows "Thinking"
-        # before the stream, stays up while text streams and while the tool
-        # runs (the tool's own progress shows in its collapsed group row), and
-        # is never hidden mid-turn — so it no longer flickers off for each tool.
         assert statuses[0] == "Thinking"
         assert statuses[-1] == "Thinking"
         assert None not in statuses, f"Spinner was hidden mid-turn: {statuses}"
-        assert all(s == "Thinking" for s in statuses)
+        assert "Responding" in statuses
+
+    @pytest.mark.parametrize(
+        "next_message",
+        [
+            SimpleNamespace(content_blocks=[], chunk_position="last"),
+            SimpleNamespace(
+                content_blocks=[
+                    {
+                        "type": "tool_call_chunk",
+                        "name": "ls",
+                        "args": '{"path":',
+                        "id": "tool-1",
+                        "index": 0,
+                    }
+                ]
+            ),
+            SimpleNamespace(
+                content_blocks=[{"type": "reasoning", "reasoning": "Planning"}]
+            ),
+        ],
+        ids=["message-end", "incomplete-tool-arguments", "reasoning"],
+    )
+    async def test_counter_resumes_after_streamed_text(
+        self, next_message: SimpleNamespace
+    ) -> None:
+        """Waiting and tool argument streaming must not leave the counter frozen."""
+        statuses: list[str | None] = []
+
+        async def record_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        chunks = [
+            ((), "messages", (_text_message("Hello"), {})),
+            ((), "messages", (_text_message(" world"), {})),
+            ((), "messages", (next_message, {})),
+        ]
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=record_spinner,
+        )
+
+        class ObservedAgent(_FakeAgent):
+            async def astream(
+                self, *_: Any, **__: Any
+            ) -> AsyncIterator[tuple[Any, ...]]:
+                for chunk, expected in zip(
+                    self._chunks, ["Responding", "Responding", "Thinking"], strict=True
+                ):
+                    yield chunk
+                    assert statuses[-1] == expected
+
+        await execute_task_textual(
+            user_input="hi",
+            agent=ObservedAgent(chunks),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+            show_reasoning=True,
+        )
+
+        assert statuses[-1] == "Thinking"
+        assert None not in statuses
 
 
 class TestExecuteTaskTextualRubricRevisionStreaming:

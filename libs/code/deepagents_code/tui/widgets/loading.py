@@ -107,6 +107,7 @@ class LoadingWidget(Static):
         self._animation_timer: Timer | None = None
         self._paused = False
         self._paused_elapsed: float = 0.0
+        self._responding_elapsed: int | None = None
 
     def compose(self) -> ComposeResult:
         """Compose the loading widget layout.
@@ -171,6 +172,10 @@ class LoadingWidget(Static):
 
         if self._hint_widget and self._start_time is not None:
             elapsed = int(time() - self._start_time)
+            if self._status == "Responding":
+                if self._responding_elapsed is None:
+                    self._responding_elapsed = elapsed
+                elapsed = self._responding_elapsed
             self._hint_widget.update(f"({format_duration(elapsed)}, esc to interrupt)")
 
     def set_status(self, status: str) -> None:
@@ -179,9 +184,12 @@ class LoadingWidget(Static):
         Args:
             status: New status text
         """
+        if status != self._status:
+            self._responding_elapsed = None
         self._status = status
         if self._status_widget:
             self._status_widget.update(f" {self._status}... ")
+        self._update_animation()
 
     def pause(self, status: str = "Awaiting decision") -> None:
         """Pause the animation and update status.
@@ -224,9 +232,7 @@ class LoadingWidget(Static):
             return
         self._start_time = time() - self._paused_elapsed
         self._paused = False
-        self._status = "Thinking"
-        if self._status_widget:
-            self._status_widget.update(f" {self._status}... ")
+        self.set_status("Thinking")
 
     def stop(self) -> None:
         """Stop the animation (widget will be removed by caller)."""

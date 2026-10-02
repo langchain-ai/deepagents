@@ -6,12 +6,18 @@ import io
 
 import pytest
 
+from deepagents_code._env_vars import NO_TERMINAL_ESCAPE
 from deepagents_code.terminal_title import TerminalTitle
 
 
 class TerminalStream(io.StringIO):
     def isatty(self) -> bool:
         return True
+
+
+@pytest.fixture(autouse=True)
+def _reset_terminal_escape_opt_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(NO_TERMINAL_ESCAPE, raising=False)
 
 
 @pytest.fixture
@@ -23,6 +29,26 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> TerminalStream:
         "deepagents_code.terminal_title.invoked_name", lambda: "dcode-dev"
     )
     return stream
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "0", "false"])
+def test_title_lifecycle_honors_terminal_escape_opt_out(
+    terminal: TerminalStream, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    stdout = TerminalStream()
+    monkeypatch.setattr("deepagents_code.terminal_title.sys.__stdout__", stdout)
+    monkeypatch.setenv(NO_TERMINAL_ESCAPE, value)
+    title = TerminalTitle("{thread_name}")
+    title.start()
+    title.start()
+    title.update(thread_name="Cache repair")
+    title.restore()
+    title.restore()
+    expected = (
+        "\x1b[22;0t\x1b]0;Cache repair\x07\x1b[23;0t" if value in {"0", "false"} else ""
+    )
+    assert terminal.getvalue() == expected
+    assert stdout.getvalue() == ""
 
 
 def test_title_lifecycle_deduplicates_and_restores(terminal: TerminalStream) -> None:

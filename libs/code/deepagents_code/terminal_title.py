@@ -7,6 +7,7 @@ import string
 import sys
 from typing import TextIO
 
+from deepagents_code._env_vars import NO_TERMINAL_ESCAPE, is_env_truthy
 from deepagents_code._invocation import invoked_name
 
 logger = logging.getLogger(__name__)
@@ -50,8 +51,8 @@ class TerminalTitle:
         return True
 
     def start(self) -> None:
-        """Save the original title once on an available terminal output stream."""
-        if self._stream is not None:
+        """Save the original title once, honoring the terminal-escape opt-out."""
+        if self._stream is not None or is_env_truthy(NO_TERMINAL_ESCAPE):
             return
         for stream in (sys.__stderr__, sys.__stdout__):
             if stream is not None and not stream.closed and stream.isatty():

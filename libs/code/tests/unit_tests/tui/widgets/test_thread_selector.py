@@ -326,7 +326,9 @@ class TestThreadNames:
     """Named threads remain distinct from initial prompts and searchable."""
 
     @pytest.mark.parametrize("name", [None, "Cache repair"])
-    async def test_prompt_remains_visible_at_80_columns(self, name: str | None) -> None:
+    async def test_name_and_prompt_remain_visible_at_80_columns(
+        self, name: str | None
+    ) -> None:
         threads: list[ThreadInfo] = [
             {**MOCK_THREADS[0], "thread_name": name},
             {**MOCK_THREADS[1]},
@@ -339,14 +341,20 @@ class TestThreadNames:
                 for width in (80, 160, 80):
                     await pilot.resize_terminal(width, 30)
                     await pilot.pause()
+                    header = app.screen.query_one(
+                        ".thread-list-header .thread-cell-thread_name", Static
+                    )
+                    assert header.display
+                    assert header.content_region.width >= len("Name")
                     rows = app.screen.query(".thread-option")
                     assert len(rows) == len(threads)
                     for row in rows:
+                        cell = row.query_one(".thread-cell-thread_name", Static)
+                        assert cell.display
+                        assert cell.content_region.width >= len("Name")
                         prompt = row.query_one(".thread-cell-initial_prompt", Static)
                         visible = prompt.content_region.intersection(row.content_region)
                         assert visible.width >= len("Fix")
-                        if name is None:
-                            assert visible.width >= len("Hello world")
 
     async def test_filter_finds_name_and_renders_literal_markup(self) -> None:
         threads: list[ThreadInfo] = [
@@ -968,7 +976,7 @@ class TestThreadSelectorPrefetchedRows:
     async def test_name_changes_refresh_cached_column_layout(
         self, cached_name: str | None, fresh_name: str | None
     ) -> None:
-        """Name-only refreshes update both the text and the column visibility."""
+        """Name-only refreshes update text while keeping the enabled column visible."""
         cached: ThreadInfo = {
             **MOCK_THREADS[0],
             "latest_checkpoint_id": "cp_1",
@@ -988,8 +996,8 @@ class TestThreadSelectorPrefetchedRows:
                 await pilot.pause()
 
                 for cell in screen.query(".thread-cell-thread_name").results(Static):
-                    assert cell.display is bool(fresh_name)
-                    assert bool(cell.size.width) is bool(fresh_name)
+                    assert cell.display
+                    assert cell.content_region.width >= len("Name")
                 name = screen.query_one("ThreadOption .thread-cell-thread_name", Static)
                 assert str(name.render()) == (fresh_name or "")
 

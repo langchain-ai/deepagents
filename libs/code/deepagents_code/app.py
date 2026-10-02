@@ -18936,6 +18936,7 @@ class DeepAgentsApp(App):
         finally:
             self._offload_task_started = False
             self._offload_worker = None
+            await self._maybe_drain_deferred()
             if not self._startup_sequence_running:
                 await self._process_next_from_queue()
 

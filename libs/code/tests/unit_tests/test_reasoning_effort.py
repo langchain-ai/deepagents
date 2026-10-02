@@ -4,6 +4,7 @@ Support data comes from LangChain model profiles, so most tests mock
 `get_model_profiles()` instead of relying on installed provider packages.
 """
 
+import asyncio
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -20,6 +21,7 @@ from deepagents_code.reasoning_effort import (
     current_effort_from_model_params,
     has_explicit_effort_model_params,
 )
+from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
 from deepagents_code.tui.widgets.messages import ErrorMessage
 
@@ -191,6 +193,54 @@ async def test_footer_effort_selects_without_queueing_command(
         await app.workers.wait_for_complete()
         assert app._model_params_override == {"reasoning_effort": "xhigh"}
         assert model_config.load_effort_for_model("openai:gpt-5.5") == "xhigh"
+        assert not app._pending_messages
+
+
+@pytest.mark.parametrize("command", ["/offload", "/compact"])
+async def test_effort_selected_during_offload_applies_before_queued_prompt(
+    command: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp(agent=MagicMock())
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
+    app._model_params_override = {"reasoning_effort": "low"}
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    next_turn_efforts: list[object] = []
+
+    async def offload() -> None:
+        started.set()
+        await finish.wait()
+
+    def send(_message: str) -> None:
+        assert app._model_params_override is not None
+        next_turn_efforts.append(app._model_params_override["reasoning_effort"])
+
+    monkeypatch.setattr(app, "_offload_impl", offload)
+    monkeypatch.setattr(app, "_send_to_agent", AsyncMock(side_effect=send))
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.post_message(ChatInput.Submitted(command, "command"))
+        await asyncio.wait_for(started.wait(), timeout=2)
+        worker = app._offload_worker
+        assert worker is not None
+
+        await app.action_open_effort_selector()
+        await pilot.pause()
+        await pilot.press("end", "enter")
+        await pilot.pause()
+        app.post_message(ChatInput.Submitted("next prompt", "normal"))
+        await pilot.pause()
+        assert app._model_params_override == {"reasoning_effort": "low"}
+        assert len(app._pending_messages) == 1
+        assert not next_turn_efforts
+
+        finish.set()
+        await worker.wait()
+
+        assert next_turn_efforts == ["xhigh"]
+        assert model_config.load_effort_for_model("openai:gpt-5.5") == "xhigh"
+        assert not app._deferred_actions
         assert not app._pending_messages
 
 

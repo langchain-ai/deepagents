@@ -26069,6 +26069,28 @@ class DeepAgentsApp(App):
             return
         self._open_debug_console()
 
+    def _build_cost_breakdown(self) -> str:
+        """Build the shared live breakdown.
+
+        Returns:
+            Current breakdown text, or an empty string when unavailable.
+        """
+        return _format_cost_breakdown_table(
+            self._session_cost_usd, self._session_cost_breakdown
+        )
+
+    def action_open_cost_breakdown(self) -> None:
+        """Open the session cost breakdown from the footer."""
+        from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
+
+        if any(isinstance(screen, CostBreakdownScreen) for screen in self.screen_stack):
+            return
+        breakdown = self._build_cost_breakdown()
+        if not breakdown:
+            self.notify("Cost breakdown unavailable for this session", markup=False)
+            return
+        self.push_screen(CostBreakdownScreen(breakdown, self._build_cost_breakdown))
+
     def _open_debug_console(self) -> None:
         """Push the read-only Debug Console modal."""
         from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
@@ -26087,9 +26109,7 @@ class DeepAgentsApp(App):
                 # counts, tokens, and other in-memory fields stay current while
                 # the modal is open. The builder is intentionally I/O-free.
                 snapshot_provider=self._build_debug_snapshot,
-                cost_breakdown_provider=lambda: _format_cost_breakdown_table(
-                    self._session_cost_usd, self._session_cost_breakdown
-                ),
+                cost_breakdown_provider=self._build_cost_breakdown,
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
                 click_to_copy=self._debug_console_click_to_copy,

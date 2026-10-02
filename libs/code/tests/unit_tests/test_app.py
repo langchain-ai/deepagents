@@ -1371,6 +1371,89 @@ class TestStartupSequence:
         set_stored_key.assert_not_called()
 
 
+class TestFooterCostBreakdown:
+    """Tests for opening the shared cost modal directly from the footer."""
+
+    @pytest.mark.parametrize("busy", [False, True])
+    async def test_footer_cost_opens_live_modal_and_restores_focus(
+        self, busy: bool
+    ) -> None:
+        from deepagents_code.cost_tracking import _empty_cost_breakdown
+        from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
+        from deepagents_code.tui.widgets.status import MetricsLine
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            breakdown = _empty_cost_breakdown()
+            breakdown["input_tokens"] = 123
+            app._set_session_cost(1.25, breakdown=breakdown)
+            app._agent_running = busy
+            await pilot.pause()
+            display = app.query_one("#tokens-display", MetricsLine)
+            offset = display.content_region.x - display.region.x
+            offset += str(display.render()).index("$")
+            await pilot.click(display, offset=(offset, 0))
+            await pilot.pause()
+
+            modal = app.screen
+            assert isinstance(modal, CostBreakdownScreen)
+            body = modal.query_one(".cost-breakdown-body", Static)
+            assert "123" in str(body.render())
+            assert "1.25" in str(body.render())
+            stack_size = len(app.screen_stack)
+            app.action_open_cost_breakdown()
+            await pilot.pause()
+            assert app.screen is modal
+            assert len(app.screen_stack) == stack_size
+
+            updated = _empty_cost_breakdown()
+            updated["input_tokens"] = 456
+            app._set_session_cost(2.5, breakdown=updated)
+            await pilot.pause(delay=0.6)
+            assert "456" in str(body.render())
+            assert "2.5" in str(body.render())
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, ModalScreen)
+            assert app._is_input_focused()
+            app._agent_running = False
+
+    @pytest.mark.parametrize("incomplete", [False, True])
+    async def test_missing_breakdown_notifies_without_empty_modal(
+        self, incomplete: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.cost_tracking import _empty_cost_breakdown
+        from deepagents_code.tui.widgets.status import MetricsLine
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._set_session_cost(
+                1.25,
+                breakdown=(
+                    _empty_cost_breakdown(historical_complete=False)
+                    if incomplete
+                    else None
+                ),
+            )
+            notify = MagicMock()
+            monkeypatch.setattr(app, "notify", notify)
+            await pilot.pause()
+            display = app.query_one("#tokens-display", MetricsLine)
+            offset = display.content_region.x - display.region.x
+            offset += str(display.render()).index("$")
+            await pilot.click(display, offset=(offset, 0))
+            await pilot.pause()
+
+            assert not isinstance(app.screen, ModalScreen)
+            assert notify.call_args.args[0] == (
+                "Cost breakdown unavailable for this session"
+            )
+            assert "$1.25" in str(display.render())
+
+
 class TestStatusBarPickerActions:
     """Tests for status-bar actions that open existing picker flows."""
 

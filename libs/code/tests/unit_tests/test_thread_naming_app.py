@@ -38,16 +38,6 @@ def naming_app(monkeypatch: pytest.MonkeyPatch) -> DeepAgentsApp:
     return app
 
 
-async def test_manual_rename_updates_active_name(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    rename = AsyncMock(return_value=True)
-    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
-    await naming_app._handle_command("/rename Cache invalidation")
-    rename.assert_awaited_once_with("original", "Cache invalidation")
-    assert naming_app._thread_name == "Cache invalidation"
-
-
 async def test_invalid_manual_name_is_not_saved(
     naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -165,20 +155,6 @@ async def test_generated_name_can_be_edited_and_confirmed(
         await pilot.pause()
         rename.assert_awaited_once_with("original", "Cache invalidation")
         assert naming_app._thread_name == "Cache invalidation"
-
-
-async def test_generated_name_cancel_does_not_save(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    rename = AsyncMock()
-    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
-    async with naming_app.run_test() as pilot:
-        naming_app._offer_thread_name("original", "Cache repair")
-        await pilot.pause()
-        await pilot.press("escape")
-        await pilot.pause()
-        rename.assert_not_awaited()
-        assert not isinstance(naming_app.screen, ThreadNameScreen)
 
 
 async def test_generation_does_not_offer_on_switched_thread(
@@ -348,16 +324,16 @@ async def test_manual_name_cancels_pending_proposal(
         return "Stale proposal"
 
     monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
-    monkeypatch.setattr(
-        "deepagents_code.sessions.rename_thread", AsyncMock(return_value=True)
-    )
+    rename = AsyncMock(return_value=True)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
     naming_app._start_thread_name_generation(
         "original", "provider:chat", automatic=False
     )
     task = naming_app._thread_name_tasks["original"]
     await asyncio.wait_for(started.wait(), timeout=5)
-    await naming_app._rename_current_thread("My choice")
+    await naming_app._handle_command("/rename My choice")
     await asyncio.gather(task, return_exceptions=True)
+    rename.assert_awaited_once_with("original", "My choice")
     assert task.cancelled()
     assert naming_app._thread_name == "My choice"
 

@@ -1631,12 +1631,12 @@ class TestGetSystemPromptFilesystemTools:
 def test_plugin_discovery_uses_invoked_cli_name(
     interactive: bool, cli_name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Plugin queries target the invoked installation in either execution mode."""
+    """The discovery skill receives the invoked CLI name in either mode."""
     monkeypatch.setattr("deepagents_code.agent.invoked_name", lambda: cli_name)
     prompt = get_system_prompt("test-agent", interactive=interactive, has_tavily=False)
 
-    assert f"`{cli_name} plugin list --json`" in prompt
-    assert f"`{cli_name} plugin marketplace list --json`" in prompt
+    assert f"this session's CLI command is `{cli_name}`" in prompt
+    assert "`deepagents-plugin-discovery` skill" in prompt
 
 
 class TestGetSystemPromptPlaceholderValidation:

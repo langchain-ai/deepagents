@@ -25857,15 +25857,20 @@ class DeepAgentsApp(App):
                 self._default_assistant_id = previous_default_agent
                 if self._server_kwargs is not None:
                     self._server_kwargs["assistant_id"] = previous_agent
-                if resume_thread_id is not None and self._session_state is not None:
+                if self._session_state is not None:
                     if previous_session_thread_id is not None:
+                        abandoned_thread_id = self._lc_thread_id
                         self._session_state.thread_id = previous_session_thread_id
                         self._lc_thread_id = previous_session_thread_id
+                        # Picker swaps also reserve a fresh thread. Roll it back
+                        # with the agent so recovery cannot strand either lease.
+                        if abandoned_thread_id != previous_session_thread_id:
+                            self._release_thread(abandoned_thread_id)
                         self._update_welcome_banner(
                             previous_session_thread_id,
                             missing_message=(
                                 "Welcome banner not found rolling back failed "
-                                "cross-agent resume to %s"
+                                "agent swap to %s"
                             ),
                             warn_if_missing=True,
                         )

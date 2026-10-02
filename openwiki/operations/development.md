@@ -5,7 +5,7 @@ description: Package-local uv and Makefile workflows, editable sibling dependenc
 tags: [development, packaging, dependencies, uv, lockfiles, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-01T08:06:30.386Z
+    at: 2026-10-02T08:06:05.669Z
 sources:
   - id: openwiki-source-baf30c604828cfde90a8ab63
     resource: repo://.githooks/pre-push
@@ -45,11 +45,17 @@ sources:
     resource: repo://libs/DEVELOPMENT.md
   - id: openwiki-source-49fbcc45434b619b68220bf9
     resource: repo://libs/Makefile
+  - id: openwiki-source-e2a176528c4d510dcc417820
+    resource: repo://libs/talon/CHANGELOG.md
+  - id: openwiki-source-131e2d6a1f4084abdc5cf240
+    resource: repo://libs/talon/deepagents_talon/_version.py
+  - id: openwiki-source-ba53b2ab73965694b2510a58
+    resource: repo://libs/talon/Makefile
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-01T08:06:30.386Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-02T08:06:05.669Z" }
 ---
 
 # Development, Packaging, and Releases
@@ -90,6 +96,8 @@ Caption: the standard local loop synchronizes the package before validating the 
 
 `make test` is the normal unit-test entrypoint. In Deep Agents and Code it runs the test dependency group, disables sockets except Unix sockets, runs in parallel with `-n auto`, and reports coverage. `make integration_test` targets the integration-test directory and permits network-capable tests. `make lint` runs Ruff checks, verifies formatting, and runs `ty`; `make format` applies Ruff formatting and safe fixes. Use `TEST_FILE=...` where a package Makefile supports focused execution.
 
+For Talon changes, run `make test` and `make lint` from `libs/talon`. Its test target runs the WhatsApp bridge’s Node tests before pytest, then runs pytest with sockets disabled except Unix sockets, a 10-second timeout, and coverage; it does not declare the Code-style `integration_test` or `check` targets. Its lint target checks Ruff formatting and invokes `ty` for `deepagents_talon`.
+
 The Code package adds two useful local entrypoints:
 
 - `make bootstrap` syncs its `test` group and installs repository hooks.
@@ -99,7 +107,7 @@ The installed hook configuration covers commit messages, pre-commit checks, and 
 
 ## Editable package relationships
 
-Sibling dependencies are deliberately resolved from editable paths. For example, Code maps `deepagents`, `deepagents-acp`, and Daytona, Modal, QuickJS, Runloop, and Vercel partner distributions to local paths in `[tool.uv.sources]`. Therefore a local source edit is consumed by Code without publishing an artifact.
+Sibling dependencies are deliberately resolved from editable paths. For example, Code maps `deepagents`, `deepagents-acp`, and Daytona, Modal, QuickJS, Runloop, and Vercel partner distributions to local paths in `[tool.uv.sources]`. Talon likewise resolves `deepagents` and `deepagents-code` from sibling editable paths. Therefore a local source edit is consumed by these packages without publishing an artifact.
 
 Treat a change to a shared interface as a dependent-package change as well. CI path filters schedule Code, Talon, ACP, and partner checks for a `libs/deepagents` change; Talon also runs when Code changes. Run the affected consumer’s focused tests before relying on a green producer-only check.
 
@@ -135,15 +143,15 @@ The release manifest records last-released baselines, not ordinary development i
 | --- | --- |
 | `libs/deepagents` | `0.7.21` |
 | `libs/acp` | `0.0.12` |
-| `libs/code` | `0.1.79` |
-| `libs/talon` | `0.0.8` |
+| `libs/code` | `0.1.80` |
+| `libs/talon` | `0.0.9` |
 | `libs/partners/daytona` | `0.0.8` |
 | `libs/partners/modal` | `0.0.6` |
 | `libs/partners/runloop` | `0.0.7` |
 | `libs/partners/vercel` | `0.0.2` |
 | `libs/partners/quickjs` | `0.3.8` |
 
-Code currently declares `deepagents-code` version `0.1.79` and requires the exact local SDK version `deepagents==0.7.21`. Change these coordinated version relationships only through their package and release process.
+Code currently declares `deepagents-code` version `0.1.80` in both its project metadata and release-please marker; its changelog records that release, and it requires the exact local SDK version `deepagents==0.7.21`. Talon similarly declares `deepagents-talon` version `0.0.9` in its project metadata and release-please marker, with a matching changelog entry. Unlike Code’s exact SDK pin, Talon accepts `deepagents>=0.7.0` and `deepagents-code>=0.1.71,<1.0.0`; update and validate these consumer constraints deliberately.
 
 ```mermaid
 flowchart TD

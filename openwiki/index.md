@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Repository Quickstart and Change Routing](quickstart.md) - Task-oriented map for locating the Deep Agents SDK, dcode terminal client, ACP bridge, Talon host, integrations, tests, and release-managed packages. Start with the owner of the observable behavior and validate at its narrowest boundary.
+- [Repository Quickstart and Change Routing](quickstart.md) - Task-oriented map for locating the independently released Deep Agents packages, their current Code and Talon versions, and the focused architecture, operations, integration, workflow, concept, and test references. Start with the owner of observable behavior and validate its narrowest boundary.
 
 # Directories
 

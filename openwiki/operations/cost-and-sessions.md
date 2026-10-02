@@ -1,11 +1,11 @@
 ---
 type: operations reference
 title: dcode Cost, Session, and Context Operations
-description: Operate dcode's best-effort cost estimates, pricing catalogs and overrides, checkpoint-backed thread sessions, JavaScript-subagent receipts, and context offload settlement. Covers ownership boundaries, cancellation, recovery, and exactly-once caveats.
+description: Operate dcode's best-effort session-cost estimates, persistent acknowledgement warning, checkpoint-backed sessions, and context-reduction operations. The warning is display-only guidance, not provider billing, authorization, or an execution gate.
 tags: [dcode, sessions, cost-tracking, pricing, offload]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-30T08:06:28.871Z
+    at: 2026-10-02T08:06:05.669Z
 sources:
   - id: openwiki-source-d4716b8ae162796c2c7ad991
     resource: repo://libs/code/deepagents_code/_js_cost.py
@@ -19,6 +19,8 @@ sources:
     resource: repo://libs/code/deepagents_code/btw_cost.py
   - id: openwiki-source-8412043b716cd8e03e899f63
     resource: repo://libs/code/deepagents_code/client/session_cost.py
+  - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
+    resource: repo://libs/code/deepagents_code/config_manifest.py
   - id: openwiki-source-f2ac9d5fb6c7c6a21f241281
     resource: repo://libs/code/deepagents_code/cost_tracking.py
   - id: openwiki-source-ea1089f0d7536fbc96c64866
@@ -27,20 +29,60 @@ sources:
     resource: repo://libs/code/deepagents_code/offload.py
   - id: openwiki-source-0f8622164498a685abc913d5
     resource: repo://libs/code/deepagents_code/sessions.py
+  - id: openwiki-source-1326222fbf96b7f18194e63b
+    resource: repo://libs/code/deepagents_code/tui/modals/session_cost.py
   - id: openwiki-source-5775d9bd08f14b550e010f4c
     resource: repo://libs/code/PRICING.md
+  - id: openwiki-source-11d6c59d85493653aee76558
+    resource: repo://libs/code/tests/unit_tests/test_app.py
   - id: openwiki-source-8574be7f7f29e3e1dd328837
     resource: repo://libs/code/tests/unit_tests/test_js_cost_tracking.py
   - id: openwiki-source-595131cfca9034bbbf74e8b2
     resource: repo://libs/code/tests/unit_tests/test_session_stats.py
   - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
     resource: repo://libs/code/tests/unit_tests/test_sessions.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-30T08:06:28.871Z" }
+  - id: openwiki-source-1a6f29d92c06e090d07c1c02
+    resource: repo://libs/code/tests/unit_tests/tui/modals/test_session_cost.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-02T08:06:05.669Z" }
 ---
 
 # dcode Cost, Session, and Context Operations
 
 Cost in dcode is an **estimate**, not provider billing, an authorization decision, or budget enforcement. It does not cap or gate requests. Treat a missing price as an accounting gap—not proof that a request was free—and reconcile charges with the provider's billing records.
+
+## Session-cost warning: acknowledgement, not a stop
+
+The interactive TUI can raise a persistent **Session cost warning** after an active thread's server-owned cumulative estimate crosses the configured soft limit. This is an acknowledgement UX layered on accounting; it neither cancels the running agent nor changes the session. In particular, it is not a provider charge, a budget reservation, an approval, or a condition that permits the next request.
+
+Configure the limit with `warnings.session_cost_threshold_usd` (the `[warnings]` TOML key `session_cost_threshold_usd`). A value of `0` disables the warning. The trigger is deliberately strict: it opens only when `0 < threshold < _session_cost_usd`; therefore an estimate exactly equal to the threshold does not warn. The application evaluates the checkpoint/streamed graph total, not the status bar's provisional amount, and ignores a named total for a thread that is no longer active.
+
+```mermaid
+flowchart TD
+    total["Server total for active thread"] --> set["Set cumulative estimate"]
+    set --> check{"First strict crossing"}
+    check -- "no" --> display["Refresh cost display"]
+    check -- "yes" --> mark["Mark warning shown"]
+    mark --> modal["Persistent warning modal"]
+    modal --> ack["Enter or Esc"]
+    ack --> display
+```
+
+*The warning is opened from an authoritative graph total and acknowledgment only returns to the existing session UI.*
+
+The modal prints the current estimated amount and configured threshold using compact dollar formatting, then suggests `/offload` to reduce context usage or `/clear` to start a new thread. These are options for the operator to choose later; clicking the modal does not dismiss it or invoke either command. Only `Enter` or `Esc` dismisses it, and its cancellation action only dismisses the screen. Tests additionally verify that dismissing it leaves an already-running agent and its worker intact.
+
+### Per-thread lifecycle
+
+The warning is latched once for the active thread after a crossing, so subsequent higher totals do not stack additional modals. On thread activation, dcode resets local usage and initializes the latch from the restored cumulative total: a thread already strictly above the threshold is displayed without reopening the warning. A restored total at or below the threshold leaves the latch clear, so a later strict crossing can warn. This makes the warning a one-time acknowledgement for a thread's crossing, rather than a recurring barrier during resume, compaction, or streaming.
+
+The number itself remains fallible. The client accepts server-owned checkpoint totals and streamed absolute totals, while its provisional request estimates only keep the status bar moving until a server total settles them. Pricing can be unavailable or a model can lack a rate, in which case the accounting path yields no estimate rather than failing a model request. Do not infer that no warning, a `$0.00` display, or an unpriced request means there was no provider cost.
+
+### Operator response
+
+1. Acknowledge with `Enter` or `Esc` if the current work should continue. This does not stop it.
+2. Use `/offload` when reducing retained context is appropriate; it is a server-owned checkpoint operation, not an automatic consequence of the warning. See [Run a dcode session](../workflows/run-dcode-session.md).
+3. Use `/clear` only when starting a new thread is the intended boundary. It is an explicit choice, not a cost-control action performed by the modal.
+4. Reconcile actual spend with the provider. Adjusting this threshold changes only when the TUI asks for acknowledgement; it does not establish a spend limit.
 
 Related material: [Code agent architecture](../architecture/code-agent.md), [State persistence](../concepts/state-persistence.md), [Sandbox partners](../integrations/sandbox-partners.md), and [Run a dcode session](../workflows/run-dcode-session.md).
 
@@ -168,6 +210,7 @@ Local archives use a hardened `conversation_history` directory under the persist
 
 ## Verification and operating checklist
 
+- Run `tests/unit_tests/test_app.py` after changing the threshold trigger, active-thread filtering, restored-thread latch, or dismissal behavior; run `tests/unit_tests/tui/modals/test_session_cost.py` for modal copy, persistence, and keyboard acknowledgement.
 - Run `tests/unit_tests/test_cost_tracking.py` after changing usage normalization, lookup, recorder drains/restores, transfers, or operation preparation.
 - Run `tests/unit_tests/test_js_cost_tracking.py` for durable receipt ownership, nested and parallel dispatch, replay/resume, failures, zero-dollar or partial pricing, and cancellation around SQLite receipt writes. Run `tests/unit_tests/test_js_cost_sync.py` to preserve synchronous interpreter behavior.
 - Run `tests/unit_tests/test_session_stats.py` after changing streamed request identity, chunk aggregation, retries, HITL replay, or usage-table output.

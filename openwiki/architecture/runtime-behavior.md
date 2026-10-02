@@ -42,9 +42,6 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_model_selection.py
   - id: openwiki-source-f2859f71853cf2cbdb40aaa3
     resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-01T08:06:30.386Z
 generated: { by: "openwiki/0.4.2", at: "2026-10-01T08:06:30.386Z" }
 ---
 

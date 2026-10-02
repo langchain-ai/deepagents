@@ -1,11 +1,11 @@
 ---
 type: architecture
 title: dcode Client and Agent Server
-description: dcode separates its Textual client from a managed local LangGraph server while ACP constructs session graphs directly. This page explains graph construction, workspace binding, configuration and hook boundaries, model and MCP policy, cost presentation, and the tests that protect them.
-tags: [dcode, deepagents-code, client-server, langgraph, workspace, graph-construction]
+description: dcode separates a Textual presentation client from a managed LangGraph agent server. It documents server-owned execution and accounting alongside the UI-only QuickJS subagent fan-out, safe rendering, cost acknowledgement, and prompt-composition regression boundaries.
+tags: [dcode, deepagents-code, client-server, langgraph, textual, subagents]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-30T08:06:28.871Z
+    at: 2026-10-02T08:06:05.669Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
@@ -37,12 +37,22 @@ sources:
     resource: repo://libs/code/deepagents_code/mcp_middleware.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
+  - id: openwiki-source-c817008792b0375d78348c10
+    resource: repo://libs/code/deepagents_code/system_prompt.md
+  - id: openwiki-source-1326222fbf96b7f18194e63b
+    resource: repo://libs/code/deepagents_code/tui/modals/session_cost.py
+  - id: openwiki-source-29a60a7d68da0bf4ec625403
+    resource: repo://libs/code/deepagents_code/tui/textual_adapter.py
+  - id: openwiki-source-9b7dc6bc03826e98808c6a5c
+    resource: repo://libs/code/deepagents_code/tui/widgets/subagent_panel.py
   - id: openwiki-source-17253964e859bb0abf2094e8
     resource: repo://libs/code/deepagents_code/workspace_diagnostics.py
   - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
     resource: repo://libs/code/deepagents_code/workspace.py
   - id: openwiki-source-599fbd14ff0c0636bf987169
     resource: repo://libs/code/tests/unit_tests/hooks/test_engine.py
+  - id: openwiki-source-5d8ba8d4a18a79ed18cff663
+    resource: repo://libs/code/tests/unit_tests/smoke_tests/test_system_prompt.py
   - id: openwiki-source-11d6c59d85493653aee76558
     resource: repo://libs/code/tests/unit_tests/test_app.py
   - id: openwiki-source-754b557086d66d3d7cb0a983
@@ -53,48 +63,50 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_remote_client.py
   - id: openwiki-source-784e764f7f5eb5169220c3d2
     resource: repo://libs/code/tests/unit_tests/test_server_graph.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-30T08:06:28.871Z" }
+  - id: openwiki-source-1a6f29d92c06e090d07c1c02
+    resource: repo://libs/code/tests/unit_tests/tui/modals/test_session_cost.py
+  - id: openwiki-source-858adb0b37b830c11324604e
+    resource: repo://libs/code/tests/unit_tests/tui/test_subagent_stream.py
+  - id: openwiki-source-6e1b5f814914e0803f7035eb
+    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_subagent_panel.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-02T08:06:05.669Z" }
 ---
 
 # dcode Client and Agent Server
 
-`deepagents-code` (`dcode`) is a reference terminal coding-agent product: it packages the `deepagents` SDK harness with a terminal experience, persistence, tools, skills, and optional sandboxed execution. Its ordinary architecture is intentionally split: the **Textual client** owns rendering, input, approvals, and lifecycle of a local child process; the **managed local server** owns graph execution, model access, tools, memory, skills, backend, and checkpointing. ACP is not a third client of that server—it is a direct, in-process graph path.
+`deepagents-code` (`dcode`) is a reference terminal coding-agent product: it packages the `deepagents` SDK harness with a terminal experience, persistence, tools, skills, and optional sandboxed execution. In ordinary operation it has two separate processes: the **Textual client** owns presentation, input, approvals, and local display state; the **managed local server** owns graph execution, models, tools, memory, skills, backend, checkpoints, and durable cost. ACP is a separate direct, in-process graph path, not a third client of the managed server.
 
 ```mermaid
 sequenceDiagram
     participant CLI as dcode CLI
     participant TUI as Textual client
     participant Launch as Server manager
-    participant Server as Managed LangGraph server
+    participant Server as LangGraph server
     participant Remote as RemoteAgent
-    participant ACP as ACP session
     CLI->>TUI: normal interactive launch
     TUI->>Launch: background startup
     Launch->>Server: start local graph service
     Launch-->>TUI: RemoteAgent and owned process
-    TUI->>Remote: input with thread and workspace claim
+    TUI->>Remote: input with thread and workspace context
     Remote->>Server: HTTP and SSE graph request
-    Server-->>Remote: messages updates and interrupts
-    Remote-->>TUI: converted events
-    CLI->>ACP: ACP stdio mode
-    ACP->>ACP: create graph for session model and cwd
+    Server-->>Remote: messages interrupts and custom events
+    Remote-->>TUI: converted stream events
+    TUI->>TUI: render messages approvals and fan-out
 ```
 
-*The top path is the client-to-managed-server protocol; the ACP path constructs and streams its graph in the ACP process instead.*
+*The server executes and persists the graph; the TUI consumes the stream and owns only its presentation state.*
 
-## Entrypoints and startup ownership
+## Entrypoints and ownership
 
-`python -m deepagents_code` obtains the package's lazy `cli_main` attribute, avoiding import of `main.py` and its startup machinery until the command actually runs. Normal interactive and headless runs use `start_server_and_get_agent`: it resolves and exports `ServerConfig`, scaffolds a temporary LangGraph project with a SQLite checkpointer module, starts `langgraph dev`, waits until the `agent` graph is ready, and returns a workspace-bound `RemoteAgent`. A failed or cancelled startup before handoff stops the process; callers that own a completed handoff must perform the eventual cleanup.
+`python -m deepagents_code` obtains the package's lazy `cli_main` attribute, avoiding import of `main.py` and its startup machinery until the command actually runs. Normal interactive and headless runs use `start_server_and_get_agent`: it resolves and exports `ServerConfig`, scaffolds a temporary LangGraph project with a SQLite checkpointer module, starts `langgraph dev`, waits until the `agent` graph is ready, and returns a workspace-bound `RemoteAgent`. A failed or cancelled startup before handoff stops the process; the caller that receives a completed handoff owns eventual cleanup.
 
-`run_textual_app` makes startup a UI boundary rather than a blocking CLI boundary. With `server_kwargs` but no agent, it paints the connection state then starts the managed server in a background worker. The worker may concurrently preload MCP metadata, but metadata failure is non-fatal; it assigns the successful process before posting `ServerReady`, so app-level cleanup can reap it if the user exits during the handoff. Raw resume intent is also resolved asynchronously, and `TextualAppError` preserves the app's final thread ID for correct outer teardown reporting.
+`run_textual_app` keeps startup at the UI boundary. Given `server_kwargs` but no agent, it renders connection state and starts server work in a background worker. Resume resolution is asynchronous; focused app tests cover deferred startup, resume ordering, recovery, approvals, and teardown.
 
-`RemoteAgent` wraps LangGraph `RemoteGraph` for HTTP and SSE. It adds the cached, per-thread workspace descriptor to each streamed request, requires a `config.configurable.thread_id`, converts serialized messages and interrupts into client objects, and forwards the remaining events. State retrieval is deliberately separate from cost reconciliation: missing or empty thread state is no state, while unexpected state errors remain errors.
+`RemoteAgent` wraps LangGraph `RemoteGraph` for HTTP and SSE, adds its cached per-thread workspace descriptor to stream context, converts serialized messages and interrupts for the client, and keeps graph state retrieval distinct from session-cost reconciliation. ACP deliberately differs: it builds a graph per ACP session from that session's model and cwd with `create_cli_agent`, bypassing the normal remote-server workspace cache; its Auto adapter persists trusted approval state and prompt metadata before streaming.
 
-ACP preserves a different boundary. Its session builder receives the ACP session model and cwd, builds a `ProjectContext`, and calls `create_cli_agent` directly per session, so it bypasses the managed-server workspace-runtime cache. Its Auto adapter writes trusted approval state and prompt metadata to the store before streaming. Do not make ACP depend on server-only caches or assume all graph construction has an HTTP client in front of it.
+## Server-owned workspace and graph lifecycle
 
-## Binding a thread to a workspace
-
-The server is authoritative for execution identity. It validates every request against a durable, per-thread workspace binding instead of trusting the client’s desired cwd. A valid request must carry the thread and workspace context, agree with the stored binding and configuration fingerprint when supplied, and still resolve to the same workspace. Missing or malformed context, an unbound thread, unsupported binding schema, a mismatched fingerprint, or changed identity becomes `WorkspaceConflictError` rather than silently moving the thread.
+The server, not the client, is authoritative for execution identity. Every request is checked against a durable per-thread workspace binding. A full runtime-identity change selects a rebuilt runtime, while access-policy drift is rejected rather than silently acquiring changed privileges. Runtime caching is LRU-bounded; a configured sandbox is reserved for one workspace per server process.
 
 ```mermaid
 flowchart TD
@@ -110,50 +122,59 @@ flowchart TD
     Reuse --> Run
 ```
 
-*Binding validation precedes runtime-cache selection, so a thread cannot acquire a different workspace or privilege set through a cache miss.*
+*Validation and runtime selection are server responsibilities; no UI display event can alter a binding or cached graph.*
 
-The cache key includes workspace identity and the complete runtime fingerprint, is LRU-bounded, and serializes concurrent construction. Runtime-only changes—such as a model, model parameters, or prompt—therefore select a fresh graph without discarding the thread’s checkpoints. Access-policy changes are treated differently: the server re-resolves configuration on each request and rejects altered trust, tool, sandbox, or approval policy rather than rebuilding under new privileges. A configured sandbox is reserved to one workspace per server process.
+For a workspace outside the launch project, `ServerConfig.resolve_workspace` drops launch-project MCP configuration, sandbox setup, and extension paths, then resolves extension trust for the target project. Workspace diagnostics compare and report only a bounded policy allowlist: paths, model specifications and parameters, prompts, environment values, and credentials are excluded.
 
-For a workspace outside the project used at launch, `ServerConfig.resolve_workspace` drops launch-project MCP configuration, sandbox setup, and extension paths, then resolves extension trust for the target project. Conflict diagnostics are intentionally narrow: a bounded policy allowlist is compared and reported, while paths, model specs and parameters, prompts, environment values, and credentials are excluded from snapshots and diagnostics. See [Configuration layering](/openwiki/concepts/config-layering.md) for precedence and [MCP](/openwiki/integrations/mcp.md) for integration trust.
+`create_cli_agent` is the common server/ACP composition seam. It returns a compiled graph and `CompositeBackend`, composing model, persistence, tools, memory, skills, backend, approval, hooks, compaction, subagents, and extensions. An explicit filesystem-tool allowlist is propagated to synchronous subagents, so delegation cannot bypass it. Graph construction enforces the model allow policy for main, Auto-classifier, rubric, and subagent model strings; recognized provider models have SDK retries disabled so dcode owns retries, while a missing subagent credential defers that subagent instead of aborting startup.
 
-## Graph-construction seam
+The server creates built-in tools, optionally adds web search, and loads MCP tools with project context and trust. MCP discovery uses throwaway sessions, while the process-wide manager opens real sessions lazily for invocation. Only explicitly read-only MCP tools are exposed to criteria/grading context. `mcp.tool_timeout` resolves managed configuration, environment, user TOML, then a 120-second default; it accepts finite values from 1 through 900 seconds and falls through invalid higher-precedence values. When MCP tools exist, deadline middleware sits inside server hooks: timeouts return a named error warning that remote work may continue and a retry may duplicate work, while tool exceptions and cancellation are preserved and recognized re-authentication failures are translated.
 
-`create_cli_agent` is the composition seam shared by the managed server and ACP. It returns a compiled graph plus its `CompositeBackend`; callers supply the authoritative project context, model and policy inputs rather than rebuilding those choices in the UI. It composes configurable-model selection, retries, resume and cost state, goals, ask-user behavior, memory, skills, local or sandbox backend, compaction, approval middleware, hooks, optional interpreter, rubric support, subagents, and extensions. An explicit filesystem-tool allowlist is installed both on the main agent and synchronous subagents so delegating through `task` cannot bypass it.
+Hooks cross a strict typed projection boundary. Event-specific wire payloads are validated, post-tool results are JSON-projected, and `SubagentStop` requires an agent transcript; unsupported events or notification types are rejected. This is an execution integration boundary, not a Textual rendering protocol.
 
-The server builds built-in tools, conditionally adds workspace-bound web search, and loads MCP tools with the project context and trust policy before calling that seam. MCP discovery uses throwaway sessions; real sessions are opened lazily by the process-wide manager when a tool is invoked. Only MCP tools explicitly classified read-only are made available as criteria or grading context.
+## QuickJS subagent fan-out is a client display feature
 
-### Model, profile, and reasoning settings
+A top-level `task()` called by JavaScript inside `js_eval` dispatches a subagent within one `js_eval` tool call, so that fan-out is not visible in the ordinary message stream. The QuickJS bridge emits lifecycle payloads on the custom stream. `TextualUIAdapter` admits only dictionary payloads whose type is `subagent` from the main-agent namespace; it ignores nested subagent namespaces and unrelated or malformed custom events. The app forwards accepted events on its Textual event loop to `SubagentPanel`.
 
-Executable graph construction enforces `models.allowed` for the main model, Auto classifier, rubric model, and declared subagent models before resolving provider-backed strings. dcode resolves recognized provider models through its factory with SDK retries disabled, so dcode’s retry middleware owns the budget; absent credentials defer a subagent’s resolution rather than aborting startup before that subagent runs. `profile_overrides` travel with construction to retain session profile behavior for later side work.
+```mermaid
+sequenceDiagram
+    participant Server as Server graph and QuickJS bridge
+    participant Stream as Custom stream
+    participant Adapter as TextualUIAdapter
+    participant Panel as SubagentPanel
+    Server->>Stream: main namespace lifecycle event
+    Stream->>Adapter: custom payload
+    Adapter->>Adapter: accept subagent main namespace only
+    Adapter->>Panel: start complete or error event
+    Panel->>Panel: group records by js_eval phase
+    Panel->>Panel: render local live status
+```
 
-The Textual client resolves supported reasoning efforts for the selected model/profile, restores a stored per-model effort only when no explicit model parameter already wins, and applies a selected effort as a session model-parameter override. The graph’s configurable-model middleware then uses those request parameters. Reasoning effort is not merely a display setting: providers whose request shape makes it relevant include it in prompt-cache identity. See [Profiles and models](/openwiki/concepts/profiles-models.md) for profile and provider details.
+*This path reports execution already occurring on the server. The panel owns no graph, task dispatch, checkpoint, or subagent persistence.*
 
-### MCP deadline semantics
+The panel is hidden until the first start event and groups records by `eval_id`, one phase per `js_eval` fan-out. It preserves arrival order, follows the active phase until the user navigates, and supports mouse or `Ctrl+T` collapse plus keyboard phase navigation. It ticks while work is running, displays frozen durations once terminal, and retains the user’s expand/collapse choice across a turn reset. A duplicate start marks a record replayed so final duration is measured locally across attempts; duplicate terminal events do not overwrite a finished record. A terminal error without its start is surfaced as a synthetic row, but a completion without its start is ignored because it has no reliable row label.
 
-`mcp.tool_timeout` is a manifest-backed scalar: managed configuration takes precedence over environment, then user `config.toml`, then the 120-second default. Invalid, non-finite, or out-of-range values fall through to a lower-precedence source; accepted values are bounded from 1 to 900 seconds. The same resolver powers runtime and config introspection.
+The custom stream is not trusted display text. Descriptions, types, labels, and errors can originate in LLM-authored JavaScript executed in the sandbox. The panel defensively validates fields, strips control, escape, and bidi characters, flattens labels to one line, bounds their length, and renders through `Content.styled` or `Static` with `markup=False`. Thus embedded Textual markup, terminal escapes, and extra display rows cannot control rendering or panel state. If a turn is interrupted before the bridge emits a terminal event, the app marks remaining rows cancelled and freezes their elapsed time; the next turn clears all prior fan-out state.
 
-When MCP tools are present, `create_cli_agent` installs `MCPToolMiddleware` inside the server hooks wrapper, including for subagents. It removes empty strings from optional string-like MCP arguments, applies `asyncio.wait_for` to MCP calls, and returns an error `ToolMessage` identifying server, tool, and deadline on timeout. The message explicitly warns that the server-side operation may continue and a retry may duplicate work. Tool exceptions are preserved, cancellation propagates, and recognized expired-auth failures are translated into actionable re-authentication instructions.
+## Cost display and acknowledgement
 
-## Hooks cross a validated projection boundary
+The graph/checkpoint remains authoritative for cumulative thread cost. The Textual client may display request-keyed provisional stream cost while a checkpoint lags, especially for nested subagent work, but an authoritative streamed or restored total replaces that display contribution. Totals naming an inactive thread are discarded. State retrieval and cost reconciliation remain separate because cost also combines graph-checkpoint accounting with best-effort separately persisted side-question cost; an unsettled graph result is marked cached so provisional main-task spend can remain visible.
 
-Hooks use typed domain objects rather than exposing live graph objects over the command boundary. A `HookInvocation` combines a strict context—thread, cwd, approval mode, optional prompt ID, effort, agent identity, and transcript revision—with one discriminated lifecycle event. Supported events include session start/end, prompt submission, permission and notification, pre/post tool use and failure, compaction, stop, and subagent start/stop. Post-tool results are JSON-projected before they can cross a LangGraph interrupt boundary.
+On an authoritative crossing of a positive configured threshold, the app shows a `SessionCostWarningScreen` once per thread. The modal is deliberately persistent against mouse clicks, uses plain-text `Static` widgets, and can be acknowledged with Enter or Escape. Its acknowledgement only dismisses the warning: it neither changes session state nor cancels a running agent. At exactly the threshold there is no warning; a zero threshold disables the feature. A new thread usage reset makes a later crossing eligible again.
 
-`HookEnvelopeAdapter` projects each domain invocation through `project_hook_input` and validates the event-specific compatible wire model before serializing compact JSON for handler stdin. Projection supplies session ID, materialized transcript path, cwd, permission-mode mapping, optional effort and agent identity; `SubagentStop` additionally requires a materialized agent transcript. Unsupported notification types and unsupported domain events fail rather than emitting an ambiguous payload. Handler results return through reduction as typed, event-specific decisions—such as permission effects, injected context, feedback, or stop-loop control—rather than as unstructured UI commands.
+## System prompt composition regression coverage
 
-## Cost presentation is server-authoritative
+`system_prompt.md` supplies templated base guidance rather than the entire first model message. The smoke test invokes a real `create_cli_agent` composition with a fake model and captures the first `SystemMessage`, so the snapshot includes middleware-injected local context, memory, and skills as well as the base template. It fixes cwd, model identity, local-context output, generated roots, and redacts machine-specific paths before comparing interactive and headless golden files.
 
-The compiled graph’s cost middleware owns the durable cumulative thread cost and prices main-model, subagent, offload, and Auto-classifier work. The Textual app writes its base cost only from checkpoint totals or streamed absolute totals; it never persists its own estimate. During a turn it may add a request-keyed **provisional** stream delta so the status bar remains responsive, then clears or settles that display-only amount when an authoritative server total arrives. Stale totals for a no-longer-active thread are ignored, and a warning modal is shown once when the authoritative total crosses the configured threshold.
+A second parameterized test verifies behavior rather than only byte-for-byte snapshots: memory content and credential-safety guidance remain available in all combinations of interactive and memory-auto-save modes; headless prompts omit unreachable user-question guidance and instead require reporting blockers without inventing identifiers or permissions. Update the snapshots intentionally only after reviewing changes to base instructions and middleware composition.
 
-On restore and end-of-turn reconciliation, `RemoteAgent.aget_session_cost` combines graph-checkpoint accounting with a best-effort fetch of separately persisted side-question cost. If side accounting is unavailable, the graph total remains usable; if the graph checkpoint is not settled, callers preserve provisional main-task spend. This is why state lookup and cost lookup must remain separate. See [Cost and sessions](/openwiki/operations/cost-and-sessions.md) for operator-facing interpretation.
+## Focused tests and safe changes
 
-## Focused test boundaries and change guidance
+The important boundary tests are deliberately layered:
 
-The high-value tests protect seams where an apparently local change could violate a cross-process or security contract:
+- `test_subagent_stream.py` protects the main-namespace custom-stream filter; `test_subagent_panel.py` exercises phase selection, reset and cancellation behavior, replay timing, narrow rendering, and escape/newline sanitization using Textual’s pilot.
+- `test_session_cost.py` verifies the warning copy remains visible after a click; app tests cover strict threshold crossing, once-per-thread behavior, reset eligibility, and dismissal without cancelling active work.
+- `smoke_tests/test_system_prompt.py` snapshots composed interactive/headless system messages and tests interaction and memory-mode invariants.
+- Server, remote-client, agent, configuration, MCP middleware, and hook tests protect the execution/persistence boundaries described above.
 
-- Agent tests assert Auto approval is not installed with a sandbox and that MCP tools install the deadline middleware; broader agent coverage protects policy checks, approval state, backend construction, subagent restrictions, and cost middleware ordering.
-- Manifest tests verify MCP deadline precedence, bounded fallback, and agreement between the runtime resolver and `dcode config` reporting. Middleware tests verify timeout text, pass-through behavior, preserved `ToolException`, re-auth translation, and propagated cancellation.
-- Hook engine tests project every supported event, confirm effort and permission-mode projection, and reject unknown notifications.
-- Textual tests cover deferred startup, asynchronous resume and thread ordering, recovery and teardown; the app code keeps server acquisition and cleanup ownership explicit.
-- Server and remote-client tests cover runtime caching and policy conflicts, workspace-specific tool selection, streamed payload conversion, trace forwarding, and independent state/cost behavior.
-
-When changing this area, first classify the boundary: presentation belongs in the Textual client; durable workspace policy and graph construction belong in the managed server; ACP must keep working without that server. Classify configuration fields too: privileges and resource access require policy-drift validation, while graph-only inputs must enter runtime identity. Preserve the managed-server startup cleanup rule, the direct ACP construction path, and the distinction between provisional UI display and durable server accounting. See [Testing guide](/openwiki/testing/testing-guide.md) for test execution and [Run a dcode session](/openwiki/workflows/run-dcode-session.md) for normal session flow.
+When changing this area, keep the ownership split explicit: server graph construction, workspace policy, task lifecycle, checkpoints, and durable accounting remain server-side; the Textual adapter and widgets filter, sanitize, and render stream observations. Do not infer graph ownership or persistence from the fan-out panel, and do not make a UI display state authoritative over server totals or bindings. See [Cost and sessions](/openwiki/operations/cost-and-sessions.md), [Testing guide](/openwiki/testing/testing-guide.md), and [Run a dcode session](/openwiki/workflows/run-dcode-session.md) for related operational guidance.

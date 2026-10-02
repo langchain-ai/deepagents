@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:dfa3f5934a85930e5b2bf01abd8f9048b26fed25908035b9419944c779275a49",
+  "pageVersion": "sha256:5cfe133ef07de90a30fd0152f7dab5a130cecec860ef1bdb7ca269a773254100",
   "claims": [
     {
       "id": "claim_02a3292b94514936b7fbbbe869876251",
@@ -52,11 +52,15 @@
     },
     {
       "id": "claim_a49fb7b51f794c52b206c53ebad1caec",
-      "statement": "Talon's CLI loads MCP tools and constructs DeepAgentRuntime with Talon MCP middleware; on the model-backed path it opens an SQLite checkpointer and history archive and supplies their ConversationSaver wrapper to the runtime.",
+      "statement": "On Talon's model-backed CLI path, the selected checkpointer and history archive are opened together and wrapped in ConversationSaver before construction of DeepAgentRuntime with Talon MCP middleware.",
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/__main__.py",
-          "version": "repo-file-v1:sha256:47d54647236442a5fdd163436ee4eb7c7495092db9c82bc922732e4af30ca494"
+          "version": "repo-file-v1:sha256:bc9f97c16989202db7c4c5b7ddea9983473996ac18de652b2225a4bd178915fd"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/checkpoint_backends.py",
+          "version": "repo-file-v1:sha256:12a6a302d806d09be9990faa167d4e208c9009d3d03343d60a85dcb409c7d69f"
         }
       ]
     },
@@ -90,7 +94,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
+          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
@@ -104,7 +108,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
+          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
@@ -122,7 +126,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
+          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
         },
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
@@ -158,7 +162,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
+          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
@@ -200,7 +204,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
+          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
         },
         {
           "resource": "repo://libs/talon/tests/test_host.py",
@@ -214,7 +218,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/__main__.py",
-          "version": "repo-file-v1:sha256:47d54647236442a5fdd163436ee4eb7c7495092db9c82bc922732e4af30ca494"
+          "version": "repo-file-v1:sha256:bc9f97c16989202db7c4c5b7ddea9983473996ac18de652b2225a4bd178915fd"
         }
       ]
     },
@@ -224,7 +228,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
+          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/interfaces.py",
@@ -242,7 +246,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/cron/jobs.py",
-          "version": "repo-file-v1:sha256:13c985c4a53c000e59cd7f2146a7020c5e720ad6a8131edcea87082029484c58"
+          "version": "repo-file-v1:sha256:055287eee8185e087164f5562ade322527a99edc23bdf9275ed5ad498f35b265"
         }
       ]
     },
@@ -252,15 +256,15 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:58f45cce4a6fa395411056430f10e056b1ac65fed47c913952ce7e7ae5f06062"
+          "version": "repo-file-v1:sha256:31a70bf1da8f4fabdfa6fa17363594f8d0d7b1a56768ad8fb52d0f836fe883a2"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:01d1c90195e8294ab6b6020047823041ebf0189d7aa60f45b7340c9a57dc4c4e"
+          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:1029097ee5c1a209e2ca6e715b447488256c18a2715a800dc4f70f6984306ed4"
+          "version": "repo-file-v1:sha256:a1a1b2c443cc89dff8cc7d678424e03b1101605c3635685fa6ce197f004eef6a"
         }
       ]
     },
@@ -284,7 +288,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/__main__.py",
-          "version": "repo-file-v1:sha256:47d54647236442a5fdd163436ee4eb7c7495092db9c82bc922732e4af30ca494"
+          "version": "repo-file-v1:sha256:bc9f97c16989202db7c4c5b7ddea9983473996ac18de652b2225a4bd178915fd"
         }
       ]
     },
@@ -351,10 +355,48 @@
           "version": "repo-file-v1:sha256:0fb5127f574feec00009b236b5963c819dc18658f2ef49b5a7d03738f195e0ae"
         }
       ]
+    },
+    {
+      "id": "claim_8b0165773fa24737ad1db7b9f094e17d",
+      "statement": "Talon selects its checkpointer by URI: built-in SQLite, PostgreSQL, and MongoDB schemes are resolved before trusted entry-point plugins, and opening failures are surfaced as configuration errors without exposing URI credentials.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/checkpoint_backends.py",
+          "version": "repo-file-v1:sha256:12a6a302d806d09be9990faa167d4e208c9009d3d03343d60a85dcb409c7d69f"
+        }
+      ]
+    },
+    {
+      "id": "claim_442301cebd154b2196e7b233e23e6340",
+      "statement": "Talon sender pairing is limited to Discord, Slack, and Telegram: an operator approves a short-lived, provider-bound sender code, the pairing store uses locked atomic updates and fails closed on unreadable state, and paired senders do not gain operator controls.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py",
+          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/pairing.py",
+          "version": "repo-file-v1:sha256:4842314f8d8531379ea6c663242f2748f8a954dd69314075f1b19e59354fb1d2"
+        }
+      ]
+    },
+    {
+      "id": "claim_8433e7f80fb6420aac78829a69b6918a",
+      "statement": "Talon 0.0.9 added Slack channel support and sender pairing, alongside per-chat model switching, cron expressions with expiry, inline scheduled delegation, sandbox execution, batched approvals, and context diagnostics.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/CHANGELOG.md",
+          "version": "repo-file-v1:sha256:cd53017713b10e31af610e8579e03b27a76b8dc104fdd187b02ae81586dc23da"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml",
+          "version": "repo-file-v1:sha256:a1a1b2c443cc89dff8cc7d678424e03b1101605c3635685fa6ce197f004eef6a"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-01T08:06:30.386Z"
+    "at": "2026-10-02T08:06:05.669Z"
   }
 }

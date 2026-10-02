@@ -26417,9 +26417,9 @@ class DeepAgentsApp(App):
             `tab -> app.focus_next`, which means it would otherwise swallow
             `tab` app-wide. Stepping aside unless an approval menu is pending
             and the chat input is unfocused keeps focus traversal and
-            chat-input completion working everywhere else. The prompt clipboard
-            and side-question dialog also keep ownership when a background
-            approval arrives after the modal opens.
+            chat-input completion working everywhere else. The prompt clipboard,
+            side-question dialog, and thread-name dialog also keep ownership
+            when a background approval arrives after the modal opens.
 
         Branches on action names, not keys, so this stays correct if a binding is
         ever rebound.
@@ -26461,10 +26461,11 @@ class DeepAgentsApp(App):
             from deepagents_code.tui.modals.prompt_clipboard import (
                 PromptClipboardScreen,
             )
+            from deepagents_code.tui.modals.thread_name import ThreadNameScreen
 
             screen_stack = self.screen_stack
             if screen_stack and isinstance(
-                screen_stack[-1], (PromptClipboardScreen, BtwScreen)
+                screen_stack[-1], (PromptClipboardScreen, BtwScreen, ThreadNameScreen)
             ):
                 return False
             return self._pending_approval_widget is not None and (

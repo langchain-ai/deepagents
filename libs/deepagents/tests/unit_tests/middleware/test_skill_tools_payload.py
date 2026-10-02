@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
+from langchain.agents import create_agent
 from langchain.agents.middleware import ModelFallbackMiddleware
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain_anthropic.chat_models import _supports_mid_conversation_system_messages
@@ -22,14 +23,16 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 
+from deepagents.middleware import FilesystemMiddleware
 from deepagents.middleware._skill_tools import _ANTHROPIC_INLINE_TOOL_MODELS
-from deepagents.middleware.skills import disclosed_skill_tool_names
+from deepagents.middleware.skills import SkillsMiddleware, disclosed_skill_tool_names
 from deepagents.middleware.summarization import SummarizationMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
 from tests.unit_tests.middleware.skill_tools_support import (
     CREATE_ISSUE,
     LINEAR_PATH,
     LIST_ISSUES,
+    SKILLS_SOURCE,
     ProviderStub,
     RecordingResolver,
     ai,
@@ -366,6 +369,20 @@ def test_inline_disclosure_is_recorded_for_the_gate(tmp_path: Path, monkeypatch:
     invoke(agent, {"messages": [HumanMessage("go")]}, mode, config)
 
     assert agent.get_state(config).values["_skill_tools_disclosed"] == {"create_customer_request": "create_customer_request"}
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+def test_inline_disclosure_sees_through_a_bound_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: str) -> None:
+    # `create_agent` takes a `model.bind(...)` wrapper as is (`create_deep_agent` rejects one).
+    write_skill(tmp_path, "crm", "create_customer_request")
+    model, stub = _stub(provider, monkeypatch, [[read("r1")], "done"])
+    backend = skills_backend(tmp_path)
+    skills = SkillsMiddleware(backend=backend, sources=[SKILLS_SOURCE], skill_tools=[create_customer_request])
+    agent = create_agent(model.bind(temperature=0), middleware=[FilesystemMiddleware(backend=backend), skills])
+
+    invoke(agent, {"messages": [HumanMessage("go")]}, mode)
+
+    assert _disclosed_names(provider, stub.bodies[1]) == ["create_customer_request"]
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from langchain_anthropic import ChatAnthropic, convert_to_anthropic_tool
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableBinding
 from langchain_core.tools import BaseTool, tool as create_tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
@@ -58,9 +59,6 @@ _OPENAI_INLINE_TOOL_MODELS = ("gpt-6-", "gpt-5.6-")
 
 _ANTHROPIC_ROOT_COMBINATORS = ("oneOf", "anyOf", "allOf")
 """Root `input_schema` keys the Anthropic API rejects, failing the whole request."""
-
-_MAX_BINDING_DEPTH = 10
-"""How many `RunnableBinding` layers to unwrap when looking for the chat model."""
 
 _ToolDisclosure = dict[str, Any]
 """A provider-native content block that makes one tool callable from its position on."""
@@ -400,14 +398,11 @@ def _inline_block_builder(model: object) -> Callable[[BaseTool], _ToolDisclosure
 
 
 def _unwrap_bound(model: object) -> object:
-    """Return the chat model beneath any `RunnableBinding` layers."""
-    current = model
-    for _ in range(_MAX_BINDING_DEPTH):
-        bound = getattr(current, "bound", None)
-        if bound is None or bound is current:
-            break
-        current = bound
-    return current
+    """Return the chat model inside `model.bind(...)` or `model.with_config(...)`.
+
+    Chained calls merge into one `RunnableBinding`, so one unwrap is enough.
+    """
+    return model.bound if isinstance(model, RunnableBinding) else model
 
 
 @functools.cache

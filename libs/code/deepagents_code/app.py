@@ -2309,6 +2309,7 @@ class ExternalInput(Message):
 
 
 DeferredActionKind = Literal[
+    "effort_change",
     "model_switch",
     "summarization_model_switch",
     "thread_switch",
@@ -19432,6 +19433,12 @@ class DeepAgentsApp(App):
         )
 
         async def apply_effort(effort: str) -> None:
+            if self._effective_model_spec() != context.spec:
+                self.notify(
+                    "Model changed; reopen the effort selector to choose an effort.",
+                    severity="warning",
+                )
+                return
             try:
                 await self._set_effort_override(effort)
             except Exception:
@@ -19445,13 +19452,30 @@ class DeepAgentsApp(App):
 
         def handle_result(result: str | None) -> None:
             if result is not None:
-                self.run_worker(
-                    apply_effort(result),
-                    exclusive=False,
-                    group="effort-selection",
-                )
+                if (
+                    self._agent_running
+                    or self._agent_reconciling
+                    or self._shell_running
+                    or self._connecting
+                ):
+                    self._defer_action(
+                        DeferredAction(
+                            kind="effort_change", execute=lambda: apply_effort(result)
+                        )
+                    )
+                    self.notify(
+                        f"Reasoning effort change to {result} is pending until "
+                        "the current task completes.",
+                        markup=False,
+                    )
+                else:
+                    self.run_worker(
+                        apply_effort(result),
+                        exclusive=False,
+                        group="effort-selection",
+                    )
             if self._chat_input:
-                self._chat_input.focus_input()
+                self.call_after_refresh(self._chat_input.focus_input)
 
         self.push_screen(screen, handle_result)
 
@@ -21979,6 +22003,8 @@ class DeepAgentsApp(App):
 
     def _discard_queue(self) -> None:
         """Clear pending messages, deferred actions, and queued widgets."""
+        if any(action.kind == "effort_change" for action in self._deferred_actions):
+            self.notify("Cancelled the pending reasoning effort change.")
         self._pending_messages.clear()
         for w in self._queued_widgets:
             w.remove()
@@ -24603,11 +24629,7 @@ class DeepAgentsApp(App):
         await self._submit_footer_picker("/model")
 
     async def action_open_effort_selector(self) -> None:
-        """Open the reasoning effort picker via `/effort`.
-
-        `/effort` is `QUEUED`, so it must go through `_submit_input` to keep its
-        place behind any pending input instead of jumping an in-flight turn.
-        """
+        """Open the effort picker immediately, deferring changes while busy."""
         await self._submit_footer_picker("/effort")
 
     def _build_model_selector_screen(

@@ -7,7 +7,7 @@ Support data comes from LangChain model profiles, so most tests mock
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from textual.app import App
@@ -149,6 +149,97 @@ async def test_effort_command_save_failure_reports_error(
     assert isinstance(message, ErrorMessage)
     assert "could not be saved" in message._content
     assert model_config.load_effort_for_model("openai:gpt-5.5") is None
+
+
+@pytest.mark.parametrize("busy", [False, True])
+async def test_footer_effort_selects_without_queueing_command(
+    busy: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp(agent=MagicMock())
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
+    app._model_params_override = {"reasoning_effort": "low"}
+    notify = Mock()
+    monkeypatch.setattr(app, "notify", notify)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        mount = AsyncMock()
+        monkeypatch.setattr(app, "_mount_message", mount)
+        app._agent_running = busy
+
+        await app.action_open_effort_selector()
+        await pilot.pause()
+        assert isinstance(app.screen, EffortSelectorScreen)
+        stack_size = len(app.screen_stack)
+        await app.action_open_effort_selector()
+        assert len(app.screen_stack) == stack_size
+        assert not app._pending_messages
+        assert not app._queued_widgets
+        mount.assert_not_awaited()
+
+        await pilot.press("end", "enter")
+        await pilot.pause()
+        if busy:
+            assert app._model_params_override == {"reasoning_effort": "low"}
+            assert model_config.load_effort_for_model("openai:gpt-5.5") is None
+            mount.assert_not_awaited()
+            assert (
+                "pending until the current task completes" in notify.call_args.args[0]
+            )
+            app._agent_running = False
+            await app._drain_deferred_actions()
+        await app.workers.wait_for_complete()
+        assert app._model_params_override == {"reasoning_effort": "xhigh"}
+        assert model_config.load_effort_for_model("openai:gpt-5.5") == "xhigh"
+        assert not app._pending_messages
+
+
+@pytest.mark.parametrize("outcome", ["apply", "interrupt", "model_change"])
+async def test_pending_effort_latest_selection_and_cancellation(
+    outcome: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp(agent=MagicMock())
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
+    app._model_params_override = {"reasoning_effort": "low"}
+    notify = Mock()
+    monkeypatch.setattr(app, "notify", notify)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._agent_running = True
+        for index, keys in enumerate(
+            (("end", "enter"), ("home", "enter"), ("escape",))
+        ):
+            app._agent_running = index == 0
+            app._agent_reconciling = index > 0
+            await app.action_open_effort_selector()
+            await pilot.pause()
+            await pilot.press(*keys)
+            await pilot.pause()
+        assert len(app._deferred_actions) == 1
+        assert app._model_params_override == {"reasoning_effort": "low"}
+        if outcome == "interrupt":
+            app._discard_queue()
+            assert "Cancelled the pending" in notify.call_args.args[0]
+        elif outcome == "model_change":
+            runtime_state.model_name = "gpt-5.5-mini"
+        app._agent_running = False
+        await app._drain_deferred_actions()
+        if outcome == "apply":
+            assert model_config.load_effort_for_model("openai:gpt-5.5") == "none"
+            assert app._model_params_override == {"reasoning_effort": "none"}
+        else:
+            assert app._model_params_override == {"reasoning_effort": "low"}
+            assert model_config.load_effort_for_model("openai:gpt-5.5") is None
+        if outcome == "model_change":
+            assert "Model changed" in notify.call_args.args[0]
+
+
+def test_only_bare_effort_bypasses_queue() -> None:
+    app = DeepAgentsApp()
+    assert app._can_bypass_queue("/effort")
+    assert not app._can_bypass_queue("/effort high")
+    assert not app._can_bypass_queue("/effort clear")
 
 
 class _EffortSelectorHost(App[None]):

@@ -1625,33 +1625,54 @@ class TestWorkspaceStoredCredentials:
         assert "OPENAI_API_KEY" not in os.environ
         assert "OPENAI_BASE_URL" not in os.environ
 
-    @patch("langchain.chat_models.init_chat_model")
-    def test_stored_native_key_clears_workspace_endpoint(
+    @pytest.mark.parametrize("endpoint_env", ["OPENAI_BASE_URL", "OPENAI_API_BASE"])
+    @pytest.mark.parametrize("stored_endpoint", [None, "https://stored.example/v1"])
+    async def test_stored_openai_key_uses_its_endpoint_in_sdk_clients(
         self,
-        mock_init_chat_model: Mock,
         monkeypatch: pytest.MonkeyPatch,
+        endpoint_env: str,
+        stored_endpoint: str | None,
     ) -> None:
-        """A stored native key is not sent to a workspace gateway URL."""
+        """SDK clients cannot reread an inherited gateway for a stored key."""
+        import os
+
+        from langchain_openai import ChatOpenAI
+
         from deepagents_code.config import create_model, use_environment
 
-        mock_model = Mock()
-        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
-        mock_init_chat_model.return_value = mock_model
+        monkeypatch.setattr(
+            ModelConfig, "load", classmethod(lambda _cls: ModelConfig())
+        )
         monkeypatch.setattr(
             "deepagents_code.model_config.auth_store.get_stored_key",
             lambda provider: "stored-key" if provider == "openai" else None,
         )
         monkeypatch.setattr(
             "deepagents_code.model_config.auth_store.get_stored_base_url",
-            lambda _provider: None,
+            lambda _provider: stored_endpoint,
         )
+        monkeypatch.setenv("OPENAI_API_KEY", "inherited-key")
+        monkeypatch.setenv(endpoint_env, "https://gateway.example/v1")
+        environment = {
+            "OPENAI_API_KEY": "inherited-key",
+            endpoint_env: "https://gateway.example/v1",
+        }
 
-        with use_environment({"OPENAI_BASE_URL": "https://workspace.example/v1"}):
-            create_model("openai:gpt-5.5")
+        with use_environment(environment):
+            result = create_model("openai:gpt-5.5")
 
-        kwargs = mock_init_chat_model.call_args.kwargs
-        assert kwargs["api_key"] == "stored-key"
-        assert "base_url" not in kwargs
+        model = result.model
+        assert isinstance(model, ChatOpenAI)
+        try:
+            expected_endpoint = stored_endpoint or "https://api.openai.com/v1"
+            for client in (model.root_client, model.root_async_client):
+                assert str(client.base_url) == expected_endpoint + "/"
+                assert client.api_key == "stored-key"
+            assert os.environ[endpoint_env] == "https://gateway.example/v1"
+            assert os.environ["OPENAI_API_KEY"] == "inherited-key"
+        finally:
+            model.root_client.close()
+            await model.root_async_client.close()
 
     @patch("langchain.chat_models.init_chat_model")
     def test_explicit_key_does_not_use_stored_endpoint(

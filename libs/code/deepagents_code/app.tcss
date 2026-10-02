@@ -449,6 +449,10 @@ ChatTextArea {
     & .text-area--cursor-gutter {
         background: transparent;
     }
+
+    &.cursor-below-first-line:focus .text-area--cursor-line {
+        background: $foreground 6%;
+    }
 }
 
 /* Completion popup styling (used by ChatInput) - appears BELOW input */

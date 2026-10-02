@@ -14012,6 +14012,8 @@ class TestApprovalPositionBindings:
 
         app = DeepAgentsApp(thread_id="thread-123")
         monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+        rename = AsyncMock()
+        monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
         async with app.run_test(size=(110, 36)) as pilot:
             messages = app.query_one("#messages", Container)
             approval = ApprovalMenu({"name": "execute", "args": {"command": "pwd"}})
@@ -14038,6 +14040,7 @@ class TestApprovalPositionBindings:
             await pilot.press("escape")
             await pilot.pause()
             assert app.screen is not screen
+            rename.assert_not_awaited()
             assert app._pending_approval_widget is approval
             approval.focus()
             await pilot.press("tab")

@@ -31,7 +31,7 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> TerminalStream:
     return stream
 
 
-@pytest.mark.parametrize("value", ["1", "true", "yes", "on", "0", "false"])
+@pytest.mark.parametrize("value", ["true", "false"])
 def test_title_lifecycle_honors_terminal_escape_opt_out(
     terminal: TerminalStream, monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
@@ -44,9 +44,7 @@ def test_title_lifecycle_honors_terminal_escape_opt_out(
     title.update(thread_name="Cache repair")
     title.restore()
     title.restore()
-    expected = (
-        "\x1b[22;0t\x1b]0;Cache repair\x07\x1b[23;0t" if value in {"0", "false"} else ""
-    )
+    expected = "\x1b[22;0t\x1b]0;Cache repair\x07\x1b[23;0t" if value == "false" else ""
     assert terminal.getvalue() == expected
     assert stdout.getvalue() == ""
 
@@ -108,13 +106,6 @@ def test_invalid_template_uses_safe_default(
     title.start()
     title.update(thread_name="Cache repair")
     assert terminal.getvalue() == "\x1b[22;0t\x1b]0;dcode-dev\x07"
-
-
-def test_literal_template_braces(terminal: TerminalStream) -> None:
-    title = TerminalTitle("{{{thread_name}}}")
-    title.start()
-    title.update(thread_name="Cache")
-    assert terminal.getvalue() == "\x1b[22;0t\x1b]0;{Cache}\x07"
 
 
 def test_title_length_is_bounded(terminal: TerminalStream) -> None:

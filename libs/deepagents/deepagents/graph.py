@@ -667,6 +667,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # the only channel that surfaces the loaded skill index / memory content,
     # and both are built only when the caller passes `skills=` / `memory=`.
 
+    # A custom `SkillsMiddleware` replaces the default by name, but the default
+    # only exists when `skills` is passed. Take `skills` from its sources so it
+    # lands in the default's slot and reaches the general-purpose subagent.
+    if skills is None:
+        skills = next((m.sources for m in middleware or () if isinstance(m, SkillsMiddleware) and m.name == "SkillsMiddleware"), None)
+
     # Process caller-supplied subagents first so the decision of whether to
     # auto-add the default general-purpose subagent can factor in an explicit
     # override, and so its middleware stack (including any factory-based

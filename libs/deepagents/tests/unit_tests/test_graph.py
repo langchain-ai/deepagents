@@ -37,6 +37,7 @@ from deepagents.middleware._prompt_caching import (
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware, create_sub_agent
 from deepagents.middleware.summarization import SummarizationMiddleware, _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
@@ -3059,13 +3060,14 @@ class TestSkillsMiddlewarePlacement:
 
     def _build(self, model: str | BaseChatModel | None = None, **kwargs: Any) -> tuple[list[AgentMiddleware], dict[str, list[AgentMiddleware]]]:
         """Return the main stack and each subagent's stack by name."""
+        kwargs.setdefault("skills", ["/skills/"])
         fake_agent = MagicMock()
         fake_agent.with_config.return_value = "compiled-agent"
         with (
             patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
         ):
-            create_deep_agent(model=model or GenericFakeChatModel(messages=iter([])), skills=["/skills/"], **kwargs)
+            create_deep_agent(model=model or GenericFakeChatModel(messages=iter([])), **kwargs)
         subagents = {spec["name"]: spec["middleware"] for spec in mock_subagents.call_args.kwargs["subagents"]}
         return mock_create.call_args.kwargs["middleware"], subagents
 
@@ -3108,6 +3110,15 @@ class TestSkillsMiddlewarePlacement:
         assert main[self._skills_slot(main)] is replacement
         general_purpose = subagents["general-purpose"]
         assert general_purpose[self._skills_slot(general_purpose)] is replacement
+
+    def test_custom_skills_middleware_takes_its_slot_without_skills(self) -> None:
+        custom = SkillsMiddleware(backend=StateBackend(), sources=["/skills/"])
+
+        main, subagents = self._build(skills=None, middleware=[custom])
+
+        assert main[self._skills_slot(main)] is custom
+        general_purpose = subagents["general-purpose"]
+        assert general_purpose[self._skills_slot(general_purpose)] is custom
 
     def test_declarative_subagent_puts_its_own_middleware_before_skills(self) -> None:
         own = _named_mw("OwnMW")

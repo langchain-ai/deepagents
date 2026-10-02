@@ -897,15 +897,17 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     ## Placement
 
     `create_deep_agent` places this middleware for you. When composing
-    `create_agent` by hand, put it after summarization and any model fallback
-    or routing middleware, so it sees the compacted conversation and the model
-    actually called, and before prompt caching:
+    `create_agent` by hand, include `FilesystemMiddleware`, whose `read_file`
+    the model uses to read skills. Put this middleware after summarization and
+    any model fallback or routing middleware, so it sees the compacted
+    conversation and the model actually called, and before prompt caching:
 
     ```python
     create_agent(
         model,
         tools=[...],
         middleware=[
+            FilesystemMiddleware(backend=backend),
             ...,
             SummarizationMiddleware(...),
             ModelFallbackMiddleware(...),

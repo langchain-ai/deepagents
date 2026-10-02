@@ -819,6 +819,140 @@ def test_run_config_text_reports_stored_source(capsys):
     assert "from-store" not in out
 
 
+@pytest.mark.parametrize("output_format", ["text", "json"])
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_tracing_off_persists_and_reports_opt_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    output_format: str,
+) -> None:
+    from deepagents_code import auth_store, config, model_config
+
+    path = tmp_path / "config.toml"
+    path.write_text('[models]\ndefault = "existing-model"\n')
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", path)
+    monkeypatch.setattr(config, "_bootstrap_state", config._BootstrapState())
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+    auth_store.set_stored_key("langsmith", "private-key")
+    args = argparse.Namespace(
+        config_command="tracing", tracing_action="off", output_format=output_format
+    )
+    assert run_config_command(args) == 0
+    data = tomllib.loads(path.read_text())
+    assert data["tracing"]["disabled"] is True
+    assert data["models"]["default"] == "existing-model"
+    assert auth_store.get_stored_key("langsmith") == "private-key"
+    output = capsys.readouterr().out
+    assert "OFF" in output
+    assert "restart" in output.lower()
+    assert "private-key" not in output
+    args.tracing_action = "status"
+    assert run_config_command(args) == 0
+    assert "OFF" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("contents", ["invalid [[[", 'tracing = "bad"'])
+def test_tracing_off_refuses_broken_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    contents: str,
+) -> None:
+    from deepagents_code import model_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(contents)
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", path)
+    args = argparse.Namespace(
+        config_command="tracing", tracing_action="off", output_format="text"
+    )
+    assert run_config_command(args) == 1
+    assert path.read_text() == contents
+    assert "OFF" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", [None, "get"])
+def test_config_surfaces_tracing_status_and_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str | None,
+) -> None:
+    from deepagents_code import config
+
+    monkeypatch.setattr(config, "_bootstrap_state", config._BootstrapState())
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "private-key")
+    args = argparse.Namespace(
+        config_command=command, key="tracing", output_format="text"
+    )
+    assert run_config_command(args) == 0
+    output = capsys.readouterr().out
+    assert "LangSmith agent tracing: ON" in output
+    assert "config tracing off" in output
+    assert "private-key" not in output
+
+
+@pytest.mark.parametrize("sdk_override", [False, None])
+def test_tracing_status_respects_sdk_disable(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    sdk_override: bool | None,
+) -> None:
+    from langsmith._internal import _context
+
+    from deepagents_code import config
+
+    monkeypatch.setattr(config, "_bootstrap_state", config._BootstrapState())
+    monkeypatch.setattr(_context, "_GLOBAL_TRACING_ENABLED", sdk_override)
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv(
+        "LANGSMITH_TRACING_V2", "false" if sdk_override is None else "true"
+    )
+    monkeypatch.setenv("LANGSMITH_API_KEY", "private-key")
+    args = argparse.Namespace(
+        config_command="tracing", tracing_action="status", output_format="text"
+    )
+    assert run_config_command(args) == 0
+    assert "LangSmith agent tracing: OFF" in capsys.readouterr().out
+
+
+def test_tracing_off_reports_managed_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from unit_tests.conftest import redirect_managed_config
+
+    path = tmp_path / "managed.toml"
+    path.write_text("[tracing]\ndisabled = false\n")
+    redirect_managed_config(monkeypatch, path)
+    args = argparse.Namespace(
+        config_command="tracing", tracing_action="off", output_format="text"
+    )
+    assert run_config_command(args) == 1
+    output = capsys.readouterr().out
+    assert "managed policy" in output
+    assert "OFF" not in output
+
+
+def test_tracing_reset_restores_stored_key_opt_in(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from deepagents_code import auth_store, config, model_config
+
+    path = tmp_path / "config.toml"
+    path.write_text("[tracing]\ndisabled = true\n")
+    monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", path)
+    monkeypatch.setattr(config, "_bootstrap_state", config._BootstrapState())
+    auth_store.set_stored_key("langsmith", "private-key")
+    args = argparse.Namespace(
+        config_command="tracing", tracing_action="reset", output_format="text"
+    )
+    assert run_config_command(args) == 0
+    assert tomllib.loads(path.read_text())["tracing"]["disabled"] is False
+    assert "LangSmith agent tracing: ON" in capsys.readouterr().out
+
+
 def test_resolve_empty_stored_key_falls_back_to_env(stored_auth_dir, monkeypatch):
     """A stored entry with a blank key does not mask a working env var."""
     import json

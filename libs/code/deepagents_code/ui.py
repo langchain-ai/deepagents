@@ -908,12 +908,23 @@ def show_config_help() -> None:
     console.print("  dcode config [options]", markup=False)
     console.print("  dcode config get <key|section> [--json] [--verbose]", markup=False)
     console.print("  dcode config path [--json]", markup=False)
+    console.print("  dcode config tracing [status|off|reset] [--json]", markup=False)
     console.print()
     console.print("Show effective configuration values and their source.")
     console.print()
     console.print("[bold]Commands:[/bold]", style=theme.PRIMARY)
     console.print("  get <key|section> Show one option, or a whole section")
     console.print("  path              Show config file locations")
+    console.print(
+        "  tracing           Show whether LangSmith agent tracing is ON or OFF"
+    )
+    console.print(
+        "  tracing off       Persistently disable agent tracing; keep credentials"
+    )
+    console.print(
+        "  tracing reset     Clear the opt-out; restore normal tracing configuration"
+    )
+    console.print("  Restart existing sessions and servers after changing tracing.")
     console.print()
     _print_option_section(
         "  -v, --verbose, --all  Also show each option's description and how to set it",

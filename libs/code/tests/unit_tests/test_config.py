@@ -5156,6 +5156,97 @@ class TestPrefixedLangsmithBridge:
         assert os.environ["LANGSMITH_TRACING"] == ""
 
 
+class TestPersistentTracingOptOut:
+    @pytest.fixture
+    def tracing_config(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        path = tmp_path / "config.toml"
+        path.write_text("[tracing]\ndisabled = true\n")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", path)
+        monkeypatch.chdir(tmp_path)
+        return path
+
+    @pytest.mark.usefixtures("tracing_config")
+    @pytest.mark.parametrize("with_flags", [False, True])
+    def test_status_and_sdk_publication_honor_opt_out(
+        self, monkeypatch: pytest.MonkeyPatch, with_flags: bool
+    ) -> None:
+        import os
+
+        snapshot = {"LANGSMITH_API_KEY": "kept-key"}
+        if with_flags:
+            snapshot.update(
+                dict.fromkeys(config_module._TRACING_ENABLE_ENV_VARS, "true")
+            )
+            snapshot.update(
+                dict.fromkeys(
+                    (
+                        "DEEPAGENTS_CODE_LANGSMITH_TRACING",
+                        "DEEPAGENTS_CODE_LANGCHAIN_TRACING_V2",
+                    ),
+                    "true",
+                )
+            )
+        for key, value in snapshot.items():
+            monkeypatch.setenv(key, value)
+        status = config_module.get_tracing_status()
+        assert not status.enabled
+        assert status.explicitly_disabled
+        config_module.reconcile_tracing_environment(snapshot)
+        assert all(
+            os.environ[var] == "false" for var in config_module._TRACING_ENABLE_ENV_VARS
+        )
+        assert os.environ["LANGSMITH_API_KEY"] == "kept-key"
+        assert not config_module._tracing_enabled_from(snapshot)
+
+    def test_bootstrap_and_auth_keep_opt_out_without_changing_user_commands(
+        self, tracing_config: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+
+        from deepagents_code import auth_store
+
+        monkeypatch.setattr(
+            model_config, "DEFAULT_STATE_DIR", tracing_config.parent / "state"
+        )
+        auth_store.set_stored_key("langsmith", "stored-key")
+        monkeypatch.setattr(
+            config_module, "_bootstrap_state", config_module._BootstrapState()
+        )
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGCHAIN_TRACING_V2", "true")
+        config_module._ensure_bootstrap()
+        assert config_module._bootstrap_state.error is None
+        apply_stored_langsmith_auth()
+        assert all(
+            os.environ[var] == "false" for var in config_module._TRACING_ENABLE_ENV_VARS
+        )
+        assert auth_store.get_stored_key("langsmith") == "stored-key"
+        user_env = dict(os.environ)
+        config_module.restore_user_langsmith_env(user_env)
+        assert user_env["LANGSMITH_TRACING"] == "true"
+        assert user_env["LANGCHAIN_TRACING_V2"] == "true"
+
+    @pytest.mark.parametrize("contents", ["", "[tracing]\ndisabled = false\n"])
+    def test_default_preserves_existing_opt_in(
+        self, tracing_config: Path, monkeypatch: pytest.MonkeyPatch, contents: str
+    ) -> None:
+        import os
+
+        from deepagents_code import auth_store
+
+        tracing_config.write_text(contents, encoding="utf-8")
+        monkeypatch.setattr(
+            model_config, "DEFAULT_STATE_DIR", tracing_config.parent / "state"
+        )
+        assert not config_module._tracing_enabled_from({})
+        assert not config_module._tracing_explicitly_disabled_from({})
+        auth_store.set_stored_key("langsmith", "stored-key")
+        apply_stored_langsmith_auth()
+        assert os.environ["LANGSMITH_TRACING"] == "true"
+        assert config_module._tracing_enabled_from(os.environ)
+
+
 class TestTracingEnvironmentReconcile:
     """The LangSmith SDK reads `os.environ`, so the snapshot is published."""
 

@@ -1735,6 +1735,7 @@ class TestExecuteTaskTextualStreamCompletion:
         message = mount_message.await_args_list[0].args[0]
         assert str(message._content) == f"Operation stopped by hook: {stop}"
         callback.assert_called_once_with()
+        assert adapter.stream_completed
 
     async def test_interrupted_stream_skips_completion_callback(self) -> None:
         adapter = TextualUIAdapter(
@@ -1758,6 +1759,7 @@ class TestExecuteTaskTextualStreamCompletion:
             )
 
         callback.assert_not_called()
+        assert not adapter.stream_completed
 
 
 class TestExecuteTaskTextualTurnMarkers:
@@ -5011,6 +5013,7 @@ class TestExecuteTaskTextualAskUser:
         assert len(app_messages) == 1
         assert str(app_messages[0]._content) == expected_message
         assert token_events == ["pending", "show:False"]
+        assert not adapter.stream_completed
 
     async def test_dismissed_questions_accumulate_across_cancelled_calls(self) -> None:
         """Two dismissed calls of one question each read as plural.

@@ -471,6 +471,62 @@ def test_main_lists_threads(
     assert any("ignored when listing" in warning for warning in output["warnings"])
 
 
+@pytest.mark.parametrize(
+    ("has_names_table", "saved_name", "checkpoint_name"),
+    [
+        (True, "Renamed title", "Stale title"),
+        (True, "Saved title", None),
+        (True, None, "Checkpoint title"),
+        (False, None, "Legacy title"),
+        (True, None, None),
+        (False, None, None),
+    ],
+)
+def test_main_summary_includes_thread_name(
+    inspector: ModuleType,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    has_names_table: bool,
+    saved_name: str | None,
+    checkpoint_name: str | None,
+) -> None:
+    db = tmp_path / "sessions.db"
+    writable = _create_database(db)
+    writable.executemany(
+        "INSERT INTO checkpoints "
+        "(thread_id, checkpoint_ns, checkpoint_id, metadata) VALUES (?, ?, ?, ?)",
+        [
+            ("thread-abc", "", "001", json.dumps({"thread_name": "Old title"})),
+            ("thread-abc", "", "002", json.dumps({"thread_name": checkpoint_name})),
+            ("thread-abc", "subagent", "999", '{"thread_name": "Subagent title"}'),
+        ],
+    )
+    if has_names_table:
+        writable.execute(
+            "CREATE TABLE dcode_thread_names (thread_id TEXT PRIMARY KEY, name TEXT)"
+        )
+        writable.execute(
+            "INSERT INTO dcode_thread_names VALUES ('other-thread', 'Other title')"
+        )
+        if saved_name is not None:
+            writable.execute(
+                "INSERT INTO dcode_thread_names VALUES (?, ?)",
+                ("thread-abc", saved_name),
+            )
+    writable.commit()
+    writable.close()
+
+    monkeypatch.setattr(
+        inspector.sys,
+        "argv",
+        ["prog", "thread-abc", "--db", str(db), "--mode", "summary"],
+    )
+    inspector.main()
+    output = json.loads(capsys.readouterr().out)
+    assert output["thread"]["thread_name"] == (saved_name or checkpoint_name)
+
+
 def test_main_latest_turn_end_to_end(
     inspector: ModuleType,
     tmp_path: Path,

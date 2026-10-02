@@ -322,6 +322,66 @@ class TestThreadSelectorNavigateAndSelect:
     """Tests for navigating then selecting a specific thread."""
 
 
+class TestThreadNames:
+    """Named threads remain distinct from initial prompts and searchable."""
+
+    @pytest.mark.parametrize("name", [None, "Cache repair"])
+    async def test_name_and_prompt_remain_visible_at_80_columns(
+        self, name: str | None
+    ) -> None:
+        threads: list[ThreadInfo] = [
+            {**MOCK_THREADS[0], "thread_name": name},
+            {**MOCK_THREADS[1]},
+        ]
+        with _patch_list_threads(threads), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(80, 30)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                for width in (80, 160, 80):
+                    await pilot.resize_terminal(width, 30)
+                    await pilot.pause()
+                    header = app.screen.query_one(
+                        ".thread-list-header .thread-cell-thread_name", Static
+                    )
+                    assert header.display
+                    assert header.content_region.width >= len("Name")
+                    rows = app.screen.query(".thread-option")
+                    assert len(rows) == len(threads)
+                    for row in rows:
+                        cell = row.query_one(".thread-cell-thread_name", Static)
+                        assert cell.display
+                        assert cell.content_region.width >= len("Name")
+                        prompt = row.query_one(".thread-cell-initial_prompt", Static)
+                        visible = prompt.content_region.intersection(row.content_region)
+                        assert visible.width >= len("Fix")
+
+    async def test_filter_finds_name_and_renders_literal_markup(self) -> None:
+        threads: list[ThreadInfo] = [
+            {**MOCK_THREADS[0], "thread_name": "[bold]Login[/bold]"},
+            {**MOCK_THREADS[1]},
+        ]
+        with _patch_list_threads(threads), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(160, 45)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                names = screen.query(".thread-cell-thread_name").results(Static)
+                assert [str(cell.render()) for cell in names] == [
+                    "Name",
+                    "[bold]Login[/bold]",
+                    "",
+                ]
+                screen.query_one("#thread-filter", Input).value = "Login"
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                assert [t["thread_id"] for t in screen._filtered_threads] == [
+                    "abc12345"
+                ]
+
+
 class TestThreadSelectorTabSort:
     """Tests for sort toggling and focus traversal in the selector."""
 
@@ -908,6 +968,38 @@ class TestThreadSelectorCheckpointDetailErrors:
 
 class TestThreadSelectorPrefetchedRows:
     """Tests for rendering with prefetched rows from startup cache."""
+
+    @pytest.mark.parametrize(
+        ("cached_name", "fresh_name"),
+        [(None, "Cache repair"), ("Cached name", "New name"), ("Cached name", None)],
+    )
+    async def test_name_changes_refresh_cached_column_layout(
+        self, cached_name: str | None, fresh_name: str | None
+    ) -> None:
+        """Name-only refreshes update text while keeping the enabled column visible."""
+        cached: ThreadInfo = {
+            **MOCK_THREADS[0],
+            "latest_checkpoint_id": "cp_1",
+            "thread_name": cached_name,
+        }
+        with _patch_list_threads([cached.copy()]) as list_threads, _patch_columns():
+            app = ThreadSelectorTestApp(current_thread=None)
+            async with app.run_test(size=(160, 45)) as pilot:
+                screen = ThreadSelectorScreen(initial_threads=[cached], filter_cwd=None)
+                app.push_screen(screen)
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+
+                list_threads.return_value = [{**cached, "thread_name": fresh_name}]
+                screen.refresh_threads()
+                await app.workers.wait_for_complete()
+                await pilot.pause()
+
+                for cell in screen.query(".thread-cell-thread_name").results(Static):
+                    assert cell.display
+                    assert cell.content_region.width >= len("Name")
+                name = screen.query_one("ThreadOption .thread-cell-thread_name", Static)
+                assert str(name.render()) == (fresh_name or "")
 
     async def test_prefetched_prompt_is_preserved_during_refresh(self) -> None:
         """Refreshing prefetched rows should not blank the prompt column first."""

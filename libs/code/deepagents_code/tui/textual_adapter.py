@@ -841,6 +841,9 @@ class TextualUIAdapter:
         show_diff_line_numbers: bool = True,
     ) -> None:
         """Initialize the adapter."""
+        self.stream_completed = False
+        """Whether the most recent execution reached a clean end of stream."""
+
         self._mount_message = mount_message
         """Async callback to mount a message widget to the chat."""
 
@@ -1770,6 +1773,7 @@ async def execute_task_textual(
     from deepagents_code.hooks.client_lifecycle import ClientHookStopError
     from deepagents_code.hooks.models.domain import HookEvent
 
+    adapter.stream_completed = False
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
     ask_user_adapter = _get_ask_user_adapter()
     adapter._reset_auto_mode_review_tracking()
@@ -4095,6 +4099,7 @@ async def execute_task_textual(
                 if not hooks.has_handlers(HookEvent.NOTIFICATION):
                     await dispatch_hook("task.complete", {"thread_id": thread_id})
                 stream_completed = True
+                adapter.stream_completed = True
                 break
 
     except ClientHookStopError:

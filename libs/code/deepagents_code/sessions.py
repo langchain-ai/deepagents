@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import sqlite3
 import time
@@ -36,6 +37,7 @@ _initial_prompt_cache: dict[str, tuple[str | None, str | None]] = {}
 _MAX_INITIAL_PROMPT_CACHE = 4096
 _recent_threads_cache: dict[tuple[str | None, int], list[ThreadInfo]] = {}
 _MAX_RECENT_THREADS_CACHE_KEYS = 16
+MAX_THREAD_NAME_LENGTH = 50
 _DEFAULT_SQLITE_TIMEOUT = 5.0
 """Seconds to wait out a locked database; matches the `sqlite3` default."""
 
@@ -211,6 +213,9 @@ class ThreadInfo(TypedDict):
 
     initial_prompt: NotRequired[str | None]
     """First human message in the thread."""
+
+    thread_name: NotRequired[str | None]
+    """User-assigned or generated thread name."""
 
     message_count: NotRequired[int]
     """Number of messages in the thread."""
@@ -408,8 +413,11 @@ in order. Keep the indexed expressions in sync with the `list_threads` query.
 async def _ensure_threads_list_index(conn: aiosqlite.Connection) -> None:
     """Create the `list_threads` covering index if it does not already exist.
 
-    Idempotent: `CREATE INDEX IF NOT EXISTS` is a near-instant catalog check once
-    the index exists. The one-time build on a pre-existing large database costs a
+    Reuse either v2 or its v3 superset from early thread-naming builds. Rebuilding
+    it to include names can hold the write lock past workspace binding's timeout.
+    Names are loaded separately for the displayed threads instead.
+
+    The one-time build on a pre-existing large database costs a
     single full table scan (seconds to tens of seconds), after which every
     `list_threads` call is a sub-second index-only scan. Runs in the aiosqlite
     worker thread, so it does not block the event loop.
@@ -419,6 +427,12 @@ async def _ensure_threads_list_index(conn: aiosqlite.Connection) -> None:
     list` (e.g. on a read-only database or under write-lock contention).
     """
     try:
+        async with conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name IN (?, ?)",
+            (_THREADS_LIST_INDEX, "idx_dcode_threads_list_v3"),
+        ) as cursor:
+            if await cursor.fetchone():
+                return
         await conn.execute(
             f"CREATE INDEX IF NOT EXISTS {_THREADS_LIST_INDEX} ON checkpoints("
             "thread_id, "
@@ -440,6 +454,49 @@ async def _ensure_threads_list_index(conn: aiosqlite.Connection) -> None:
             _THREADS_LIST_INDEX,
             exc_info=True,
         )
+
+
+async def _populate_thread_names(
+    conn: aiosqlite.Connection, threads: list[ThreadInfo]
+) -> None:
+    """Load names after limiting the list, keeping its covering index unchanged."""
+    names: dict[str, str | None] = {}
+    if await _table_exists(conn, "dcode_thread_names"):
+        async with conn.execute(
+            "SELECT thread_id, name FROM dcode_thread_names "
+            "WHERE thread_id IN (SELECT value FROM json_each(?))",
+            (json.dumps([thread["thread_id"] for thread in threads]),),
+        ) as cursor:
+            names = {row[0]: row[1] for row in await cursor.fetchall()}
+    missing = [
+        thread["thread_id"] for thread in threads if thread["thread_id"] not in names
+    ]
+    if missing:
+        names.update(await _checkpoint_thread_names(conn, missing))
+    for thread in threads:
+        thread["thread_name"] = names.get(thread["thread_id"])
+
+
+async def _checkpoint_thread_names(
+    conn: aiosqlite.Connection, thread_ids: list[str]
+) -> dict[str, str | None]:
+    """Read names from the latest root checkpoints of the requested threads.
+
+    Saved names come from `dcode_thread_names`; this fallback is for checkpoint
+    metadata only. Seek via the primary key instead of scanning an unnamed
+    thread's entire history looking for a non-null name.
+
+    Returns:
+        Names found in the latest checkpoints, keyed by thread ID.
+    """
+    async with conn.execute(
+        "SELECT value, (SELECT json_extract(metadata, '$.thread_name') "
+        "FROM checkpoints WHERE thread_id = requested.value "
+        "AND checkpoint_ns = '' "
+        "ORDER BY checkpoint_id DESC LIMIT 1) FROM json_each(?) AS requested",
+        (json.dumps(thread_ids),),
+    ) as cursor:
+        return {row[0]: row[1] for row in await cursor.fetchall()}
 
 
 async def list_threads(
@@ -537,6 +594,9 @@ async def list_threads(
                 )
                 for r in rows
             ]
+
+        if threads:
+            await _populate_thread_names(conn, threads)
 
         # Fetch message counts if requested
         if include_message_count and threads:
@@ -1638,6 +1698,98 @@ async def find_similar_threads(thread_id: str, limit: int = 3) -> list[str]:
             return [r[0] for r in rows]
 
 
+def validate_thread_name(name: str) -> str:
+    """Validate a thread name.
+
+    Args:
+        name: Proposed name.
+
+    Returns:
+        Trimmed name.
+
+    Raises:
+        ValueError: If empty, overlong, or containing nonprintable characters.
+    """
+    if any(not char.isprintable() for char in name):
+        msg = "Thread names must be a single line without control characters"
+        raise ValueError(msg)
+    name = name.strip()
+    if not name or len(name) > MAX_THREAD_NAME_LENGTH:
+        msg = "Thread names must contain between 1 and 50 characters"
+        raise ValueError(msg)
+    return name
+
+
+async def get_thread_name(thread_id: str) -> str | None:
+    """Read a thread's durable name independently of checkpoint revisions.
+
+    Args:
+        thread_id: Thread to look up.
+
+    Returns:
+        Saved name, or `None` for unnamed threads.
+    """
+    async with _connect() as conn:
+        if await _table_exists(conn, "dcode_thread_names"):
+            async with conn.execute(
+                "SELECT name FROM dcode_thread_names WHERE thread_id = ?", (thread_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return row[0]
+        if not await _table_exists(conn, "checkpoints"):
+            return None
+        return (await _checkpoint_thread_names(conn, [thread_id])).get(thread_id)
+
+
+async def rename_thread(
+    thread_id: str, name: str, *, only_if_unnamed: bool = False
+) -> bool:
+    """Atomically name an existing thread without mutating its conversation.
+
+    Args:
+        thread_id: Thread to name.
+        name: Nonempty, printable, single-line name of at most 50 characters.
+        only_if_unnamed: Preserve a previously generated or manually assigned name.
+
+    Returns:
+        Whether an existing thread was renamed.
+    """
+    name = validate_thread_name(name)
+    async with _connect() as conn:
+        await conn.execute("BEGIN IMMEDIATE")
+        if not await _table_exists(conn, "checkpoints"):
+            return False
+        await conn.execute(
+            "CREATE TABLE IF NOT EXISTS dcode_thread_names "
+            "(thread_id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL)"
+        )
+        async with conn.execute(
+            "INSERT INTO dcode_thread_names (thread_id, name) "
+            "SELECT ?, ? WHERE EXISTS "
+            "(SELECT 1 FROM checkpoints WHERE thread_id = ?) "
+            "AND (? = 0 OR NOT EXISTS (SELECT 1 FROM checkpoints "
+            "WHERE thread_id = ? "
+            "AND json_extract(metadata, '$.thread_name') IS NOT NULL)) "
+            "ON CONFLICT(thread_id) DO UPDATE SET name = excluded.name WHERE ? = 0",
+            (thread_id, name, thread_id, only_if_unnamed, thread_id, only_if_unnamed),
+        ) as cursor:
+            if not cursor.rowcount:
+                return False
+        await conn.execute(
+            "UPDATE checkpoints SET metadata = json_set(metadata, '$.thread_name', ?) "
+            "WHERE thread_id = ? AND checkpoint_id = "
+            "(SELECT MAX(checkpoint_id) FROM checkpoints WHERE thread_id = ?)",
+            (name, thread_id, thread_id),
+        )
+        await conn.commit()
+    for rows in _recent_threads_cache.values():
+        for thread in rows:
+            if thread["thread_id"] == thread_id:
+                thread["thread_name"] = name
+    return True
+
+
 async def delete_thread(thread_id: str) -> bool:
     """Delete thread checkpoints, side-question costs, and offloaded history.
 
@@ -1655,6 +1807,10 @@ async def delete_thread(thread_id: str) -> bool:
     deleted = False
     async with _connect() as conn:
         await delete_cost(conn, thread_id)
+        if await _table_exists(conn, "dcode_thread_names"):
+            await conn.execute(
+                "DELETE FROM dcode_thread_names WHERE thread_id = ?", (thread_id,)
+            )
         if await _table_exists(conn, "checkpoints"):
             cursor = await conn.execute(
                 "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
@@ -1922,6 +2078,7 @@ async def list_threads_command(
 
     table = Table(title=title, show_header=True, header_style=f"bold {theme.PRIMARY}")
     table.add_column("Thread ID", style="bold")
+    table.add_column("Name", max_width=50, no_wrap=True)
     table.add_column("Agent")
     table.add_column("Messages", justify="right")
     if verbose:
@@ -1937,6 +2094,7 @@ async def list_threads_command(
     for t in threads:
         row: list[str] = [
             t["thread_id"],
+            escape_markup(t.get("thread_name") or ""),
             t["agent_name"] or "unknown",
             str(t.get("message_count", 0)),
         ]

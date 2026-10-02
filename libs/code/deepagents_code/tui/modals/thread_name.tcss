@@ -1,0 +1,25 @@
+ThreadNameScreen {
+    align: center middle;
+
+    & > Vertical {
+        width: 64;
+        height: auto;
+        padding: 1 2;
+        border: round $primary;
+        background: $surface;
+    }
+
+    .thread-name-heading {
+        text-style: bold;
+        margin-bottom: 1;
+    }
+
+    .thread-name-help {
+        color: $text-muted;
+    }
+
+    #thread-name-error {
+        color: $error;
+        height: auto;
+    }
+}

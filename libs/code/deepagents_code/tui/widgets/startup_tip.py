@@ -40,7 +40,7 @@ _TIPS: dict[str, int] = {
     "Use /uninstall to remove an optional integration": 1,
     "Use /effort to change the current model's reasoning effort": 1,
     "Start with --show-reasoning to display provider-visible reasoning": 1,
-    "Use config tracing off in your CLI to persistently disable agent tracing": 1,
+    "Start with --no-tracing to disable LangSmith agent tracing for a session": 1,
     _TIP_EXTERNAL_EDITOR: 1,
     "Use /skill:<name> to invoke a skill directly": 1,
     "Use /theme to customize the TUI's colors": 1,

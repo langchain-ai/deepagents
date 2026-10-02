@@ -130,22 +130,6 @@ def setup_config_parser(
     )
     add_output_args(get_parser)
 
-    tracing_parser = config_sub.add_parser(
-        "tracing",
-        help="Show or persistently disable LangSmith agent tracing",
-        add_help=False,
-    )
-    tracing_parser.add_argument(
-        "tracing_action",
-        nargs="?",
-        choices=("status", "off", "reset"),
-        default="status",
-    )
-    tracing_parser.add_argument(
-        "-h", "--help", action=make_help_action(_lazy_ui_help("show_config_help"))
-    )
-    add_output_args(tracing_parser)
-
     path_parser = config_sub.add_parser(
         "path",
         help="Show config file locations",
@@ -688,95 +672,28 @@ def _config_json_row(
     return row
 
 
-def _tracing_summary() -> dict[str, str | bool]:
-    """Return locally resolved tracing status, not remote server state."""
+def _print_tracing_summary() -> None:
+    """Show local tracing state and the session/environment opt-outs."""
     from langsmith.utils import tracing_is_enabled
 
+    from deepagents_code._invocation import invoked_name
     from deepagents_code.config import (
         _clear_langsmith_env_caches,
+        console,
         is_tracing_disabled,
     )
 
     _clear_langsmith_env_caches()
-    disabled = is_tracing_disabled()
-    enabled = not disabled and tracing_is_enabled() is True
-    return {
-        "enabled": enabled,
-        "disabled": disabled,
-        "status": "ON" if enabled else "OFF",
-        "scope": (
-            "Local configuration; restart existing sessions and servers "
-            "to apply changes."
-        ),
-    }
-
-
-def _print_tracing_summary() -> None:
-    """Make the effective status and persistent opt-out discoverable."""
-    from deepagents_code._invocation import invoked_name
-    from deepagents_code.config import console
-
-    summary = _tracing_summary()
-    reason = " (disabled in config)" if summary["disabled"] else ""
-    console.print(f"LangSmith agent tracing: {summary['status']}{reason}", markup=False)
+    enabled = not is_tracing_disabled() and tracing_is_enabled() is True
+    console.print("LangSmith agent tracing: " + ("ON" if enabled else "OFF"))
+    console.print(f"Disable for a session: {invoked_name()} --no-tracing", markup=False)
+    console.print("Or set DEEPAGENTS_CODE_LANGSMITH_TRACING=false", markup=False)
     console.print(
-        f"Disable: {invoked_name()} config tracing off | "
-        f"Check: {invoked_name()} config tracing",
-        markup=False,
+        "Local configuration only; existing servers are unaffected. "
+        "Local history and model-provider requests are unchanged.",
+        style="dim",
     )
-    console.print(summary["scope"], style="dim", markup=False)
     console.print()
-
-
-def _run_tracing(action: str, output_format: OutputFormat) -> int:
-    """Return an exit code after inspecting or saving the tracing opt-out."""
-    from deepagents_code.config import _ensure_bootstrap, console, is_tracing_disabled
-    from deepagents_code.configuration.writer import update_user_config
-
-    error = None
-    if action != "status":
-        disabled = action == "off"
-
-        def mutate(data: dict[str, Any]) -> bool:
-            section = data.setdefault("tracing", {})
-            if not isinstance(section, dict):
-                msg = "The tracing configuration must be a TOML table."
-                raise TypeError(msg)
-            changed = section.get("disabled") is not disabled
-            section["disabled"] = disabled
-            return changed
-
-        try:
-            result = update_user_config(mutate)
-        except TypeError:
-            error = "The tracing configuration must be a TOML table."
-        else:
-            if not result.ok:
-                error = (
-                    "Could not save tracing preference; "
-                    "check config file syntax and permissions."
-                )
-            elif is_tracing_disabled() != disabled:
-                error = "Tracing preference is not effective; check managed policy."
-    if error:
-        if output_format == "json":
-            write_json("config tracing", {"error": error})
-        else:
-            console.print(error, style="red", markup=False)
-        return 1
-    _ensure_bootstrap()
-    if output_format == "json":
-        write_json("config tracing", _tracing_summary())
-    else:
-        _print_tracing_summary()
-        if action == "off":
-            console.print("Saved persistent opt-out. Stored credentials are unchanged.")
-        elif action == "reset":
-            console.print(
-                "Opt-out cleared. Existing environment and stored credentials "
-                "decide tracing."
-            )
-    return 0
 
 
 def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
@@ -1375,8 +1292,6 @@ def run_config_command(args: argparse.Namespace) -> int:
         return _run_get(args.key, output_format, verbose=verbose)
     if command == "path":
         return _run_path(output_format)
-    if command == "tracing":
-        return _run_tracing(args.tracing_action, output_format)
 
     from deepagents_code.ui import show_config_help
 

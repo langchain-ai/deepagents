@@ -2765,6 +2765,11 @@ def parse_args() -> argparse.Namespace:
         "Run `dcode mcp config` to see discovery paths.",
     )
     parser.add_argument(
+        "--no-tracing",
+        action="store_true",
+        help="Disable LangSmith agent tracing for this session (keep local history)",
+    )
+    parser.add_argument(
         "--no-mcp",
         action="store_true",
         help="Disable all MCP tool loading (skip auto-discovery and explicit config)",
@@ -5294,6 +5299,8 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+        if getattr(args, "no_tracing", False):
+            os.environ["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "false"
         _install_cli_provider(args)
         explicit_approval_flag = (
             "--yolo"

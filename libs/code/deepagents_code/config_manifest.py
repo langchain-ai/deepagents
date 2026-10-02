@@ -2596,19 +2596,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     ),
     # --- Tracing -------------------------------------------------------
     ConfigOption(
-        key="tracing.disabled",
-        group="Tracing",
-        summary=(
-            "Disable LangSmith agent tracing regardless of credentials or environment "
-            "flags. Restart running sessions and servers after changing this setting. "
-            "False preserves the existing tracing configuration; it does not enable "
-            "tracing by itself."
-        ),
-        kind=OptionKind.BOOL,
-        default=False,
-        toml_keys=("tracing", "disabled"),
-    ),
-    ConfigOption(
         key="tracing.langsmith_project",
         group="Tracing",
         summary="LangSmith project name for deepagents agent traces.",

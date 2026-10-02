@@ -195,7 +195,7 @@ Example:
         return tools_by_integration.get(name, [])
 
 
-    SkillsMiddleware(backend=backend, sources=["/skills/"], skill_tools=resolve_skill_tools)
+    SkillsMiddleware(backend=backend, sources=["/skills/"], tools=resolve_skill_tools)
     ```
 """
 
@@ -884,13 +884,13 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
       include_tools: create_customer_request list_customer_requests
     ```
 
-    Pass those tools as `skill_tools`, either as a list or as a
+    Pass those tools as `tools`, either as a list or as a
     `SkillToolResolver` that looks them up by name. The model sees a skill tool
     only after it uses `read_file` on a skill that lists it, and only while that
     read stays in context. Until then, calling the tool fails as an unknown tool.
 
-    `include_tools` can also list a tool passed in the agent's `tools` rather
-    than `skill_tools`. If that tool is deferred
+    `include_tools` can also list a tool passed to the agent rather than to
+    this middleware. If that tool is deferred
     (`extras={"defer_loading": True}`), reading the skill discloses it
     automatically.
 
@@ -909,7 +909,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             ...,
             SummarizationMiddleware(...),
             ModelFallbackMiddleware(...),
-            SkillsMiddleware(backend=backend, sources=["/skills/"], skill_tools=[...]),
+            SkillsMiddleware(backend=backend, sources=["/skills/"], tools=[...]),
             AnthropicPromptCachingMiddleware(),
         ],
     )
@@ -935,7 +935,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         backend: BackendProtocol,
         sources: Sequence[SkillSource],
         system_prompt: str | None = SKILLS_SYSTEM_PROMPT,
-        skill_tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None = None,
+        tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None = None,
     ) -> None:
         """Initialize the skills middleware.
 
@@ -953,7 +953,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 `{skills_list}` slots for runtime substitution. Pass `None`
                 to skip appending entirely (skills are still loaded into
                 `state["skills_metadata"]`).
-            skill_tools: Tools the model sees only after reading a skill that
+            tools: Tools the model sees only after reading a skill that
                 lists them in `metadata.include_tools`.
 
                 A list of tools, or a `SkillToolResolver` that returns the tools
@@ -963,10 +963,10 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         Raises:
             TypeError: If a tuple entry in `sources` is not exactly a
                 `(str, str)` pair, if `system_prompt` is not `str` or
-                `None`, if `skill_tools` is a single tool rather than a list,
-                or if a `skill_tools` entry is a provider-native tool dict.
+                `None`, if `tools` is a single tool rather than a list,
+                or if a `tools` entry is a provider-native tool dict.
             ValueError: If `system_prompt` is a string missing any of the
-                required format slots, or if `skill_tools` repeats a name.
+                required format slots, or if `tools` repeats a name.
         """
         if system_prompt is not None:
             if not isinstance(system_prompt, str):
@@ -984,9 +984,10 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         self.sources: list[str] = [_source_path(s) for s in sources]
         self.source_labels: list[str] = [_derive_source_label(s) for s in sources]
         self.system_prompt_template = system_prompt
-        # Kept off `self.tools`: `create_agent` registers those with the tool
-        # node, which would make skill tools callable without their skill.
-        self._skill_tool_resolver = _normalize_skill_tools(skill_tools)
+        # Kept off `self.tools`, unlike other middleware's tools: `create_agent`
+        # registers those with the tool node, which would make skill tools
+        # callable without their skill.
+        self._skill_tool_resolver = _normalize_skill_tools(tools)
 
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""

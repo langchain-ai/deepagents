@@ -330,7 +330,7 @@ def _no_warnings() -> Iterator[None]:
 def test_async_resolver_on_the_sync_entry_point_raises(tmp_path: Path) -> None:
     write_skill(tmp_path, "linear", "linear")
     agent = skills_agent(tmp_path, _model(ai(read("r1", path=LINEAR_PATH))), skill_tools=_async_linear)
-    msg = r"^skill_tools resolver returned an awaitable for 'linear'; an async resolver needs the agent's async entry point \(e\.g\. `ainvoke`\)"
+    msg = r"^skill tool resolver returned an awaitable for 'linear'; an async resolver needs the agent's async entry point \(e\.g\. `ainvoke`\)"
 
     with _no_warnings(), pytest.raises(TypeError, match=msg):
         invoke(agent, {"messages": [HumanMessage("go")]}, "sync")
@@ -370,8 +370,8 @@ def test_resolver_error_at_tool_time_propagates(tmp_path: Path, mode: str) -> No
 @pytest.mark.parametrize(
     ("output", "msg"),
     [
-        pytest.param([{"name": "x"}], r"^skill_tools resolver returned a dict for 'linear'; expected BaseTool instances", id="non-tool-item"),
-        pytest.param(list_issues, r"^skill_tools resolver must return a sequence of BaseTool for 'linear', got StructuredTool", id="bare-tool"),
+        pytest.param([{"name": "x"}], r"^skill tool resolver returned a dict for 'linear'; expected BaseTool instances", id="non-tool-item"),
+        pytest.param(list_issues, r"^skill tool resolver must return a sequence of BaseTool for 'linear', got StructuredTool", id="bare-tool"),
     ],
 )
 def test_resolver_returning_something_other_than_tools_raises(tmp_path: Path, mode: str, *, output: object, msg: str) -> None:
@@ -383,12 +383,12 @@ def test_resolver_returning_something_other_than_tools_raises(tmp_path: Path, mo
 
 
 class TestConstruction:
-    """`skill_tools` mistakes in the resolver form raise when the agent or middleware is built."""
+    """`tools` mistakes in the resolver form raise when the agent or middleware is built."""
 
     def test_a_bare_tool_raises(self) -> None:
-        msg = r"^skill_tools must be a list of tools or a resolver function, got StructuredTool; wrap a single tool in a list$"
+        msg = r"^tools must be a list of tools or a resolver function, got StructuredTool; wrap a single tool in a list$"
         with pytest.raises(TypeError, match=msg):
-            SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], skill_tools=create_issue)  # ty: ignore[invalid-argument-type]
+            SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], tools=create_issue)  # ty: ignore[invalid-argument-type]
 
 
 def _task(subagent_type: str, call_id: str = "t1") -> AIMessage:
@@ -436,7 +436,7 @@ class TestSubagents:
             "description": "d",
             "model": worker_model,
             "skills": [SKILLS_SOURCE],
-            "middleware": [SkillsMiddleware(backend=skills_backend(tmp_path), sources=[SKILLS_SOURCE], skill_tools=own)],
+            "middleware": [SkillsMiddleware(backend=skills_backend(tmp_path), sources=[SKILLS_SOURCE], tools=own)],
         }
 
         invoke(skills_agent(tmp_path, _model(_task("worker")), skill_tools=parent, subagents=[worker]), {"messages": [HumanMessage("go")]}, mode)

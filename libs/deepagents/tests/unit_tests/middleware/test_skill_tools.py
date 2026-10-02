@@ -402,22 +402,22 @@ def test_include_tools_written_as_a_yaml_list_warns(tmp_path: Path, caplog: pyte
 
 
 class TestConstruction:
-    """`skill_tools` mistakes raise when the agent or middleware is built."""
+    """`tools` mistakes raise when the agent or middleware is built."""
 
     def test_duplicate_names_raise(self) -> None:
-        msg = r"^skill_tools contains duplicate tool name\(s\): create_customer_request$"
+        msg = r"^tools contains duplicate tool name\(s\): create_customer_request$"
         for duplicate in (registered_create_customer_request, create_customer_request):
             with pytest.raises(ValueError, match=msg):
-                SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], skill_tools=[create_customer_request, duplicate])
+                SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], tools=[create_customer_request, duplicate])
 
     def test_dict_entries_raise(self) -> None:
-        msg = r"^skill_tools entries must be BaseTool instances or callables; provider-native tool dicts are not supported$"
+        msg = r"^tools entries must be BaseTool instances or callables; provider-native tool dicts are not supported$"
         web_search = {"type": "web_search_20250305", "name": "web_search"}
         with pytest.raises(TypeError, match=msg):
-            SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], skill_tools=[web_search])  # ty: ignore[invalid-argument-type]
+            SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], tools=[web_search])  # ty: ignore[invalid-argument-type]
 
     def test_skill_tools_are_never_registered(self) -> None:
-        middleware = SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], skill_tools=[create_customer_request])
+        middleware = SkillsMiddleware(backend=StateBackend(), sources=[SKILLS_SOURCE], tools=[create_customer_request])
         agent = create_deep_agent(model=_model(), skills=[SKILLS_SOURCE], middleware=[middleware])
 
         # `create_agent` collects `getattr(middleware, "tools", [])` into the tool node.
@@ -481,7 +481,7 @@ class TestSubagents:
             "description": "Files requests.",
             "model": worker_model,
             "skills": [SKILLS_SOURCE],
-            "middleware": [SkillsMiddleware(backend=skills_backend(tmp_path), sources=[SKILLS_SOURCE], skill_tools=[list_customer_requests])],
+            "middleware": [SkillsMiddleware(backend=skills_backend(tmp_path), sources=[SKILLS_SOURCE], tools=[list_customer_requests])],
         }
 
         invoke(skills_agent(tmp_path, _model(_task("worker")), subagents=[worker]), {"messages": [HumanMessage("go")]}, mode)

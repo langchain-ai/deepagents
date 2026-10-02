@@ -377,7 +377,7 @@ def test_inline_disclosure_sees_through_a_bound_model(tmp_path: Path, monkeypatc
     write_skill(tmp_path, "crm", "create_customer_request")
     model, stub = _stub(provider, monkeypatch, [[read("r1")], "done"])
     backend = skills_backend(tmp_path)
-    skills = SkillsMiddleware(backend=backend, sources=[SKILLS_SOURCE], skill_tools=[create_customer_request])
+    skills = SkillsMiddleware(backend=backend, sources=[SKILLS_SOURCE], tools=[create_customer_request])
     agent = create_agent(model.bind(temperature=0), middleware=[FilesystemMiddleware(backend=backend), skills])
 
     invoke(agent, {"messages": [HumanMessage("go")]}, mode)

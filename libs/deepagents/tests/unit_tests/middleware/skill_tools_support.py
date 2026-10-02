@@ -60,11 +60,11 @@ def skills_backend(root: Path) -> FilesystemBackend:
 def skills_agent(root: Path, model: BaseChatModel | str, **kwargs: Any) -> CompiledStateGraph:
     """Build a deep agent over the skills under `root`, with `create_customer_request` as a skill tool.
 
-    `skill_tools` goes into a `SkillsMiddleware` that replaces the default one,
+    `skill_tools` becomes the `tools` of a `SkillsMiddleware` that replaces the default one,
     as callers pass skill tools to `create_deep_agent`.
     """
     backend = skills_backend(root)
-    skills = SkillsMiddleware(backend=backend, sources=[SKILLS_SOURCE], skill_tools=kwargs.pop("skill_tools", [create_customer_request]))
+    skills = SkillsMiddleware(backend=backend, sources=[SKILLS_SOURCE], tools=kwargs.pop("skill_tools", [create_customer_request]))
     middleware = [*kwargs.pop("middleware", ()), skills]
     return create_deep_agent(model=model, backend=backend, skills=[SKILLS_SOURCE], middleware=middleware, **kwargs)
 
@@ -106,7 +106,7 @@ def create_issue(title: str, runtime: ToolRuntime) -> str:
 
 @dataclass
 class RecordingResolver:
-    """A `skill_tools` resolver over a fixed map of names, recording every name it's asked for."""
+    """A skill tool resolver over a fixed map of names, recording every name it's asked for."""
 
     families: dict[str, list[BaseTool]]
     calls: list[str] = field(default_factory=list)

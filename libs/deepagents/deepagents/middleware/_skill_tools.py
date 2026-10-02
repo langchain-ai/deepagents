@@ -70,38 +70,38 @@ _ToolDisclosure = dict[str, Any]
 """A provider-native content block that makes one tool callable from its position on."""
 
 
-def _normalize_skill_tools(skill_tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None) -> SkillToolResolver:
-    """Return the resolver `skill_tools` stands for.
+def _normalize_skill_tools(tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None) -> SkillToolResolver:
+    """Return the resolver `SkillsMiddleware`'s `tools` stands for.
 
     A sequence is converted as `create_agent` converts tools, then resolved by
     exact name.
 
     Raises:
-        TypeError: If `skill_tools` is a bare tool or neither a sequence nor
+        TypeError: If `tools` is a bare tool or neither a sequence nor
             callable, or if an entry is a provider-native tool dict.
         ValueError: If two entries share a name.
     """
-    if skill_tools is not None and not isinstance(skill_tools, Sequence):
-        if isinstance(skill_tools, BaseTool) or not callable(skill_tools):
-            msg = f"skill_tools must be a list of tools or a resolver function, got {type(skill_tools).__name__}; wrap a single tool in a list"
+    if tools is not None and not isinstance(tools, Sequence):
+        if isinstance(tools, BaseTool) or not callable(tools):
+            msg = f"tools must be a list of tools or a resolver function, got {type(tools).__name__}; wrap a single tool in a list"
             raise TypeError(msg)
-        return skill_tools
+        return tools
     converted: list[BaseTool] = []
     # ty keeps a callable-and-sequence intersection that no value inhabits.
-    for entry in cast("Sequence[BaseTool | Callable[..., Any]]", skill_tools or ()):
+    for entry in cast("Sequence[BaseTool | Callable[..., Any]]", tools or ()):
         if isinstance(entry, dict):
-            msg = "skill_tools entries must be BaseTool instances or callables; provider-native tool dicts are not supported"
+            msg = "tools entries must be BaseTool instances or callables; provider-native tool dicts are not supported"
             raise TypeError(msg)
         converted.append(entry if isinstance(entry, BaseTool) else create_tool(entry))
     names = [t.name for t in converted]
     duplicates = sorted({name for name in names if names.count(name) > 1})
     if duplicates:
-        msg = f"skill_tools contains duplicate tool name(s): {', '.join(duplicates)}"
+        msg = f"tools contains duplicate tool name(s): {', '.join(duplicates)}"
         raise ValueError(msg)
-    tools = {t.name: t for t in converted}
+    by_name = {t.name: t for t in converted}
 
     def resolve_by_exact_name(name: str, runtime: Runtime[Any]) -> list[BaseTool]:  # noqa: ARG001  # resolver signature
-        return [tools[name]] if name in tools else []
+        return [by_name[name]] if name in by_name else []
 
     return resolve_by_exact_name
 
@@ -118,7 +118,7 @@ def _resolve_include_name(resolver: SkillToolResolver, name: str, runtime: Runti
         close = getattr(result, "close", None)
         if callable(close):
             close()
-        msg = f"skill_tools resolver returned an awaitable for {name!r}; an async resolver needs the agent's async entry point (e.g. `ainvoke`)"
+        msg = f"skill tool resolver returned an awaitable for {name!r}; an async resolver needs the agent's async entry point (e.g. `ainvoke`)"
         raise TypeError(msg)
     return _checked(name, result)
 
@@ -142,12 +142,12 @@ def _checked(name: str, result: object) -> list[BaseTool]:
         TypeError: If `result` isn't a sequence of `BaseTool`s.
     """
     if not isinstance(result, Sequence) or isinstance(result, str):
-        msg = f"skill_tools resolver must return a sequence of BaseTool for {name!r}, got {type(result).__name__}"
+        msg = f"skill tool resolver must return a sequence of BaseTool for {name!r}, got {type(result).__name__}"
         raise TypeError(msg)
     tools: dict[str, BaseTool] = {}
     for item in result:
         if not isinstance(item, BaseTool):
-            msg = f"skill_tools resolver returned a {type(item).__name__} for {name!r}; expected BaseTool instances"
+            msg = f"skill tool resolver returned a {type(item).__name__} for {name!r}; expected BaseTool instances"
             raise TypeError(msg)
         tools.setdefault(item.name, item)
     return list(tools.values())

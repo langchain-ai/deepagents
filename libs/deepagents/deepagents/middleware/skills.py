@@ -526,23 +526,11 @@ def _parse_skill_metadata(
         )
         compatibility_str = compatibility_str[:MAX_SKILL_COMPATIBILITY_LENGTH]
 
-    metadata = _validate_metadata(frontmatter_data.get("metadata", {}), skill_path)
-    include_tools = metadata.get(_INCLUDE_TOOLS_KEY)
-    if include_tools is not None and ("[" in include_tools or "," in include_tools):
-        # A YAML list reaches here as its `str()` (e.g. `"['a', 'b']"`), whose
-        # names would never match a tool.
-        logger.warning(
-            "Skill '%s' (%s): metadata.include_tools should be a space-separated string of tool names; got %r",
-            name,
-            skill_path,
-            include_tools,
-        )
-
     return SkillMetadata(
         name=str(name),
         description=description_str,
         path=skill_path,
-        metadata=metadata,
+        metadata=_validate_metadata(frontmatter_data.get("metadata", {}), skill_path),
         license=str(frontmatter_data.get("license", "")).strip() or None,
         compatibility=compatibility_str,
         allowed_tools=allowed_tools,
@@ -557,7 +545,8 @@ def _validate_metadata(
 
     YAML `safe_load` can return any type for the `metadata` key. This
     ensures the values in `SkillMetadata` are always a `dict[str, str]` by
-    coercing via `str()` and rejecting non-dict inputs.
+    coercing via `str()` and rejecting non-dict inputs. It also warns when
+    `include_tools` isn't a space-separated string of tool names.
 
     Args:
         raw: Raw value from `frontmatter_data.get("metadata", {})`.
@@ -574,6 +563,14 @@ def _validate_metadata(
                 type(raw).__name__,
             )
         return {}
+    include_tools = raw.get(_INCLUDE_TOOLS_KEY)
+    # A YAML list would be coerced to its `str()` (e.g. `"['a', 'b']"`), whose names never match a tool.
+    if isinstance(include_tools, list) or (isinstance(include_tools, str) and "," in include_tools):
+        logger.warning(
+            "metadata.include_tools in %s should be a space-separated string of tool names; got %r",
+            skill_path,
+            include_tools,
+        )
     return {str(k): str(v) for k, v in raw.items()}
 
 

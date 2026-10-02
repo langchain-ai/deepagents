@@ -394,8 +394,8 @@ def test_include_tools_written_as_a_yaml_list_warns(tmp_path: Path, caplog: pyte
         result = invoke(skills_agent(tmp_path, model), {"messages": [HumanMessage("go")]}, "sync")
 
     assert (
-        "Skill 'crm' (/skills/crm/SKILL.md): metadata.include_tools should be a space-separated string of tool names; "
-        "got \"['create_customer_request', 'list_customer_requests']\""
+        "metadata.include_tools in /skills/crm/SKILL.md should be a space-separated string of tool names; "
+        "got ['create_customer_request', 'list_customer_requests']"
     ) in caplog.messages
     assert "include_tools" not in model.call_history[0]["messages"][0].text
     assert result["messages"][-1].content == "done"

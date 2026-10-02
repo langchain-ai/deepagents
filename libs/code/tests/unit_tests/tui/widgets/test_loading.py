@@ -43,6 +43,43 @@ class TestLoadingWidget:
         assert widget._start_time == pytest.approx(132.5)
         assert not widget._paused
 
+    @pytest.mark.parametrize("next_status", ["Thinking", "Offloading"])
+    async def test_responding_freezes_display_without_losing_elapsed_time(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        next_status: str,
+    ) -> None:
+        """Streaming freezes only the counter, then catches up on the next activity."""
+        now = 112.7
+        monkeypatch.setattr("deepagents_code.tui.widgets.loading.time", lambda: now)
+        async with LoadingWidgetApp().run_test() as pilot:
+            widget = pilot.app.query_one("#loading", LoadingWidget)
+            widget._start_time = 100.0
+            widget.set_status("Responding")
+            assert widget._hint_widget is not None
+            assert str(widget._hint_widget.render()) == "(12s, esc to interrupt)"
+
+            now = 145.0
+            widget.set_status("Responding")
+            position = widget._spinner._position
+            widget._update_animation()
+            assert widget._spinner._position != position
+            assert str(widget._hint_widget.render()) == "(12s, esc to interrupt)"
+
+            widget.set_status(next_status)
+            assert str(widget._hint_widget.render()) == "(45s, esc to interrupt)"
+
+            now = 150.0
+            widget.set_status("Responding")
+            now = 155.0
+            widget._update_animation()
+            assert str(widget._hint_widget.render()) == "(50s, esc to interrupt)"
+
+            widget.pause()
+            now = 200.0
+            widget.resume()
+            assert str(widget._hint_widget.render()) == "(55s, esc to interrupt)"
+
     async def test_pause_hint_renders_whole_seconds(
         self,
         monkeypatch: pytest.MonkeyPatch,

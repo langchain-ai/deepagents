@@ -3121,19 +3121,11 @@ async def execute_task_textual(
                                     current_msg = AssistantMessage(id=msg_id)
                                     await adapter._mount_message(current_msg)
                                     assistant_message_by_namespace[ns_key] = current_msg
-                                    # Keep the Thinking spinner visible after
-                                    # the streaming message so the user still
-                                    # sees activity if the model pauses between
-                                    # finishing text and emitting its next
-                                    # action (e.g. a tool call). The mount
-                                    # above placed the new message at the end
-                                    # of the container; this re-anchors the
-                                    # spinner after it.
-                                    if (
-                                        adapter._set_spinner
-                                        and not adapter._current_tool_messages
-                                    ):
-                                        await adapter._set_spinner("Thinking")
+                                if (
+                                    adapter._set_spinner
+                                    and not adapter._current_tool_messages
+                                ):
+                                    await adapter._set_spinner("Responding")
 
                                 # Append just the new text chunk for smoother
                                 # streaming (uses MarkdownStream internally for
@@ -3142,6 +3134,8 @@ async def execute_task_textual(
                                 _notify_user_visible_output_started()
 
                         elif block_type == "reasoning" and show_reasoning:
+                            if adapter._set_spinner:
+                                await adapter._set_spinner("Thinking")
                             reasoning = reasoning_text(block)
                             if reasoning is not None:
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
@@ -3170,6 +3164,8 @@ async def execute_task_textual(
                                 _notify_user_visible_output_started()
 
                         elif block_type in {"tool_call_chunk", "tool_call"}:
+                            if adapter._set_spinner:
+                                await adapter._set_spinner("Thinking")
                             if reasoning_message_by_namespace:
                                 await _flush_reasoning_ns(
                                     adapter, ns_key, reasoning_message_by_namespace
@@ -3291,6 +3287,8 @@ async def execute_task_textual(
                                 tool_call_buffers.pop(buffer_key, None)
 
                     if getattr(message, "chunk_position", None) == "last":
+                        if adapter._set_spinner:
+                            await adapter._set_spinner("Thinking")
                         pending_text = pending_text_by_namespace.get(ns_key, "")
                         if pending_text:
                             await _flush_assistant_text_ns(
@@ -3322,6 +3320,8 @@ async def execute_task_textual(
                     await _flush_assistant_text_ns(
                         adapter, pending_text, ns_key, assistant_message_by_namespace
                     )
+            if adapter._set_spinner and any(pending_text_by_namespace.values()):
+                await adapter._set_spinner("Thinking")
             pending_text_by_namespace.clear()
             assistant_message_by_namespace.clear()
             await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)

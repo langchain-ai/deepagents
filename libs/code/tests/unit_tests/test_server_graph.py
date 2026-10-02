@@ -674,6 +674,8 @@ class TestWorkspaceEnvironmentBinding:
             runtime = await module._make_graphs(config_override=config)
 
         assert runtime.agent is graph_obj
+        assert runtime.model_environment is not None
+        assert runtime.model_environment["WORKSPACE_ONLY"] == "from-workspace-dotenv"
         assert runtime.model_metadata is not None
         assert runtime.model_metadata.to_payload() == {
             "model_name": "test",

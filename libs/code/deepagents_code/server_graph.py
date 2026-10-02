@@ -333,6 +333,9 @@ class ServerRuntime(NamedTuple):
     model_metadata: ModelMetadata | None = None
     """Resolved startup model properties for the interactive client."""
 
+    model_environment: Mapping[str, str] | None = None
+    """Immutable workspace environment shared by metadata resolution and inference."""
+
 
 async def _make_graphs(
     *,
@@ -615,6 +618,7 @@ async def _make_graphs_in_environment(
                 result.context_limit,
                 result.unsupported_modalities,
             ),
+            model_environment=workspace_env,
         )
 
     from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy

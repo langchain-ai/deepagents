@@ -722,10 +722,8 @@ class TestModelSwitchBareModelName:
     async def test_fireworks_qualified_id_gets_provider_prefix(self) -> None:
         """A Fireworks `accounts/...` ID resolves to a `fireworks:` prefix.
 
-        Without provider inference the raw ID would surface unprefixed in the
-        confirmation message and the status bar (which reads
-        `runtime_state.model_provider`). `detect_provider` recognizes the
-        fully-qualified Fireworks ID so both reflect the `fireworks` provider.
+        The server's resolved provider appears in the confirmation message,
+        status bar, and subsequent inference override.
         """
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # ty: ignore
@@ -743,6 +741,15 @@ class TestModelSwitchBareModelName:
 
         model_id = "accounts/fireworks/models/kimi-k2p7-code"
         with (
+            patch.object(
+                RemoteAgent,
+                "aresolve_model",
+                AsyncMock(
+                    return_value=_FakeModelResult(
+                        model_name=model_id, provider="fireworks", context_limit=131_072
+                    )
+                ),
+            ),
             patch(
                 "deepagents_code.model_config.get_provider_auth_status",
                 return_value=_CONFIGURED_AUTH_STATUS,

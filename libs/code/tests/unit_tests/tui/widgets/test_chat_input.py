@@ -478,7 +478,8 @@ class TestShellSyntaxHighlighting:
             # text stays correct once the patch is lifted.
             assert text_area.get_line(0).plain == "echo second"
 
-    async def test_cursor_line_keeps_shell_highlight_colors(self) -> None:
+    @pytest.mark.parametrize("row", [0, 1])
+    async def test_cursor_line_keeps_shell_highlight_colors(self, row: int) -> None:
         """Rendered strip on the cursor line should keep token colors.
 
         Regression test: `TextArea._render_line` stylizes the whole cursor line
@@ -488,11 +489,12 @@ class TestShellSyntaxHighlighting:
         other tests in this class only assert on `get_line()`, which runs
         before the cursor-line style is applied.
         """
-        app = _ChatInputTestApp()
+        app = _CursorLineTestApp()
         async with app.run_test() as pilot:
             chat_input = app.query_one(ChatInput)
             text_area = app.query_one(ChatTextArea)
-            text_area.text = 'FOO="bar" echo "$FOO"'
+            command = 'FOO="bar" echo "$FOO"'
+            text_area.text = "echo first\n" * row + command
             chat_input.mode = "shell"
             await pilot.pause()
 
@@ -502,8 +504,9 @@ class TestShellSyntaxHighlighting:
             # even with the token colors flattened. Parking it past the last
             # character puts it on trailing padding, which the `.strip()`
             # filter drops, so only real token colors are counted.
-            text_area.move_cursor((0, len(text_area.text)))
-            strip = text_area.render_line(0)
+            text_area.move_cursor((row, len(command)))
+            await pilot.pause()
+            strip = text_area.render_line(row)
             colors = {
                 segment.style.color.triplet
                 for segment in strip
@@ -512,6 +515,57 @@ class TestShellSyntaxHighlighting:
             # Distinct syntax colors must survive to the rendered strip, not
             # flatten to the single cursor-line text color.
             assert len(colors) > 1
+
+
+class _CursorLineTestApp(_ChatInputTestApp):
+    CSS_PATH = chat_input_module.__file__.replace(
+        "tui/widgets/chat_input.py", "app.tcss"
+    )
+
+    def get_theme_variable_defaults(self) -> dict[str, str]:
+        from deepagents_code import theme
+
+        return theme.get_css_variable_defaults(colors=theme.get_theme_colors(self))
+
+
+@pytest.mark.parametrize("theme", ["textual-dark", "textual-light"])
+async def test_cursor_line_highlight_follows_multiline_editing(theme: str) -> None:
+    app = _CursorLineTestApp()
+    app.theme = theme
+    async with app.run_test() as pilot:
+        area = app.query_one(ChatTextArea)
+        area.text = "first\nsecond\nthird"
+        area.focus()
+        await pilot.pause()
+
+        def background(row: int) -> object:
+            style = list(area.render_line(row))[-1].style
+            assert style is not None
+            return style.bgcolor
+
+        normal = background(0)
+        assert background(1) == normal
+        await pilot.press("down")
+        assert area.cursor_location[0] == 1
+        assert background(0) == normal
+        assert background(1) != normal
+        await pilot.press("down")
+        assert background(1) == normal
+        assert background(2) != normal
+        app.set_focus(None)
+        await pilot.pause()
+        assert background(2) == normal
+        area.focus()
+        await pilot.pause()
+        assert background(2) != normal
+        await pilot.press("up", "up")
+        assert background(0) == background(1) == normal
+        area.text = ""
+        await pilot.press("a", "ctrl+j", "b")
+        assert background(1) != normal
+        area.text = "single line"
+        await pilot.pause()
+        assert background(0) == normal
 
 
 class TestHistoryNavigationFlag:

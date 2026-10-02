@@ -1,12 +1,18 @@
 """Tests for async subagent middleware functionality."""
 
 import json
+import warnings
+from copy import deepcopy
 from typing import Any, TypeVar
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from langchain.tools import ToolRuntime
+from langchain_core._api import LangChainBetaWarning
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
+from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
@@ -124,6 +130,24 @@ class TestAsyncSubAgentMiddleware:
 
     def test_state_schema_is_set(self) -> None:
         assert AsyncSubAgentMiddleware.state_schema is AsyncSubAgentState
+
+
+class TestAsyncForkConfiguration:
+    @pytest.mark.parametrize("mode", ["invalid", "handoff", None])
+    def test_rejects_invalid_mode(self, mode: str | None) -> None:
+        with pytest.raises(ValueError, match="expected 'isolated' or 'fork'"):
+            AsyncSubAgentMiddleware(async_subagents=[_make_spec(mode=mode)])
+
+    @pytest.mark.parametrize("mode", ["isolated", "fork"])
+    def test_mode_warning_and_listing(self, mode: str) -> None:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec(mode=mode)], system_prompt="Delegate background work.")
+        assert len([w for w in caught if isinstance(w.message, LangChainBetaWarning)]) == (mode == "fork")
+        for description in (middleware.tools[0].description, middleware.system_prompt):
+            assert ("inherits your conversation at launch" in description) == (mode == "fork")
+            if mode == "fork":
+                assert "its own system prompt and tools" in description
 
 
 class TestResolveHeaders:
@@ -264,6 +288,81 @@ class TestLaunchTool:
             assistant_id="my_graph",
             input={"messages": [{"role": "user", "content": "analyze data"}]},
         )
+
+
+@pytest.mark.parametrize("invocation", ["sync", "async"])
+@pytest.mark.parametrize("mode", [None, "isolated", "fork"])
+@pytest.mark.parametrize("summarized", [False, True])
+async def test_launch_context_snapshot(invocation: str, mode: str | None, *, summarized: bool) -> None:
+    history = [
+        HumanMessage(content="Original request"),
+        AIMessage(content="Earlier answer"),
+        HumanMessage(content=[{"type": "text", "text": "Investigate order 42"}]),
+        AIMessage(content="", tool_calls=[{"name": "lookup", "args": {"order": 42}, "id": "lookup_call"}]),
+        ToolMessage(content="Order 42 is delayed", tool_call_id="lookup_call"),
+        AIMessage(
+            content="Delegating",
+            tool_calls=[
+                {"name": "start_async_task", "args": {"description": "Explain the delay", "subagent_type": "alpha"}, "id": "tc_launch"},
+                {"name": "other_tool", "args": {}, "id": "sibling_call"},
+            ],
+        ),
+    ]
+    summary = HumanMessage(content="Summary of earlier context")
+    runtime = _make_runtime("tc_launch")
+    runtime.state.update({"messages": history, "files": {"private.txt": "not shared"}, "async_tasks": {}})
+    if summarized:
+        runtime.state["_summarization_event"] = {"cutoff_index": 2, "summary_message": summary, "file_path": None}
+    initial_state = deepcopy(runtime.state)
+    expected = deepcopy([summary, *history[2:-1]] if summarized else history[:-1])
+    bodies: list[dict[str, Any]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/threads":
+            assert runtime.state == initial_state
+            history[2].content[0]["text"] = "Parent changed while creating child thread"
+            summary.content = "Later summary"
+            history.append(HumanMessage(content="Later parent message"))
+            return httpx.Response(200, json={"thread_id": "new_child_thread"})
+        assert request.url.path == "/threads/new_child_thread/runs"
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"run_id": "run_xyz", "status": "pending"})
+
+    spec = _make_spec("alpha")
+    if mode is not None:
+        spec["mode"] = mode
+    launch = _build_async_subagent_tools([spec])[0]
+    transport = httpx.MockTransport(handle)
+    if invocation == "sync":
+        with (
+            httpx.Client(base_url="http://remote", transport=transport) as http_client,
+            patch("deepagents.middleware.async_subagents.get_sync_client", return_value=SyncLangGraphClient(http_client)),
+        ):
+            result = launch.func(description="Explain the delay", subagent_type="alpha", runtime=runtime)
+    else:
+        async with httpx.AsyncClient(base_url="http://remote", transport=transport) as http_client:
+            with patch("deepagents.middleware.async_subagents.get_client", return_value=LangGraphClient(http_client)):
+                result = await launch.coroutine(description="Explain the delay", subagent_type="alpha", runtime=runtime)
+
+    assert isinstance(result, Command)
+    assert result.update["async_tasks"]["new_child_thread"]["status"] == "running"
+    assert result.update["messages"][0].tool_call_id == "tc_launch"
+    assert len(bodies) == 1
+    body = bodies[0]
+    assert body["assistant_id"] == "my_graph"
+    assert set(body["input"]) == {"messages"}
+    if mode == "fork":
+        child_messages = body["input"]["messages"]
+        assert child_messages[:-1] == [message.model_dump(mode="json") for message in expected]
+        assert child_messages[-1]["type"] == "human"
+        assert child_messages[-1]["content"].endswith("Explain the delay")
+        assert "background subagent" in child_messages[-1]["content"]
+        assert "will be refused" not in child_messages[-1]["content"]
+        child_messages[0]["content"] = "Child-only change"
+        assert "Child-only change" not in str(runtime.state)
+    else:
+        assert body["input"]["messages"] == [{"role": "user", "content": "Explain the delay"}]
+    assert runtime.state["async_tasks"] == {}
 
 
 class TestCheckTool:

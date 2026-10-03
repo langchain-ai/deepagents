@@ -3,9 +3,6 @@ type: channel admission and identity
 title: Talon Channel Admission and Conversation Identity
 description: How Talon channel adapters enforce sender admission, pairing, and Slack thread identity before host-owned agent routing. Includes security boundaries for operator controls, OAuth callbacks, revocation, and media delivery.
 tags: [talon, channels, admission-control, conversation-identity, pairing, security, slack]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-02T08:06:05.669Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
@@ -25,6 +22,8 @@ sources:
     resource: repo://libs/talon/deepagents_talon/pairing.py
   - id: openwiki-source-1c86f8e1d9b6cb62f342d9ed
     resource: repo://libs/talon/tests/channels/test_base.py
+  - id: openwiki-source-266f810628c26d9ced8dfceb
+    resource: repo://libs/talon/tests/channels/test_slack.py
   - id: openwiki-source-581a0b1656cc4ab3f26c7a17
     resource: repo://libs/talon/tests/integration_tests/test_slack_host.py
   - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
@@ -35,12 +34,15 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_pairing.py
   - id: openwiki-source-8f71a0fa13257ebf54bc782f
     resource: repo://libs/talon/tests/unit_tests/test_slack_oauth_context.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-02T08:06:05.669Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-03T08:05:07.881Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
 ---
 
 Talon adapters are the security-sensitive boundary between provider events and the host-owned agent runtime. An adapter normalizes a provider event, decides whether its sender may enter, and invokes a handler registered by `TalonHost`. The host—not the adapter—then owns commands, agent-thread identity, active-turn replacement, model invocation, and delivery.
 
-> **Security posture:** Channel access is access to the configured agent, its credentials, MCP tools, and host resources. Exposure and pairing are invocation gates, not sandboxing or a lower-privilege session.
+> **Security posture:** Talon is experimental and is **not** a multi-tenant security boundary. Channel access reaches the configured agent, its credentials, MCP tools, and host resources. Exposure, pairing, sender filtering, and bounded Slack-context retrieval are implemented invocation and context-handling constraints—not sandboxing, complete authorization, or a lower-privilege session.
 
 See [runtime behavior](/openwiki/architecture/runtime-behavior.md), [Talon scheduling](/openwiki/concepts/talon-scheduling.md), [the Talon integration](/openwiki/integrations/talon.md), and [security operations](/openwiki/operations/security.md) for adjacent concerns.
 
@@ -111,7 +113,9 @@ Slack accepts DMs and `app_mention` events. It drops bot-authored events, edits,
 
 Slash-command authorization is checked before command discovery, so an unauthorized caller does not learn available commands. Commands are normally DM-only and use the Slack command responder rather than a normal channel post. The exception is an explicitly configured operator's `/pair approve <code>`, which Slack and the host permit outside a DM; pairing list and revoke remain DM-only. `/pair` is intercepted before model invocation, and pairing never grants its control-plane authority.
 
-For admitted non-DM thread messages, Slack retrieves preceding replies and retains only configured operators or static allowlisted users. It attaches that material separately as `slack_thread_context`; the host labels it as context rather than instructions and preserves the inbound text as the current message. Retrieval failure becomes an explicit unavailable marker.
+For an admitted non-DM thread message, Slack requests only replies before the triggering timestamp. Retrieval is deliberately bounded to 20 API pages, retains the most recent 40 eligible messages, truncates each retained text to 1,000 characters, and then evicts oldest entries until the sender-and-text representation fits 12,000 characters. If pagination indicates more history after the page limit, or retrieval otherwise fails, the adapter supplies an explicit unavailable marker instead of partial over-limit history.
+
+The adapter then retains from that bounded set only configured operators or static allowlisted users and attaches the result separately as `slack_thread_context`. The host labels it as context rather than instructions and preserves the inbound text as the current message. These sender and size filters constrain what is retrieved into the prompt; they are not a complete authorization boundary for the Slack workspace.
 
 OAuth callback URLs are excluded from historical Slack context before per-message truncation and before the adapter applies its sender filter. The recognizer decodes Slack markup first and recognizes loopback callback forms, while ordinary non-loopback URLs remain eligible context. This prevents a historical callback's code or state from being exposed to model-visible context, including when a long message would otherwise hide sensitive parameters after truncation.
 

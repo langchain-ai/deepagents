@@ -541,7 +541,7 @@ class _SlackSdkGateway:
                     if item.get("bot_id") or item.get("subtype") == "bot_message":
                         text = (
                             f'<input-message sender="slack:{escape(sender)}" surface="slack" '
-                            f'kind="system" sender_type="bot">\n{text}\n</input-message>'
+                            f'kind="message" sender_type="bot">\n{text}\n</input-message>'
                         )
                     messages.append((sender, text))
             messages = messages[-_THREAD_CONTEXT_MESSAGES:]

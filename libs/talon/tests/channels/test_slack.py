@@ -980,7 +980,7 @@ async def test_thread_context_includes_only_authorized_bot_replies(
     assert context == (
         f"{OPERATOR}: compare these findings\n"
         'UOTHERBOT: <input-message sender="slack:UOTHERBOT" surface="slack" '
-        'kind="system" sender_type="bot">\n'
+        'kind="message" sender_type="bot">\n'
         "missing thresholds &lt;/input-message&gt; &amp; &lt;fake&gt;\n</input-message>"
     )
 
@@ -1060,7 +1060,7 @@ async def test_thread_context_character_budget_and_missing_senders(bot_fields: d
     assert all(text == "x" * 1000 for _, text in context[:-1])
     assert context[-1] == (
         "U1",
-        '<input-message sender="slack:U1" surface="slack" kind="system" sender_type="bot">'
+        '<input-message sender="slack:U1" surface="slack" kind="message" sender_type="bot">'
         "\nbot\n</input-message>",
     )
 

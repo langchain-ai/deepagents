@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e614338c494c88012f27fe4b90fa991e6300ae4f3b833a6715bf014d8c72dcf2",
+  "pageVersion": "sha256:7aa623d2c3dd7ffe556f8f11ea2238d0d4cdd07c16159f4ea3241f0cd5d507bb",
   "claims": [
     {
       "id": "claim_2b3bce19bf9e4eefa1dd9dc076b9b387",
@@ -44,7 +44,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/channels/slack.py",
-          "version": "repo-file-v1:sha256:2b8dc54b98600b0cdd3bf4a6e0bdc98de86280c5dc82bc078f3badc635444305"
+          "version": "repo-file-v1:sha256:b6eddc1e34932407294622fcf7625c791896d6cfb7d2675ae1ef60ef4fcfd9c2"
         }
       ]
     },
@@ -71,10 +71,134 @@
           "version": "repo-file-v1:sha256:a23ee8c48b866c01418a0268e86bf8db97ad2c47c5457705337aadae2e6f61b8"
         }
       ]
+    },
+    {
+      "id": "claim_d66cb7d5f57d4025a21332de03115c3d",
+      "statement": "The deepagents package exposes graph construction and extension types from its package root, while create_deep_agent resolves agent inputs and assembles the ordered middleware stack before delegating to LangChain create_agent.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/__init__.py",
+          "version": "repo-file-v1:sha256:b8473628ecfa213979f63abe8c4b6b82315368fd98f6e95180f6fe19dd86c7eb"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:1972d98908a6d061128b3b260458f04637d38f70a4afbe0a71687aae1b303be8"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py",
+          "version": "repo-file-v1:sha256:e46ffd42855248758db15722187117d9e64a47d0f67936f7b212d65d3e64c1e5"
+        }
+      ]
+    },
+    {
+      "id": "claim_01758d7ec2dd4880827fa66f5c3fadba",
+      "statement": "FilesystemMiddleware and SubAgentMiddleware are protected Deep Agents scaffolding because they respectively enforce built-in filesystem permissions and implement the task tool; excluding either through a harness profile raises instead of producing a degraded graph.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:1972d98908a6d061128b3b260458f04637d38f70a4afbe0a71687aae1b303be8"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py",
+          "version": "repo-file-v1:sha256:e46ffd42855248758db15722187117d9e64a47d0f67936f7b212d65d3e64c1e5"
+        }
+      ]
+    },
+    {
+      "id": "claim_99ee74238ef94140bab76842bc01cb31",
+      "statement": "dcode separates terminal presentation from a separate agent-server process: the client owns input and rendering, while the server owns agent execution, streaming, checkpointing, and resume behavior.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/ARCHITECTURE.md",
+          "version": "repo-file-v1:sha256:1044d5960a89cb0a26efdc7ff02036cba8f13332e6c4c6b1e08f443c49796aed"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py",
+          "version": "repo-file-v1:sha256:30ae0790edfb9b0b747b1c24e462f4c50b7ffb2cdf130889c7a30f2ca61f4b3d"
+        }
+      ]
+    },
+    {
+      "id": "claim_4772c379242f4a18a97dffe7e9347cf2",
+      "statement": "Talon's CLI dispatches administration commands without launching the host, while a model-backed launch opens sandbox, checkpoint, and history resources, composes DeepAgentRuntime, and gives TalonHost responsibility for runtime, channel, and scheduler lifecycle.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py",
+          "version": "repo-file-v1:sha256:bc9f97c16989202db7c4c5b7ddea9983473996ac18de652b2225a4bd178915fd"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py",
+          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
+        }
+      ]
+    },
+    {
+      "id": "claim_48f3e740389b46bdb2edcbc6ff12096a",
+      "statement": "TalonHost starts the runtime before channels and scheduler, unwinds started components in reverse after startup failure, and attempts to stop all managed components after cancelling active work.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py",
+          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_host.py",
+          "version": "repo-file-v1:sha256:ff53c2008a80763de36488d087c77957cd5163e04f469c438baa2efe078fda83"
+        }
+      ]
+    },
+    {
+      "id": "claim_30807132a4c644479d181f27e6679ed9",
+      "statement": "AgentServerACP adapts either a compiled graph or session-context factory to ACP, keeps session-scoped configuration, and makes durable session loading an explicit option requiring a restart-surviving checkpointer.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/deepagents_acp/server.py",
+          "version": "repo-file-v1:sha256:0fb5127f574feec00009b236b5963c819dc18658f2ef49b5a7d03738f195e0ae"
+        },
+        {
+          "resource": "repo://libs/acp/tests/test_agent.py",
+          "version": "repo-file-v1:sha256:ca3ea6380d87a027fa47a7af179cbf6eff934d02a67a5f06a218339464c5e608"
+        }
+      ]
+    },
+    {
+      "id": "claim_2e5ae9575863405b8dee774eff0ede11",
+      "statement": "Repository CI uses path-based change detection so SDK changes run dependent code, Talon, ACP, evaluation, and partner jobs, while reusable lint and test workflows centralize shared package validation.",
+      "evidence": [
+        {
+          "resource": "repo://.github/LAYOUT.md",
+          "version": "repo-file-v1:sha256:837ef549c9b1efd63ad5c8e8627d03eb236115d77cfc26b55d2ec1cbda4edf55"
+        },
+        {
+          "resource": "repo://.github/workflows/_test.yml",
+          "version": "repo-file-v1:sha256:f7ab3552746418008ddadf22bfa153548dac2e0eb59cf5f61b0d2a084547c83d"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml",
+          "version": "repo-file-v1:sha256:c07bd2615c48a984d7bc5e7ad2d9290220c0b58b41e0404a3cd11c5f147f48a7"
+        },
+        {
+          "resource": "repo://libs/ARCHITECTURE.md",
+          "version": "repo-file-v1:sha256:a2657562c0c28a61c0b8c1ff335b29c714b31f601558d92abcfc8977a987bb2c"
+        }
+      ]
+    },
+    {
+      "id": "claim_f78a4e7959494baeb1e7aaa91c88204d",
+      "statement": "Partner packages are independently versioned and own their package environment and tests; adding one also requires coordinated issue, dependency, CI, release, and relevant Harbor or integration-test wiring.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/ci.yml",
+          "version": "repo-file-v1:sha256:c07bd2615c48a984d7bc5e7ad2d9290220c0b58b41e0404a3cd11c5f147f48a7"
+        },
+        {
+          "resource": "repo://libs/partners/AGENTS.md",
+          "version": "repo-file-v1:sha256:34a9fbced5f655cc34c107caf5dc9b1eff12b3d491d5a6cba1f509d51e1585ad"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-02T08:06:05.669Z"
+    "at": "2026-10-03T08:05:07.881Z"
   }
 }

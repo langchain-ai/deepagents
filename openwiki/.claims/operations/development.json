@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:368b84052f5294d78a200ec43059dd4fbc40a00ccf701da8ccd335fdd56dd099",
+  "pageVersion": "sha256:0068f12995f9cd887bb48e63b9a33423eb91dd236cffc3d0e54be1c4054cfdc6",
   "claims": [
     {
       "id": "claim_a64f733f2f92431a84333168dbfe4826",
@@ -399,10 +399,58 @@
           "version": "repo-lines-v1:sha256:716d148a82ec56097bac0680d098016ab40ec079582d6b4b6b66bb13b3338ede:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlZDY5NmY5YTY2MzQ0MWY5YmNiNGVkOWQ1Y2ExMDZhYTk3YWY5ZTAyNjQ4ODkwNGZjY2VkZWI3ZWFiMGRhOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyZmI1NTcxNWEzYjdmN2QyNWFjNTZjNjcyNGU5YjUxNGFjYjEzMWFjMzE5NGY4MTViNDNlNTBiMTljOWQ3MjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFiNzIzMTVlYmEwODdjZWIzNGFlNTVmNjA5OWE3YjI2NmUyNDcyY2Q2NWU2ZWZiZjhhMjA5MzgwMWMxYTE3MGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY2YWQ2MzEzYTRjZGIyNzgyM2VmNDJkN2UzYTgxOGJiMDRmYWY2ODJhM2EyMTY4M2VlZmE5ZTEzZTFmM2Q2YWQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_b68205b3851c40d39dbcc45c290c8c10",
+      "statement": "Adding a release-please-managed package requires entries in both release-please configuration and its manifest; for an unreleased source package at 0.0.1, the manifest baseline must be 0.0.0 so release-please proposes its first 0.0.1 release rather than 0.0.2.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L236-L242",
+          "version": "repo-lines-v1:sha256:195fc86d7fbdf369a978fb6863fcdabf68e0c28a6514a0c689f7924f58517497:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYmI3YmIzYWRlMDAzMjdkMDRlMjYzNTI1ZGFhMzU0MzdhNTE4MDU3ZGNkNWFhOTlmMDMyZTFmNTk4YWVlZjBiMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTJmZTU0MzIxNmVjMDVhNDA4NGYyM2Y0YTJjNzA3MDI3N2M4NWZjOGI3NWU1OGEwNGYzMjNiNTFiNTkzYTUwMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODgwOTE4YWM2NDMwNzA0MDMwMDQzMjc4YWJiMTY3MDAxYzY4MzQzZmM1YTNhZGY3ZjgyYjYxNjk1MjliODRhZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTQxZGU5MzE1MzgyMWU4YTFhMzhkZDIzYWUyYWQxODgwYzA5MTI0YTM3YjJjNTIwZjJiNDNiZjAwMWVjOGY1ZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_7ec68346997b4ed289f5fb953760075f",
+      "statement": "After a release PR merge, publishing starts before release-please refreshes other open release PRs; the refresh waits for every pending publish to settle and fails safe when the release state cannot be verified.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L255-L272",
+          "version": "repo-lines-v1:sha256:e276ba9922c68c4cb4c095f49d0901904f21a4fa394cce79e85b6ad9be633354:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyZTc1ODYyMjUxNWZkNjdkMDYwYzljNzFmNmYxZjhmMjI1MTVjZTc2YjE4Yjk1NTAyNjVlMGQ0NWI0YzUyODEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0ZDVhMjhlODBlMTQ5MjYwOGY1OTZjNjVjYjdlMjA1OTFjZTQwNDVhMTg5MDA0MDcwNzRkNzQ4MWY5YmRiMjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM4NzNlMjIwNDZlYWNhZTIzMGQzNmY5NmMxMDRiZjY4MzgxZDdkYjFhMGJiMDVmNTkwNjc2ZTI1MjBjMGE3YjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNjOGVkNDk0ZWEzZDFlODE4MzM0YTU1M2JhNWNlMTFlNDBiNWI4MjVmOWRjMDRjN2YwM2VhYTU0ZGU4Y2UyZmQifQ"
+        },
+        {
+          "resource": "repo://.github/RELEASING.md#L279-L286",
+          "version": "repo-lines-v1:sha256:e8c5e27d06e9d2cd384e6d7721852c07e29803c91c7f683952444b604366e97a:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2U1ZjMzMmZhMjA1ZWEwZTdhODhmNmQzMDExMmVkZjBmMjA1NWY3YjEyNTM0MzE5YjQ3YjFiYmRjOWEwNGUyMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNGFjNTYxOTVhZTQxYjdkOGM5ZTM1YjM2MjE5ZTM1NDkwMmNmNWUwYzc0MTI5NTE4OTY4NTBjY2M1ZjI4MTA0OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTU2YmIzNDBiNGY1ZWQ1MzQ1OTVmNDljMDNhMmM3MWJmOTYwYTFjMmY5Y2JmZDlhYjdhYjBkMjkxZWY5ZmRiNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2M4ZWQ0OTRlYTNkMWU4MTgzMzRhNTUzYmE1Y2UxMWU0MGI1YjgyNWY5ZGMwNGM3ZjAzZWFhNTRkZThjZTJmZCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_bd047911cce9478e858110902ce05c86",
+      "statement": "A release that fails before PyPI publication can be repaired by merging a hotfix that retains the release version and manually dispatching the workflow at that hotfix SHA, whereas a version already published to PyPI must not be republished or retagged and requires a new patch release.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L351-L404",
+          "version": "repo-lines-v1:sha256:961eaea5e46811f472704ad3c3d9b7ffadf59e5b2d25930d05ebe9a0d2eb5877:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1MDY5ODY0OGJmZjc4NGViYTIxOTg4ZGE4ZTU3NTk0OTJlNjJhZDlkZTE3OGEwZDRjMmFmNzQyYjQ0ZjQ0OWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUxYzJiOTJjZDVjZTQ0NGI0MzRkZTNlMzVkZjk0N2EzZDBkNTYwODJhODVjMWM4YzQwOGYzZWNkYzkzYWIzZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhMmQwOTMyMThmNjMxOGQ0YjQ4YTFiY2ZjN2I4OWVlMjAzYTEyMTY3ZTEyNGM0ODllNTIzODdjNGZhMGM3OTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE4Yjk5NjkxM2U3MWI4ZTg0N2NiMDBjMmEyNjA0YjM1Mjc0NGU0MGZlZTA4NWY3YmZlYzI5OWZmNjFjMTA3MWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_daecee33f41f4b3e96753c90b4fe07c6",
+      "statement": "Release-note generation is intentionally fail-open: publishing and GitHub tag creation proceed if it fails, producing an empty release body rather than blocking an already-published package.",
+      "evidence": [
+        {
+          "resource": "repo://.github/workflows/release.yml#L475-L483",
+          "version": "repo-lines-v1:sha256:0521b9be8fc6ee1419bdab9ab01cd59926d6b60687f7bd43271b2364e24d20e0:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWVmMzU4ZGZjYTgzODkyNzVmMTNhZWZhZGE0YWE1NjcwZmUzMzQxMjA3YzMzMmJjNmU5ZDVkMmFiOWI5YThkZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjdhMDE0YTE4YWZmNzUzZWU1M2FhMGEzZTY1Yzk3MDc4OTcyYjJlNmFhYWQ5YmZlMDY1MWRkZGE5YzAyMWUxNCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjdkZDYwMzA5NjFjNjZlZGE2ZDQ2MTkzMmI4YWY2MTI1NmFlMjgzZWI0M2VmNmI5OTJkNDVhZjg0NzkyYTBlZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjU1MGQ4MTgzZmY4YWRiMWNhMWM3ZjNiMmUxMDU0OGU0MWY3MmZhYmUxMmJhMGE2OWFhMGU2NTQ0NmNlYjljOCJ9"
+        },
+        {
+          "resource": "repo://.github/workflows/release.yml#L895-L912",
+          "version": "repo-lines-v1:sha256:d0e70d2532bf7837255f7d6632cedc6040e2f8010671e5465f37358dc0747757:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2MDg5MDY1MzY0NjZlYTU3NTAwOWVmMmQyMGQ1ZDFlNDA3MmEzNWZlMjRlMjI4NjJhMDI2NjhkNzBjZWZmY2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlNzM4ODA3MWUxYTg5MGMxYmU0MjUzZTY4Zjg3M2NjY2JkZmMxNTM2MGMzMjBiYzFjNWNiZThiM2IyNzdlZmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE1OTI5NjM1OGRjOWZkZTk5Y2EyYTAxZjFkN2I3ODU0N2YyODEzNWNlYzRiOTk5YjczYjA0YzZmNWVkNTU3NjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjYWQ4YzI1NTc5NzNjZDBmNmY1NjE2OTlhNzA0NGRjYTQ1ODdhMjM1NGRlZTMzNTY5NmIyZTA3NTBlZWNhNGEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-02T08:06:05.669Z"
+    "at": "2026-10-03T08:05:07.881Z"
   }
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e3ec85b1dca035c4bf558a148a6e66e8a2c8ce5e446f16539562ce44a0e5873d",
+  "pageVersion": "sha256:c44eac47ae4002b9c4e6d5b8c354726400ee725c61c05fb085eda6451daa9355",
   "claims": [
     {
       "id": "claim_d5f0cd3cc3d64996b26d2e3d6ee0d6a1",
@@ -347,10 +347,34 @@
           "version": "repo-lines-v1:sha256:d84cbbe1e4ffed0d0439bdc78f06d3885fce5e87159a2ddba020237e3903636a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxNGJmNzVkNzYyOTVmYzFlZmFjMDM2ODFmN2IxZmMyYmZhYTVhOWYxNzlhODRjZjUzYTgxMGRhMzNiOGFkYTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwNGFjOGJiNzFmOWM0YTY0ZTI3MDg0NTkyYTNkZTI4NTQ1ZjkwOWI4ODI0MTIxOTYyM2JiMmY5ZmIwMTU2NDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM2MjdmMTIyOWQxNDM4NTgxMjkzOGNmNDQ2YjMwMzdlYzRjYWY3ZWYwN2EzZmU0NzZjOGE5NjMwOTk2ODRiMTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2MzIyNjlhYWEyMmU4MzgxOTk5MjI0OThmYzhlNWNmYTAwMmFhYzYxOWM3NjhjMmU2NWI1MDdmYTU3ZjM0MzgifQ"
         }
       ]
+    },
+    {
+      "id": "claim_e1dd772ec649494c821243e9b769998d",
+      "statement": "Schedule timezone resolution accepts only `UTC` or IANA region names and rejects bare UTC offsets and legacy POSIX aliases so recurring schedules retain future daylight-saving rules.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/timezones.py#L32-L58",
+          "version": "repo-lines-v1:sha256:0e57bab7a94c8396c5888f33e20962a952849f4b3939abceaf27dd3ad89f5c09:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkMTAzY2ZhNTQyOGFjZjFkYTg0ZGFlMzQxM2ZhYTY4NThkMzhlNmE0MDE1MTJjNzQ5MDA5YzY4Y2Y5YWI1ZTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1OWIxOWZkYzNkYTZlYzU5MzdjNmQwMzllYjliZjdjZjk4ODRlMzljYTc3YjNjMGI4NmJhNTg5YWZhN2RjZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcyNjgwYjkxNmQ3NjBmODU4ZTEwYjU4ODRhMWJmNjliZDZmMmY4OWQwYmFkMDYzYjZiMDY4MmNlZWViMjc1MjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgxYWJjNmQ1M2I4NmI1MWYwNTg3MjVkZWJmNTk5MjJlOTg5NTlmMzIyNTE0NDg1N2JjYjY3OTE3MWZjNzcxZGMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b15330112cb04eca9e2c9591b1edba0d",
+      "statement": "The standard delivery callback logs and drops output when no configured channel serves a job's recorded origin instead of raising, leaving the scheduler's previously recorded successful run status unchanged.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L471-L476",
+          "version": "repo-lines-v1:sha256:b792e17068d2d2e74ca12e16220a481476fb1814531addc357a42f19882500d5:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOGIyY2VlNGNlNzBiODFjNTcwNTBjN2JmYWU4MDRkMWY5ZTgxNzg1NDU3NjcwNTVmYzk5MjMzNTkzYTk2MTg4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTRhMTNhMTM4MzRlZWYxNjVmMzgzYjFiY2YxOWNkNzU4NGFiODViZDhjNWFiZGE1Y2YxYTc1N2FjNzg4YWY4NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZGQ5NzM4NjFhY2I1NzdiZTk5NzZhN2IyODUwNmVkYjk2NmU2MDZlZmJiYTJmMjI1ZWFkZGM5NzQ0MTZlNzM0ZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2Q0MTM0MGNjMjM5YTE1OWNlOWI2MDIyZTlmNjMyMjgzMmUyZWFkNzZjYWU5ZTQ3NTRkMjEwZWI4ZmI2ZDVlOCJ9"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/cron/scheduler.py#L165-L200",
+          "version": "repo-lines-v1:sha256:4f440a2ead43806db4caa450a9fb2a4edfdf5e81d4c81fd675388fa13a947109:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZjMGNiYzg5MWM1Njc0NTNmZmQ5MzQ4MjNkOGVhZTI0YWY5NTg2NTI3Y2ZmYTlkMjQzNjIwNjkyYjA2MWU5OTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyYWI1NmFjMGE4NjliZjgwOWVlZTFiZGRjZTM4OGFmMDc3YzlmYjM2NzI1MjFkYzdmYzk1ZTIwOWExMTc3Y2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxM2QwM2IxNTZkMzEwNDJhNjJjMWE1YjBjMzMyYmJhYjZhYmNmZjQwNzZkYWJiMTk5MjcxZjk0MTBjM2IxYWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiNWNkMjRlYzBhN2RlZTc5MzYyNmJlMDVmNDM3YjIxY2IwNWEwZDE4ZTk2MTAwMmU5YmQxMWE5YjQ1YjhmZWIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-02T08:06:05.669Z"
+    "at": "2026-10-03T08:05:07.881Z"
   }
 }

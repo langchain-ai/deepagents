@@ -1,8 +1,8 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Focused regression guidance for Talon persistence, scheduling, Slack admission and OAuth boundaries, and dcode prompt and Textual UI contracts. Keep unit tests deterministic, network-free, and centered on observable behavior.
-tags: [testing, talon, scheduling, slack, checkpoints, dcode]
+description: Deterministic, network-free regression seams and package commands for Deep Agents SDK graph and skills behavior, dcode prompt and TUI contracts, and Talon checkpoint, channel, cron, and concurrency behavior.
+tags: [testing, deepagents, talon, dcode, scheduling, slack]
 sources:
   - id: openwiki-source-006b62af9993da1b48c11de8
     resource: repo://libs/code/Makefile
@@ -10,6 +10,10 @@ sources:
     resource: repo://libs/code/tests/unit_tests/smoke_tests/test_system_prompt.py
   - id: openwiki-source-6e1b5f814914e0803f7035eb
     resource: repo://libs/code/tests/unit_tests/tui/widgets/test_subagent_panel.py
+  - id: openwiki-source-0f308f1610986e2f3ed6d53c
+    resource: repo://libs/deepagents/Makefile
+  - id: openwiki-source-c71ac20477155a66b7a8c60a
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
   - id: openwiki-source-c2be68f237284dc06b9c12f7
     resource: repo://libs/talon/deepagents_talon/checkpoint_backends.py
   - id: openwiki-source-f55101eb12af3c6ae9b9d823
@@ -40,24 +44,27 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_slack_oauth_context.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-02T08:06:05.669Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-02T08:06:05.669Z" }
+    at: 2026-10-03T08:05:07.881Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
 ---
 
 # Testing Guide
 
-Put a regression at the narrowest boundary that proves its user-visible contract. Unit tests must be deterministic and network-free: use temporary directories, injected clocks, fake gateways, fake models, and recording callbacks rather than live providers, sleeps, or private call-order assertions. Tests live with their owning package and normally mirror its source layout. Warnings are errors, so fix a new warning rather than adding a broad filter. See [Development](../operations/development.md) for setup and the [source map](../architecture/source-map.md) for package ownership.
+Put a regression at the narrowest public or model-visible boundary that proves its contract. Unit tests are deterministic and network-free: use temporary directories, fixed or injected clocks, fake models and gateways, recording callbacks, and the Textual pilot rather than live providers, sleeps, or incidental call-order assertions. Tests mirror the owning package's source layout. Warnings are errors; fix an actionable warning rather than adding a broad filter. See [Development](../operations/development.md), [Subagents and Skills](../concepts/subagents-skills.md), [Talon channel admission](../concepts/talon-channel-admission.md), and [Talon scheduling](../concepts/talon-scheduling.md) for the adjacent operational and conceptual contracts.
 
 ## Run the owning target
 
-Install dependencies in the package being changed with `uv sync --all-groups`, then use its `Makefile`. Talon's `make test` first runs WhatsApp bridge Node tests, then runs the selected `TEST_FILE` with non-Unix sockets disabled, Unix sockets allowed, a 10-second pytest timeout, and coverage; `make lint` runs Ruff checks/format diff and `ty` for Talon source. dcode unit tests similarly block non-Unix sockets, while its integration target does not; `update-snapshots` is the explicit network-free smoke-snapshot update target.
+Install dependencies in the changed package with `uv sync --all-groups`, then use its `Makefile`. The core SDK and dcode unit targets use parallel pytest workers, block non-Unix sockets, allow Unix sockets, and collect coverage; their integration targets are distinct and may use the network. Talon's `make test` first runs WhatsApp bridge Node tests, then runs the selected `TEST_FILE` with non-Unix sockets disabled, Unix sockets allowed, a 10-second pytest timeout, and coverage; `make lint` runs Ruff checks/format diff and `ty` for Talon source. The dcode Makefile provides network-restricted parallel unit tests and an explicit `update-snapshots` target that runs smoke snapshots with the `--update-snapshots` option.
 
 ```bash
-cd libs/talon
+cd libs/deepagents
+make test TEST_FILE=tests/unit_tests/test_graph.py
+make test TEST_FILE=tests/unit_tests/middleware/test_skill_tools.py
+make lint
+
+cd ../talon
 make test TEST_FILE=tests/unit_tests/test_checkpoint_backends.py
 make test TEST_FILE=tests/unit_tests/test_cron_concurrency.py
-make test TEST_FILE=tests/unit_tests/test_pairing.py
-make test TEST_FILE=tests/unit_tests/test_pairing_slack.py
 make test TEST_FILE=tests/unit_tests/test_slack_oauth_context.py
 make lint
 
@@ -68,38 +75,43 @@ make update-snapshots
 make lint
 ```
 
-Do not use `make update-snapshots` as a way to accept an unexplained prompt change: first inspect the complete diff and decide whether it represents the intended model-visible contract.
+Do not use `make update-snapshots` to accept an unexplained prompt change. Inspect the complete golden-file diff and decide whether it is an intended model-visible contract change.
 
-## Talon checkpoint selection: URI validation, plugin ownership, and safe errors
+## SDK graph assembly and skills: assert what the model can do
 
-`open_checkpointer` is the lifetime boundary for LangGraph checkpoint persistence. With no configured URI it opens Talon's local SQLite path. Otherwise it selects a built-in scheme (`sqlite`/`file`, PostgreSQL, or MongoDB) or exactly one installed `deepagents_talon.checkpoint_backends` entry point whose name matches the URI scheme. The returned factory is an async context manager, so a custom backend must be closed even when work in the caller's context raises.
+Use `create_deep_agent` with a fake model when validating graph assembly. A graph-level test should assert the compiled graph's externally meaningful outcome—such as the available tool set, configured metadata, or a harness-profile override—rather than the constructor sequence of its middleware. Run behavior through both `invoke` and `ainvoke` where the contract is meant to hold on both paths; the skills suite parametrizes this explicitly.
 
-Test behavior at this public seam, not the lookup sequence. The focused suite establishes that the default and configured SQLite path retain a checkpoint across separate openings; that a custom entry-point factory receives the URI and cleans up on exception; and that unsupported, malformed, or incomplete URIs fail as `TalonConfigError`. For a driver initialization failure, assert the stable operator-facing message and assert that credentials from the URI are absent. This is a security contract: exceptions from a driver may contain the full connection URI.
+Skill tools have a particularly important disclosure gate. A tool named by a skill is bound only after a successful `read_file` of that skill's normalized `SKILL.md`; a call before the read, or in the same model turn as the read, is returned as an invalid-tool error and does not execute. Compaction can withdraw disclosure when it removes the corresponding read from effective history. Checkpointed disclosure state must likewise not authorize a call after an agent is rebuilt without the skill tool, or when an old persisted record has an incompatible shape.
 
 ```mermaid
 sequenceDiagram
-    participant Host as Talon host
-    participant Open as open_checkpointer
-    participant Select as backend selection
-    participant Saver as checkpoint saver
-    Host->>Open: enter configured context
-    Open->>Select: select URI scheme
-    Select-->>Open: built-in or entry-point factory
-    Open->>Saver: enter async context
-    Saver-->>Host: usable saver
-    Host->>Open: exit or raise
-    Open->>Saver: close context
+    participant Model as fake model
+    participant Agent as deep agent graph
+    participant Skills as skills middleware
+    participant Tool as skill tool
+    Model->>Agent: read SKILL.md
+    Agent->>Skills: successful read result
+    Skills-->>Model: next call includes named tool
+    Model->>Agent: call named tool
+    Agent->>Tool: execute disclosed tool
+    Tool-->>Model: tool result
 ```
 
-*Checkpoint backend selection owns both configuration-safe startup errors and the saver lifecycle.*
+*The capability becomes model-visible only on a subsequent call after a successful skill-file read.*
 
-## Cron store: concurrent mutations and durable claims
+Test collision and lifecycle edges at the same seam: a regular registered tool or another middleware's dynamic tool takes precedence over a same-named skill tool; malformed `include_tools` metadata emits the reviewed warning; an interrupt still applies once a skill tool is disclosed; and a general-purpose subagent inherits applicable skill tools while a declarative subagent uses only its own configuration. These assertions protect capability boundaries without turning a test into an implementation trace.
 
-`CronJobStore` is a JSON store with a process-local reentrant lock shared by stores addressing the same resolved `jobs.json` path. A complete read-modify-write mutation, including cache refresh, occurs under that lock; it coordinates stores in one process but intentionally does not coordinate another process or an external writer. Job execution and delivery are outside the lock.
+## Talon checkpoint selection: URI validation, plugin ownership, and safe errors
 
-The concurrency regression uses two threads and an observed lock—not timing—to pause one writer until the contender demonstrably encounters the held lock. Run every mutation (`create`, edit, remove, claim, result marking, discard, and prune) against both the same store instance and a second instance with a primed cache. The observable assertions are that a concurrently created record is never lost, removal semantics remain correct, and both cached stores converge with a fresh store after completion. A reader contending with a write must observe the completed persisted record, not a partial result.
+`open_checkpointer` is the lifetime boundary for LangGraph checkpoint persistence. With no configured URI it opens Talon's local SQLite path. Otherwise it selects a built-in scheme (`sqlite`/`file`, PostgreSQL, or MongoDB) or exactly one installed `deepagents_talon.checkpoint_backends` entry point whose name matches the URI scheme. The returned factory is an async context manager, so a custom backend must be closed even when work in the caller's context raises. `open_checkpointer` defaults to Talon's local SQLite URI, selects either a built-in URI scheme or exactly one checkpoint-backend entry point, owns the selected async context lifecycle, and turns unexpected initialization failures into a credential-safe `TalonConfigError`.
 
-The independent claim invariant deserves its own race test: two stores claiming the same due job yield one claim and one `None`; the stored result has a single completed repeat and the next scheduled time. This protects at-most-once claiming without asserting internal helper order.
+Test the public seam, not the lookup sequence: retain a checkpoint across separate openings; verify a custom entry-point factory receives its URI and cleans up after an exception; reject unsupported or incomplete URIs; and assert a startup error neither includes credentials nor exposes a driver exception.
+
+## Cron: durable claim, calendar semantics, and concurrent storage
+
+`CronJobStore` is a JSON store with a process-local reentrant lock shared by stores addressing the same resolved `jobs.json` path. Cron stores that address the same resolved jobs file share a reentrant in-process lock for complete storage mutations and reads, while job execution and delivery remain outside the lock and external processes are not coordinated. Concurrent cron mutation tests cover same-instance and separate-store callers and show that a contested claim is exclusive, concurrent creation is retained through every mutation type, and readers observe completed persisted writes.
+
+Before invoking a due job, `CronJobStore.advance_next_run` advances or disables the occurrence and persists the claimed record; this claim-before-run ordering prevents a due one-shot from remaining due while its callback runs. The scheduler records success, runner failures, and delivery failures after claiming a job, suppresses delivery for `[SILENT]` output, and continues scanning after an unexpected tick failure.
 
 ```mermaid
 stateDiagram-v2
@@ -108,60 +120,41 @@ stateDiagram-v2
     Claimed --> Success: runner and delivery succeed
     Claimed --> Failure: runner or delivery fails
     Claimed --> Silent: silent output
-    Success --> Cleanup: finished or expired
+    Success --> Cleanup: later sweep
     Failure --> Retained: final failure
     Claimed --> Retained: no recorded outcome
-    Cleanup --> Removed: later sweep
+    Cleanup --> Removed
     Retained --> Removed: retention pruning
 ```
 
-*The scheduler claims durably before callbacks; completed-history cleanup is a later store concern.*
+*The durable claim happens before execution; cleanup and retention are later store operations.*
 
-Before invoking a due job, `CronJobStore.advance_next_run` advances or disables the occurrence and persists the claimed record; this claim-before-run ordering prevents a due one-shot from remaining due while its callback runs. The scheduler records success, runner failures, and delivery failures after claiming a job, suppresses delivery for `[SILENT]` output, and continues scanning after an unexpected tick failure.
+The race suite uses observed lock contention rather than elapsed time. Exercise every storage mutation against both one store object and separate stores with primed caches, then compare them with a fresh store. Assert persisted records and exclusive claiming, not private helper order.
 
-Keep calendar coverage deterministic with fixed UTC/local datetimes and `ZoneInfo`. Talon cron-expression tests protect calendar semantics including day-of-month/day-of-week matching, `L`/`LW`/`W`/last-weekday/nth-weekday extensions, leap-year and rare future matches, and rejection of expressions that can never fire. Talon schedules preserve requested local wall-clock behavior across daylight-saving transitions: spring gaps snap forward without duplicate firing, fall-back ambiguous times fire once, and daily schedules retain their local hour including sub-hour gaps. `until` is valid only for recurring jobs and is inclusive for a due occurrence, with a five-minute grace for scheduler latency; a run missed beyond that grace is disabled rather than delivered after the requested window.
+Keep calendar coverage fixed with UTC/local datetimes and `ZoneInfo`. Talon cron-expression tests protect calendar semantics including day-of-month/day-of-week matching, `L`/`LW`/`W`/last-weekday/nth-weekday extensions, leap-year and rare future matches, and rejection of expressions that can never fire. Talon schedules preserve requested local wall-clock behavior across daylight-saving transitions: spring gaps snap forward without duplicate firing, fall-back ambiguous times fire once, and daily schedules retain their local hour including sub-hour gaps. `until` is valid only for recurring jobs and is inclusive for a due occurrence, with a five-minute grace for scheduler latency; a run missed beyond that grace is disabled rather than delivered after the requested window.
 
-Finished or expired jobs are normally discarded on a later scheduler sweep, but failed final runs and jobs claimed without a recorded outcome are retained for inspection until retention pruning; a newly enabled replacement schedule prevents removal. Test persisted records and removal decisions, not merely whether a callback ran.
+Finished or expired jobs are normally discarded on a later scheduler sweep, but failed final runs and jobs claimed without a recorded outcome are retained for inspection until retention pruning; a newly enabled replacement schedule prevents removal. Test the stored status, error, and removal decision—not merely whether a callback was called.
 
-## Sender pairing and Slack boundaries
+## Sender admission and Slack OAuth context
 
-Pairing is a channel admission policy, not an agent prompt. An unknown sender creates a provider-scoped, expiring request; an operator alone consumes its code through the channel control surface or CLI. A paired sender may be admitted in later DMs and visible chats, but never becomes an operator. Environment-configured senders remain authoritative and cannot be revoked through pairing. The JSON store is private (`0600`), refuses symlinks, performs locked atomic replacement for mutations, and fails closed for unreadable or corrupt admission state.
+Talon pairing persists provider-scoped pending and approved senders with locked atomic replacement, rejects unsafe or invalid store state for admission, and uses expiring single-use codes that only an operator-facing approval surface can consume. Use an injected clock and temporary store to prove provider isolation, normalization, expiry, single use, and corruption failure without a real channel.
 
-Test the pairing store with an injected epoch clock. Cover the unambiguous eight-character alphabet, case/separator normalization, single-use and expiry, provider isolation, capacity per provider, repeat requests, and corrupt-state failure. At the adapter boundary, prove an unpaired DM reaches neither the host nor agent and receives at most one code; a guild message must not issue one. After operator approval, prove admission in both direct and shared chats and that reactions use the appropriate conversation identifiers. Revocation must block future input, cancel the sender's active work, and pause only scheduled jobs attributed to that sender.
+Slack pairing tests verify that unknown senders receive at most one code in their DM, unknown channel mentions only create a request after a DM can be opened, known senders do not trigger DM opening, and authorized `/talon pair` approval admits the sender without granting command access to an unauthorized coworker. Keep authorization and code delivery outside model input.
 
-Slack adds one important transport boundary: an unknown channel mention sends the code only through the requester's opened DM, and no pending request is created when that DM cannot be opened. A known sender must not trigger DM opening. `/talon pair` passes its argument through, returns command responses through its responder rather than normal channel posts, and requires an authorized operator; pairing cannot be enabled with open exposure.
+Slack OAuth-context tests exclude loopback OAuth callbacks from retrieved thread history before truncation and ensure unsolicited or historical callback text does not become model input or expose callback secrets in an agent request representation. The fake Slack SDK gateway and host drain helper cover link formatting, loopback host variants, error callbacks, and oversized input without Slack credentials or Socket Mode.
 
-```mermaid
-sequenceDiagram
-    participant Sender as unknown Slack sender
-    participant Channel as Slack channel
-    participant Store as pairing store
-    participant Operator as operator command
-    Sender->>Channel: DM or mention
-    Channel->>Store: create provider-scoped request
-    Channel-->>Sender: code in sender DM
-    Operator->>Store: approve code
-    Store-->>Operator: paired sender
-    Sender->>Channel: later message
-    Channel-->>Sender: admitted to host
-```
+## dcode: prompt snapshots and Textual behavior
 
-*The code is delivered and approved outside model input; approval changes the sender admission state.*
+dcode's system-prompt smoke test composes a real CLI agent with real middleware and a fake chat model, fixes machine-dependent settings and paths, captures the first system message, and snapshots both interactive and headless prompt variants. The dcode prompt tests separately verify that memory and secret-handling instructions remain present while interactive and headless modes expose different reachable interaction guidance.
 
-OAuth callback text is another strict model-input boundary. The Slack gateway filters historical loopback OAuth callbacks before thread-context truncation, including Slack link formatting, mentions, surrounding text, alternate loopback hosts, error callbacks, and overlong strings. At the host boundary, an unsolicited callback does not create an agent request or pending authorization; retrieved context preserves trusted ordinary history but excludes untrusted content and callback secrets from both request text and representation. Keep the fake gateway and host drain helper: no Slack credentials or live Socket Mode connection are needed.
+Patch model identity, current directory, local-context detection, backend roots, and settings paths; seed user skill and memory content; redact temporary and profile paths; then compare the complete prompt. This is intentionally broader than a helper unit test because the output is the system message seen by the model.
 
-## dcode: composed-prompt snapshots and Textual behavior
-
-The CLI prompt snapshot is a model-visible integration contract, not a unit test of prompt-building helpers. It creates the real CLI agent and middleware with an `InMemorySaver` and a fake chat model that captures the first `SystemMessage`. Patch model identity, current directory, local-context detection, backend roots, and settings paths; seed a user skill and memory file; then redact temporary, built-in-skill, and profile paths before comparing the complete prompt golden file. Snapshot both interactive and headless local modes.
-
-The companion mode matrix should remain narrower than a full snapshot while protecting semantic differences: memory content and secret-handling guidance are present; disabled automatic memory saving is stated; interactive prompts may ask the user; headless prompts omit unreachable question instructions, report blockers and completed work, and do not invent missing identifiers or permissions. Update snapshots only for intentional user/model-visible changes.
-
-Textual widget tests should mount the real `SubagentPanel` in a minimal `App` and drive it with `run_test()` and realistic lifecycle event dictionaries. Assert rendering and durable user-facing state: active selection follows the newest phase until navigation locks it, user collapse survives a turn reset, a narrow header keeps its full toggle hint while its summary clips, and the next turn clears stale rows. Interrupted in-flight rows become cancelled without changing completed rows; duplicate/replayed events must preserve final status and duration. Also exercise hostile labels so terminal escapes are removed and newlines are flattened, and verify phase duration is wall-clock span across staggered subagents rather than the longest child duration.
+SubagentPanel tests mount the real Textual widget with `run_test()` and assert observable selection, persistent collapse preference, reset/cancellation/replay behavior, hostile-label sanitization, responsive header rendering, and wall-clock phase duration. Feed realistic lifecycle event dictionaries and assert rendered content or durable panel state: selection follows the active phase until navigation locks it, interrupted in-flight rows become cancelled without changing completed rows, replay preserves final status and duration, and staggered subagents report wall-clock span rather than the longest child duration.
 
 ## Focused-regression checklist
 
-1. Start at the owning public boundary: `open_checkpointer`, `CronJobStore`, pairing/channel admission, Slack context retrieval, CLI-agent composition, or the mounted widget.
-2. Replace nondeterminism with a temporary path, fixed clock, fake gateway/model, recording sink, or Textual pilot.
-3. Assert a persisted record, admission result, sanitized error, model-visible prompt/context, sent response, or rendered state—not private implementation sequencing.
-4. Add the failure or lifecycle edge: malformed URI, driver exception, contested claim, corrupt pairing store, unavailable DM, revocation, historical callback, headless mode, cancellation, or replay.
-5. Run the focused target and `make lint`; use a live integration only when the deterministic boundary cannot establish the contract.
+1. Start at the owner boundary: `create_deep_agent`, `open_checkpointer`, `CronJobStore`, channel admission/context retrieval, CLI-agent composition, or a mounted widget.
+2. Replace nondeterminism with a temporary path, injected clock, fake model/gateway, recording callback, or Textual pilot.
+3. Assert a persisted record, tool availability/error, sanitized error, model-visible prompt/context, sent response, or rendered state—not private sequencing.
+4. Include one failure or lifecycle edge: compaction, rebuild, malformed URI, contested claim, corrupt store, unavailable DM, historical callback, headless mode, cancellation, or replay.
+5. Run the focused package target and `make lint`; use a live integration only where no deterministic boundary can prove the contract.

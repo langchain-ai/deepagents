@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:5cfe133ef07de90a30fd0152f7dab5a130cecec860ef1bdb7ca269a773254100",
+  "pageVersion": "sha256:f04396c969327472a59e81bce4a568e1270b7ab5bdd24191e1d767febd59e69b",
   "claims": [
     {
       "id": "claim_02a3292b94514936b7fbbbe869876251",
@@ -26,7 +26,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:c8f6784ca9bc12d339526667c6898608c326b8121ccd39036fab125491840715"
+          "version": "repo-file-v1:sha256:1972d98908a6d061128b3b260458f04637d38f70a4afbe0a71687aae1b303be8"
         }
       ]
     },
@@ -65,30 +65,6 @@
       ]
     },
     {
-      "id": "claim_b115cf98ab154316aeb483d6a1df7263",
-      "statement": "Talon replaces the SDK subagent middleware with TaskTools so task calls can add only unique tool names from the current parent catalog to named local subagents; fresh local subagents run without inherited parent history, and fork mode is rejected.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
-        },
-        {
-          "resource": "repo://libs/talon/deepagents_talon/subagents.py",
-          "version": "repo-file-v1:sha256:b839d65ab603eed8c63b6adbc48faeff4f5b2bdd2fd7f77674ee670ebba42235"
-        }
-      ]
-    },
-    {
-      "id": "claim_a8e81f1c8a214d3eb8f19e3721ef27b1",
-      "statement": "Talon MCP refresh and subagent reload construct replacement graphs under a lock, leaving the previous graph active when validation or reload fails and applying successful replacements to later turns.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
-        }
-      ]
-    },
-    {
       "id": "claim_94dd64563ae644319f3db76269852692",
       "statement": "TalonHost owns process-level lifecycle: it starts the agent runtime before channels and an optional scheduler, unwinds a partial start in reverse order, and on shutdown cancels work before stopping channels, scheduler, and runtime while isolating component stop failures.",
       "evidence": [
@@ -99,154 +75,6 @@
         {
           "resource": "repo://libs/talon/tests/test_host.py",
           "version": "repo-file-v1:sha256:ff53c2008a80763de36488d087c77957cd5163e04f469c438baa2efe078fda83"
-        }
-      ]
-    },
-    {
-      "id": "claim_9055c8156d9c4dfd9cab84afe9169ba9",
-      "statement": "Talon serializes work per conversation; an incoming message cancels and replaces an active turn, but if cancellation does not complete within the configured timeout the conversation is blocked until restart.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
-        },
-        {
-          "resource": "repo://libs/talon/tests/test_host.py",
-          "version": "repo-file-v1:sha256:ff53c2008a80763de36488d087c77957cd5163e04f469c438baa2efe078fda83"
-        }
-      ]
-    },
-    {
-      "id": "claim_995ddaa42cc34b12b0ee9593200b0106",
-      "statement": "For ordinary non-cron turns, BackgroundSubagents detaches task and start_async_task delegation into in-memory, conversation-owned jobs; workers use separate thread IDs, cannot delegate again, clear inherited authorization handlers, and expose completed results for a later owner turn.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/background.py",
-          "version": "repo-file-v1:sha256:d8e461ca33be4ef7ccd947dec80a067745596227d62af134c1013f4b55354c66"
-        },
-        {
-          "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
-        },
-        {
-          "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
-          "version": "repo-file-v1:sha256:45162fd662c51dca92519285250060079894bda9f9df7c201dcd640f36aa05ab"
-        }
-      ]
-    },
-    {
-      "id": "claim_27f0e5fc7ac9428eabdf5fb8b7b7b65f",
-      "statement": "Cron requests are marked as scheduled by DeepAgentRuntime, causing task and start_async_task delegation to execute inline and return a result in the same turn rather than create a background job or later delivery turn; nested delegation is prevented.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/background.py",
-          "version": "repo-file-v1:sha256:d8e461ca33be4ef7ccd947dec80a067745596227d62af134c1013f4b55354c66"
-        },
-        {
-          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
-        },
-        {
-          "resource": "repo://libs/talon/tests/unit_tests/test_background.py",
-          "version": "repo-file-v1:sha256:45162fd662c51dca92519285250060079894bda9f9df7c201dcd640f36aa05ab"
-        }
-      ]
-    },
-    {
-      "id": "claim_331786c4b2014ef7871c1ec84802843c",
-      "statement": "Scheduled delegation has separate operational bounds: inline work is semaphore-limited and queued, has a shorter timeout that becomes an error tool result, and the host bounds each scheduled run and repairs its job thread after a run timeout.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/background.py",
-          "version": "repo-file-v1:sha256:d8e461ca33be4ef7ccd947dec80a067745596227d62af134c1013f4b55354c66"
-        },
-        {
-          "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
-        },
-        {
-          "resource": "repo://libs/talon/tests/test_host.py",
-          "version": "repo-file-v1:sha256:ff53c2008a80763de36488d087c77957cd5163e04f469c438baa2efe078fda83"
-        }
-      ]
-    },
-    {
-      "id": "claim_703a32d6e5ef4a6e9ca02b70d515f48e",
-      "statement": "PersistentCronScheduler discards finished jobs, advances each claimed due job before invoking it, records successful or failed runs, suppresses delivery for [SILENT] output, and changes the recorded outcome to an error when delivery fails.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/cron/scheduler.py",
-          "version": "repo-file-v1:sha256:b02f21ef8b0cd01d9cb39eb60086d3161f8aa9a834ebcc6d9c165eaed2f4dc10"
-        }
-      ]
-    },
-    {
-      "id": "claim_6b8d28a31dbc4004a46a8293ffa05767",
-      "statement": "For each Talon invocation, the runtime captures an immutable approval-policy snapshot; an approval interrupt batch must have unique IDs, is presented as one decision for all protected actions, and resumes with a decision payload for every interrupt ID while cancelling any co-batched MCP elicitation. Cron and background-delivery invocations are auto-rejected because they have no interactive approval path.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
-        },
-        {
-          "resource": "repo://libs/talon/deepagents_talon/tool_approvals.py",
-          "version": "repo-file-v1:sha256:286355f9ca364dc32ea117fabdeee4e2724531b50f84a6c6a5e99469b682a9e5"
-        },
-        {
-          "resource": "repo://libs/talon/tests/unit_tests/test_tool_approval_batch.py",
-          "version": "repo-file-v1:sha256:b5ad0150efb4aef0070ffaf05270767cd622d898e593158c755086ecd1362315"
-        }
-      ]
-    },
-    {
-      "id": "claim_49e30d14d13b4b9fa7922375de8ef1fb",
-      "statement": "TalonHost exposes a pending tool-approval request to the originating channel and resumes it only after an approve/reject response from the sender who started the run; a validated reaction on the approval prompt can resolve the same pending request.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
-        },
-        {
-          "resource": "repo://libs/talon/tests/test_host.py",
-          "version": "repo-file-v1:sha256:ff53c2008a80763de36488d087c77957cd5163e04f469c438baa2efe078fda83"
-        }
-      ]
-    },
-    {
-      "id": "claim_4434ac5c41dc4a69857d66ae606bfb40",
-      "statement": "The Talon CLI creates an assistant-scoped cron store and cleanup context, uses EchoAgentRuntime when no model is configured, and attaches PersistentCronScheduler only when channels are configured; its scheduler delegates execution and result delivery to TalonHost.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/__main__.py",
-          "version": "repo-file-v1:sha256:bc9f97c16989202db7c4c5b7ddea9983473996ac18de652b2225a4bd178915fd"
-        }
-      ]
-    },
-    {
-      "id": "claim_c289cfe49ada46828f7d70d0845e5fda",
-      "statement": "Talon exposes context diagnostics as an optional ContextDoctorRuntime capability: TalonHost runs it with a ten-second bound and returns non-disclosing unavailable or failure text, while DeepAgentRuntime requires a started graph and delegates its report to ContextDoctor.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
-        },
-        {
-          "resource": "repo://libs/talon/deepagents_talon/interfaces.py",
-          "version": "repo-file-v1:sha256:29e905a67a663b38cdebadded219fd797b01ceb12d9d0bcdb73377df61650d06"
-        },
-        {
-          "resource": "repo://libs/talon/deepagents_talon/runtime.py",
-          "version": "repo-file-v1:sha256:7392965006d0f948de82c8cd06f952de3f9d6855e931ab5b43c5739f481c0345"
-        }
-      ]
-    },
-    {
-      "id": "claim_40c784683dd8497d975c78dde04bba61",
-      "statement": "CronJobStore persists jobs in a versioned JSON envelope, including the job prompt, parsed schedule, run state, and channel/conversation/message delivery origin.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/cron/jobs.py",
-          "version": "repo-file-v1:sha256:055287eee8185e087164f5562ade322527a99edc23bdf9275ed5ad498f35b265"
         }
       ]
     },
@@ -279,16 +107,6 @@
         {
           "resource": "repo://libs/talon/deepagents_talon/interfaces.py",
           "version": "repo-file-v1:sha256:29e905a67a663b38cdebadded219fd797b01ceb12d9d0bcdb73377df61650d06"
-        }
-      ]
-    },
-    {
-      "id": "claim_77dd8a9d823e4cf2a7a6fe6c16e99551",
-      "statement": "The Talon CLI bootstraps configuration and assistant-scoped durable collaborators before running the host: it ensures the home directory, cleans sensitive state, chooses channels from flags/environment, and with a model opens an optional sandbox before creating the graph-backed runtime.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/deepagents_talon/__main__.py",
-          "version": "repo-file-v1:sha256:bc9f97c16989202db7c4c5b7ddea9983473996ac18de652b2225a4bd178915fd"
         }
       ]
     },
@@ -367,36 +185,40 @@
       ]
     },
     {
-      "id": "claim_442301cebd154b2196e7b233e23e6340",
-      "statement": "Talon sender pairing is limited to Discord, Slack, and Telegram: an operator approves a short-lived, provider-bound sender code, the pairing store uses locked atomic updates and fails closed on unreadable state, and paired senders do not gain operator controls.",
+      "id": "claim_76b56bdc77344b4595c23678a69651d9",
+      "statement": "Deep Agents separates persistence responsibilities: a checkpointer is passed through graph construction for LangGraph state, the backend governs file, memory, and execution capabilities, and Talon adds independently owned conversation archive and cron-job persistence.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:1c21dd3d17d5ba97b6b77d6225e83b97ddcc5dc6d053b14dfb74614857bc80d8"
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L500-L574",
+          "version": "repo-lines-v1:sha256:1efc8f2ca85e530c576d0fd15ef9ae505caaf3107a59d8ae99c12d0b48ea663f:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1YzRmNzllNDg3ODFiYTVjZDkwNzA0MzIwNmVmMDE5YzliYTA5YmY5ZWNmODcxMDg2MTM4OWRkMzMzZjVjYWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1ZmIzYTI1MjI4OGI1MGRjODU4Y2EwNGJkOTAyNzBhMTZmNGJjNGViZWQwZDdmMzkyYTFiM2VjNzgxZTQ4YTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmNWM0ZmRlY2E2YjYxZThhYWVjZjA4ODRhMWQ1MTMyZWQ0ZTI1YjdjNDM5OTY5ZjRiMDg1MDY3YzYzMTM3YzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU1MDg1NTc3YmEwNzU2MWRiYjQyZjEzN2MzN2UxM2M4ZTkxNmI4NmIwNDBkOWY2YWJiMTZmNTUyMWQxMTA2MmQifQ"
         },
         {
-          "resource": "repo://libs/talon/deepagents_talon/pairing.py",
-          "version": "repo-file-v1:sha256:4842314f8d8531379ea6c663242f2748f8a954dd69314075f1b19e59354fb1d2"
+          "resource": "repo://libs/talon/README.md#L87-L140",
+          "version": "repo-lines-v1:sha256:33c57af397de77f25a3145fbd3b1c9a0beb9bab538f8509a17e92046a9df3715:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5NmFmNzU3Y2IxODJhODFhYWYyYTk4ODQ4MzdjY2FiYWM1ZTE1NjhiNjRmNmUwN2ZjMTZjOWJhZTkxYjJlM2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkMTZkODRjNTMzZDFiZDI4OWQ2NTk4NGE2ZDNlODQ4MDVkMWU2YTdhOTI2MDRkN2U5OTcyYWFjYWExZmM3YWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBhYTBlMjU0MmIyYzllMDgxNTE0MjU5MjI5YzY4MTI1MjcyOGQwYzFhNjZjNmY5ODgzMjEwNzI2YzE3MzI2N2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFlMWY4MDgyYmE3YTM2NzliMWYzMzFjNjIxYjc4Zjc2ZTQxMjNmZWVjZDU0ZjhlNjQxZTQ0MmU4ZDFhYTIzOTMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L317-L352",
+          "version": "repo-lines-v1:sha256:42789579a19abf840b46433520e1ea0587fdb789608fc312dee8cb63e8ebd9ec:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1NmE5ZDI2MDUzMjRiNGEzNmNjMmUxOWNhNzAxNWRjZjQ1OWQ2YzI0NTMzZjMyMzZjNzZlZDg3M2UxZGNmZTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdkMTdkZmFmZmE3OTQzMjliYTBmMmNlYzBhMmYxZTk0MmZiYzBhZWNkOTZjOTVlYzJhMDQ3Mzk0ZGY1NmE5ZTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE1Y2I2Njg4OTNiODVmYjY2MWJkMmZjZDJiMDk1MmQ1NTkwODY3MzQ1ZGM3ZGFjOTRkNTI1MzU3MGJmOTdmYjEifQ"
         }
       ]
     },
     {
-      "id": "claim_8433e7f80fb6420aac78829a69b6918a",
-      "statement": "Talon 0.0.9 added Slack channel support and sender pairing, alongside per-chat model switching, cron expressions with expiry, inline scheduled delegation, sandbox execution, batched approvals, and context diagnostics.",
+      "id": "claim_319f1386be0d44e5b73c0a57b60a50f6",
+      "statement": "Talon's CLI uses EchoAgentRuntime when no model is configured, while the model-backed path can open a sandbox, load MCP tools, and construct DeepAgentRuntime; it adds PersistentCronScheduler only when one or more channels are configured.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/CHANGELOG.md",
-          "version": "repo-file-v1:sha256:cd53017713b10e31af610e8579e03b27a76b8dc104fdd187b02ae81586dc23da"
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L301-L306",
+          "version": "repo-lines-v1:sha256:9f16d74430887896d0c2a51b9c06826026e8f8cf5faa0e400e1adfa3a9e4dc26:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDg1YzAyMzIwYjYwNGE1ZGUyMDFmZmI0ZGZhNWI5Zjg2MTk4MTNkYmQyMDc3MzZhYTE2ZjgwOTUxMDY1NmU5MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGM2ZDQ0MjZmNGZlOWVjN2RkMmViZTJjNTI0MTQ4N2VkYTMyMDA4YmUyNzIzNTUwZmUxZTc3OTU1ZDdiZWIwZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODhiOGE1MTM3OTM3YWY1MDVkNWE2MjY5MjhiNDZhZDNiNTBlYzZhZTQzYTNhNDIxNTU1MGMzM2I4ZWVmZDFkZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjA5YWNhMzk4OTg3OTA0NjcwNmFmOWE4MTUzNGY3OTZjNDJjMTZiMzI5OWRjNzU2NDc2YTZiNGFkY2VmNzQzOCJ9"
         },
         {
-          "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:a1a1b2c443cc89dff8cc7d678424e03b1101605c3635685fa6ce197f004eef6a"
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L341-L385",
+          "version": "repo-lines-v1:sha256:54c2ed0d3aec0db237f40443f3cc4ceaa69ca7d797599057261958b1be5fe162:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmMmJiOGRiYjAxYWM1ZGY2MTEyMzQ1ZWNmMzMxNWZmZWZiZTVhYWNmNjdhZjJkMzJjYTMzYWZiOTg5YmE0YzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5MmFjYzRhZTAzNjI0ZmUwMjExZjQxOTA3NmFkOWY1NjRmMDdjZDI1MGViMjM2NWZmMjIzODBkNTk2ZGY2MTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBjZWM4ZDEyNjBkYmY5M2U4Y2QwNWI5NmI2MGI3NWE0ZTA0MjYwNDZmNGQyOWJjMGQ2M2IxNWU0ZjhjYjkwN2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNiMDljMTI5MzhjYWIxNzU3ZmNjMTZhODVmOTllNjBkMzhlNDQ3ZThjODU2NjhhZDU3OWViNGUzNzFkMzgzMGMifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-02T08:06:05.669Z"
+    "at": "2026-10-03T08:05:07.881Z"
   }
 }

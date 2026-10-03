@@ -1047,7 +1047,7 @@ provides-extras = ["aws", "quickjs", "video"]
 test = [
     { name = "av", specifier = ">=18.0.0,<19.0.0" },
     { name = "build" },
-    { name = "langchain-openai" },
+    { name = "langchain-openai", specifier = ">=1.6.5,<2.0.0" },
     { name = "langchain-tests", specifier = ">=1.1.9" },
     { name = "pillow", specifier = ">=12.3.0,<13.0.0" },
     { name = "pytest" },
@@ -1066,7 +1066,7 @@ test = [
 
 [[package]]
 name = "deepagents-acp"
-version = "0.0.12"
+version = "0.0.13"
 source = { editable = "../acp" }
 dependencies = [
     { name = "agent-client-protocol" },

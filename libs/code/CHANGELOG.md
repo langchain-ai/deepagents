@@ -2,6 +2,14 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.81](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.80...deepagents-code==0.1.81) (2026-10-03)
+
+
+### Bug Fixes
+
+* **code:** clarify clear hint starts a new thread ([#6726](https://github.com/langchain-ai/deepagents/issues/6726)) ([8468bad](https://github.com/langchain-ai/deepagents/commit/8468bad7054cb778aa8b199ee5a644a5acca0332))
+* **code:** preserve dispatch timers across interrupt replays ([#6722](https://github.com/langchain-ai/deepagents/issues/6722)) ([899a9f7](https://github.com/langchain-ai/deepagents/commit/899a9f79161ef9a19bc5a378cbd4215bb946f583))
+
 ## [0.1.80](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.79...deepagents-code==0.1.80) (2026-10-01)
 
 ### Features

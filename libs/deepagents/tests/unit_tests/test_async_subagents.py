@@ -710,6 +710,7 @@ class TestAsyncTools:
     async def test_async_cancel_returns_command(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.cancel = _async_return(None)
+        mock_client.runs.get = _async_return({"run_id": "run_xyz", "status": "running"})
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])
@@ -720,11 +721,28 @@ class TestAsyncTools:
         assert isinstance(result, Command)
         assert result.update["async_tasks"]["thread_abc"]["status"] == "cancelled"
 
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_async_cancel_after_run_finished_keeps_final_status(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.cancel = _async_return(None)
+        mock_client.runs.get = _async_return({"run_id": "run_xyz", "status": "success"})
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec()])
+        cancel = _get_tool(tools, "cancel_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_async_cancel")
+        result = await cancel.coroutine(task_id="thread_abc", runtime=rt)
+
+        assert isinstance(result, Command)
+        assert result.update["async_tasks"]["thread_abc"]["status"] == "success"
+        assert "already finished" in result.update["messages"][0].content
+
 
 class TestCancelTool:
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_cancel_returns_command_with_cancelled_status(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
+        mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "running"}
         mock_get_client.return_value = mock_client
 
         tools = _build_async_subagent_tools([_make_spec()])
@@ -766,6 +784,55 @@ class TestCancelTool:
         assert isinstance(result, str)
         assert "Failed to cancel run" in result
         assert "connection refused" in result
+
+    @pytest.mark.parametrize("run_status", ["success", "error", "timeout"])
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_cancel_after_run_finished_keeps_final_status(self, mock_get_client: MagicMock, run_status: str) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": run_status}
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec()])
+        cancel = _get_tool(tools, "cancel_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_cancel")
+        result = cancel.func(task_id="thread_abc", runtime=rt)
+
+        assert isinstance(result, Command)
+        assert result.update["async_tasks"]["thread_abc"]["status"] == run_status
+        content = result.update["messages"][0].content
+        assert "already finished" in content
+        assert f"'{run_status}'" in content
+        assert not content.startswith("Cancelled")
+
+    @pytest.mark.parametrize("run_status", ["pending", "running", "interrupted"])
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_cancel_of_unfinished_run_records_cancelled(self, mock_get_client: MagicMock, run_status: str) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": run_status}
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec()])
+        cancel = _get_tool(tools, "cancel_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_cancel")
+        result = cancel.func(task_id="thread_abc", runtime=rt)
+
+        assert isinstance(result, Command)
+        assert result.update["async_tasks"]["thread_abc"]["status"] == "cancelled"
+        assert result.update["messages"][0].content == "Cancelled async subagent task: thread_abc"
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_cancel_records_cancelled_when_status_read_fails(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.get.side_effect = RuntimeError("connection reset")
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec()])
+        cancel = _get_tool(tools, "cancel_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_cancel")
+        result = cancel.func(task_id="thread_abc", runtime=rt)
+
+        assert isinstance(result, Command)
+        assert result.update["async_tasks"]["thread_abc"]["status"] == "cancelled"
 
 
 class TestUnknownTaskId:

@@ -94,6 +94,7 @@ Production agents powered by the LangChain stack:
 | [**Agents as Folders**](downloading_agents/) | Download a zip, unzip, and run |
 | [**Better Harness**](better-harness/) | Eval-driven outer-loop optimization of a Deep Agents harness |
 | [**Rubric Middleware**](rubric_middleware/) | Grader-model rubric feedback loop that revises output until all criteria pass |
+| [**Virtual Table Middleware**](virtual-table/) | Prototype for subagent-enriched text rows with deterministic SQL aggregation |
 
 Each example has its own `README` with setup instructions.
 

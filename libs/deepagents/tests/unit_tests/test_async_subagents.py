@@ -2,7 +2,7 @@
 
 import json
 from typing import Any, TypeVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -263,7 +263,35 @@ class TestLaunchTool:
             thread_id="thread_abc",
             assistant_id="my_graph",
             input={"messages": [{"role": "user", "content": "analyze data"}]},
+            config={"configurable": {"parent_thread_id": None}},
         )
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("parent_thread_id", [None, "parent-thread"])
+async def test_parent_thread_identity_survives_updates(*, asynchronous: bool, parent_thread_id: str | None) -> None:
+    client = MagicMock()
+    client.threads.create = (
+        AsyncMock(return_value={"thread_id": "child-thread"}) if asynchronous else MagicMock(return_value={"thread_id": "child-thread"})
+    )
+    client.runs.create = AsyncMock(return_value={"run_id": "run"}) if asynchronous else MagicMock(return_value={"run_id": "run"})
+    runtime = _make_runtime()
+    if parent_thread_id is not None:
+        runtime.config = {"configurable": {"thread_id": parent_thread_id}}
+    factory = "get_client" if asynchronous else "get_sync_client"
+    with patch(f"deepagents.middleware.async_subagents.{factory}", return_value=client):
+        tools = _build_async_subagent_tools([_make_spec()])
+        arguments = {"description": "write a file", "subagent_type": "test-agent", "runtime": runtime}
+        result = await tools[0].coroutine(**arguments) if asynchronous else tools[0].func(**arguments)
+        assert isinstance(result, Command)
+        assert client.runs.create.call_args.kwargs["config"] == {"configurable": {"parent_thread_id": parent_thread_id}}
+        runtime.state = result.update
+        runtime.config = {"configurable": {"thread_id": "different-caller"}}
+        arguments = {"task_id": "child-thread", "message": "read the file", "runtime": runtime}
+        result = await tools[2].coroutine(**arguments) if asynchronous else tools[2].func(**arguments)
+        assert isinstance(result, Command)
+        assert client.runs.create.call_args.kwargs["config"] == {"configurable": {"parent_thread_id": parent_thread_id}}
+        assert result.update["async_tasks"]["child-thread"]["parent_thread_id"] == parent_thread_id
 
 
 class TestCheckTool:
@@ -417,6 +445,7 @@ class TestUpdateTool:
             thread_id="thread_abc",
             assistant_id="my_graph",
             input={"messages": [{"role": "user", "content": "Focus on security issues only"}]},
+            config={"configurable": {"parent_thread_id": None}},
             multitask_strategy="interrupt",
         )
 

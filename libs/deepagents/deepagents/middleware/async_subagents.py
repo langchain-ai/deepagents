@@ -92,6 +92,9 @@ class AsyncTask(TypedDict):
     run_id: str
     """Run ID for the current execution on the thread."""
 
+    parent_thread_id: NotRequired[str | None]
+    """Parent thread identity used to launch this task."""
+
     status: str
     """Current task status (e.g., `'running'`, `'success'`, `'error'`, `'cancelled'`).
 
@@ -265,6 +268,7 @@ def _build_start_tool(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": description}]},
+                config={"configurable": {"parent_thread_id": runtime.config.get("configurable", {}).get("thread_id")}},
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -275,6 +279,7 @@ def _build_start_tool(
             "task_id": task_id,
             "agent_name": subagent_type,
             "thread_id": task_id,
+            "parent_thread_id": runtime.config.get("configurable", {}).get("thread_id"),
             "run_id": run["run_id"],
             "status": "running",
             "created_at": now,
@@ -305,6 +310,7 @@ def _build_start_tool(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": description}]},
+                config={"configurable": {"parent_thread_id": runtime.config.get("configurable", {}).get("thread_id")}},
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -315,6 +321,7 @@ def _build_start_tool(
             "task_id": task_id,
             "agent_name": subagent_type,
             "thread_id": task_id,
+            "parent_thread_id": runtime.config.get("configurable", {}).get("thread_id"),
             "run_id": run["run_id"],
             "status": "running",
             "created_at": now,
@@ -500,6 +507,7 @@ def _build_update_tool(
                 thread_id=tracked["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
+                config={"configurable": {"parent_thread_id": tracked.get("parent_thread_id")}},
                 multitask_strategy="interrupt",
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
@@ -510,6 +518,7 @@ def _build_update_tool(
             "task_id": tracked["task_id"],
             "agent_name": tracked["agent_name"],
             "thread_id": tracked["thread_id"],
+            "parent_thread_id": tracked.get("parent_thread_id"),
             "run_id": run["run_id"],
             "status": "running",
             "created_at": tracked["created_at"],
@@ -539,6 +548,7 @@ def _build_update_tool(
                 thread_id=tracked["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
+                config={"configurable": {"parent_thread_id": tracked.get("parent_thread_id")}},
                 multitask_strategy="interrupt",
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
@@ -549,6 +559,7 @@ def _build_update_tool(
             "task_id": tracked["task_id"],
             "agent_name": tracked["agent_name"],
             "thread_id": tracked["thread_id"],
+            "parent_thread_id": tracked.get("parent_thread_id"),
             "run_id": run["run_id"],
             "status": "running",
             "created_at": tracked["created_at"],

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import urllib.request
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -24,11 +26,15 @@ from deepagents_talon.channels.slack import (
     format_markdown_for_slack,
 )
 from deepagents_talon.config import TalonConfig
+from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import ChannelMedia
 from deepagents_talon.mcp_auth import extract_oauth_callback_url
+from tests.test_host import ArchiveAgent, _wait_for_request
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from deepagents_talon.interfaces import ChannelMessage
 
 BOT = "UBOT"
 OPERATOR = "UOPERATOR"
@@ -1084,3 +1090,41 @@ async def test_thread_context_failure_preserves_control_text(tmp_path: Path) -> 
     )
     assert messages[0].text == "/stop"
     assert "history unavailable" in messages[0].metadata["slack_thread_context"]
+
+
+async def test_slack_stop_bypasses_stalled_attachment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel, gateway, _, _ = _channel(tmp_path)
+    agent = ArchiveAgent()
+    config = TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test"}, base_home=tmp_path)
+    host = TalonHost(config=config, agent=agent, channels=[channel])
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def prepare(message: ChannelMessage, _files: object) -> ChannelMessage:
+        entered.set()
+        await release.wait()
+        return message
+
+    monkeypatch.setattr(channel, "_prepare_inbound_media", prepare)
+    await host.start()
+    try:
+        inbound = _SlackInboundMessage(
+            channel_id="DCHAT",
+            sender_id=OPERATOR,
+            text="older attachment",
+            ts="1",
+            is_dm=True,
+            thread_ts=None,
+        )
+        await gateway.handle_message(inbound)
+        await entered.wait()
+        await gateway.handle_message(replace(inbound, text="/stop", ts="2"))
+        release.set()
+        await gateway.handle_message(replace(inbound, text="later", ts="3"))
+        await _wait_for_request(agent, "later")
+        assert [request.text for request in agent.requests] == ["later"]
+    finally:
+        release.set()
+        await host.stop()

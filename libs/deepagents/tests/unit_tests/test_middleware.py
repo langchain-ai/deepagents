@@ -147,27 +147,27 @@ class TestFilesystemMiddleware:
         middleware = FilesystemMiddleware()
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 8  # All tools including execute and delete
+        assert len(middleware.tools) == 7  # StateBackend does not support execute
 
     def test_init_with_composite_backend(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))})
         middleware = FilesystemMiddleware(backend=backend)
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt is None
-        assert len(middleware.tools) == 8  # All tools including execute and delete
+        assert len(middleware.tools) == 7  # Composite default does not support execute
 
     def test_init_custom_system_prompt_default(self):
         middleware = FilesystemMiddleware(system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, StateBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 8  # All tools including execute and delete
+        assert len(middleware.tools) == 7  # StateBackend does not support execute
 
     def test_init_custom_system_prompt_with_composite(self):
         backend = CompositeBackend(default=StateBackend(), routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))})
         middleware = FilesystemMiddleware(backend=backend, system_prompt="Custom system prompt")
         assert isinstance(middleware.backend, CompositeBackend)
         assert middleware._custom_system_prompt == "Custom system prompt"
-        assert len(middleware.tools) == 8  # All tools including execute and delete
+        assert len(middleware.tools) == 7  # Composite default does not support execute
 
     def test_init_custom_tool_descriptions_default(self):
         middleware = FilesystemMiddleware(custom_tool_descriptions={"ls": "Custom ls tool description"})
@@ -2647,30 +2647,12 @@ class TestFilesystemMiddleware:
         assert isinstance(result, ToolMessage)
         assert "[Output was truncated due to size limits.]" in result.content
 
-    def test_execute_tool_returns_error_when_backend_doesnt_support(self):
-        """Test that execute tool returns friendly error instead of raising exception."""
+    def test_execute_tool_not_registered_when_backend_doesnt_support(self):
+        """Execute is not registered when the backend cannot serve it."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
 
-        # Find the execute tool
-        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
-
-        # Create runtime with StoreBackend
-        runtime = ToolRuntime(
-            state={},
-            context=None,
-            tool_call_id="test_exec",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
-        # Execute should return error message, not raise exception
-        result = execute_tool.invoke({"command": "ls -la", "runtime": runtime})
-
-        assert isinstance(result, ToolMessage)
-        assert "Error: Execution not available" in result.content
-        assert "does not support command execution" in result.content
+        assert "execute" not in {tool.name for tool in middleware.tools}
 
     def test_delete_filtered_when_backend_lacks_delete(self):
         """Delete is removed from the request when the backend can't delete.
@@ -2806,17 +2788,17 @@ class TestFilesystemMiddleware:
         names = {tool.name for tool in middleware.tools}
         assert names == {"ls", "read_file"}
 
-    def test_enabled_tools_none_default_keeps_all_self_tools(self):
-        """tools=None (default) still registers every filesystem tool."""
+    def test_enabled_tools_none_default_keeps_all_supported_self_tools(self):
+        """tools=None registers every tool supported by the backend."""
         middleware = FilesystemMiddleware(backend=StateBackend())
         names = {tool.name for tool in middleware.tools}
-        assert names == {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+        assert names == {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep"}
 
-    def test_enabled_tools_all_keeps_all_self_tools(self):
-        """tools="all" registers every filesystem tool, same as the default."""
+    def test_enabled_tools_all_keeps_all_supported_self_tools(self):
+        """tools="all" registers every backend-supported tool, like the default."""
         middleware = FilesystemMiddleware(backend=StateBackend(), tools="all")
         names = {tool.name for tool in middleware.tools}
-        assert names == {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+        assert names == {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep"}
 
     def test_enabled_tools_execute_listed_but_backend_unsupported_is_noop(self):
         """Execute in tools list is still filtered when the backend doesn't support execution."""
@@ -2917,8 +2899,8 @@ class TestFilesystemMiddleware:
 
         middleware._filter_unsupported_tools_and_apply_prompt(request)
 
-        tools_override = [c.kwargs["tools"] for c in request.override.call_args_list if "tools" in c.kwargs][-1]
-        grep_tool = next(tool for tool in tools_override if tool.name == "grep")
+        request.override.assert_not_called()
+        grep_tool = next(tool for tool in middleware.tools if tool.name == "grep")
         assert grep_tool.description == custom_description
 
     def test_grep_description_swap_copies_dict_tool_specs(self):

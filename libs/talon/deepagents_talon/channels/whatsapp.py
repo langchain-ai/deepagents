@@ -265,6 +265,18 @@ class _BridgeTransport:
             raise _WhatsAppBridgeError(msg, retryable=retryable) from error
 
 
+@dataclass
+class _WhatsAppPreparation:
+    channel: WhatsAppChannel
+    message: ChannelMessage
+
+    async def __call__(self, message: ChannelMessage) -> ChannelMessage:
+        return await self.channel._prepare_message(message)  # noqa: SLF001  # Channel-owned preparation.
+
+    def release(self) -> None:
+        self.channel._release_message(self.message)  # noqa: SLF001  # Channel-owned cleanup.
+
+
 class WhatsAppChannel:
     """Channel adapter for WhatsApp via a local Node bridge."""
 
@@ -296,6 +308,7 @@ class WhatsAppChannel:
         self._stopped = asyncio.Event()
         self._status = ChannelStatus(provider="whatsapp", connected=False, detail="disconnected")
         self._failed_health_checks = 0
+        self._releases: dict[str, dict[str, object]] = {}
 
     def set_message_handler(self, handler: MessageHandler) -> None:
         """Register the host callback for inbound messages.
@@ -409,6 +422,10 @@ class WhatsAppChannel:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._poll = None
         self._health = None
+        try:
+            await self._flush_releases()
+        except _WhatsAppBridgeError:
+            logger.warning("Failed to release WhatsApp inputs during shutdown")
         await self._stop_bridge()
         self._status = ChannelStatus(provider="whatsapp", connected=False, detail="disconnected")
         log_debug_event(logger, "whatsapp.channel.stopped")
@@ -597,9 +614,95 @@ class WhatsAppChannel:
         await self._start_bridge()
         self._failed_health_checks = 0
 
+    def _release_message(self, message: ChannelMessage) -> None:
+        token = message.metadata.get("preparation_token")
+        if isinstance(token, str):
+            self._releases[token] = {
+                "preparation_token": token,
+                "chat_id": message.conversation_id,
+                "message_id": message.message_id,
+            }
+
+    async def _flush_releases(self) -> None:
+        while self._releases:
+            batch = dict(list(self._releases.items())[:128])
+            await self._post_result("/release", {"inputs": list(batch.values())})
+            for token in batch:
+                self._releases.pop(token, None)
+
+    async def _prepare_message(self, message: ChannelMessage) -> ChannelMessage:
+        token = message.metadata.get("preparation_token")
+        if not isinstance(token, str):
+            return message
+        payload = await self._transport.post(
+            "/prepare",
+            {
+                "preparation_token": token,
+                "chat_id": message.conversation_id,
+                "message_id": message.message_id,
+            },
+        )
+        prepared = _parse_message(payload)
+        if (prepared.conversation_id, prepared.message_id, prepared.sender_id) != (
+            message.conversation_id,
+            message.message_id,
+            message.sender_id,
+        ):
+            msg = "WhatsApp preparation returned a different input identity"
+            raise _WhatsAppBridgeError(msg)
+        return _enforce_inbound_media_cap(prepared, max_bytes=self.config.max_media_bytes)
+
+    async def _dispatch_batch(self, messages: list[ChannelMessage]) -> int:
+        remaining = iter(messages)
+        accepted = 0
+        try:
+            for message in remaining:
+                accepted += await self._dispatch_message(message)
+        finally:
+            for message in remaining:
+                self._release_message(message)
+        return accepted
+
+    async def _dispatch_message(self, message: ChannelMessage) -> bool:
+        if message.metadata.get("event_type") == "reaction":
+            return await self._dispatch_reaction(message)
+        if _allows_whatsapp_message(self.config.exposure, message):
+            checked = _enforce_inbound_media_cap(
+                message,
+                max_bytes=self.config.max_media_bytes,
+            )
+            log_debug_event(
+                logger,
+                "whatsapp.inbound.message.dispatching",
+                has_media=bool(checked.metadata.get("has_media")),
+                media_type=checked.metadata.get("media_type"),
+                quoted_message_id_present=(checked.metadata.get("quoted_message_id") is not None),
+                quoted_participant_present=(checked.metadata.get("quoted_participant") is not None),
+                reply_context_status=checked.metadata.get("reply_context_status"),
+                text_chars=len(checked.text),
+            )
+            await dispatch_message(
+                self._handler,
+                checked,
+                provider="WhatsApp",
+                prepare=_WhatsAppPreparation(self, checked),
+            )
+            log_debug_event(logger, "whatsapp.inbound.message.dispatched")
+            return True
+        self._release_message(message)
+        log_debug_event(
+            logger,
+            "whatsapp.inbound.message.rejected",
+            exposure=self.config.exposure.mode.value,
+            has_media=bool(message.metadata.get("has_media")),
+            text_chars=len(message.text),
+        )
+        return False
+
     async def _poll_messages(self) -> None:
         while not self._stopped.is_set():
             try:
+                await self._flush_releases()
                 payload = await self._transport.get("/messages")
                 messages = _parse_messages(payload)
                 if messages:
@@ -608,41 +711,10 @@ class WhatsAppChannel:
                         "whatsapp.poll.batch.received",
                         message_count=len(messages),
                     )
-                accepted = 0
-                for message in messages:
-                    if message.metadata.get("event_type") == "reaction":
-                        accepted += await self._dispatch_reaction(message)
-                        continue
-                    if _allows_whatsapp_message(self.config.exposure, message):
-                        accepted += 1
-                        checked = _enforce_inbound_media_cap(
-                            message,
-                            max_bytes=self.config.max_media_bytes,
-                        )
-                        log_debug_event(
-                            logger,
-                            "whatsapp.inbound.message.dispatching",
-                            has_media=bool(checked.metadata.get("has_media")),
-                            media_type=checked.metadata.get("media_type"),
-                            quoted_message_id_present=(
-                                checked.metadata.get("quoted_message_id") is not None
-                            ),
-                            quoted_participant_present=(
-                                checked.metadata.get("quoted_participant") is not None
-                            ),
-                            reply_context_status=checked.metadata.get("reply_context_status"),
-                            text_chars=len(checked.text),
-                        )
-                        await dispatch_message(self._handler, checked, provider="WhatsApp")
-                        log_debug_event(logger, "whatsapp.inbound.message.dispatched")
-                    else:
-                        log_debug_event(
-                            logger,
-                            "whatsapp.inbound.message.rejected",
-                            exposure=self.config.exposure.mode.value,
-                            has_media=bool(message.metadata.get("has_media")),
-                            text_chars=len(message.text),
-                        )
+                try:
+                    accepted = await self._dispatch_batch(messages)
+                finally:
+                    await self._flush_releases()
                 if messages:
                     log_debug_event(
                         logger,
@@ -871,6 +943,7 @@ def _parse_message(payload: object) -> ChannelMessage:
         message_id=optional_str(values.get("message_id") or values.get("messageId")),
         metadata={
             "provider": "whatsapp",
+            "preparation_token": values.get("preparation_token"),
             "event_type": values.get("event_type"),
             "message_type": message_type,
             "media_type": media_type,

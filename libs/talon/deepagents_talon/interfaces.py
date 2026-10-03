@@ -200,6 +200,21 @@ ReactionHandler = Callable[[ChannelReaction], Awaitable[None]]
 
 
 @runtime_checkable
+class ReleasablePreparation(Protocol):
+    """Deferred preparation with idempotent, nonblocking resource cleanup."""
+
+    async def __call__(self, message: ChannelMessage) -> ChannelMessage:
+        """Prepare the admitted message.
+
+        Args:
+            message: Authorized channel envelope.
+        """
+
+    def release(self) -> None:
+        """Schedule cleanup when the host no longer needs the input."""
+
+
+@runtime_checkable
 class DeferredMessageHandler(Protocol):
     """Optional handler that admits envelopes before asynchronous preparation.
 

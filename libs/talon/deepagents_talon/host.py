@@ -59,6 +59,7 @@ from deepagents_talon.interfaces import (
     ModelSelectableRuntime,
     ProgressMessageHandler,
     ReactionChannelAdapter,
+    ReleasablePreparation,
     SendResult,
     SmartModelRuntime,
     ThreadedChannelAdapter,
@@ -236,6 +237,11 @@ class _PendingInput:
     prepare: Callable[[ChannelMessage], Awaitable[ChannelMessage]] | None
     identity: str = field(default_factory=lambda: str(uuid.uuid4()))
     task: asyncio.Task[ChannelMessage] | None = None
+    admitted: bool = False
+
+    def release(self) -> None:
+        if isinstance(self.prepare, ReleasablePreparation):
+            self.prepare.release()
 
 
 @dataclass
@@ -535,6 +541,13 @@ class TalonHost:
         await self._admit_input(channel, _PendingInput(message, None))
 
     async def _admit_input(self, channel: ChannelAdapter, item: _PendingInput) -> None:
+        try:
+            await self._admit_pending_input(channel, item)
+        finally:
+            if not item.admitted:
+                item.release()
+
+    async def _admit_pending_input(self, channel: ChannelAdapter, item: _PendingInput) -> None:
         message = item.message
         provider = await _channel_provider(channel)
         command = _command_name(message.text)
@@ -590,6 +603,7 @@ class TalonHost:
                     )
                     return
                 self._pending_inputs.setdefault(agent_conversation_id, []).append(item)
+                item.admitted = True
                 await self._replace_agent_turn(
                     _BackgroundRoute(
                         channel=channel,
@@ -1039,6 +1053,7 @@ class TalonHost:
 
     def _discard_inputs(self, conversation_id: str) -> None:
         for pending in self._pending_inputs.pop(conversation_id, ()):
+            pending.release()
             if pending.task is not None:
                 pending.task.cancel()
 
@@ -1048,6 +1063,8 @@ class TalonHost:
             task.exception()
 
     def _finish_inputs(self, conversation_id: str, pending: list[_PendingInput]) -> None:
+        for item in pending:
+            item.release()
         identities = {item.identity for item in pending}
         remaining = [
             item

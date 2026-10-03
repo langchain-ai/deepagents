@@ -20,6 +20,7 @@ from deepagents_talon.interfaces import (
     ChannelMessage,
     DeferredMessageHandler,
     MessageHandler,
+    ReleasablePreparation,
     SendResult,
 )
 from deepagents_talon.media import resolve_bounded_media_path
@@ -134,12 +135,18 @@ async def dispatch_message(
     """
     if handler is None:
         logger.warning("Dropping %s message because no handler is registered", provider)
+        if isinstance(prepare, ReleasablePreparation):
+            prepare.release()
         return
     if prepare is not None:
         if isinstance(handler, DeferredMessageHandler):
             await handler.admit_message(message, prepare)
             return
-        message = await prepare(message)
+        try:
+            message = await prepare(message)
+        finally:
+            if isinstance(prepare, ReleasablePreparation):
+                prepare.release()
     await handler(message)
 
 

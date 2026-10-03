@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2f3992fe522fd4102c5acfa6a46c919b02cf4bd3d0ac5e0f0c3f255a10d361db",
+  "pageVersion": "sha256:6008c786f65d411e041ea463e3825d938fc367339d408b10342dfcf8ec9d7b35",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -27,60 +27,6 @@
       ]
     },
     {
-      "id": "claim_95264e2a3dba4dd9846f764433c99416",
-      "statement": "The Deep Agents SDK is an extensible, model-agnostic agent harness built on LangGraph and provides bundled capabilities including subagents, pluggable filesystem backends, context management, persistent memory, human intervention, skills, and tools/MCP support.",
-      "evidence": [
-        {
-          "resource": "repo://README.md#L24-L42",
-          "version": "repo-lines-v1:sha256:8b485d6f721e33c309d1d7767910ae82798f87b21cccba854edf5a82bbde798a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA0MTlmYjc1NTEzOTcwMjRlN2M4NWY4YmRhNjk0NmZjYWQwOGU3ZDliOWIyMGZkYTVmY2NmOWE4ZTA5Yjc5YzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0MmEzNTc5NmU5MTJlZTk4YmQzMDNmNzM4OGYwMDc0MmNmOGI3ODQ1OTRmYjY5ZjhjMmYwN2Q1MzBkNzRjYmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI3YzkzOGNmZDIwZDhjY2Q1M2I5NWQwZGQ2ZTQxYzIxYTQ5ZDY2OTUzMmM2NDA1MTcxMTI1OTYyZTcxOTQwZjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjZDZhOGZhMGQyZmI4YTZhNTE0N2Y0YmJkOGYxODQ5OTY0MTllNzk5Zjc4ODU0ZjYxOWIzYTVjZGU5YTBiMTQifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_1c2b6f5ad510470ca2bc97390e6422d6",
-      "statement": "dcode is a pre-built terminal coding agent layered on the SDK, with an interactive TUI, conversation resume, remote sandboxes, persistent memory, skills, headless mode, and tool-call approvals; by default it trusts the directory from which it runs.",
-      "evidence": [
-        {
-          "resource": "repo://libs/code/README.md#L30-L49",
-          "version": "repo-lines-v1:sha256:942bb184e1580f8530f00fa28d7d02e64a3851ed4c20167802fa93724b4a65a0:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1OWU2YjM5ZmQ1YzA1YjkzYjgyNTUyNjExM2FkNDUzOGU4NTU1MThlOTc0YTVjYzk2ODhjOTA0OWQ4MmZkNjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiMzEwZjk1MDdjZjEyM2U2ODEzNzVkMDMzMGJjYjA2Y2Y1N2Y5YmY0MGE0ODE2ODdiMDNiOWVmODg2MTRmMGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5NzZlNDdiNzdlMjM4NmJmZjNjMzY2YjI3ZWJkOWNlZTNjMmQyYzQ1OTNlYWQzYWJjYjA0YzcwODg4ODQ2ZTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI3NzNmZDM4MTFlNGE5NzYyMDY4OGNiNmE2MmIwNzAxMjM0NjI0MTA5ZWRmOTJhNTQzYTMzODlmMTM5MjRlNmYifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_4d31e1d7e9544bbfbfa78974e7eda68e",
-      "statement": "The ACP package connects a Python Deep Agent to ACP-capable editors and can also expose dcode's prebuilt coding agent as an ACP server over standard input/output.",
-      "evidence": [
-        {
-          "resource": "repo://libs/acp/README.md#L1-L10",
-          "version": "repo-lines-v1:sha256:a543b8083357e42719d459184078d6af55385dd41bb4fe6651b8ea63c690cb38:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmNjg5YzQ0Mjk4Mjg2YmQwYjMwZGJmOWI1Y2ZiOWNhYTFmNzdhMDgxZTRlNGI0YzFjZjAxNzdmYzBkMGJmNDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM5ZDNkMDhhNjcwMjQ5OTI3MGQwMjk2N2QwNGFmYmRkZTE3NzQ0ZGY5NDg3OTkzZTAyMDYxYmM2NTAwODdhNWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk0OWEwMzM2ZDNkZmNhYTExZjZjMWZlZGE1NzBjMGI4ZjFlYjA1OWY0Yzk4NDQzYzEzNzEzM2VhZmY3ZDkxODIifQ"
-        },
-        {
-          "resource": "repo://libs/acp/README.md#L137-L175",
-          "version": "repo-lines-v1:sha256:3d54f033d4beb1f5543a6fe522ceaf1b86cba5a1e9fb22b99eee4246c7cfb686:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkY2YyMmEzYWEwZWRiY2ZiYjM2ZmViYjMxZjQyYzI5Y2I2YjRlYmQ5Nzk2M2MyYjAzYjFlNTk2MTI2Yzc5NTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiNDQ3NDBjMmFhZTlmNzQ5YmEwMGQ3NTg3OTA1ZjljNmM3OGRlNjgzMGQzOWZmOTljMTE3ZTVhNzdmMjI4YjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVlYThlMTRiOTIwNjg1YmVjMWE4ZjE2NmY5ZThiOGMwZDBjOGMyZjdlYzVlZjNlNzEzOThiODc2YmEyYjcxYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3N2RmMTQwNjQ2YTljNjA0ZDc1MjllZjNjMzc5ODZmZDQ1ODM5YWU0ZTI0NzRiY2UyNDhjYjZlN2QwY2NkMGYifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_256f810d0d67470a83ee412f2de8adb3",
-      "statement": "The evaluation suite runs agents against real LLMs, captures tool calls, file mutations, and final responses, scores correctness and efficiency, and includes Harbor integration for sandboxed benchmarks.",
-      "evidence": [
-        {
-          "resource": "repo://libs/evals/README.md#L1-L8",
-          "version": "repo-lines-v1:sha256:93400fda4e778c601bba64b213e8883ebca8ea4c1fee989f661ee59d812f1a1b:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODI5MWY4Y2ZjM2RjNDJiY2U4M2EzY2JiN2M2YWU1MDlkNmQyYzgyNjYzYjdhNWM4YzU3YTFiNTk3OGM5ZjkxNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTNjNjAyZTY2NDU5ZDJlMjI1NDI2NzM3ZWQ1NDY2NTJjM2QzMWQyM2Q0OTdjYjU1YWM2ODQ1MWU4MmU4ZjU0ZiJ9"
-        }
-      ]
-    },
-    {
-      "id": "claim_57abb6df38334501a9a62aa55957dde6",
-      "statement": "Talon is an experimental local host whose single event loop owns channel adapters, cron schedulers, and the agent runtime; it is not a production or multi-tenant security boundary, and channel access is equivalent to access to the operator's agent, credentials, MCP tools, and host resources.",
-      "evidence": [
-        {
-          "resource": "repo://libs/talon/README.md#L1-L15",
-          "version": "repo-lines-v1:sha256:fbf61f4af9cf49ff30603e8a3800fe2564e59941dbedafae0316fa8ec2bc73a8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3ODJlZmZkZmNkNWY5YjQ2OTIxNTFhY2NiNmI0NDUyYTA3NjdlMjFlMTFlNTNmODRhYmRlYTYyMmFkM2FiNjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3NWZjZGE4NDVmNWRjZGQ3ZmI2MTNlZWMwODhjNTA0Y2ZmMTE5NWFiMGIwMmM0OGY5MzE4NThmYWU4M2Y3ZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyMTA2ZGE4ZDU4NWJiYzY3MTZlYjFlMzE1NzVkY2Y3MDJjMWQ2MmRjYTI0ZTVkM2JlNmRiYTk3ZmU5N2Q3OTYifQ"
-        }
-      ]
-    },
-    {
       "id": "claim_caf8c42c3d904ac0bcefb0a19d532137",
       "statement": "Repository tests should be network-free and deterministic under `tests/unit_tests/`, with `tests/integration_tests/` reserved for networked integration contracts; unaccepted pytest warnings fail the suite.",
       "evidence": [
@@ -97,24 +43,6 @@
         {
           "resource": "repo://libs/partners/AGENTS.md#L1-L25",
           "version": "repo-lines-v1:sha256:34a9fbced5f655cc34c107caf5dc9b1eff12b3d491d5a6cba1f509d51e1585ad:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUwYzczZWNhNjUzMzllM2E5NDJjMzViY2MzOGMxN2NjNTJmOGYxOTk3YmNjNzdiZDUwMjc1MDNlMWExZTUwODYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmNzBlMzM5NGQ0OTRiOTRlYzNjNDliNDBmZTVmZjFmNmNlOTcwZTJlMjJkYWMzYzJkMjc4NDhmZWRjMTgxZDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
-        }
-      ]
-    },
-    {
-      "id": "claim_8b19207a41a940c8a0abc5b905652a41",
-      "statement": "Repository automation is organized under `.github` into workflows, composite actions, scripts, issue templates, and release/labeling documentation; labeling workflows apply package, integration, priority, and PR metadata labels, while helper-script tests mirror their production domain layout.",
-      "evidence": [
-        {
-          "resource": "repo://.github/LAYOUT.md#L1-L18",
-          "version": "repo-lines-v1:sha256:6e8baab71361153e6cd60051a4a1a29668c96331b7c8a4f87891682362c471b1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzMGYwYmZhNTRkYTZlNGNjMWJkNTI0MjAyNzRlNjE5MjczMGNkMGFiZWFkNDU4NTg5M2NiMjVlOGI1NjJhMGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliMDg5YmZmZjMxMDQ0M2VhZWZkYjBlM2M0YzFiZGEwMzRjODNhOWI2ODQxNjgxNjhmZGRiNjczMDQyYzU0NDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5OTE4MDdiNWJjMDU2OTJiNTY3ZWI3YjVlZTg3YjEwMjlkMWU5YzllMzA0NjE5M2FhZDQ5MGRmMGYxNzg5OWMifQ"
-        },
-        {
-          "resource": "repo://.github/LAYOUT.md#L31-L43",
-          "version": "repo-lines-v1:sha256:7757dab8dffa87673702b973d7aeea7ebfeee2134a9ed7f1aa4ecf15afe2da6a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4YjkyNmI0NjY0NWVjYTNkZDRkMzBjNDE2MDIyYTU5ZjAyNmRlOGQ0Mzk4MTk0YTA3NGE3NTcwNzI5MTZmYTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjMjllYTI5ZWZjNmE2Yzk1ZGRmMTAzYzNlYmI2ODhjZmVkZDM0MzY5ZjRjOGJhYmFjMGU4YTcxYTcxMjY5YjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJmOGU5MGIwMGFhZTNmNjA3MDI4YWM3NDlhYmE1MWQ3MDViM2Y2YzI3NGQwNWMxMTAxNjY0NmQ2OGRlMTk0MmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyYjZkMDhjZmEwNGZjYjU5NDRmNGVlYzQ2Yzk1ZjIxODUwMDVkOTIzZTY3ZjE4NWZmZGY5NTk0YzRmMDE2Y2YifQ"
-        },
-        {
-          "resource": "repo://.github/LAYOUT.md#L61-L97",
-          "version": "repo-lines-v1:sha256:cd45b58ccf99033cfade8023bb3ae647ca30105e5d2ad14b51af8ddf900ab3d3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE0YmRlMWI4MmJjMDBjOGJhMTYzZmY0ZmMyMjhiNTY0NGIxZTE1NGVlNjRjMTU4NzBhMDkxOWY2ZjRkOWVkZjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3MWY3ZDMzOTc5OTlhYzYwNTM5NWYwYjQwYzkzNDMzMzE1MDU5MDlmOGI1Y2ZmYjY2NmI2OWUyYjM1OTYzMTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJlZGI5YzNjYmQ1ZmRhZDBiNmM2NGIyMjMwOGEzZjYzZmEwODY5MmM4NjMwNDUwYzUxNDFhOTkyMjI4MGM1NTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4YWMyODU0YWY4ZWZmM2IzNDQ1Nzg0OTRiMTBjNjAxNDZiZGM0OTU1YzcwYWMxNmU2MDkzYmI2YmQyYTUyYWQifQ"
         }
       ]
     },
@@ -185,10 +113,58 @@
           "version": "repo-lines-v1:sha256:d61208dcce31d3e34954060a71ea596e364d591a41381313958dea55b23aaa2e:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzAyYTgxYzM4MzZlZGVmMmQwYmExMWQyMzUzZmI2ZGFiYzc3NzE1MGE3Y2E4M2VhMGQ5ZTlhNzAzMTNmZWFiYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDgwMTMwZTg0MGQzYWI0MTM5YmYxNjY4NGUxMDQyZjUzOTMzZGIxYzA5N2M5N2Q5Y2EzMmE5NmI2MTlhOTIxNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjEzN2FhYWFjOGFmNGYwY2JiMDhhNzFmNmU1NGMyOGZiMGE0ODFiN2VhZGVlYTEyMTM0YzQ3Mzg3NTM0ZTdmOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDM4ODEwOTBmZTM5ZmUyNmQ3MWQ3OGI2NjU4ZTUzZDJjMzMxNjBjNzc2Yjg2NDE2NzU0MmQ3NWZiYjlhZjViOSJ9"
         }
       ]
+    },
+    {
+      "id": "claim_d2debc14eeaa47e9a33cbd2df3da6b5b",
+      "statement": "The release manifest currently records Deep Agents `0.7.21`, ACP `0.0.12`, and the Daytona, Modal, Runloop, Vercel, and QuickJS partner components at `0.0.8`, `0.0.6`, `0.0.7`, `0.0.2`, and `0.3.8`, respectively.",
+      "evidence": [
+        {
+          "resource": "repo://.release-please-manifest.json#L1-L11",
+          "version": "repo-lines-v1:sha256:6c0617deabad55f039e81c3bd8108934d4101aa8cbe8650b1cb028a530526c33:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d0a0c903c7ae4f4cb3db5dddc8ac5d36",
+      "statement": "Release-please scopes releasable changes by changed package paths. A bump-worthy change touching several managed components creates a release PR for each, so cross-package dependency bounds and lockfile churn should be separated into a hidden `chore(deps)` change; an empty commit can fan out to every component.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L695-L719",
+          "version": "repo-lines-v1:sha256:e203894a20cf04414c6ce1c8c357d550df83def37a07ae137781aa3242f5b875:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMzYjI3M2QwN2E0MTc4YTViZWYzZmNmNTI1YzQ5ZDk4Y2FlYjg1NTMwMzM1NmJmNTkzNjFjYjlkOWQ4N2RiM2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmMzNjMGIzNmZiMTY5MTk0NjJkNjQ3ZDg0NWM1NWY5YzUwZmRhZjhkNDMzNjg3NWU5YjQ2NWVhMDAyNzJjMmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc2MTMxMjM4ZjNjMjljOWYzNTc1MjlmZThjZjYzZmI3ZDkzMzkxOTllNTFhMTllMTk3OTY1YTRlY2Q0NTEzMDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFkMGIxMzg1YjQzMzRlZGFlNjcxMjRiNWE2YzRjMmM4ZWU0ODU1Njk4NDc3Y2M1NTQyYTg4NmRmZDhmZTdjYmYifQ"
+        },
+        {
+          "resource": "repo://.github/RELEASING.md#L723-L734",
+          "version": "repo-lines-v1:sha256:1b406d0525ed0316eccfe385953bc58c7b65378a49277d9bac248c1aee380084:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkNWY5MTdjOTJiNmIyNzgxNmEwNjk0ZWE5NjRkZDg4NTAwNjNlYWYxYjdkMzExYjc2NTU4MjAzZjU1OWNjNWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiOGZmOTA2NjQ4ODI5NjMxZGU5ZTNiMDcxY2IzMDIzMDRiZmUxMzM0MjMxZmY2NWI3NDJmOGIwNWIwYzI0Y2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFkMGIxMzg1YjQzMzRlZGFlNjcxMjRiNWE2YzRjMmM4ZWU0ODU1Njk4NDc3Y2M1NTQyYTg4NmRmZDhmZTdjYmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljNzhkZjEyNmM5NjM1MTdmYjZhY2Q4YmRlMjJjZTdkYjEyNmRmYWMyNDU1MTk5M2ZkNWMwMDdjZTEzYjBiNzcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8b0707926373428a85111341b01bd806",
+      "statement": "`deepagents-code` declares an exact `deepagents==0.7.21` dependency, and release guidance requires updating that pin in the feature PR when Code needs new SDK behavior.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L41-L50",
+          "version": "repo-lines-v1:sha256:ac8860f32b94aa1182cef3a73f8a31bef0fa230c3dfe3ac09437e5e60c0a898d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwZDJjOTk1MmIzYThhMjAyMzY0NGNlOGNhMGFiNDczNWRiZTgzYzUxYzg2NWJhZmE3MjU5YzE4YTg0YTQ2NWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0NzBkZTk0NTIwMDk5N2ZmY2FlOTNkMmU4Yzc0YTBkMjExMzhmN2JhNWY5Zjk4MDJiY2YyMDJjNjViMGU5NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4OTg0MjU0NjdiNjFmMTU4NDA4ZTM3NTAwZWUyZTUwMmVjMmNhMTY0ZDc5NTA3ZWUzOThlZTQ1N2U3N2Y0YTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5OTQyNjI2Y2UwZWIwZjAxOWUyYWQ0MTJmZWEzODA5OTg5N2U4NTAzMWY4MDQyMDQ2OGNlNDQwMDJjZTNlNDMifQ"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L28-L37",
+          "version": "repo-lines-v1:sha256:265fc3797ceed1bcdb32c2ed817cdb8011d95b75526659feed87e9b94cc5bca6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjZmRjNWNlNjgzN2IwZmNjZGRlZDk4YmI0MjEzOWQ5MzRlOGJiNzVlNTQzMjg3NzNhZjdhMzJjMzA0NWMwOTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhZmQwZDk4OTM5MWMwMDdhN2Q3YWM0NWI0OWJmY2Y3MjE0OWNlNjA3MTgzOTBiY2U0MTQzMDZkNGQ4YTQ2ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIwZWY0ODc3M2JhNTUxOTE4NWQ5NzlmZWI3MDE3NGVkMWYyNTI1NGQwZjdiNjY4ZDQwMDViNmYxYjlmNmFlMGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6a8fbd349dbc4c1786b62f70196acff2",
+      "statement": "For a new core-package major or minor line, release guidance says to lift sibling bounds in-tree, publish the core package, then publish capped partners, exact-pinned consumers such as Code, and finally packages that depend on those consumers.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L736-L748",
+          "version": "repo-lines-v1:sha256:3c28f4d2669f30951def07633b573b3dc7ff0df9cbebe4bd184b4ab1f28fa3fa:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3NThlMTI1NGNkMDllMjYwN2M0NTU3NTUyMTFkNzYwM2M5NjhkMmNkYTFhMjQ3MTY2NzAzYzY4NzgwOWQ4ZWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyZWFjNjU2NzRmYmE4YTg2NmZmNzcyODU0MjUxZGIyZWNmMTJiYmQzYTUzZDMzZWJkZDYyYzFjMjQzMzRmNDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZjNTc0NTgzNmFmMzFkOTFkMDU2MGMxNzdlY2M3YjU0YzU3NzIyOTAwY2Y1M2Q5ODkxZDZkMjdiZGY3ZTE0NjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFiZTFkZDlmNTI1YzNjYWU1NzM5MmVlYTcyOWE2MjgzMzViNDFlZTgwZWIzZjcwZTJlYmUzZTdmMmRmNjQzZGIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-02T08:06:05.669Z"
+    "at": "2026-10-03T08:05:07.881Z"
   }
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f42aac9ebf3835115ec415488556f5de394a3ddb24d1922d33fe66c5149673c4",
+  "pageVersion": "sha256:5ee987ba65bf08c174fe4664ce8511e633065d63c74c12ed5fda04d28f902ed7",
   "claims": [
     {
       "id": "claim_d463e7db72ac47529b1cd7e9f1097352",
@@ -417,10 +417,38 @@
           "version": "repo-lines-v1:sha256:a0307b232bf7fb0853c711dbae8a4a2e6ed40df7861c7bb66ecce71e52be13cc:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2NzMxYTcxNGRhNTRlNGEyZmNmMzQwYzc2OTU2MWYyZDU3MjFiOGVjN2FjNGZkMTkzMDQ3NzdhOTgwOWY3NzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjOTMzODU5OTRjMzk1MzNmZDYyYTgzZGI5ZmMzNWM1NGNkNTUwN2RlYjI1Y2RjODZkMmZlNDQxZGZkYzVmMzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_63188eee00ab41fba3239a758cc332de",
+      "statement": "dcode configuration normally resolves through one process-wide generation so readers share a coherent snapshot; file edits take effect through an in-app default-config write or `/reload`, while a failed user TOML parse retains the last usable generation and environment resolution remains live.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/ARCHITECTURE.md#L40-L54",
+          "version": "repo-lines-v1:sha256:bdad712cd13e50e09d01c69552d097b25d4c0e9c08912fa4aebd321821d52ed6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyNzk1ZTVkZDJhMmNlMTNkMGZjNGQ0MTc2ZGVlN2Y0M2NjZjk5OWI1ZDM3YmQ5ZTI3MzU4YmZiZjdmY2YwNjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQzODZlOWM0ZTVjMWZjMDY2YTE5ZWZjZDViZGJiYWI3MGY0OThiM2Y1Njg4NTQ0ZWZmOGQ2MDgwODhhNzgzNGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYzNGVmMjFmNzk2MjE2ZGM1YTBiOWJkYzhmZmFlMjQ4NzQ4MDRhYTNkZjNmNDZiMGFhYTA4ZTZjNGE2ODNmZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ0NmM3Zjk1NjljMmRkNGNkNjRiZjEyZGU1ZjRlZDAwYWVhODgxNzU5Y2M4MDkzZDM2Nzk2YTY2MWFjNDI1ODUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L3866-L3889",
+          "version": "repo-lines-v1:sha256:dc13f204cd720fcb45878e7f2377bdee05dbcc74dd33e86ce9ec67ecfbb4c3a8:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ODVmYTYwODI0M2FkNTlkM2U1ZDNmYzA5ZWY0YmEwZTVmYTUxODBlNGE5YjYyNjE2ZTdiZTAyYWFhNGQ2NzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiODNjNTVmNzM3M2QwZDQ0NmE2YTU3NjhhNThiYTlhZDI5Y2QyOWY0ZjQ2MGVlYjNjYzIwMDU5M2NkZjNhZWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRhZmUyODBlMGY2YjJmNmRhYTJiMGQ4YWZiMDllYWZkNGEwYTU4NmY5OWZkNmJhYzRjNTBiNGRlNDc4MDU4ZjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM0ZmMzNzViNTlkMDE3ZWEwOWEwOWVhODY2ZWFjZGI1MWIxZWU4ZWRjMDFkNjk1OTM3YTVmOGIwMGE2OGYzN2QifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/config_manifest.py#L972-L1033",
+          "version": "repo-lines-v1:sha256:ead85e5a8e0957cbf022d4c73832be19271189b6ce5efef09dedff1dd825a200:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiM2RhZjkzZGQxNmUxNjhhNmY2OTY4ZTI5OWM1ZWMyMjljNTNlNGMzODAwN2M5NzU0NzEwMzlkMDI2MzRkMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiODA2M2Y1MTk2YTNlMGJmZWY2ZjNkNDJlMTdhMDE5NzFmOTQxYWVkYzUzZDYwZjJiY2I4MThmOGEzYmQ2MGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MDE0OWUwNjlhZDY3ZWNjZjQ3MzY0NmZmMWM3NTAwNTBkMzI5ZDExMDAxOGRjNTc2Njg3OGVhZmExZDYwN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk0ZDZiYzUyMTliNmQ2MWU1MTJjYThlYjYwMDk3YjlkZmM0MmU4NWE1YTM3ZWIzODNmNzgyMTI3OWZjM2M0MTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_01ff92e535264333831f4ea35a01177c",
+      "statement": "An explicit `system_prompt` passed to `create_cli_agent` replaces, rather than augments, the generated prompt and its dynamic execution context; without an override, prompt generation includes model, working-directory, execution-mode, skills, and interactive-versus-headless guidance.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py#L2565-L2603",
+          "version": "repo-lines-v1:sha256:5a57555328a22905536ebea74f83bc44a2762bc97a4611afec30d31de7da5f52:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4ZjgyY2Y2ZGI0NDQ3NzNjMTc1OWQ0MWVjMzY0ZWM4M2VkOTYzNzgzNzY5YzU2ZjAyMGE0OTFjOGU1YTI1NGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4MTBiNGNjNTNkOTQ3YWU5NzUxZmZjMWI3OWUzY2JhNGQ2ODExNjNjYmViZTZiMTA5MTE5NDg3ZTZiNzFjMGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliZjY0ZmM4ZWE5ZTI3MDNiNDEwYTcwMzE0YjAyNDljMTgwYjBkOWRiNWE3MTI1NDM3ZTQ5ZTk5ZjBjNTYzMTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI5NjhjY2VjMDhmZDYxYmRjNjBmOGFkMDUzNmEzNTQ3MzQ3MWE5YzVmZGY1ZTkxNjc1MmUzNTQwMmUxYTI3MzEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-02T08:06:05.669Z"
+    "at": "2026-10-03T08:05:07.881Z"
   }
 }

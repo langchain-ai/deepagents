@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:baa7ca0e75143005014aeb17c1e6c1928af09bc25f40886b5cc7e8466bd6de0b",
+  "pageVersion": "sha256:b5060f52ac37e9392088a98d9d3272884507f37ca5860e2e20a61efbf3ce96f5",
   "claims": [
     {
       "id": "claim_9b577faaad1344b3b39669ae32d672d9",
@@ -369,10 +369,28 @@
           "version": "repo-lines-v1:sha256:a06a2e8ca0e94c8002770ffbe605ea96b324c036d874bec7b6b565c5cd73e0d9:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3N2M3N2YzOTM5OGIxYjIzODE1NDkwMzlmNTdkNjU3YzgwZDc0YWE4OGNlYmUwNzMxNGQ2NzQwMDdlOWExM2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NzI2ZGY3MDFjNzg1NjlhNjQ4YmI4M2FkMmMzYjk1ZGRiNTdjYzgzMDViYmY3YTVjZjdhNDViNzcwNTg2ODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyNDdkOTRlMjdmOGZkMjE2Y2Y3ZDZlNjhmNzNkNDQ3ZTBhNWE2YzA2YjBhMTFkZjdmOTY0MTMzNjc3ZmQwN2MifQ"
         }
       ]
+    },
+    {
+      "id": "claim_054fc3586ac446198ba9280ed225c1da",
+      "statement": "StateBackend and StoreBackend preserve binary uploads as base64-backed file data and restore the original bytes on download; a subsequent text write replaces the binary encoding with utf-8 while preserving the original creation timestamp.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_file_format.py#L204-L214",
+          "version": "repo-lines-v1:sha256:712647bcf613d191fcf98680487ef9b0f6e8e4f0e7d5d8d282c4543105e74c0b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdkYThkMjU5YzM1Nzc2OWM3ZmQwOWJiZGZlZmY1NDZlNmM2Nzc2ZDIyNjYwMmJkODNhODdlN2ZjZjk1NmE3YTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljMzAyN2YzNzY4YTU5ZWIzNjE3ZGE2NmQwODFiODJhMGMyMWFiYTVkNDI1ZmU4YjFkMjYzMWIyYzQ4ZWY3MGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJkNmNlOGI4MGZjMGU4NWJjNjVkZGM3MGYzYTUyYzc2YmY4MTBjNmMxYzVhNjg1MzBjMjhjZTg0NzJlYTIxZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_file_format.py#L57-L91",
+          "version": "repo-lines-v1:sha256:cbeee7233695c255078dfa9353c3e0bc7123ed1c480cc653848ccf1c6386aa77:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwNTg3MDI4NmI1OTNjZWI0MmY5OWY3ZmQyODVlZmUzYzdmZmIzOTlkZWViOGExNzEwZWU0OGIwZjkwY2M4ZDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhZjQ2NDQwY2RjNTBhM2RmOGFjZTNiMWMzZTA0NjRkNTZiNzNiYjRkODk3M2YxYjllYWY5Mzg1MmNmODQzYjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJlZWFlZDA0NGMwMWEzMDYyZDIzNDRkYzBlMWI1N2UwNzhlMmRhNWZjOTViY2NlZjYzMDE2MDc2ZDRkMDc0NDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmODU2MWRiNWNiNjliYWZhZjQ2MDJkNGNkMTEwYzcyNjU2OTM2ZWZiZjQ5NGFlNjcxODYzMzg2MDg0ZDc1ODMifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_file_format.py#L94-L119",
+          "version": "repo-lines-v1:sha256:9ac9d7a710ca1a9755e52493eeb51aed932dcb379d6afca5e225efc2957b80ea:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxZTQ1ZmQ5MGJjZWJlYmNkNzEyMjRhNTExMThhYzU2ZTE5MzJhNTU0ZWNiMTM1ODVlZmE5MjJmMzQ5N2I2MzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4NDgzNWExNTI5MWE1MjI0ZWQ3ZjJlMmMzMjM1N2Q2ZDUwMjY4NjIwZTRhMjc1MzE4MjhiNjFhNDFlNWJlYWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVlYzkyZGZiYmY4N2IyZmFjMTIyYjhjZmMyN2RiNDY4MjkyMzE5ZGI5NDk5MGIzZGVmZjcyNjZlNmNjNzJmNDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYzYzhhNjU0OGI0ODUwMTg1MzgwM2JhYTQwOWVhMzM3MWMzZTZiOGI3YzUwZjlhYWMzMmNiYmU4NTEzOWY0NzUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-01T08:06:30.386Z"
+    "at": "2026-10-03T08:05:07.881Z"
   }
 }

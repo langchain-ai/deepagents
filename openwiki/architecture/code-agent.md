@@ -1,11 +1,11 @@
 ---
 type: architecture
 title: dcode Client and Agent Server
-description: dcode separates a Textual presentation client from a managed LangGraph agent server. It documents server-owned execution and accounting alongside the UI-only QuickJS subagent fan-out, safe rendering, cost acknowledgement, and prompt-composition regression boundaries.
+description: dcode separates a Textual presentation client from a managed LangGraph agent server. This page explains shared interactive and headless execution, configuration generations, prompt composition, and the cost and subagent-progress UI boundaries.
 tags: [dcode, deepagents-code, client-server, langgraph, textual, subagents]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-02T08:06:05.669Z
+    at: 2026-10-03T08:05:07.881Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
@@ -27,6 +27,8 @@ sources:
     resource: repo://libs/code/deepagents_code/client/remote_client.py
   - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
     resource: repo://libs/code/deepagents_code/config_manifest.py
+  - id: openwiki-source-7f6b98925b5f1ba065df3a04
+    resource: repo://libs/code/deepagents_code/config.py
   - id: openwiki-source-fa408b1d4395cf38b0e4e5ff
     resource: repo://libs/code/deepagents_code/hooks/models/domain.py
   - id: openwiki-source-6edbdd620f44ae4fba5cde4b
@@ -69,7 +71,7 @@ sources:
     resource: repo://libs/code/tests/unit_tests/tui/test_subagent_stream.py
   - id: openwiki-source-6e1b5f814914e0803f7035eb
     resource: repo://libs/code/tests/unit_tests/tui/widgets/test_subagent_panel.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-02T08:06:05.669Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
 ---
 
 # dcode Client and Agent Server
@@ -132,6 +134,12 @@ The server creates built-in tools, optionally adds web search, and loads MCP too
 
 Hooks cross a strict typed projection boundary. Event-specific wire payloads are validated, post-tool results are JSON-projected, and `SubagentStop` requires an agent transcript; unsupported events or notification types are rejected. This is an execution integration boundary, not a Textual rendering protocol.
 
+## Configuration generations
+
+Configuration is intentionally a coherent process-level snapshot rather than a file-watch system. Normal manifest readers resolve through one shared resolver generation, so they see the same managed and user-file snapshots; the environment tier remains live. A hand edit to `config.toml` therefore does not affect these readers until an in-app write refreshes the generation or the user invokes `/reload`. If a user configuration file is unusable, the prior usable generation remains in force rather than partially replacing settings.
+
+Some diagnostic and explicitly supplied-table callers deliberately use an ad-hoc resolver or a fresh file parse to inspect a specific file generation. This is an exception to, not a weakening of, runtime coherence. When changing a setting, preserve the distinction: routine runtime resolution must use the shared generation, while inspection features must report the source generation they actually read.
+
 ## QuickJS subagent fan-out is a client display feature
 
 A top-level `task()` called by JavaScript inside `js_eval` dispatches a subagent within one `js_eval` tool call, so that fan-out is not visible in the ordinary message stream. The QuickJS bridge emits lifecycle payloads on the custom stream. `TextualUIAdapter` admits only dictionary payloads whose type is `subagent` from the main-agent namespace; it ignores nested subagent namespaces and unrelated or malformed custom events. The app forwards accepted events on its Textual event loop to `SubagentPanel`.
@@ -162,9 +170,9 @@ The graph/checkpoint remains authoritative for cumulative thread cost. The Textu
 
 On an authoritative crossing of a positive configured threshold, the app shows a `SessionCostWarningScreen` once per thread. The modal is deliberately persistent against mouse clicks, uses plain-text `Static` widgets, and can be acknowledged with Enter or Escape. Its acknowledgement only dismisses the warning: it neither changes session state nor cancels a running agent. At exactly the threshold there is no warning; a zero threshold disables the feature. A new thread usage reset makes a later crossing eligible again.
 
-## System prompt composition regression coverage
+## System prompt composition and regression coverage
 
-`system_prompt.md` supplies templated base guidance rather than the entire first model message. The smoke test invokes a real `create_cli_agent` composition with a fake model and captures the first `SystemMessage`, so the snapshot includes middleware-injected local context, memory, and skills as well as the base template. It fixes cwd, model identity, local-context output, generated roots, and redacts machine-specific paths before comparing interactive and headless golden files.
+`system_prompt.md` supplies templated base guidance rather than the entire first model message. `create_cli_agent` auto-generates a prompt with model identity, working-directory and execution context, skills, and interactive or headless guidance; passing `system_prompt` replaces that generated content entirely. The smoke test invokes a real `create_cli_agent` composition with a fake model and captures the first `SystemMessage`, so the snapshot includes middleware-injected local context, memory, and skills as well as the base template. It fixes cwd, model identity, local-context output, generated roots, and redacts machine-specific paths before comparing interactive and headless golden files.
 
 A second parameterized test verifies behavior rather than only byte-for-byte snapshots: memory content and credential-safety guidance remain available in all combinations of interactive and memory-auto-save modes; headless prompts omit unreachable user-question guidance and instead require reporting blockers without inventing identifiers or permissions. Update the snapshots intentionally only after reviewing changes to base instructions and middleware composition.
 
@@ -177,4 +185,4 @@ The important boundary tests are deliberately layered:
 - `smoke_tests/test_system_prompt.py` snapshots composed interactive/headless system messages and tests interaction and memory-mode invariants.
 - Server, remote-client, agent, configuration, MCP middleware, and hook tests protect the execution/persistence boundaries described above.
 
-When changing this area, keep the ownership split explicit: server graph construction, workspace policy, task lifecycle, checkpoints, and durable accounting remain server-side; the Textual adapter and widgets filter, sanitize, and render stream observations. Do not infer graph ownership or persistence from the fan-out panel, and do not make a UI display state authoritative over server totals or bindings. See [Cost and sessions](/openwiki/operations/cost-and-sessions.md), [Testing guide](/openwiki/testing/testing-guide.md), and [Run a dcode session](/openwiki/workflows/run-dcode-session.md) for related operational guidance.
+When changing this area, keep the ownership split explicit: server graph construction, workspace policy, task lifecycle, checkpoints, and durable accounting remain server-side; the Textual adapter and widgets filter, sanitize, and render stream observations. Do not infer graph ownership or persistence from the fan-out panel, and do not make a UI display state authoritative over server totals or bindings. See [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md), [MCP integration](/openwiki/integrations/mcp.md), [Cost and sessions](/openwiki/operations/cost-and-sessions.md), [Quickstart](/openwiki/quickstart.md), [Testing guide](/openwiki/testing/testing-guide.md), and [Run a dcode session](/openwiki/workflows/run-dcode-session.md) for related guidance.

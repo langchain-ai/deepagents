@@ -3,6 +3,9 @@ type: persistent scheduling model
 title: Talon Scheduling and Cron Records
 description: Talon cron jobs are durable, origin-scoped scheduled agent invocations with explicit local-time semantics. This page describes their grammar, storage and claim protocol, delivery, retention, concurrency boundary, and revocation limits.
 tags: [talon, scheduling, cron, persistence, delivery, pairing]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-03T08:05:07.881Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
@@ -20,14 +23,13 @@ sources:
     resource: repo://libs/talon/deepagents_talon/pairing.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-6b99900bec3040b9b6d2324c
+    resource: repo://libs/talon/deepagents_talon/timezones.py
   - id: openwiki-source-d723914ebb96abaf33d45325
     resource: repo://libs/talon/tests/unit_tests/test_cron_concurrency.py
   - id: openwiki-source-f2859f71853cf2cbdb40aaa3
     resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-02T08:06:05.669Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-02T08:06:05.669Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
 ---
 
 # Talon Scheduling and Cron Records
@@ -59,7 +61,7 @@ Schedule text is limited to 200 characters. The accepted forms are:
 | `cron <minute> <hour> <day-of-month> <month> <day-of-week> <IANA-zone>` | Recurring five-field expression evaluated in its explicit zone. |
 | `cron @hourly`, `@daily`, `@weekly`, `@monthly`, or `@yearly` plus a zone | Macros described by the agent tool help. |
 
-The parser also recognizes the equivalent `@annually` and `@midnight` macros. Cron fields support ranges, steps, comma lists, month and weekday aliases (`0` or `7` is Sunday), and limited `L`, `W`, and `#` calendar extensions. When both textual day fields are restricted—neither starts with `*`—Talon uses Vixie-style OR; otherwise the two day predicates must both match. Parsed expressions and resolved zone names use separate bounded 128-entry caches because schedule input is agent-supplied.
+Timezone names must be `UTC` or an IANA region name such as `America/New_York`; bare UTC offsets and legacy POSIX aliases are rejected because they cannot carry a region's future daylight-saving rules. The parser also recognizes the equivalent `@annually` and `@midnight` macros. Cron fields support ranges, steps, comma lists, month and weekday aliases (`0` or `7` is Sunday), and limited `L`, `W`, and `#` calendar extensions. When both textual day fields are restricted—neither starts with `*`—Talon uses Vixie-style OR; otherwise the two day predicates must both match. Parsed expressions and resolved zone names use separate bounded 128-entry caches because schedule input is agent-supplied.
 
 Wall-clock schedules, `until`, and cron candidates are evaluated in the declared IANA zone. A nonexistent spring-forward local time moves to the first valid minute; an ambiguous fall-back time uses the earlier occurrence. Several cron candidates that snap into the same gap-end instant coalesce to one fire. A past `at` schedule is rejected. Intervals preserve their phase from the previous due time and skip to a future interval after downtime instead of replaying every missed occurrence.
 
@@ -96,7 +98,7 @@ flowchart TD
     Retain -->|"no"| Delete["Remove record"]
 ```
 
-*The store lock serializes only in-process storage access, not distributed writers, execution, or delivery; each occurrence is persisted and advanced before it is run.*
+*The persisted claim-to-delivery lifecycle. The store lock serializes only in-process storage access, not distributed writers, execution, or delivery; each occurrence is persisted and advanced before it is run.*
 
 On each default 60-second tick, the scheduler first sweeps finished records, then collects due jobs and handles them sequentially. For each, `advance_next_run` atomically rechecks eligibility and persists `claimed_at` plus the next state before calling the host. One-shots and exhausted recurring jobs are disabled before their final invocation; repeat count is consumed at claim time. This is an at-most-once claim protocol: a process failure after that durable claim may lose the occurrence, but does not make it claimable again.
 
@@ -110,7 +112,7 @@ The host executes each job on a dedicated `<job-id>:talon-cron` graph thread, pr
 
 A cron run receives durable origin metadata for cron-tool scope and can obtain a read-only resolved origin-history scope when the matching channel and a history-enabled runtime are available. Archive scope is disabled, so the scheduled prompt and execution do not create an attended turn or transcript archive entry. A final non-silent reply that is delivered can separately be recorded in delivery history when the runtime supports it.
 
-For delivery, the host resolves the adapter matching the stored provider, resolves the parent or thread target from `deliver_to`, and sends with retry. The scheduler treats a callback failure as a delivery error. Delivery therefore reuses the recorded origin; it does not admit a sender, recreate the inbound request, or let model output select an arbitrary destination.
+For delivery, the host resolves the adapter matching the stored provider, resolves the parent or thread target from `deliver_to`, and sends with retry. The scheduler treats a callback failure as a delivery error. If no configured adapter serves the recorded origin, the standard callback logs and drops the result rather than raising, so that run remains recorded as successful; operators should treat removing or renaming a provider with outstanding jobs as potential message loss. Delivery reuses the recorded origin; it does not admit a sender, recreate the inbound request, or let model output select an arbitrary destination.
 
 ## Revocation and operating limits
 
@@ -128,4 +130,4 @@ Run it only while Talon is stopped. It finds every matching provider/sender reco
 
 Preserve strict parsing and record validation, trusted origin injection, channel-level origin scope, atomic persist-before-run claiming, and the single-process ownership assumption. Do not add an interactive approval or authorization path to cron. Keep execution status, result delivery, history access, archive writes, channel admission, and retention as separate boundaries.
 
-Focused tests: `libs/talon/tests/cron/test_jobs.py` covers persistence, scope, grammar, local-time behavior, caching, and store recovery; `libs/talon/tests/cron/test_until.py` covers inclusive bounds, grace, expiry, and retention; `libs/talon/tests/cron/test_scheduler.py` covers ordering, suppression, errors, and ticker recovery; and `libs/talon/tests/unit_tests/test_cron_concurrency.py` verifies shared-lock mutations and exclusive claims across separate store instances in one process. See [runtime behavior](../architecture/runtime-behavior.md), [state persistence](./state-persistence.md), [Talon channel admission](./talon-channel-admission.md), [Talon integration](../integrations/talon.md), and the [testing guide](../testing/testing-guide.md).
+Focused tests: `libs/talon/tests/cron/test_jobs.py` covers persistence, scope, grammar, local-time behavior, caching, and store recovery; `libs/talon/tests/cron/test_until.py` covers inclusive bounds, grace, expiry, and retention; `libs/talon/tests/cron/test_scheduler.py` covers ordering, suppression, errors, and ticker recovery; and `libs/talon/tests/unit_tests/test_cron_concurrency.py` verifies shared-lock mutations and exclusive claims across separate store instances in one process. See [runtime behavior](../architecture/runtime-behavior.md), [state persistence](./state-persistence.md), [Talon integration](../integrations/talon.md), and the [testing guide](../testing/testing-guide.md).

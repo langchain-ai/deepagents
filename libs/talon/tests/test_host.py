@@ -692,13 +692,13 @@ async def test_host_interrupts_active_turn_and_continues_same_conversation(tmp_p
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
     await _wait_for_request(agent, "block")
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
-    await _wait_for_request(agent, "second")
+    await _wait_for_request(agent, "block\n\nsecond")
     await _wait_for_sent_count(channel, 1)
     await host.stop()
 
-    assert [request.text for request in agent.requests] == ["block", "second"]
+    assert [request.text for request in agent.requests] == ["block", "block\n\nsecond"]
     assert agent.recoveries == ["test:chat"]
-    assert channel.sent == [("chat", "reply:second")]
+    assert channel.sent == [("chat", "reply:block\n\nsecond")]
 
 
 class SlowToStopTypingChannel(RecordingChannel):
@@ -972,7 +972,7 @@ async def test_recovery_failure_starts_replacement_with_metadata(tmp_path: Path)
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
     await _wait_for_request(agent, "block")
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
-    await _wait_for_request(agent, "second")
+    await _wait_for_request(agent, "block\n\nsecond")
     await host.stop()
 
     assert agent.requests[1].metadata["interruption_recovery"] == "failed"

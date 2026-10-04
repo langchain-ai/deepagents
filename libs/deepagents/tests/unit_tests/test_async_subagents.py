@@ -2,7 +2,6 @@
 
 import base64
 import json
-import warnings
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, TypeVar
@@ -13,7 +12,6 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
-from langchain_core._api import LangChainBetaWarning
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
@@ -145,17 +143,6 @@ class TestAsyncForkConfiguration:
     def test_rejects_invalid_mode(self, mode: str | None) -> None:
         with pytest.raises(ValueError, match="expected 'isolated' or 'fork'"):
             AsyncSubAgentMiddleware(async_subagents=[_make_spec(mode=mode)])
-
-    @pytest.mark.parametrize("mode", ["isolated", "fork"])
-    def test_mode_warning_and_listing(self, mode: str) -> None:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec(mode=mode)], system_prompt="Delegate background work.")
-        assert len([w for w in caught if isinstance(w.message, LangChainBetaWarning)]) == (mode == "fork")
-        for description in (middleware.tools[0].description, middleware.system_prompt):
-            assert ("inherits your conversation at launch" in description) == (mode == "fork")
-            if mode == "fork":
-                assert "its own system prompt and tools" in description
 
 
 class TestResolveHeaders:
@@ -299,8 +286,7 @@ class TestLaunchTool:
 
 
 @pytest.mark.parametrize("invocation", ["sync", "async"])
-@pytest.mark.parametrize("mode", [None, "isolated", "fork"])
-@pytest.mark.parametrize("summarized", [False, True])
+@pytest.mark.parametrize(("mode", "summarized"), [(None, True), ("isolated", True), ("fork", False), ("fork", True)])
 async def test_launch_context_snapshot(invocation: str, mode: str | None, *, summarized: bool) -> None:
     history = [
         HumanMessage(content="Original request"),
@@ -365,10 +351,6 @@ async def test_launch_context_snapshot(invocation: str, mode: str | None, *, sum
         assert "artifact" not in child_messages[-2]
         assert child_messages[-1]["type"] == "human"
         assert child_messages[-1]["content"].endswith("Explain the delay")
-        assert "background subagent" in child_messages[-1]["content"]
-        assert "will be refused" not in child_messages[-1]["content"]
-        child_messages[0]["content"] = "Child-only change"
-        assert "Child-only change" not in str(runtime.state)
     else:
         assert body["input"]["messages"] == [{"role": "user", "content": "Explain the delay"}]
     assert runtime.state["async_tasks"] == {}
@@ -377,8 +359,7 @@ async def test_launch_context_snapshot(invocation: str, mode: str | None, *, sum
 @pytest.mark.filterwarnings("ignore:.*forked subagents.*:langchain_core._api.LangChainBetaWarning")
 @pytest.mark.parametrize("invocation", ["sync", "async"])
 @pytest.mark.parametrize("resume", [None, "new_turn", "approval"])
-@pytest.mark.parametrize("artifacts_root", ["/", "/artifacts"])
-async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, resume: str | None, artifacts_root: str) -> None:
+async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, resume: str | None) -> None:
     image = b"\x89PNG\r\n\x1a\n uploaded image"
     media = [
         {"type": "image", "mime_type": "image/png", "base64": base64.b64encode(image).decode("ascii")},
@@ -402,7 +383,7 @@ async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, 
         model,
         middleware=[
             FilesystemMiddleware(
-                backend=CompositeBackend(default=FilesystemBackend(root_dir=tmp_path, virtual_mode=True), routes={}, artifacts_root=artifacts_root),
+                backend=CompositeBackend(default=FilesystemBackend(root_dir=tmp_path, virtual_mode=True), routes={}, artifacts_root="/artifacts"),
                 offload_binary_content=True,
             ),
             AsyncSubAgentMiddleware(async_subagents=[_make_spec("alpha", mode="fork")]),

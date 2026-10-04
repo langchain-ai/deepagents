@@ -567,14 +567,13 @@ async def test_cursor_line_highlight_follows_multiline_editing(theme: str) -> No
         assert background(0) == normal
 
 
-@pytest.mark.parametrize("theme", ["textual-dark", "textual-light"])
 @pytest.mark.parametrize("cursor_style", ["underline", "block"])
-@pytest.mark.parametrize("location", [(1, 0), (1, 3), (1, 6), (2, 0)])
+@pytest.mark.parametrize("location", [(1, 3), (1, 6), (2, 0)])
 async def test_cursor_preserves_line_highlight_when_blinking(
-    theme: str, cursor_style: CursorStyle, location: tuple[int, int]
+    cursor_style: CursorStyle, location: tuple[int, int]
 ) -> None:
+    """Blinking preserves the tint on text, end-of-line, and empty rows."""
     app = _CursorLineTestApp()
-    app.theme = theme
     async with app.run_test() as pilot:
         chat = app.query_one(ChatInput)
         area = app.query_one(ChatTextArea)

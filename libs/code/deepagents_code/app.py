@@ -19458,6 +19458,7 @@ class DeepAgentsApp(App):
                     or self._agent_reconciling
                     or self._shell_running
                     or self._connecting
+                    or self._startup_sequence_running
                 ):
                     self._defer_action(
                         DeferredAction(

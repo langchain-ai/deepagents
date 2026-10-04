@@ -196,6 +196,71 @@ async def test_footer_effort_selects_without_queueing_command(
         assert not app._pending_messages
 
 
+async def test_effort_selected_during_startup_survives_model_restoration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp(
+        agent=MagicMock(), thread_id="resume-effort", resume_thread="resume-effort"
+    )
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
+    app._model_params_override = {"reasoning_effort": "low"}
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    next_turn_efforts: list[object] = []
+
+    async def load_history(**_kwargs: object) -> None:
+        started.set()
+        await finish.wait()
+        await app._adopt_resumed_model_if_needed(
+            model_spec="openai:gpt-5.5",
+            model_params={"reasoning_effort": "medium"},
+        )
+        assert app._model_params_override == {"reasoning_effort": "medium"}
+
+    def send(_message: str, **_kwargs: object) -> None:
+        assert app._model_params_override is not None
+        next_turn_efforts.append(app._model_params_override["reasoning_effort"])
+
+    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    monkeypatch.setattr(app, "_load_thread_history", load_history)
+    monkeypatch.setattr(app, "_remote_agent", Mock(return_value=MagicMock()))
+    monkeypatch.setattr(
+        model_config, "get_provider_auth_status", Mock(return_value=None)
+    )
+    monkeypatch.setattr(app, "_run_session_start_hook", AsyncMock(return_value=True))
+    monkeypatch.setattr(app, "_maybe_compact_after_resume", AsyncMock())
+    monkeypatch.setattr(app, "_remount_pending_goal_rubric_review", AsyncMock())
+    monkeypatch.setattr(app, "_send_to_agent", AsyncMock(side_effect=send))
+
+    async with app.run_test() as pilot:
+        app._connecting = False
+        app._should_adopt_resumed_model = True
+        worker = app.run_worker(app._run_session_start_sequence())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert app._startup_sequence_running
+
+        await app.action_open_effort_selector()
+        await pilot.pause()
+        await pilot.press("end", "enter")
+        await pilot.pause()
+        app.post_message(ChatInput.Submitted("next prompt", "normal"))
+        await pilot.pause()
+        assert len(app._pending_messages) == 1
+        assert not next_turn_efforts
+        assert app._model_params_override == {"reasoning_effort": "low"}
+        assert model_config.load_effort_for_model("openai:gpt-5.5") is None
+
+        finish.set()
+        await worker.wait()
+
+        assert next_turn_efforts == ["xhigh"]
+        assert app._model_params_override == {"reasoning_effort": "xhigh"}
+        assert model_config.load_effort_for_model("openai:gpt-5.5") == "xhigh"
+        assert not app._deferred_actions
+        assert not app._pending_messages
+
+
 @pytest.mark.parametrize("command", ["/offload", "/compact"])
 async def test_effort_selected_during_offload_applies_before_queued_prompt(
     command: str, monkeypatch: pytest.MonkeyPatch

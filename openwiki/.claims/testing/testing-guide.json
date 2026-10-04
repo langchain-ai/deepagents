@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:c8f1a7a7c81634b2195a5ae6fad7865e9c86a89b5057b9f2bf7d9f9b1c027ca6",
+  "pageVersion": "sha256:0b6de32f026794faf93edcf900367af204823f45a6759beaf82d0d898f7337d1",
   "claims": [
     {
       "id": "claim_e455c61b9b6c44638b6c8233625fec69",
@@ -184,7 +184,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/tests/unit_tests/test_slack_oauth_context.py#L16-L70",
-          "version": "repo-lines-v1:sha256:abf3f8f1333208fd4f83b9a8e14626b09ab8676b70b74819c0e4d762fded72ac:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmMWNjZWZlN2JjMTdmOTJmOWIyOTdkMWNkY2VhNTYzOTk1MjQ0YjEyMzZiYjQ2N2Y3NGE4ZmU1Mzk0ZjkzOTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3MGRhMDMyZmJmZGJkMWI0MjRlODE0YzIxMmFlNTg0ODRlNzZmNTdkYzU2ZGJmZDEzYmY4MDM3MzZkMzI0YjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA1NTA5OTg2ODAyZGM3ODQ1ODNkNzM1ZjkwMGY5MDUzNDNkYmFmOTZkMTNjMjIzMGM1NjJjYTQxNmRhMWUyMTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY3MjY1NWQ4MDRjODIxN2EyZDNiMmU4Njc1M2NlYjlmMjE5MTNkM2YxMDk0NmU4Mjk3YmQ3YTM4NDNiMDExYWQifQ"
+          "version": "repo-lines-v1:sha256:2497371befa45d2cc0cc14ad5ac9651e79b53775bba3a5925d595448faab4362:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmMWNjZWZlN2JjMTdmOTJmOWIyOTdkMWNkY2VhNTYzOTk1MjQ0YjEyMzZiYjQ2N2Y3NGE4ZmU1Mzk0ZjkzOTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3MGRhMDMyZmJmZGJkMWI0MjRlODE0YzIxMmFlNTg0ODRlNzZmNTdkYzU2ZGJmZDEzYmY4MDM3MzZkMzI0YjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA1NTA5OTg2ODAyZGM3ODQ1ODNkNzM1ZjkwMGY5MDUzNDNkYmFmOTZkMTNjMjIzMGM1NjJjYTQxNmRhMWUyMTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY3MjY1NWQ4MDRjODIxN2EyZDNiMmU4Njc1M2NlYjlmMjE5MTNkM2YxMDk0NmU4Mjk3YmQ3YTM4NDNiMDExYWQifQ"
         }
       ]
     },
@@ -235,10 +235,58 @@
           "version": "repo-lines-v1:sha256:5e9c8a781a2587711313141f3ca35ed5da71a807c6f74f9b59ad6d8b80a43bd9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ZjNhNzI0MWE2NmI3NjAwYjM2MzViZmQ3NzE4MGU4NDY2YTZkMzYxZDRjOGY1ZTg4ZmEzMWFlNTgyMTZkN2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiMGRhNmZkYTVmZGRkMTM4ZjVmMjNhMGQ2ZDk3ODBhN2Y1OTJjMTQwYjdjODI5NjVmODJlODdlZTYxNWE0NDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0ZWJhYzU1OWIxOGIxZWE4ZTkxZWUzMGM3YmE0ZWMxMGY4YTU5OGQ5NDNkYThmZDI1NDRkMzJlNGZlZWYwMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4YmM5MDIwNDM1ODU2Njg4YzU4MjkyNDAwODViMDI1Y2QyMWZjNmFiZDI0NThjNDM3ZTQ4Yjc3YzZiOTJhODIifQ"
         }
       ]
+    },
+    {
+      "id": "claim_19e8e88be8de401e8967fa02d58a7080",
+      "statement": "The Deep Agents SDK unit-test target runs pytest in parallel with sockets disabled except Unix sockets, disables benchmarks, and collects coverage; its separate integration target uses a 30-second timeout.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/Makefile#L12-L38",
+          "version": "repo-lines-v1:sha256:e80d443fbec6ebefd315a7f1120531b91aa1d20c05bd1a64b7c50dff84787637:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ZjNhNzI0MWE2NmI3NjAwYjM2MzViZmQ3NzE4MGU4NDY2YTZkMzYxZDRjOGY1ZTg4ZmEzMWFlNTgyMTZkN2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwNWEzOGQzODM4ZjhkOTY4YTEwMjMyMDY4OGE1NGE2YzZmNDM0MTFkMDJlNWRkMjQzYTBlN2Q4ZGQ4N2EwNzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0ZWJhYzU1OWIxOGIxZWE4ZTkxZWUzMGM3YmE0ZWMxMGY4YTU5OGQ5NDNkYThmZDI1NDRkMzJlNGZlZWYwMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0YWM5ZjFmMzlmMGQ4OWJhNzkzMjlhMGU3ZDU0NWExYWMxMTUyODM2NTZjMWEzZDk1OGUxMzMzNWM4MWMyZWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fc557ca0dea041a483e2312ab3e6c5d9",
+      "statement": "Skills tests run synchronous and asynchronous agent invocation paths and show that a skill tool becomes bound only after a successful normalized `SKILL.md` read; calls before that disclosure or in the same turn are rejected without execution.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py#L216-L232",
+          "version": "repo-lines-v1:sha256:61805fa9c25f3f1b2b86f4096a8e4f4cb0a2ae6ba4938bbccf7c0fc8c74fa6c3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiNzMwYmM1MTk3ODFlM2JjOTc1ZmJmMjYwMDNkNGZhMzQ1NjBlZTk1MjQ0MTY3ZDQ1ZTZkYTEyNjBkNTQ1N2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE3ZmE1ZTI5YWI2MWQzMjA0NjczNTczYTgzNjNkYTUyOGY5MWE2ODkxNmU1NTljOGY5MGUyOWFlNjg0MWNjYzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE5YmY0Y2E3M2QzOGJkZTE5OWIxNmNlNDAzMzE5ZWUxOWE4NTdlZDg5OGMzOTcyYzA1ZmQ2Zjc3MjE1MzI1YjUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py#L55-L115",
+          "version": "repo-lines-v1:sha256:4e80c0926280bdc21e1dc386bef7b046c474037e2509ec85afda0f3d1ad40caf:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwNTFjNDJiNjQ2YWNiYTUzYThiMTczNjJmY2YyM2UxYjc1YTdiNGRjMThlYjEwYWM1YWJjZjEzNzQzNWQ3ZTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2ZWFhZTUxMjNlMDY5NTExODY5Njg3MTk4NmNkNjJhZTQzMGQ4MTUxNzBiMDkzZTM5MzMzZmFjYTQzYTFhNjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcwMWE0M2M4MTI4M2QzMDgzNTJkMDc5ZTI0MGIzNTJlY2E3MjdlNjNmOGMxODgxYTczYTYzMjJhMDhlNmRkZmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3ZTI2MjM3NThlMWJmZGVkMWE0NDcyZmY1MjA1ODVkNjMzNDQ5MjFlMzczZmEzMGM4NjVjNDEzZWRmZjg1ZjAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_875f23b7dcff48a694098a5199b6ea39",
+      "statement": "Skills disclosure is state-sensitive: compaction that drops the skill read withdraws the tool, and stale or incompatible checkpointed disclosure records do not authorize a later skill-tool call.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py#L135-L206",
+          "version": "repo-lines-v1:sha256:0c1ea2d24d74c3a996bfdeef7f1c8ece77c291968f62217dce2002f24bdf953a:eyJzZWxlY3RlZExpbmVDb3VudCI6NzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1MDhhYjliYTIzOTRkZGVlM2U3Y2Q1ZDhhYmViZmVhODYxYmFlOTJiOGI5Mzc3MzJiOWQ4YmEwY2QxNjRjMTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQyZDJhNDEzYzhiYTIxN2U2ZGYxZmJlOTE1Y2FkMTQ1NjUxZDgwNWNmODIyYTViZTk1MjAzYjBmNGQ3OTA3ZmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhmYzFiNjUxYTNmMzFmZmNjZGI1NzdiNjI0NzU1ZDI4YzkzYzk0ODBiMDliMTAwYTNmN2I3ODAzNzBhMzU2MzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUyMGVhYWFhYjBhMzZjYzAxYjJlOWNjNDVlZDU4ZGNjNmRhOGJlYTlmMDY0ZGYyY2RjMzM5MWQ3YzU2MzE3NTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2504c8d20ad549e6a120f03037a4cc9a",
+      "statement": "Skill-tool tests preserve capability precedence and isolation: registered or dynamically exposed tools win over same-named skill tools, while a declarative subagent receives only its explicitly configured skill tools.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py#L304-L345",
+          "version": "repo-lines-v1:sha256:a3fba514fd5179eb7fc6206e4998a85ac0eab2e4353e3c48fa937f8f4948131b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyNzA1M2ExODJkYzE3NjA0YjdhZmIzZjcxZDQ3MzllZWZjMDkzMmYyZjY3YzliOTkwNzg1ZDkzODE1MmRmZWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlMjg0NTc4NWIyZTE5YzdhY2E3YmQyNWRhNDZkOGI4ZGFhN2IwMTE1OTU2NWRiOGY2MmIyNGNlNDM4YjJjNWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIwOTJhYjk1N2U1MGRkMGM0MjMxZWQ1N2U0YzU0YTI4YzBiMTc4ZDA3NjE2M2MxZDVhYmEwZDY2NjA5MDc0MWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdkOTIxMGNkMjA3MWI4ODgyYzU5NzkzMDUzYmM1Njg2ZjVhYWJiN2Q1Mjg1NjJlOGIxNTA2Mjc4MjQyNjE1MjAifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py#L476-L492",
+          "version": "repo-lines-v1:sha256:289af6c752d5985dea75d5762fd12b0f7fe6f56d8c542224ab805052b8bb50c0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxMWZkMmIxMGU2ZjQ0MTU0M2UwNzQ4ZWMyMTk3ZDlhOGIyYjdjNjZjMjY5Y2Y0YmVjMDhlOGZhZjkzM2FkZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0YjkyODQxZmIwNzU1Y2I4NjExY2M4NmE5OTM2ZTg3OGFjZGJkNzAyYWE4MTNhMzVjOTI1YjViOGU3M2YzMmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczOGY3MmRjZDljY2Y4ODNlYWRiYTdmODBkZDhhNmI2MTExMGYzMWU2NmIzYzc1ZDRhZmVmZjE5MzU1ZDIxNWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwYTk1MWUyOTNmMTliODE2MDZmYWFlMzYyOTE0ZGYyODc5ZWExNzhmZjUyZDg5NDZiOGNkZjc5OTRhN2E5MGYifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-02T08:06:05.669Z"
+    "at": "2026-10-03T08:05:07.881Z"
   }
 }

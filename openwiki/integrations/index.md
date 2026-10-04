@@ -4,4 +4,4 @@
 - [GitHub Action Integration](github-action.md) - Run one bounded, non-interactive dcode task from a GitHub Actions job. Documents the public action contract, credential and workspace handoff, memory cache lifecycle, and headless tool controls.
 - [MCP Servers, Trust, OAuth, and Tool Execution](mcp.md) - How dcode discovers, trust-gates, connects, and authenticates MCP servers, and how it normalizes, bounds, and reports MCP tool calls across primary and delegated agents.
 - [Sandbox Provider Integrations](sandbox-partners.md) - Explains dcode and Talon remote sandbox-provider discovery, provisioning, ownership, and routing, and distinguishes those execution capabilities from host-resident integrations and QuickJS middleware.
-- [Talon Runtime Integration](talon.md) - Operator guide to starting and configuring the experimental Talon 0.0.9 runtime, including checkpoint URIs, Slack and sender pairing, persistent schedules, sandbox selection, and security limits.
+- [Talon Runtime Integration](talon.md) - Operator-facing map of the experimental Talon CLI host, channels, durable checkpoints and history, MCP, sandbox execution, schedules, and per-assistant state.

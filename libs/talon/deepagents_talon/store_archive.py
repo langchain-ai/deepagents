@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from deepagents_talon.archive import CHUNK_SIZE, build_search_page
+from deepagents_talon.archive import CHUNK_SIZE, ScanLimitError, build_search_page
 from deepagents_talon.history_vectors import HistoryVectorIndex
 from deepagents_talon.store_archive_index import StoreVectorArchive
 from deepagents_talon.store_records import (
@@ -408,7 +408,7 @@ class StoreConversationArchive:
                 candidate generation, never for a page that claims completeness.
 
         Raises:
-            RuntimeError: The scan budget is exhausted and `partial` is not set.
+            ScanLimitError: The scan budget is exhausted and `partial` is not set.
         """
         async with self.records.access():
             if session_id:
@@ -459,7 +459,7 @@ class StoreConversationArchive:
                     "Conversation history scan limit exceeded (500 records); "
                     "no partial page returned"
                 )
-                raise RuntimeError(msg)
+                raise ScanLimitError(msg)
 
     async def entries(
         self,
@@ -482,7 +482,7 @@ class StoreConversationArchive:
             limit: Maximum result count, from 1 to 20.
 
         Raises:
-            RuntimeError: The scan budget is exhausted before a complete page is known.
+            ScanLimitError: The scan budget is exhausted before a complete page is known.
         """
         _bounds(after, limit)
         await self.setup()
@@ -500,6 +500,9 @@ class StoreConversationArchive:
     ) -> SearchPage:
         """Search scoped history with explicit retrieval coverage.
 
+        Keyword pages scan at most 500 ordering records; when that budget runs out
+        first, the page reports `limit_reached` with a token that resumes the scan.
+
         Args:
             scope: Trusted channel and chat identity.
             query: Search text; empty lists recent history.
@@ -515,18 +518,49 @@ class StoreConversationArchive:
         status = "disabled" if query.strip() else "not_requested"
         if after and (continuation is None or continuation[:3] != context):
             return build_search_page([], limit, status, expired=True)
-        cursor = continuation[3] if continuation else 0
-        hits = await self.text_entries(
-            scope, query=query, session_id="", after=cursor, limit=limit + 1
+        scanned = await self._keyword_scan(
+            scope, query, continuation[3] if continuation else 0, limit + 1
         )
-        page = build_search_page(hits, limit, status, expired=bool(after and not hits))
-        if page["has_more"]:
+        if scanned is None:
+            return build_search_page([], limit, status, expired=True)
+        hits, resume = scanned
+        limited = bool(resume) and len(hits) <= limit
+        page = build_search_page(hits, limit, status, scan_limited=limited)
+        if resume:
             token = uuid4().hex
-            self._pages[token] = (*context, page["results"][-1]["cursor"])
+            self._pages[token] = (*context, resume)
             page["next_after"] = token
             if len(self._pages) > _MAX_SEARCH_PAGES:
                 self._pages.popitem(last=False)
         return page
+
+    async def _keyword_scan(
+        self, scope: ArchiveScope, query: str, start: int, limit: int
+    ) -> tuple[list[ArchiveEntry], int] | None:
+        """Scan one budget of the scope chain from `start`, inclusive, or its head.
+
+        Returns matches and the cursor the next page starts at: the first unreturned
+        match, the first unscanned record when the budget ran out, or 0 at the end.
+        Returns None when a resumed scan's scope was reset or its start record is gone.
+        """
+        async with self.records.access():
+            scoped = await self.records.get(scope_key(scope))
+            if start and (scoped is None or await self.records.get(str(start)) is None):
+                return None
+            hits: list[ArchiveEntry] = []
+            last: Record = {}
+            chain = self._retrieval_chain(
+                start or number(scoped or {}, "head"), "previous_scope", partial=True
+            )
+            async for identifier, record in chain:
+                last = record
+                entry = await self.visible(record, scope)
+                if entry is not None and _matches(str(record["search_text"]), query):
+                    hits.append(entry)
+                    if len(hits) == limit:
+                        return hits, identifier
+            # Without a full page, the chain only stops short when the budget ran out.
+            return hits, number(last, "previous_scope")
 
     async def conversations(
         self,
@@ -543,7 +577,7 @@ class StoreConversationArchive:
             limit: Maximum result count, from 1 to 20.
 
         Raises:
-            RuntimeError: More than 500 ordering records are needed to complete the page.
+            ScanLimitError: More than 500 ordering records are needed to complete the page.
         """
         _bounds(after, limit)
         await self.setup()

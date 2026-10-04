@@ -450,7 +450,10 @@ ChatTextArea {
         background: transparent;
     }
 
-    &.cursor-below-first-line:focus .text-area--cursor-line {
+    /* Transparent cursor backgrounds resolve against the widget, so the
+       underline cursor needs the same tint to keep the line continuous. */
+    &.cursor-below-first-line:focus .text-area--cursor-line,
+    &.cursor-below-first-line.cursor-underline:focus .text-area--cursor {
         background: $foreground 6%;
     }
 }

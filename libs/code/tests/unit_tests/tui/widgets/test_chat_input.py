@@ -37,6 +37,7 @@ if TYPE_CHECKING:
 
     from textual.pilot import Pilot
 
+    from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.sessions import ThreadInfo
 
 
@@ -566,6 +567,39 @@ async def test_cursor_line_highlight_follows_multiline_editing(theme: str) -> No
         area.text = "single line"
         await pilot.pause()
         assert background(0) == normal
+
+
+@pytest.mark.parametrize("theme", ["textual-dark", "textual-light"])
+@pytest.mark.parametrize("cursor_style", ["underline", "block"])
+@pytest.mark.parametrize("location", [(1, 0), (1, 3), (1, 6), (2, 0)])
+async def test_cursor_preserves_line_highlight_when_blinking(
+    theme: str, cursor_style: CursorStyle, location: tuple[int, int]
+) -> None:
+    app = _CursorLineTestApp()
+    app.theme = theme
+    async with app.run_test() as pilot:
+        chat = app.query_one(ChatInput)
+        area = app.query_one(ChatTextArea)
+        area.text = "first\nsecond\n"
+        chat.set_cursor_style(style=cursor_style)
+        area.focus()
+        area.move_cursor(location)
+        await pilot.pause()
+
+        row, column = location
+        for visible in (False, True, False):
+            area._pause_blink(visible=visible)
+            await pilot.pause()
+            strip = area.render_line(row)
+            cursor = next(iter(strip.crop(column, column + 1))).style
+            line = list(strip)[-1].style
+            assert cursor is not None
+            assert line is not None
+            if cursor_style == "block" and visible:
+                assert cursor.bgcolor != line.bgcolor
+            else:
+                assert cursor.bgcolor == line.bgcolor
+            assert bool(cursor.underline) == (cursor_style == "underline" and visible)
 
 
 class TestHistoryNavigationFlag:

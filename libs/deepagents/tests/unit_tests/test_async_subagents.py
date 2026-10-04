@@ -462,6 +462,76 @@ async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, 
         assert all("deepagents_blob" in block and "base64" not in block for block in message.content)
 
 
+@pytest.mark.filterwarnings("ignore:.*forked subagents.*:langchain_core._api.LangChainBetaWarning")
+@pytest.mark.parametrize("invocation", ["sync", "async"])
+async def test_fork_preserves_evicted_human_content(tmp_path: Path, invocation: str) -> None:
+    content = "First section\n" * 500 + "Critical detail in the middle\n" + "Last section\n" * 500
+    parent_backend = FilesystemBackend(root_dir=tmp_path / "parent", virtual_mode=True)
+    parent_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "start_async_task", "args": {"description": "Review details", "subagent_type": "alpha"}, "id": "launch"}],
+                ),
+                AIMessage(content="Launched"),
+            ]
+        )
+    )
+    parent = create_agent(
+        parent_model,
+        middleware=[
+            FilesystemMiddleware(backend=parent_backend, human_message_token_limit_before_evict=1000),
+            AsyncSubAgentMiddleware(async_subagents=[_make_spec("alpha", mode="fork")]),
+        ],
+    )
+    bodies: list[dict[str, Any]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/threads":
+            return httpx.Response(200, json={"thread_id": "child"})
+        assert request.url.path == "/threads/child/runs"
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"run_id": "run", "status": "pending"})
+
+    payload = {"messages": [HumanMessage(content=content, additional_kwargs={"source": "user-upload"})]}
+    transport = httpx.MockTransport(handle)
+    if invocation == "sync":
+        with (
+            httpx.Client(base_url="http://remote", transport=transport) as http_client,
+            patch("deepagents.middleware.async_subagents.get_sync_client", return_value=SyncLangGraphClient(http_client)),
+        ):
+            result = parent.invoke(payload)
+    else:
+        async with httpx.AsyncClient(base_url="http://remote", transport=transport) as http_client:
+            with patch("deepagents.middleware.async_subagents.get_client", return_value=LangGraphClient(http_client)):
+                result = await parent.ainvoke(payload)
+
+    parent_message = result["messages"][0]
+    eviction_path = parent_message.additional_kwargs["lc_evicted_to"]
+    assert parent_message.content == content
+    assert parent_backend.download_files([eviction_path])[0].content == content.encode()
+    assert "Critical detail in the middle" not in parent_model.call_history[0]["messages"][0].content
+
+    child_backend = FilesystemBackend(root_dir=tmp_path / "child", virtual_mode=True)
+    child_model = GenericFakeChatModel(messages=iter([AIMessage(content="Reviewed")]))
+    child = create_agent(
+        child_model,
+        middleware=[FilesystemMiddleware(backend=child_backend, human_message_token_limit_before_evict=1000)],
+    )
+    assert child_backend.download_files([eviction_path])[0].error == "file_not_found"
+    assert len(bodies) == 1
+    if invocation == "sync":
+        child.invoke(bodies[0]["input"])
+    else:
+        await child.ainvoke(bodies[0]["input"])
+    received = child_model.call_history[0]["messages"][0]
+    assert "Critical detail in the middle" in received.content
+    assert received.content == content
+    assert received.additional_kwargs == {"source": "user-upload"}
+    assert parent_message.additional_kwargs == {"source": "user-upload", "lc_evicted_to": eviction_path}
+
+
 class TestCheckTool:
     def _make_check_runtime(self, tool_call_id: str = "tc_check") -> ToolRuntime:
         """Create a runtime with a tracked task in state."""

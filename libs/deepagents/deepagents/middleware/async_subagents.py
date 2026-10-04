@@ -285,7 +285,9 @@ def _start_task_messages(spec: AsyncSubAgent, runtime: ToolRuntime, description:
     messages = _restore_payloads(messages, runtime.state.get(_BLOB_PAYLOADS_KEY) or {})
     # Artifacts are local tool data, not model-facing conversation content, and
     # may contain objects that cannot be copied or serialized by the remote SDK.
-    return deepcopy([message.model_dump(exclude={"artifact"}) for message in messages])
+    # Eviction tags point to parent-local files; forwarding them would make the
+    # child's filesystem middleware hide the full content sent in this snapshot.
+    return deepcopy([message.model_dump(exclude={"artifact": True, "additional_kwargs": {"lc_evicted_to"}}) for message in messages])
 
 
 def _describe_async_subagent(spec: AsyncSubAgent) -> str:

@@ -396,7 +396,6 @@ async def test_auto_name_is_conditional_and_context_isolated(
             True,
             "updated_at",
             "cwd",
-            auto_rename=True,
             rename_model="provider:titles",
         ),
     )
@@ -434,12 +433,12 @@ async def test_auto_name_skips_resumed_conversation(
     generate.assert_not_awaited()
 
 
-def test_auto_name_disabled_by_default(
+def test_auto_name_can_be_disabled(
     naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
         "deepagents_code.model_config.load_thread_config",
-        lambda: ThreadConfig({}, True, "updated_at", "cwd"),
+        lambda: ThreadConfig({}, True, "updated_at", "cwd", auto_rename=False),
     )
     naming_app._maybe_auto_name_thread("original", "provider:chat")
     assert not naming_app._thread_name_tasks

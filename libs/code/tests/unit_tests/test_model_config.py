@@ -1303,12 +1303,14 @@ class TestThreadConfigCoalesced:
         assert cfg.relative_time is True
         assert cfg.sort_order == "updated_at"
         assert cfg.scope == "cwd"
+        assert cfg.auto_rename is True
 
 
 @pytest.mark.parametrize(
     ("content", "auto_rename", "rename_model", "tab_title"),
     [
-        ("", False, "", "{app_name}"),
+        ("", True, "", "{app_name}"),
+        ("[threads]\nauto_rename = false\n", False, "", "{app_name}"),
         (
             (
                 '[threads]\nauto_rename = true\nrename_model = "provider:model"\n'
@@ -1323,7 +1325,7 @@ class TestThreadConfigCoalesced:
                 '[threads]\nauto_rename = "yes"\nrename_model = 2\n'
                 "[terminal]\ntab_title = false\n"
             ),
-            False,
+            True,
             "",
             "{app_name}",
         ),

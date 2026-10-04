@@ -6119,7 +6119,7 @@ class ThreadConfig(NamedTuple):
     scope: str
     """`'cwd'` (current working directory) or `'all'` (all directories)."""
 
-    auto_rename: bool = False
+    auto_rename: bool = True
     """Generate a name after a new thread's first assistant response."""
 
     rename_model: str = ""
@@ -6152,7 +6152,7 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
     relative_time = True
     sort_order = "updated_at"
     scope = "cwd"
-    auto_rename = False
+    auto_rename = True
     rename_model = ""
 
     try:

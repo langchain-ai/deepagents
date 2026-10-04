@@ -19302,7 +19302,7 @@ class DeepAgentsApp(App):
         *,
         model_params: dict[str, object] | None = None,
     ) -> None:
-        """Schedule one opt-in naming attempt after the first completed response."""
+        """Schedule one naming attempt after the first completed response."""
         from deepagents_code.model_config import load_thread_config
 
         config = load_thread_config()

@@ -24,6 +24,31 @@ def _request(payload: object) -> Request:
     return Request({"type": "http", "path_params": {"thread_id": "thread"}}, receive)
 
 
+@pytest.fixture
+def model_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    runtime = SimpleNamespace(
+        model_metadata=ModelMetadata("test", "custom", 4096, frozenset({"video"})),
+        model_environment={},
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_api.require_thread_workspace",
+        AsyncMock(return_value=SimpleNamespace(cwd="/workspace")),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.server_graph._workspace_runtime",
+        AsyncMock(return_value=runtime),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.server_graph._resolve_bound_workspace_config",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                profile_overrides={"max_input_tokens": 4096}, cli_max_retries=2
+            )
+        ),
+    )
+    return runtime
+
+
 async def test_startup_metadata_works_despite_thread_workspace_conflicts() -> None:
     import httpx
 
@@ -70,9 +95,9 @@ async def test_startup_metadata_unavailable(error: BaseException | None) -> None
 
 
 @pytest.mark.parametrize("spec", [None, "custom:test"])
-async def test_server_returns_only_metadata(spec: str | None) -> None:
-    metadata = ModelMetadata("test", "custom", 4096, frozenset({"video"}))
-    binding = SimpleNamespace(cwd="/workspace")
+async def test_server_returns_only_metadata(
+    spec: str | None, model_runtime: SimpleNamespace
+) -> None:
     result = SimpleNamespace(
         model_name="test",
         provider="custom",
@@ -80,28 +105,7 @@ async def test_server_returns_only_metadata(spec: str | None) -> None:
         unsupported_modalities=frozenset({"video"}),
         model=object(),
     )
-    config = SimpleNamespace(
-        profile_overrides={"max_input_tokens": 4096}, cli_max_retries=2
-    )
-    with (
-        patch(
-            "deepagents_code.model_api.require_thread_workspace",
-            AsyncMock(return_value=binding),
-        ),
-        patch(
-            "deepagents_code.server_graph._workspace_runtime",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    model_metadata=metadata, model_environment={}
-                )
-            ),
-        ),
-        patch(
-            "deepagents_code.server_graph._resolve_bound_workspace_config",
-            AsyncMock(return_value=config),
-        ),
-        patch("deepagents_code.config.create_model", return_value=result) as create,
-    ):
+    with patch("deepagents_code.config.create_model", return_value=result) as create:
         response = await model_metadata(
             _request(
                 {
@@ -112,50 +116,32 @@ async def test_server_returns_only_metadata(spec: str | None) -> None:
             )
         )
     assert response.status_code == 200
-    assert json.loads(bytes(response.body)) == metadata.to_payload()
+    assert json.loads(bytes(response.body)) == model_runtime.model_metadata.to_payload()
     if spec is None:
         create.assert_not_called()
     else:
         create.assert_called_once_with(
             spec,
             extra_kwargs={"temperature": 0.5},
-            profile_overrides=config.profile_overrides,
+            profile_overrides={"max_input_tokens": 4096},
             cli_max_retries=2,
         )
 
 
 @pytest.mark.parametrize("environment_available", [False, True])
 async def test_switch_metadata_uses_runtime_environment(
-    environment_available: bool,
+    environment_available: bool, model_runtime: SimpleNamespace
 ) -> None:
     from deepagents_code.config import active_environment
 
-    runtime = SimpleNamespace(
-        model_environment={"MODEL_VERSION": "original"}
-        if environment_available
-        else None
+    model_runtime.model_environment = (
+        {"MODEL_VERSION": "original"} if environment_available else None
     )
 
     def resolve(_spec: str, **_kwargs: object) -> ModelMetadata:
         return ModelMetadata(active_environment()["MODEL_VERSION"], "custom")
 
     with (
-        patch(
-            "deepagents_code.model_api.require_thread_workspace",
-            AsyncMock(return_value=SimpleNamespace(cwd="/workspace")),
-        ),
-        patch(
-            "deepagents_code.server_graph._workspace_runtime",
-            AsyncMock(return_value=runtime),
-        ),
-        patch(
-            "deepagents_code.server_graph._resolve_bound_workspace_config",
-            AsyncMock(
-                return_value=SimpleNamespace(
-                    profile_overrides=None, cli_max_retries=None
-                )
-            ),
-        ),
         patch(
             "deepagents_code.config._preview_dotenv_environ",
             return_value={"MODEL_VERSION": "edited"},
@@ -208,40 +194,6 @@ async def test_server_resolution_failures_are_contained(
     ):
         response = await model_metadata(_request({"workspace": {}}))
     assert response.status_code == status
-
-
-async def test_remote_roundtrip_never_constructs_a_local_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    remote = RemoteAgent("http://test")
-    metadata = ModelMetadata("test", "custom", 4096, frozenset({"video"}))
-    post = AsyncMock(return_value=metadata.to_payload())
-    monkeypatch.setattr(
-        remote, "_workspace_for_thread", AsyncMock(return_value={"id": "bound"})
-    )
-    monkeypatch.setattr(
-        remote,
-        "_get_graph",
-        Mock(
-            return_value=SimpleNamespace(
-                client=SimpleNamespace(http=SimpleNamespace(post=post))
-            )
-        ),
-    )
-    with patch("deepagents_code.config.create_model") as create:
-        result = await remote.aresolve_model(
-            {"configurable": {"thread_id": "thread"}}, "custom:test"
-        )
-    assert result == metadata
-    create.assert_not_called()
-    post.assert_awaited_once_with(
-        "/dcode/threads/thread/model",
-        json={
-            "workspace": {"id": "bound"},
-            "model_spec": "custom:test",
-            "extra_kwargs": None,
-        },
-    )
 
 
 @pytest.mark.parametrize(

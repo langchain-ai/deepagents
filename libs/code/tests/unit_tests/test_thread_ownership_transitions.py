@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from langgraph.pregel import Pregel
 
     from deepagents_code.output import OutputFormat
+    from deepagents_code.tui.widgets.messages import AppMessage
 
 
 @pytest.fixture
@@ -365,6 +366,86 @@ async def test_handoff_seed_releases_only_failed_reservations(
         )
         assert held_lease("child") is not None
         assert try_acquire("child") is None
+
+
+@pytest.mark.usefixtures("isolated_state")
+@pytest.mark.parametrize("pause_at", ["saved", "activity", "adopted"])
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_handoff_releases_only_unadopted_child(
+    monkeypatch: pytest.MonkeyPatch, pause_at: str, cancel: bool
+) -> None:
+    from deepagents_code.thread_ownership import ensure_owned
+
+    app = DeepAgentsApp(thread_id="source", server_kwargs={})
+    app._reserve_thread("source")
+    app._shell_running = pause_at == "activity"
+    paused = asyncio.Event()
+    proceed = asyncio.Event()
+    remote = MagicMock()
+    remote.aoffload = AsyncMock(
+        return_value={
+            "status": "summarized",
+            "summary": "Saved conversation",
+            "archive_path": "/conversation_history/source.md",
+        }
+    )
+
+    def ensure(config: RunnableConfig) -> None:
+        ensure_owned(config["configurable"]["thread_id"])
+
+    remote.aensure_thread = AsyncMock(side_effect=ensure)
+    remote.abind_workspace = AsyncMock()
+    remote.aupdate_state = AsyncMock()
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    monkeypatch.setattr(app, "_set_spinner", AsyncMock())
+    monkeypatch.setattr(app, "_sync_session_cost_from_checkpoint", AsyncMock())
+
+    async def mount(message: AppMessage) -> None:
+        text = str(message._content)
+        if (pause_at == "saved" and "Summary saved" in text) or (
+            pause_at == "activity" and "new activity" in text
+        ):
+            paused.set()
+            await proceed.wait()
+
+    async def resume(child_id: str) -> None:
+        app._lc_thread_id = child_id
+        if pause_at == "adopted":
+            paused.set()
+            await proceed.wait()
+
+    monkeypatch.setattr(app, "_mount_message", mount)
+    monkeypatch.setattr(app, "_resume_thread", resume)
+    task = asyncio.create_task(app._handoff_expired_cache("source"))
+    try:
+        await asyncio.wait_for(paused.wait(), timeout=5)
+        child_id = remote.aensure_thread.call_args.args[0]["configurable"]["thread_id"]
+        assert held_lease(child_id) is not None
+        assert try_acquire(child_id) is None
+        assert await sessions.thread_exists(child_id)
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            proceed.set()
+            assert await task == child_id
+
+        adopted = pause_at == "adopted" or (pause_at == "saved" and not cancel)
+        assert app._lc_thread_id == (child_id if adopted else "source")
+        if adopted:
+            assert held_lease(child_id) is not None
+            assert try_acquire(child_id) is None
+        else:
+            assert held_lease(child_id) is None
+            available = try_acquire(child_id)
+            assert available is not None
+            available.release()
+            assert await sessions.delete_thread(child_id)
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.usefixtures("isolated_state")

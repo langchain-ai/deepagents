@@ -10149,11 +10149,18 @@ class DeepAgentsApp(App):
             agent_name=agent_name,
             context=context,
         )
-        await self._mount_message(
-            AppMessage(f"Summary saved in new thread: {child_id}")
-        )
-        await self._switch_to_handoff(thread_id, child_id)
-        return child_id
+        try:
+            # Track the seeded reservation before the first post-seed await so
+            # cancelling either notice or the switch cannot strand the child.
+            self._reserve_thread(child_id)
+            await self._mount_message(
+                AppMessage(f"Summary saved in new thread: {child_id}")
+            )
+            await self._switch_to_handoff(thread_id, child_id)
+            return child_id
+        finally:
+            if self._lc_thread_id != child_id:
+                self._release_thread(child_id)
 
     @staticmethod
     async def _seed_handoff_thread(
@@ -10220,7 +10227,6 @@ class DeepAgentsApp(App):
 
     async def _switch_to_handoff(self, thread_id: str, child_id: str) -> None:
         """Open the child thread unless new work would be stranded on the source."""
-        self._reserve_thread(child_id)
         if (
             self._pending_messages
             or self._pending_shell_messages
@@ -10234,8 +10240,6 @@ class DeepAgentsApp(App):
             )
         elif self._lc_thread_id == thread_id and not self._exiting:
             await self._resume_thread(child_id)
-        if self._lc_thread_id != child_id:
-            self._release_thread(child_id)
 
     def _offload_context(self, thread_id: str | None) -> CLIContext:
         """Build the runtime context for a server offload of `thread_id`.

@@ -18346,6 +18346,57 @@ class TestRestartServerForAgentSwap:
         )
 
     @pytest.mark.parametrize("resume_thread_id", [None, "research-thread"])
+    async def test_reservation_failure_preserves_current_session(
+        self, monkeypatch: pytest.MonkeyPatch, resume_thread_id: str | None
+    ) -> None:
+        """An unavailable destination leaves the current client and chat usable."""
+        from deepagents_code.thread_ownership import held_lease
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app, server_proc = self._make_app()
+        monkeypatch.setattr(
+            "deepagents_code.app._new_thread_id", lambda: "fresh-thread"
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.previous_thread_id = "earlier-thread"
+            app._session_state.approval_mode_key = "auto"
+            app._reserve_thread("old-thread")
+            previous_lease = held_lease("old-thread")
+            previous_client = app._agent
+            app._message_store.append(
+                MessageData(type=MessageType.ASSISTANT, content="Existing answer")
+            )
+            monkeypatch.setattr(
+                app,
+                "_reserve_thread",
+                MagicMock(side_effect=OSError("read-only ownership directory")),
+            )
+            app._agent_switching = True
+
+            assert not await app._restart_server_for_agent_swap(
+                "researcher", resume_thread_id=resume_thread_id
+            )
+
+            assert app._lc_thread_id == "old-thread"
+            assert app._session_state.thread_id == "old-thread"
+            assert app._session_state.previous_thread_id == "earlier-thread"
+            assert app._session_state.approval_mode_key == "auto"
+            assert app._agent is previous_client
+            assert app._assistant_id == "coder"
+            assert held_lease("old-thread") is previous_lease
+            assert held_lease(resume_thread_id or "fresh-thread") is None
+            assert any(
+                message.content == "Existing answer"
+                for message in app._message_store.get_all_messages()
+            )
+            assert not app._agent_switching
+            assert not app._connecting
+            assert not app._reconnecting
+            server_proc.restart.assert_not_awaited()
+
+    @pytest.mark.parametrize("resume_thread_id", [None, "research-thread"])
     async def test_restart_failure_restores_thread_and_ownership(
         self, monkeypatch: pytest.MonkeyPatch, resume_thread_id: str | None
     ) -> None:

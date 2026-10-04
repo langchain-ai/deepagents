@@ -25702,12 +25702,18 @@ class DeepAgentsApp(App):
         # and 2 bail-outs leave it `False`: no history was loaded, so there is
         # nothing deferred to restore.
         deferred_goal_review = False
+        next_thread_id: str | None = None
 
         try:
             # Phase 1: UI teardown. A failure here does NOT mean the server
             # is gone — we notify the user and bail out with the previous
             # agent still live. Only Phase 2 escalates to ServerStartFailed.
             try:
+                # Reserve before clearing the chat or detaching the client so a
+                # failed reservation leaves the current session usable.
+                if self._session_state:
+                    next_thread_id = resume_thread_id or _new_thread_id()
+                    self._reserve_thread(next_thread_id)
                 self._connecting = True
                 self._reconnecting = True
                 self._agent = None
@@ -25763,7 +25769,7 @@ class DeepAgentsApp(App):
                 self._reset_thread_usage()
                 self._update_status("")
 
-                if self._session_state:
+                if self._session_state and next_thread_id is not None:
                     from deepagents_code.hooks.models.domain import SessionEndCause
 
                     end_cause = (
@@ -25777,14 +25783,9 @@ class DeepAgentsApp(App):
                             thread_id=previous_thread_id,
                         )
                     )
-                    if resume_thread_id is None:
-                        next_thread_id = self._session_state.reset_thread()
-                    else:
-                        self._session_state.previous_thread_id = previous_thread_id
-                        self._session_state.thread_id = resume_thread_id
-                        self._session_state.approval_mode_key = None
-                        next_thread_id = resume_thread_id
-                    self._reserve_thread(next_thread_id)
+                    self._session_state.previous_thread_id = previous_thread_id
+                    self._session_state.thread_id = next_thread_id
+                    self._session_state.approval_mode_key = None
                     self._lc_thread_id = next_thread_id
                     self._update_welcome_banner(
                         next_thread_id,
@@ -26032,6 +26033,8 @@ class DeepAgentsApp(App):
                 )
             return True
         finally:
+            if next_thread_id is not None and next_thread_id != self._lc_thread_id:
+                self._release_thread(next_thread_id)
             self._agent_switching = False
             if self._chat_input:
                 self._chat_input.set_cursor_active(active=not self._agent_running)

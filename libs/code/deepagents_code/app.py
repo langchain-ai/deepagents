@@ -25469,7 +25469,6 @@ class DeepAgentsApp(App):
         Returns:
             Whether the agent transition completed.
         """
-        previous = self._lc_thread_id
         if resume_thread_id:
             try:
                 self._reserve_thread(resume_thread_id)
@@ -25478,15 +25477,12 @@ class DeepAgentsApp(App):
                 self._agent_switching = False
                 return False
         try:
-            switched = await self._restart_server_for_owned_agent_swap(
+            return await self._restart_server_for_owned_agent_swap(
                 agent_name,
                 resume_thread_id=resume_thread_id,
                 preloaded_payload=preloaded_payload,
                 persist_default_agent=persist_default_agent,
             )
-            if switched and previous != self._lc_thread_id:
-                self._release_thread(previous)
-            return switched
         finally:
             if resume_thread_id and resume_thread_id != self._lc_thread_id:
                 self._release_thread(resume_thread_id)
@@ -25779,6 +25775,11 @@ class DeepAgentsApp(App):
                 )
                 self.post_message(self.ServerStartFailed(error=exc))
                 return False
+
+            # The new session is active. Release the outgoing reservation before
+            # follow-up work can fail or be cancelled and strand its thread.
+            if previous_thread_id != self._lc_thread_id:
+                self._release_thread(previous_thread_id)
 
             # Phase 3: confirmation. Past here all failures are
             # cosmetic — the new server is healthy.

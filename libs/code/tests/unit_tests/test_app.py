@@ -18531,6 +18531,35 @@ class TestRestartServerForAgentSwap:
             isinstance(message, DeepAgentsApp.ServerStartFailed) for message in posted
         )
 
+    @pytest.mark.parametrize("cancelled", [False, True])
+    async def test_confirmation_failure_releases_previous_thread(
+        self, monkeypatch: pytest.MonkeyPatch, cancelled: bool
+    ) -> None:
+        """Follow-up failures leave only the successfully adopted thread locked."""
+        from deepagents_code.thread_ownership import held_lease, try_acquire
+
+        app, _server_proc = self._make_app()
+        monkeypatch.setattr(
+            "deepagents_code.app._new_thread_id", lambda: "fresh-thread"
+        )
+        error = asyncio.CancelledError if cancelled else RuntimeError
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._reserve_thread("old-thread")
+            monkeypatch.setattr(app, "_reload_hooks", AsyncMock(side_effect=error))
+
+            with pytest.raises(error):
+                await app._restart_server_for_agent_swap("researcher")
+
+            assert app._assistant_id == "researcher"
+            assert app._agent is not None
+            assert app._lc_thread_id == "fresh-thread"
+            assert try_acquire("fresh-thread") is None
+            assert held_lease("old-thread") is None
+            available = try_acquire("old-thread")
+            assert available is not None
+            available.release()
+
     async def test_no_resume_hint_when_previous_thread_has_no_agent_output(
         self,
     ) -> None:

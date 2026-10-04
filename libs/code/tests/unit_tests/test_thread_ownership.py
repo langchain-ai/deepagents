@@ -290,40 +290,22 @@ async def test_local_remote_agent_propagates_tokens_without_claiming_reads(
         assert graph.aupdate_state.call_args.kwargs["headers"][OWNER_KEY] == lease.token
         assert OWNER_KEY not in config["configurable"]
         lease.release()
+        with pytest.raises(ThreadOwnershipError, match="reservation changed"):
+            await agent.aupdate_state(config, {})
         successor = ensure_owned("thread")
         try:
+            with pytest.raises(ThreadOwnershipError, match="reservation changed"):
+                await agent.aupdate_state(config, {})
+            agent.bind_thread_ownership("thread")
+            await agent.aupdate_state(config, {})
+            assert (
+                graph.aupdate_state.call_args.kwargs["headers"][OWNER_KEY]
+                == successor.token
+            )
             with pytest.raises(ThreadOwnershipError, match="reservation changed"):
                 await agent.aupdate_state(prepared, {})
         finally:
             successor.release()
-    finally:
-        release_all()
-
-
-def test_remote_client_does_not_upgrade_stale_thread_only_config(tmp_path, monkeypatch):
-    from deepagents_code import sessions
-    from deepagents_code.client.remote_client import RemoteAgent
-
-    monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
-    agent = RemoteAgent("http://localhost", local_ownership=True)
-    config = {"configurable": {"thread_id": "thread"}}
-    old = agent._prepare_mutation(config)
-    lease = ensure_owned("thread")
-    lease.release()
-    try:
-        with pytest.raises(ThreadOwnershipError, match="reservation changed"):
-            agent._prepare_mutation(config)
-        successor = try_acquire("thread")
-        assert successor is not None
-        with pytest.raises(ThreadOwnershipError, match="reservation changed"):
-            agent._prepare_mutation(config)
-        agent.bind_thread_ownership("thread")
-        assert (
-            agent._prepare_mutation(config)["configurable"][OWNER_KEY]
-            == successor.token
-        )
-        with pytest.raises(ThreadOwnershipError, match="reservation changed"):
-            agent._prepare_mutation(old)
     finally:
         release_all()
 

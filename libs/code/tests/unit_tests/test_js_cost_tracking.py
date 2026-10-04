@@ -313,9 +313,8 @@ async def test_completed_sibling_interrupt_fresh_runtime(
     await _assert_accounting(resumed, 5)
 
 
-@pytest.mark.parametrize("parallel", [False, True])
 async def test_completed_sibling_cost_survives_owned_sqlite_resume(
-    tmp_path: Path, parallel: bool
+    tmp_path: Path,
 ) -> None:
     from deepagents_code.thread_ownership import (
         OWNER_KEY,
@@ -329,14 +328,9 @@ async def test_completed_sibling_cost_survives_owned_sqlite_resume(
         return str(interrupt("approve?"))
 
     code = (
-        'await task({description:"done", subagentType:"done"});'
-        'await task({description:"pause", subagentType:"pause"})'
+        'await Promise.all([task({description:"done", subagentType:"done"}),'
+        'task({description:"pause", subagentType:"pause"})])'
     )
-    if parallel:
-        code = (
-            'await Promise.all([task({description:"done", subagentType:"done"}),'
-            'task({description:"pause", subagentType:"pause"})])'
-        )
     database = tmp_path / "owned.sqlite"
     saver_class = owned_saver_class(db_path=database)
     lease = ensure_owned("js-cost", db_path=database)

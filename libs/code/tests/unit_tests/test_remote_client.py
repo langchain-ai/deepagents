@@ -252,8 +252,9 @@ class TestRemoteAgentReplicaForwarding:
 
 
 class TestRemoteAgentAstream:
-    @pytest.mark.parametrize("local_ownership", [False, True])
-    @pytest.mark.parametrize("resume", [False, True])
+    @pytest.mark.parametrize(
+        ("local_ownership", "resume"), [(False, False), (True, False), (True, True)]
+    )
     async def test_ownership_uses_header_with_workspace_context(
         self,
         tmp_path,

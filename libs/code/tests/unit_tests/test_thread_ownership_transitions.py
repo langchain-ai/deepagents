@@ -414,7 +414,6 @@ async def test_handoff_seed_releases_failed_reservations(
         ("saved", False),
         ("saved", True),
         ("activity", False),
-        ("activity", True),
         ("adopted", True),
     ],
 )

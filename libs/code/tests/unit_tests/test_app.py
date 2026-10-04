@@ -1498,13 +1498,7 @@ class TestStatusBarPickerActions:
             offset += 0 if target == "model" else len("openai:gpt-5.5 ")
             await pilot.click(label, offset=(offset, 0))
             await pilot.pause()
-            if busy and target == "effort":
-                assert [message.text for message in app._pending_messages] == [
-                    "/effort"
-                ]
-                app._agent_running = False
-                await app._process_next_from_queue()
-                await pilot.pause()
+            assert not app._pending_messages
             expected = (
                 ModelSelectorScreen if target == "model" else EffortSelectorScreen
             )
@@ -17723,18 +17717,6 @@ class TestDeferredActions:
             assert len(app._deferred_actions) == 1
             await app._drain_deferred_actions()
             assert executed == ["second"]
-
-    async def test_repeated_footer_effort_click_queues_once(self) -> None:
-        """Repeated effort clicks during a turn keep one queued picker request."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent_running = True
-
-            await app.action_open_effort_selector()
-            await app.action_open_effort_selector()
-
-            assert [message.text for message in app._pending_messages] == ["/effort"]
 
     async def test_repeated_footer_model_click_keeps_one_modal(self) -> None:
         """Clicking the model label again does not stack another selector."""

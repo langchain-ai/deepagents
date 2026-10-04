@@ -2190,6 +2190,7 @@ class ExternalInput(Message):
 
 
 DeferredActionKind = Literal[
+    "effort_change",
     "model_switch",
     "summarization_model_switch",
     "thread_switch",
@@ -18816,6 +18817,7 @@ class DeepAgentsApp(App):
         finally:
             self._offload_task_started = False
             self._offload_worker = None
+            await self._maybe_drain_deferred()
             if not self._startup_sequence_running:
                 await self._process_next_from_queue()
 
@@ -19059,6 +19061,7 @@ class DeepAgentsApp(App):
             # the part that wedges the session, and it is already handed back.
             with suppress(Exception):
                 self._chat_input.set_cursor_active(active=True)
+        await self._drain_deferred_during_cleanup()
         if not self._pending_messages:
             return
         try:
@@ -19313,6 +19316,12 @@ class DeepAgentsApp(App):
         )
 
         async def apply_effort(effort: str) -> None:
+            if self._effective_model_spec() != context.spec:
+                self.notify(
+                    "Model changed; reopen the effort selector to choose an effort.",
+                    severity="warning",
+                )
+                return
             try:
                 await self._set_effort_override(effort)
             except Exception:
@@ -19326,13 +19335,31 @@ class DeepAgentsApp(App):
 
         def handle_result(result: str | None) -> None:
             if result is not None:
-                self.run_worker(
-                    apply_effort(result),
-                    exclusive=False,
-                    group="effort-selection",
-                )
+                if (
+                    self._agent_running
+                    or self._agent_reconciling
+                    or self._shell_running
+                    or self._connecting
+                    or self._startup_sequence_running
+                ):
+                    self._defer_action(
+                        DeferredAction(
+                            kind="effort_change", execute=lambda: apply_effort(result)
+                        )
+                    )
+                    self.notify(
+                        f"Reasoning effort change to {result} is pending until "
+                        "the current task completes.",
+                        markup=False,
+                    )
+                else:
+                    self.run_worker(
+                        apply_effort(result),
+                        exclusive=False,
+                        group="effort-selection",
+                    )
             if self._chat_input:
-                self._chat_input.focus_input()
+                self.call_after_refresh(self._chat_input.focus_input)
 
         self.push_screen(screen, handle_result)
 
@@ -19871,6 +19898,20 @@ class DeepAgentsApp(App):
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
+    async def _drain_deferred_during_cleanup(self) -> None:
+        """Apply queued actions without letting a failure skip turn cleanup."""
+        try:
+            await self._maybe_drain_deferred()
+        except Exception:
+            logger.exception("Failed to drain deferred actions during agent cleanup")
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "A deferred action failed after task completion. "
+                        "You may need to retry the operation.",
+                    ),
+                )
+
     async def _cleanup_agent_task(
         self,
         *,
@@ -19939,19 +19980,7 @@ class DeepAgentsApp(App):
                         goal_grade=goal_grade,
                     )
 
-                try:
-                    await self._maybe_drain_deferred()
-                except Exception:
-                    logger.exception(
-                        "Failed to drain deferred actions during agent cleanup"
-                    )
-                    with suppress(Exception):
-                        await self._mount_message(
-                            ErrorMessage(
-                                "A deferred action failed after task completion. "
-                                "You may need to retry the operation.",
-                            ),
-                        )
+                await self._drain_deferred_during_cleanup()
 
                 application = self._queued_goal_application
                 if application is not None:
@@ -19989,7 +20018,13 @@ class DeepAgentsApp(App):
                     else:
                         self._queued_goal_application = None
             finally:
-                self._agent_reconciling = False
+                try:
+                    # Selections can arrive during the goal-application awaits.
+                    # Apply them before releasing queued input or continuations.
+                    if self._deferred_actions:
+                        await self._drain_deferred_during_cleanup()
+                finally:
+                    self._agent_reconciling = False
 
             # Queued user input normally takes precedence over a synthetic
             # continuation. A failed creation write is the exception: its hidden
@@ -21860,6 +21895,8 @@ class DeepAgentsApp(App):
 
     def _discard_queue(self) -> None:
         """Clear pending messages, deferred actions, and queued widgets."""
+        if any(action.kind == "effort_change" for action in self._deferred_actions):
+            self.notify("Cancelled the pending reasoning effort change.")
         self._pending_messages.clear()
         for w in self._queued_widgets:
             w.remove()
@@ -24484,11 +24521,7 @@ class DeepAgentsApp(App):
         await self._submit_footer_picker("/model")
 
     async def action_open_effort_selector(self) -> None:
-        """Open the reasoning effort picker via `/effort`.
-
-        `/effort` is `QUEUED`, so it must go through `_submit_input` to keep its
-        place behind any pending input instead of jumping an in-flight turn.
-        """
+        """Open the effort picker immediately, deferring changes while busy."""
         await self._submit_footer_picker("/effort")
 
     def _build_model_selector_screen(

@@ -860,6 +860,86 @@ class TestCheckEdgeCases:
         assert "no output" in parsed["result"].lower()
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_check_success_skips_trailing_tool_message(self, mock_get_client: MagicMock) -> None:
+        """A subagent whose last turn was a tool call reports that tool's output today.
+
+        The parent agent is told the subagent answered with the grep hit, not with the
+        sentence the subagent wrote just before it called the tool.
+        """
+        mock_client = MagicMock()
+        mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
+        mock_client.threads.get.return_value = {
+            "values": {
+                "messages": [
+                    {"role": "assistant", "content": "The bug is in composite.py:527."},
+                    {"role": "tool", "content": "src/a.py:12: TODO: fix this later", "tool_call_id": "call_1"},
+                ]
+            }
+        }
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec()])
+        check = _get_tool(tools, "check_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_check")
+        result = check.func(task_id="thread_abc", runtime=rt)
+
+        assert isinstance(result, Command)
+        parsed = json.loads(result.update["messages"][0].content)
+        assert parsed["status"] == "success"
+        assert parsed["result"] == "The bug is in composite.py:527."
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_check_success_skips_trailing_empty_assistant_message(self, mock_get_client: MagicMock) -> None:
+        """Anthropic's trailing empty ``end_turn`` message must not become an empty result."""
+        mock_client = MagicMock()
+        mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
+        mock_client.threads.get.return_value = {
+            "values": {
+                "messages": [
+                    {"role": "assistant", "content": "Analysis complete: found 3 issues."},
+                    {"role": "assistant", "content": ""},
+                ]
+            }
+        }
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec()])
+        check = _get_tool(tools, "check_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_check")
+        result = check.func(task_id="thread_abc", runtime=rt)
+
+        assert isinstance(result, Command)
+        parsed = json.loads(result.update["messages"][0].content)
+        assert parsed["status"] == "success"
+        assert parsed["result"] == "Analysis complete: found 3 issues."
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_check_success_reports_no_answer_when_only_tool_output(self, mock_get_client: MagicMock) -> None:
+        """With no assistant text at all, say so rather than passing tool output off as the answer."""
+        mock_client = MagicMock()
+        mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
+        mock_client.threads.get.return_value = {
+            "values": {
+                "messages": [
+                    {"role": "user", "content": "search the repo"},
+                    {"role": "tool", "content": "src/a.py:12: TODO", "tool_call_id": "call_1"},
+                ]
+            }
+        }
+        mock_get_client.return_value = mock_client
+
+        tools = _build_async_subagent_tools([_make_spec()])
+        check = _get_tool(tools, "check_async_task")
+        rt = _make_runtime_with_task(tool_call_id="tc_check")
+        result = check.func(task_id="thread_abc", runtime=rt)
+
+        assert isinstance(result, Command)
+        parsed = json.loads(result.update["messages"][0].content)
+        assert parsed["status"] == "success"
+        assert "TODO" not in parsed["result"]
+        assert "no output" in parsed["result"].lower()
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_check_threads_get_failure_still_returns_status(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}

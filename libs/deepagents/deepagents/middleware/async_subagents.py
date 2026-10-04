@@ -14,11 +14,11 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT, TracePolicy, omit_payload
 from langchain.tools import ToolRuntime
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, MessageLikeRepresentation, ToolMessage, convert_to_messages
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
@@ -351,15 +351,40 @@ def _build_check_result(
     }
     if run["status"] == "success":
         messages = thread_values.get("messages", []) if isinstance(thread_values, dict) else []
-        if messages:
-            last = messages[-1]
-            result["result"] = last.get("content", "") if isinstance(last, dict) else str(last)
-        else:
-            result["result"] = "(completed with no output messages)"
+        # Walk back to the last AIMessage with non-empty text. The final turn of a
+        # subagent is often a tool call, whose ToolMessage carries the tool's raw output
+        # rather than the subagent's answer, and Anthropic occasionally emits a trailing
+        # empty `end_turn` AIMessage after a successful final tool call. This mirrors
+        # `_return_command_with_state_update` in subagents.py.
+        answer = ""
+        for message in reversed(messages or []):
+            text = _message_text(message)
+            if text:
+                answer = text
+                break
+        result["result"] = answer or "(completed with no output messages)"
     elif run["status"] == "error":
         error_detail = run.get("error")
         result["error"] = str(error_detail) if error_detail else "The async subagent encountered an error."
     return result
+
+
+def _message_text(message: object) -> str:
+    """Return an assistant message's text, or "" for anything else.
+
+    Thread values arrive from the LangGraph SDK as serialized dicts, so messages are
+    normalized before the role and content are read. Anything that is not an
+    ``AIMessage`` — a tool result, a human turn, an entry the SDK returns in a shape
+    ``convert_to_messages`` rejects — yields an empty string so the caller keeps
+    scanning backwards.
+    """
+    try:
+        normalized = convert_to_messages(cast("list[MessageLikeRepresentation]", [message]))[0]
+    except (TypeError, ValueError, KeyError):
+        return ""
+    if not isinstance(normalized, AIMessage):
+        return ""
+    return normalized.text.rstrip() if normalized.text else ""
 
 
 def _build_check_command(

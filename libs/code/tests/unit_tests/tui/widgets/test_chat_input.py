@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
@@ -33,7 +34,6 @@ from deepagents_code.tui.widgets.chat_input import (
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
-    from pathlib import Path
 
     from textual.pilot import Pilot
 
@@ -519,9 +519,7 @@ class TestShellSyntaxHighlighting:
 
 
 class _CursorLineTestApp(_ChatInputTestApp):
-    CSS_PATH = chat_input_module.__file__.replace(
-        "tui/widgets/chat_input.py", "app.tcss"
-    )
+    CSS_PATH = Path(chat_input_module.__file__).parents[2] / "app.tcss"
 
     def get_theme_variable_defaults(self) -> dict[str, str]:
         from deepagents_code import theme

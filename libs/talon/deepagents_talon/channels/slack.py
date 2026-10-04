@@ -18,6 +18,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from html import escape
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, NoReturn, Protocol
 
@@ -535,8 +536,14 @@ class _SlackSdkGateway:
                 if _contains_oauth_callback(raw_text):
                     continue
                 text = _decode_mrkdwn(raw_text)
-                if sender and text and not item.get("bot_id"):
-                    messages.append((sender, text[:1000]))
+                if sender and text and sender != self._bot_id:
+                    text = escape(text[:1000], quote=False)
+                    if item.get("bot_id") or item.get("subtype") == "bot_message":
+                        text = (
+                            f'<input-message sender="slack:{escape(sender)}" surface="slack" '
+                            f'kind="message" sender_type="bot">\n{text}\n</input-message>'
+                        )
+                    messages.append((sender, text))
             messages = messages[-_THREAD_CONTEXT_MESSAGES:]
             cursor = optional_str(response.get("response_metadata", {}).get("next_cursor"))
             more = bool(response.get("has_more") or cursor)
@@ -893,9 +900,14 @@ class SlackChannel:
             return _UNAUTHORIZED_MESSAGE
         if not known:
             return _COMMAND_UNAVAILABLE_MESSAGE
-        if not inbound.is_dm:
-            # A slash command carries no thread, so in a channel it would act on a
-            # conversation that never holds an agent thread.
+        parts = (inbound.argument or "").split()
+        approving = (
+            inbound.command == "pair"
+            and bool(parts)
+            and parts[0].lower() == "approve"
+            and inbound.sender_id in self._exposure.operator_ids
+        )
+        if not inbound.is_dm and not approving:
             return _COMMAND_DM_ONLY_MESSAGE
         return None
 

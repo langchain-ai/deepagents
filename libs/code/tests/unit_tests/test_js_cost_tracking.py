@@ -222,9 +222,9 @@ async def test_js_subagent_cost_is_durable(mode) -> None:
     assert snapshot.values["_session_cost_usd"] == pytest.approx(3.0)
     await _assert_accounting(agent, 3)
     assert snapshot.values["_session_cost_transfers"] == {}
-    from deepagents_code.app import _format_cost_breakdown_table
+    from deepagents_code.tui.modals.cost_breakdown import format_cost_breakdown_table
 
-    table = _format_cost_breakdown_table(
+    table = format_cost_breakdown_table(
         snapshot.values["_session_cost_usd"], snapshot.values["_session_cost_breakdown"]
     )
     assert "Entire-thread estimated breakdown" in table
@@ -874,10 +874,10 @@ async def test_parallel_usage_with_partial_or_zero_pricing(
     )
     await agent.ainvoke({"messages": [HumanMessage("go")]}, _CONFIG)
     await _assert_accounting(agent, 4, priced=priced, charged=charged)
-    from deepagents_code.app import _format_cost_breakdown_table
+    from deepagents_code.tui.modals.cost_breakdown import format_cost_breakdown_table
 
     snapshot = await agent.aget_state(_CONFIG)
-    table = _format_cost_breakdown_table(
+    table = format_cost_breakdown_table(
         snapshot.values.get("_session_cost_usd", 0.0),
         snapshot.values["_session_cost_breakdown"],
     )
@@ -1049,9 +1049,11 @@ async def test_legacy_dollar_only_receipt_survives_sqlite_resume(
         assert breakdown["cache_creation_cost_usd"] == pytest.approx(0.6)
         assert breakdown["cache_read_cost_usd"] == pytest.approx(0.3)
         assert breakdown["reasoning_cost_usd"] == pytest.approx(0.36)
-        from deepagents_code.app import _format_cost_breakdown_table
+        from deepagents_code.tui.modals.cost_breakdown import (
+            format_cost_breakdown_table,
+        )
 
-        assert _format_cost_breakdown_table(4.0, breakdown) == ""
+        assert format_cost_breakdown_table(4.0, breakdown) == ""
         await agent.ainvoke(None, _CONFIG)
         replayed = await agent.aget_state(_CONFIG)
         assert replayed.values["_session_cost_usd"] == pytest.approx(4.0)

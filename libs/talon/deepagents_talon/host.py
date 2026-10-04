@@ -612,7 +612,9 @@ class TalonHost:
             or message.sender_id not in exposure.operator_ids
         ):
             return _PAIR_OPERATOR_ONLY_MESSAGE
-        if not is_direct_message(message):
+        parts = message.text.split()
+        approving = len(parts) > 1 and parts[1].lower() == "approve"
+        if not is_direct_message(message) and not approving:
             return _PAIR_DM_ONLY_MESSAGE
         if not isinstance(pairing, SenderPairing):
             return _PAIR_DISABLED_MESSAGE

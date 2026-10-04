@@ -5,7 +5,7 @@ description: Package-local uv and Makefile workflows, editable sibling dependenc
 tags: [development, packaging, dependencies, uv, lockfiles, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-01T08:06:30.386Z
+    at: 2026-10-03T08:05:07.881Z
 sources:
   - id: openwiki-source-baf30c604828cfde90a8ab63
     resource: repo://.githooks/pre-push
@@ -45,16 +45,22 @@ sources:
     resource: repo://libs/DEVELOPMENT.md
   - id: openwiki-source-49fbcc45434b619b68220bf9
     resource: repo://libs/Makefile
+  - id: openwiki-source-e2a176528c4d510dcc417820
+    resource: repo://libs/talon/CHANGELOG.md
+  - id: openwiki-source-131e2d6a1f4084abdc5cf240
+    resource: repo://libs/talon/deepagents_talon/_version.py
+  - id: openwiki-source-ba53b2ab73965694b2510a58
+    resource: repo://libs/talon/Makefile
   - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-01T08:06:30.386Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
 ---
 
 # Development, Packaging, and Releases
 
-This repository is a monorepo of independently versioned Python distributions under `libs/`, not a single root Python project. Work in the package that owns the change; use the aggregate tools only when an operation must span packages. For package topology and test conventions, see the [Source Map](../architecture/source-map.md) and [Testing Guide](../testing/testing-guide.md).
+This repository is a monorepo of independently versioned Python distributions under `libs/`, not a single root Python project. Work in the package that owns the change; use aggregate tooling only when an operation must span packages. For package topology and test conventions, see the [Source Map](../architecture/source-map.md) and [Testing Guide](../testing/testing-guide.md).
 
 ## Package-local development
 
@@ -90,16 +96,18 @@ Caption: the standard local loop synchronizes the package before validating the 
 
 `make test` is the normal unit-test entrypoint. In Deep Agents and Code it runs the test dependency group, disables sockets except Unix sockets, runs in parallel with `-n auto`, and reports coverage. `make integration_test` targets the integration-test directory and permits network-capable tests. `make lint` runs Ruff checks, verifies formatting, and runs `ty`; `make format` applies Ruff formatting and safe fixes. Use `TEST_FILE=...` where a package Makefile supports focused execution.
 
-The Code package adds two useful local entrypoints:
+For Talon changes, run `make test` and `make lint` from `libs/talon`. Its test target runs the WhatsApp bridge’s Node tests before pytest, then runs pytest with sockets disabled except Unix sockets, a 10-second timeout, and coverage. Its lint target checks Ruff formatting and invokes `ty` for `deepagents_talon`.
+
+The Code package adds two local CI-parity entrypoints:
 
 - `make bootstrap` syncs its `test` group and installs repository hooks.
 - `make check` runs linting, import checks, and unit tests, then verifies extras synchronization, project/version-marker equality, and lock freshness. Its SDK-pin checker treats only exit status `1` (a stale SDK pin) as advisory; other failures stop the command.
 
-The installed hook configuration covers commit messages, pre-commit checks, and pre-push. It validates Conventional Commit types, prevents direct commits to `main`, applies basic file hygiene, formats/lints relevant packages, and checks relevant lockfiles, extras, and version markers. The lock hook checks just the touched lock-owning package/example directories, or all such directories when no paths are supplied. The pre-push branch-name hook expects `<github-username>/<scope>/<short-description>` for ordinary branches; it is bypassable locally, while server-side checks remain authoritative.
+Installed hooks cover commit messages, pre-commit checks, and pre-push. They validate Conventional Commit types, prevent direct commits to `main`, apply basic file hygiene, format/lint relevant packages, and check relevant lockfiles, extras, and version markers. The lock hook checks just the touched lock-owning package/example directories, or all such directories when no paths are supplied. The pre-push branch-name hook expects `<github-username>/<scope>/<short-description>` for ordinary branches; it is bypassable locally, while server-side checks remain authoritative.
 
 ## Editable package relationships
 
-Sibling dependencies are deliberately resolved from editable paths. For example, Code maps `deepagents`, `deepagents-acp`, and Daytona, Modal, QuickJS, Runloop, and Vercel partner distributions to local paths in `[tool.uv.sources]`. Therefore a local source edit is consumed by Code without publishing an artifact.
+Sibling dependencies are deliberately resolved from editable paths. Code maps `deepagents`, `deepagents-acp`, and Daytona, Modal, QuickJS, Runloop, and Vercel partner distributions to local paths in `[tool.uv.sources]`. Talon likewise resolves `deepagents` and `deepagents-code` from sibling editable paths. Thus a local source edit is consumed by these packages without publishing an artifact.
 
 Treat a change to a shared interface as a dependent-package change as well. CI path filters schedule Code, Talon, ACP, and partner checks for a `libs/deepagents` change; Talon also runs when Code changes. Run the affected consumer’s focused tests before relying on a green producer-only check.
 
@@ -117,7 +125,7 @@ From `libs/`, the aggregate Makefile discovers library/partner packages with Mak
 | `make lock-bump DEP=<pkg>` | Re-resolve every discovered lock with `-P <pkg>`; `DEP` is required. |
 | `make bench-all` | Run the `bench` target for Deep Agents and Code. |
 
-The lock interpreter is a reproducibility policy: ACP locks with Python 3.14, while other package and example locks use Python 3.12. It is not a runtime-support floor. Currently, ACP declares `>=3.11`; Deep Agents declares `>=3.11,<4.0`; Code declares `>=3.12,<4.0`; and Talon declares `>=3.12`. Confirm the target package’s `requires-python` before changing code or widening a dependency range.
+The lock interpreter is a reproducibility policy: ACP locks with Python 3.14, while other package and example locks use Python 3.12. It is not a runtime-support floor. ACP declares `>=3.11`; Deep Agents declares `>=3.11,<4.0`; Code declares `>=3.12,<4.0`; and Talon declares `>=3.12`. Confirm the target package’s `requires-python` before changing code or widening a dependency range.
 
 ### Automated lower-bound maintenance
 
@@ -127,7 +135,7 @@ Because a local path consumer’s lock embeds the producer requirements, changin
 
 ## Versions and releases
 
-Release-please manages nine independently versioned Python distributions with separate draft release PRs: Deep Agents, ACP, Code, Talon, and the Daytona, Modal, Runloop, Vercel, and QuickJS partners. Each configuration entry identifies a Python release type, distribution and component name, changelog, extra version files, and excluded test paths. The configuration also delegates GitHub-release creation to the separate publisher workflow.
+Release-please manages nine independently versioned Python distributions with separate draft release PRs: Deep Agents, ACP, Code, Talon, and the Daytona, Modal, Runloop, Vercel, and QuickJS partners. Each configuration entry identifies a Python release type, distribution and component name, changelog, extra version files, and excluded test paths. `skip-github-release` delegates GitHub-release creation to the separate publisher workflow.
 
 The release manifest records last-released baselines, not ordinary development inputs:
 
@@ -135,15 +143,17 @@ The release manifest records last-released baselines, not ordinary development i
 | --- | --- |
 | `libs/deepagents` | `0.7.21` |
 | `libs/acp` | `0.0.12` |
-| `libs/code` | `0.1.79` |
-| `libs/talon` | `0.0.8` |
+| `libs/code` | `0.1.80` |
+| `libs/talon` | `0.0.9` |
 | `libs/partners/daytona` | `0.0.8` |
 | `libs/partners/modal` | `0.0.6` |
 | `libs/partners/runloop` | `0.0.7` |
 | `libs/partners/vercel` | `0.0.2` |
 | `libs/partners/quickjs` | `0.3.8` |
 
-Code currently declares `deepagents-code` version `0.1.79` and requires the exact local SDK version `deepagents==0.7.21`. Change these coordinated version relationships only through their package and release process.
+A new release-please-managed package must appear in both the config and manifest. For an unreleased `0.0.1` package, its manifest baseline must be `0.0.0`; recording `0.0.1` says that version is already released and makes the first release PR `0.0.2`.
+
+Code currently declares `deepagents-code` version `0.1.80` in both its project metadata and release-please marker; its changelog records that release, and it requires the exact local SDK version `deepagents==0.7.21`. Talon similarly declares `deepagents-talon` version `0.0.9` in its project metadata and release-please marker, with a matching changelog entry. Unlike Code’s exact SDK pin, Talon accepts `deepagents>=0.7.0` and `deepagents-code>=0.1.71,<1.0.0`; update and validate these consumer constraints deliberately.
 
 ```mermaid
 flowchart TD
@@ -160,8 +170,10 @@ flowchart TD
 
 Caption: release-please prepares a component-specific release, while the publisher validates and publishes one resolved source tree.
 
-Component attribution is based on changed file paths, not Conventional Commit scope alone. Keep a bump-worthy PR to one managed component. An empty commit has no paths and could otherwise fan out into releases for every managed package; the release workflow blocks it before release-please runs. Lockfile churn can similarly attribute a bump-worthy commit to dependent packages, so isolate shared dependency/lock updates in a `chore(deps):` change when appropriate.
+Component attribution is based on changed file paths, not Conventional Commit scope alone. Keep a bump-worthy PR to one managed component. An empty commit has no paths and could otherwise fan out into releases for every managed package; the release workflow blocks it before release-please runs. Lockfile churn can similarly attribute a bump-worthy commit to dependent packages. Put cross-package dependency or lockfile churn in a separate `chore(deps):` change when appropriate: closing a stray release PR does not remove the unreleased commit that will cause it to be regenerated.
 
-After a release PR merge, the workflow requires both a matching `release(<component>): <version>` title and that component’s `CHANGELOG.md` change before dispatching publishing. The publisher resolves the requested release SHA and, for normal releases, rejects it unless that tree’s `pyproject.toml` declares the requested version. It builds from that SHA and tags the same SHA, maintaining artifact/tag tree identity. It also refuses to publish a version already on PyPI and fails closed on unreachable or unexpected PyPI responses.
+After a release PR merge, the workflow requires both a matching `release(<component>): <version>` title and that component’s `CHANGELOG.md` change before dispatching publishing. The release begins immediately; release-please refreshes other open release PRs only after pending publishes settle, because it recomputes all components against release state. A failed or unreadable pending state is not assumed safe.
 
-The build job has only read-level repository permission and is deliberately isolated from the later publishing/GitHub-release job, which needs trusted-publishing and repository-write authority. This separation keeps build-time code and dependencies away from publishing credentials.
+The publisher resolves the requested release SHA and, for normal releases, rejects it unless that tree’s `pyproject.toml` declares the requested version. It builds from that SHA and tags the same SHA, maintaining artifact/tag tree identity. It also refuses to publish a version already on PyPI and fails closed on unreachable or unexpected PyPI responses. A failed release before PyPI publication can be repaired with a `hotfix` that preserves the bumped version and a manual dispatch specifying that hotfix SHA; once a version is on PyPI, do not reuse it or move its tag—ship a new patch instead.
+
+The build job has only read-level repository permission and is deliberately isolated from the later publishing/GitHub-release job, which needs trusted-publishing and repository-write authority. This separation keeps build-time code and dependencies away from publishing credentials. Release notes are non-blocking: a notes-generation failure does not prevent publishing, and the resulting GitHub release can have an empty body.

@@ -35,6 +35,7 @@ Follow Conventional Commits and include a scope. Allowed types and scopes are de
 - Wrap class, function, method, parameter, and variable names in backticks.
 - Do not put Linear issue-closing markers in titles; put issue relationships in the PR body.
 - For version-branch syncs, use `chore(repo): sync main into vX.Y`; `release` is a type, not a scope.
+- PRs should generally leave `README.md` files unchanged, including root and package READMEs. Only modify them when explicitly requested or necessary to correct information made inaccurate by the PR; avoid incidental README edits.
 - Keep each bump-worthy PR to one releasable component. Put cross-package dependency or lockfile churn in a separate `chore(deps):` PR. See [multi-component fan-out](.github/RELEASING.md#multi-component-fan-out) and [lockfile churn fan-out](.github/RELEASING.md#lockfile-churn-fan-out).
 
 ### Branch naming

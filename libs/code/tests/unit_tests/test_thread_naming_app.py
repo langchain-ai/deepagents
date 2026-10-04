@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
-from textual.widgets import Input, Static
+from textual.widgets import Input, OptionList, Static
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.model_config import ThreadConfig
@@ -161,6 +161,55 @@ async def test_generated_name_can_be_edited_and_confirmed(
         assert naming_app._thread_name == "Cache invalidation"
 
 
+async def test_generated_name_waits_for_thread_selector_input(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A completed proposal must not steal keys from the thread-selector filter."""
+    from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def generate(*_args: object, **_kwargs: object) -> str:
+        started.set()
+        await release.wait()
+        return "Cache repair"
+
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    monkeypatch.setattr(
+        "deepagents_code.sessions.list_threads", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr("deepagents_code.sessions.get_cached_threads", lambda **_: [])
+    monkeypatch.setattr(
+        ThreadSelectorScreen, "_load_available_agent_names", AsyncMock()
+    )
+    rename = AsyncMock(return_value=True)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    async with naming_app.run_test() as pilot:
+        await pilot.press(*"/rename", "enter")
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task = naming_app._thread_name_tasks["original"]
+        await pilot.press(*"/threads", "enter")
+        await pilot.pause()
+        selector = naming_app.screen
+        assert isinstance(selector, ThreadSelectorScreen)
+        field = selector.query_one("#thread-filter", Input)
+        await pilot.press("c")
+        release.set()
+        await task
+        await pilot.pause()
+        await pilot.press("a", "c", "h", "e")
+        assert field.value == "cache"
+        assert naming_app.screen is selector
+        assert selector.focused is field
+        rename.assert_not_awaited()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(naming_app.screen, ThreadNameScreen)
+        await pilot.press("end", "!", "enter")
+        await pilot.pause()
+        rename.assert_awaited_once_with("original", "Cache repair!")
+
+
 async def test_generation_does_not_offer_on_switched_thread(
     naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -183,6 +232,75 @@ async def test_generation_does_not_offer_on_switched_thread(
     release.set()
     await task
     offer.assert_not_called()
+
+
+async def test_generated_name_waits_for_nested_auth_modals(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closing the auth key field must not offer a name over the auth manager."""
+    from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def generate(*_args: object, **_kwargs: object) -> str:
+        started.set()
+        await release.wait()
+        return "Cache repair"
+
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    async with naming_app.run_test() as pilot:
+        await pilot.press(*"/rename", "enter")
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task = naming_app._thread_name_tasks["original"]
+        await pilot.press(*"/auth", "enter")
+        manager = naming_app.screen
+        assert isinstance(manager, AuthManagerScreen)
+        options = manager.query_one(OptionList)
+        options.highlighted = options.get_option_index("openai")
+        await pilot.press("enter")
+        prompt = naming_app.screen
+        assert isinstance(prompt, AuthPromptScreen)
+        release.set()
+        await task
+        await pilot.pause()
+        await pilot.press(*"draft")
+        assert naming_app.screen is prompt
+        assert prompt.query_one("#auth-prompt-input", Input).value == "draft"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert naming_app.screen is manager
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(naming_app.screen, ThreadNameScreen)
+        assert naming_app.screen.query_one(Input).value == "Cache repair"
+        await pilot.press("escape")
+
+
+@pytest.mark.parametrize("manual_name", [False, True])
+async def test_deferred_name_is_discarded_when_stale(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch, *, manual_name: bool
+) -> None:
+    """A queued proposal cannot outlive a thread switch or an explicit rename."""
+    from deepagents_code.tui.widgets.auth import AuthConfirmScreen
+
+    rename = AsyncMock(return_value=True)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    async with naming_app.run_test() as pilot:
+        chat_screen = naming_app.screen
+        naming_app.push_screen(AuthConfirmScreen(title="Auth", body="Continue?"))
+        await pilot.pause()
+        naming_app._offer_thread_name("original", "Stale proposal")
+        if manual_name:
+            await naming_app._save_thread_name("original", "My choice")
+        else:
+            naming_app._lc_thread_id = "new"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert naming_app.screen is chat_screen
+        if manual_name:
+            rename.assert_awaited_once_with("original", "My choice")
+        else:
+            rename.assert_not_awaited()
 
 
 @pytest.mark.parametrize("automatic", [False, True])

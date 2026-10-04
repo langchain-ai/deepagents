@@ -3558,6 +3558,7 @@ class DeepAgentsApp(App):
         self._thread_name = ""
         self._thread_name_revision = 0
         self._thread_name_tasks: dict[str, asyncio.Task[None]] = {}
+        self._pending_thread_name_proposal: tuple[str, str] | None = None
         self._auto_named_threads: set[str] = set()
         from deepagents_code.model_config import load_terminal_tab_title
         from deepagents_code.terminal_title import TerminalTitle
@@ -4924,6 +4925,7 @@ class DeepAgentsApp(App):
         gc.freeze()
         self._terminal_title.start()
         self._update_terminal_title()
+        self.screen_change_signal.subscribe(self, self._on_thread_name_screen_change)
 
         chat = self.query_one("#chat", VerticalScroll)
         self._message_measure_width = chat.size.width
@@ -19245,6 +19247,7 @@ class DeepAgentsApp(App):
 
         if thread_id != self._lc_thread_id or self._exiting:
             return
+        self._pending_thread_name_proposal = None
         if pending := self._thread_name_tasks.get(thread_id):
             pending.cancel()
         try:
@@ -19336,6 +19339,7 @@ class DeepAgentsApp(App):
             if not automatic:
                 self.notify("A thread name is already being generated.")
             return
+        self._pending_thread_name_proposal = None
         task = asyncio.create_task(
             self._generate_thread_name(
                 thread_id,
@@ -19408,10 +19412,27 @@ class DeepAgentsApp(App):
 
     def _offer_thread_name(self, thread_id: str, name: str) -> None:
         """Offer a proposal only on its original thread after other modals unwind."""
+        self._pending_thread_name_proposal = (thread_id, name)
+        self._show_pending_thread_name()
+
+    def _on_thread_name_screen_change(self, _screen: Screen) -> None:
+        """Retry deferred proposals after modal dismissal callbacks finish."""
+        if self._pending_thread_name_proposal is not None:
+            self.call_after_refresh(self._show_pending_thread_name)
+
+    def _show_pending_thread_name(self) -> None:
+        """Show the pending proposal once the chat screen owns input again."""
         from deepagents_code.tui.modals.thread_name import ThreadNameScreen
 
-        if thread_id != self._lc_thread_id or self._exiting:
+        if self._pending_thread_name_proposal is None:
             return
+        thread_id, name = self._pending_thread_name_proposal
+        if thread_id != self._lc_thread_id or self._exiting:
+            self._pending_thread_name_proposal = None
+            return
+        if isinstance(self.screen, ModalScreen):
+            return
+        self._pending_thread_name_proposal = None
 
         def apply_name(result: str | None) -> None:
             if result is not None:
@@ -30433,6 +30454,7 @@ class DeepAgentsApp(App):
         async with self._environment_mutation_lock:
             # Naming clients resolve provider defaults lazily. Cancel and drain
             # old-workspace requests before any new connection settings load.
+            self._pending_thread_name_proposal = None
             tasks = list(self._thread_name_tasks.values())
             for task in tasks:
                 task.cancel()

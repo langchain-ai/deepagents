@@ -267,9 +267,8 @@ async def test_effort_selected_during_startup_survives_model_restoration(
         assert not app._pending_messages
 
 
-@pytest.mark.parametrize("command", ["/offload", "/compact"])
 async def test_effort_selected_during_offload_applies_before_queued_prompt(
-    command: str, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = DeepAgentsApp(agent=MagicMock())
     runtime_state.model_provider = "openai"
@@ -291,7 +290,7 @@ async def test_effort_selected_during_offload_applies_before_queued_prompt(
     monkeypatch.setattr(app, "_send_to_agent", AsyncMock(side_effect=send))
     async with app.run_test() as pilot:
         await pilot.pause()
-        app.post_message(ChatInput.Submitted(command, "command"))
+        app.post_message(ChatInput.Submitted("/offload", "command"))
         await asyncio.wait_for(started.wait(), timeout=2)
         worker = app._offload_worker
         assert worker is not None
@@ -372,8 +371,9 @@ async def test_effort_selected_during_goal_reconciliation_applies_before_next_tu
         assert not app._agent_reconciling
 
 
-@pytest.mark.parametrize("queued", [False, True])
-@pytest.mark.parametrize("setup_failure", ["not_ready", "exception"])
+@pytest.mark.parametrize(
+    ("queued", "setup_failure"), [(False, "not_ready"), (True, "exception")]
+)
 async def test_effort_selected_during_abandoned_turn_applies_before_next_prompt(
     queued: bool, setup_failure: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

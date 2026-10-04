@@ -1448,7 +1448,7 @@ class TestFooterCostBreakdown:
 
             assert not isinstance(app.screen, ModalScreen)
             assert notify.call_args.args[0] == (
-                "Cost breakdown unavailable for this session"
+                "No cost details to show for this session yet."
             )
             assert "$1.25" in str(display.render())
 

@@ -32,7 +32,7 @@ def open_cost_breakdown(app: App, provider: Callable[[], str]) -> None:
         return
     breakdown = provider()
     if not breakdown:
-        app.notify("Cost breakdown unavailable for this session", markup=False)
+        app.notify("No cost details to show for this session yet.", markup=False)
         return
     app.push_screen(CostBreakdownScreen(breakdown, provider))
 

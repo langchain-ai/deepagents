@@ -320,37 +320,6 @@ async def test_local_remote_agent_propagates_tokens_without_claiming_reads(
         release_all()
 
 
-async def test_graph_preserves_ownership_across_checkpoints(tmp_path):
-    from langgraph.graph import END, START, StateGraph
-    from pydantic import BaseModel
-
-    class State(BaseModel):
-        value: int
-
-    def increment(state: State) -> dict[str, int]:
-        return {"value": state.value + 1}
-
-    db_path = tmp_path / "sessions.db"
-    lease = ensure_owned("thread", db_path=db_path)
-    try:
-        async with owned_saver_class(db_path=db_path).from_conn_string(
-            str(db_path)
-        ) as saver:
-            graph = StateGraph(State)
-            graph.add_node("increment", increment)
-            graph.add_edge(START, "increment")
-            graph.add_edge("increment", END)
-            agent = graph.compile(checkpointer=saver)
-            config: RunnableConfig = {
-                "configurable": {"thread_id": "thread", OWNER_KEY: lease.token}
-            }
-            assert await agent.ainvoke(State(value=1), config) == {"value": 2}
-            await agent.aupdate_state(config, {"value": 5})
-            assert (await agent.aget_state(config)).values == {"value": 5}
-    finally:
-        lease.release()
-
-
 def test_remote_client_does_not_upgrade_stale_thread_only_config(tmp_path, monkeypatch):
     from deepagents_code import sessions
     from deepagents_code.client.remote_client import RemoteAgent

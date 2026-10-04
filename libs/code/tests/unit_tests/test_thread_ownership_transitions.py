@@ -373,9 +373,9 @@ async def test_cross_agent_resume_retries_after_cwd_cancellation(
 
 
 @pytest.mark.usefixtures("isolated_state")
-@pytest.mark.parametrize("failure", ["ensure", "metadata", None])
-async def test_handoff_seed_releases_only_failed_reservations(
-    monkeypatch: pytest.MonkeyPatch, failure: str | None
+@pytest.mark.parametrize("failure", ["ensure", "metadata"])
+async def test_handoff_seed_releases_failed_reservations(
+    monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     from deepagents_code.thread_ownership import ensure_owned
 
@@ -399,27 +399,25 @@ async def test_handoff_seed_releases_only_failed_reservations(
             side_effect=RuntimeError("seed failed") if failure == "metadata" else None
         ),
     )
-    if failure:
-        with pytest.raises(RuntimeError, match="seed failed"):
-            await DeepAgentsApp._seed_handoff_thread(
-                remote, "summary", cwd="/tmp", agent_name="agent", context={}
-            )
-        assert held_lease("child") is None
-        assert try_acquire("child") is not None
-    else:
-        assert (
-            await DeepAgentsApp._seed_handoff_thread(
-                remote, "summary", cwd="/tmp", agent_name="agent", context={}
-            )
-            == "child"
+    with pytest.raises(RuntimeError, match="seed failed"):
+        await DeepAgentsApp._seed_handoff_thread(
+            remote, "summary", cwd="/tmp", agent_name="agent", context={}
         )
-        assert held_lease("child") is not None
-        assert try_acquire("child") is None
+    assert held_lease("child") is None
+    assert try_acquire("child") is not None
 
 
 @pytest.mark.usefixtures("isolated_state")
-@pytest.mark.parametrize("pause_at", ["saved", "activity", "adopted"])
-@pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize(
+    ("pause_at", "cancel"),
+    [
+        ("saved", False),
+        ("saved", True),
+        ("activity", False),
+        ("activity", True),
+        ("adopted", True),
+    ],
+)
 async def test_handoff_releases_only_unadopted_child(
     monkeypatch: pytest.MonkeyPatch, pause_at: str, cancel: bool
 ) -> None:

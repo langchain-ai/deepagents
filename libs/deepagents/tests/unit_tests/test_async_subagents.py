@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
 from langchain_core._api import LangChainBetaWarning
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -18,7 +19,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 
-from deepagents.backends import FilesystemBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
@@ -375,8 +376,9 @@ async def test_launch_context_snapshot(invocation: str, mode: str | None, *, sum
 
 @pytest.mark.filterwarnings("ignore:.*forked subagents.*:langchain_core._api.LangChainBetaWarning")
 @pytest.mark.parametrize("invocation", ["sync", "async"])
-@pytest.mark.parametrize("resumed", [False, True])
-async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, *, resumed: bool) -> None:
+@pytest.mark.parametrize("resume", [None, "new_turn", "approval"])
+@pytest.mark.parametrize("artifacts_root", ["/", "/artifacts"])
+async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, resume: str | None, artifacts_root: str) -> None:
     image = b"\x89PNG\r\n\x1a\n uploaded image"
     media = [
         {"type": "image", "mime_type": "image/png", "base64": base64.b64encode(image).decode("ascii")},
@@ -384,7 +386,7 @@ async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, 
     ]
     (tmp_path / "photo.png").write_bytes(image)
     responses = [AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "read"}])]
-    if resumed:
+    if resume == "new_turn":
         responses.append(AIMessage(content="Media received"))
     responses.extend(
         [
@@ -399,21 +401,29 @@ async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, 
     agent = create_agent(
         model,
         middleware=[
-            FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True), offload_binary_content=True),
+            FilesystemMiddleware(
+                backend=CompositeBackend(default=FilesystemBackend(root_dir=tmp_path, virtual_mode=True), routes={}, artifacts_root=artifacts_root),
+                offload_binary_content=True,
+            ),
             AsyncSubAgentMiddleware(async_subagents=[_make_spec("alpha", mode="fork")]),
+            HumanInTheLoopMiddleware(interrupt_on={"start_async_task": True} if resume == "approval" else {}),
         ],
         checkpointer=InMemorySaver(),
     )
     config = {"configurable": {"thread_id": "parent"}}
     payload = {"messages": [HumanMessage(content=deepcopy(media))]}
-    if resumed:
+    if resume is not None:
         if invocation == "sync":
-            agent.invoke(payload, config)
+            paused = agent.invoke(payload, config)
         else:
-            await agent.ainvoke(payload, config)
+            paused = await agent.ainvoke(payload, config)
         assert "_blob_payloads" not in agent.get_state(config).values
         (tmp_path / "photo.png").write_bytes(b"source changed after offloading")
-        payload = {"messages": [HumanMessage(content="Delegate the review")]}
+        if resume == "approval":
+            assert paused["__interrupt__"]
+            payload = Command(resume={"decisions": [{"type": "approve"}]})
+        else:
+            payload = {"messages": [HumanMessage(content="Delegate the review")]}
 
     bodies: list[dict[str, Any]] = []
 
@@ -445,6 +455,7 @@ async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, 
     assert child_tool["content"] == [media[0]]
     assert "deepagents_blob" not in json.dumps(child_messages)
     assert model.call_history[-2]["messages"][0].content == media
+    assert "_blob_payloads" not in agent.get_state(config).values
     parent_messages = agent.get_state(config).values["messages"]
     parent_tool = next(message for message in parent_messages if message.type == "tool")
     for message in (parent_messages[0], parent_tool):

@@ -3679,12 +3679,26 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         msg = f"Unreachable code reached in _aintercept_large_tool_result: for tool_result of type {type(tool_result)}"
         raise AssertionError(msg)
 
+    def _hydrate_tool_request(self, request: ToolCallRequest) -> ToolCallRequest:
+        """Reload the transient media cache for tools resumed without a model call."""
+        payloads = dict(request.state.get(_BLOB_PAYLOADS_KEY) or {})
+        _hydrate_messages(request.state.get("messages", []), self.backend, self._blobs_prefix, payloads)
+        state = {**request.state, _BLOB_PAYLOADS_KEY: payloads}
+        return replace(request, state=state, runtime=replace(request.runtime, state=state))
+
+    async def _ahydrate_tool_request(self, request: ToolCallRequest) -> ToolCallRequest:
+        """Async version of `_hydrate_tool_request`."""
+        payloads = dict(request.state.get(_BLOB_PAYLOADS_KEY) or {})
+        await _ahydrate_messages(request.state.get("messages", []), self.backend, self._blobs_prefix, payloads)
+        state = {**request.state, _BLOB_PAYLOADS_KEY: payloads}
+        return replace(request, state=state, runtime=replace(request.runtime, state=state))
+
     def wrap_tool_call(
         self,
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], ToolMessage | Command],
     ) -> ToolMessage | Command:
-        """Check the size of the tool call result and evict to filesystem if too large.
+        """Reload media for tools and evict oversized tool results to the filesystem.
 
         Args:
             request: The tool call request being processed.
@@ -3700,6 +3714,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         if error := _parallel_file_mutation_error(request):
             return error
+        if self._offload_binary_content:
+            request = self._hydrate_tool_request(request)
         tool_result = handler(request)
         if self._offload_binary_content and request.tool_call["name"] == "read_file":
             tool_result = _offload_tool_result(tool_result, self.backend, self._blobs_prefix, {})
@@ -3714,7 +3730,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
     ) -> ToolMessage | Command:
-        """(async) Check the size of the tool call result and evict to filesystem if too large.
+        """(async) Reload media for tools and evict oversized tool results to the filesystem.
 
         Args:
             request: The tool call request being processed.
@@ -3729,6 +3745,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         """
         if error := _parallel_file_mutation_error(request):
             return error
+        if self._offload_binary_content:
+            request = await self._ahydrate_tool_request(request)
         tool_result = await handler(request)
         if self._offload_binary_content and request.tool_call["name"] == "read_file":
             tool_result = await _aoffload_tool_result(tool_result, self.backend, self._blobs_prefix, {})

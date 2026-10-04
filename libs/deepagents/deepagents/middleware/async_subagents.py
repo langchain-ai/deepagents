@@ -279,8 +279,8 @@ def _start_task_messages(spec: AsyncSubAgent, runtime: ToolRuntime, description:
         description,
         preamble=_ASYNC_FORK_TASK_PREAMBLE,
     )
-    # FilesystemMiddleware caches the media shown to the parent model in this
-    # run, including blobs loaded after a resume. Remote children need those
+    # FilesystemMiddleware reloads the media cache before tool execution, even
+    # when an approval resumes directly at this launch. Remote children need those
     # payloads inline because they cannot resolve the parent's blob references.
     messages = _restore_payloads(messages, runtime.state.get(_BLOB_PAYLOADS_KEY) or {})
     # Artifacts are local tool data, not model-facing conversation content, and

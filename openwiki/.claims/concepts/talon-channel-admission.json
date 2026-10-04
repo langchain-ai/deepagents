@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b3c2d9b7319b8b141e68653909575cc8746ce661df58834c5280fbfa2b53e8fa",
+  "pageVersion": "sha256:19c126a1e3f7ee80823be4e68182579873ec2302ac1430fe8dc022c8a99e3ea6",
   "claims": [
     {
       "id": "claim_0c5d862f533545f9aadcc99ac6555b7d",
@@ -162,19 +162,27 @@
     },
     {
       "id": "claim_74e7da4f223c49bab13b1d216b3df091",
-      "statement": "Pairing grants normal sender invocation but never operator authority: environment-configured operator and allowlisted IDs remain authoritative DM senders, while /pair is restricted to an explicitly configured operator ID in a DM and is handled outside the model.",
+      "statement": "Pairing grants normal sender invocation but never operator authority: environment-configured operator and allowlisted IDs remain authoritative DM senders, while /pair is handled outside the model and requires an explicitly configured operator; pairing administration is DM-only except that an operator may approve a code outside a DM.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/deepagents_talon/host.py#L594-L625",
-          "version": "repo-lines-v1:sha256:2f0b4439e276c382ae9e8d7603b7668773c905bde7d0cb94530b6601938b0d5a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhZjUwNjAyNzg1ODg2Mzg4ODE3ZDA3ODY3MmU5NTdjNzRhZjhkZWNiNzcyYjY3ODM2MDlkOTc3ZGZiMTRmOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NzRkYjVmYWI4YzRmYmIyMjgyYWNhMDA0NGM3NDY3NGYyMDQ5ZWRkY2IwZTA3MWUwMjA0OWVhNjVkMTFhYmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmMWU3ZmM3OTJlMTM1Yzg3ODVkMDBhNTIyZDVlNTdiYjQyOGVkOTc5ODA0OWY1NGM2ZGQzNTNjODQ0NzAxMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzYmY0Y2E4MzYwYjIxYmYwMTgyMDhmZTZmOWY0N2JmZTEwMzUzN2JlZGQ1NjA1NjU4OGQ3MWY0ZWNmMWNkYWUifQ"
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L882-L905",
+          "version": "repo-lines-v1:sha256:c842e5ec2d4cf67a395228646ae3da00ddce2ce5b3f6e9c5a906f42a14d94932:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNhYTE3ZDE4Mjc0ZjJlZjc0NjU4MzYwNTg2YTg5YTRhNTYzOThkNzUxY2U1MGViYzExOWJiMWQ1OTY4NjJmNmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVlN2M5NTdiY2I0NGZiNjczYzk4YjAwNTBhNzVkMzgwODJkYjgxZDkxOGRlMzEzYTNmMDdjMTIzNTMwNmQ3ZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE4NTAyMTRjMjAzZDljMmJjZjIwYzJiOWE0MzQ2NTE0N2Y3MzkxMTk3YjgyMTY1MWQzYzFjMDcyNzQ1YzJmOTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwZTlhOTUzY2Y5NDJkZDZlNjVkNzAyYmEwMmEyMzIzMDQxYTQyMDNjYTcwMjZkYzRlOWEzMDg2NWQxYWU0NTUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L598-L631",
+          "version": "repo-lines-v1:sha256:f7a113598123bc8a0ce235a1940bef134470e0ec22cd22a76d95d10cea7c9284:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhZjUwNjAyNzg1ODg2Mzg4ODE3ZDA3ODY3MmU5NTdjNzRhZjhkZWNiNzcyYjY3ODM2MDlkOTc3ZGZiMTRmOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NzRkYjVmYWI4YzRmYmIyMjgyYWNhMDA0NGM3NDY3NGYyMDQ5ZWRkY2IwZTA3MWUwMjA0OWVhNjVkMTFhYmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmMWU3ZmM3OTJlMTM1Yzg3ODVkMDBhNTIyZDVlNTdiYjQyOGVkOTc5ODA0OWY1NGM2ZGQzNTNjODQ0NzAxMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQzYmY0Y2E4MzYwYjIxYmYwMTgyMDhmZTZmOWY0N2JmZTEwMzUzN2JlZGQ1NjA1NjU4OGQ3MWY0ZWNmMWNkYWUifQ"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/pairing.py#L364-L407",
           "version": "repo-lines-v1:sha256:a3c4b05674dbbb18a4a2d1396b95e64b1d8ff6cfb9b7cfd10bd9d802bcf9e8db:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBlM2ZiMWU1OGZiYzkwNDc5NGQ1MDczMTRmYTkxYzlmMmYxOThjODhkM2ZmMzk1ZTAwODI4OTAxYzM3ZGM5MWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMwMmQ5YjNhOTBjMWQzOWI4ZDkyMTJlOTc0ZTc3NzM4NTlkOGJkNGMxYzQ2YTczOWQ3N2Q5ZjRlNjczOTAyZmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4OTg4ODM2ZmJiZmVmODNlMDJjOWNlNGVkNTU5M2FhMjQzODk2Mjc2YTY2YmI1OWU2MzhjZTIxMTllM2Y5MTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg0NTcxNjk5Y2Q2OTcwMjliMjAyNjc2NWFjNjQwMTE4OGIwMmU1MjMwNGMxYTkyNmVlNzIwYzY0ZTE3Y2M0MzAifQ"
         },
         {
-          "resource": "repo://libs/talon/deepagents_talon/pairing.py#L548-L565",
-          "version": "repo-lines-v1:sha256:a1c47f8d7316023f6a32cb78d282162c637bbdb858fb3589944429ef3fc6d6a2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjOTc0MGIwMWQyNDdhODQ5MDlkYTA2N2M3OTE3MmY3OTZkN2ZkN2E1OTA5ZDJhNmZlMzFkZjU1ODUyNTJlYmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlY2EzNDFiN2IzNzAzMjBkMGUxMmVmNWRjN2IzYjc0YzlkNDY1NWI3MWQ3ZDE0ZDljYzNkY2E2YTBiYTZmOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI5YmU4NzBjODA2OTZlM2VmZTMxMTZmZmY0ZWIxNzAyYWRjNTczMTM5MjdkZjI4MzM3YTlkNmQ0MzZjOGNjMDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmYzVjMjJmYzY4NDM0ZjgwZmNjMjU5YWUzNzdkZWNkYTgyODFkNWU2ZmQxN2YxNjlhYWZiMGU4NmViOWVkMmIifQ"
+          "resource": "repo://libs/talon/tests/unit_tests/test_pairing.py#L445-L500",
+          "version": "repo-lines-v1:sha256:c96c1ad751eb4adf82246ec4173bbeb7e05ede6e113efae6f7561c2bac71dd03:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3YmRhYzI4ZTEyZGNmN2E3MTNmZjc3MzVmODBjYzI0Yjg1OGQ3ZjYzYTFmNDM2MThiNGQyOWQ3YjBhZDc5OGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkMjQ0ZWEyNjU0OTcxZWNmMzJiN2Y3M2I2ZmY3ZWI5ZGFkODFlNWY1ZWY2ZDEzYTAwY2Q3MTcwYWEyMzk0ZWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhNzQ3YzUxNTdmZGE4MTAyYzJiNGM0Mzg1NTVmNzFjYzQwNjkzYTE5NjgzM2M4NzBmZjQyZDc5NmUyZWQzMzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczMzlmMjY4YzkwNmRlMTFhOWFlMzI4OGRiNTM2YTI1YzI4ZWI3MTk2ZmRlOTQ2Y2FjNzQxYzY2MThjZTgyYWMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_pairing_slack.py#L248-L269",
+          "version": "repo-lines-v1:sha256:3d95058504ad751c792e08c2cb14eb8b034886a04e86ce69664dd408ffd6bf3e:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3NDdjMDk4ZWVmZWVlMmZlMWFiODgzOWRhZTYxYmNhYzg1ODVkMzgzZDk5YmUxZDJlZDk5MDcwOWZkZmRkYzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlYTJlYzZlYTljYmQ1NjE1Y2EwZmYxOWU2YjYzZTM3ZTkzODIxZmMwM2NhYzJiZjlmYTc2ZTk5OThiMDg4NTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjljOTE1ZjgyMzA5ZjhlNTAxYzdhMWI5ODI2ZGM2NmNjMmYyODgwMmU1ODBhYzk2ZTJiNDRjOTFhNTQyMDczZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzZGYyMDU3ZjQxMGFmZDgwNjVmZWViNDcxMzdiYWMwYTA3YjYxMmE3NjFhMTUwOWM3OWNjOTQyZmQyYTJlZGEifQ"
         }
       ]
     },
@@ -220,15 +228,19 @@
     },
     {
       "id": "claim_ae8c80a8030740d9aca09eaa73eaca62",
-      "statement": "Discord drops self-authored gateway messages before exposure checks; Slack preserves a root message's thread conversation ID and restricts slash commands to DMs; Telegram applies pairing after normal admission fails.",
+      "statement": "Discord drops self-authored gateway messages before exposure checks; Slack preserves a root message's thread conversation ID and checks slash-command authorization before command discovery, with commands DM-only except operator /pair approve; Telegram applies pairing after normal admission fails.",
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/channels/discord.py#L875-L912",
           "version": "repo-lines-v1:sha256:61785f53ff17b5125e36f7af6b785aa7500bea88a9efaa1bc2c4405742e72e80:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5ZTBiYTE4NjBkN2FlOGE5YTNiNjkxZGRiNGRhNjcyNGUyNzQ1YTliZmYwMzY4YzY5MTEwM2VhNGQ4Njg0ZjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlZjY3MWFjZWNkNTQ3NzY1MWFmZjNlYWRlYmVkMDJlMDQ1ZDVhOTA4NjlhNzI0OTk3NDI1NWE4N2ZhZWM3ZmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU0ZmFiNTkxYWNlMmM4ZjkyNGJmYWQ2ZDNiNjFkMjI5ODU3NDYxNDkzZjRiMTQxOTdiZGQyYWUwZjM3YjhmYzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY5NTY0ZTM0YTllNDBjNmNmYTZkOGQ2NzlkNjljYTI3MzkzYjA4YjUzOGVhNTNkYjJhNTI2OTUyZTU5MmQ0NGMifQ"
         },
         {
-          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L836-L895",
-          "version": "repo-lines-v1:sha256:a0ac2d5c4c630ab0a27b9f60aa606f804bbcc2275d2755fe74d42ca9264ebde2:eyJzZWxlY3RlZExpbmVDb3VudCI6ODAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFhZjIzNWYwZTQ4MDAwMWYyZWMzYTgxNTM2ZjY0NTQ1N2VhZWYxZDc2MGI0NTIxZDU0YWQ0YjVmMzQ5OWZmYmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxNDBjYjg5ZTIwODRkYjI4OTMzOWNmYTk3MjZjM2IyZDUxNWY1NGU4ZjUyZDM4ZjZmMzY5OTUwMzhkNmI1NjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmYmQ2MmRkMzg4N2UwN2IyZWMxNGU2YjE3MzhlMzZmN2JmYjg0MWRiODdkM2M4MzA1NzBhYzhhNTkwMzM3MWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYzODM5MTg2Mjg4NDVhODA1ZmI5MWI3MTJlZmVlNDEzZjliZTI0MDAzMzViMDU1MzRiZmU0MGM2MDA2MTQ1NjUifQ"
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L1288-L1328",
+          "version": "repo-lines-v1:sha256:d9c16245042c04f56ac963d7a3f6e4909db9645ea895d96109d2f16f85c5a801:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiNGZiOGQ0YTczYzNhZTI1N2RiZDlkMmUwYWRkY2ViMWQ3ZDU0NWRkMWU4YjJlODI0NDUwNDA2ZmM5N2RiYTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5ODhjMmQxZDZkYWUzZDJlNDM4YmE4YzAxODZiYTk4MmM5YjJhMmZlNWYxMGFiMGRiZDE2MTVlMWEwOGM1YzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNiYWU1OWYzNjE1NzVjN2RkZTY5ZTQ5NDJjYmVhZTYxNzAzNDFkYzM2ZWJmNTVmZTE4NTIyMTc4ODM4YzFmYzYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L859-L934",
+          "version": "repo-lines-v1:sha256:9e5045ef6974a203afc2e57e5ae7e299046acdd79199f7b250d717fdecbbd47c:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxYzExOWFkZTRkZDE2YWQzZTIxYzNiMjJhN2JkZmMyYTYxNTRkZjA5M2E0NjczMDU5OWI2NzAwMTczM2Q2NGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRjNzA0M2ZkMmI3NDU2YTk0Y2Y1MmEzYTY1MTMxZjA3NDhiZDY3NDYyZGQxNWIxYjczOTMyY2ViMWVjZjFmNDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmYTcxNDhkN2JkMmFmYTM0ZTg5YmU1MzVlYjYyODA4ZmIxOTI3NzJhYTJlNTJlODlkNDE2N2Q1MzdkZTZhNDEifQ"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/channels/telegram.py#L683-L718",
@@ -336,19 +348,31 @@
     },
     {
       "id": "claim_992ea5e8639e496c983113db2cc66b26",
-      "statement": "For admitted non-DM Slack thread messages, the adapter fetches preceding context only from configured operators or static allowlisted users and attaches it separately; failures become an explicit unavailable marker, and the host wraps it as context while preserving the current message.",
+      "statement": "For admitted non-DM Slack thread messages, the gateway excludes OAuth callback messages before truncation, then the adapter retains preceding context only from configured operators or static allowlisted users and attaches it separately; failures become an explicit unavailable marker, and the host wraps it as context while preserving the current message.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L927-L971",
-          "version": "repo-lines-v1:sha256:dbab0ce28f3f43858131a6dc93e7641eac572c65c05c9db8daafe973674e43a1:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzOTc4YjMwYzUxY2M2MjJmYmUxMjM1ZGE0MjY0MjM5YzM3MTEwODYwYmU0ZDMyNGI5MzYxYTc2NDFmZTc3ZWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmZjU0OGRmYWNhOWI5OTgzZGY5NzZiODgzYzIzOTMxMzIxMzBjZDRmNGZmYzNlZTM3ZWVkMzk2MTE2NzEwNTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmOWViZTk5YzUyM2EwNTkzZTNjNzgxODZiNjNhM2JlMmRhMGIxNDMyOWE3YTA5ZWM2MGZkOTQ3NTg2OTVkMWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM2YWY5YmI0MDAwZTM3ZjAyMmU2MDI0OTY3NmQ3NWM1NDI0NTlmZjg2YTMyOTdjOWYxMzk0ZTliZjQwZmFkZTgifQ"
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L1331-L1340",
+          "version": "repo-lines-v1:sha256:404258518c3400724b03ce7790bc66aaacb04fb3a05ed486926a7246519304a2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwNjcyM2Y2M2M5N2MzNGE3MzVlMDQ3ZTYyYWY4M2RkZWU3NzczYjhmODg2YzhlZDlmYTRiOWM3OThhYjg5ZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU0NjIzN2VjYmFkODdhN2RkMDVhZWE4OGIxN2Y0ZWJkNDRhMzdjNDU3YmQ1MTgzNWQ1N2RlYzIxNmYyMTEyMTcifQ"
         },
         {
-          "resource": "repo://libs/talon/deepagents_talon/host.py#L2049-L2066",
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L516-L554",
+          "version": "repo-lines-v1:sha256:1c9ac460444d01606d0b340efc1cfacf52bc69d299440a923607e076d38daa52:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2MGJiNDA1NzM1MTY0NWZkYTc0YWY0OWZjMGEwOTZkZDY2NTMzNmVkODMzMWFkNmM1MGZkNzAyZjgwOTBkYTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4ZDA0ZGI2NDdmNGUzNTk0NzJjNjhjNjA1MDZkNTkwNzIwNGY5ZmE2YjBlODhlYzA1MTQ4OTRmNmNiN2UyYzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUzOWNhM2VhY2Y5OGE3OWViYmE4ZTkxNDhmNDc0ZDY5NDA3NmVjZDVlMzE2YmIxNjQ4YmE5N2JjODdlMmZlZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlkY2I0MGQ0ZWM2MWI0NTI4ZWYzMzFhZjIxOGI2OGNmYTIzODQzZDU4MDJmZWNhZDgzNDY4NzQxOTQ5Nzk1NDkifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L935-L981",
+          "version": "repo-lines-v1:sha256:a2767c8e1cf21837f61d76e5c55620e3b01ffca42e59a795e067dca86a97b203:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzOTc4YjMwYzUxY2M2MjJmYmUxMjM1ZGE0MjY0MjM5YzM3MTEwODYwYmU0ZDMyNGI5MzYxYTc2NDFmZTc3ZWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmZjU0OGRmYWNhOWI5OTgzZGY5NzZiODgzYzIzOTMxMzIxMzBjZDRmNGZmYzNlZTM3ZWVkMzk2MTE2NzEwNTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmOWViZTk5YzUyM2EwNTkzZTNjNzgxODZiNjNhM2JlMmRhMGIxNDMyOWE3YTA5ZWM2MGZkOTQ3NTg2OTVkMWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM2YWY5YmI0MDAwZTM3ZjAyMmU2MDI0OTY3NmQ3NWM1NDI0NTlmZjg2YTMyOTdjOWYxMzk0ZTliZjQwZmFkZTgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L2051-L2068",
           "version": "repo-lines-v1:sha256:18ae97aa070e4ab9f68bbb5eea92b944e5d899e475b76d0b4a3bae0d3c601841:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxNzE3NzA3ZmY1OGMyOTY3OGZjZTM5OTFhNWViY2UwYzU3NjU4NTI4OGU3YjQ0MjI1MGRmNWQ1ZDBhNWU3NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQxNmJlZTlkOWI2MDQwN2M5YTBiY2Y5YmMzMGQwYThjNzY2OTEwNTQ4MjZhZTVhMDU2MmQzMTEyMTVhNjY1MGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY1NDdlNDQ5ZjBmMTM1MGQ2NWRmNjQzNzBkMTFmMzNjZjNjMWFmODJlMjY4MTczNDU4ZGExNTcwZWE1YTRjY2MifQ"
         },
         {
           "resource": "repo://libs/talon/tests/integration_tests/test_slack_host.py#L189-L205",
           "version": "repo-lines-v1:sha256:2697f25d3024b8ed87d8de99e6035f12c81c19e28ec6a67056cebc7698236b41:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjM2JlYjU1MDM0YjFmZDFjNmYzMjM4ZDIzODc0MmU5ZTM4MmYzODI1YjQ1MmIwZmY0MGU3YTBlNWQ0MjFiNDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3MjY1NWQ4MDRjODIxN2EyZDNiMmU4Njc1M2NlYjlmMjE5MTNkM2YxMDk0NmU4Mjk3YmQ3YTM4NDNiMDExYWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEyNTM2YjIyZWZkMzljZGYyM2ZmOTJkNmI1Y2ExNzA5ZTMwMDE4OTI0N2Q0ZWE4ZTkwNTI5ZjVjYzQwN2EyNDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_slack_oauth_context.py#L33-L71",
+          "version": "repo-lines-v1:sha256:2f154a249501992cd8726f1d6de8b338aefc2db5a6a42c0ebb7695e3c2875891:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0NDU5MjY2YjlmN2FkNmJlYTVlZmZhZjUzZDU2MjYwMzIyNzNkN2MxZTU4ZjJkZGUwMWQ0MzA3NTkxNDg3YzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3MjY1NWQ4MDRjODIxN2EyZDNiMmU4Njc1M2NlYjlmMjE5MTNkM2YxMDk0NmU4Mjk3YmQ3YTM4NDNiMDExYWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0MjE3Y2Q5MDI3NTFhNmUyZGE1YTJlYWUyY2M2MzlmMTZiNzkzMWUzYTRjMjRmMjE5YzA2NjIzNzEyNGEzZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
     },
@@ -373,10 +397,28 @@
           "version": "repo-lines-v1:sha256:6cb6d31bc83965fb3aa478ce68cfacc99be881b73a657095b7dbf471277da495:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE4MjhiYTc0OGJhMDAwMjBiZGViZTVjNDhhNmE1NmY1NzQ5M2IxN2NmZGRjOTNkNjdjZmE3MzJkYjQ2MjlmNWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1OTMyMTRlYjUwYzZiNmJlZTVkZWUwODFiMWQ2OTdlMjU4NDk1YjIwZDAyZmIwZjc4ZmFkOTEzOWIwYWEyYWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhODJlYmU5ZWQ0MDdjM2E2YmE0YjAwMzQyOTJiYWE1MmMxMWNlNWFlMjg2MTA3NDAyZGU0NzkyZWVlY2FjZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwZmFkYTIyODA5OTU2YjIyMDFlMTZlNWI0N2YzYzRjZGEwMjFlZDRmNThmZjA3M2EwMDA5NDIzMTlhYWJmMzQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_64964c3d8457431bae3799d54d24508c",
+      "statement": "Slack thread-context retrieval is bounded to 20 pages, 40 most recent retained messages, 1,000 characters per message, and 12,000 aggregate sender-and-text characters; hitting the pagination bound fails retrieval rather than supplying over-limit history.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L517-L561",
+          "version": "repo-lines-v1:sha256:1c9ac460444d01606d0b340efc1cfacf52bc69d299440a923607e076d38daa52:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2MGJiNDA1NzM1MTY0NWZkYTc0YWY0OWZjMGEwOTZkZDY2NTMzNmVkODMzMWFkNmM1MGZkNzAyZjgwOTBkYTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4ZDA0ZGI2NDdmNGUzNTk0NzJjNjhjNjA1MDZkNTkwNzIwNGY5ZmE2YjBlODhlYzA1MTQ4OTRmNmNiN2UyYzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUzOWNhM2VhY2Y5OGE3OWViYmE4ZTkxNDhmNDc0ZDY5NDA3NmVjZDVlMzE2YmIxNjQ4YmE5N2JjODdlMmZlZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlkY2I0MGQ0ZWM2MWI0NTI4ZWYzMzFhZjIxOGI2OGNmYTIzODQzZDU4MDJmZWNhZDgzNDY4NzQxOTQ5Nzk1NDkifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L88-L90",
+          "version": "repo-lines-v1:sha256:33d96c8afe5ce730288da2d79d822f0cb8dbf27e33e80b5ebff8fb88c33a4fa0:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjhlOWIzMTg3MzU4ZWM5ODkzMGJmZjhhZDE3NDIwMTAzZTExODBiODVjM2Q2OGFjN2EwYzU4YzY5NjQxZmE0YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDU4ODIyMmIzYzYzYjc4MTcyNGE3OTkwZTViNmE2NjE3YTc0NTRmZTBiMTFlNjVhZDBjNDc5NjdlYzg3NWRkYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2MyMjQwYmQyZTU3YjZhMzMwNzQ0YjA0NDQ4ZjY3NzUxNTNhMmI4MjA5Y2I4YTVkZGM5MzI3NTFiZjk4OGJkOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWI4NzE4YjFmNjAyNGM3M2UzZjgzN2UzZDM5YjgzNzQ0MmY0NjM1ZjhiNzYxYWE2MmNkMzFkZGQ3YTdmMTg5YyJ9"
+        },
+        {
+          "resource": "repo://libs/talon/tests/channels/test_slack.py#L995-L1065",
+          "version": "repo-lines-v1:sha256:78d19a6a42b5f49f597d5495a6b265a428120ea9468c2a48bd63cab530eb77ea:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3MDgyMGEzNGEyYjZhYmY3MWUyMTk1NDIxYWYzYmQ0ZjdhYjUyZjBlMjkwNzEyYTgyZWE3MmUyYThlYTUyYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU4ZmVhYTA4MWE3Zjg3MTNhYWE0YzliYTJiMDM3ZjI3NGNmOGYxYzYyNzMzNzVhOTNjNjFiMmU4OTc1MWNhNTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwM2EyMTczYjhmMWMxOTc1YzBiNzY4ODM0NTI0NDAyNmNlMWRlY2E5MWI2MzNhNGQ0MzFlZWE4NzQ3ZTY0NjQifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-01T08:06:30.386Z"
+    "at": "2026-10-03T08:05:07.881Z"
   }
 }

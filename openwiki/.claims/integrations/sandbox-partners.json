@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:5e1a53c5a944ee2d80bf6e207f835e82790be9d55fd8abcee0bd78e7a1d479d5",
+  "pageVersion": "sha256:ed5a56e21730de39b19ca818c7edbecc622868da6e5c25e5ac3ab78d22ed9086",
   "claims": [
     {
       "id": "claim_ac9d07f5c6064ef7a2a64d3bca27ae9e",
@@ -140,7 +140,7 @@
     },
     {
       "id": "claim_4f083182c8334ceb800d7725f94d1537",
-      "statement": "The dcode command is provided by the deepagents-code distribution, version 0.1.79; it requires Python >=3.12,<4.0, pins deepagents==0.7.21, includes langsmith[sandbox]>=0.14.2 and langchain-quickjs>=0.3.4,<0.4.0 as base dependencies, and exposes separate optional extras for the AgentCore, Daytona, Modal, Runloop, and Vercel sandbox adapters.",
+      "statement": "The dcode command is provided by the deepagents-code distribution, version 0.1.80; it requires Python >=3.12,<4.0, pins deepagents==0.7.21, includes langsmith[sandbox]>=0.14.2 and langchain-quickjs>=0.3.4,<0.4.0 as base dependencies, and exposes separate optional extras for the AgentCore, Daytona, Modal, Runloop, and Vercel sandbox adapters.",
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml#L138-L156",
@@ -152,7 +152,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L14",
-          "version": "repo-lines-v1:sha256:1f18a3e889fc90c036912e697966241cab583d89e80ddfa6d15125d5b93f4793:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
+          "version": "repo-lines-v1:sha256:ad4ba25fedb253289a4ad5e2d98a08b5d9d420826623a171b9499bf085703a85:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMjczYzUzYjJjMGIyMWZhMGYyZmU2YTUyZmZlZDQ3OGU5MjI3YWQyYjVmMTUzZWYwMDNhNzI2NTdiNzQyMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE0YzZmNDE2ZTEzZWYxOTEwMDJkYmNhZmRhOTNiMTU2ZmI3Y2EwMGIyYmU4MWQ4ZGNlMWE4NWRiMzgxNDY3NmEifQ"
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L60-L65",
@@ -253,6 +253,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-01T08:06:30.386Z"
+    "at": "2026-10-02T08:06:05.669Z"
   }
 }

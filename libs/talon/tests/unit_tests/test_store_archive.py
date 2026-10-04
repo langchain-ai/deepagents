@@ -152,6 +152,40 @@ async def test_retrieval_budget_bounds_reads_and_releases_lock(options):
     assert (await archive.entries(SCOPE, limit=1))[0]["text"] == "still writable"
 
 
+@pytest.mark.parametrize("query", ["rare", "missing", ""])
+async def test_keyword_search_resumes_past_the_scan_budget(query):
+    metadata = CountingStore()
+    archive = StoreConversationArchive(metadata, namespace=("resume",), vector_search=False)
+    await archive.append(
+        SCOPE,
+        "session",
+        "time",
+        [
+            HumanMessage("rare" if index == 0 else "ordinary", id=str(index))
+            for index in range(1201)
+        ],
+    )
+    pages, after = [], ""
+    while True:
+        metadata.reads = 0
+        page = await archive.search_page(SCOPE, query=query, after=after, limit=20)
+        assert metadata.reads <= 1003
+        assert page["pagination_status"] == "ok"
+        pages.append(page)
+        if not page["has_more"]:
+            break
+        after = page["next_after"]
+    texts = [row["text"] for page in pages for row in page["results"]]
+    if query:
+        # Only budget-limited pages precede the end, each reporting partial coverage.
+        assert all(page["scan_status"] == "limit_reached" for page in pages[:-1])
+        assert len(pages) == 3
+        assert texts == (["rare"] if query == "rare" else [])
+    else:
+        assert texts == ["ordinary"] * 1200 + ["rare"]
+    assert pages[-1]["scan_status"] == "ok"
+
+
 async def test_hybrid_search_ranks_partial_candidates_beyond_the_scan_budget():
     metadata = CountingStore()
     vectors = InMemoryStore(index={"dims": 2, "embed": StaticEmbeddings(), "fields": ["text"]})

@@ -7,6 +7,8 @@ types. Uses the Textual `run_test()` pilot harness.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from textual.app import App, ComposeResult
 from textual.geometry import Offset
@@ -233,6 +235,52 @@ class TestSafety:
             data_row = rows.split("\n")[1]
             assert "\n" not in data_row
             assert "second line" in data_row
+
+
+class TestReplayTiming:
+    @pytest.mark.parametrize("outcome", ["complete", "error"])
+    async def test_running_replay_keeps_elapsed_time(
+        self, monkeypatch: pytest.MonkeyPatch, outcome: str
+    ) -> None:
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1"))
+            record = panel._find_record("a")
+            assert record is not None
+            clock = SimpleNamespace(monotonic=lambda: record.started_monotonic + 12.5)
+            monkeypatch.setattr(
+                "deepagents_code.tui.widgets.subagent_panel.time", clock
+            )
+            panel.on_subagent_event(_start("a", "E1"))
+            assert "12.5s" in _render(panel.query_one("#subagent-agents", Static))
+            clock.monotonic = lambda: record.started_monotonic + 20
+            event = _complete("a", "E1", 0)
+            event.update(phase=outcome, error="failure")
+            panel.on_subagent_event(event)
+            clock.monotonic = lambda: record.started_monotonic + 30
+            panel.on_subagent_event(event)
+            assert "20.0s" in _render(panel.query_one("#subagent-agents", Static))
+            assert panel._phases["E1"].elapsed_seconds() == 20
+            assert not panel._any_running()
+
+    @pytest.mark.parametrize("outcome", ["complete", "error"])
+    async def test_finished_replay_preserves_duration_and_status(
+        self, outcome: str
+    ) -> None:
+        async with PanelApp().run_test(size=(200, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1"))
+            event = _complete("a", "E1", 12500)
+            event.update(phase=outcome, error="original failure")
+            panel.on_subagent_event(event)
+            before = _render(panel.query_one("#subagent-agents", Static))
+            panel.on_subagent_event(_start("a", "E1"))
+            assert not panel._any_running()
+            assert _render(panel.query_one("#subagent-agents", Static)) == before
+            panel.on_subagent_event(_complete("a", "E1", 0))
+            assert _render(panel.query_one("#subagent-agents", Static)) == before
+            assert panel._phases["E1"].counts() == (1, 1)
+            assert panel._phases["E1"].elapsed_seconds() == pytest.approx(12.5)
 
 
 class TestPhaseTiming:

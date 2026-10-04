@@ -58,7 +58,7 @@ test = [
   "ty>=0.0.62,<1.0.0",
   "pytest-asyncio>=1.4.0",
   "langchain-tests>=1.1.9",
-  "langchain-openai",
+  "langchain-openai>=1.6.5,<2.0.0",
   "twine",
   "build",
   # Lazy-imported at runtime so the core package does

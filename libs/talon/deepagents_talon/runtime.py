@@ -59,6 +59,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalHandler,
     ToolApprovalRequest,
 )
+from deepagents_talon.local_tools import LocalToolError, load_local_tools
 from deepagents_talon.mcp import _cancel_mcp_elicitation
 from deepagents_talon.messaging import MESSAGE_HANDLER, ProgressMessages, send_message
 from deepagents_talon.model_selection import (
@@ -76,6 +77,7 @@ from deepagents_talon.observability import (
     stable_log_ref,
 )
 from deepagents_talon.subagents import (
+    _DELEGATION_TOOLS,
     Attachment,
     LocalSubAgent,
     TaskTools,
@@ -286,6 +288,7 @@ class DeepAgentRuntime:
         model: Chat model identifier for `create_deep_agent`.
         tools: Runtime tools exposed to the agent in addition to the clock,
             web, and cron tools.
+        tools_dirs: Explicit trusted host directories imported once at startup.
         refresh_tools: Optional callback that supplies replacement runtime tools
             after an external authorization changes their availability.
         reload_tools: Optional callback that reloads runtime tools on demand.
@@ -324,6 +327,7 @@ class DeepAgentRuntime:
         *,
         model: str,
         tools: Sequence[BaseTool | Callable[..., object]] = (),
+        tools_dirs: Sequence[Path] = (),
         refresh_tools: Callable[[], Awaitable[Sequence[BaseTool | Callable[..., object]] | None]]
         | None = None,
         reload_tools: Callable[[], Awaitable[Sequence[BaseTool | Callable[..., object]]]]
@@ -362,6 +366,9 @@ class DeepAgentRuntime:
 
         self.model = model
         self.tools = tuple(tools)
+        self.tools_dirs = tuple(tools_dirs)
+        self._local_tools: tuple[BaseTool, ...] | None = None
+        self._local_tool_modules = contextlib.ExitStack()
         self.refresh_tools = refresh_tools
         self.reload_tools = reload_tools
         self.system_prompt = system_prompt
@@ -410,10 +417,19 @@ class DeepAgentRuntime:
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
-        self._resolved_subagents = self._resolve_subagents()
-        snapshot = self.approval_store.ensure()
-        self._graph = self._create_graph(approvals=snapshot)
-        self._active_approvals = snapshot
+        try:
+            if self._local_tools is None:
+                self._local_tools = self._local_tool_modules.enter_context(
+                    load_local_tools(self.tools_dirs)
+                )
+            self._resolved_subagents = self._resolve_subagents()
+            snapshot = self.approval_store.ensure()
+            self._graph = self._create_graph(approvals=snapshot)
+            self._active_approvals = snapshot
+        except Exception:
+            self._local_tool_modules.close()
+            self._local_tools = None
+            raise
 
     def _create_graph(
         self,
@@ -445,6 +461,7 @@ class DeepAgentRuntime:
             spec for spec in resolved if "runnable" not in spec and "graph_id" not in spec
         ]
         attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
+        self._validate_local_tools(attachments_tools)
         catalog = {
             name: tool
             for name, tool in _tool_map(attachments_tools).items()
@@ -626,6 +643,8 @@ class DeepAgentRuntime:
             msg = "Background subagents did not stop; runtime resources remain open"
             raise RuntimeError(msg)
         self._graph = None
+        self._local_tool_modules.close()
+        self._local_tools = None
         cleanup = getattr(self.checkpointer, "close", None)
         if callable(cleanup):
             result = cleanup()
@@ -944,7 +963,25 @@ class DeepAgentRuntime:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())
         tools.extend(self.tools if runtime_tools is None else runtime_tools)
+        tools.extend(self._local_tools or ())
         return tools
+
+    def _validate_local_tools(self, tools: Sequence[BaseTool | Callable[..., object]]) -> None:
+        local = self._local_tools or ()
+        if not local:
+            return
+        reserved = _DELEGATION_TOOLS | {
+            "get_agent_tools",
+            "write_todos",
+            "compact",
+            "fetch_url",
+            "web_search",
+        }
+        other = _tool_map([item for item in tools if all(item is not value for value in local)])
+        for value in local:
+            if value.name in reserved or value.name in other:
+                msg = f"Local tool name {value.name!r} conflicts with an existing Talon tool"
+                raise LocalToolError(msg)
 
     async def _invoke_until_text(
         self,

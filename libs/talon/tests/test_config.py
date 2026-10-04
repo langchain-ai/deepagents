@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -176,6 +177,17 @@ def test_from_env_keeps_runtime_env_vars(tmp_path: Path) -> None:
     assert config.env["BUILTIN_MCP_URL"] == "https://tools.example/mcp"
     assert config.env["LANGSMITH_HOST_URL"] == "https://langsmith.example/api"
     assert config.env["HOST_LANGCHAIN_API_URL"] == "https://langsmith.example/api-host"
+
+
+def test_tools_dirs_expand_normalize_and_deduplicate_paths(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    raw = os.pathsep.join([" tools ", "~/other", "", str(tmp_path / "tools")])
+    config = TalonConfig.from_env({"DEEPAGENTS_TALON_TOOLS_DIRS": raw}, base_home=tmp_path)
+
+    assert config.tools_dirs == (tmp_path / "tools", tmp_path / "other")
+    assert TalonConfig.from_env({}, base_home=tmp_path).tools_dirs == ()
 
 
 @pytest.mark.parametrize("assistant_id", ["", ".", "..", "../bad", "bad/slash", "bad space"])

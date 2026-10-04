@@ -157,6 +157,16 @@ class TalonConfig:
         return self.home / "channels"
 
     @property
+    def tools_dirs(self) -> tuple[Path, ...]:
+        """Explicit host directories containing trusted Python tools."""
+        paths = (
+            Path(value.strip()).expanduser().resolve()
+            for value in self.env.get("DEEPAGENTS_TALON_TOOLS_DIRS", "").split(os.pathsep)
+            if value.strip()
+        )
+        return tuple(dict.fromkeys(paths))
+
+    @property
     def sandbox(self) -> SandboxSettings | None:
         """Remote sandbox for agent tools, or None to run them on the host."""
         from deepagents_talon.sandbox import SandboxSettings  # noqa: PLC0415

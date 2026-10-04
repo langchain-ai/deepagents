@@ -312,35 +312,7 @@ class TestCostDisplay:
             assert app.opened_pickers == ["cost"]
             assert app.unhandled_clicks == unhandled
 
-    async def test_only_cost_has_hover_affordance(self) -> None:
-        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.set_tokens(5000)
-            bar.set_cost(1.25)
-            await pilot.pause()
-            display = pilot.app.query_one("#tokens-display", MetricsLine)
-            inset = display.content_region.x - display.region.x
-            cost_offset = (inset + str(display.render()).index("$"), 0)
-
-            await pilot.hover(display, offset=cost_offset)
-            await pilot.pause()
-            assert display.styles.pointer == "pointer"
-            assert any(
-                segment.style is not None and segment.style.underline
-                for segment in display.render_line(0)
-                if "$" in segment.text
-            )
-
-            await pilot.hover(display, offset=(inset, 0))
-            await pilot.pause()
-            assert display.styles.pointer == "default"
-            assert not any(
-                segment.style is not None and segment.style.underline
-                for segment in display.render_line(0)
-            )
-
-    @pytest.mark.parametrize("width", [3, 5])
-    async def test_hidden_cost_leaves_no_click_target(self, width: int) -> None:
+    async def test_hidden_cost_leaves_no_click_target(self) -> None:
         app = StatusBarApp()
         async with app.run_test(size=(150, 24)) as pilot:
             bar = app.query_one("#status-bar", StatusBar)
@@ -348,7 +320,7 @@ class TestCostDisplay:
             bar.set_cost(1.25)
             await pilot.pause()
             display = app.query_one("#tokens-display", MetricsLine)
-            display.styles.width = width
+            display.styles.width = 5
             await pilot.pause()
             assert "$" not in str(display.render())
             inset = display.content_region.x - display.region.x

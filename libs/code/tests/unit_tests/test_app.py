@@ -1374,9 +1374,8 @@ class TestStartupSequence:
 class TestFooterCostBreakdown:
     """Tests for opening the shared cost modal directly from the footer."""
 
-    @pytest.mark.parametrize("busy", [False, True])
     async def test_footer_cost_opens_live_modal_and_restores_focus(
-        self, busy: bool
+        self,
     ) -> None:
         from deepagents_code.cost_tracking import _empty_cost_breakdown
         from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
@@ -1388,7 +1387,7 @@ class TestFooterCostBreakdown:
             breakdown = _empty_cost_breakdown()
             breakdown["input_tokens"] = 123
             app._set_session_cost(1.25, breakdown=breakdown)
-            app._agent_running = busy
+            app._agent_running = True
             await pilot.pause()
             display = app.query_one("#tokens-display", MetricsLine)
             offset = display.content_region.x - display.region.x

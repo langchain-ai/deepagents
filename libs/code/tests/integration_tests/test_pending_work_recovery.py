@@ -63,7 +63,9 @@ async def test_abandon_pending_tool_work_never_executes_tool(
     before = await graph.aget_state(config)
     assert before.next == ("tools",)
 
-    agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+    agent = RemoteAgent(
+        url="http://localhost:8123", graph_name="agent", local_ownership=False
+    )
     local_graph = cast("Any", graph)
     local_graph._validate_client = lambda: SimpleNamespace(
         runs=SimpleNamespace(list=AsyncMock(return_value=[]))

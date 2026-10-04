@@ -113,11 +113,13 @@ async def test_inflight_writer_blocks_takeover_after_client_release(tmp_path):
     replacement.release()
 
 
-async def test_saver_fences_checkpoints_writes_and_deletion(tmp_path):
+async def test_saver_fences_checkpoints_writes_and_deletion(tmp_path, monkeypatch):
+    from deepagents_code import sessions
+
     db_path = tmp_path / "sessions.db"
+    monkeypatch.setattr(sessions, "get_db_path", lambda: db_path)
     lease = try_acquire("thread", db_path=db_path)
     assert lease is not None
-    saver_class = owned_saver_class(db_path=db_path)
     config: RunnableConfig = {
         "configurable": {
             "thread_id": "thread",
@@ -127,7 +129,14 @@ async def test_saver_fences_checkpoints_writes_and_deletion(tmp_path):
     }
     checkpoint = empty_checkpoint()
     try:
-        async with saver_class.from_conn_string(str(db_path)) as saver:
+        async with sessions.get_checkpointer() as saver:
+            with pytest.raises(ThreadOwnershipError):
+                await saver.aput(
+                    {"configurable": {"thread_id": "thread", "checkpoint_ns": ""}},
+                    checkpoint,
+                    {},
+                    {},
+                )
             saved = await saver.aput(config, checkpoint, {}, {})
             await saver.aput_writes(saved, [("result", "first")], "task")
             with pytest.raises(ThreadOwnershipError, match="open elsewhere"):
@@ -265,7 +274,7 @@ async def test_local_remote_agent_propagates_tokens_without_claiming_reads(
     from deepagents_code.client.remote_client import RemoteAgent
 
     monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
-    agent = RemoteAgent("http://localhost", local_ownership=True)
+    agent = RemoteAgent("http://localhost")
     graph = MagicMock()
     graph.aget_state = AsyncMock(return_value=None)
     graph.aupdate_state = AsyncMock()

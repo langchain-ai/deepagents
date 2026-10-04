@@ -77,8 +77,7 @@ async def test_acp_defaults_classifier_after_provider_resolution(tmp_path) -> No
             return None
 
     @asynccontextmanager
-    async def get_checkpointer(*, owned: bool = False) -> AsyncIterator[Checkpointer]:
-        assert owned
+    async def get_checkpointer() -> AsyncIterator[Checkpointer]:
         yield Checkpointer()
 
     class AgentServer:
@@ -155,7 +154,7 @@ async def test_acp_sessions_use_fenced_persistence(tmp_path, monkeypatch) -> Non
     class State(BaseModel):
         messages: list[str] = []
 
-    async with get_checkpointer(owned=True) as saver:
+    async with get_checkpointer() as saver:
         graph = StateGraph(State)
         graph.add_node("echo", lambda state: state)
         graph.add_edge(START, "echo")

@@ -3618,7 +3618,7 @@ async def _run_acp_cli_async(
     try:
         from deepagents_code.sessions import get_checkpointer
 
-        async with get_checkpointer(owned=True) as checkpointer:
+        async with get_checkpointer() as checkpointer:
             await checkpointer.setup()
             from langgraph.store.memory import InMemoryStore
 

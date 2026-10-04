@@ -350,7 +350,7 @@ class RemoteAgent:
         graph_name: str = "agent",
         api_key: str | None = None,
         headers: dict[str, str] | None = None,
-        local_ownership: bool = False,
+        local_ownership: bool = True,
     ) -> None:
         """Initialize the remote agent client.
 
@@ -362,7 +362,8 @@ class RemoteAgent:
                 When `None`, `RemoteGraph` auto-reads `LANGGRAPH_API_KEY`,
                 `LANGSMITH_API_KEY`, or `LANGCHAIN_API_KEY` from
                 the environment.
-            local_ownership: Fence writes to a locally managed sessions database.
+            local_ownership: Fence writes to the local sessions database. Set to
+                `False` only for externally managed servers with separate storage.
             headers: Extra HTTP headers to include in every request
                 (e.g. bearer tokens, proxy headers).
         """

@@ -25556,7 +25556,7 @@ class DeepAgentsApp(App):
                 A fresh `RemoteAgent`, exposed as `Any`.
             """
             return self._configure_remote_agent(
-                _RemoteAgent(url=url, graph_name="agent", local_ownership=True)
+                _RemoteAgent(url=url, graph_name="agent")
             )
 
         previous_agent = self._assistant_id
@@ -29483,7 +29483,7 @@ class DeepAgentsApp(App):
 
             def _build_agent(url: str) -> Any:  # noqa: ANN401  # union narrowed elsewhere
                 return self._configure_remote_agent(
-                    _RemoteAgent(url=url, graph_name="agent", local_ownership=True)
+                    _RemoteAgent(url=url, graph_name="agent")
                 )
 
             # A failed refresh must not reach the UI as "zero servers": the

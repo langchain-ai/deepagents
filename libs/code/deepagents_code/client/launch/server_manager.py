@@ -447,7 +447,6 @@ async def start_server_and_get_agent(
         await server.start()
         await server.wait_for_graph_ready("agent")
         agent = RemoteAgent(
-            local_ownership=True,
             url=server.url,
             graph_name="agent",
         )

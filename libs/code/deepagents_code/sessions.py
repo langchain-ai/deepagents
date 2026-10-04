@@ -1719,22 +1719,15 @@ async def delete_thread(thread_id: str) -> bool:
 
 
 @asynccontextmanager
-async def get_checkpointer(*, owned: bool = False) -> AsyncIterator[AsyncSqliteSaver]:
-    """Get AsyncSqliteSaver for the global database.
-
-    Args:
-        owned: Require a live thread reservation and fencing token for writes.
+async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
+    """Get a checkpointer requiring live thread ownership for database writes.
 
     Yields:
-        AsyncSqliteSaver instance for checkpoint persistence.
+        AsyncSqliteSaver enforcing thread reservations and fencing tokens.
     """
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from deepagents_code.thread_ownership import owned_saver_class
 
-    saver_class = AsyncSqliteSaver
-    if owned:
-        from deepagents_code.thread_ownership import owned_saver_class
-
-        saver_class = owned_saver_class(db_path=get_db_path())
+    saver_class = owned_saver_class(db_path=get_db_path())
 
     # Built here rather than through `AsyncSqliteSaver.from_conn_string` so the
     # connection is one this module owns and can clean up after an interrupted
@@ -1754,25 +1747,45 @@ async def save_thread_seed(
 
     Only seed an absent thread; never replace shared server checkpoints. Thread
     history still loads from the connected agent, so subsequent remote turns
-    take precedence over this discovery snapshot.
+    take precedence over this discovery snapshot. Reserve the local thread for
+    the save when this process does not already own it.
 
     Args:
         thread_id: Newly seeded remote thread identifier.
         values: Initial message and model state saved on the server.
         agent_name: Agent that owns the new thread.
         cwd: Workspace directory used for thread discovery.
+
     """
+    from deepagents_code.thread_ownership import OWNER_KEY, ensure_owned, held_lease
+
+    existing = held_lease(thread_id)
+    lease = existing or ensure_owned(thread_id)
+    try:
+        await _save_thread_seed(
+            {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": "",
+                    OWNER_KEY: lease.token,
+                },
+                "metadata": {"agent_name": agent_name, "cwd": cwd},
+            },
+            values,
+        )
+    finally:
+        if existing is None:
+            lease.release()
+
+
+async def _save_thread_seed(
+    config: RunnableConfig, values: Mapping[str, object]
+) -> None:
+    """Write the initial checkpoint while the caller holds its reservation."""
     from langgraph.checkpoint.base import empty_checkpoint
 
     checkpoint = empty_checkpoint()
-    config: RunnableConfig = {
-        "configurable": {"thread_id": thread_id, "checkpoint_ns": ""},
-        "metadata": {
-            "agent_name": agent_name,
-            "cwd": cwd,
-            "updated_at": checkpoint["ts"],
-        },
-    }
+    config.setdefault("metadata", {})["updated_at"] = checkpoint["ts"]
     async with get_checkpointer() as checkpointer:
         if await checkpointer.aget_tuple(config) is not None:
             return

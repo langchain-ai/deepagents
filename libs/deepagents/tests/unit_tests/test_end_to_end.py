@@ -3,7 +3,9 @@
 import base64
 import hashlib
 import json
+import logging
 import mimetypes
+import sys
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any, cast
@@ -32,9 +34,10 @@ from langgraph.store.memory import InMemoryStore
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field
 
+import deepagents.backends.filesystem as filesystem_backend
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
-from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, SandboxBackendProtocol
+from deepagents.backends.protocol import BackendProtocol, ExecuteResponse, FileOperationError, FileUploadResponse, SandboxBackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, create_file_data
@@ -1577,8 +1580,34 @@ class TestBinaryContentOffload:
 
         assert downloads == [[f"/blobs/{_OFFLOAD_PNG_DIGEST}"]]
 
-    def test_resumed_thread_batches_downloads_for_multiple_blobs(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    @staticmethod
+    def _trace_uploads(backend: FilesystemBackend, monkeypatch: pytest.MonkeyPatch) -> None:
+        logger = logging.getLogger(__name__)
+        upload = backend.upload_files
+        classify = filesystem_backend._map_exception_to_standard_error
+
+        def recording(files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+            responses = upload(files)
+            logger.info("Blob upload results: %r", responses)
+            return responses
+
+        def recording_error(exc: Exception) -> FileOperationError | None:
+            error = classify(exc)
+            logger.error("Filesystem error mapped to %r", error, exc_info=(type(exc), exc, exc.__traceback__))
+            return error
+
+        monkeypatch.setattr(backend, "upload_files", recording)
+        monkeypatch.setattr(filesystem_backend, "_map_exception_to_standard_error", recording_error)
+
+    @pytest.mark.parametrize("attempt", range(10) if sys.platform == "win32" else range(1))
+    def test_resumed_thread_batches_downloads_for_multiple_blobs(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, attempt: int
+    ) -> None:
+        caplog.set_level(logging.INFO, logger=__name__)
+        logger = logging.getLogger(__name__)
+        logger.info("Blob offload attempt %d in %s", attempt, tmp_path)
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        self._trace_uploads(backend, monkeypatch)
         other = b"\x89PNG\r\n\x1a\n another image"
         (tmp_path / "a.png").write_bytes(_OFFLOAD_PNG)
         (tmp_path / "b.png").write_bytes(other)
@@ -1586,7 +1615,11 @@ class TestBinaryContentOffload:
         config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
         reads = [{"name": "read_file", "args": {"file_path": f"/{name}"}, "id": f"call_{name}", "type": "tool_call"} for name in ("a.png", "b.png")]
         first = FixedGenericFakeChatModel(messages=iter([AIMessage(content="", tool_calls=reads), AIMessage(content="Read both.")]))
-        self._agent(backend, first, checkpointer).invoke({"messages": [HumanMessage(content="Read both images")]}, config)
+        agent = self._agent(backend, first, checkpointer)
+        agent.invoke({"messages": [HumanMessage(content="Read both images")]}, config)
+        for message in agent.get_state(config).values["messages"]:
+            if isinstance(message, ToolMessage):
+                logger.info("Checkpointed tool %s: %r", message.tool_call_id, message.content)
         downloads = self._record_downloads(backend, monkeypatch)
 
         model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="They differ.")]))

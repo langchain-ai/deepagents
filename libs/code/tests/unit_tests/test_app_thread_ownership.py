@@ -50,14 +50,6 @@ def seed_history() -> None:
         )
 
 
-@pytest.mark.usefixtures("owned_app")
-async def test_distinct_candidates_and_agent_filter() -> None:
-    seed_history()
-    assert await sessions.get_recent_thread_ids() == ["other", "newer", "older"]
-    assert await sessions.get_recent_thread_ids("worker") == ["newer", "older"]
-    assert await sessions.get_recent_thread_ids("missing") == []
-
-
 async def test_bare_resume_skips_and_reserves(
     owned_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:

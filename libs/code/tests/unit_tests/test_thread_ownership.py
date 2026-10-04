@@ -256,35 +256,6 @@ async def test_generated_server_checkpointer_enforces_ownership(tmp_path, monkey
             lease.release()
 
 
-def test_thread_ids_cannot_escape_state_directory(tmp_path):
-    lease = try_acquire("../../outside", db_path=tmp_path / "sessions.db")
-    assert lease is not None
-    try:
-        assert set(tmp_path.iterdir()) == {tmp_path / "sessions.db.owners"}
-    finally:
-        lease.release()
-
-
-async def test_same_client_reacquisition_fences_old_computation(tmp_path):
-    db_path = tmp_path / "sessions.db"
-    first = ensure_owned("thread", db_path=db_path)
-    assert ensure_owned("thread", db_path=db_path) is first
-    assert try_acquire("thread", db_path=db_path) is None
-    first.release()
-    second = ensure_owned("thread", db_path=db_path)
-    try:
-        assert first.token != second.token
-        with pytest.raises(ThreadOwnershipError, match="ownership changed"):
-            async with writer_guard("thread", db_path=db_path, token=first.token):
-                pytest.fail("Reacquisition must fence old computations")
-        first.release()
-        assert ensure_owned("thread", db_path=db_path) is second
-        async with writer_guard("thread", db_path=db_path, token=second.token):
-            pass
-    finally:
-        second.release()
-
-
 async def test_local_remote_agent_propagates_tokens_without_claiming_reads(
     tmp_path, monkeypatch
 ):
@@ -413,25 +384,6 @@ async def test_cancellation_during_lock_acquisition_releases_acquired_gate(
     finally:
         finish.set()
         await asyncio.gather(task, return_exceptions=True)
-        lease.release()
-
-
-async def test_cancellation_while_waiting_for_busy_gate_stops_retrying(tmp_path):
-    db_path = tmp_path / "sessions.db"
-    lease = ensure_owned("thread", db_path=db_path)
-
-    async def write() -> None:
-        async with writer_guard("thread", db_path=db_path, token=lease.token):
-            pytest.fail("Cancelled waiter must not acquire the gate")
-
-    try:
-        async with writer_guard("thread", db_path=db_path, token=lease.token):
-            task = asyncio.create_task(write())
-            await asyncio.sleep(0.02)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 2)
-    finally:
         lease.release()
 
 

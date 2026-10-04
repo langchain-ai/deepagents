@@ -12,13 +12,15 @@ import binascii
 import hashlib
 import logging
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final
 
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Iterator, Sequence
 
     from langgraph.types import Command
 
@@ -35,6 +37,19 @@ _BLOB_PAYLOADS_KEY: Final = "_blob_payloads"
 """Private, untracked state key mapping digests to base64 payloads for the current run."""
 
 _DIGEST_RE: Final = re.compile(r"[0-9a-f]{64}")
+
+_TOOL_BLOB_STORE: ContextVar[tuple[BackendProtocol, str] | None] = ContextVar("_tool_blob_store", default=None)
+"""Request-scoped blob storage for tools that explicitly need portable media."""
+
+
+@contextmanager
+def _tool_blob_store(backend: BackendProtocol | None, prefix: str) -> Iterator[None]:
+    """Expose blob storage during tool execution without putting it in graph state."""
+    token = _TOOL_BLOB_STORE.set((backend, prefix) if backend is not None else None)
+    try:
+        yield
+    finally:
+        _TOOL_BLOB_STORE.reset(token)
 
 
 def _blob_path(prefix: str, digest: str) -> str:
@@ -211,6 +226,24 @@ def _restore_payloads(messages: Sequence[AnyMessage], payloads: dict[str, str]) 
             message = message.model_copy(update={"content": [hydrate(block) for block in message.content]})  # noqa: PLW2901
         result.append(message)
     return result
+
+
+def _hydrate_tool_messages(messages: Sequence[AnyMessage], cache: dict[str, str]) -> list[AnyMessage]:
+    """Restore media on demand from the enclosing filesystem tool wrapper."""
+    store = _TOOL_BLOB_STORE.get()
+    if store is None:
+        return _restore_payloads(messages, cache)
+    backend, prefix = store
+    return _hydrate_messages(messages, backend, prefix, dict(cache))
+
+
+async def _ahydrate_tool_messages(messages: Sequence[AnyMessage], cache: dict[str, str]) -> list[AnyMessage]:
+    """Async version of `_hydrate_tool_messages`."""
+    store = _TOOL_BLOB_STORE.get()
+    if store is None:
+        return _restore_payloads(messages, cache)
+    backend, prefix = store
+    return await _ahydrate_messages(messages, backend, prefix, dict(cache))
 
 
 def _hydrate_messages(messages: Sequence[AnyMessage], backend: BackendProtocol, prefix: str, cache: dict[str, str]) -> list[AnyMessage]:

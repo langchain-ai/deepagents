@@ -20,7 +20,7 @@ from typing import Annotated, Any, Literal, NotRequired, TypedDict
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT, TracePolicy, omit_payload
 from langchain.tools import ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AnyMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
@@ -28,7 +28,7 @@ from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 from langgraph_sdk.schema import Run
 from pydantic import BaseModel, Field
 
-from deepagents.middleware._blob_offload import _BLOB_PAYLOADS_KEY, _restore_payloads
+from deepagents.middleware._blob_offload import _BLOB_PAYLOADS_KEY, _ahydrate_tool_messages, _hydrate_tool_messages
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.subagents import _fork_messages
 from deepagents.middleware.summarization import SUMMARIZATION_EVENT_KEY
@@ -89,6 +89,7 @@ class AsyncSubAgent(TypedDict):
     subsequent parent and child messages are independent. The remote agent keeps
     its own system prompt, tools, and runtime. Other parent state is not forwarded.
     Only enable this for servers trusted to receive the parent's conversation.
+    The inherited message history must be compatible with the remote agent's model.
 
     !!! warning "Experimental"
 
@@ -269,25 +270,43 @@ _ASYNC_FORK_TASK_PREAMBLE = (
 )
 
 
-def _start_task_messages(spec: AsyncSubAgent, runtime: ToolRuntime, description: str) -> list[dict[str, Any]]:
-    """Snapshot the effective conversation for forks, or send only the task."""
-    if spec.get("mode") != "fork":
-        return [{"role": "user", "content": description}]
+def _fork_task_messages(runtime: ToolRuntime, description: str) -> list[AnyMessage]:
+    """Snapshot effective history before media downloads can yield to parent edits."""
     messages = _fork_messages(
         runtime.state.get("messages", []),
         runtime.state.get(SUMMARIZATION_EVENT_KEY),
         description,
         preamble=_ASYNC_FORK_TASK_PREAMBLE,
     )
-    # FilesystemMiddleware reloads the media cache before tool execution, even
-    # when an approval resumes directly at this launch. Remote children need those
-    # payloads inline because they cannot resolve the parent's blob references.
-    messages = _restore_payloads(messages, runtime.state.get(_BLOB_PAYLOADS_KEY) or {})
-    # Artifacts are local tool data, not model-facing conversation content, and
-    # may contain objects that cannot be copied or serialized by the remote SDK.
+    # Artifacts are local tool data and may contain objects that cannot be copied.
+    return deepcopy([message.model_copy(update={"artifact": None}) if isinstance(message, ToolMessage) else message for message in messages])
+
+
+def _serialize_fork_messages(messages: list[AnyMessage]) -> list[dict[str, Any]]:
+    """Serialize portable conversation content for the remote child."""
     # Eviction tags point to parent-local files; forwarding them would make the
     # child's filesystem middleware hide the full content sent in this snapshot.
-    return deepcopy([message.model_dump(exclude={"artifact": True, "additional_kwargs": {"lc_evicted_to"}}) for message in messages])
+    return [message.model_dump(exclude={"artifact": True, "additional_kwargs": {"lc_evicted_to"}}) for message in messages]
+
+
+def _start_task_messages(spec: AsyncSubAgent, runtime: ToolRuntime, description: str) -> list[dict[str, Any]]:
+    """Snapshot the effective conversation for forks, or send only the task."""
+    if spec.get("mode") != "fork":
+        return [{"role": "user", "content": description}]
+    messages = _fork_task_messages(runtime, description)
+    # Restore media here so unrelated tools and isolated launches never reload it,
+    # including when an approval edits the target before this tool executes.
+    messages = _hydrate_tool_messages(messages, runtime.state.get(_BLOB_PAYLOADS_KEY) or {})
+    return _serialize_fork_messages(messages)
+
+
+async def _astart_task_messages(spec: AsyncSubAgent, runtime: ToolRuntime, description: str) -> list[dict[str, Any]]:
+    """Async version of `_start_task_messages`."""
+    if spec.get("mode") != "fork":
+        return [{"role": "user", "content": description}]
+    messages = _fork_task_messages(runtime, description)
+    messages = await _ahydrate_tool_messages(messages, runtime.state.get(_BLOB_PAYLOADS_KEY) or {})
+    return _serialize_fork_messages(messages)
 
 
 def _describe_async_subagent(spec: AsyncSubAgent) -> str:
@@ -353,7 +372,7 @@ def _build_start_tool(
         if error:
             return error
         spec = agent_map[subagent_type]
-        messages = _start_task_messages(spec, runtime, description)
+        messages = await _astart_task_messages(spec, runtime, description)
         try:
             client = clients.get_async(subagent_type)
             thread = await client.threads.create()

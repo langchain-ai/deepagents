@@ -5,7 +5,7 @@ import json
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, TypeVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -13,6 +13,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
@@ -358,7 +359,68 @@ async def test_launch_context_snapshot(invocation: str, mode: str | None, *, sum
 
 @pytest.mark.filterwarnings("ignore:.*forked subagents.*:langchain_core._api.LangChainBetaWarning")
 @pytest.mark.parametrize("invocation", ["sync", "async"])
-@pytest.mark.parametrize("resume", [None, "new_turn", "approval"])
+@pytest.mark.parametrize("target", ["custom", "isolated", "edited_isolated"])
+async def test_nonfork_tools_do_not_reload_media_after_approval(tmp_path: Path, invocation: str, target: str) -> None:
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    media = [{"type": "image", "mime_type": "image/png", "base64": base64.b64encode(b"uploaded image").decode("ascii")}]
+
+    @tool
+    def ping() -> str:
+        """Return an acknowledgement without accessing media."""
+        downloads.assert_not_called()
+        return "pong"
+
+    def create_thread() -> dict[str, str]:
+        downloads.assert_not_called()
+        return {"thread_id": "child"}
+
+    sync_client = MagicMock()
+    sync_client.threads.create.side_effect = create_thread
+    sync_client.runs.create.return_value = {"run_id": "run"}
+    async_client = MagicMock()
+    async_client.threads.create = AsyncMock(side_effect=create_thread)
+    async_client.runs.create = AsyncMock(return_value={"run_id": "run"})
+    name = "ping" if target == "custom" else "start_async_task"
+    args = {} if target == "custom" else {"description": "Do independent work", "subagent_type": "beta" if target == "edited_isolated" else "alpha"}
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": f"call_{index}"} for index in range(2)]),
+                AIMessage(content="Done"),
+            ]
+        )
+    )
+    middleware = [FilesystemMiddleware(backend=backend, offload_binary_content=True)]
+    if target != "custom":
+        middleware.append(AsyncSubAgentMiddleware(async_subagents=[_make_spec("alpha"), _make_spec("beta", mode="fork")]))
+    middleware.append(HumanInTheLoopMiddleware(interrupt_on={name: True}))
+    agent = create_agent(model, tools=[ping] if target == "custom" else [], middleware=middleware, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "parent"}}
+    payload = {"messages": [HumanMessage(content=media)]}
+    paused = agent.invoke(payload, config) if invocation == "sync" else await agent.ainvoke(payload, config)
+    assert paused["__interrupt__"]
+    assert "_blob_payloads" not in agent.get_state(config).values
+    resume = Command(resume={"decisions": [{"type": "approve"}, {"type": "approve"}]})
+    if target == "edited_isolated":
+        action = {"name": name, "args": {**args, "subagent_type": "alpha"}}
+        resume = Command(resume={"decisions": [{"type": "edit", "edited_action": action} for _ in range(2)]})
+    with (
+        patch.object(backend, "download_files", wraps=backend.download_files) as downloads,
+        patch("deepagents.middleware.async_subagents.get_sync_client", return_value=sync_client),
+        patch("deepagents.middleware.async_subagents.get_client", return_value=async_client),
+    ):
+        result = agent.invoke(resume, config) if invocation == "sync" else await agent.ainvoke(resume, config)
+        # Only the subsequent model call needs the media, regardless of tool count.
+        downloads.assert_called_once()
+    assert result["messages"][-1].content == "Done"
+    assert model.call_history[-1]["messages"][0].content == media
+    if target != "custom":
+        assert result["async_tasks"]["child"]["status"] == "running"
+
+
+@pytest.mark.filterwarnings("ignore:.*forked subagents.*:langchain_core._api.LangChainBetaWarning")
+@pytest.mark.parametrize("invocation", ["sync", "async"])
+@pytest.mark.parametrize("resume", [None, "new_turn", "approval", "edited_fork"])
 async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, resume: str | None) -> None:
     image = b"\x89PNG\r\n\x1a\n uploaded image"
     media = [
@@ -373,7 +435,13 @@ async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, 
         [
             AIMessage(
                 content="",
-                tool_calls=[{"name": "start_async_task", "args": {"description": "Review the media", "subagent_type": "alpha"}, "id": "launch"}],
+                tool_calls=[
+                    {
+                        "name": "start_async_task",
+                        "args": {"description": "Review the media", "subagent_type": "isolated" if resume == "edited_fork" else "alpha"},
+                        "id": "launch",
+                    }
+                ],
             ),
             AIMessage(content="Launched"),
         ]
@@ -386,8 +454,8 @@ async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, 
                 backend=CompositeBackend(default=FilesystemBackend(root_dir=tmp_path, virtual_mode=True), routes={}, artifacts_root="/artifacts"),
                 offload_binary_content=True,
             ),
-            AsyncSubAgentMiddleware(async_subagents=[_make_spec("alpha", mode="fork")]),
-            HumanInTheLoopMiddleware(interrupt_on={"start_async_task": True} if resume == "approval" else {}),
+            AsyncSubAgentMiddleware(async_subagents=[_make_spec("alpha", mode="fork"), _make_spec("isolated")]),
+            HumanInTheLoopMiddleware(interrupt_on={"start_async_task": True} if resume in ("approval", "edited_fork") else {}),
         ],
         checkpointer=InMemorySaver(),
     )
@@ -400,9 +468,20 @@ async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, 
             paused = await agent.ainvoke(payload, config)
         assert "_blob_payloads" not in agent.get_state(config).values
         (tmp_path / "photo.png").write_bytes(b"source changed after offloading")
-        if resume == "approval":
+        if resume in ("approval", "edited_fork"):
             assert paused["__interrupt__"]
-            payload = Command(resume={"decisions": [{"type": "approve"}]})
+            payload = Command(
+                resume={
+                    "decisions": [
+                        {
+                            "type": "edit",
+                            "edited_action": {"name": "start_async_task", "args": {"description": "Review the media", "subagent_type": "alpha"}},
+                        }
+                        if resume == "edited_fork"
+                        else {"type": "approve"}
+                    ]
+                }
+            )
         else:
             payload = {"messages": [HumanMessage(content="Delegate the review")]}
 

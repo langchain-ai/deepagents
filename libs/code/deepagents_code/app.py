@@ -19328,6 +19328,10 @@ class DeepAgentsApp(App):
         model_params: dict[str, object] | None = None,
     ) -> None:
         """Keep generation detached from chat streaming and bound to its thread."""
+        if self._environment_mutation_lock.locked():
+            if not automatic:
+                self.notify("Wait for the environment update before generating a name.")
+            return
         if thread_id in self._thread_name_tasks:
             if not automatic:
                 self.notify("A thread name is already being generated.")
@@ -30427,6 +30431,12 @@ class DeepAgentsApp(App):
         from deepagents_code.model_config import clear_caches
 
         async with self._environment_mutation_lock:
+            # Naming clients resolve provider defaults lazily. Cancel and drain
+            # old-workspace requests before any new connection settings load.
+            tasks = list(self._thread_name_tasks.values())
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             changes = await self._reload_settings_from_environment(
                 start_path=cwd,
             )

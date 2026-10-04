@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -15,6 +16,9 @@ from textual.widgets import Input, Static
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.model_config import ThreadConfig
 from deepagents_code.tui.modals.thread_name import ThreadNameScreen
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture
@@ -179,6 +183,58 @@ async def test_generation_does_not_offer_on_switched_thread(
     release.set()
     await task
     offer.assert_not_called()
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+async def test_workspace_switch_cancels_pending_naming(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    automatic: bool,
+) -> None:
+    """A delayed state read must not send the old chat to the new workspace."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def read_state(_thread_id: str) -> dict[str, object]:
+        started.set()
+        await release.wait()
+        return {"messages": [HumanMessage("Private chat"), AIMessage("Reply")]}
+
+    monkeypatch.setattr(naming_app, "_get_thread_state_values", read_state)
+    generate = AsyncMock(return_value="Private chat")
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    monkeypatch.setattr(naming_app, "call_after_refresh", MagicMock())
+    monkeypatch.setattr(
+        naming_app, "_reload_settings_from_environment", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr("deepagents_code.model_config.clear_caches", lambda: None)
+    naming_app._start_thread_name_generation(
+        "original", "provider:chat", automatic=automatic
+    )
+    task = naming_app._thread_name_tasks["original"]
+    await asyncio.wait_for(started.wait(), timeout=5)
+    await naming_app._refresh_project_context_for_cwd_switch(tmp_path)
+    release.set()
+    await asyncio.gather(task, return_exceptions=True)
+    generate.assert_not_awaited()
+    assert task.cancelled()
+    assert not naming_app._thread_name_tasks
+
+
+async def test_naming_cannot_start_during_workspace_reload(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second request during reload cannot read partially changed settings."""
+    generate = AsyncMock(return_value="Private chat")
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    monkeypatch.setattr(naming_app, "call_after_refresh", MagicMock())
+    async with naming_app._environment_mutation_lock:
+        naming_app._start_thread_name_generation(
+            "original", "provider:chat", automatic=False
+        )
+        await asyncio.gather(*naming_app._thread_name_tasks.values())
+    generate.assert_not_awaited()
 
 
 async def test_auto_name_is_conditional_and_context_isolated(

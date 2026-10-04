@@ -345,37 +345,6 @@ async def test_remote_surfaces_server_failure(
         )
 
 
-async def test_switch_does_not_read_client_provider_credentials(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = DeepAgentsApp()
-    app._agent = RemoteAgent("http://test")
-    monkeypatch.setattr(app, "_mount_message", AsyncMock())
-    monkeypatch.setattr(app, "_restore_effort_override", AsyncMock())
-    monkeypatch.setattr(runtime_state, "model_name", "old")
-    monkeypatch.setattr(runtime_state, "model_provider", "custom")
-    monkeypatch.setattr(runtime_state, "model_context_limit", None)
-    monkeypatch.setattr(runtime_state, "model_unsupported_modalities", frozenset())
-    with (
-        patch.object(
-            RemoteAgent,
-            "aresolve_model",
-            AsyncMock(return_value=ModelMetadata("test", "openai", 4096)),
-        ),
-        patch(
-            "deepagents_code.model_config.get_provider_auth_status",
-            side_effect=AssertionError("client provider import"),
-        ),
-        patch(
-            "deepagents_code.config.create_model",
-            side_effect=AssertionError("client model construction"),
-        ),
-    ):
-        await app._switch_model("openai:test", persist=False)
-    assert app._model_override == "openai:test"
-    assert runtime_state.model_context_limit == 4096
-
-
 @pytest.mark.parametrize(
     ("model_name", "client_provider", "server_provider"),
     [
@@ -408,6 +377,14 @@ async def test_bare_switch_adopts_server_provider(
     monkeypatch.setattr(remote, "aresolve_model", AsyncMock(side_effect=resolve))
     with (
         patch("deepagents_code.config.detect_provider", return_value=client_provider),
+        patch(
+            "deepagents_code.model_config.get_provider_auth_status",
+            side_effect=AssertionError("client provider import"),
+        ),
+        patch(
+            "deepagents_code.config.create_model",
+            side_effect=AssertionError("client model construction"),
+        ),
         patch(
             "deepagents_code.model_config.save_recent_model", return_value=True
         ) as save,

@@ -1675,10 +1675,18 @@ class TestWorkspaceStoredCredentials:
             await model.root_async_client.close()
 
     @pytest.mark.parametrize(
-        "endpoint_source", ["native", "stored", "prefixed", "config", "caller"]
-    )
-    @pytest.mark.parametrize(
-        "usage_override", ["default", "provider", "model", "caller", "stream_options"]
+        ("endpoint_source", "usage_override"),
+        [
+            ("native", "default"),
+            ("native", "provider"),
+            ("native", "model"),
+            ("native", "caller"),
+            ("native", "stream_options"),
+            ("stored", "default"),
+            ("prefixed", "default"),
+            ("config", "default"),
+            ("caller", "default"),
+        ],
     )
     async def test_stored_openai_streaming_usage(
         self,

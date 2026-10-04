@@ -31080,6 +31080,12 @@ class DeepAgentsApp(App):
             prefetched_payload: _ThreadHistoryPayload | None = None
             outgoing_ended = False
             try:
+                from deepagents_code.client.remote_client import RemoteAgent
+
+                # Prefetch registers the thread, so a revisited thread must use
+                # its new reservation before any history request is sent.
+                if isinstance(self._agent, RemoteAgent):
+                    self._agent.bind_thread_ownership(thread_id)
                 prefetched_payload = await self._fetch_thread_history_data(thread_id)
                 from deepagents_code.hooks.models.domain import (
                     SessionEndCause,
@@ -31110,10 +31116,6 @@ class DeepAgentsApp(App):
                 # Switch to the selected thread
                 self._session_state.thread_id = thread_id
                 self._lc_thread_id = thread_id
-                from deepagents_code.client.remote_client import RemoteAgent
-
-                if isinstance(self._agent, RemoteAgent):
-                    self._agent.bind_thread_ownership(thread_id)
 
                 self._update_welcome_banner(
                     thread_id,

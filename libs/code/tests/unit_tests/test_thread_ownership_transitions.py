@@ -263,22 +263,24 @@ async def test_revisited_thread_binds_before_history_mutations(
 ) -> None:
     from deepagents_code.app import TextualSessionState
     from deepagents_code.client.remote_client import RemoteAgent
-    from deepagents_code.thread_ownership import OWNER_KEY
 
     app = DeepAgentsApp(thread_id="current", server_kwargs={})
     agent = RemoteAgent("http://test:0", local_ownership=True)
+    graph = MagicMock()
+    graph._validate_client.return_value.threads.create = AsyncMock()
+    state = MagicMock()
+    state.values = {"messages": [{"type": "human", "content": "Saved history"}]}
+    graph.aget_state = AsyncMock(return_value=state)
+    agent._graph = graph
+    monkeypatch.setattr(agent, "aget_session_cost", AsyncMock(return_value=None))
     app._agent = agent
     app._session_state = TextualSessionState(thread_id="current")
     app._reserve_thread("current")
-    old = try_acquire("target")
-    assert old is not None
-    agent.bind_thread_ownership("target")
-    old.release()
-    app._reserve_thread("target")
-    current = held_lease("target")
-    assert current is not None
-    assert current.token != old.token
+    original = held_lease("current")
+    assert original is not None
+    await agent.aensure_thread({"configurable": {"thread_id": "current"}})
     for name in (
+        "_mount_message",
         "_set_spinner",
         "_clear_messages",
         "_reload_hooks",
@@ -298,21 +300,26 @@ async def test_revisited_thread_binds_before_history_mutations(
     monkeypatch.setattr(
         app, "_offer_thread_cwd_switch", AsyncMock(return_value="continue")
     )
-    monkeypatch.setattr(
-        app, "_fetch_thread_history_data", AsyncMock(return_value=object())
-    )
     monkeypatch.setattr(app, "_run_session_start_hook", AsyncMock(return_value=False))
     monkeypatch.setattr(type(app._hooks), "on_session_end", AsyncMock())
 
-    def load(**_kwargs: object) -> None:
-        prepared = agent._prepare_mutation({"configurable": {"thread_id": "target"}})
-        assert prepared["configurable"][OWNER_KEY] == current.token
-
-    loaded = AsyncMock(side_effect=load)
+    loaded = AsyncMock()
     monkeypatch.setattr(app, "_load_thread_history", loaded)
     await app._resume_thread("target")
-    loaded.assert_awaited_once()
     assert app._lc_thread_id == "target"
+    assert held_lease("current") is None
+
+    loaded.reset_mock()
+    await app._resume_thread("current")
+    assert app._lc_thread_id == "current"
+    assert app._session_state.thread_id == "current"
+    current = held_lease("current")
+    assert current is not None
+    assert current.token != original.token
+    assert held_lease("target") is None
+    loaded.assert_awaited_once()
+    payload = loaded.call_args.kwargs["preloaded_payload"]
+    assert [message.content for message in payload.messages] == ["Saved history"]
 
 
 @pytest.mark.usefixtures("isolated_state")

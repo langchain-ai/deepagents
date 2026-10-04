@@ -31,21 +31,17 @@ def terminal(monkeypatch: pytest.MonkeyPatch) -> TerminalStream:
     return stream
 
 
-@pytest.mark.parametrize("value", ["true", "false"])
 def test_title_lifecycle_honors_terminal_escape_opt_out(
-    terminal: TerminalStream, monkeypatch: pytest.MonkeyPatch, value: str
+    terminal: TerminalStream, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stdout = TerminalStream()
     monkeypatch.setattr("deepagents_code.terminal_title.sys.__stdout__", stdout)
-    monkeypatch.setenv(NO_TERMINAL_ESCAPE, value)
+    monkeypatch.setenv(NO_TERMINAL_ESCAPE, "true")
     title = TerminalTitle("{thread_name}")
-    title.start()
     title.start()
     title.update(thread_name="Cache repair")
     title.restore()
-    title.restore()
-    expected = "\x1b[22;0t\x1b]0;Cache repair\x07\x1b[23;0t" if value == "false" else ""
-    assert terminal.getvalue() == expected
+    assert terminal.getvalue() == ""
     assert stdout.getvalue() == ""
 
 
@@ -115,10 +111,12 @@ def test_title_length_is_bounded(terminal: TerminalStream) -> None:
     assert terminal.getvalue() == "\x1b[22;0t\x1b]0;" + "x" * 512 + "\x07"
 
 
-def test_redirected_streams_receive_no_escape_sequences(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("stdout_is_terminal", [False, True])
+def test_redirected_stderr_only_falls_back_to_terminal_stdout(
+    monkeypatch: pytest.MonkeyPatch, *, stdout_is_terminal: bool
 ) -> None:
-    stderr, stdout = io.StringIO(), io.StringIO()
+    stderr = io.StringIO()
+    stdout = TerminalStream() if stdout_is_terminal else io.StringIO()
     monkeypatch.setattr("deepagents_code.terminal_title.sys.__stderr__", stderr)
     monkeypatch.setattr("deepagents_code.terminal_title.sys.__stdout__", stdout)
     title = TerminalTitle("{thread_name}")
@@ -126,21 +124,9 @@ def test_redirected_streams_receive_no_escape_sequences(
     title.update(thread_name="Cache")
     title.restore()
     assert stderr.getvalue() == ""
-    assert stdout.getvalue() == ""
-
-
-def test_redirected_stderr_falls_back_to_stdout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stderr, stdout = io.StringIO(), TerminalStream()
-    monkeypatch.setattr("deepagents_code.terminal_title.sys.__stderr__", stderr)
-    monkeypatch.setattr("deepagents_code.terminal_title.sys.__stdout__", stdout)
-    title = TerminalTitle("{thread_name}")
-    title.start()
-    title.update(thread_name="Cache")
-    title.restore()
-    assert stderr.getvalue() == ""
-    assert stdout.getvalue() == "\x1b[22;0t\x1b]0;Cache\x07\x1b[23;0t"
+    assert stdout.getvalue() == (
+        "\x1b[22;0t\x1b]0;Cache\x07\x1b[23;0t" if stdout_is_terminal else ""
+    )
 
 
 def test_closed_terminal_does_not_break_cleanup(terminal: TerminalStream) -> None:

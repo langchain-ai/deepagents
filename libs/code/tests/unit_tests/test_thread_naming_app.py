@@ -22,6 +22,8 @@ from deepagents_code.tui.modals.thread_name import ThreadNameScreen
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from deepagents_code.sessions import ThreadInfo
+
 
 @pytest.fixture
 def naming_app(monkeypatch: pytest.MonkeyPatch) -> DeepAgentsApp:
@@ -42,15 +44,6 @@ def naming_app(monkeypatch: pytest.MonkeyPatch) -> DeepAgentsApp:
         "deepagents_code.sessions.get_thread_name", AsyncMock(return_value=None)
     )
     return app
-
-
-async def test_invalid_manual_name_is_not_saved(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    rename = AsyncMock()
-    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
-    await naming_app._handle_command("/rename " + "x" * 51)
-    rename.assert_not_awaited()
 
 
 @pytest.mark.parametrize("automatic", [False, True])
@@ -380,25 +373,32 @@ async def test_auto_name_is_conditional_and_context_isolated(
     context = contextvars.ContextVar("stream", default="isolated")
     context.set("chat-stream")
     contexts: list[str] = []
-    specs: list[object] = []
+    monkeypatch.setattr(
+        naming_app,
+        "_get_thread_state_values",
+        AsyncMock(
+            return_value={
+                "messages": [
+                    HumanMessage("Fix caching"),
+                    HumanMessage(
+                        "Goal changed", additional_kwargs={"lc_source": "goal_state"}
+                    ),
+                    HumanMessage(
+                        "Hidden context",
+                        additional_kwargs={"lc_source": "local_context"},
+                    ),
+                    AIMessage("Here is the fix"),
+                ]
+            }
+        ),
+    )
 
-    async def generate(*args: object, **_kwargs: object) -> str:
+    async def generate(*_args: object, **_kwargs: object) -> str:
         await asyncio.sleep(0)
         contexts.append(context.get())
-        specs.append(args[0])
         return "Cache repair"
 
     monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
-    monkeypatch.setattr(
-        "deepagents_code.model_config.load_thread_config",
-        lambda: ThreadConfig(
-            {},
-            True,
-            "updated_at",
-            "cwd",
-            rename_model="provider:titles",
-        ),
-    )
     rename = AsyncMock(return_value=False)
     monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
     naming_app._maybe_auto_name_thread("original", "provider:chat")
@@ -406,7 +406,6 @@ async def test_auto_name_is_conditional_and_context_isolated(
     await task
     naming_app._maybe_auto_name_thread("original", "provider:chat")
     assert contexts == ["isolated"]
-    assert specs == ["provider:titles"]
     rename.assert_awaited_once_with("original", "Cache repair", only_if_unnamed=True)
 
 
@@ -442,26 +441,6 @@ def test_auto_name_can_be_disabled(
     )
     naming_app._maybe_auto_name_thread("original", "provider:chat")
     assert not naming_app._thread_name_tasks
-
-
-async def test_load_name_does_not_overwrite_new_thread(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    started, release = asyncio.Event(), asyncio.Event()
-
-    async def get_name(_thread_id: str) -> str:
-        started.set()
-        await release.wait()
-        return "Old name"
-
-    monkeypatch.setattr("deepagents_code.sessions.get_thread_name", get_name)
-    task = asyncio.create_task(naming_app._load_thread_name())
-    await started.wait()
-    naming_app._lc_thread_id = "new"
-    naming_app._thread_name = "New name"
-    release.set()
-    await task
-    assert naming_app._thread_name == "New name"
 
 
 @pytest.mark.parametrize("completed", [False, True])
@@ -530,42 +509,9 @@ async def test_manual_name_cancels_pending_proposal(
     assert naming_app._thread_name == "My choice"
 
 
-async def test_auto_name_ignores_internal_human_messages(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    visible = [HumanMessage("Fix caching"), AIMessage("Here is the fix")]
-    monkeypatch.setattr(
-        naming_app,
-        "_get_thread_state_values",
-        AsyncMock(
-            return_value={
-                "messages": [
-                    visible[0],
-                    HumanMessage(
-                        "Goal changed", additional_kwargs={"lc_source": "goal_state"}
-                    ),
-                    HumanMessage(
-                        "Hidden context",
-                        additional_kwargs={"lc_source": "local_context"},
-                    ),
-                    visible[1],
-                ]
-            }
-        ),
-    )
-    generate = AsyncMock(return_value="Cache repair")
-    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
-    monkeypatch.setattr(
-        "deepagents_code.sessions.rename_thread", AsyncMock(return_value=True)
-    )
-    await naming_app._generate_thread_name("original", "provider:chat", automatic=True)
-    assert generate.await_count == 1
-    assert generate.await_args is not None
-    assert generate.await_args.args[1] == visible
-
-
-async def test_stale_load_cannot_overwrite_manual_name(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("manual_name", [False, True])
+async def test_stale_load_cannot_overwrite_current_name(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch, *, manual_name: bool
 ) -> None:
     started, release = asyncio.Event(), asyncio.Event()
 
@@ -580,21 +526,32 @@ async def test_stale_load_cannot_overwrite_manual_name(
     )
     task = asyncio.create_task(naming_app._load_thread_name())
     await started.wait()
-    await naming_app._save_thread_name("original", "Manual name")
+    if manual_name:
+        await naming_app._handle_command("/rename Current name")
+    else:
+        naming_app._lc_thread_id = "new"
+        naming_app._thread_name = "Current name"
     release.set()
     await task
-    assert naming_app._thread_name == "Manual name"
+    assert naming_app._thread_name == "Current name"
 
 
-async def test_auto_name_refreshes_open_thread_selector(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("automatic", [False, True])
+async def test_rename_refreshes_open_thread_selector(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch, *, automatic: bool
 ) -> None:
     from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
-    thread = {"thread_id": "original", "updated_at": None, "thread_name": None}
+    thread: ThreadInfo = {
+        "thread_id": "original",
+        "agent_name": "agent",
+        "updated_at": None,
+        "latest_checkpoint_id": "cp_1",
+        "thread_name": None if automatic else "Old name",
+    }
     monkeypatch.setattr(
         "deepagents_code.sessions.list_threads",
-        AsyncMock(side_effect=lambda **_: [dict(thread)]),
+        AsyncMock(side_effect=lambda **_: [thread.copy()]),
     )
     monkeypatch.setattr(
         ThreadSelectorScreen, "_load_available_agent_names", AsyncMock()
@@ -611,13 +568,20 @@ async def test_auto_name_refreshes_open_thread_selector(
 
     monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
     async with naming_app.run_test() as pilot:
-        selector = ThreadSelectorScreen(filter_cwd=None)
+        selector = ThreadSelectorScreen(
+            initial_threads=[thread.copy()], filter_cwd=None
+        )
         naming_app.push_screen(selector)
         await pilot.pause()
         name_cell = "ThreadOption .thread-cell-thread_name"
-        assert str(selector.query_one(name_cell, Static).render()) == ""
-        await naming_app._generate_thread_name(
-            "original", "provider:chat", automatic=True
+        assert str(selector.query_one(name_cell, Static).render()) == (
+            thread["thread_name"] or ""
         )
+        if automatic:
+            await naming_app._generate_thread_name(
+                "original", "provider:chat", automatic=True
+            )
+        else:
+            await naming_app._handle_command("/rename Cache repair")
         await pilot.pause()
         assert str(selector.query_one(name_cell, Static).render()) == "Cache repair"

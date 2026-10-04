@@ -99,21 +99,23 @@ middleware = SkillsMiddleware(
 
 from __future__ import annotations
 
+import asyncio
 import html
 import json
 import logging
 import re
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import yaml
 from langchain.agents.middleware.types import OmitFromOutput, PrivateStateAttr
+from langchain_core.tools import BaseTool
+from langgraph.runtime import Runtime, get_runtime
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
-
+    from langchain_core.messages import ToolMessage
     from langchain_core.runnables import RunnableConfig
-    from langgraph.runtime import Runtime
 
     from deepagents.backends.protocol import BackendProtocol
 
@@ -123,15 +125,34 @@ from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
+    ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
     ResponseT,
+    ToolCallRequest,
     TracePolicy,
     omit_payload,
 )
+from langgraph.types import Command
 
 from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
 from deepagents.backends.utils import to_posix_path
+from deepagents.middleware._skill_tools import (
+    _INCLUDE_TOOLS_KEY,
+    _SKILL_TOOLS_DISCLOSED_KEY,
+    _acall_resolver,
+    _bind_disclosures,
+    _call_resolver,
+    _discard_rejected_schemas,
+    _disclosed_record,
+    _find_skill_reads,
+    _inline_block_builder,
+    _insert_disclosures,
+    _normalize_skill_tools,
+    _plan_disclosure,
+    _SkillRead,
+    _unclaimed_include_names,
+)
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -147,6 +168,36 @@ _SKILL_LOAD_WARNING_TRUNCATION_SUFFIX = "... [truncated]"
 MAX_SKILL_NAME_LENGTH = 64
 MAX_SKILL_DESCRIPTION_LENGTH = 1024
 MAX_SKILL_COMPATIBILITY_LENGTH = 500
+
+SkillToolResolver = Callable[[str, Runtime[ContextT]], Sequence[BaseTool] | Awaitable[Sequence[BaseTool]]]
+"""Return the skill tools that one `metadata.include_tools` name stands for.
+
+A resolver lets a skill list tools whose real names are only known at runtime,
+such as generated MCP tool names, and lets one name stand for several tools.
+It's called with the name and the graph's `Runtime` on every model call after a
+skill listing that name is read, and again before one of its tools runs. It can
+be sync or async. An async resolver needs the agent's async entry point, such as
+`ainvoke`.
+
+- Return the same tools for the same name within a thread, or the prompt cache
+    breaks.
+- Keep it cheap, or cache, since it runs on every model call.
+- One resolver serves every thread, so scope any cache by what the tools
+    depend on, usually something in `runtime.context`.
+
+Example:
+    ```python
+    # e.g. every tool on a Linear MCP connection, whatever their generated names
+    tools_by_integration = {"linear": linear_tools}
+
+
+    def resolve_skill_tools(name: str, runtime: Runtime) -> list[BaseTool]:
+        return tools_by_integration.get(name, [])
+
+
+    SkillsMiddleware(backend=backend, sources=["/skills/"], tools=resolve_skill_tools)
+    ```
+"""
 
 SkillSource = str | tuple[str, str]
 """A skill source: either a bare path or a `(path, label)` pair.
@@ -302,6 +353,16 @@ class SkillsState(AgentState):
 
     skills_load_errors: NotRequired[Annotated[list[str], PrivateStateAttr]]
     """Skill source loading errors. Not propagated to parent agents."""
+
+    _skill_tools_disclosed: NotRequired[Annotated[dict[str, str], PrivateStateAttr]]
+    """Skill tools disclosed to the latest model call, each mapped to the name that produced it.
+
+    Keys are sorted. Not propagated to parent agents. Written on every model
+    call, including `{}`, so the tool-time gate admits exactly the calls whose
+    schema the model was shown, and a record checkpointed by an earlier build of
+    the agent never outlives the next model call. Read it through
+    `disclosed_skill_tool_names`.
+    """
 
 
 class SkillsStateUpdate(TypedDict):
@@ -484,7 +545,8 @@ def _validate_metadata(
 
     YAML `safe_load` can return any type for the `metadata` key. This
     ensures the values in `SkillMetadata` are always a `dict[str, str]` by
-    coercing via `str()` and rejecting non-dict inputs.
+    coercing via `str()` and rejecting non-dict inputs. It also warns when
+    `include_tools` isn't a space-separated string of tool names.
 
     Args:
         raw: Raw value from `frontmatter_data.get("metadata", {})`.
@@ -501,6 +563,14 @@ def _validate_metadata(
                 type(raw).__name__,
             )
         return {}
+    include_tools = raw.get(_INCLUDE_TOOLS_KEY)
+    # A YAML list would be coerced to its `str()` (e.g. `"['a', 'b']"`), whose names never match a tool.
+    if isinstance(include_tools, list) or (isinstance(include_tools, str) and "," in include_tools):
+        logger.warning(
+            "metadata.include_tools in %s should be a space-separated string of tool names; got %r",
+            skill_path,
+            include_tools,
+        )
     return {str(k): str(v) for k, v in raw.items()}
 
 
@@ -804,6 +874,49 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         )
         ```
 
+    ## Skill tools
+
+    A skill can list the tools its instructions use, separated by spaces, under
+    `metadata.include_tools` in its `SKILL.md` frontmatter:
+
+    ```yaml
+    metadata:
+      include_tools: create_customer_request list_customer_requests
+    ```
+
+    Pass those tools as `tools`, either as a list or as a
+    `SkillToolResolver` that looks them up by name. The model sees a skill tool
+    only after it uses `read_file` on a skill that lists it, and only while that
+    read stays in context. Until then, calling the tool fails as an unknown tool.
+
+    `include_tools` can also list a tool passed to the agent rather than to
+    this middleware. If that tool is deferred
+    (`extras={"defer_loading": True}`), reading the skill discloses it
+    automatically.
+
+    ## Placement
+
+    `create_deep_agent` places this middleware for you. When composing
+    `create_agent` by hand, include `FilesystemMiddleware`, whose `read_file`
+    the model uses to read skills. Put this middleware after summarization and
+    any model fallback or routing middleware, so it sees the compacted
+    conversation and the model actually called, and before prompt caching:
+
+    ```python
+    create_agent(
+        model,
+        tools=[...],
+        middleware=[
+            FilesystemMiddleware(backend=backend),
+            ...,
+            SummarizationMiddleware(...),
+            ModelFallbackMiddleware(...),
+            SkillsMiddleware(backend=backend, sources=["/skills/"], tools=[...]),
+            AnthropicPromptCachingMiddleware(),
+        ],
+    )
+    ```
+
     See constructor for the full argument list.
 
     Attributes:
@@ -824,6 +937,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         backend: BackendProtocol,
         sources: Sequence[SkillSource],
         system_prompt: str | None = SKILLS_SYSTEM_PROMPT,
+        tools: Sequence[BaseTool | Callable[..., Any]] | SkillToolResolver | None = None,
     ) -> None:
         """Initialize the skills middleware.
 
@@ -841,13 +955,20 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 `{skills_list}` slots for runtime substitution. Pass `None`
                 to skip appending entirely (skills are still loaded into
                 `state["skills_metadata"]`).
+            tools: Tools the model sees only after reading a skill that
+                lists them in `metadata.include_tools`.
+
+                A list of tools, or a `SkillToolResolver` that returns the tools
+                for a name. Plain functions in a list are converted to tools, as
+                `create_agent` does.
 
         Raises:
             TypeError: If a tuple entry in `sources` is not exactly a
-                `(str, str)` pair, or if `system_prompt` is not `str` or
-                `None`.
+                `(str, str)` pair, if `system_prompt` is not `str` or
+                `None`, if `tools` is a single tool rather than a list,
+                or if a `tools` entry is a provider-native tool dict.
             ValueError: If `system_prompt` is a string missing any of the
-                required format slots.
+                required format slots, or if `tools` repeats a name.
         """
         if system_prompt is not None:
             if not isinstance(system_prompt, str):
@@ -865,6 +986,10 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         self.sources: list[str] = [_source_path(s) for s in sources]
         self.source_labels: list[str] = [_derive_source_label(s) for s in sources]
         self.system_prompt_template = system_prompt
+        # Kept off `self.tools`, unlike other middleware's tools: `create_agent`
+        # registers those with the tool node, which would make skill tools
+        # callable without their skill.
+        self._skill_tool_resolver = _normalize_skill_tools(tools)
 
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
@@ -988,8 +1113,9 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             # warnings only reach the model via the prompt fragment and
             # silently disappear when the fragment is suppressed.
             logger.warning("Skills load errors: %s", skills_load_errors)
+        skills = list(all_skills.values())
         # Always write the errors so warnings from an earlier load are cleared
-        return SkillsStateUpdate(skills_metadata=list(all_skills.values()), skills_load_errors=skills_load_errors)
+        return SkillsStateUpdate(skills_metadata=skills, skills_load_errors=skills_load_errors)
 
     async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load skills metadata before agent execution (async).
@@ -1033,42 +1159,136 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             # warnings only reach the model via the prompt fragment and
             # silently disappear when the fragment is suppressed.
             logger.warning("Skills load errors: %s", skills_load_errors)
+        skills = list(all_skills.values())
         # Always write the errors so warnings from an earlier load are cleared
-        return SkillsStateUpdate(skills_metadata=list(all_skills.values()), skills_load_errors=skills_load_errors)
+        return SkillsStateUpdate(skills_metadata=skills, skills_load_errors=skills_load_errors)
+
+    def _disclose_skill_tools(
+        self, request: ModelRequest[ContextT], reads: list[_SkillRead], resolved: Mapping[str, Sequence[BaseTool]]
+    ) -> tuple[ModelRequest[ContextT], dict[str, str]]:
+        """Disclose what the read skills' include names produce.
+
+        Returns:
+            The request to send, and the record of the gated skill tools it discloses.
+        """
+        disclosure = _plan_disclosure(reads, request.tools, resolved)
+        _discard_rejected_schemas(disclosure, request.model)
+        record = disclosure.record()
+        if not disclosure.anchors:
+            return request, record
+        build = _inline_block_builder(request.model)
+        if build is None:
+            return request.override(tools=_bind_disclosures(request.tools, disclosure)), record
+        return request.override(messages=_insert_disclosures(request.messages, disclosure, build)), record
 
     def wrap_model_call(
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ModelResponse[ResponseT]:
-        """Inject skills documentation into the system prompt.
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse[ResponseT]:
+        """Inject skills documentation into the system prompt and disclose read skills' tools.
 
         Args:
             request: Model request being processed
             handler: Handler function to call with modified request
 
         Returns:
-            Model response from handler
+            Model response from handler, with the skill tools it disclosed recorded
+                in state.
         """
-        modified_request = self.modify_request(request)
-        return handler(modified_request)
+        request = self.modify_request(request)
+        reads = _find_skill_reads(request.messages, request.state.get("skills_metadata") or [])
+        names = _unclaimed_include_names(reads, request.tools)
+        resolved = {name: _call_resolver(self._skill_tool_resolver, name, request.runtime) for name in names}
+        request, record = self._disclose_skill_tools(request, reads, resolved)
+        return ExtendedModelResponse(model_response=handler(request), command=Command(update={_SKILL_TOOLS_DISCLOSED_KEY: record}))
 
     async def awrap_model_call(
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
-    ) -> ModelResponse[ResponseT]:
-        """Inject skills documentation into the system prompt (async version).
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse[ResponseT]:
+        """Inject skills documentation into the system prompt and disclose read skills' tools (async version).
 
         Args:
             request: Model request being processed
             handler: Async handler function to call with modified request
 
         Returns:
-            Model response from handler
+            Model response from handler, with the skill tools it disclosed recorded
+                in state.
         """
-        modified_request = self.modify_request(request)
-        return await handler(modified_request)
+        request = self.modify_request(request)
+        reads = _find_skill_reads(request.messages, request.state.get("skills_metadata") or [])
+        names = _unclaimed_include_names(reads, request.tools)
+        tools = await asyncio.gather(*(_acall_resolver(self._skill_tool_resolver, name, request.runtime) for name in names))
+        request, record = self._disclose_skill_tools(request, reads, dict(zip(names, tools, strict=True)))
+        return ExtendedModelResponse(model_response=await handler(request), command=Command(update={_SKILL_TOOLS_DISCLOSED_KEY: record}))
+
+    def _with_disclosed_skill_tool(self, request: ToolCallRequest, include_name: str, tools: Sequence[BaseTool]) -> ToolCallRequest:
+        """Return `request` running the tool it calls from `tools`, or unchanged to fail as invalid if that's missing."""
+        name = request.tool_call["name"]
+        tool = next((t for t in tools if t.name == name), None)
+        if tool is None:
+            logger.warning("Skill tool '%s' was disclosed via '%s', but the resolver no longer returns it", name, include_name)
+            return request
+        return request.override(tool=tool)
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Run a disclosed skill tool; calls to any other unregistered tool fail as invalid.
+
+        Args:
+            request: Tool call request being processed
+            handler: Handler function to call with the request, with any disclosed skill tool attached
+
+        Returns:
+            The tool's result, or the tool node's invalid-tool error.
+        """
+        include_name = _disclosed_record(request.state).get(request.tool_call["name"])
+        if request.tool is not None or include_name is None:
+            return handler(request)
+        tools = _call_resolver(self._skill_tool_resolver, include_name, get_runtime())
+        return handler(self._with_disclosed_skill_tool(request, include_name, tools))
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Run a disclosed skill tool; calls to any other unregistered tool fail as invalid (async version).
+
+        Args:
+            request: Tool call request being processed
+            handler: Async handler function to call with the request, with any disclosed skill tool attached
+
+        Returns:
+            The tool's result, or the tool node's invalid-tool error.
+        """
+        include_name = _disclosed_record(request.state).get(request.tool_call["name"])
+        if request.tool is not None or include_name is None:
+            return await handler(request)
+        tools = await _acall_resolver(self._skill_tool_resolver, include_name, get_runtime())
+        return await handler(self._with_disclosed_skill_tool(request, include_name, tools))
 
 
-__all__ = ["SkillMetadata", "SkillsMiddleware", "SkillsState"]
+def disclosed_skill_tool_names(state: Mapping[str, object]) -> frozenset[str]:
+    """Return the names of the skill tools disclosed to the latest model call.
+
+    Use it in middleware that gates tool calls itself, so the gate admits the
+    skill tools the model has been shown. The agent's own deferred tools aren't
+    included, even when a skill disclosed them.
+
+    Args:
+        state: The agent state, such as `request.state` in `wrap_tool_call`.
+
+    Returns:
+        The disclosed skill tools' names, or an empty set if there are none.
+    """
+    return frozenset(_disclosed_record(state))
+
+
+__all__ = ["SkillMetadata", "SkillToolResolver", "SkillsMiddleware", "SkillsState", "disclosed_skill_tool_names"]

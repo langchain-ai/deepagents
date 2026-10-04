@@ -29,6 +29,38 @@ If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful fo
 
 Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. Offloaded conversation history and large tool results live in the assistant home’s `artifacts/` directory. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
+## Checkpoint backends
+
+Set `DEEPAGENTS_TALON_CHECKPOINT_URI` to select persistent LangGraph checkpoints:
+
+| URI | Install |
+| --- | --- |
+| Unset, `sqlite:///absolute/path/checkpoints.sqlite`, or `file:///absolute/path/checkpoints.sqlite` | Included by default |
+| `postgresql://user:password@host/database` (also `postgres:`) | `uv sync --extra postgres` |
+| `mongodb://host/database` or `mongodb+srv://host/database` | `uv sync --extra mongodb` |
+
+Only the selected checkpoint driver is imported. PostgreSQL and MongoDB packages
+are optional; SQLite remains installed for the default local conversation archive.
+Checkpoint and history URIs are independent. Changing the checkpoint URI does not
+migrate existing checkpoints. Use separate databases for separate assistants;
+remote checkpoint thread IDs are not automatically namespaced by assistant ID.
+SQLite paths containing spaces must be percent-encoded; query options are not supported.
+
+Other LangGraph checkpointers can be supplied by trusted installed packages:
+
+```toml
+[project.entry-points."deepagents_talon.checkpoint_backends"]
+custom = "my_package:open_checkpointer"
+```
+
+Set the checkpoint URI to `custom://...`. The factory receives the unchanged URI
+and returns an async context manager yielding an initialized `BaseCheckpointSaver`
+with async checkpoint methods. The factory owns setup, connection options, bounded
+startup, and cleanup, including cancellation. Built-in schemes take precedence;
+unknown or duplicate plugin schemes fail startup. Talon wraps every backend with
+`ConversationSaver` so history tools remain available. This plugin API is experimental.
+Embedding hosts can also pass any compatible saver directly to `DeepAgentRuntime`.
+
 ## Sandboxed execution
 
 By default the agent's shell and file tools run on the host. Set `DEEPAGENTS_TALON_SANDBOX` to a sandbox provider to run them in a remote sandbox instead:
@@ -78,7 +110,8 @@ reset. Custom async LangGraph checkpointers can enable history with `Conversatio
 Set `DEEPAGENTS_TALON_HISTORY_URI` to `mongodb://host/database` or
 `postgresql://user:password@host/database` and install the `mongodb` or `postgres`
 extra (`uv sync --extra mongodb`). All three backends use the same archive; SQLite
-is the default. This alpha requires fresh history storage. Checkpoints stay local.
+is the default. This alpha requires fresh history storage. Checkpoints stay local
+unless `DEEPAGENTS_TALON_CHECKPOINT_URI` is also configured.
 Default SQLite uses the same store factory and assistant namespace as configured
 backends, with its own connection to the checkpoint database.
 

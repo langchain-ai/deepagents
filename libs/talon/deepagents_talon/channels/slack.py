@@ -18,6 +18,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from html import escape
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, NoReturn, Protocol
 
@@ -535,8 +536,14 @@ class _SlackSdkGateway:
                 if _contains_oauth_callback(raw_text):
                     continue
                 text = _decode_mrkdwn(raw_text)
-                if sender and text and not item.get("bot_id"):
-                    messages.append((sender, text[:1000]))
+                if sender and text and sender != self._bot_id:
+                    text = escape(text[:1000], quote=False)
+                    if item.get("bot_id") or item.get("subtype") == "bot_message":
+                        text = (
+                            f'<input-message sender="slack:{escape(sender)}" surface="slack" '
+                            f'kind="message" sender_type="bot">\n{text}\n</input-message>'
+                        )
+                    messages.append((sender, text))
             messages = messages[-_THREAD_CONTEXT_MESSAGES:]
             cursor = optional_str(response.get("response_metadata", {}).get("next_cursor"))
             more = bool(response.get("has_more") or cursor)

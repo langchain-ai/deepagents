@@ -13,7 +13,7 @@ import threading
 import time
 from bisect import bisect_left, bisect_right
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePath, PureWindowsPath
 
 from deepagents.backends.protocol import (
     ASYNC_GREP_TIMEOUT,
@@ -66,6 +66,22 @@ _RIPGREP_STDERR_CAPTURE_LIMIT = 500
 
 _RIPGREP_STDERR_READ_SIZE = 8192
 """Number of stderr characters read per chunk while draining ripgrep."""
+
+
+def _comparison_path(path: PurePath) -> PurePath:
+    """Give resolved Windows drive and UNC paths a common comparison namespace."""
+    if isinstance(path, PureWindowsPath) and path.is_absolute():
+        drive = path.drive
+        if drive[1:] == ":":
+            return PureWindowsPath("\\\\?\\" + str(path))
+        if drive.startswith("\\\\") and not drive.startswith(("\\\\?\\", "\\\\.\\")):
+            return PureWindowsPath("\\\\?\\UNC\\" + str(path)[2:])
+    return path
+
+
+def _relative_to_resolved(path: PurePath, root: PurePath) -> PurePath:
+    """Compare resolved paths without changing their filesystem representation."""
+    return _comparison_path(path).relative_to(_comparison_path(root))
 
 
 @functools.cache
@@ -207,7 +223,7 @@ class FilesystemBackend(BackendProtocol):
                 raise ValueError(msg)
             full = (self.cwd / vpath.lstrip("/")).resolve()
             try:
-                full.relative_to(self.cwd)
+                _relative_to_resolved(full, self.cwd)
             except ValueError:
                 msg = f"Path:{full} outside root directory: {self.cwd}"
                 raise ValueError(msg) from None
@@ -238,7 +254,7 @@ class FilesystemBackend(BackendProtocol):
             RuntimeError: If `Path.resolve()` detects a symlink loop on
                 Python <=3.12 (wraps the underlying `OSError(ELOOP)`).
         """
-        return "/" + path.resolve().relative_to(self.cwd).as_posix()
+        return "/" + _relative_to_resolved(path.resolve(), self.cwd).as_posix()
 
     def _display_path(self, path: Path) -> str:
         """Render a path for agent-visible messages without leaking the real root.
@@ -1086,7 +1102,7 @@ class FilesystemBackend(BackendProtocol):
         # results, while `p` itself keeps its original shape. OSError guards
         # against unresolvable symlink targets.
         try:
-            p.resolve().relative_to(base_resolved)
+            _relative_to_resolved(p.resolve(), base_resolved)
         except (ValueError, OSError):
             logger.warning(
                 "Skipping ripgrep result outside search root: path=%s root=%s",
@@ -1382,7 +1398,7 @@ class FilesystemBackend(BackendProtocol):
                     continue
                 if self.virtual_mode:
                     try:
-                        matched_path.resolve().relative_to(self.cwd)
+                        _relative_to_resolved(matched_path.resolve(), self.cwd)
                     except (OSError, RuntimeError, ValueError):
                         continue
                 abs_path = str(matched_path)

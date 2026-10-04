@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -122,3 +123,44 @@ async def test_stalled_model_times_out(
     with pytest.raises(TimeoutError):
         await generate_thread_name("provider:rename-model", [HumanMessage("Fix cache")])
     assert cancelled.is_set()
+
+
+@pytest.mark.parametrize("factory_fails", [False, True])
+async def test_initialization_timeout_waits_for_factory(
+    monkeypatch: pytest.MonkeyPatch, *, factory_fails: bool
+) -> None:
+    """A naming timeout cannot leave provider-setting mutations running."""
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    deadline = asyncio.timeout(None)
+    model = AsyncMock()
+    finished = threading.Event()
+
+    def create_model(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(timeout=5)
+        finished.set()
+        if factory_fails:
+            msg = "Model initialization failed"
+            raise ValueError(msg)
+        return SimpleNamespace(model=model)
+
+    monkeypatch.setattr("deepagents_code.config.create_model", create_model)
+    monkeypatch.setattr(
+        "deepagents_code.thread_titles.asyncio.timeout", lambda _: deadline
+    )
+    task = asyncio.create_task(
+        generate_thread_name("provider:rename-model", [HumanMessage("Fix cache")])
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        deadline.reschedule(loop.time())
+        done, _ = await asyncio.wait({task}, timeout=0.05)
+        assert not done
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+    with pytest.raises(TimeoutError):
+        await task
+    assert finished.is_set()
+    model.ainvoke.assert_not_awaited()

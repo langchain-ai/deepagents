@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import json
+import threading
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -338,6 +340,70 @@ async def test_workspace_switch_cancels_pending_naming(
     generate.assert_not_awaited()
     assert task.cancelled()
     assert not naming_app._thread_name_tasks
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+@pytest.mark.parametrize("factory_fails", [False, True])
+@pytest.mark.parametrize("already_cancelled", [False, True])
+async def test_workspace_reload_waits_for_naming_model_initialization(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    automatic: bool,
+    factory_fails: bool,
+    already_cancelled: bool,
+) -> None:
+    """An old factory cannot mutate provider settings after a workspace reload."""
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    settings = {"workspace": "original"}
+    model = AsyncMock()
+
+    def create_model(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(timeout=5)
+        settings["workspace"] = "original"
+        if factory_fails:
+            msg = "Model initialization failed"
+            raise ValueError(msg)
+        return SimpleNamespace(model=model)
+
+    def reload_settings(*, start_path: Path) -> list[str]:
+        settings["workspace"] = str(start_path)
+        return []
+
+    reload = AsyncMock(side_effect=reload_settings)
+    monkeypatch.setattr("deepagents_code.config.create_model", create_model)
+    monkeypatch.setattr(naming_app, "_reload_settings_from_environment", reload)
+    monkeypatch.setattr("deepagents_code.model_config.clear_caches", lambda: None)
+    naming_app._start_thread_name_generation(
+        "original", "provider:chat", automatic=automatic
+    )
+    task = naming_app._thread_name_tasks["original"]
+    refresh: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        if already_cancelled:
+            task.cancel()
+            await asyncio.sleep(0)
+        refresh = asyncio.create_task(
+            naming_app._refresh_project_context_for_cwd_switch(tmp_path)
+        )
+        done, _ = await asyncio.wait({refresh}, timeout=0.05)
+        assert not done
+        assert not task.done()
+        reload.assert_not_awaited()
+    finally:
+        release.set()
+        await asyncio.gather(
+            task, *([refresh] if refresh is not None else []), return_exceptions=True
+        )
+    await refresh
+    assert task.cancelled()
+    assert settings["workspace"] == str(tmp_path)
+    assert not naming_app._thread_name_tasks
+    model.ainvoke.assert_not_awaited()
 
 
 async def test_naming_cannot_start_during_workspace_reload(

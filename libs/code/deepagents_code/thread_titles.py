@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from langchain_core.messages import BaseMessage
+
+    from deepagents_code.config import ModelResult
 
 _TITLE_PROMPT = """Name this coding conversation with a concise noun or action phrase.
 Use 3-8 words in sentence case, at most 50 characters on one line.
@@ -57,6 +60,39 @@ def _normalize_name(name: str) -> str:
     return validate_thread_name(name.rstrip(". "))
 
 
+async def _create_naming_model(
+    model_spec: str, model_params: dict[str, object] | None
+) -> ModelResult:
+    """Keep provider-setting mutations tracked until the factory thread exits.
+
+    Returns:
+        The initialized naming model and its metadata.
+
+    Raises:
+        asyncio.CancelledError: After the factory has finished if cancelled.
+    """
+    from deepagents_code.config import create_model
+
+    task = asyncio.create_task(
+        asyncio.to_thread(
+            create_model,
+            model_spec,
+            extra_kwargs=model_params,
+            bind_preserved_thinking=False,
+        )
+    )
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # Consume late factory errors without replacing caller cancellation.
+        # Repeated cancellation (including timeouts) must not orphan the thread.
+        completion = asyncio.gather(task, return_exceptions=True)
+        while not completion.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.shield(completion)
+        raise
+
+
 async def generate_thread_name(
     model_spec: str,
     messages: Sequence[BaseMessage],
@@ -64,6 +100,9 @@ async def generate_thread_name(
     model_params: dict[str, object] | None = None,
 ) -> str:
     """Generate a safe name using the selected model without conversation callbacks.
+
+    Cancellation waits for model initialization, which can update process-wide
+    provider settings, even if the generation timeout has expired.
 
     Args:
         model_spec: Configured provider/model specification.
@@ -77,19 +116,12 @@ async def generate_thread_name(
     Raises:
         ValueError: If the conversation or generated name is empty.
     """
-    from deepagents_code.config import create_model
-
     conversation = _conversation_text(messages)
     if not conversation:
         msg = "Send a message before generating a thread name."
         raise ValueError(msg)
     async with asyncio.timeout(10):
-        result = await asyncio.to_thread(
-            create_model,
-            model_spec,
-            extra_kwargs=model_params,
-            bind_preserved_thinking=False,
-        )
+        result = await _create_naming_model(model_spec, model_params)
         response = await result.model.ainvoke(
             [("system", _TITLE_PROMPT), ("human", conversation)],
             config={"callbacks": [], "run_name": "thread-title"},

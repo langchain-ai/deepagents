@@ -1,111 +1,134 @@
 ---
-type: delegation and skill-discovery concept
+type: delegation and progressive-disclosure concept
 title: Subagents and Skills
-description: Deep Agents delegates synchronous isolated or forked work through a task tool and can track remote Agent Protocol work asynchronously. Skills are a separate backend-discovery and prompt-index mechanism, with explicit state and propagation boundaries.
-tags: [deepagents, subagents, delegation, skills, middleware, agent-protocol]
+description: Deep Agents delegates local, forked, compiled, and remote work across explicit state and lifecycle boundaries. Skills separately discover instruction bundles and can disclose and gate skill-selected tools according to provider request capabilities.
+tags: [deepagents, subagents, delegation, skills, middleware, tool-gating, agent-protocol]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-25T08:06:00.203Z
+    at: 2026-10-03T08:05:07.881Z
 sources:
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-5c9c6a877b43f30407158658
+    resource: repo://libs/deepagents/deepagents/middleware/_skill_tools.py
   - id: openwiki-source-e51c4102234507d1529a2440
     resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
   - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-ecfcdcb389d95ca759a82a61
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tool_resolver.py
+  - id: openwiki-source-13e0ea89aadd1a5e309ac7e3
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
+  - id: openwiki-source-c71ac20477155a66b7a8c60a
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
     resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
 ---
 
 # Subagents and Skills
 
-`create_deep_agent` assembles two distinct extension mechanisms. **Subagents** execute a delegated task and return a result through a tool call; they may be local synchronous agents, caller-provided runnables, or remote asynchronous Agent Protocol tasks. **Skills** are not delegated agents or tools: `SkillsMiddleware` indexes instruction bundles in backend storage and tells an agent where to read a relevant `SKILL.md` when needed.
+`create_deep_agent` combines two distinct mechanisms. **Subagents** are delegated executions: a local `task` call waits for a child result, while an `AsyncSubAgent` launches a remote Agent Protocol run that is managed later. **Skills** are backend-resident instruction bundles. `SkillsMiddleware` indexes their metadata, adds a progressive-disclosure prompt, and—when configured with skill tools—makes selected tools available only after an observed successful read of the relevant `SKILL.md`.
 
-This distinction is important for capability design. A subagent's context, tools, middleware, permission rules, approval behavior, and state transfer are determined by its spec and compilation path. A skill only contributes metadata and a progressive-disclosure prompt section; it does not itself grant a tool or execute code. See [Middleware catalog](/openwiki/concepts/middleware-catalog.md), [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md), and [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md) for the surrounding construction mechanisms.
+A skill is therefore neither an authorization policy nor a subagent. Its instruction text can guide the model, and `metadata.include_tools` can participate in a model-visible and execution-time tool gate, but filesystem permissions, ordinary registered tools, and approval/`interrupt_on` policies remain separate controls. See [Middleware stack](/openwiki/architecture/middleware-stack.md), [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md), and [Permissions and HITL](/openwiki/concepts/permissions-hitl.md).
 
-## Assembly and delegation paths
+## Assembly and delegation boundaries
 
-The `subagents=` argument accepts three shapes:
-
-- A declarative `SubAgent` is compiled into a local runnable and called through `task`.
-- A `CompiledSubAgent` supplies its own runnable; Deep Agents treats its graph, state schema, and embedded controls as caller-owned.
-- An `AsyncSubAgent`, identified by `graph_id`, is routed to `AsyncSubAgentMiddleware` instead of the synchronous middleware and talks to an Agent Protocol server.
-
-Unless the selected harness profile disables it or a caller supplies a replacement, the factory adds a synchronous `general-purpose` agent. Thus the normal graph exposes `task`; disable the default and provide no synchronous subagents to remove it. Async definitions are independent and install their own launch and task-management tools.
+`subagents=` accepts declarative `SubAgent` specs, prebuilt `CompiledSubAgent` specs, and `AsyncSubAgent` specs identified by `graph_id`. The factory compiles declarative local specs, leaves a compiled runnable caller-owned, and installs the synchronous `SubAgentMiddleware` and remote `AsyncSubAgentMiddleware` independently. Unless the harness profile disables it or a caller provides a `general-purpose` replacement, it also installs the default synchronous general-purpose worker.
 
 ```mermaid
 flowchart TD
-    Parent["Parent model"] --> Task["task tool"]
-    Task --> Mode{"Subagent mode"}
-    Mode -->|"isolated"| Fresh["Task message and filtered state"]
-    Mode -->|"fork"| History["Effective parent history and task preamble"]
-    Fresh --> Local["Local runnable"]
-    History --> Local
-    Local --> Result["ToolMessage or Command update"]
+    Parent["Parent model"] --> Task["task"]
+    Task --> Branch{"Local mode"}
+    Branch -->|"isolated"| Isolated["New task message and filtered state"]
+    Branch -->|"fork"| Fork["Effective history and inherited context"]
+    Isolated --> Local["Local runnable"]
+    Fork --> Local
+    Local --> Return["ToolMessage and permitted state update"]
     Parent --> Start["start_async_task"]
-    Start --> Remote["Remote Agent Protocol thread and run"]
-    Remote --> Record["async_tasks state"]
-    Record --> Manage["check update cancel list tools"]
+    Start --> Remote["Agent Protocol thread and run"]
+    Remote --> Tasks["async_tasks state"]
+    Tasks --> Manage["check update cancel list"]
 ```
 
-*The synchronous `task` path waits for a local result, while the asynchronous path records a remote task and returns its identifier immediately.*
+*Local delegation blocks for one child result; remote delegation records a task ID and continues.*
 
-The synchronous task schema deliberately accepts only `description` and `subagent_type`; unknown model-supplied arguments are rejected rather than silently losing instructions. Agent names must be unique and unsupported modes fail validation; `handoff` remains a legacy spelling for isolated. The selected agent is invoked with the parent run's ambient callbacks, tags, and configurable values, plus subagent tracing metadata. Independent `task` calls can run as parallel tool calls under the agent runtime.
+The local `task` schema accepts `description` and `subagent_type` (plus injected runtime), rejects invented arguments, and rejects duplicate names or unsupported modes during construction. `handoff` is retained as an alias for `isolated`. A child invocation receives ambient parent configuration through the runtime, while its tracing context and configurable metadata identify it as `ls_agent_type="subagent"`.
 
-## Isolated and forked local execution
+### Isolated local work
 
-### Isolated is the default
+Isolation is the default. The child receives a new `HumanMessage` containing the delegated description and a state copy excluding `messages`, `todos`, `structured_response`, `skills_metadata`, `_skill_tools_disclosed`, the fork marker, and middleware-private fields. The same exclusions apply to updates returned to the parent. This prevents a child’s conversation, skills index, or latest disclosure record from replacing the parent’s state.
 
-An isolated declarative subagent receives a new `HumanMessage` containing only the delegated description. It does **not** receive the parent message history, todos, parent `structured_response`, skill metadata, or middleware-private state. Public state fields can be passed in, and returned public updates can be merged back, but the task adapter excludes `messages`, `todos`, `structured_response`, `skills_metadata`, the fork marker, and all discovered private state fields. This lets a child report a useful public update without exposing parent-only implementation state or allowing its skills index to replace the parent’s.
+For declarative workers, omitted `tools` inherit the parent application tool sequence; an explicit value replaces it. Omitted `permissions` and `interrupt_on` inherit parent configuration, while explicit values take precedence. A `CompiledSubAgent` is an opaque runnable: its own graph owns such behavior and it must return a state with `messages` to communicate a result.
 
-The child is compiled with the spec's model and tools. If `tools` is omitted, declarative specs inherit the parent-supplied tool sequence; supplying it replaces that inherited application-tool sequence. A declarative subagent may choose its own model, middleware, skill sources, permission rules, `interrupt_on`, and response format. Its permissions inherit the parent rules only when its spec omits `permissions`; an explicit list replaces them. Likewise, `interrupt_on` inherits by default but an explicit child value overrides it. A compiled runnable does not receive these factory-level inheritance rules—configure its state schema, permissions, middleware, and approval controls when compiling it.
+The child result becomes one `ToolMessage` associated with the original tool call. A non-null `structured_response` is JSON-serialized; otherwise the adapter finds the last non-empty child `AIMessage` text. Other non-excluded public state updates may cross back, but the child transcript does not.
 
-### Fork continues the parent, but cannot recurse
+### Forked local work
 
-`mode="fork"` is experimental. A fork receives the parent’s effective conversation history—including application of a prior summarization event—followed by a preamble and the delegated task. For a declarative fork, Deep Agents also carries parent state except stale structured output and summarization session/event state, marks the child as forked, rebuilds the parent system prompt, and appends the spec’s `system_prompt` as an addendum. It mirrors the parent’s prompt-producing middleware so dynamic prompt content can be reconstructed; a compiled fork is opaque, so it gets only non-excluded, non-private public state.
+Experimental `mode="fork"` continues the parent rather than starting with a blank task. The adapter applies any summarization event to reconstruct effective history, removes the parent’s pending tool-call message, and appends a preamble plus the delegated task. Declarative forks inherit parent state except fork-excluded transient output/summarization state, retain private channels so their middleware can reconstruct context, rebuild the parent prompt, and add their own prompt as an addendum. A compiled fork gets only non-excluded public state because its graph is opaque.
 
-A fork cannot declare `skills`: it inherits the parent’s skill behavior so it cannot silently diverge from the inherited prompt. It is also given a guarded `task` tool rather than having delegation removed; when it calls it, the tool returns a refusal. This retains the familiar tool surface and turns recursive delegation into an explicit model-visible failure instead of launching an unbounded delegation tree.
+A fork cannot set `skills`; it uses the parent’s skills behavior. It receives a guarded mirror of `task`, not unrestricted recursive delegation: any nested call sees the fork marker and returns a refusal. Use a fork only when the child needs the effective conversation and prompt context; use isolated mode for a narrower task boundary.
 
-## Result contract and tracing identity
+## Remote asynchronous work
 
-Synchronous subagents return a `Command` that creates a `ToolMessage` tied to the original tool-call ID. For an ordinary result, the middleware walks backward to the last non-empty `AIMessage` text; it does not expose the child’s intermediate conversation. When the child returns `structured_response`, the value is JSON-serialized instead—using Pydantic's `model_dump_json()` or dataclass conversion where appropriate. This is the supported bridge for a subagent response schema, while the child's `structured_response` key itself remains excluded from parent state.
+An `AsyncSubAgent` specifies a remote `graph_id`, optional `url`, and optional headers. `start_async_task` creates a remote thread and run with the description as a user message, then stores an `AsyncTask` in state under the thread ID. The record includes agent name, thread/run IDs, status, and lifecycle timestamps; a reducer merges task updates so they survive normal state lifecycle and context compaction.
 
-A `CompiledSubAgent` must return a state containing `messages`; otherwise the task fails with a configuration error because no result can be communicated. It can return public state updates, but excluded and private keys do not cross the boundary. Dynamic response formats are available only for declarative specs via `__deepagents_subagent_response_format`; applying one to a compiled runnable raises rather than pretending the opaque graph supports it.
+`check_async_task` retrieves the run and returns the final remote message on success. `update_async_task` starts a new run on the same thread using `multitask_strategy="interrupt"`, retaining the task ID but replacing its run ID. `cancel_async_task` cancels the tracked run. `list_async_tasks` filters by cached status, then refreshes nonterminal selected tasks, retaining cached status if the remote fetch fails. Unknown agent types or task IDs and SDK failures are returned as tool errors rather than state mutations.
 
-Each synchronous child call enters a LangSmith tracing context with `ls_agent_type="subagent"`, preserving the enclosing tracing fields while changing that identity. The tool also stamps this as configurable metadata for the child invocation. This makes delegated work identifiable in tracing without manually copying callbacks, tags, or configurable values; the runtime carries those ambient parent values and the child's bound configuration wins collisions.
+Clients are cached by URL and resolved headers. The middleware supplies `x-auth-scheme: langsmith` unless the spec supplies it; SDK environment credentials serve managed deployments and `headers` are the self-hosted extension point. A synchronous parent requires a URL: omitted `url` selects in-process ASGI transport, available only from an async parent invocation. Remote graphs own their own tools, permissions, HITL policy, and state schema; those are not inherited from the local parent.
 
-## Remote asynchronous subagents
+## Skills: discovery and prompt index
 
-An `AsyncSubAgent` names a remote `graph_id`, with optional `url` and `headers`. `start_async_task` creates a remote thread and run with the delegated description as a user message, then stores an `AsyncTask` record keyed by the remote thread ID in `async_tasks`. The record holds the agent name, thread ID, current run ID, status, and creation/check/update timestamps, so it persists with agent state rather than relying only on conversational text. The middleware adds `x-auth-scheme: langsmith` unless headers already supply it. SDK environment credentials support managed deployments; headers are the extension point for self-hosted authentication.
+A source is a backend path or `(path, label)` pair. Before agent execution, the middleware lists immediate source directories and downloads each candidate `SKILL.md` through backend APIs. Valid frontmatter supplies a skill name and description; metadata also captures its path, optional license and compatibility, `allowed-tools`, and arbitrary `metadata`. The listing prompt shows source labels, skill descriptions and paths, then directs the model to use `read_file` to obtain full instructions and supporting files only when relevant.
 
-`check_async_task` fetches the current run and, on success, reads the remote thread’s final message. `update_async_task` interrupts the current run and starts a new one on the same remote thread, retaining the task ID while replacing its run ID. `cancel_async_task` cancels the tracked remote run, and `list_async_tasks` filters tracked records then refreshes nonterminal statuses. Unknown types and unknown task IDs are returned as tool errors; failures communicating with the server also become a tool result rather than corrupting the task record. A synchronous parent call requires a URL; URL-less local ASGI transport is available only through async invocation.
+```mermaid
+flowchart TD
+    Begin["before_agent"] --> Cached{"skills_metadata is a list"}
+    Cached -->|"yes"| Prompt["Render metadata prompt"]
+    Cached -->|"no or None"| Scan["List sources and download SKILL.md"]
+    Scan --> Overlay["Later same-name source wins"]
+    Overlay --> Store["Store metadata and load errors"]
+    Store --> Prompt
+    Prompt --> Read["Model reads relevant SKILL.md"]
+    Read --> Resolve["Resolve include_tools for next model call"]
+    Resolve --> Gate["Record disclosed skill tools"]
+```
 
-Remote tasks do not inherit the parent’s local tool set, filesystem permissions, state schema, or `interrupt_on` policy. They execute the graph deployed at the remote endpoint, which must own its own authorization and approval configuration.
+*Skills load once per state unless invalidated; tool disclosure follows a successful skill-file read.*
 
-## Skills: discovery, not delegation
+Sources are processed in order and later skills with the same name replace earlier entries. `skills_metadata` caches the resulting list per state, including an empty list; set it to `None` in invocation input or through `update_state` to request a reload. Source-level listing errors are retained in `skills_load_errors`. If a prompt is enabled, diagnostics are bounded, escaped, and explicitly labelled untrusted. `system_prompt=None` suppresses only this prompt fragment: metadata and errors still load. A custom template must contain `{skills_locations}`, `{skills_load_warnings}`, and `{skills_list}`.
 
-A skill source is a backend path or `(path, label)` pair. Each immediate child directory is considered a candidate only when it contains `SKILL.md`; the middleware reads this file through backend `ls` and `download_files` APIs, not direct host filesystem APIs. Frontmatter must provide a name and description to load. The metadata includes the backend path and optional license, compatibility, arbitrary metadata, and `allowed-tools` advisory list. Invalid or unreadable content, invalid metadata, and files larger than 10 MiB are skipped with diagnostics rather than becoming instructions.
+Top-level `skills=` installs a skills middleware on the main graph and the auto-generated general-purpose worker. A named isolated declarative worker gets skills only from its own `skills` spec; its sources do not inherit from the parent. Forks replay the parent behavior and cannot specify separate sources. Normal isolation excludes both skill metadata and the disclosure record; forks preserve metadata to rebuild parent context but still exclude `_skill_tools_disclosed`.
 
-At `before_agent`, metadata is loaded in source order and later entries with the same skill name replace earlier entries. The result is cached in `skills_metadata` per state/thread: a present list—including an empty one—prevents a rescan; setting it to `None` in invocation input or with `update_state` requests reload on the next run. Source-level failures are logged and retained as private `skills_load_errors`; the prompt renders a bounded, escaped diagnostic block and treats it as untrusted content.
+## Skill-selected tools: disclosure is a gate, not authorization
 
-The model sees source labels, skill names, descriptions, optional annotations, and the `SKILL.md` path. It must choose a relevant skill, explicitly read that file with its available file tool, then use any referenced supporting files or scripts. `allowed-tools` is descriptive metadata in this implementation, not an enforcement mechanism. Passing `system_prompt=None` still loads and caches metadata but suppresses this prompt index; a custom template must retain the three runtime substitution slots.
+`metadata.include_tools` is a space-separated list of include names. `SkillsMiddleware(tools=...)` accepts a list of tools/callables or a `SkillToolResolver`; list entries resolve by exact tool name, while a resolver can map one include name to a family of `BaseTool` instances using graph runtime context. Skill tools are deliberately not registered in the ordinary tool node, so a model cannot call them merely because middleware was constructed.
 
-### Skill propagation boundary
+Only a successful `read_file` tool result for a known skill’s normalized `SKILL.md` path counts as a disclosure trigger; offsets, limits, and later clipping do not invalidate that read. The read affects the **next** model call, not a tool call made in the same model response. For every still-visible successful read, the middleware resolves unclaimed include names, anchors each produced tool at its earliest read, and writes `{tool name: include name}` to private `_skill_tools_disclosed` state for the latest model call. If summarization removes the anchoring read, the tool is withdrawn or re-anchored to a remaining read.
 
-Top-level `skills=` installs `SkillsMiddleware` on the main graph. It is also installed on the automatically generated general-purpose subagent, so that default worker can discover the same sources. A named declarative isolated subagent receives skills only when its own spec sets `skills`; its own list replaces the parent skill sources rather than inheriting them. Forks instead replay the parent skills behavior and are forbidden from supplying a separate list. In all cases, `skills_metadata` does not cross the normal parent/child state boundary, so one agent cannot overwrite another agent's cached discovery index.
+At tool execution, an ordinary registered tool already selected by the runtime wins. Otherwise `wrap_tool_call` admits only a name recorded in `_skill_tools_disclosed`, re-resolves the recorded include name, and attaches the returned matching tool. Missing disclosure, stale/malformed records, or a resolver that no longer returns the named tool leaves the call to fail as an invalid tool. Resolver exceptions and invalid resolver return types propagate; async resolvers require the async entry point. This observable gate constrains tool availability, but it does not replace permission checks or `interrupt_on`: disclosed tools still pass through normal approval middleware.
 
-## Configuration and focused verification
+A skill can also name an already registered tool. That does not replace it. If that registered tool is deferred with `extras={"defer_loading": True}`, the skill read exposes its schema but it remains an ordinary, ungated tool; `disclosed_skill_tool_names()` deliberately reports only gated skill tools for other middleware that needs matching gate semantics.
 
-Use declarative isolated agents for focused work where the parent must provide all necessary task context and wants a narrow, independently configured capability set. Use a fork only when the worker genuinely needs the effective conversation and system-prompt context; it carries more context, is experimental, and cannot delegate again. Use `CompiledSubAgent` when a separately built graph is the required extension boundary. Use `AsyncSubAgent` for long-running remote work where a persistent task record and later status or result checks are preferable to blocking the parent turn.
+### Provider request formats
 
-Focused tests cover synchronous final-message and structured-response forwarding, isolation of todo, private, and skill state, inherited runtime metadata, fork history/prompt reconstruction and recursion refusal, tracing identity, and skills installed on the appropriate child types. Async-subagent tests cover launch, check, update, cancellation, task-state updates, stale-status refresh, and error paths. Skills middleware tests exercise backend discovery, source precedence, invalid files and diagnostics, state caching/reload, and the no-prompt-index mode.
+On models without supported mid-conversation tool additions, disclosed tools are appended to the next request’s bound tool list. For supported Anthropic models, the middleware inserts `tool_addition` / `tool_definition` blocks after the relevant complete tool-result batch. For supported OpenAI Responses models, it inserts `additional_tools` developer items at the equivalent point. Insertions do not split parallel tool results or precede queued user turns, and the stable placement preserves request-prefix caching. Unsupported provider/model paths use bound tools instead.
+
+Anthropic disclosure rejects a tool schema with a root `oneOf`, `anyOf`, or `allOf`, because that provider rejects it; the tool is neither disclosed nor admitted. OpenAI Responses can receive the corresponding additional tool schema. In every provider path, the private disclosure record is derived from what was actually shown to the latest model call, so execution uses the same boundary.
+
+## Operations and focused tests
+
+Choose an isolated declarative subagent for a focused task with explicit inputs and independently configured tools. Choose a fork only for context-dependent continuation, accepting its experimental and nonrecursive behavior. Use a compiled worker when a separately built graph is the intended ownership boundary, and an async worker for remote, long-running work that needs persistent status management.
+
+Focused tests cover task argument validation, state isolation, fork reconstruction and refusal, structured-result forwarding, tracing identity, remote launch/check/update/cancel/list behavior, skill source precedence and reload, and skill propagation to the right worker. The skill-tool tests additionally verify pre-read and same-turn rejection, compaction withdrawal, resolver behavior, approval integration, and provider payload placement for Anthropic, OpenAI, and fallback binding paths.
 
 ## Related
 
+- [Middleware stack](/openwiki/architecture/middleware-stack.md)
 - [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md)
-- [Middleware catalog](/openwiki/concepts/middleware-catalog.md)
-- [Talon](/openwiki/integrations/talon.md)
+- [Permissions and HITL](/openwiki/concepts/permissions-hitl.md)
+- [Tools and filesystem](/openwiki/concepts/tools-filesystem.md)
+- [Testing guide](/openwiki/testing/testing-guide.md)
 - [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md)

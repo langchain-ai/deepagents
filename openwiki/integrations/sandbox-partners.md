@@ -3,9 +3,6 @@ type: sandbox provider integration guide
 title: Sandbox Provider Integrations
 description: Explains dcode and Talon remote sandbox-provider discovery, provisioning, ownership, and routing, and distinguishes those execution capabilities from host-resident integrations and QuickJS middleware.
 tags: [sandbox, providers, dcode, talon, execution-boundaries, quickjs]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-01T08:06:30.386Z
 sources:
   - id: openwiki-source-9f207ab48c42b84dcfd05f43
     resource: repo://libs/code/deepagents_code/integrations/sandbox_config.py
@@ -31,7 +28,10 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-57a0613315e23277d358df76
     resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-01T08:06:30.386Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-02T08:06:05.669Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-02T08:06:05.669Z
 ---
 
 # Sandbox Provider Integrations
@@ -75,14 +75,22 @@ These helpers do not reduce `execute()` authority. Shell quoting in recursive de
 
 The registry merges curated providers, packages advertised through `deepagents_code.sandbox_providers`, and local `[sandboxes.providers]` declarations. A name resolves in this order: **configuration, entry point, built-in**. Treat a configured `class_path` as operator-trusted code. The `[sandboxes].default` selection is considered only after sandbox mode has been explicitly enabled, so declaring a default does not silently redirect normal execution.
 
-The base `deepagents-code` distribution includes `langsmith[sandbox]`; optional extras install adapters for `agentcore`, `daytona`, `modal`, `runloop`, and `vercel`:
+The base `deepagents-code` distribution includes `langsmith[sandbox]`. The other curated remote providers are optional extras; install the extra matching `DEEPAGENTS_TALON_SANDBOX`, or install them all:
+
+| Talon provider | `deepagents-code` extra | Adapter dependency declared by that extra |
+| --- | --- | --- |
+| `agentcore` | `agentcore` | `langchain-agentcore-codeinterpreter>=0.0.5,<1.0.0` |
+| `daytona` | `daytona` | `langchain-daytona>=0.0.7` |
+| `modal` | `modal` | `langchain-modal>=0.0.5` |
+| `runloop` | `runloop` | `langchain-runloop>=0.0.6` |
+| `vercel` | `vercel` | `langchain-vercel-sandbox>=0.0.1` |
 
 ```bash
 pip install 'deepagents-code[agentcore,daytona,modal,runloop,vercel]'
 pip install 'deepagents-code[all-sandboxes]'
 ```
 
-`deepagents-code` 0.1.79 requires Python `>=3.12,<4.0`, pins `deepagents==0.7.21`, and includes `langsmith[sandbox]>=0.14.2` and `langchain-quickjs>=0.3.4,<0.4.0` as base dependencies. The retained `quickjs` extra is empty, so it is only compatible with older install commands; it does not install an additional package.
+`deepagents-code` 0.1.80 requires Python `>=3.12,<4.0`, pins `deepagents==0.7.21`, and includes `langsmith[sandbox]>=0.14.2` and `langchain-quickjs>=0.3.4,<0.4.0` as base dependencies. `langchain-quickjs` therefore installs with dcode, but it remains an in-process JavaScript integration rather than a provider selectable through `DEEPAGENTS_TALON_SANDBOX`. The retained `quickjs` extra is empty, so it is only compatible with older install commands; it does not install an additional package.
 
 `create_sandbox()` resolves metadata before construction, rejects unsupported snapshot requests and snapshot-plus-attached-ID combinations, and merges configured parameters with call parameters taking precedence. A supplied host setup file is expanded against the workspace environment and run as `bash -c` after acquisition. The context deletes only an environment it created. If setup or the body fails, cleanup still runs; cleanup errors are reported without concealing the original exception.
 

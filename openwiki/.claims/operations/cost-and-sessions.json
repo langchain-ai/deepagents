@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f9bcc0ad361bb6289db29505f9311bab0596b91770f15800ec460be522c99cca",
+  "pageVersion": "sha256:02835c22c2d9bf557f98b979e6141eed85ea5014dcd81f4f33cb6b857f020d1b",
   "claims": [
     {
       "id": "claim_36f9759159fd4a76aefadc633e23a115",
@@ -269,10 +269,138 @@
           "version": "repo-lines-v1:sha256:19fa5ecbb1e17146d720e4f8785829b87c5e866aa55f756c9cfab554a3bc0069:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3YjQwYWU0YzRhMmUxYTFlZWY2ZjZlMTBmODFmZDg1YzI4NjVkYjYxY2NlMzYxODM0NGQ4YWQ5ZWM4Y2U1MzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBkMTBhNzc1MmViZTFmZTdiMDBiZmY0MzY1NmQ2YTk4YzQxOTI4Yzc3YWMxMjg2OGFhMzlmOWE5ODEwYmZhYTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc5OTIyYTA5MTk2ZmM3MWQ4NThiZjMyZTZlY2U1ODZkOGY3ZjUwOTRiMGYyMGYxMTI0MGQ1YTAyZGI5NjM1M2UifQ"
         }
       ]
+    },
+    {
+      "id": "claim_ba23abc1b0574c9e80f7e86f33adfa51",
+      "statement": "The TUI checks only server-owned cumulative cost for the active thread and opens `SessionCostWarningScreen` once when the configured threshold is strictly exceeded; a restored thread already above the threshold is marked acknowledged, while a later crossing from at or below it can warn.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L9092-L9156",
+          "version": "repo-lines-v1:sha256:dbd9d68b06006cb84e091bac16020fa021b7f0ae82a0581524e39061022f4a44:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlZjIzMmVjMDc2YTY0YTg1MWZlYjY0OTU1Yzc3OTdkNjk5NjllNjEyODM5NzY5MDM3YjFlZmNhMTc4OGQyMTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNhMTY2Y2IxMDg1MmJlZTk0N2MxZGQ1NWRiZTc4ZjI5ZDBlZGM1MzA5YjNiNTk2ODM1NzM4YzA3ODU2YWI3OWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhZDQwNzJkM2I1YTA0YTgyOTRkYTZiNjVjOTFiYzRkN2NiMGRlY2Y0MTQ5Yzk3NzZjNDZhYTRmYzI3ZDkwZTkifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L9168-L9204",
+          "version": "repo-lines-v1:sha256:91051e29ded2797f032e5f493680ae54fa31a742e362e47df88c3918cff05ec3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjNTQ1ZDNjNmMxMTBlNDBmZjE1Y2VjMDAwMTkzOTZkNzEwMThiM2MwZDM4ODY0ZmM4NWYxYzI0ZmIxYTI3NjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4N2E3ZWZiMDUyOGEyZDFjZWNkNTFhMDJjNjM1MmZmYzY5YTY2MjRlOTRhOTgwMTJhNDI2ODZiYTQ1YjU4ZDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk3ZmVkMWUzMzgwM2Q1N2QyMzBiYTE4Yjc5NzA1ZjExNzY3M2JmMjVmNzFjMWJmM2I4MmU1OTBjOGFmNjM5N2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ0MWM5NjYxODI2ZjZiOWJmNzU1ODExNjEwYWQxMzhkZDUyN2I1YTI0NjNhMWEwYWNmNjdiYzI3NDQzMjIwMTIifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_app.py#L31593-L31708",
+          "version": "repo-lines-v1:sha256:ef3375644d0125d1f4a1dd1d684e3216a77cb4de6a1cd2bebc0640ccb8ec099d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3MTE4YmM0NzM2NzY3OWNjOGE3Y2E5MzI0ZmEzMjI0MzVmNWJmZjgyMjcyNzE1YjQ4MmQ0Yjc4MzU4YjYyZjMyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzZGY2NzU0OTkyN2EyMjFkNTU2YmE5OTI0NTA2ZDc1ZWM4ZDE0YzE1OWRhOWViNWMxOGI3YTdhMjg1MjRmYWUwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNDQ3YjBkZmUzMjMzZjE3MGExYzdlYWFhNTI1ZjA2NzY3NTVmYjRjNDI4OWM4YTYzMDY2ZWRjN2NlNTMyYzFlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2Y0OWZiMDE0YjA5MTBlNTMzN2UwZjhlYTEyNzU0YzI5NzJkOGIxYWI3MmZjMjU0ZDVmMjcyYzFhZGRiNTYyIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_c216eb57f15245c69e17899ba2d029a4",
+      "statement": "`SessionCostWarningScreen` is a persistent acknowledgement modal: it displays estimated cost, threshold, and `/offload` and `/clear` suggestions; clicks do not dismiss it, and Enter or Esc merely dismisses it without changing the session or cancelling running work.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/modals/session_cost.py#L18-L70",
+          "version": "repo-lines-v1:sha256:37148109d635f231752d059d7656f14f46d7235aebdfc51775e7c93a2d62973e:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2ZDJkYzhkMzBhMjQwMjNhZTQzZmRjMGU1NjFhZTcxZTIyMTgwY2M0YjEwMGI2OWQ4NGUzZTUyYTU0YzUwMzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkZmQwZjJmOGY2ZTBmZDg4ODg1OGQxNGFmNTVkMjEzNDk4M2Q3ZDA3ZWVlYjQ1NWJjYTNhMmNjMDVhOTY4NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVlNDliYzgwNjVhYjA4MWMyMjdiYjk4MWY0NjVjM2ZmYWFkMGE2ZTA3NjVkNjg5OTE2MDU5Njk5NmU1NTYxNDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_app.py#L31679-L31699",
+          "version": "repo-lines-v1:sha256:4e9acb3c09f3272d9acda0fda7be6ce3a25489eb14b31ca06c5e2670d961549f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0OTg1ODhlY2JiOTU2OGJkM2U4NTVjNWZhOTQwMzE1YjU5ZDYyYjZlZmRhY2Y5MzM3NjJkMzM5YzQ0YWNmMjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJjZGNkZTJjN2YzZWI3YTVlNjc3NTVkODExOWI0MDk0M2RjNjkzM2MyZTExZGRlZjFmM2U2ODhjNGNkOTc4MzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFjMWI2YWJiMTIwYWI1OWYzMzk3MWM1YTVjMDk5NGJhZGY4YjI0ZGU2Njg5ZGMxN2I3NTM1YjEzY2E0YTVhNzgifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/tui/modals/test_session_cost.py#L9-L24",
+          "version": "repo-lines-v1:sha256:622391d5d19b881d3447bc5fb55273be3e6733d71f2032e71698d604b9f230a8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxZjI4MjZmZTU0NGY1MjcxY2NmMGY4NzUzOTkwYzFmZDhkZTQ3Mzk4YjZlZWI2ZDlkMWUyNTZkYjY2YmU2ZTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzNjgwYTkxZjBhZTg0MDI3ZDhhNzM3NmVhNGRiMTRiYjU1MGVhMmYxMGY1NTc3YmFiZDk5NmY4OGFjMDQ4OTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMwMjVhZmZiOWRiMmRmZTQ1NTIzYmRjOWUyM2RhYWVkYjRmYjg3NDY1YWQyMWVlNzI4NTVkMmJjOWE4MzRkOWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_106b2fa77ee94c52a663673a211da0f9",
+      "statement": "`warnings.session_cost_threshold_usd` is a floating warning setting whose documented zero value disables warnings; the warning is display-only and does not cap spend or gate execution.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/PRICING.md#L2-L10",
+          "version": "repo-lines-v1:sha256:f3fd689e4329229ebb9e5cda2941488150b10023f762a3b8cceebcceb46965c7:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDdmZTYyMTFmMTVjMmJmMTM5MGYzNzFhNmRlN2IzNTgyZDIyMWJkOTFiYWE4ZTEyMDk3OGY5ZjYyNGYxN2RjNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjEsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzgxMDdkYjU3YmMwYzVlM2U1NTg5NWYzOWEwMGFmMTA2MWMxMDQ2YWNlYTc3YTNhNjJlZWU1ZDNmOWU2ZjhmYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWJmZTYzN2QyOGUwN2E3YWVjMGYxNTc5N2FjOGZkOWEwN2VkNDE0NDM5MTA2YmE0MzU2NzQ1NDYxZjFmYmE0MiJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L9143-L9156",
+          "version": "repo-lines-v1:sha256:f23dce9ba4931b62268822b6c2eefbb0e08ee4dd6cf94e38e490ac43639d3b7d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmOTRhY2UyZjYyOGE3NjEyNzAwZmUwY2IyMjY3OTQyNjFmMTBjYWQ3ZjdhNmRhMTA5MGI0ZjNlOWJiMzk5YjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVhOTk5ZjZkZGIxMWUxY2RkNzYzNTQwYjRlNWEyMTY5ZDcxMzFiNzI5NDEwMWU5ZDQ2MWQ4YWRjODcyZGQwODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhZDQwNzJkM2I1YTA0YTgyOTRkYTZiNjVjOTFiYzRkN2NiMGRlY2Y0MTQ5Yzk3NzZjNDZhYTRmYzI3ZDkwZTkifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/config_manifest.py#L2943-L2951",
+          "version": "repo-lines-v1:sha256:1c09025f69d76742bf83337e2846e1eda92cb2dadd55b6ade1627bd98b7a9873:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNGQxYmRjYjRjOTlhOGIxMmEwMjUyOTM4YWIzOTg3N2EyZWZhNDRmN2VlZDJiMmEwY2M0N2FlYTgwZjZkMDUxNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjQ3YmRhN2YxOWE0NTExY2Y5ZDkxODA3NDY1OTM2OGNiMTI0NTNkYjg3OTdmMDg5YjU4ZGFmNGFlMzEzM2E0OCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTY2MTVlYjk0YjBhNDhiYWQwYTlkYTZhMTM3MWFmY2U0ZmNhNDAwMmVlZWJhZmUxOTJlOGRiMDg4OTRjY2UyZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjQzNTZjNDE2OTNhMTg5MmY1YzhhZWUwNWQ0YjVhN2JmMzk5MDI5ZGJiMjZjMDY2M2YyMmJiNzMzNDY2MWU1YSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_7327fb3bb2ad4bba9d2dd5ba52c3195a",
+      "statement": "The TUI mounts a hidden-until-start `SubagentPanel` for `js_eval` task fan-out, and its stream adapter forwards only main-agent custom payloads with `type == \"subagent\"`; nested and unrelated custom events are excluded.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L4996-L5025",
+          "version": "repo-lines-v1:sha256:d291dc529613be136cabe180b64f9f338c52fbb66c0f902136038d096abe940e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlN2Y1OWMxMjk3MjI4YmMyOGNiN2YwZjcwZWIzMmI3ODY2YWE0OGQ3OTBkZGU2M2ZhYWM3NTgyMGY4MGJiODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyMzQxZTFlYjNmNDhlYzQ0ZDcwYTQwZTFmOTgyNzdmYjk5NjZiNWVhMWM2NmYwMzhiNDZkM2Y3ZmI5ZDI3MGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzMGJhNGMwYjE4YzIxY2FkZTFmYmJkZWM2YzhmMjQ2M2Y3YTFkNzYxYjU3Yzk3NTQ2MGIyMmQ1ODMxMWY0YzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzNmY3MmUxNTE3NmE0YzMzYmEzNzdjZThiZDI0Y2VmNzg1MDcxMzdiZWQyYjQ2YjNlMjNlNzY3NGEyNDY0MzgifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/textual_adapter.py#L1369-L1383",
+          "version": "repo-lines-v1:sha256:29b699677aa630845566a089d8d66520eefe37d49fd33d32ec120167b216dbdf:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4NGFkNTM0Nzk1ZTJiYzQwNDYwNGFkYTVkYmMwY2M2ZGU2ODlmZTE2MGMxYWFiOTRkNzcxYzEwMjlmZTRlYmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxNGJhMTBiYmQ5NDQ2ODI3YjQyNmY0YTYxNDI4ZDU0NDdjNzU2Yjc2ZjkzNGMyYTVkYzVhOTVjNWViZDQzNzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQyYmM5MjYxZTIxZDlmMzgyOGE1MWM2ODc3NjJlNzdhNDYyZGRkZTBkYjVlMmI5MmJlNjM5NDRmNzAwMzdjMmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZhOGY5YjZjNWU2MWNmNWY0YjJiOWFkMjcxNzU0ZWViOWM0NGJiNmFlZDYxY2RkNWVkNTk3NDc1NzExZTc2MGQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/textual_adapter.py#L2129-L2145",
+          "version": "repo-lines-v1:sha256:907e12da880bbfe8ea825a658b6aad06d430856b83ef18cbe9092ab33b7a591c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2MzNiMGFlYzdiN2U3MzY3NjZiYjQwNWVhNjk1MzE5MzliZmU5NTI1ZWEzNDk5ZjFlYzM4MDc4Mzk1ZWMwNWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjN2MyYmYzOWU4OTAwNjlmNjQ4YmZmZGVlOGY3NDk2MmNkMThhOTM2ZjQyMDlkZmZjMzA0ZGM4NmYxYzQ2YzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc1OTY4NWI5MTRiOWYyMWJkMjJlYWFiYWYzZDY3ZmIzMThiNTE1YzU5MGIyOGMxZWZhODg0YmU2YzRkMTNmMzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZlYmIwYzBlMzVjMWFhNTI2ZWY3ZDQ2YTJiNDM4YmM3NTQxMjY5ODMxMjViZjQ3N2M4YmU4OGU0ZDI0MDI3OTAifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/textual_adapter.py#L2465-L2473",
+          "version": "repo-lines-v1:sha256:5741b5e7faf0cab5b93ad8ab517c959f141cfbe0768f9dc3186031f67fa0eabb:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjkzY2Q2OTJhZWExMTE5OTdkODc5ODQ0Yjg4YTczYmMwZDliNjZkYWIwNmY5OTFmNmYzZWNiNjJhNmYxMzk1ZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzdhNjAzNDNkMGI3NWNhYTBlY2ZjYzA1MDFmYWM4NjRiMTI4MjljMmRmYjFmOTRhYzAxM2I0MzVkOThkYTkyZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTcwNTE1ZGJjYTA0ZGY1MzczMTM1ZTZmNDc2YWRjMWZiNzA2YzE2MDJiOGFmMDM1MDMwYTBjYzk2OWQyMGVhZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYWI4M2JkOTAwNjBjMGQyMDJhY2IzNDg0OTNiYWJjYjMxZWU5NGZjYThiMmM2ODQzNTAxZDc0ZDM0MmZkZmI5ZCJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/subagent_panel.py#L215-L223",
+          "version": "repo-lines-v1:sha256:32e2a7e17ad969545b296f305216a6da2e0564ca2a1b0eb480580ef9b32ebf1c:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODU3ZmVlODQ1Njg0ZGM1Njk3MGY5M2FjOGIzMWIzODJmNTNlYWZiZjhmNTNlYzkwZGE0MjZlYzJlOGJkZTJmOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTZhNzE1MjU3MmVlODRmMTA5MDZjNzRiOWYyYTkyNDM0ZGRhYjBlM2M0MjgxM2IwNGU1OTdlZmNlYzk1MWIyNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTM1YmQ3MzIxYzRjZjdjYThhMTUzZjRkYWZjNjBmN2VmZTRmM2FlZGY3OTBjNWY5OWI5OTY5ZTc2MmNmY2JiZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzQ4NDdlNjgyZGQzMGU2M2M2NzA3NWJkZmNmMTdlNDZlYzdlNmJkZGExOTBkOTAyZmE3NDU0YTg5MmI2YTAxYyJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_48d03ce3bd53482db80675c0d4dc1eb6",
+      "statement": "SubagentPanel groups lifecycle records by `eval_id`, preserves elapsed timing across replayed starts, surfaces orphan errors but ignores orphan completions, clears phase data for a new turn or `/clear`, and finalizes stranded running rows as cancelled when a turn is interrupted.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L19662-L19667",
+          "version": "repo-lines-v1:sha256:a21c7117d75a73d2bd042f85780323535ea64be3fbd2aea8e12a34b41b0aa3cd:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzRkM2M0NzAxOWUxMTJjNGJiOGFjZjE1YTg2OWI3Y2M4OTEyMDQzODUwOGI0NzBmMjFhNDcyNjAyNDI0NzJlMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWYzODkwOTZjZDI1NDFiMDY4OWU0ODhhNjFkYzJkMTc5MjBjMTU0MjBlN2NiN2VkNzY4ZjIwZjdkNDI3ZjVmMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDQzMjEzODMyYWVhNGNkMWU4YTc1M2Y4MmZkYzYzOGI1ZjRmYTkwMTFiYjYyMGM3Yzg0MzQ4ZWUwNDA3OTI3ZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODBlN2NlZDI0ZjI3YmM0MDgwMGQ1Mzk1YzlhZDZiNmFmNTE0NGQ0NzNmZjEyN2FiZGM0NjYyN2RjOWRmMGZlMiJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L19910-L19916",
+          "version": "repo-lines-v1:sha256:b5aa60b01d7c6ce6424931f24eba57d15b9b908afa60afd34d6f5190d57b253c:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjA5M2RiM2QxYzA5MmY0NTgyNDkxZWQwMjM3ZmFkMDIyYTMzMThhZDNjNDc2NjhhYzI3MWU2ZjgzNDFjZmEyYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGY4ODhhMmFmNGQ5YWMwNDM0OGMwNTBiMDEyZGU1MzQyODA3ZDBiMzdiMDM0ZTc1YWM1MGE4ZTMzNjgwMWQ3MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODM3OWViMjRjNDI4Y2ZlODE3ZWYzZTRhM2Q1YjlkODU2NjE3MzQ2NTlmN2RhZTE4MmI2NTc2YjYzYjQxZTk5MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmM1OGUxZDhmZTZhNDQxOTlhY2RmNzE2MmU5NTAwYWQ1Nzg5YzQzNzYxZmE1NmJjYTE4Y2QwZDU5MGYyMWJhYyJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/subagent_panel.py#L341-L479",
+          "version": "repo-lines-v1:sha256:0436de46f3ca20e52f7b96020c7b23590a5fb84f878bf0969263583dd2418b4b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjMjUzNmY5MGQwNDE3NjE5NWY3ZWFjZGRkM2NlN2ZmNjJmZjQ3ZDk2YTg4MmQ1ZTY1YTU0YTdkMTJkNjQ2MTJkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmMjVmZjQ2YTQ5OThlYTQ5YTcyZjQ3ODk2MjQ3NTlhNWYwYWMzNDFiNWYyYzZkOWYwY2Y0NWM4OTAyYTdkZjk4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmMWY4MzQyMTVhMTBhNDAyZmVlYmIyN2FiYWE2N2ZjOGI2OTIwNGI3M2RjYTc3ZDU0MjYzMjdiMDU3NDQ2YjQyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0M2VlNDI4OTU0ZjVjMDU2YWU1ZGYyMjhhMzc2ZGU3MGZmODRmZTQ1NjQ0YWY1ZmJkZDA1YTc5ZDQ4MWU3YmMzIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/subagent_panel.py#L570-L617",
+          "version": "repo-lines-v1:sha256:c23f3cc823569cb2806ddf863398b4ba85f88df7d6210415005b7b3e89425c66:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1M2NjMTg3YWE5ZTQwMmMwNDE2YWNhNGE4ZDJhMWJjMjAwZmZmMDkwNGRlODIwODkzNDNiODMwMTFkYzJlMDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYxNTE5ZThiYjIxZjkwYzZkOTAxNzIwOWQxZDU4MTJkZWJkODZiYTY4ZjllYTljMTMyMTczOWUxYmU3ZTc5M2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI4MGU2MGZhMmE4NzNhODIyMjMyNmNlOThhNjdlYTQ3NTY4ZTI5YjE3NDlhZDEwNzE3YTUzNmU5ZWFlY2Y2ZGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgzYWU3YjkyYmVhMjNiNmRiMWU3MDVkMmJjNmFlOThmNjg1OGNhMGJkZWUwZjExOTc4YTllMzVlOTc2Y2EyZmYifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/tui/widgets/test_subagent_panel.py#L155-L283",
+          "version": "repo-lines-v1:sha256:b3dcd4cc604165402c3f08a4e5229266d683b86a763ec7e01790186772c2fbea:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MTljYTlmMjAwMjBkYzg0NzUxN2QzOTcxYjVjOGNmNzA2Mjk0MDdhZDM3YTc0OTQ4NDNmMjIxMWJhYmE2MWQ4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyMTU4YmU5NTRhMGNiYTE0NDE3NTJkYTU2OWM1MzZmNDFmNTRkNzdhNTYzYTE2OTk5NzA0NWU0MmE1ODE1MDIwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4YzllYTY3MzAzNDBhNzc1YjEzMGE1OTE5NTYzODU0YzFlNzFmOGI1YjIzYmI5YTkzNzI5YjUxMjk0MWM0NmNiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0ZmUxMWEwNmI0Nzg4NzNhNmIzMTExYWI5NGIzZDAxZmU1NjhjMjY1NGQ5N2RkN2NhMGNjMTBiNzkyNDVhMjA5In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_6eb01de6c04e4691a5f0a036bf0e142a",
+      "statement": "SubagentPanel treats task labels and error text as untrusted LLM/JavaScript input: it removes control, escape, and bidi characters, bounds labels, and renders non-markup Textual content to prevent terminal or markup injection.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/subagent_panel.py#L1-L15",
+          "version": "repo-lines-v1:sha256:2cff82d1cf836bbb824a81823b5f7b7e022924e5f1416474a132caacb0e3f016:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0ZDFkMDZmMmQyNDc5NTI3MTExNDQ1NDRhODQ4ZjkyODZmOWNiOTRiMDgyYjcyOGY4YmYyMjhjYjJkYmRkMDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/subagent_panel.py#L202-L212",
+          "version": "repo-lines-v1:sha256:2884feccb23fbebc7b9111010442c17f6d80742e161342b3531a147c79b51c3b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1MzVlMWM0MTkzYmUyNDcyNWZmNGFkYmI5MzM2ZGU0Mjk3MTFhNTIzOThiOWJkNzViOWJkNzk4ODdhNWQwY2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkMDRiNGVlOGNmMTUyYzI2ZTA0ZDZhZGVjNzVlNGEwM2I4NWQ3YTUwZjA0ZjUzYzY4ZDRiN2M3NDE2OGU4YmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcxMGM2ZjMxOTlhOTgzZTE3OGViNWYyMjFiZTVlMTk2NGE1YTY1ZWEyMTgyOTA1MjBiZWY1NGQ4ODRmMGY1ZmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZkOGFjMzFiZjJhOTM3MjU4YTU1MDljNzUzNDNlNDFiOWYwYjQ5NjFkMmJlNTdkMjU2MTRiNDJkNzBkZDhlZWMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/subagent_panel.py#L311-L320",
+          "version": "repo-lines-v1:sha256:de3020d0d6d4b55edcba74646409b97dd3a0ce50593dba1f4260c6f9cec0a440:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmMzc5OTczMWQzMDI4MTc3MTE1Y2M1YWUxZjIwMDkwZWI5MzI1YzlkOTgxMTM4YjFjNzg0MjY0ZTAyNDRlNjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlYTRmZDY1MWNmMmE1YjI1MWJiYmY2MTQ0MzUwMDg1ZGI0YmQ2MmU5MzEyNDZhOGM5OWExZDdhNDRjMWE2NWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiMzkyNjdmZGUwZGMwMGIxNDNiNGFjMTZmYWFkMjYxNDlmNGE3YmMzNjYyNzAzZTMxYzZlNzA0ZjE3YmViZTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZmN2E0YTIyNmRiNmE5ZWY0MGVmZGRjN2JlNTRlNTMxYWQxYjczMGZiNzllMDFiY2E4MWVmN2JjYjM5OGQwM2IifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/tui/widgets/test_subagent_panel.py#L225-L237",
+          "version": "repo-lines-v1:sha256:764ceaf078d5774ca316fa377b93eeb55a90ef7c48d5be4ba6be9a7a2e9a6400:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4NGI0Y2Y3MjY1YzAxY2VkYjMxODQ5MzRiYjk0OTk3YmE4NTAyOWM5YTU0YzEwZDkwYTE0YmY3ZDgwNjYzNTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5ZjEyNGVhMWZhY2JkNDZhMTgxYTkwYmI2NTMzYTI4N2ExMTExMzViZGRlNDNhNTJkZDIxOTEwNmRkZjk2Y2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJhZjQ5ODJmNjUwZDljYzRhOWMwZjFiYjU5MTQ5NjIyMDBjYmJiMTA1N2RkMjM0ZThkMWRlYjZkOGE4ZjZkNDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1MzUzNTEwYTc1Njk5YjE2MWJmNjQyMWE5MzBlMzlmOTk4MzRjOTdlNjQwZjljMmQ4MjJjNjJiMTM1ODg4ZTEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-30T08:06:28.871Z"
+    "at": "2026-10-03T08:05:07.881Z"
   }
 }

@@ -324,6 +324,55 @@ async def test_revisited_thread_binds_before_history_mutations(
 
 
 @pytest.mark.usefixtures("isolated_state")
+async def test_cross_agent_resume_retries_after_cwd_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    (tmp_path / "other").mkdir()
+    monkeypatch.setattr("deepagents_code.app.user_deepagents_dir", lambda: tmp_path)
+    app = DeepAgentsApp(thread_id="current", server_kwargs={}, server_proc=MagicMock())
+    agent = RemoteAgent("http://test:0", local_ownership=True)
+    graph = MagicMock()
+    graph._validate_client.return_value.threads.create = AsyncMock()
+    state = MagicMock()
+    state.values = {"messages": [{"type": "human", "content": "Saved history"}]}
+    graph.aget_state = AsyncMock(return_value=state)
+    agent._graph = graph
+    monkeypatch.setattr(agent, "aget_session_cost", AsyncMock(return_value=None))
+    app._agent = agent
+    app._reserve_thread("current")
+    original = held_lease("current")
+    monkeypatch.setattr(app, "_mount_message", AsyncMock())
+    monkeypatch.setattr(app, "_thread_resume_block", AsyncMock(return_value=None))
+    monkeypatch.setattr(app, "_push_screen_wait", AsyncMock(return_value="switch"))
+    monkeypatch.setattr(
+        app, "_offer_thread_cwd_switch", AsyncMock(side_effect=["abort", "continue"])
+    )
+
+    def switch(_agent_name: str, **kwargs: object) -> bool:
+        app._lc_thread_id = str(kwargs["resume_thread_id"])
+        return True
+
+    restarted = AsyncMock(side_effect=switch)
+    monkeypatch.setattr(app, "_restart_server_for_agent_swap", restarted)
+    target = _ThreadsResumeTarget(thread_id="target", agent_name="other")
+    await app._confirm_then_resume_cross_agent_thread(target)
+    assert app._lc_thread_id == "current"
+    assert held_lease("current") is original
+    assert held_lease("target") is None
+    restarted.assert_not_awaited()
+
+    await app._confirm_then_resume_cross_agent_thread(target)
+    assert app._lc_thread_id == "target"
+    assert held_lease("current") is None
+    assert held_lease("target") is not None
+    restarted.assert_awaited_once()
+    payload = restarted.call_args.kwargs["preloaded_payload"]
+    assert [message.content for message in payload.messages] == ["Saved history"]
+
+
+@pytest.mark.usefixtures("isolated_state")
 @pytest.mark.parametrize("failure", ["ensure", "metadata", None])
 async def test_handoff_seed_releases_only_failed_reservations(
     monkeypatch: pytest.MonkeyPatch, failure: str | None

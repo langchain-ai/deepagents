@@ -29931,6 +29931,12 @@ class DeepAgentsApp(App):
             # Fetch before mutating cwd, agent identity, or the transcript. A
             # failed lookup therefore leaves the current session untouched.
             try:
+                from deepagents_code.client.remote_client import RemoteAgent
+
+                # A canceled attempt released the reservation after prefetch
+                # registered it, so retries must bind the newly acquired lease.
+                if isinstance(self._agent, RemoteAgent):
+                    self._agent.bind_thread_ownership(target.thread_id)
                 payload = await self._fetch_thread_history_data(target.thread_id)
             except Exception as exc:
                 logger.exception(

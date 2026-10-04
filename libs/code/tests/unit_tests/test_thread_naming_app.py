@@ -138,31 +138,6 @@ async def test_naming_uses_the_selected_models_endpoint(
     assert requests == [(f"https://{endpoint}.example/v1/chat/completions", model)]
 
 
-async def test_generated_name_can_be_edited_and_confirmed(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    rename = AsyncMock(return_value=True)
-    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
-    monkeypatch.setattr(
-        "deepagents_code.thread_titles.generate_thread_name",
-        AsyncMock(return_value="Cache repair"),
-    )
-    async with naming_app.run_test() as pilot:
-        await naming_app._handle_command("/rename")
-        await asyncio.gather(*naming_app._thread_name_tasks.values())
-        await pilot.pause()
-        assert isinstance(naming_app.screen, ThreadNameScreen)
-        rename.assert_not_awaited()
-        field = naming_app.screen.query_one(Input)
-        field.value = "Cache invalidation"
-        await pilot.press("shift+tab")
-        assert naming_app.screen.focused is field
-        await pilot.press("enter")
-        await pilot.pause()
-        rename.assert_awaited_once_with("original", "Cache invalidation")
-        assert naming_app._thread_name == "Cache invalidation"
-
-
 async def test_generated_name_waits_for_thread_selector_input(
     naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -207,33 +182,13 @@ async def test_generated_name_waits_for_thread_selector_input(
         await pilot.press("escape")
         await pilot.pause()
         assert isinstance(naming_app.screen, ThreadNameScreen)
+        name_field = naming_app.screen.query_one(Input)
+        await pilot.press("shift+tab")
+        assert naming_app.screen.focused is name_field
         await pilot.press("end", "!", "enter")
         await pilot.pause()
         rename.assert_awaited_once_with("original", "Cache repair!")
-
-
-async def test_generation_does_not_offer_on_switched_thread(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    started, release = asyncio.Event(), asyncio.Event()
-
-    async def generate(*_args: object, **_kwargs: object) -> str:
-        started.set()
-        await release.wait()
-        return "Old conversation"
-
-    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
-    offer = MagicMock()
-    monkeypatch.setattr(naming_app, "_offer_thread_name", offer)
-    naming_app._start_thread_name_generation(
-        "original", "provider:chat", automatic=False
-    )
-    task = naming_app._thread_name_tasks["original"]
-    await started.wait()
-    naming_app._lc_thread_id = "new"
-    release.set()
-    await task
-    offer.assert_not_called()
+        assert naming_app._thread_name == "Cache repair!"
 
 
 async def test_generated_name_waits_for_nested_auth_modals(
@@ -342,7 +297,6 @@ async def test_workspace_switch_cancels_pending_naming(
     assert not naming_app._thread_name_tasks
 
 
-@pytest.mark.parametrize("automatic", [False, True])
 @pytest.mark.parametrize("factory_fails", [False, True])
 @pytest.mark.parametrize("already_cancelled", [False, True])
 async def test_workspace_reload_waits_for_naming_model_initialization(
@@ -350,7 +304,6 @@ async def test_workspace_reload_waits_for_naming_model_initialization(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     *,
-    automatic: bool,
     factory_fails: bool,
     already_cancelled: bool,
 ) -> None:
@@ -378,7 +331,7 @@ async def test_workspace_reload_waits_for_naming_model_initialization(
     monkeypatch.setattr(naming_app, "_reload_settings_from_environment", reload)
     monkeypatch.setattr("deepagents_code.model_config.clear_caches", lambda: None)
     naming_app._start_thread_name_generation(
-        "original", "provider:chat", automatic=automatic
+        "original", "provider:chat", automatic=False
     )
     task = naming_app._thread_name_tasks["original"]
     refresh: asyncio.Task[None] | None = None

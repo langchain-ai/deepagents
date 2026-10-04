@@ -38,7 +38,7 @@ _TIPS: dict[str, int] = {
     "Use /model to switch models mid-conversation": 2,
     "Use /summarization-model to choose a model for compaction summaries": 1,
     "Use /uninstall to remove an optional integration": 1,
-    "Click effort in the footer during a run to choose the next run's effort": 1,
+    "Use /effort to change the current model's reasoning effort": 1,
     "Start with --show-reasoning to display provider-visible reasoning": 1,
     _TIP_EXTERNAL_EDITOR: 1,
     "Use /skill:<name> to invoke a skill directly": 1,

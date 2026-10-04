@@ -54,6 +54,7 @@ from deepagents_talon.interfaces import (
     ConversationDeliveryRuntime,
     ConversationHistoryRuntime,
     CronScheduler,
+    LocalToolsReloadableRuntime,
     MCPReloadableRuntime,
     ModelSelectableRuntime,
     ProgressMessageHandler,
@@ -101,6 +102,7 @@ logger = logging.getLogger(__name__)
 _STOP_COMMAND = chat_commands.STOP
 _NEW_COMMAND = chat_commands.NEW
 _MCP_RELOAD_COMMAND = chat_commands.MCP_RELOAD
+_TOOLS_RELOAD_COMMAND = chat_commands.TOOLS_RELOAD
 _HELP_COMMAND = chat_commands.HELP
 _CONTEXT_DOCTOR_COMMAND = chat_commands.CONTEXT_DOCTOR
 _MODEL_COMMAND = chat_commands.MODEL
@@ -119,6 +121,9 @@ _HISTORY_RESET_FAILURE_MESSAGE = (
 _MCP_RELOAD_SUCCESS_MESSAGE = "Reloaded MCP configuration."
 _MCP_RELOAD_FAILURE_MESSAGE = "Could not reload MCP configuration. Check Talon logs."
 _MCP_RELOAD_UNAVAILABLE_MESSAGE = "MCP configuration reload is unavailable."
+_TOOLS_RELOAD_SUCCESS_MESSAGE = "Reloaded local Python tools."
+_TOOLS_RELOAD_FAILURE_MESSAGE = "Could not reload local Python tools. Check Talon logs."
+_TOOLS_RELOAD_UNAVAILABLE_MESSAGE = "Local Python tool reload is unavailable."
 _MODEL_DEFAULT_ARGUMENT = "default"
 _GLOBAL_MODEL_KEY = "__default__"
 _MODEL_UNAVAILABLE_MESSAGE = "Model switching is unavailable."
@@ -580,6 +585,8 @@ class TalonHost:
             )
         elif command == _MCP_RELOAD_COMMAND:
             await self._reload_mcp_configuration(channel, message.conversation_id)
+        elif command == _TOOLS_RELOAD_COMMAND:
+            await self._reload_local_tools(channel, message.conversation_id)
         elif command == _CONTEXT_DOCTOR_COMMAND:
             await self._context_doctor(channel, message.conversation_id, conversation_root)
         elif command == _PAIR_COMMAND:
@@ -813,6 +820,19 @@ class TalonHost:
                 message = _MCP_RELOAD_FAILURE_MESSAGE
             else:
                 message = _MCP_RELOAD_SUCCESS_MESSAGE
+        await send_with_retry(lambda: channel.send_message(conversation_id, message))
+
+    async def _reload_local_tools(self, channel: ChannelAdapter, conversation_id: str) -> None:
+        if not isinstance(self.agent, LocalToolsReloadableRuntime):
+            message = _TOOLS_RELOAD_UNAVAILABLE_MESSAGE
+        else:
+            try:
+                await self.agent.reload_local_tools()
+            except Exception:  # noqa: BLE001  # do not disclose tool source or import errors
+                logger.warning("Local Python tool reload failed", exc_info=True)
+                message = _TOOLS_RELOAD_FAILURE_MESSAGE
+            else:
+                message = _TOOLS_RELOAD_SUCCESS_MESSAGE
         await send_with_retry(lambda: channel.send_message(conversation_id, message))
 
     async def receive_reaction(self, channel: ChannelAdapter, reaction: ChannelReaction) -> None:

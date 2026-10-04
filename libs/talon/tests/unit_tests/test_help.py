@@ -78,7 +78,16 @@ async def test_help_replies_without_invoking_agent(tmp_path: Path, command: str)
         assert len(channel.sent) == 1
         conversation_id, text = channel.sent[0]
         assert conversation_id == "chat"
-        for topic in ("/help", "/new", "/stop", "/mcp-reload", "MCP", "OAuth", "callback URL"):
+        for topic in (
+            "/help",
+            "/new",
+            "/stop",
+            "/mcp-reload",
+            "/tools-reload",
+            "MCP",
+            "OAuth",
+            "callback URL",
+        ):
             assert topic in text
     finally:
         await host.stop()

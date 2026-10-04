@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 from contextlib import contextmanager
+from importlib.machinery import SourceFileLoader
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -13,7 +14,7 @@ from langchain_core.tools import BaseTool
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
     from pathlib import Path
-    from types import ModuleType
+    from types import CodeType, ModuleType
 
 
 class LocalToolError(ValueError):
@@ -74,9 +75,17 @@ def _tool_files(directory: Path) -> list[Path]:
     return paths
 
 
+class _FreshSourceLoader(SourceFileLoader):
+    def get_code(self, fullname: str) -> CodeType:
+        path = self.get_filename(fullname)
+        return self.source_to_code(self.get_data(path), path)
+
+
 def _import_module(path: Path) -> ModuleType:
     name = f"_talon_local_tools_{uuid4().hex}"
-    spec = importlib.util.spec_from_file_location(name, path)
+    spec = importlib.util.spec_from_file_location(
+        name, path, loader=_FreshSourceLoader(name, str(path))
+    )
     if spec is None or spec.loader is None:
         msg = f"Cannot import local tools from {path}"
         raise LocalToolError(msg)

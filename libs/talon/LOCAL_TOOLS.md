@@ -42,8 +42,21 @@ and relative imports are not provided; put shared helpers in an installed packag
 
 Missing directories, import errors, duplicate tool names, and conflicts with
 Talon or MCP tool names fail startup. Symlinked Python files must resolve inside
-the configured directory. Tools are imported once per runtime; restart Talon to
-activate edits. MCP and subagent reloads preserve the loaded Python tools.
+the configured directory. Send `/tools-reload` after adding, editing, or deleting
+Python tool files to activate changes without restarting Talon. For example,
+`DEEPAGENTS_TALON_TOOLS_DIRS=./tools` loads a folder in your repository.
+On Slack, use `/talon tools-reload` in a DM or mention the bot with
+`@Talon /tools-reload` in a channel thread. The command is also listed in `/help`
+and registered as a Discord application command.
+
+Reload reimports the configured files and validates the new tool catalog and
+subagent attachments before activation. Import or validation failures leave the
+previous tools active. MCP and subagent reloads preserve the latest loaded Python
+tools. Successful reloads affect subsequent turns; running turns and background
+tasks retain their original tools. Retired import generations remain registered
+until shutdown, so repeated reloads can increase memory usage. Reload does not
+cancel ongoing work or reset conversation history. Installed dependency modules
+are not reloaded; restart Talon after changing those.
 
 Embedding hosts can pass `tools_dirs=[Path("/opt/my-talon-tools")]` to
 `DeepAgentRuntime`. This is a new optional keyword-only parameter; existing
@@ -54,11 +67,13 @@ per-task tool selection; they are not attached to every subagent automatically.
 ## Trust and approvals
 
 **Only load code you trust as much as Talon itself.** Imports execute arbitrary
-Python on the host at startup, with Talon's privileges and access to process
-credentials. Local tools also run on the host even when shell and filesystem
-tools use a remote sandbox. Filesystem middleware does not constrain arbitrary
-Python tool code. Keep tool directories outside agent-writable workspaces, and
-do not point this setting at uploads, downloaded code, or other untrusted content.
+Python on the host at startup and on every reload, with Talon's privileges and
+access to process credentials. Reloading executes import-time side effects again;
+failed reloads cannot undo those effects. Local tools also run on the host even
+when shell and filesystem tools use a remote sandbox. Filesystem middleware does not constrain arbitrary
+Python tool code. If the agent edits tools in your repository, review those edits
+before requesting a reload: loading them grants Talon's full host privileges.
+Do not point this setting at uploads, downloaded code, or other untrusted content.
 The symlink check is not a sandbox or protection against a writer modifying code.
 
 Existing exact-name approval settings in the assistant's `tools.json` apply to

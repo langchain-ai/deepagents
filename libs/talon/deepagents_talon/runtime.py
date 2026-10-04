@@ -396,6 +396,7 @@ class DeepAgentRuntime:
         self._context_diagnostics: ContextDoctor | None = None
         self._attachments: list[Attachment] = []
         self._mcp_reload_failed = False
+        self._local_tools_reload_failed = False
         self._invocation_graph: contextvars.ContextVar[object | None] = contextvars.ContextVar(
             "talon_invocation_graph",
             default=None,
@@ -437,12 +438,13 @@ class DeepAgentRuntime:
         *,
         subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
         approvals: ApprovalSnapshot | None = None,
+        local_tools: tuple[BaseTool, ...] | None = None,
     ) -> object:
         resolved = [
             spec.copy() for spec in (self._resolved_subagents if subagents is None else subagents)
         ]
         snapshot = self._approval_snapshot(approvals)
-        tools = self._build_tools(runtime_tools)
+        tools = self._build_tools(runtime_tools, local_tools=local_tools)
         tools.extend(self.approval_store.tools(snapshot))
         interrupt_on = self._interrupt_on(snapshot)
         context_size = _context_size_from_env(self.env)
@@ -461,7 +463,7 @@ class DeepAgentRuntime:
             spec for spec in resolved if "runnable" not in spec and "graph_id" not in spec
         ]
         attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
-        self._validate_local_tools(attachments_tools)
+        self._validate_local_tools(attachments_tools, local_tools=local_tools)
         catalog = {
             name: tool
             for name, tool in _tool_map(attachments_tools).items()
@@ -811,6 +813,20 @@ class DeepAgentRuntime:
                 self._mcp_reload_failed = True
                 raise
 
+    async def reload_local_tools(self) -> None:
+        """Activate freshly imported tools for later turns, retaining active generations."""
+        async with self._tools_lock:
+            try:
+                with contextlib.ExitStack() as candidate:
+                    tools = candidate.enter_context(load_local_tools(self.tools_dirs))
+                    graph = self._create_graph(local_tools=tools)
+                    self._local_tool_modules.enter_context(candidate.pop_all())
+                    self._local_tools, self._graph = tools, graph
+                    self._local_tools_reload_failed = False
+            except Exception:
+                self._local_tools_reload_failed = True
+                raise
+
     def _replace_runtime_tools(
         self,
         tools: Sequence[BaseTool | Callable[..., object]],
@@ -850,7 +866,9 @@ class DeepAgentRuntime:
             return {
                 "agents": attachments,
                 "latest_agents": self._attachments,
-                "saved_changes_inactive": changed or self._mcp_reload_failed,
+                "saved_changes_inactive": (
+                    changed or self._mcp_reload_failed or self._local_tools_reload_failed
+                ),
                 "current_turn_uses_previous_graph": attachments is not self._attachments,
                 "running_tasks": "Running turns and tasks retain their original capabilities.",
             }
@@ -950,6 +968,8 @@ class DeepAgentRuntime:
     def _build_tools(
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
+        *,
+        local_tools: tuple[BaseTool, ...] | None = None,
     ) -> list[BaseTool | Callable[..., object]]:
         tools: list[BaseTool | Callable[..., object]] = [current_time, send_message]
         if self._smart_model is not None:
@@ -963,11 +983,16 @@ class DeepAgentRuntime:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())
         tools.extend(self.tools if runtime_tools is None else runtime_tools)
-        tools.extend(self._local_tools or ())
+        tools.extend((self._local_tools or ()) if local_tools is None else local_tools)
         return tools
 
-    def _validate_local_tools(self, tools: Sequence[BaseTool | Callable[..., object]]) -> None:
-        local = self._local_tools or ()
+    def _validate_local_tools(
+        self,
+        tools: Sequence[BaseTool | Callable[..., object]],
+        *,
+        local_tools: tuple[BaseTool, ...] | None = None,
+    ) -> None:
+        local = (self._local_tools or ()) if local_tools is None else local_tools
         if not local:
             return
         reserved = _DELEGATION_TOOLS | {

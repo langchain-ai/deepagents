@@ -19180,6 +19180,7 @@ class DeepAgentsApp(App):
             # the part that wedges the session, and it is already handed back.
             with suppress(Exception):
                 self._chat_input.set_cursor_active(active=True)
+        await self._drain_deferred_during_cleanup()
         if not self._pending_messages:
             return
         try:

@@ -132,6 +132,8 @@ async def test_thread_name_survives_checkpoints_and_manual_rename(
     from langchain_core.language_models.fake_chat_models import FakeListChatModel
     from langchain_core.messages import HumanMessage
 
+    from deepagents_code.thread_ownership import OWNER_KEY, ensure_owned
+
     monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
     await sessions.save_thread_seed(
         "named",
@@ -142,14 +144,18 @@ async def test_thread_name_survives_checkpoints_and_manual_rename(
     assert await sessions.rename_thread("named", "First title", only_if_unnamed=True)
     assert await sessions.rename_thread("named", "  Manual title  ")
     assert not await sessions.rename_thread("named", "Late auto", only_if_unnamed=True)
-    async with sessions.get_checkpointer() as checkpointer:
-        graph = create_agent(
-            FakeListChatModel(responses=["Reply"]), checkpointer=checkpointer
-        )
-        await graph.ainvoke(
-            {"messages": [HumanMessage("Continue")]},
-            {"configurable": {"thread_id": "named"}},
-        )
+    lease = ensure_owned("named")
+    try:
+        async with sessions.get_checkpointer() as checkpointer:
+            graph = create_agent(
+                FakeListChatModel(responses=["Reply"]), checkpointer=checkpointer
+            )
+            await graph.ainvoke(
+                {"messages": [HumanMessage("Continue")]},
+                {"configurable": {"thread_id": "named", OWNER_KEY: lease.token}},
+            )
+    finally:
+        lease.release()
     assert await sessions.get_thread_name("named") == "Manual title"
     assert (await sessions.list_threads())[0]["thread_name"] == "Manual title"
     assert await sessions.delete_thread("named")

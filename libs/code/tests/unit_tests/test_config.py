@@ -1828,33 +1828,10 @@ class TestWorkspaceStoredCredentials:
                 )
                 assert "".join(chunk.text for chunk in chunks) == "Hello"
 
-    async def test_stored_baseten_key_preserves_endpoint_alias(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """An explicit Baseten alias reaches both clients without conflicting URLs."""
-        from langchain_openai.chat_models.base import BaseChatOpenAI
-
-        from deepagents_code.config import use_environment
-
-        pytest.importorskip("langchain_baseten")
-        _stored_provider_config(monkeypatch, "baseten")
-        endpoint = "https://selected.example/v1"
-        with use_environment({}):
-            model = create_model(
-                "baseten:test-model",
-                extra_kwargs={"baseten_api_base": endpoint},
-            ).model
-        assert isinstance(model, BaseChatOpenAI)
-        try:
-            assert str(model.root_client.base_url).rstrip("/") == endpoint
-            assert str(model.root_async_client.base_url).rstrip("/") == endpoint
-        finally:
-            model.root_client.close()
-            await model.root_async_client.close()
-
     @pytest.mark.parametrize(
         ("provider", "endpoint_alias"),
         [
+            ("baseten", "baseten_api_base"),
             ("deepseek", "api_base"),
             ("fireworks", "fireworks_api_base"),
             ("groq", "groq_api_base"),
@@ -1878,7 +1855,8 @@ class TestWorkspaceStoredCredentials:
         _stored_provider_config(monkeypatch, provider)
         endpoint = "https://selected.example/v1"
         environment = dict.fromkeys(
-            model_config.PROVIDER_BASE_URL_ENV[provider], "https://gateway.example/v1"
+            model_config.PROVIDER_BASE_URL_ENV.get(provider, ()),
+            "https://gateway.example/v1",
         )
         for name, value in environment.items():
             monkeypatch.setenv(name, value)

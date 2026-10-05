@@ -8,11 +8,14 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from deepagents_code.model_config import (
+    CODEX_PROVIDER,
+    PROVIDER_API_KEY_ENV,
     ModelConfig,
     ModelProfileEntry,
     ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
+    _get_builtin_providers,
     get_available_models,
     get_model_profiles,
     get_provider_auth_status,
@@ -209,6 +212,24 @@ def load_model_catalog(
             info = providers[provider]
             if provider in available or info.install_extra or spec == current_spec:
                 models.append(spec)
+        except Exception:
+            logger.warning(
+                "Skipping unavailable catalog provider %s", provider, exc_info=True
+            )
+    # Custom entries need setup prompts even when an integration is missing or
+    # exposes no profiles. Keep readiness on the inference host, independent of
+    # the discovered model rows.
+    known_providers = (
+        _get_builtin_providers().keys()
+        | PROVIDER_API_KEY_ENV.keys()
+        | config.providers.keys()
+        | {CODEX_PROVIDER}
+    )
+    for provider in sorted(known_providers - providers.keys()):
+        if not config.is_provider_enabled(provider):
+            continue
+        try:
+            providers[provider] = _provider_entry(provider, config)
         except Exception:
             logger.warning(
                 "Skipping unavailable catalog provider %s", provider, exc_info=True

@@ -10,11 +10,11 @@ from pydantic import ValidationError
 from textual.app import App
 from textual.widgets import Input
 
-from deepagents_code import model_config
+from deepagents_code import config_manifest, model_catalog, model_config
 from deepagents_code._cli_context import INHERIT_SUMMARIZATION_MODEL
 from deepagents_code.app import DeepAgentsApp, DeferredAction
 from deepagents_code.model_catalog import CatalogProfile, CatalogProvider, ModelCatalog
-from deepagents_code.model_config import ProviderAuthState
+from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
 from deepagents_code.model_metadata import ModelMetadata
 from deepagents_code.tui.widgets.model_selector import (
     SUMMARIZATION_DEFAULT_SCOPE,
@@ -88,6 +88,75 @@ async def test_remote_picker_uses_catalog_for_highlighting_search_and_selection(
         await pilot.press("enter")
         await pilot.pause()
     selected.assert_called_once_with(("remote:resolved", "remote"))
+
+
+@pytest.mark.parametrize(
+    ("provider", "installed"),
+    [("groq", False), ("groq", True), ("ollama", False), ("custom", True)],
+)
+async def test_custom_provider_without_discovered_models_prompts_for_setup(
+    provider: str,
+    installed: bool,
+    isolated_config: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.tui.widgets.auth import AuthPromptScreen
+    from deepagents_code.tui.widgets.install_confirm import InstallProviderConfirmScreen
+
+    await asyncio.to_thread(
+        isolated_config.write_text,
+        '[models.providers.custom]\napi_key_env = "CUSTOM_KEY"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(model_catalog, "get_available_models", dict)
+    monkeypatch.setattr(model_catalog, "get_model_profiles", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        config_manifest, "is_provider_package_installed", lambda _provider: installed
+    )
+    monkeypatch.setattr(
+        model_catalog,
+        "get_provider_auth_status",
+        lambda name: ProviderAuthStatus(
+            state=ProviderAuthState.MISSING,
+            provider=name,
+            env_var=f"{name.upper()}_API_KEY",
+        ),
+    )
+    catalog = await asyncio.to_thread(model_catalog.load_model_catalog)
+    assert catalog.models == []
+
+    def client_probe(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Remote picker consulted local provider readiness")
+
+    monkeypatch.setattr(config_manifest, "is_provider_package_installed", client_probe)
+    monkeypatch.setattr(model_catalog, "get_provider_auth_status", client_probe)
+    selected = Mock()
+    screen = ModelSelectorScreen(
+        default_scope=None,
+        include_recent_models=False,
+        catalog_loader=AsyncMock(return_value=catalog),
+    )
+    spec = f"{provider}:custom-model"
+    app = App()
+    async with app.run_test() as pilot:
+        app.push_screen(screen, selected)
+        await pilot.pause()
+        screen.query_one("#model-filter", Input).value = spec
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        prompt_type = AuthPromptScreen if installed else InstallProviderConfirmScreen
+        assert isinstance(app.screen, prompt_type)
+        selected.assert_not_called()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is screen
+        assert screen.pending_install_extra is None
+        if not installed:
+            await pilot.press("enter", "enter")
+            await pilot.pause()
+            assert screen.pending_install_extra == provider
+            selected.assert_called_once_with((spec, provider))
 
 
 @pytest.mark.parametrize("resolution_fails", [False, True])

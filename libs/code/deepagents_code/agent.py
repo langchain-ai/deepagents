@@ -75,6 +75,7 @@ from deepagents_code._glm_5p2_profile import (
     _ensure_glm_5p2_profile_registered,
     _GlmTerminalStallRecovery,
 )
+from deepagents_code._invocation import invoked_name
 from deepagents_code._paths import (
     PATHS,
     ensure_agent_dir,
@@ -1787,6 +1788,7 @@ def get_system_prompt(
         .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
+        .replace("{cli_name}", invoked_name())
         .replace("{filesystem_tool_guidance}", filesystem_tool_guidance)
         .replace("{tool_approval_guidance}", tool_approval_guidance)
         .replace("{web_search_tool_guidance}", web_search_tool_guidance)

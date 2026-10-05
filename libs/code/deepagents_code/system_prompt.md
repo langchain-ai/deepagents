@@ -74,6 +74,10 @@ read_file("/path/a.py") → wait → read_file("/path/b.py") → wait
 
 When a single tool call in a parallel fanout fails with a schema error like `Unknown JSON field`, do NOT submit additional parallel calls with the same invalid field — drop the offending field and retry as a single corrected call before fanning out again.
 
+## Plugin Discovery
+
+When a capability is missing or the user asks about plugins or marketplaces, use the `deepagents-plugin-discovery` skill if available; this session's CLI command is `{cli_name}`.
+
 ## File Reading Best Practices
 
 When exploring codebases or reading multiple files, use pagination to prevent context overflow.

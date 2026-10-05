@@ -1758,6 +1758,76 @@ class TestWorkspaceStoredCredentials:
         assert os.environ[endpoint_env] == "https://gateway.example/v1"
         assert os.environ["OPENAI_API_KEY"] == "inherited-key"
 
+    @pytest.mark.parametrize("client_kind", ["sync", "async"])
+    @pytest.mark.parametrize("stream_usage", [None, True])
+    async def test_stored_openai_key_preserves_custom_client_streaming(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        client_kind: str,
+        stream_usage: bool | None,
+    ) -> None:
+        """Caller-owned clients omit streaming usage unless explicitly enabled."""
+        import httpx
+        from openai import AsyncOpenAI, OpenAI
+
+        from deepagents_code.config import use_environment
+
+        _stored_provider_config(monkeypatch, "openai")
+        endpoint = "https://custom.example/v1"
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert str(request.url) == endpoint + "/chat/completions"
+            payload = json.loads(request.content)
+            assert payload["stream"] is True
+            if stream_usage:
+                assert payload["stream_options"] == {"include_usage": True}
+            else:
+                assert "stream_options" not in payload
+            chunk = {
+                "choices": [{"delta": {"content": "Hello"}, "finish_reason": "stop"}]
+            }
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(respond)
+            ) as http_async_client:
+                extra_kwargs: dict[str, object] = {
+                    "use_responses_api": False,
+                    "http_client": http_client,
+                    "http_async_client": http_async_client,
+                }
+                if client_kind == "sync":
+                    extra_kwargs["client"] = OpenAI(
+                        api_key="custom-key",
+                        base_url=endpoint,
+                        http_client=http_client,
+                        max_retries=0,
+                    ).chat.completions
+                else:
+                    extra_kwargs["async_client"] = AsyncOpenAI(
+                        api_key="custom-key",
+                        base_url=endpoint,
+                        http_client=http_async_client,
+                        max_retries=0,
+                    ).chat.completions
+                if stream_usage is not None:
+                    extra_kwargs["stream_usage"] = stream_usage
+                with use_environment({}):
+                    model = create_model(
+                        "openai:gpt-5.5", extra_kwargs=extra_kwargs
+                    ).model
+                chunks = (
+                    list(model.stream("Hi"))
+                    if client_kind == "sync"
+                    else [chunk async for chunk in model.astream("Hi")]
+                )
+                assert "".join(chunk.text for chunk in chunks) == "Hello"
+
     async def test_stored_baseten_key_preserves_endpoint_alias(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

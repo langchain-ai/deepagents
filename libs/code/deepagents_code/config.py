@@ -6032,9 +6032,12 @@ def _apply_scoped_endpoint(
         if (
             provider == "openai"
             and kwargs.get("base_url") == _PROVIDER_NATIVE_BASE_URLS["openai"]
+            and kwargs.get("client") is None
+            and kwargs.get("async_client") is None
         ):
             # An explicit URL disables LangChain's native streaming-usage default.
-            # Restore it after endpoint overrides, preserving explicit opt-outs.
+            # Restore it only for clients constructed here; caller-owned clients
+            # can use a different endpoint. Preserve explicit opt-outs.
             kwargs.setdefault("stream_usage", True)
         return clear_headers
     if "base_url" in extra_kwargs:

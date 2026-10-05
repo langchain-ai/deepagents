@@ -9702,6 +9702,7 @@ class DeepAgentsApp(App):
             or self._thread_switching
             or not thread_id
             or expires_at is None
+            or self._active_turn_visible_output_started
             or self._cache_expiring_seen.get(thread_id) == expires_at
             or not 0
             < (expires_at - datetime.now(UTC)).total_seconds()
@@ -20080,6 +20081,8 @@ class DeepAgentsApp(App):
         self._agent_turn_started = False
         self._active_user_message = None
         self._active_turn_visible_output_started = False
+        if self._status_bar:
+            self._status_bar.set_cache_timing_paused(paused=False)
         queued_result: _GoalApplicationResult | None = None
         queued_objective: str | None = None
         try:
@@ -21742,6 +21745,8 @@ class DeepAgentsApp(App):
         seen work produced from it.
         """
         self._active_turn_visible_output_started = True
+        if self._status_bar:
+            self._status_bar.set_cache_timing_paused(paused=True)
 
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).

@@ -92,6 +92,34 @@ async def test_cache_expiring_notification_window(
         toast.assert_not_called()
 
 
+async def test_cache_expiring_notification_waits_for_output_to_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    app._lc_thread_id = "source"
+    app._status_bar = StatusBar()
+    app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(seconds=20)
+    notify = AsyncMock()
+    toast = MagicMock()
+    monkeypatch.setattr(type(app._hooks), "notify", notify)
+    monkeypatch.setattr(app, "notify", toast)
+    monkeypatch.setattr(app, "_set_spinner", AsyncMock())
+    monkeypatch.setattr(app, "_schedule_git_branch_refresh", MagicMock())
+    monkeypatch.setattr(app, "_process_next_from_queue", AsyncMock())
+    monkeypatch.setattr(app, "_maybe_drain_deferred", AsyncMock())
+
+    app._on_user_visible_output_started()
+    await app._notify_cache_expiring()
+    notify.assert_not_awaited()
+    toast.assert_not_called()
+
+    await app._cleanup_agent_task()
+    await app._notify_cache_expiring()
+    await app._notify_cache_expiring()
+    notify.assert_awaited_once()
+    toast.assert_called_once()
+
+
 @pytest.mark.parametrize("failure", [None, ClientHookStopError, RuntimeError])
 async def test_cache_expiring_dedup_and_rearm(
     failure: type[Exception] | None, monkeypatch: pytest.MonkeyPatch

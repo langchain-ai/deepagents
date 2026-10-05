@@ -369,6 +369,24 @@ class TestCacheTimingDisplay:
                 assert "bust" not in str(display.render())
                 assert bar._cache_timer is None
 
+    async def test_paused_countdown_survives_refresh_and_clears_on_reset(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            now = datetime.now(UTC)
+            with patch(
+                "deepagents_code.tui.widgets.status.datetime", wraps=datetime
+            ) as clock:
+                clock.now.return_value = now
+                bar.set_cache_timing(now, ttl_seconds=300)
+                bar.set_cache_timing_paused(paused=True)
+                clock.now.return_value = now + timedelta(seconds=45)
+                bar.set_cache_timing_paused(paused=True)
+                bar._tick_cache_timer()
+                assert bar._cache_timing_segment().endswith(" / 5:00")
+                bar.set_cache_timing(None)
+                bar.set_cache_timing(now, ttl_seconds=300)
+                assert bar._cache_timing_segment().endswith(" / 4:15")
+
     async def test_clear_stops_countdown(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)

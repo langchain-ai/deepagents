@@ -726,6 +726,7 @@ class StatusBar(Vertical):
         self.cache_expires_at: datetime | None = None
         self.cache_retention_confidence: CacheConfidence = "expired"
         self._cache_timer: Timer | None = None
+        self._cache_paused_at: datetime | None = None
         self._status_by_source: dict[StatusMessageSource, str] = {
             "agent": "",
             "hooks": "",
@@ -1187,9 +1188,8 @@ class StatusBar(Vertical):
         )
         if self.cache_expires_at is None:
             return written
-        remaining = max(
-            0, int((self.cache_expires_at - datetime.now(UTC)).total_seconds())
-        )
+        now = self._cache_paused_at or datetime.now(UTC)
+        remaining = max(0, int((self.cache_expires_at - now).total_seconds()))
         minutes, seconds = divmod(remaining, 60)
         countdown = (
             "uncertain"
@@ -1197,6 +1197,13 @@ class StatusBar(Vertical):
             else f"{minutes}:{seconds:02d}"
         )
         return f"{written} / {countdown}" if written else countdown
+
+    def set_cache_timing_paused(self, *, paused: bool) -> None:
+        """Freeze the displayed countdown without changing the recorded expiry."""
+        self._cache_paused_at = (
+            self._cache_paused_at or datetime.now(UTC) if paused else None
+        )
+        self._refresh_metrics()
 
     def _stop_cache_timer(self) -> None:
         """Stop the cache countdown timer."""
@@ -1322,6 +1329,7 @@ class StatusBar(Vertical):
                 or a minimum (`may_be_cold`), rather than an exact lifetime.
         """
         self._stop_cache_timer()
+        self._cache_paused_at = None
         self.cache_written_at = written_at
         self.cache_retention_confidence = retention_confidence
         retention_at = retention_at or written_at

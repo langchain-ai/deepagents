@@ -3986,6 +3986,9 @@ class DeepAgentsApp(App):
         self._rubric_model: str | None = self._rubric_startup_model
         """Thread-scoped grader model; `None` follows the active main model."""
 
+        self._rubric_model_selection = 0
+        """Invalidates older grader selections across resolution and installation."""
+
         self._rubric_model_recorded: bool = False
         """Whether the active thread has a recorded grader selection, including
         an explicit clear (which selects inheritance, not a model)."""
@@ -17263,6 +17266,8 @@ class DeepAgentsApp(App):
         model_spec: str | None,
         *,
         source: Literal["goal", "rubric"] = "rubric",
+        extra: str | None = None,
+        selection: int | None = None,
     ) -> None:
         """Set the thread's grader model without rebuilding the graph.
 
@@ -17274,15 +17279,34 @@ class DeepAgentsApp(App):
             model_spec: Model spec to grade with, or `None` to follow the
                 active main model.
             source: Which command invoked this, for wording and `show` hints.
+            extra: Provider integration to install before resolving the model.
+            selection: Original selection number when resuming deferred work.
         """
         from functools import partial
 
         label = "Goal grader" if source == "goal" else "Rubric grader"
 
+        if selection is None:
+            self._rubric_model_selection += 1
+            selection = self._rubric_model_selection
+        if selection != self._rubric_model_selection:
+            return
         if self._defer_model_selection(
             "rubric_model_switch",
-            partial(self._set_rubric_model, model_spec, source=source),
+            partial(
+                self._set_rubric_model,
+                model_spec,
+                source=source,
+                extra=extra,
+                selection=selection,
+            ),
         ):
+            return
+        if extra and model_spec is not None:
+            if await self._prepare_model_provider(extra, model_spec):
+                await self._set_rubric_model(
+                    model_spec, source=source, selection=selection
+                )
             return
 
         display: str | None = None
@@ -17291,10 +17315,14 @@ class DeepAgentsApp(App):
             try:
                 result = await self._resolve_auxiliary_model(model_spec)
             except Exception as exc:
+                if selection != self._rubric_model_selection:
+                    return
                 logger.exception("Failed to resolve %s model %s", label, model_spec)
                 await self._mount_message(
                     ErrorMessage(_build_model_switch_error_body(exc))
                 )
+                return
+            if selection != self._rubric_model_selection:
                 return
             display = f"{result.provider}:{result.model_name}"
             if display == self._rubric_model and self._rubric_model_recorded:
@@ -17321,24 +17349,28 @@ class DeepAgentsApp(App):
             )
             return
 
-        previous = self._rubric_model
-        previous_recorded = self._rubric_model_recorded
-        self._rubric_model = display
-        self._rubric_model_recorded = True
-        persisted = False
-        try:
-            async with self._goal_state_mutation_boundary():
+        async with self._goal_state_mutation_boundary():
+            # Another choice may arrive while a checkpoint write holds the lock.
+            if selection != self._rubric_model_selection:
+                return
+            previous = self._rubric_model
+            previous_recorded = self._rubric_model_recorded
+            self._rubric_model = display
+            self._rubric_model_recorded = True
+            persisted = False
+            try:
                 persisted = await self._persist_goal_rubric_state()
-        except Exception:
-            logger.exception(
-                "Failed to persist %s model %r for thread %s",
-                label.lower(),
-                display,
-                self._lc_thread_id,
-            )
+            except Exception:
+                logger.exception(
+                    "Failed to persist %s model %r for thread %s",
+                    label.lower(),
+                    display,
+                    self._lc_thread_id,
+                )
+            if not persisted:
+                self._rubric_model = previous
+                self._rubric_model_recorded = previous_recorded
         if not persisted:
-            self._rubric_model = previous
-            self._rubric_model_recorded = previous_recorded
             await self._mount_message(
                 ErrorMessage(
                     f"{label} model could not be saved to the thread and was "
@@ -24750,14 +24782,11 @@ class DeepAgentsApp(App):
         if role == "summarization":
             await self._set_summarization_model(model_spec, extra=extra)
             return
-
-        kinds: dict[str, DeferredActionKind] = {
-            "auto": "auto_classifier_model_switch",
-            "goal": "rubric_model_switch",
-            "rubric": "rubric_model_switch",
-        }
+        if role in {"goal", "rubric"}:
+            await self._set_rubric_model(model_spec, source=role, extra=extra)
+            return
         if self._defer_model_selection(
-            kinds[role],
+            "auto_classifier_model_switch",
             partial(
                 self._apply_auxiliary_model_selection,
                 model_spec,
@@ -24769,12 +24798,9 @@ class DeepAgentsApp(App):
             return
         if extra and not await self._prepare_model_provider(extra, model_spec):
             return
-        if role == "auto":
-            await self._set_auto_classifier_model(
-                model_spec, persisted_as_default=persisted_as_default
-            )
-        else:
-            await self._set_rubric_model(model_spec, source=role)
+        await self._set_auto_classifier_model(
+            model_spec, persisted_as_default=persisted_as_default
+        )
 
     async def _prepare_model_provider(self, extra: str, model_spec: str) -> bool:
         """Return whether provider installation and authentication succeeded."""

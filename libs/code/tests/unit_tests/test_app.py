@@ -10590,6 +10590,83 @@ class TestRubricCommand:
             respawn.assert_not_awaited()
             app._server_proc.update_env.assert_not_called()
 
+    @pytest.mark.parametrize("newer", ["clear", "custom:newer"])
+    @pytest.mark.parametrize("stale_fails", [False, True])
+    async def test_grader_picker_ignores_superseded_server_response(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        wait_for_modal: WaitForModal,
+        newer: str,
+        stale_fails: bool,
+    ) -> None:
+        """A slow picker resolution cannot undo or misreport a newer choice."""
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.model_catalog import ModelCatalog
+        from deepagents_code.model_metadata import ModelMetadata
+        from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def resolve(
+            _config: object, spec: str, **_kwargs: object
+        ) -> ModelMetadata:
+            if spec == "custom:older":
+                started.set()
+                await release.wait()
+                if stale_fails:
+                    msg = "stale model unavailable"
+                    raise ValueError(msg)
+            return ModelMetadata(spec.split(":")[1], "custom")
+
+        remote = RemoteAgent("http://test:0")
+        monkeypatch.setattr(remote, "aresolve_model", resolve)
+        monkeypatch.setattr(
+            remote,
+            "aget_model_catalog",
+            AsyncMock(
+                return_value=ModelCatalog(
+                    models=["custom:older"], profiles={}, providers={}
+                )
+            ),
+        )
+        monkeypatch.setattr(remote, "aensure_thread", AsyncMock())
+        persist = AsyncMock()
+        monkeypatch.setattr(remote, "aupdate_state", persist)
+        app = DeepAgentsApp()
+        monkeypatch.setattr(app, "_agent", remote)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "thread"
+            app._rubric_model = "custom:initial"
+            app._rubric_model_recorded = True
+            await app._handle_command("/goal model")
+            await wait_for_modal(pilot, ModelSelectorScreen, present=True)
+            app.screen.query_one(Input).value = "custom:older"
+            await pilot.pause()
+            await pilot.press("enter")
+            await asyncio.wait_for(started.wait(), timeout=5)
+            try:
+                await app._handle_command(f"/rubric model {newer}")
+            finally:
+                release.set()
+            await app.workers.wait_for_complete()
+
+            expected = None if newer == "clear" else newer
+            assert app._rubric_model == expected
+            assert app._rubric_model_recorded
+            persist.assert_awaited_once()
+            assert persist.await_args is not None
+            assert persist.await_args.args[1]["_rubric_model_spec"] == (
+                expected or INHERIT_RUBRIC_MODEL
+            )
+            reports = "\n".join(str(w._content) for w in app.query(AppMessage))
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "model set to custom:older" not in reports
+            assert "stale model unavailable" not in errors
+
     async def test_set_rubric_model_records_explicit_startup_model(self) -> None:
         """Selecting the startup model explicitly must pin it to the thread."""
         app = DeepAgentsApp(

@@ -1092,3 +1092,106 @@ async def test_clearing_auxiliary_choices_waits_for_active_turn(
         assert app._rubric_model_recorded
     assert app._model_override == "custom:main"
     resolve.assert_not_awaited()
+
+
+@pytest.mark.parametrize("blocked_step", ["install", "resolve"])
+@pytest.mark.parametrize("defer_clear", [False, True])
+async def test_grader_clear_supersedes_in_flight_selection(
+    blocked_step: str,
+    defer_clear: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A clear invalidates older work even before the busy session can apply it."""
+    from deepagents_code.model_metadata import ModelMetadata
+    from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
+
+    app = DeepAgentsApp()
+    remote = _make_remote_agent()
+    monkeypatch.setattr(app, "_agent", remote)
+    app._server_kwargs = {}
+    app._lc_thread_id = "thread"
+    app._rubric_model = "custom:initial"
+    app._rubric_model_recorded = True
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def install(_extra: str, *, auto_restart: bool) -> bool:
+        assert auto_restart
+        started.set()
+        await release.wait()
+        return True
+
+    async def resolve(_config: object, _spec: str, **_kwargs: object) -> ModelMetadata:
+        if blocked_step == "resolve":
+            started.set()
+            await release.wait()
+        return ModelMetadata("older", "custom")
+
+    monkeypatch.setattr(app, "_install_extra", install)
+    monkeypatch.setattr(
+        app, "_prompt_model_auth_if_needed", AsyncMock(return_value=True)
+    )
+    monkeypatch.setattr(app, "_mount_message", AsyncMock())
+    monkeypatch.setattr(app, "notify", Mock())
+    monkeypatch.setattr(remote, "aresolve_model", resolve)
+    monkeypatch.setattr(remote, "aensure_thread", AsyncMock())
+    persist = AsyncMock()
+    monkeypatch.setattr(remote, "aupdate_state", persist)
+
+    pending = asyncio.create_task(
+        app._apply_auxiliary_model_selection(
+            "custom:older",
+            "test-extra" if blocked_step == "install" else None,
+            role="goal",
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        app._agent_running = defer_clear
+        await app._set_rubric_model(None, source="rubric")
+    finally:
+        release.set()
+        await pending
+    if defer_clear:
+        assert app._rubric_model == "custom:initial"
+        persist.assert_not_awaited()
+        app._agent_running = False
+        await app._maybe_drain_deferred()
+
+    assert app._rubric_model is None
+    assert app._rubric_model_recorded
+    persist.assert_awaited_once()
+    assert persist.await_args is not None
+    assert persist.await_args.args[1]["_rubric_model_spec"] == INHERIT_RUBRIC_MODEL
+
+
+async def test_grader_selection_rechecks_after_waiting_for_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A superseded resolution must not commit after the state lock is released."""
+    from deepagents_code.model_metadata import ModelMetadata
+
+    app = DeepAgentsApp()
+    remote = _make_remote_agent()
+    monkeypatch.setattr(app, "_agent", remote)
+    app._lc_thread_id = "thread"
+    app._rubric_model = "custom:initial"
+    app._rubric_model_recorded = True
+    monkeypatch.setattr(app, "_mount_message", AsyncMock())
+    monkeypatch.setattr(
+        remote,
+        "aresolve_model",
+        AsyncMock(return_value=ModelMetadata("older", "custom")),
+    )
+    persist = AsyncMock(return_value=True)
+    monkeypatch.setattr(app, "_persist_goal_rubric_state", persist)
+
+    async with app._goal_state_lock:
+        older = asyncio.create_task(app._set_rubric_model("custom:older"))
+        await asyncio.sleep(0)
+        newer = asyncio.create_task(app._set_rubric_model(None))
+        await asyncio.sleep(0)
+    await asyncio.gather(older, newer)
+
+    assert app._rubric_model is None
+    persist.assert_awaited_once()

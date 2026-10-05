@@ -16,7 +16,16 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, TypeGuard, cast
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Literal,
+    NotRequired,
+    TypeGuard,
+    cast,
+    override,
+)
 from uuid import UUID, uuid5
 
 from langchain.agents.middleware.human_in_the_loop import (
@@ -228,6 +237,11 @@ class ServerHooksState(AgentState[Any]):
         reducers, so a reducer added before the marker is silently ignored.
     """
 
+    _hooks_session_gate: NotRequired[
+        Annotated[_SessionHookGate | None, PrivateStateAttr]
+    ]
+    """Expected hook context, replaced at the start of each independent turn."""
+
     _hooks_stop_continuation_count: NotRequired[Annotated[int, PrivateStateAttr]]
     """Stop-hook continuations in the current turn; reset to 0 when the loop ends."""
 
@@ -329,6 +343,31 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             and (server := _mcp_server_from_tool(tool)) is not None
         }
 
+    @override
+    def before_agent(
+        self,
+        state: ServerHooksState,
+        runtime: Runtime[ContextT],
+    ) -> dict[str, Any]:
+        """Checkpoint the turn's hook gate before any hook can interrupt.
+
+        Returns:
+            The expected hook gate for this independent turn.
+        """
+        return {"_hooks_session_gate": _session_gate(runtime.context)}
+
+    async def abefore_agent(
+        self,
+        state: ServerHooksState,
+        runtime: Runtime[ContextT],
+    ) -> dict[str, Any]:
+        """Checkpoint the turn's hook gate on async graph entry.
+
+        Returns:
+            The expected hook gate for this independent turn.
+        """
+        return self.before_agent(state, runtime)
+
     def before_model(
         self,
         state: ServerHooksState,
@@ -387,7 +426,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         Returns:
             Tool result with checkpointed post-hook bookkeeping when needed.
         """
-        gate = _session_gate(request.runtime.context)
+        gate = _validated_session_gate(request.state, request.runtime.context)
         call = _tool_call_data(request)
         pre = _pre_tool_outcome(request.state, call)
         context = _hook_context(
@@ -418,7 +457,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         Returns:
             Tool result with checkpointed post-hook bookkeeping when needed.
         """
-        gate = _session_gate(request.runtime.context)
+        gate = _validated_session_gate(request.state, request.runtime.context)
         call = _tool_call_data(request)
         pre = _pre_tool_outcome(request.state, call)
         context = _hook_context(
@@ -500,6 +539,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         state: ServerHooksState,
         runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
+        gate = _validated_session_gate(state, runtime.context)
         pending = _pending_post_tools(state)
         if not pending:
             return None
@@ -519,7 +559,6 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
             for message in messages[message_index + 1 :]
             if isinstance(message, ToolMessage)
         }
-        gate = _session_gate(runtime.context)
         config = _runtime_hook_config(runtime)
         context = _hook_context(runtime.context, config, self._cwd)
         updates: list[ToolMessage] = []
@@ -564,7 +603,7 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         state: ServerHooksState,
         runtime: Runtime[ContextT],
     ) -> dict[str, Any]:
-        gate = _session_gate(runtime.context)
+        gate = _validated_session_gate(state, runtime.context)
         precompact_enabled = _event_enabled(gate, HookEvent.PRE_COMPACT)
         pretool_enabled = _event_enabled(gate, HookEvent.PRE_TOOL_USE)
         if not precompact_enabled and not pretool_enabled:
@@ -728,9 +767,9 @@ class ServerHooksMiddleware(AgentMiddleware[ServerHooksState, ContextT, Response
         state: ServerHooksState,
         runtime: Runtime[ContextT],
     ) -> dict[str, Any] | None:
+        gate = _validated_session_gate(state, runtime.context)
         if not self._emit_stop:
             return None
-        gate = _session_gate(runtime.context)
         if not _event_enabled(gate, HookEvent.STOP):
             return None
         continuation = int(state.get(_STOP_STATE_KEY, 0) or 0)
@@ -784,6 +823,20 @@ def _session_gate(runtime_context: object) -> _SessionHookGate | None:
         "snapshot_id": snapshot_id,
         "events": frozenset(str(item) for item in events),
     }
+
+
+def _validated_session_gate(
+    state: Mapping[str, Any], runtime_context: object
+) -> _SessionHookGate | None:
+    gate = _session_gate(runtime_context)
+    expected = state.get("_hooks_session_gate")
+    if expected is not None and gate != expected:
+        msg = (
+            "Server hook context changed during an active turn. Pass the same "
+            "hooks_snapshot_id and hooks_server_events on every resume."
+        )
+        raise RuntimeError(msg)
+    return gate
 
 
 def _event_enabled(gate: _SessionHookGate | None, event: HookEvent) -> bool:

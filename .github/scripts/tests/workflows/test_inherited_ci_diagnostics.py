@@ -179,6 +179,51 @@ def test_detection_and_gate_preserve_parent_result(
     assert result.returncode == (0 if conclusion == "success" else 1)
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        "<html>Bad Gateway</html>",
+        '{"conclusion":',
+        '{"conclusion":"success"}\n{',
+        '"error"',
+        "[]",
+    ],
+)
+def test_invalid_parent_lookup_runs_normal_package_jobs(
+    tmp_path: Path, response: str
+) -> None:
+    bin_path = tmp_path / "bin"
+    bin_path.mkdir()
+    for name, body in {
+        "python3": "printf true",
+        "git": "printf abc123",
+        "gh": 'printf "%s" "$CHECK_RESPONSE"; exit 1',
+    }.items():
+        executable = bin_path / name
+        executable.write_text(f"#!/bin/sh\n{body}\n")
+        executable.chmod(0o755)
+    output = tmp_path / "output"
+    detector = _step("changes", "📝 Detect a changelog-only curated-notes apply")
+    result = subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", detector["run"]],
+        env={
+            **os.environ,
+            "PATH": f"{bin_path}:{os.environ['PATH']}",
+            "CHECK_RESPONSE": response,
+            "GITHUB_OUTPUT": str(output),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert outputs["only"] == "false"
+    assert outputs["prior-conclusion"] == ""
+    assert json.loads(outputs["parent-check"]) == {}
+    assert "running the normal package jobs" in result.stdout
+
+
 def test_diagnostics_cannot_replace_the_gate_or_require_write_permissions() -> None:
     workflow = yaml.safe_load(WORKFLOW.read_text())
     report = _step("ci_success", "Report inherited CI failure")

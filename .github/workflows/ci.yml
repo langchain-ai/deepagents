@@ -114,7 +114,9 @@ jobs:
               "repos/$GITHUB_REPOSITORY/commits/$parent/check-runs?check_name=%E2%9C%85%20CI%20Success&filter=latest&per_page=100" \
               --jq '[.check_runs[] | select(.name == "✅ CI Success")] | if length == 1 then .[0] | {id, conclusion, details_url, check_suite: {id: .check_suite.id}} else {} end' \
               2>/dev/null || true)"
-            parent_check="$(printf '%s' "$parent_check" | jq -c .)"
+            if ! parent_check="$(printf '%s' "$parent_check" | jq -cs 'if length == 1 and (.[0] | type) == "object" then .[0] else {} end' 2>/dev/null)"; then
+              parent_check='{}'
+            fi
             conclusion="$(printf '%s' "$parent_check" | jq -r '.conclusion // ""')"
             case "$conclusion" in
               success|failure) ;;

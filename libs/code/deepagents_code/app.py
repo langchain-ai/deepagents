@@ -19386,8 +19386,11 @@ class DeepAgentsApp(App):
         except Exception as exc:
             logger.warning("Thread name generation failed", exc_info=True)
             if not automatic and thread_id == self._lc_thread_id and not self._exiting:
+                reason = str(exc) or type(exc).__name__
+                if isinstance(exc, TimeoutError):
+                    reason = "Request timed out. Try /rename again."
                 self.notify(
-                    f"Could not generate a thread name: {exc}",
+                    f"Could not generate a thread name: {reason}",
                     severity="error",
                     markup=False,
                 )

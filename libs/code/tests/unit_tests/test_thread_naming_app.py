@@ -62,6 +62,34 @@ async def test_rename_submission_runs_while_busy(
             rename.assert_awaited_once_with("original", "Release audit")
 
 
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (TimeoutError(), "Request timed out. Try /rename again."),
+        (ValueError(), "ValueError"),
+        (ValueError("Provider unavailable"), "Provider unavailable"),
+    ],
+)
+async def test_manual_naming_failure_has_readable_reason(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    reason: str,
+) -> None:
+    notify = MagicMock()
+    monkeypatch.setattr(naming_app, "notify", notify)
+    monkeypatch.setattr(
+        "deepagents_code.thread_titles.generate_thread_name",
+        AsyncMock(side_effect=error),
+    )
+
+    await naming_app._generate_thread_name("original", "provider:chat", automatic=False)
+
+    notify.assert_called_once_with(
+        f"Could not generate a thread name: {reason}", severity="error", markup=False
+    )
+
+
 @pytest.mark.parametrize("automatic", [False, True])
 @pytest.mark.parametrize("rename_model", ["", "openai:test-titles", "openai:test-chat"])
 async def test_naming_uses_the_selected_models_endpoint(

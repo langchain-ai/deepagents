@@ -6403,19 +6403,31 @@ def _create_model_from_class(
         raise ModelConfigError(msg)
 
     try:
+        if provider == "perplexity" and kwargs.get("base_url"):
+            return _create_perplexity_model(model_name, kwargs, model_class=cls)
         return cls(model=model_name, **kwargs)
     except Exception as e:
         msg = f"Failed to instantiate '{class_path}' for '{provider}:{model_name}': {e}"
         raise ModelConfigError(msg) from e
 
 
-def _create_perplexity_model(model_name: str, kwargs: dict[str, Any]) -> BaseChatModel:
+def _create_perplexity_model(
+    model_name: str,
+    kwargs: dict[str, Any],
+    *,
+    model_class: type[BaseChatModel] | None = None,
+) -> BaseChatModel:
     """Apply the endpoint to SDK clients before any requests can be made.
 
     `ChatPerplexity` does not expose `base_url`; passing it to the integration
     would send it as a completion parameter while its SDK rereads the process
     environment. Client construction is local, so set each instance's endpoint
     before returning the model. Explicitly supplied clients retain their settings.
+
+    Args:
+        model_name: Model identifier.
+        kwargs: Constructor parameters including the resolved `base_url`.
+        model_class: Configured class to construct instead of `init_chat_model`.
 
     Returns:
         Model with the resolved endpoint on both SDK clients.
@@ -6424,7 +6436,11 @@ def _create_perplexity_model(model_name: str, kwargs: dict[str, Any]) -> BaseCha
 
     kwargs = dict(kwargs)
     base_url = kwargs.pop("base_url")
-    model = init_chat_model(model_name, model_provider="perplexity", **kwargs)
+    model = (
+        model_class(model=model_name, **kwargs)
+        if model_class is not None
+        else init_chat_model(model_name, model_provider="perplexity", **kwargs)
+    )
     for attribute in ("client", "async_client"):
         if not kwargs.get(attribute):
             getattr(model, attribute).base_url = base_url

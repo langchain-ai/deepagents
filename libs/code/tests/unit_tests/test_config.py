@@ -1981,6 +1981,74 @@ class TestWorkspaceStoredCredentials:
             sync_client.close()
             await async_client.close()
 
+    @pytest.mark.parametrize("endpoint_source", ["native", "stored", "caller"])
+    async def test_perplexity_class_path_invokes_with_resolved_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch, endpoint_source: str
+    ) -> None:
+        """Class-path models use the resolved endpoint for sync and async calls."""
+        import os
+        from functools import partial
+
+        import httpx
+        from langsmith import tracing_context
+
+        from deepagents_code.config import use_environment
+
+        integration = pytest.importorskip("langchain_perplexity.chat_models")
+        endpoint = "https://selected.example/v1"
+        config = _stored_provider_config(
+            monkeypatch,
+            "perplexity",
+            base_url=endpoint if endpoint_source == "stored" else None,
+        )
+        config.providers["perplexity"]["class_path"] = (
+            "langchain_perplexity:ChatPerplexity"
+        )
+        monkeypatch.setenv("PERPLEXITY_BASE_URL", "https://gateway.example/v1")
+        expected = (
+            "https://api.perplexity.ai" if endpoint_source == "native" else endpoint
+        )
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert str(request.url) == expected + "/chat/completions"
+            assert request.headers["authorization"] == "Bearer stored-key"
+            return httpx.Response(
+                200,
+                json={
+                    "id": "test-completion",
+                    "model": "test-model",
+                    "choices": [{"message": {"role": "assistant", "content": "Hello"}}],
+                },
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(respond)
+            ) as http_async_client:
+                monkeypatch.setattr(
+                    integration,
+                    "Perplexity",
+                    partial(integration.Perplexity, http_client=http_client),
+                )
+                monkeypatch.setattr(
+                    integration,
+                    "AsyncPerplexity",
+                    partial(integration.AsyncPerplexity, http_client=http_async_client),
+                )
+                extra_kwargs = (
+                    {"base_url": endpoint} if endpoint_source == "caller" else {}
+                )
+                with use_environment(
+                    {"PERPLEXITY_BASE_URL": "https://gateway.example/v1"}
+                ):
+                    model = create_model(
+                        "perplexity:test-model", extra_kwargs=extra_kwargs
+                    ).model
+                with tracing_context(enabled=False):
+                    assert model.invoke("Hi").content == "Hello"
+                    assert (await model.ainvoke("Hi")).content == "Hello"
+        assert os.environ["PERPLEXITY_BASE_URL"] == "https://gateway.example/v1"
+
     @pytest.mark.parametrize("selector", ["parameter", "environment", "project"])
     async def test_stored_google_key_preserves_vertex_endpoint(
         self, monkeypatch: pytest.MonkeyPatch, selector: str

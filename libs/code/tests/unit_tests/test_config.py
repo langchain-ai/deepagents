@@ -1511,6 +1511,27 @@ class TestDefaultModelSpecAllowlist:
             _get_default_model_spec()
 
 
+def _stored_provider_config(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    *,
+    base_url: str | None = None,
+) -> ModelConfig:
+    config = ModelConfig(providers={provider: {}})
+    monkeypatch.setattr(ModelConfig, "load", classmethod(lambda _cls: config))
+    monkeypatch.setattr(
+        model_config.auth_store,
+        "get_stored_key",
+        lambda name: "stored-key" if name == provider else None,
+    )
+    monkeypatch.setattr(
+        model_config.auth_store,
+        "get_stored_base_url",
+        lambda name: base_url if name == provider else None,
+    )
+    return config
+
+
 class TestWorkspaceStoredCredentials:
     """Stored auth remains workspace-local during server model construction."""
 
@@ -1625,33 +1646,115 @@ class TestWorkspaceStoredCredentials:
         assert "OPENAI_API_KEY" not in os.environ
         assert "OPENAI_BASE_URL" not in os.environ
 
-    @patch("langchain.chat_models.init_chat_model")
-    def test_stored_native_key_clears_workspace_endpoint(
+    @pytest.mark.parametrize(
+        ("endpoint_source", "usage_override", "endpoint_env"),
+        [
+            ("native", "default", "OPENAI_BASE_URL"),
+            ("native", "default", "OPENAI_API_BASE"),
+            ("native", "provider", "OPENAI_BASE_URL"),
+            ("native", "model", "OPENAI_BASE_URL"),
+            ("native", "caller", "OPENAI_BASE_URL"),
+            ("native", "stream_options", "OPENAI_BASE_URL"),
+            ("stored", "default", "OPENAI_BASE_URL"),
+            ("stored", "default", "OPENAI_API_BASE"),
+            ("prefixed", "default", "OPENAI_BASE_URL"),
+            ("config", "default", "OPENAI_BASE_URL"),
+            ("caller", "default", "OPENAI_BASE_URL"),
+        ],
+    )
+    async def test_stored_openai_streaming_usage(
         self,
-        mock_init_chat_model: Mock,
         monkeypatch: pytest.MonkeyPatch,
+        endpoint_source: str,
+        usage_override: str,
+        endpoint_env: str,
     ) -> None:
-        """A stored native key is not sent to a workspace gateway URL."""
-        from deepagents_code.config import create_model, use_environment
+        """Native streams report usage while endpoints and opt-outs stay honored."""
+        import os
 
-        mock_model = Mock()
-        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
-        mock_init_chat_model.return_value = mock_model
-        monkeypatch.setattr(
-            "deepagents_code.model_config.auth_store.get_stored_key",
-            lambda provider: "stored-key" if provider == "openai" else None,
+        import httpx
+        from langchain_openai import ChatOpenAI
+
+        from deepagents_code.config import use_environment
+
+        endpoint = "https://selected.example/v1"
+        config = _stored_provider_config(
+            monkeypatch,
+            "openai",
+            base_url=endpoint if endpoint_source == "stored" else None,
         )
-        monkeypatch.setattr(
-            "deepagents_code.model_config.auth_store.get_stored_base_url",
-            lambda _provider: None,
-        )
+        provider = config.providers["openai"]
+        if endpoint_source == "config":
+            provider["base_url"] = endpoint
+        if usage_override == "provider":
+            provider["params"] = {"stream_usage": False}
+        elif usage_override == "model":
+            provider["params"] = {"gpt-5.5": {"stream_usage": False}}
+        monkeypatch.setenv("OPENAI_API_KEY", "inherited-key")
+        monkeypatch.setenv(endpoint_env, "https://gateway.example/v1")
+        environment = {
+            "OPENAI_API_KEY": "inherited-key",
+            endpoint_env: "https://gateway.example/v1",
+        }
+        if endpoint_source == "prefixed":
+            environment["DEEPAGENTS_CODE_OPENAI_BASE_URL"] = endpoint
+        extra_kwargs: dict[str, object] = {"use_responses_api": False}
+        if endpoint_source == "caller":
+            extra_kwargs["base_url"] = endpoint
+        if usage_override == "caller":
+            extra_kwargs["stream_usage"] = False
+        elif usage_override == "stream_options":
+            extra_kwargs["model_kwargs"] = {"stream_options": {"include_usage": False}}
 
-        with use_environment({"OPENAI_BASE_URL": "https://workspace.example/v1"}):
-            create_model("openai:gpt-5.5")
+        expected_usage = endpoint_source == "native" and usage_override == "default"
 
-        kwargs = mock_init_chat_model.call_args.kwargs
-        assert kwargs["api_key"] == "stored-key"
-        assert "base_url" not in kwargs
+        def respond(request: httpx.Request) -> httpx.Response:
+            assert request.headers["authorization"] == "Bearer stored-key"
+            payload = json.loads(request.content)
+            assert payload["stream"] is True
+            assert payload.get("stream_options", {}).get("include_usage", False) is (
+                expected_usage
+            )
+            expected_endpoint = (
+                "https://api.openai.com/v1" if endpoint_source == "native" else endpoint
+            )
+            assert str(request.url) == expected_endpoint + "/chat/completions"
+            chunk: dict[str, object] = {
+                "choices": [{"delta": {"content": "Hello"}, "finish_reason": "stop"}]
+            }
+            if expected_usage:
+                chunk["usage"] = {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 1,
+                    "total_tokens": 3,
+                }
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text=f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n",
+            )
+
+        with httpx.Client(transport=httpx.MockTransport(respond)) as http_client:
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(respond)
+            ) as http_async_client:
+                extra_kwargs.update(
+                    http_client=http_client, http_async_client=http_async_client
+                )
+                with use_environment(environment):
+                    model = create_model(
+                        "openai:gpt-5.5", extra_kwargs=extra_kwargs
+                    ).model
+                assert isinstance(model, ChatOpenAI)
+                for chunks in (
+                    list(model.stream("Hi")),
+                    [chunk async for chunk in model.astream("Hi")],
+                ):
+                    assert (
+                        any(chunk.usage_metadata for chunk in chunks) is expected_usage
+                    )
+        assert os.environ[endpoint_env] == "https://gateway.example/v1"
+        assert os.environ["OPENAI_API_KEY"] == "inherited-key"
 
     @patch("langchain.chat_models.init_chat_model")
     def test_explicit_key_does_not_use_stored_endpoint(
@@ -1682,6 +1785,155 @@ class TestWorkspaceStoredCredentials:
         kwargs = mock_init_chat_model.call_args.kwargs
         assert kwargs["api_key"] == "caller-key"
         assert "base_url" not in kwargs
+
+    @pytest.mark.parametrize(
+        "endpoint_source", ["native", "stored", "prefixed", "config", "caller"]
+    )
+    async def test_stored_google_key_uses_its_endpoint_in_sdk_client(
+        self, monkeypatch: pytest.MonkeyPatch, endpoint_source: str
+    ) -> None:
+        """Google cannot reread a gateway after scoped endpoint resolution."""
+        import os
+
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        from deepagents_code.config import use_environment
+
+        endpoint = "https://selected.example"
+        config = _stored_provider_config(
+            monkeypatch,
+            "google_genai",
+            base_url=endpoint if endpoint_source == "stored" else None,
+        )
+        if endpoint_source == "config":
+            config.providers["google_genai"]["base_url"] = endpoint
+        monkeypatch.setenv("GOOGLE_API_KEY", "inherited-key")
+        monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://gateway.example")
+        environment = {
+            "GOOGLE_API_KEY": "inherited-key",
+            "GOOGLE_GEMINI_BASE_URL": "https://gateway.example",
+        }
+        if endpoint_source == "prefixed":
+            environment["DEEPAGENTS_CODE_GOOGLE_GEMINI_BASE_URL"] = endpoint
+        extra_kwargs: dict[str, Any] = {"vertexai": False}
+        if endpoint_source == "caller":
+            extra_kwargs["base_url"] = endpoint
+
+        with use_environment(environment):
+            result = create_model("google_genai:gemini-test", extra_kwargs=extra_kwargs)
+
+        model = result.model
+        assert isinstance(model, ChatGoogleGenerativeAI)
+        assert model.client is not None
+        try:
+            expected = (
+                "https://generativelanguage.googleapis.com/"
+                if endpoint_source == "native"
+                else endpoint
+            )
+            assert model.client._api_client._http_options.base_url == expected
+            assert model.client._api_client.api_key == "stored-key"
+            assert os.environ["GOOGLE_GEMINI_BASE_URL"] == "https://gateway.example"
+            assert os.environ["GOOGLE_API_KEY"] == "inherited-key"
+        finally:
+            model.client.close()
+            await model.client.aio.aclose()
+
+    @pytest.mark.parametrize(
+        ("provider", "endpoint_env", "native_endpoint"),
+        [
+            ("groq", "GROQ_BASE_URL", "https://api.groq.com"),
+            ("groq", "GROQ_API_BASE", "https://api.groq.com"),
+            ("fireworks", "FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference"),
+            ("fireworks", "FIREWORKS_API_BASE", "https://api.fireworks.ai/inference"),
+            ("perplexity", "PERPLEXITY_BASE_URL", "https://api.perplexity.ai"),
+        ],
+    )
+    @pytest.mark.parametrize("stored_endpoint", [None, "https://stored.example/v1"])
+    async def test_stored_optional_provider_key_uses_its_endpoint_in_sdk_clients(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        endpoint_env: str,
+        native_endpoint: str,
+        stored_endpoint: str | None,
+    ) -> None:
+        """Both sync and async SDK clients bypass inherited gateway fallbacks."""
+        import os
+
+        from deepagents_code.config import use_environment
+
+        pytest.importorskip(f"langchain_{provider}")
+        _stored_provider_config(monkeypatch, provider, base_url=stored_endpoint)
+        key_env = model_config.PROVIDER_API_KEY_ENV[provider]
+        monkeypatch.setenv(key_env, "inherited-key")
+        monkeypatch.setenv(endpoint_env, "https://gateway.example/v1")
+        with use_environment(
+            {key_env: "inherited-key", endpoint_env: "https://gateway.example/v1"}
+        ):
+            model = create_model(f"{provider}:test-model").model
+
+        attributes = (
+            ("_sdk_client", "_async_sdk_client")
+            if provider == "fireworks"
+            else ("client", "async_client")
+        )
+        sync_client, async_client = (getattr(model, name) for name in attributes)
+        if provider == "groq":
+            sync_client, async_client = sync_client._client, async_client._client
+        try:
+            for client in (sync_client, async_client):
+                assert str(client.base_url).rstrip("/") == (
+                    stored_endpoint or native_endpoint
+                )
+                assert client.api_key == "stored-key"
+            assert os.environ[endpoint_env] == "https://gateway.example/v1"
+            assert os.environ[key_env] == "inherited-key"
+        finally:
+            sync_client.close()
+            await async_client.close()
+
+    @pytest.mark.parametrize("selector", ["parameter", "environment", "project"])
+    async def test_stored_google_key_preserves_vertex_endpoint(
+        self, monkeypatch: pytest.MonkeyPatch, selector: str
+    ) -> None:
+        """Selecting Vertex must not force Google's Gemini Developer API URL."""
+        from google.auth.credentials import AnonymousCredentials
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        from deepagents_code.config import use_environment
+
+        _stored_provider_config(monkeypatch, "google_genai")
+        monkeypatch.setattr(
+            "google.genai._api_client.load_auth",
+            lambda **_kwargs: (AnonymousCredentials(), "test-project"),
+        )
+        monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+        monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://gateway.example")
+        monkeypatch.delenv("GOOGLE_VERTEX_BASE_URL", raising=False)
+        monkeypatch.delenv("GOOGLE_GENAI_USE_VERTEXAI", raising=False)
+        extra_kwargs: dict[str, Any] = {"location": "us-central1"}
+        if selector == "parameter":
+            extra_kwargs["vertexai"] = True
+        elif selector == "environment":
+            monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        else:
+            extra_kwargs["project"] = "test-project"
+
+        with use_environment({}):
+            model = create_model(
+                "google_genai:gemini-test", extra_kwargs=extra_kwargs
+            ).model
+
+        assert isinstance(model, ChatGoogleGenerativeAI)
+        assert model.client is not None
+        try:
+            assert model.client._api_client._http_options.base_url == (
+                "https://us-central1-aiplatform.googleapis.com/"
+            )
+        finally:
+            model.client.close()
+            await model.client.aio.aclose()
 
     @patch("langchain.chat_models.init_chat_model")
     def test_stored_anthropic_key_clears_endpoint_and_headers(

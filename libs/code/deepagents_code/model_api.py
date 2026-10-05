@@ -58,12 +58,23 @@ async def model_metadata(request: Request) -> JSONResponse:
             "workspace",
             "model_spec",
             "extra_kwargs",
+            "purpose",
         }:
             return JSONResponse(
                 {"detail": "Invalid model metadata request."}, status_code=422
             )
         spec = body.get("model_spec")
         params = body.get("extra_kwargs")
+        purpose = body.get("purpose", "main")
+        if (
+            not isinstance(purpose, str)
+            or purpose not in {"main", "auxiliary"}
+            or (purpose == "auxiliary" and (spec is None or params is not None))
+        ):
+            return JSONResponse(
+                {"detail": "Invalid model resolution purpose or parameters."},
+                status_code=422,
+            )
         if (spec is not None and (not isinstance(spec, str) or not spec)) or (
             params is not None and not isinstance(params, dict)
         ):
@@ -104,14 +115,21 @@ async def model_metadata(request: Request) -> JSONResponse:
                     result = create_model(
                         spec,
                         extra_kwargs=params,
-                        profile_overrides=config.profile_overrides,
+                        profile_overrides=(
+                            config.profile_overrides if purpose == "main" else None
+                        ),
                         cli_max_retries=config.cli_max_retries,
                     )
+                profile = result.model.profile
+                structured_output = (
+                    profile.get("structured_output") if profile else None
+                )
                 return ModelMetadata(
                     result.model_name,
                     result.provider,
                     result.context_limit,
                     result.unsupported_modalities,
+                    structured_output=structured_output,
                 )
 
             metadata = await asyncio.to_thread(resolve)

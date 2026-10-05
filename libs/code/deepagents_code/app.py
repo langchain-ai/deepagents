@@ -756,37 +756,6 @@ def _goal_state_change_notice(
     return build_goal_state_notice(current, prior_blocker=prior_blocker)
 
 
-def _create_model_with_deepagents_import_lock(
-    model_spec: str | None = None,
-    *,
-    extra_kwargs: dict[str, Any] | None = None,
-    profile_overrides: dict[str, Any] | None = None,
-    cli_max_retries: int | None = None,
-) -> ModelResult:
-    """Create a model while serializing Deep Agents SDK import entry.
-
-    Args:
-        model_spec: Model specification in `provider:model` format.
-        extra_kwargs: Extra model constructor kwargs.
-        profile_overrides: Model profile metadata overrides.
-        cli_max_retries: Explicit `--max-retries` value, or `None` when the
-            call path carries no launch-time override. `create_model` defaults
-            this to `None` too, so passing it is the same as omitting it.
-
-    Returns:
-        Created model and resolved metadata.
-    """
-    with _DEEPAGENTS_IMPORT_LOCK:
-        from deepagents_code.config import create_model
-
-        return create_model(
-            model_spec,
-            extra_kwargs=extra_kwargs,
-            profile_overrides=profile_overrides,
-            cli_max_retries=cli_max_retries,
-        )
-
-
 def _resolve_parent_dir(path: str | Path) -> str:
     """Return the resolved parent directory for a path."""
     return str(Path(path).resolve().parent)
@@ -1121,7 +1090,6 @@ if TYPE_CHECKING:
         ColdCacheWarning,
         PromptCachePolicy,
     )
-    from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.configuration.types import ProviderStatus
     from deepagents_code.event_bus import EventSource, ExternalEvent
@@ -1134,6 +1102,7 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.model_config import MissingProviderPackageError
+    from deepagents_code.model_metadata import ModelMetadata
     from deepagents_code.plugins.models import (
         PluginDiscoveryResult,
         PluginInstance,
@@ -3444,8 +3413,7 @@ class DeepAgentsApp(App):
             profile_override: Extra profile fields from `--profile-override`,
                 retained so later profile-aware behavior stays consistent with
                 the app override, including model selection details,
-                offload budget display, and on-demand `create_model()`
-                calls such as `/offload`.
+                and offload budget display.
             summarization_model: Initial model used only for compaction summaries.
             server_proc: LangGraph server process for the interactive session.
             server_kwargs: When provided, server startup is deferred.
@@ -3455,10 +3423,10 @@ class DeepAgentsApp(App):
                 for `start_server_and_get_agent`.
             mcp_preload_kwargs: Kwargs for `_preload_session_mcp_server_info`,
                 run concurrently with server startup when `server_kwargs` is set.
-            model_kwargs: Kwargs for deferred `create_model()`.
+            model_kwargs: Startup model selection retained for recovery.
 
-                When provided, model creation runs in a background worker after
-                first paint instead of blocking startup.
+                When provided, the startup worker reads metadata from the server
+                after first paint.
             model_explicitly_set: Whether the user passed `--model` on the
                 command line.
 
@@ -3801,8 +3769,8 @@ class DeepAgentsApp(App):
 
         self._profile_override = profile_override
         """Extra profile fields from `--profile-override`, retained so later
-        profile-aware behavior (model selection, offload budget display,
-        on-demand `create_model()`) stays consistent with the app override."""
+        profile-aware behavior (model selection and offload budget display)
+        stays consistent with the app override."""
 
         self._server_proc = server_proc
         """Handle to the langgraph dev subprocess, when the app owns one.
@@ -3850,10 +3818,10 @@ class DeepAgentsApp(App):
         with server startup when `server_kwargs` is set."""
 
         self._model_kwargs = model_kwargs
-        """Kwargs for deferred `create_model()`.
+        """Startup model selection retained for recovery.
 
-        When non-`None`, model creation runs in a background worker after
-        first paint; consumed by the startup worker and reset to `None`.
+        When non-`None`, the startup worker reads server model metadata after
+        first paint, then resets this to `None`.
         """
 
         self._model_explicitly_set = model_explicitly_set
@@ -17192,6 +17160,9 @@ class DeepAgentsApp(App):
             current_model=current_model,
             current_provider=current_provider,
             cli_profile_override=self._profile_override,
+            check_provider_requirements=(
+                self._remote_agent() is None or self._server_kwargs is not None
+            ),
             title=title,
             description=description,
             # Grader models have no persistent config key yet, so there is
@@ -17307,9 +17278,6 @@ class DeepAgentsApp(App):
         """
         from functools import partial
 
-        from deepagents_code.config import detect_provider
-        from deepagents_code.model_config import ModelSpec, get_provider_auth_status
-
         label = "Goal grader" if source == "goal" else "Rubric grader"
 
         if self._agent_running or self._shell_running or self._connecting:
@@ -17325,46 +17293,20 @@ class DeepAgentsApp(App):
         display: str | None = None
         if model_spec is not None:
             model_spec = model_spec.removeprefix(":")
-            parsed = ModelSpec.try_parse(model_spec)
-            provider = parsed.provider if parsed else detect_provider(model_spec)
-            model_name = parsed.model if parsed else model_spec
-            display = (
-                model_spec if parsed or not provider else f"{provider}:{model_name}"
-            )
+            try:
+                result = await self._resolve_auxiliary_model(model_spec)
+            except Exception as exc:
+                logger.exception("Failed to resolve %s model %s", label, model_spec)
+                await self._mount_message(
+                    ErrorMessage(_build_model_switch_error_body(exc))
+                )
+                return
+            display = f"{result.provider}:{result.model_name}"
             if display == self._rubric_model and self._rubric_model_recorded:
                 await self._mount_message(
                     AppMessage(f"{label} model already set to {display}.")
                 )
                 return
-            # An external graph owns its provider packages, credentials, and
-            # model allowlist. Persist the spec and let that server validate it.
-            if self._remote_agent() is None or self._server_proc is not None:
-                auth_status = get_provider_auth_status(provider) if provider else None
-                if auth_status is not None and auth_status.blocks_start:
-                    await self._mount_message(
-                        ErrorMessage(
-                            f"Missing credentials: {auth_status.missing_detail()}\n\n"
-                            f"Run `/auth` for the '{auth_status.provider}' provider, "
-                            f"then set the grader model again.",
-                        ),
-                    )
-                    return
-                try:
-                    await asyncio.to_thread(
-                        _create_model_with_deepagents_import_lock,
-                        display,
-                        profile_overrides=self._profile_override,
-                    )
-                except Exception as exc:
-                    logger.exception(
-                        "Failed to resolve %s model %s",
-                        label.lower(),
-                        display,
-                    )
-                    await self._mount_message(
-                        ErrorMessage(_build_model_switch_error_body(exc))
-                    )
-                    return
         elif self._rubric_model is None and self._rubric_model_recorded:
             await self._mount_message(
                 AppMessage(f"{label} model already follows the active model.")
@@ -23758,6 +23700,9 @@ class DeepAgentsApp(App):
             current_model=current_model,
             current_provider=current_provider,
             cli_profile_override=self._profile_override,
+            check_provider_requirements=(
+                self._remote_agent() is None or self._server_kwargs is not None
+            ),
             recommended_models=_AUTO_CLASSIFIER_RECOMMENDED_MODELS,
             include_recent_models=False,
             title="Choose the Auto classifier model",
@@ -23785,9 +23730,6 @@ class DeepAgentsApp(App):
             model_spec: `provider:model` spec, or `None` to reuse the main model.
             persisted_as_default: Whether the selector already stored this spec.
         """
-        from deepagents_code.config import detect_provider
-        from deepagents_code.model_config import ModelSpec, get_provider_auth_status
-
         display: str | None = None
         unchanged = False
         if model_spec is not None:
@@ -23800,56 +23742,23 @@ class DeepAgentsApp(App):
                     )
                 )
                 return
-            parsed = ModelSpec.try_parse(model_spec)
-            provider = parsed.provider if parsed else detect_provider(model_spec)
-            model_name = parsed.model if parsed else model_spec
-            display = (
-                model_spec if parsed or not provider else f"{provider}:{model_name}"
-            )
-            # Deliberately no early return when the spec is unchanged: re-issuing
-            # the same spec is how a user retries after fixing credentials, and
-            # short-circuiting made that a no-op that reported success. The
-            # checks below re-run, so they get a real answer either way.
-            unchanged = display == self._auto_classifier_model
-            auth_status = get_provider_auth_status(provider) if provider else None
-            if auth_status is not None and auth_status.blocks_start:
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Missing credentials: {auth_status.missing_detail()}\n\n"
-                        f"Run `/auth` for the '{auth_status.provider}' provider, "
-                        "then set the Auto classifier model again.",
-                    ),
-                )
-                return
             try:
-                # No profile overrides: `--profile-override` describes the main
-                # model, and the server resolves the classifier without them, so
-                # validating with them would test a different model than the one
-                # Auto will actually build.
-                result = await asyncio.to_thread(
-                    _create_model_with_deepagents_import_lock,
-                    display,
-                )
+                result = await self._resolve_auxiliary_model(model_spec)
             except Exception as exc:
-                logger.exception("Failed to resolve Auto classifier model %s", display)
-                # This check runs in the client; the classifier is built in the
-                # agent server, which may be a separate process or a remote
-                # deployment with different credentials and provider packages. Say
-                # so rather than asserting the model is broken everywhere.
+                logger.exception(
+                    "Failed to resolve Auto classifier model %s", model_spec
+                )
                 await self._mount_message(
-                    ErrorMessage(
-                        f"{_build_model_switch_error_body(exc)}\n\n"
-                        "This check ran in the client. If the agent server has "
-                        "credentials or provider packages this machine lacks, set "
-                        "`[models].auto_classifier` in config.toml instead."
-                    )
+                    ErrorMessage(_build_model_switch_error_body(exc))
                 )
                 return
+            display = f"{result.provider}:{result.model_name}"
+            # Reissuing the same spec revalidates it after environment changes.
+            unchanged = display == self._auto_classifier_model
             # Profiles are incomplete, and the classifier already fails closed
             # at runtime, so an unsupported-looking model warns instead of being
             # blocked.
-            profile = getattr(result.model, "profile", None)
-            if isinstance(profile, dict) and profile.get("structured_output") is False:
+            if result.structured_output is False:
                 await self._mount_message(
                     AppMessage(
                         f"{display} does not advertise structured output. Auto "
@@ -24659,6 +24568,9 @@ class DeepAgentsApp(App):
             current_model=runtime_state.model_name,
             current_provider=runtime_state.model_provider,
             cli_profile_override=self._profile_override,
+            check_provider_requirements=(
+                self._remote_agent() is None or self._server_kwargs is not None
+            ),
             curated=curated,
             title="Choose a Recommended Model" if curated else None,
             description=(
@@ -31379,25 +31291,32 @@ class DeepAgentsApp(App):
         )
         return False
 
+    async def _resolve_auxiliary_model(self, model_spec: str) -> ModelMetadata:
+        """Resolve a secondary model in the workspace that will run it.
+
+        Returns:
+            Validated metadata without changing the active main model.
+
+        Raises:
+            RuntimeError: If there is no server-backed session.
+        """
+        remote = self._remote_agent()
+        if remote is None:
+            msg = (
+                "Model selection requires a server-backed session "
+                "connected to a thread."
+            )
+            raise RuntimeError(msg)
+        return await remote.aresolve_model(
+            {"configurable": {"thread_id": self._lc_thread_id}},
+            model_spec.removeprefix(":"),
+            purpose="auxiliary",
+        )
+
     async def _set_summarization_model(self, model_spec: str) -> None:
         """Validate and set the session's summarization model."""
-        if self._remote_agent() is not None and self._server_kwargs is None:
-            self._summarization_model_override = model_spec
-            await self._mount_message(
-                AppMessage(
-                    f"Summarization model requested: {model_spec}. The remote server "
-                    "will validate it at compaction time and use the main agent "
-                    "model if initialization fails."
-                )
-            )
-            return
-
         try:
-            result = await asyncio.to_thread(
-                _create_model_with_deepagents_import_lock,
-                model_spec,
-                cli_max_retries=(self._server_kwargs or {}).get("cli_max_retries"),
-            )
+            result = await self._resolve_auxiliary_model(model_spec)
         except Exception as exc:
             logger.exception("Failed to resolve summarization model %s", model_spec)
             await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
@@ -31911,17 +31830,16 @@ async def run_textual_app(
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained so later profile-aware behavior stays consistent with
-            the app override, including model selection details, offload
-            budget display, and on-demand `create_model()` calls such
-            as `/offload`.
+            the app override, including model selection details and offload
+            budget display.
         summarization_model: Initial model used only for compaction summaries.
         server_proc: LangGraph server process for the interactive session.
         server_kwargs: Kwargs for deferred `start_server_and_get_agent` call.
         mcp_preload_kwargs: Kwargs for concurrent MCP metadata preload.
-        model_kwargs: Kwargs for deferred `create_model()` call.
+        model_kwargs: Startup model selection retained for recovery.
 
-            When provided, model creation runs in a background worker after
-            first paint so the splash screen appears immediately.
+            When provided, the startup worker reads metadata from the server
+            after first paint so the splash screen appears immediately.
         model_explicitly_set: Whether the user passed `--model` on the command
             line.
 

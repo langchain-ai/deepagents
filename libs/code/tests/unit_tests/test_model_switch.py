@@ -834,7 +834,7 @@ class TestSummarizationModelCommand:
         resolved = Mock(provider="openai", model_name="gpt-5.4-mini")
 
         with patch(
-            "deepagents_code.app._create_model_with_deepagents_import_lock",
+            "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
             return_value=resolved,
         ):
             await app._handle_command("/summarization-model openai:gpt-5.4-mini")
@@ -858,14 +858,14 @@ class TestSummarizationModelCommand:
         resolved = Mock(provider="anthropic", model_name="claude-haiku-4-5")
 
         with patch(
-            "deepagents_code.app._create_model_with_deepagents_import_lock",
+            "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
             return_value=resolved,
         ):
             await app._handle_command("/summarization-model haiku")
 
         assert app._summarization_model_override == "anthropic:claude-haiku-4-5"
 
-    async def test_external_remote_defers_validation_to_server(self) -> None:
+    async def test_external_remote_validates_before_applying(self) -> None:
         """Remote-only packages and credentials must be resolved remotely."""
         app = DeepAgentsApp()
         app._agent = _make_remote_agent()  # ty: ignore[invalid-assignment]
@@ -874,17 +874,20 @@ class TestSummarizationModelCommand:
 
         with (
             patch(
-                "deepagents_code.app._create_model_with_deepagents_import_lock"
-            ) as create_model,
+                "deepagents_code.client.remote_client.RemoteAgent.aresolve_model",
+                return_value=Mock(
+                    provider="server_provider", model_name="remote-model"
+                ),
+            ) as resolve_model,
             patch.object(AppMessage, "__init__", capture_init),
         ):
             await app._handle_command(
                 "/summarization-model server_provider:remote-model"
             )
 
-        create_model.assert_not_called()
+        resolve_model.assert_awaited_once()
         assert app._summarization_model_override == "server_provider:remote-model"
-        assert any("remote server will validate it" in text for text in captured)
+        assert captured == ["Summarization model set to server_provider:remote-model."]
 
     @pytest.mark.parametrize("word", ["clear", "--clear", "reset", "CLEAR"])
     async def test_every_clearing_spelling_effort_accepts_works_here(
@@ -899,7 +902,7 @@ class TestSummarizationModelCommand:
         app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
 
         with patch(
-            "deepagents_code.app._create_model_with_deepagents_import_lock"
+            "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model"
         ) as create_model:
             await app._handle_command(f"/summarization-model {word}")
 
@@ -1088,7 +1091,7 @@ class TestSummarizationModelCommand:
 
         with (
             patch(
-                "deepagents_code.app._create_model_with_deepagents_import_lock"
+                "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model"
             ) as create_model,
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
@@ -1106,7 +1109,7 @@ class TestSummarizationModelCommand:
 
         with (
             patch(
-                "deepagents_code.app._create_model_with_deepagents_import_lock",
+                "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
                 side_effect=ValueError("bad model"),
             ),
             patch.object(ErrorMessage, "__init__", capture_init),

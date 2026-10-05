@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from deepagents_code.client.session_cost import SessionCost
     from deepagents_code.cost_tracking import CostBreakdown
     from deepagents_code.mcp_tools import MCPServerInfo
-    from deepagents_code.model_metadata import ModelMetadata
+    from deepagents_code.model_metadata import ModelMetadata, ModelPurpose
     from deepagents_code.offload_middleware import OffloadResult
     from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
 
@@ -424,8 +424,15 @@ class RemoteAgent:
         model_spec: str | None = None,
         *,
         extra_kwargs: dict[str, Any] | None = None,
+        purpose: ModelPurpose = "main",
     ) -> ModelMetadata:
         """Read a thread's metadata or validate a proposed switch on the server.
+
+        Args:
+            config: Thread configuration used to bind the workspace.
+            model_spec: Proposed model, or `None` to read startup metadata.
+            extra_kwargs: Constructor parameters for a main-model switch.
+            purpose: Auxiliary models resolve without main-model profile overrides.
 
         Returns:
             Validated metadata, without a provider model in the client process.
@@ -447,6 +454,7 @@ class RemoteAgent:
                         "workspace": workspace,
                         "model_spec": model_spec,
                         "extra_kwargs": extra_kwargs,
+                        **({"purpose": purpose} if purpose != "main" else {}),
                     },
                 )
             except APIStatusError as exc:

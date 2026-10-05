@@ -6596,11 +6596,17 @@ class DeepAgentsApp(App):
         # drains them. Deferred actions (model/thread switches queued during
         # the initial connect) are dropped because the failure invalidates
         # their assumptions; the user can re-issue them after recovery.
+        had_deferred_actions = bool(self._deferred_actions)
         self._deferred_actions.clear()
 
         # Failure surfaces only in chat — keeps recovery hint adjacent to the
         # input. Banner is set to idle above to drop the connecting spinner.
         text = f"Server failed to start: {self._server_startup_error}"
+        if had_deferred_actions:
+            text += (
+                "\n\nQueued changes were not applied. "
+                "Reissue those commands to try again."
+            )
         if (
             self._server_startup_missing_credentials_provider is not None
             and self._server_kwargs is not None
@@ -24704,10 +24710,12 @@ class DeepAgentsApp(App):
         if not (self._agent_running or self._shell_running or self._connecting):
             return False
         self._defer_action(DeferredAction(kind=kind, execute=execute))
-        if self._agent_running or self._shell_running:
-            self.notify(
-                "Model selection will apply after current work finishes.", markup=False
-            )
+        message = (
+            "Model selection will apply once the session is ready."
+            if self._connecting
+            else "Model selection will apply after current work finishes."
+        )
+        self.notify(message, markup=False)
         return True
 
     async def _apply_auxiliary_model_selection(

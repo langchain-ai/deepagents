@@ -507,6 +507,44 @@ async def test_default_can_be_saved_before_server_connects(
 
 
 @pytest.mark.parametrize(
+    "command", ["/offload model", "/auto model", "/goal model", "/rubric model"]
+)
+@pytest.mark.parametrize("selection", ["custom:new", "clear"])
+async def test_connecting_model_choices_report_queue_and_startup_failure(
+    command: str, selection: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed connection reports choices it could not apply."""
+    app = DeepAgentsApp()
+    notify = Mock()
+    monkeypatch.setattr(app, "notify", notify)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._connecting = True
+        app._summarization_model_override = "custom:old"
+        app._auto_classifier_model = "custom:old"
+        app._rubric_model = "custom:old"
+        app._rubric_model_recorded = True
+
+        await app._handle_command(f"{command} {selection}")
+
+        notify.assert_any_call(
+            "Model selection will apply once the session is ready.", markup=False
+        )
+        app.on_deep_agents_app_server_start_failed(
+            DeepAgentsApp.ServerStartFailed(error=RuntimeError("connection failed"))
+        )
+        await pilot.pause()
+
+        assert app._startup_failure_widget is not None
+        failure = str(app._startup_failure_widget._content)
+        assert "Queued changes were not applied" in failure
+        assert "Reissue those commands to try again" in failure
+        assert app._summarization_model_override == "custom:old"
+        assert app._auto_classifier_model == "custom:old"
+        assert app._rubric_model == "custom:old"
+
+
+@pytest.mark.parametrize(
     ("command", "attribute"),
     [
         ("/offload model", "_summarization_model_override"),

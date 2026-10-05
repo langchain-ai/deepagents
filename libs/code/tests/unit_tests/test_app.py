@@ -16699,21 +16699,26 @@ class TestDispatchModelSwitch:
         app.notify.assert_called_once()  # ty: ignore
         app._schedule_off_message_pump.assert_not_called()  # ty: ignore
 
-    async def test_defers_silently_while_only_connecting(self) -> None:
-        """A reconnect-only defer queues the switch without a toast."""
+    async def test_defers_with_notice_while_only_connecting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A connection delay reports that the requested switch is queued."""
         app = DeepAgentsApp()
         app._agent_running = False
         app._shell_running = False
         app._connecting = True
-        app._defer_action = MagicMock()  # ty: ignore
-        app._schedule_off_message_pump = MagicMock()  # ty: ignore
-        app.notify = MagicMock()  # ty: ignore
+        schedule = MagicMock()
+        notify = MagicMock()
+        monkeypatch.setattr(app, "_schedule_off_message_pump", schedule)
+        monkeypatch.setattr(app, "notify", notify)
 
         app._dispatch_model_switch("openai:gpt-5.5")
 
-        app._defer_action.assert_called_once()  # ty: ignore
-        app.notify.assert_not_called()  # ty: ignore
-        app._schedule_off_message_pump.assert_not_called()  # ty: ignore
+        assert len(app._deferred_actions) == 1
+        notify.assert_called_once_with(
+            "Model selection will apply once the session is ready.", markup=False
+        )
+        schedule.assert_not_called()
 
     async def test_deferred_model_switch_blocks_drain_until_confirmed(self) -> None:
         """A later deferred action cannot run while the confirmation is open."""

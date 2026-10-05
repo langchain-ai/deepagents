@@ -6014,20 +6014,34 @@ def _apply_scoped_endpoint(
     provider: str,
     kwargs: dict[str, Any],
     extra_kwargs: dict[str, Any] | None,
-) -> None:
+) -> bool:
     """Pair the resolved key with its endpoint on the workspace-scoped path.
 
     `apply_stored_credentials` is skipped while an environment is bound, so this
     is the only thing keeping a gateway key from reaching an endpoint that key
     was not issued for.
+
+    Returns:
+        Whether constructed clients must discard inherited gateway headers.
     """
     if not (extra_kwargs and "api_key" in extra_kwargs):
-        _apply_scoped_stored_endpoint(provider, kwargs)
+        clear_headers = _apply_scoped_stored_endpoint(provider, kwargs)
         if extra_kwargs and "base_url" in extra_kwargs:
             kwargs["base_url"] = extra_kwargs["base_url"]
-        return
+            clear_headers = False
+        if (
+            provider == "openai"
+            and kwargs.get("base_url") == _PROVIDER_NATIVE_BASE_URLS["openai"]
+            and kwargs.get("client") is None
+            and kwargs.get("async_client") is None
+        ):
+            # An explicit URL disables LangChain's native streaming-usage default.
+            # Restore it only for clients constructed here; caller-owned clients
+            # can use a different endpoint. Preserve explicit opt-outs.
+            kwargs.setdefault("stream_usage", True)
+        return clear_headers
     if "base_url" in extra_kwargs:
-        return
+        return False
 
     from deepagents_code.model_config import auth_store
 
@@ -6047,15 +6061,75 @@ def _apply_scoped_endpoint(
             provider,
         )
         kwargs.pop("base_url", None)
-        return
+        return False
     if stored_base_url and kwargs.get("base_url") == stored_base_url:
         kwargs.pop("base_url", None)
+    return False
 
 
-def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None:
-    """Pair stored credentials with their endpoint without mutating the process."""
+_PROVIDER_NATIVE_BASE_URLS: dict[str, str] = {
+    "anthropic": "https://api.anthropic.com",
+    "baseten": "https://inference.baseten.co/v1",
+    "cohere": "https://api.cohere.com",
+    "deepseek": "https://api.deepseek.com/v1",
+    "fireworks": "https://api.fireworks.ai/inference",
+    "google_genai": "https://generativelanguage.googleapis.com/",
+    "groq": "https://api.groq.com",
+    "mistralai": "https://api.mistral.ai/v1",
+    "nvidia": "https://integrate.api.nvidia.com/v1",
+    "openai": "https://api.openai.com/v1",
+    "openrouter": "https://openrouter.ai/api/v1",
+    "perplexity": "https://api.perplexity.ai",
+    "together": "https://api.together.xyz/v1/",
+    "xai": "https://api.x.ai/v1/",
+}
+"""Native endpoints that must bypass integration and SDK environment fallbacks.
+
+These are constructor URLs verified against the provider sources, not request
+URLs: Fireworks appends `/v1/chat/completions` to an explicit base URL. Providers
+with deployment-specific endpoints (such as Azure) have no fixed native URL.
+"""
+
+_PROVIDER_BASE_URL_ALIASES: dict[str, str] = {
+    "anthropic": "anthropic_api_url",
+    "baseten": "baseten_api_base",
+    "deepseek": "api_base",
+    "fireworks": "fireworks_api_base",
+    "google_genai": "client_options",
+    "groq": "groq_api_base",
+    "mistralai": "endpoint",
+    "openai": "openai_api_base",
+    "openrouter": "openrouter_api_base",
+    "together": "together_api_base",
+    "xai": "xai_api_base",
+}
+"""Provider endpoint fields accepted alongside the common `base_url` alias."""
+
+
+def _google_genai_uses_vertexai(kwargs: dict[str, Any]) -> bool:
+    """Match the integration's backend selection before choosing a native URL.
+
+    Returns:
+        Whether Google will derive a Vertex endpoint from project and location.
+    """
+    if kwargs.get("vertexai") is not None:
+        return bool(kwargs["vertexai"])
+    # The integration reads the process environment for backend selection.
+    selector = os.environ.get("GOOGLE_GENAI_USE_VERTEXAI", "").lower()
+    if selector in {"true", "1", "yes"}:
+        return True
+    if selector in {"false", "0", "no"}:
+        return False
+    return kwargs.get("credentials") is not None or kwargs.get("project") is not None
+
+
+def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> bool:
+    """Pair stored credentials with their endpoint without mutating the process.
+
+    Returns:
+        Whether a native endpoint replaced inherited gateway settings.
+    """
     from deepagents_code.model_config import (
-        PROVIDER_CUSTOM_HEADERS_ENV,
         ModelConfig,
         _configured_base_url_survives_env_clear,
         auth_store,
@@ -6080,20 +6154,71 @@ def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None
         stored_base_url = None
     else:
         if not stored_key:
-            return
+            return False
     provider_config = ModelConfig.load().providers.get(provider)
     configured_url = provider_config.get("base_url") if provider_config else None
     if configured_url or _configured_base_url_survives_env_clear(provider):
-        return
+        return False
     if stored_base_url:
         kwargs["base_url"] = stored_base_url
-        return
+        return False
     kwargs.pop("base_url", None)
-    if provider == "anthropic":
-        kwargs["base_url"] = "https://api.anthropic.com"
-    custom_headers = PROVIDER_CUSTOM_HEADERS_ENV.get(provider)
-    if custom_headers:
-        kwargs["default_headers"] = {}
+    # Omitting the kwarg lets the integration/SDK reread the process's gateway
+    # env vars, which a workspace-scoped construction must leave untouched.
+    if provider == "google_genai" and _google_genai_uses_vertexai(kwargs):
+        # Vertex has regional endpoints; the Gemini URL is not its default.
+        return False
+    endpoint_alias = _PROVIDER_BASE_URL_ALIASES.get(provider)
+    if (not endpoint_alias or kwargs.get(endpoint_alias) is None) and (
+        native_url := _PROVIDER_NATIVE_BASE_URLS.get(provider)
+    ):
+        kwargs["base_url"] = native_url
+        return True
+    return False
+
+
+def _clear_inherited_client_headers(
+    model: BaseChatModel, kwargs: Mapping[str, object]
+) -> None:
+    """Remove SDK environment headers from newly constructed native clients.
+
+    These SDKs merge their environment headers even with `default_headers={}`.
+    Filter the instance headers before any request, preserving explicit headers
+    and caller-owned clients without touching the shared process environment.
+    """
+    from collections.abc import Mapping
+
+    inherited = {
+        line.partition(":")[0].strip().lower()
+        for prefix in ("OPENAI", "ANTHROPIC", "FIREWORKS", "PERPLEXITY")
+        for line in os.environ.get(f"{prefix}_CUSTOM_HEADERS", "").splitlines()
+        if ":" in line
+    }
+    explicit = kwargs.get("default_headers")
+    explicit_names = set(explicit) if isinstance(explicit, Mapping) else set()
+    if not inherited:
+        return
+    for attribute in (
+        "client",
+        "async_client",
+        "root_client",
+        "root_async_client",
+        "_client",
+        "_async_client",
+    ):
+        if kwargs.get(attribute) is not None:
+            continue
+        client = getattr(model, attribute, None)
+        if not isinstance(getattr(client, "_custom_headers", None), Mapping):
+            # Chat-completion resources hold their owning SDK client here.
+            client = getattr(client, "_client", None)
+        headers = getattr(client, "_custom_headers", None)
+        if client is not None and isinstance(headers, Mapping):
+            client._custom_headers = {
+                name: value
+                for name, value in headers.items()
+                if name.lower() not in inherited or name in explicit_names
+            }
 
 
 def _apply_google_anthropic_vertex_kwargs(
@@ -6332,10 +6457,58 @@ def _create_model_from_class(
         raise ModelConfigError(msg)
 
     try:
+        # A real subclass has already loaded the optional integration. Other
+        # custom classes must keep their normal constructor endpoint argument.
+        perplexity_class = getattr(
+            sys.modules.get("langchain_perplexity.chat_models"), "ChatPerplexity", None
+        )
+        if (
+            provider == "perplexity"
+            and kwargs.get("base_url")
+            and isinstance(perplexity_class, type)
+            and issubclass(cls, perplexity_class)
+        ):
+            return _create_perplexity_model(model_name, kwargs, model_class=cls)
         return cls(model=model_name, **kwargs)
     except Exception as e:
         msg = f"Failed to instantiate '{class_path}' for '{provider}:{model_name}': {e}"
         raise ModelConfigError(msg) from e
+
+
+def _create_perplexity_model(
+    model_name: str,
+    kwargs: dict[str, Any],
+    *,
+    model_class: type[BaseChatModel] | None = None,
+) -> BaseChatModel:
+    """Apply the endpoint to SDK clients before any requests can be made.
+
+    `ChatPerplexity` does not expose `base_url`; passing it to the integration
+    would send it as a completion parameter while its SDK rereads the process
+    environment. Client construction is local, so set each instance's endpoint
+    before returning the model. Explicitly supplied clients retain their settings.
+
+    Args:
+        model_name: Model identifier.
+        kwargs: Constructor parameters including the resolved `base_url`.
+        model_class: Configured class to construct instead of `init_chat_model`.
+
+    Returns:
+        Model with the resolved endpoint on both SDK clients.
+    """
+    from langchain.chat_models import init_chat_model
+
+    kwargs = dict(kwargs)
+    base_url = kwargs.pop("base_url")
+    model = (
+        model_class(model=model_name, **kwargs)
+        if model_class is not None
+        else init_chat_model(model_name, model_provider="perplexity", **kwargs)
+    )
+    for attribute in ("client", "async_client"):
+        if not kwargs.get(attribute):
+            getattr(model, attribute).base_url = base_url
+    return model
 
 
 def _create_model_via_init(
@@ -6373,6 +6546,8 @@ def _create_model_via_init(
 
     try:
         if provider:
+            if provider == "perplexity" and kwargs.get("base_url"):
+                return _create_perplexity_model(model_name, kwargs)
             return init_chat_model(model_name, model_provider=provider, **kwargs)
         return init_chat_model(model_name, **kwargs)
     except ImportError as e:
@@ -6794,8 +6969,11 @@ def create_model(
         reasoning_effort_override = extra_kwargs.get("reasoning_effort")
         reasoning_override = extra_kwargs.get("reasoning")
         kwargs.update(extra_kwargs)
-    if provider and scoped_environment:
-        _apply_scoped_endpoint(provider, kwargs, extra_kwargs)
+    clear_inherited_headers = (
+        provider
+        and scoped_environment
+        and (_apply_scoped_endpoint(provider, kwargs, extra_kwargs))
+    )
     kwargs = _compose_openai_reasoning_effort(
         provider,
         kwargs,
@@ -6873,6 +7051,9 @@ def create_model(
         model = _create_model_from_class(class_path, model_name, provider, kwargs)
     else:
         model = _create_model_via_init(model_name, provider, kwargs)
+
+    if clear_inherited_headers:
+        _clear_inherited_client_headers(model, kwargs)
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
     from deepagents_code.cost_tracking import _set_configured_model_metadata

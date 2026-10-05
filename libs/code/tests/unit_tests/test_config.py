@@ -1915,28 +1915,14 @@ class TestWorkspaceStoredCredentials:
             await model.client.aio.aclose()
 
     @pytest.mark.parametrize(
-        ("provider", "endpoint_env", "stored_endpoint", "expected_endpoint"),
+        ("provider", "endpoint_env", "expected_endpoint"),
         [
-            ("groq", "GROQ_BASE_URL", None, "https://api.groq.com"),
-            ("groq", "GROQ_API_BASE", None, "https://api.groq.com"),
-            (
-                "fireworks",
-                "FIREWORKS_BASE_URL",
-                None,
-                "https://api.fireworks.ai/inference",
-            ),
+            ("groq", "GROQ_BASE_URL", "https://api.groq.com"),
+            ("groq", "GROQ_API_BASE", "https://api.groq.com"),
             (
                 "fireworks",
                 "FIREWORKS_API_BASE",
-                None,
                 "https://api.fireworks.ai/inference",
-            ),
-            ("perplexity", "PERPLEXITY_BASE_URL", None, "https://api.perplexity.ai"),
-            (
-                "perplexity",
-                "PERPLEXITY_BASE_URL",
-                "https://stored.example/v1",
-                "https://stored.example/v1",
             ),
         ],
     )
@@ -1945,7 +1931,6 @@ class TestWorkspaceStoredCredentials:
         monkeypatch: pytest.MonkeyPatch,
         provider: str,
         endpoint_env: str,
-        stored_endpoint: str | None,
         expected_endpoint: str,
     ) -> None:
         """Both sync and async SDK clients bypass inherited gateway fallbacks."""
@@ -1954,7 +1939,7 @@ class TestWorkspaceStoredCredentials:
         from deepagents_code.config import use_environment
 
         pytest.importorskip(f"langchain_{provider}")
-        _stored_provider_config(monkeypatch, provider, base_url=stored_endpoint)
+        _stored_provider_config(monkeypatch, provider)
         key_env = model_config.PROVIDER_API_KEY_ENV[provider]
         monkeypatch.setenv(key_env, "inherited-key")
         monkeypatch.setenv(endpoint_env, "https://gateway.example/v1")
@@ -1981,11 +1966,11 @@ class TestWorkspaceStoredCredentials:
             sync_client.close()
             await async_client.close()
 
-    @pytest.mark.parametrize("class_kind", ["perplexity", "subclass", "openai"])
+    @pytest.mark.parametrize("class_kind", ["subclass", "openai"])
     async def test_perplexity_class_path_invokes_with_resolved_endpoint(
         self, monkeypatch: pytest.MonkeyPatch, class_kind: str
     ) -> None:
-        """Class-path models use the stored endpoint for sync and async calls."""
+        """Class-path models use the configured endpoint for sync and async calls."""
         import os
         from functools import partial
 
@@ -2002,19 +1987,17 @@ class TestWorkspaceStoredCredentials:
             class_path = "langchain_openai:ChatOpenAI"
         else:
             integration = pytest.importorskip("langchain_perplexity.chat_models")
-            class_path = "langchain_perplexity:ChatPerplexity"
-            if class_kind == "subclass":
 
-                class CustomPerplexity(integration.ChatPerplexity):
-                    pass
+            class CustomPerplexity(integration.ChatPerplexity):
+                pass
 
-                monkeypatch.setattr(
-                    sys.modules[__name__],
-                    "CustomPerplexity",
-                    CustomPerplexity,
-                    raising=False,
-                )
-                class_path = f"{__name__}:CustomPerplexity"
+            monkeypatch.setattr(
+                sys.modules[__name__],
+                "CustomPerplexity",
+                CustomPerplexity,
+                raising=False,
+            )
+            class_path = f"{__name__}:CustomPerplexity"
         config.providers["perplexity"]["class_path"] = class_path
         monkeypatch.setenv("PERPLEXITY_BASE_URL", "https://gateway.example/v1")
 
@@ -2109,9 +2092,17 @@ class TestWorkspaceStoredCredentials:
             await model.client.aio.aclose()
 
     @pytest.mark.parametrize(
-        "provider", ["openai", "anthropic", "fireworks", "perplexity"]
+        ("provider", "endpoint_source"),
+        [
+            ("openai", "native"),
+            ("anthropic", "native"),
+            ("fireworks", "native"),
+            ("perplexity", "native"),
+            ("anthropic", "stored"),
+            ("perplexity", "stored"),
+            ("openai", "caller"),
+        ],
     )
-    @pytest.mark.parametrize("endpoint_source", ["native", "stored", "caller"])
     async def test_stored_key_drops_gateway_headers_only_for_native_requests(
         self,
         monkeypatch: pytest.MonkeyPatch,

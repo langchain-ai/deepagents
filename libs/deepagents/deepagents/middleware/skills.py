@@ -110,6 +110,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import yaml
 from langchain.agents.middleware.types import OmitFromOutput, PrivateStateAttr
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
 from langgraph.runtime import Runtime, get_runtime
 
@@ -343,6 +344,13 @@ class SkillMetadata(TypedDict):
 
 class SkillsState(AgentState):
     """State for the skills middleware."""
+
+    pinned_skills: NotRequired[list[str]]
+    """Skill names whose full instructions are loaded into every model request.
+
+    Pins persist in checkpointed state; pass `[]` to clear them. Instructions are
+    request-local human messages, not appended to the stored conversation.
+    """
 
     skills_metadata: NotRequired[Annotated[list[SkillMetadata] | None, OmitFromOutput]]
     """List of loaded skill metadata from configured sources. Not propagated to parent agents.
@@ -856,6 +864,18 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     agent.update_state(config, {"skills_metadata": None})
     ```
 
+    Pass skill names in invocation state to load their full instructions before
+    every model call, without requiring the model to choose `read_file`:
+
+    ```python
+    agent.invoke({"messages": messages, "pinned_skills": ["web-research"]}, config)
+    ```
+
+    Pins persist in checkpointed state until replaced or cleared with `[]`.
+    Instructions are injected as request-local human messages, not stored in
+    conversation history. Unknown names or unreadable files fail before the model
+    call. Pinning guarantees loading instructions, not model compliance.
+
     Example:
         ```python
         from deepagents.backends.filesystem import FilesystemBackend
@@ -1163,6 +1183,37 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         # Always write the errors so warnings from an earlier load are cleared
         return SkillsStateUpdate(skills_metadata=skills, skills_load_errors=skills_load_errors)
 
+    def _pinned_skills(self, state: AgentState) -> list[SkillMetadata]:
+        """Resolve distinct pinned names against the discovered catalog."""
+        names = state.get("pinned_skills", [])
+        if not isinstance(names, list) or any(not isinstance(name, str) for name in names):
+            msg = "pinned_skills must be a list of skill names"
+            raise TypeError(msg)
+        catalog = {skill["name"]: skill for skill in state.get("skills_metadata") or []}
+        missing = [name for name in names if name not in catalog]
+        if missing:
+            msg = f"Unknown pinned skill(s): {', '.join(missing)}"
+            raise ValueError(msg)
+        return [catalog[name] for name in dict.fromkeys(names)]
+
+    def _inject_pinned_skills(
+        self, request: ModelRequest[ContextT], skills: list[SkillMetadata], responses: list[FileDownloadResponse]
+    ) -> tuple[ModelRequest[ContextT], list[_SkillRead]]:
+        """Add full skill instructions and disclosure anchors to this request only."""
+        messages = list(request.messages)
+        reads: list[_SkillRead] = []
+        for skill, response in zip(skills, responses, strict=True):
+            if response.error or response.content is None:
+                msg = f"Could not load pinned skill {skill['name']!r}: {response.error or 'missing content'}"
+                raise ValueError(msg)
+            if len(response.content) > MAX_SKILL_FILE_SIZE:
+                msg = f"Pinned skill {skill['name']!r} exceeds the maximum file size"
+                raise ValueError(msg)
+            content = response.content.decode("utf-8")
+            reads.append((len(messages), skill))
+            messages.append(HumanMessage(content=f"<skill>\n<name>{skill['name']}</name>\n<path>{skill['path']}</path>\n{content}\n</skill>"))
+        return request.override(messages=messages), reads
+
     def _disclose_skill_tools(
         self, request: ModelRequest[ContextT], reads: list[_SkillRead], resolved: Mapping[str, Sequence[BaseTool]]
     ) -> tuple[ModelRequest[ContextT], dict[str, str]]:
@@ -1197,7 +1248,10 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 in state.
         """
         request = self.modify_request(request)
-        reads = _find_skill_reads(request.messages, request.state.get("skills_metadata") or [])
+        skills = self._pinned_skills(request.state)
+        responses = self._backend.download_files([skill["path"] for skill in skills]) if skills else []
+        request, pinned_reads = self._inject_pinned_skills(request, skills, responses)
+        reads = _find_skill_reads(request.messages, request.state.get("skills_metadata") or []) + pinned_reads
         names = _unclaimed_include_names(reads, request.tools)
         resolved = {name: _call_resolver(self._skill_tool_resolver, name, request.runtime) for name in names}
         request, record = self._disclose_skill_tools(request, reads, resolved)
@@ -1219,7 +1273,10 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
                 in state.
         """
         request = self.modify_request(request)
-        reads = _find_skill_reads(request.messages, request.state.get("skills_metadata") or [])
+        skills = self._pinned_skills(request.state)
+        responses = await self._backend.adownload_files([skill["path"] for skill in skills]) if skills else []
+        request, pinned_reads = self._inject_pinned_skills(request, skills, responses)
+        reads = _find_skill_reads(request.messages, request.state.get("skills_metadata") or []) + pinned_reads
         names = _unclaimed_include_names(reads, request.tools)
         tools = await asyncio.gather(*(_acall_resolver(self._skill_tool_resolver, name, request.runtime) for name in names))
         request, record = self._disclose_skill_tools(request, reads, dict(zip(names, tools, strict=True)))

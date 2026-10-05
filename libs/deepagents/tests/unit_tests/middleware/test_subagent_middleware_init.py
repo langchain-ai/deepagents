@@ -921,7 +921,7 @@ class TestSubagentMiddlewareInit:
             def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
                 del config
                 captured.update(state)
-                return {**state, "messages": [AIMessage(content="done")]}
+                return {**state, "messages": [AIMessage(content="done")], "pinned_skills": ["worker-only"]}
 
         def fake_create_sub_agent(spec: dict[str, Any], **kwargs: Any) -> object:
             del spec, kwargs
@@ -945,6 +945,7 @@ class TestSubagentMiddlewareInit:
                 "messages": [HumanMessage(content="parent history")],
                 "memory_contents": {"/m.md": "PARENT MEMORY"},
                 "structured_response": {"answer": "stale"},
+                "pinned_skills": ["parent-only"],
                 "_summarization_session_id": "session_parent",
             },
             context={},
@@ -961,6 +962,8 @@ class TestSubagentMiddlewareInit:
         # response must likewise not be available to override this fork's result.
         assert "_summarization_session_id" not in captured
         assert "structured_response" not in captured
+        assert "pinned_skills" not in captured
+        assert "pinned_skills" not in result.update
         assert ("memory_contents" in captured) is declarative
         assert (_FORKED_CONTEXT_KEY in captured) is declarative
         assert result.update["messages"][0].content == "done"

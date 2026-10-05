@@ -246,6 +246,9 @@ def generate_langgraph_json(
         config["env"] = env_file
     if checkpointer_path:
         config["checkpointer"] = {"path": checkpointer_path}
+        from deepagents_code.thread_ownership import OWNER_KEY
+
+        config.setdefault("http", {})["configurable_headers"] = {"include": [OWNER_KEY]}
 
     output_path = Path(output_dir) / "langgraph.json"
     output_path.write_text(json.dumps(config, indent=2))

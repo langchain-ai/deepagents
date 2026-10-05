@@ -18409,23 +18409,100 @@ class TestRestartServerForAgentSwap:
             for text in plain
         )
 
-    async def test_cross_agent_restart_failure_restores_thread_pointer(self) -> None:
-        """A failed owner restart does not leave session state on its thread."""
+    @pytest.mark.parametrize("resume_thread_id", [None, "research-thread"])
+    async def test_reservation_failure_preserves_current_session(
+        self, monkeypatch: pytest.MonkeyPatch, resume_thread_id: str | None
+    ) -> None:
+        """An unavailable destination leaves the current client and chat usable."""
+        from deepagents_code.thread_ownership import held_lease
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
         app, server_proc = self._make_app()
-        server_proc.restart = AsyncMock(side_effect=RuntimeError("boom"))
+        monkeypatch.setattr(
+            "deepagents_code.app._new_thread_id", lambda: "fresh-thread"
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.previous_thread_id = "earlier-thread"
+            app._session_state.approval_mode_key = "auto"
+            app._reserve_thread("old-thread")
+            previous_lease = held_lease("old-thread")
+            previous_client = app._agent
+            app._message_store.append(
+                MessageData(type=MessageType.ASSISTANT, content="Existing answer")
+            )
+            monkeypatch.setattr(
+                app,
+                "_reserve_thread",
+                MagicMock(side_effect=OSError("read-only ownership directory")),
+            )
+            app._agent_switching = True
+
+            assert not await app._restart_server_for_agent_swap(
+                "researcher", resume_thread_id=resume_thread_id
+            )
+
+            assert app._lc_thread_id == "old-thread"
+            assert app._session_state.thread_id == "old-thread"
+            assert app._session_state.previous_thread_id == "earlier-thread"
+            assert app._session_state.approval_mode_key == "auto"
+            assert app._agent is previous_client
+            assert app._assistant_id == "coder"
+            assert held_lease("old-thread") is previous_lease
+            assert held_lease(resume_thread_id or "fresh-thread") is None
+            assert any(
+                message.content == "Existing answer"
+                for message in app._message_store.get_all_messages()
+            )
+            assert not app._agent_switching
+            assert not app._connecting
+            assert not app._reconnecting
+            server_proc.restart.assert_not_awaited()
+
+    @pytest.mark.parametrize("resume_thread_id", [None, "research-thread"])
+    async def test_restart_failure_restores_thread_and_ownership(
+        self, monkeypatch: pytest.MonkeyPatch, resume_thread_id: str | None
+    ) -> None:
+        """Failed swaps retain only the restored thread's lease through recovery."""
+        from deepagents_code.thread_ownership import held_lease, try_acquire
+
+        app, server_proc = self._make_app()
+        server_proc.restart = AsyncMock(side_effect=[RuntimeError("boom"), None])
+        server_proc.wait_for_graph_ready = AsyncMock()
+        monkeypatch.setattr(
+            "deepagents_code.app._new_thread_id", lambda: "fresh-thread"
+        )
+        abandoned_thread_id = resume_thread_id or "fresh-thread"
         posted: list[object] = []
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._reserve_thread("old-thread")
+            previous_lease = held_lease("old-thread")
+            assert previous_lease is not None
             with patch.object(app, "post_message", side_effect=posted.append):
                 switched = await app._restart_server_for_agent_swap(
                     "researcher",
-                    resume_thread_id="research-thread",
-                    preloaded_payload=MagicMock(),
-                    persist_default_agent=False,
+                    resume_thread_id=resume_thread_id,
+                    preloaded_payload=MagicMock() if resume_thread_id else None,
+                    persist_default_agent=resume_thread_id is None,
                 )
+                assert switched is False
+                assert app._lc_thread_id == "old-thread"
+                assert held_lease("old-thread") is previous_lease
+                assert try_acquire("old-thread") is None
+                assert held_lease(abandoned_thread_id) is None
+                available = try_acquire(abandoned_thread_id)
+                assert available is not None
+                available.release()
 
-        assert switched is False
+                assert await app._restart_server_manual()
+                assert app._lc_thread_id == "old-thread"
+                assert held_lease("old-thread") is previous_lease
+                assert try_acquire("old-thread") is None
+                assert held_lease(abandoned_thread_id) is None
+
         assert app._assistant_id == "coder"
         assert app._default_assistant_id == "coder"
         assert app._lc_thread_id == "old-thread"
@@ -18435,6 +18512,35 @@ class TestRestartServerForAgentSwap:
         assert any(
             isinstance(message, DeepAgentsApp.ServerStartFailed) for message in posted
         )
+
+    @pytest.mark.parametrize("cancelled", [False, True])
+    async def test_confirmation_failure_releases_previous_thread(
+        self, monkeypatch: pytest.MonkeyPatch, cancelled: bool
+    ) -> None:
+        """Follow-up failures leave only the successfully adopted thread locked."""
+        from deepagents_code.thread_ownership import held_lease, try_acquire
+
+        app, _server_proc = self._make_app()
+        monkeypatch.setattr(
+            "deepagents_code.app._new_thread_id", lambda: "fresh-thread"
+        )
+        error = asyncio.CancelledError if cancelled else RuntimeError
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._reserve_thread("old-thread")
+            monkeypatch.setattr(app, "_reload_hooks", AsyncMock(side_effect=error))
+
+            with pytest.raises(error):
+                await app._restart_server_for_agent_swap("researcher")
+
+            assert app._assistant_id == "researcher"
+            assert app._agent is not None
+            assert app._lc_thread_id == "fresh-thread"
+            assert try_acquire("fresh-thread") is None
+            assert held_lease("old-thread") is None
+            available = try_acquire("old-thread")
+            assert available is not None
+            available.release()
 
     async def test_no_resume_hint_when_previous_thread_has_no_agent_output(
         self,

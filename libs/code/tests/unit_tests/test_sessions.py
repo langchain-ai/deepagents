@@ -29,6 +29,8 @@ async def test_thread_seed_is_resumable_and_preserves_later_work(
     from langchain_core.language_models.fake_chat_models import FakeListChatModel
     from langchain_core.messages import HumanMessage
 
+    from deepagents_code.thread_ownership import OWNER_KEY, ensure_owned, held_lease
+
     monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
     values = {"messages": [HumanMessage("Saved summary")]}
     await sessions.save_thread_seed(
@@ -40,23 +42,55 @@ async def test_thread_seed_is_resumable_and_preserves_later_work(
     assert threads[0]["initial_prompt"] == "Saved summary"
     assert threads[0]["message_count"] == 1
 
-    async with sessions.get_checkpointer() as checkpointer:
-        graph = create_agent(
-            FakeListChatModel(responses=["Continued reply"]), checkpointer=checkpointer
-        )
-        config: RunnableConfig = {"configurable": {"thread_id": "child"}}
-        state = await graph.aget_state(config)
-        assert not state.next
-        await graph.ainvoke({"messages": [HumanMessage("Continue")]}, config)
-        await sessions.save_thread_seed(
-            "child", values, agent_name="agent", cwd=str(tmp_path)
-        )
-        state = await graph.aget_state(config)
-        assert [message.text for message in state.values["messages"]] == [
-            "Saved summary",
-            "Continue",
-            "Continued reply",
-        ]
+    assert held_lease("child") is None
+    lease = ensure_owned("child")
+    try:
+        async with sessions.get_checkpointer() as checkpointer:
+            graph = create_agent(
+                FakeListChatModel(responses=["Continued reply"]),
+                checkpointer=checkpointer,
+            )
+            config: RunnableConfig = {
+                "configurable": {"thread_id": "child", OWNER_KEY: lease.token}
+            }
+            state = await graph.aget_state(config)
+            assert not state.next
+            await graph.ainvoke({"messages": [HumanMessage("Continue")]}, config)
+            await sessions.save_thread_seed(
+                "child", values, agent_name="agent", cwd=str(tmp_path)
+            )
+            assert held_lease("child") is lease
+            state = await graph.aget_state(config)
+            assert [message.text for message in state.values["messages"]] == [
+                "Saved summary",
+                "Continue",
+                "Continued reply",
+            ]
+    finally:
+        lease.release()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_failed_thread_seed_releases_reservation(
+    failure: type[BaseException], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interrupted local seed must not prevent a later handoff attempt."""
+    from deepagents_code.thread_ownership import try_acquire
+
+    monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(sessions, "_save_thread_seed", AsyncMock(side_effect=failure))
+        with pytest.raises(failure):
+            await sessions.save_thread_seed(
+                "child", {"messages": []}, agent_name="agent", cwd=str(tmp_path)
+            )
+    lease = try_acquire("child")
+    assert lease is not None
+    lease.release()
+    await sessions.save_thread_seed(
+        "child", {"messages": []}, agent_name="agent", cwd=str(tmp_path)
+    )
+    assert await sessions.thread_exists("child")
 
 
 async def test_activity_refresh_preserves_seed_creation_order(
@@ -381,21 +415,6 @@ class TestThreadFunctions:
         assert result is False
         # ...but its stranded archive is removed regardless.
         assert not archive.exists()
-
-
-class TestGetCheckpointer:
-    """Tests for get_checkpointer async context manager."""
-
-    def test_returns_async_sqlite_saver(self, tmp_path):
-        """Get checkpointer returns AsyncSqliteSaver."""
-
-        async def _test() -> None:
-            db_path = tmp_path / "test.db"
-            with patch.object(sessions, "get_db_path", return_value=db_path):
-                async with sessions.get_checkpointer() as cp:
-                    assert "AsyncSqliteSaver" in type(cp).__name__
-
-        asyncio.run(_test())
 
 
 class TestFormatTimestamp:

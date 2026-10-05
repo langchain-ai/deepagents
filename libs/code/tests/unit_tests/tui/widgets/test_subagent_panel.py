@@ -260,7 +260,7 @@ class TestReplayTiming:
             clock.monotonic = lambda: record.started_monotonic + 30
             panel.on_subagent_event(event)
             assert "20.0s" in _render(panel.query_one("#subagent-agents", Static))
-            assert panel._phases["E1"].elapsed_seconds() == 20
+            assert panel._phases["E1"].elapsed_seconds() == pytest.approx(20)
             assert not panel._any_running()
 
     @pytest.mark.parametrize("outcome", ["complete", "error"])

@@ -1,6 +1,6 @@
 # Files
 
-- [dcode Client and Agent Server](code-agent.md) - dcode separates a Textual presentation client from a managed LangGraph agent server. This page explains shared interactive and headless execution, configuration generations, prompt composition, and the cost and subagent-progress UI boundaries.
+- [dcode Client and Agent Server](code-agent.md) - dcode separates a Textual presentation client from a managed LangGraph agent server. This page describes execution ownership, server-ready UI refresh, and the client-side entire-thread cost-breakdown path without conflating it with checkpointed accounting or live display state.
 - [Middleware Stack and Ordering](middleware-stack.md) - Exact middleware assembly and filtering order for Deep Agents main agents and subagent forms. Explains profile exclusions, replacement boundaries, prompt caching, skills, memory, HITL, content compatibility, and the final tool-visibility filter.
 - [Architecture Overview](overview.md) - How the Deep Agents monorepo separates the reusable SDK from dcode, ACP, Talon, evaluations, and optional partner integrations. Explains runtime layering and which layer owns graph state, product hosting, and durable host resources.
 - [Talon Runtime and Host Behavior](runtime-behavior.md) - Control flow and isolation rules for Talon's agent turns, host delivery lifecycle, approvals and OAuth routing, background work, scheduled execution, history, retries, and shutdown.

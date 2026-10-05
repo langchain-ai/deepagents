@@ -2,6 +2,16 @@
 
 # Deep Agents Changelog
 
+## [0.7.22](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.21...deepagents==0.7.22) (2026-10-05)
+
+### Features
+
+- Load a skill’s tools only when the skill is read. ([#6552](https://github.com/langchain-ai/deepagents/pull/6552))
+
+### Bug Fixes
+
+- Reset stale encoding when overwriting text. ([#6737](https://github.com/langchain-ai/deepagents/pull/6737))
+
 ## [0.7.21](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.20...deepagents==0.7.21) (2026-09-30)
 
 ### Features

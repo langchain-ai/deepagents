@@ -652,6 +652,10 @@ class ChatTextArea(PasteBurstTextArea):
         if owner is not None and owner._prompt_search_active:
             owner.focus_input()
 
+    def on_text_area_selection_changed(self, event: TextArea.SelectionChanged) -> None:
+        """Mark cursor lines below the first for a subtle editing cue."""
+        self.set_class(event.selection.end[0] > 0, "cursor-below-first-line")
+
     def _render_line(self, y: int) -> Strip:
         """Render a line, keeping shell token colors visible on the cursor line.
 

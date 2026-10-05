@@ -6208,6 +6208,28 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
     return result
 
 
+def load_terminal_tab_title(config_path: Path | None = None) -> str:
+    """Load the terminal tab title template.
+
+    Args:
+        config_path: Optional explicit config file, excluding managed policy.
+
+    Returns:
+        Configured template, or `"{app_name}"` by default.
+    """
+    try:
+        data, _ = _load_effective_config_data(config_path)
+        terminal = data.get("terminal", {})
+        value = terminal.get("tab_title") if isinstance(terminal, dict) else None
+        if isinstance(value, str):
+            return value
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read terminal title config; using default", exc_info=True
+        )
+    return "{app_name}"
+
+
 def invalidate_thread_config_cache() -> None:
     """Clear the cached `ThreadConfig` so the next load re-reads disk."""
     global _thread_config_cache  # noqa: PLW0603  # Module-level cache requires global statement

@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import logging
+import ntpath
 import os
 import shutil
 import subprocess
@@ -70,6 +71,42 @@ def test_upload_preserves_extended_resolved_path(tmp_path: Path, monkeypatch: py
     assert backend.upload_files([("/blobs/image", b"image")])[0].error is None
     assert target.read_bytes() == b"image"
     assert backend._to_virtual_path(target) == "/blobs/image"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Real Windows path resolution")
+def test_upload_when_parent_appears_during_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    target = backend.cwd / "blobs" / "image"
+    final_path = ntpath._getfinalpathname
+    errors: list[int] = []
+
+    def create_parent_after_lookup(path: str) -> str:
+        try:
+            return final_path(path)
+        except OSError as exc:
+            if path == str(target):
+                errors.append(exc.winerror)
+                if not target.parent.exists():
+                    target.parent.mkdir()
+            raise
+
+    monkeypatch.setattr(ntpath, "_getfinalpathname", create_parent_after_lookup)
+    resolved = backend._resolve_path("/blobs/image")
+    assert errors[0] == 3, errors
+    assert errors[-1] == 2, errors
+    assert str(resolved).startswith("\\\\?\\"), (resolved, errors)
+    with pytest.raises(ValueError, match=r"not in the subpath|not a subpath|different anchors"):
+        resolved.relative_to(backend.cwd)
+    assert backend._to_virtual_path(resolved) == "/blobs/image"
+
+    target.parent.rmdir()
+    errors.clear()
+    assert backend.upload_files([("/blobs/image", b"image")])[0].error is None
+    assert errors[0] == 3 and errors[-1] == 2, errors
+    assert target.read_bytes() == b"image"
+    outside = Path("\\\\?\\" + str(backend.cwd.parent / "outside"))
+    with pytest.raises(ValueError, match=r"not in the subpath|not a subpath|different anchors"):
+        fs_module._relative_to_resolved(outside, backend.cwd)
 
 
 def require_ripgrep() -> None:

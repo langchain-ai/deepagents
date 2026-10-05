@@ -23711,10 +23711,11 @@ class DeepAgentsApp(App):
 
         The value rides on the per-run graph context, so it applies from the
         next turn without restarting the agent server. A spec that cannot be
-        resolved here is rejected outright rather than staged, because a
+        resolved by a connected server is rejected rather than staged, because a
         classifier the server cannot build denies every action it is asked to
         review — those deterministic policy could not already clear — and only
-        escalates to approval once failures repeat.
+        escalates to approval once failures repeat. Before a server connects,
+        choices are checked against local policy so startup can be repaired.
 
         Args:
             model_spec: `provider:model` spec, or `None` to reuse the main model.
@@ -31360,24 +31361,44 @@ class DeepAgentsApp(App):
         """Validate a choice before switching or saving it as a default.
 
         Returns:
-            Metadata from the workspace that will run the model.
-
-        Raises:
-            RuntimeError: If no server-backed session is available.
+            Metadata from the workspace that will run the model, or a
+                policy-checked model identity before the server connects.
         """
         remote = self._remote_agent()
         if remote is None:
-            msg = (
-                "Model selection requires a server-backed session "
-                "connected to a thread."
-            )
-            raise RuntimeError(msg)
+            return await asyncio.to_thread(self._resolve_disconnected_model, model_spec)
         return await remote.aresolve_model(
             {"configurable": {"thread_id": self._lc_thread_id}},
             model_spec.removeprefix(":"),
             extra_kwargs=extra_kwargs,
             **({"purpose": purpose} if purpose != "main" else {}),
         )
+
+    @staticmethod
+    def _resolve_disconnected_model(model_spec: str) -> ModelMetadata:
+        """Check config choices without requiring provider packages or credentials.
+
+        Returns:
+            Model identity with runtime capabilities left unknown.
+
+        Raises:
+            ModelConfigError: If the model identity cannot be determined.
+        """
+        from deepagents_code.model_config import (
+            ModelConfig,
+            ModelConfigError,
+            ModelSpec,
+        )
+        from deepagents_code.model_metadata import ModelMetadata
+
+        config = ModelConfig.load()
+        canonical = config.canonical_model_spec(model_spec.removeprefix(":"))
+        parsed = ModelSpec.try_parse(canonical) if canonical else None
+        if parsed is None:
+            msg = "Specify a model as provider:model (for example, openai:my-model)."
+            raise ModelConfigError(msg)
+        config.require_model_allowed(str(parsed))
+        return ModelMetadata(model_name=parsed.model, provider=parsed.provider)
 
     async def _resolve_auxiliary_model(self, model_spec: str) -> ModelMetadata:
         """Return auxiliary metadata from the shared selection resolver."""

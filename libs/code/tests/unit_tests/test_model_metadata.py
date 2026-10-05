@@ -1,6 +1,9 @@
 """Server metadata resolution and client failure isolation."""
 
 import json
+import tomllib
+from collections.abc import Iterator
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -14,6 +17,16 @@ from deepagents_code.model_api import model_metadata
 from deepagents_code.model_config import ModelConfigError
 from deepagents_code.model_metadata import ModelMetadata, ModelPurpose
 from deepagents_code.workspace import WorkspaceConflictError
+
+
+@pytest.fixture(autouse=True)
+def clear_model_config_cache() -> Iterator[None]:
+    """Keep policy loaded from temporary configs from leaking between tests."""
+    from deepagents_code.model_config import clear_caches
+
+    clear_caches()
+    yield
+    clear_caches()
 
 
 def _request(payload: object) -> Request:
@@ -460,24 +473,23 @@ async def test_auxiliary_selection_uses_server_environment_and_profile(
 
 
 @pytest.mark.parametrize(
-    ("command", "connected"),
+    "command",
     [
-        ("/summarization-model", True),
-        ("/auto model", True),
-        ("/goal model", True),
-        ("/rubric model", True),
-        ("/auto model", False),
+        "/summarization-model",
+        "/auto model",
+        "/goal model",
+        "/rubric model",
     ],
 )
 async def test_auxiliary_resolution_failure_preserves_selections(
-    command: str, connected: bool, monkeypatch: pytest.MonkeyPatch
+    command: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No selector confirms or persists a choice the server cannot validate."""
     from deepagents_code.tui.widgets.messages import ErrorMessage
 
     app = DeepAgentsApp()
     remote = RemoteAgent("http://test")
-    app._agent = remote if connected else None
+    app._agent = remote
     app._lc_thread_id = "thread"
     app._summarization_model_override = "custom:summary"
     app._auto_classifier_model = "custom:classifier"
@@ -505,6 +517,109 @@ async def test_auxiliary_resolution_failure_preserves_selections(
     assert any(
         isinstance(call.args[0], ErrorMessage) for call in messages.await_args_list
     )
+
+
+@pytest.mark.parametrize("connecting", [False, True])
+async def test_default_can_be_saved_before_server_connects(
+    connecting: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+    app._connecting = connecting
+    monkeypatch.setattr(app, "_mount_message", AsyncMock())
+    with patch(
+        "deepagents_code.config.create_model",
+        side_effect=AssertionError("Saving config must not construct a model"),
+    ):
+        await app._handle_command("/model --default :gpt-test")
+
+    with (tmp_path / "config.toml").open("rb") as handle:
+        assert tomllib.load(handle)["models"]["default"] == "openai:gpt-test"
+    assert app._model_override is None
+
+
+@pytest.mark.parametrize(
+    ("command", "attribute"),
+    [
+        ("/summarization-model", "_summarization_model_override"),
+        ("/auto model", "_auto_classifier_model"),
+    ],
+)
+@pytest.mark.parametrize("allowed", [False, True])
+async def test_auxiliary_choices_without_server_enforce_policy(
+    command: str,
+    attribute: str,
+    allowed: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.tui.widgets.messages import ErrorMessage
+
+    (tmp_path / "config.toml").write_text('[models]\nallowed = ["custom:allowed"]\n')
+    app = DeepAgentsApp()
+    messages = AsyncMock()
+    monkeypatch.setattr(app, "_mount_message", messages)
+    spec = "custom:allowed" if allowed else "custom:blocked"
+    with patch(
+        "deepagents_code.config.create_model",
+        side_effect=AssertionError("Saving config must not construct a model"),
+    ):
+        await app._handle_command(f"{command} {spec}")
+
+    assert getattr(app, attribute) == (spec if allowed else None)
+    assert (
+        any(isinstance(call.args[0], ErrorMessage) for call in messages.await_args_list)
+        is not allowed
+    )
+
+
+@pytest.mark.parametrize("spec", ["custom:blocked", "unknown-model", "custom:"])
+async def test_invalid_default_without_server_preserves_config(
+    spec: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code.tui.widgets.messages import ErrorMessage
+
+    config = tmp_path / "config.toml"
+    original = '[models]\ndefault = "custom:allowed"\nallowed = ["custom:allowed"]\n'
+    config.write_text(original)
+    app = DeepAgentsApp()
+    messages = AsyncMock()
+    monkeypatch.setattr(app, "_mount_message", messages)
+
+    await app._handle_command(f"/model --default {spec}")
+
+    assert config.read_text() == original
+    assert any(
+        isinstance(call.args[0], ErrorMessage) for call in messages.await_args_list
+    )
+
+
+async def test_picker_saves_default_without_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents_code.model_catalog import CatalogProvider, ModelCatalog
+    from deepagents_code.model_config import ProviderAuthState
+
+    app = DeepAgentsApp()
+    monkeypatch.setattr(
+        app,
+        "_load_model_catalog",
+        AsyncMock(
+            return_value=ModelCatalog(
+                models=["custom:test"],
+                profiles={},
+                providers={"custom": CatalogProvider(state=ProviderAuthState.MISSING)},
+            )
+        ),
+    )
+    async with app.run_test() as pilot:
+        app.push_screen(app._build_model_selector_screen())
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        with (tmp_path / "config.toml").open("rb") as handle:
+            assert tomllib.load(handle)["models"]["default"] == "custom:test"
+        assert app._model_override is None
 
 
 def test_invalid_structured_output_metadata_is_rejected() -> None:

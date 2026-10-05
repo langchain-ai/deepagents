@@ -276,6 +276,8 @@ async def test_defers_busy_and_disabled_then_rearms_new_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = DeepAgentsApp()
+    # Exercise scheduling independently of model identity and cost eligibility.
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     async with app.run_test() as pilot:
         await pilot.pause()
         _prepare(app, monkeypatch)

@@ -4429,6 +4429,9 @@ class DeepAgentsApp(App):
         self._deferred_actions: list[DeferredAction] = []
         """Deferred actions executed after the current busy state resolves."""
 
+        self._draining_deferred_actions = False
+        """Keep one drain in charge across restarts and awaited modal results."""
+
         # Session stats & tokens
         self._session_stats: SessionStats = SessionStats()
         """Cumulative usage stats across all turns in this process."""
@@ -22137,30 +22140,42 @@ class DeepAgentsApp(App):
 
     async def _drain_deferred_actions(self) -> None:
         """Execute deferred actions queued while busy (e.g. model/thread switch)."""
-        while self._deferred_actions:
-            action = self._deferred_actions.pop(0)
+        # ServerReady can request another drain while an action is still
+        # installing/authenticating. The original drain owns the queue until
+        # that action and its selection continuation have finished.
+        if self._draining_deferred_actions:
+            return
+        self._draining_deferred_actions = True
+        try:
+            while self._deferred_actions:
+                await self._execute_deferred_action(self._deferred_actions.pop(0))
+        finally:
+            self._draining_deferred_actions = False
+
+    async def _execute_deferred_action(self, action: DeferredAction) -> None:
+        """Report an action's failure without blocking later queued work."""
+        try:
+            await action.execute()
+        except Exception:
+            logger.exception(
+                "Failed to execute deferred action %r (callable=%r)",
+                action.kind,
+                action.execute,
+            )
+            label = action.kind.replace("_", " ")
             try:
-                await action.execute()
-            except Exception:
-                logger.exception(
-                    "Failed to execute deferred action %r (callable=%r)",
-                    action.kind,
-                    action.execute,
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Deferred {label} failed unexpectedly. "
+                        "You may need to retry the operation.",
+                    ),
                 )
-                label = action.kind.replace("_", " ")
-                try:
-                    await self._mount_message(
-                        ErrorMessage(
-                            f"Deferred {label} failed unexpectedly. "
-                            "You may need to retry the operation.",
-                        ),
-                    )
-                except Exception:
-                    logger.debug(
-                        "Could not mount error message for deferred %r",
-                        action.kind,
-                        exc_info=True,
-                    )
+            except Exception:
+                logger.debug(
+                    "Could not mount error message for deferred %r",
+                    action.kind,
+                    exc_info=True,
+                )
 
     def _warn_dropped_mcp_reconnect(self) -> None:
         """Warn when an interrupt discards a queued MCP reconnect.

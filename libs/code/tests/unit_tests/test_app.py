@@ -16716,9 +16716,127 @@ class TestDispatchModelSwitch:
         assert order == ["thread_switch"]
         app._switch_model.assert_awaited_once()  # ty: ignore
 
+    @pytest.mark.parametrize("confirm", [True, False])
+    async def test_install_restart_keeps_deferred_switch_on_original_thread(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        wait_for_modal: WaitForModal,
+        confirm: bool,
+    ) -> None:
+        """ServerReady cannot skip an install-backed selection awaiting consent."""
+        from deepagents_code import config as config_mod, update_check
+        from deepagents_code.client.remote_client import RemoteAgent
+        from deepagents_code.model_config import (
+            ProviderAuthSource,
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+        from deepagents_code.model_metadata import ModelMetadata
+        from deepagents_code.tui.modals.model_switch import ModelSwitchWarningScreen
+
+        monkeypatch.setattr(config_mod, "_is_editable_install", lambda: False)
+        monkeypatch.setattr(
+            update_check, "create_update_log_path", lambda: tmp_path / "install.log"
+        )
+        monkeypatch.setattr(
+            update_check, "install_extra_command", lambda extra: f"uv install {extra}"
+        )
+        install = AsyncMock(return_value=ExtraInstallOutcome(True, "installed"))
+        monkeypatch.setattr(update_check, "perform_install_extra", install)
+        monkeypatch.setattr(
+            "deepagents_code.model_config.get_provider_auth_status",
+            lambda provider: ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider=provider,
+                source=ProviderAuthSource.ENV,
+            ),
+        )
+        monkeypatch.setattr(
+            RemoteAgent,
+            "aresolve_model",
+            AsyncMock(return_value=ModelMetadata("test-model", "baseten")),
+        )
+        # Keep process and network work stubbed, but run installation, restart,
+        # ServerReady delivery, confirmation, and model application for real.
+        proc = MagicMock()
+        proc.url = "http://test:0"
+        proc.restart = AsyncMock()
+        proc.wait_for_graph_ready = AsyncMock()
+        app = DeepAgentsApp()
+        monkeypatch.setattr(app, "_agent", RemoteAgent(proc.url))
+        monkeypatch.setattr(app, "_prewarm_model_caches", AsyncMock())
+        monkeypatch.setattr(runtime_state, "model_provider", "openai")
+        monkeypatch.setattr(runtime_state, "model_name", "original-model")
+        monkeypatch.setattr(runtime_state, "model_context_limit", None)
+        monkeypatch.setattr(runtime_state, "model_unsupported_modalities", frozenset())
+        monkeypatch.setattr(
+            app, "_reload_configuration_for_restart", AsyncMock(return_value=True)
+        )
+        applied_before_thread_switch: list[str | None] = []
+
+        async def switch_thread() -> None:
+            applied_before_thread_switch.append(app._model_override)
+            app._lc_thread_id = "next-thread"
+            await asyncio.sleep(0)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_proc = proc
+            app._server_kwargs = {"no_mcp": True}
+            app._lc_thread_id = "original-thread"
+            app._context_tokens = 150_000
+            app._model_switch_warning_threshold = 100_000
+            app._agent_running = True
+            await app._install_extra_then_switch("baseten", "baseten:test-model")
+            app._defer_action(
+                DeferredAction(kind="thread_switch", execute=switch_thread)
+            )
+            app._agent_running = False
+            drain = asyncio.create_task(app._maybe_drain_deferred())
+            try:
+                await wait_for_modal(pilot, ModelSwitchWarningScreen, present=True)
+                await pilot.pause()
+                assert app._lc_thread_id == "original-thread"
+                assert applied_before_thread_switch == []
+                await pilot.press("enter" if confirm else "escape")
+                await asyncio.wait_for(drain, timeout=5)
+                assert app._lc_thread_id == "next-thread"
+                assert applied_before_thread_switch == [
+                    "baseten:test-model" if confirm else None
+                ]
+                install.assert_awaited_once()
+                proc.restart.assert_awaited_once()
+            finally:
+                drain.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await drain
+
 
 class TestDeferredActions:
     """Test deferred action queueing and draining."""
+
+    async def test_cancelled_drain_allows_remaining_actions_to_resume(self) -> None:
+        """Cancellation releases queue ownership for a later drain."""
+        app = DeepAgentsApp()
+        started = asyncio.Event()
+        remaining = AsyncMock()
+
+        async def blocked_action() -> None:
+            started.set()
+            await asyncio.Event().wait()
+
+        app._defer_action(DeferredAction(kind="model_switch", execute=blocked_action))
+        app._defer_action(DeferredAction(kind="thread_switch", execute=remaining))
+        drain = asyncio.create_task(app._drain_deferred_actions())
+        await asyncio.wait_for(started.wait(), timeout=5)
+        drain.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await drain
+        remaining.assert_not_awaited()
+
+        await app._drain_deferred_actions()
+        remaining.assert_awaited_once()
 
     async def test_deferred_actions_drain_after_agent_cleanup(self) -> None:
         """Deferred actions should execute when agent task completes."""

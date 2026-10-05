@@ -2054,17 +2054,17 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         custom_input = filter_input.value.strip()
 
         blocked = (
-            self._presentation_config().policy_error(custom_input, canonicalize=True)
-            if custom_input and self._catalog_loader is None
+            self._presentation_config().policy_error(
+                custom_input, canonicalize=self._catalog_loader is None
+            )
+            if custom_input and (self._catalog_loader is None or ":" in custom_input)
             else None
         )
         if blocked is not None:
-            # Returning silently would read as a dead keybinding. `create_model`
-            # would reject this spec anyway; saying so here saves a round trip.
-            # `canonicalize` keeps this preflight in step with that gate: a bare
-            # name whose provider can be inferred is matched in the same
-            # canonical form, so an allowed model is not rejected here merely
-            # for lacking a `provider:` prefix.
+            # Reject before provider setup can install packages or request auth.
+            # Catalog-backed pickers check explicit specs without local provider
+            # inference; bare names are resolved by the inference host. Standalone
+            # pickers canonicalize locally to match the model-construction gate.
             self.notify(str(blocked), severity="error", timeout=8)
             return
 

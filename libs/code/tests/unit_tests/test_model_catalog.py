@@ -160,6 +160,77 @@ async def test_custom_provider_without_discovered_models_prompts_for_setup(
             selected.assert_called_once_with((spec, provider))
 
 
+@pytest.mark.parametrize("installed", [False, True])
+@pytest.mark.parametrize(
+    ("spec", "allowed_models", "blocked"),
+    [
+        ("groq:custom-model", ["remote:allowed"], True),
+        ("groq:custom-model", [], True),
+        ("groq:custom-model", ["groq:custom-model"], False),
+        ("custom-model", ["remote:allowed"], False),
+    ],
+)
+async def test_catalog_policy_precedes_custom_provider_setup(
+    installed: bool,
+    spec: str,
+    allowed_models: list[str],
+    blocked: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.tui.widgets.auth import AuthPromptScreen
+    from deepagents_code.tui.widgets.install_confirm import InstallProviderConfirmScreen
+
+    catalog = ModelCatalog(
+        models=[],
+        profiles={},
+        providers={
+            "groq": CatalogProvider(
+                state=ProviderAuthState.MISSING,
+                env_var="GROQ_API_KEY",
+                install_extra=None if installed else "groq",
+            )
+        },
+        allowed_models=allowed_models,
+    )
+
+    def client_probe(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Catalog policy must not consult local provider data")
+
+    monkeypatch.setattr(model_config.ModelConfig, "canonical_model_spec", client_probe)
+    monkeypatch.setattr("deepagents_code.config.detect_provider", client_probe)
+    selected = Mock()
+    notify = Mock()
+    screen = ModelSelectorScreen(
+        default_scope=None,
+        include_recent_models=False,
+        catalog_loader=AsyncMock(return_value=catalog),
+    )
+    monkeypatch.setattr(screen, "notify", notify)
+    app = App()
+    async with app.run_test() as pilot:
+        app.push_screen(screen, selected)
+        await pilot.pause()
+        screen.query_one("#model-filter", Input).value = spec
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        if blocked:
+            assert app.screen is screen
+            assert screen.pending_install_extra is None
+            selected.assert_not_called()
+            assert "models.allowed" in notify.call_args.args[0]
+        elif ":" in spec:
+            prompt_type = (
+                AuthPromptScreen if installed else InstallProviderConfirmScreen
+            )
+            assert isinstance(app.screen, prompt_type)
+            selected.assert_not_called()
+            notify.assert_not_called()
+        else:
+            selected.assert_called_once_with((spec, ""))
+            notify.assert_not_called()
+
+
 @pytest.mark.parametrize("resolution_fails", [False, True])
 async def test_picker_validates_before_saving_default(
     catalog: ModelCatalog,

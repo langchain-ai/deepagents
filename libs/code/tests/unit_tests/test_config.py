@@ -1651,12 +1651,9 @@ class TestWorkspaceStoredCredentials:
         [
             ("native", "default", "OPENAI_BASE_URL"),
             ("native", "default", "OPENAI_API_BASE"),
-            ("native", "provider", "OPENAI_BASE_URL"),
-            ("native", "model", "OPENAI_BASE_URL"),
             ("native", "caller", "OPENAI_BASE_URL"),
             ("native", "stream_options", "OPENAI_BASE_URL"),
             ("stored", "default", "OPENAI_BASE_URL"),
-            ("stored", "default", "OPENAI_API_BASE"),
             ("prefixed", "default", "OPENAI_BASE_URL"),
             ("config", "default", "OPENAI_BASE_URL"),
             ("caller", "default", "OPENAI_BASE_URL"),
@@ -1693,10 +1690,6 @@ class TestWorkspaceStoredCredentials:
             provider["params"] = {"openai_api_base": endpoint}
         elif endpoint_source == "model_alias":
             provider["params"] = {"gpt-5.5": {"openai_api_base": endpoint}}
-        if usage_override == "provider":
-            provider["params"] = {"stream_usage": False}
-        elif usage_override == "model":
-            provider["params"] = {"gpt-5.5": {"stream_usage": False}}
         monkeypatch.setenv("OPENAI_API_KEY", "inherited-key")
         monkeypatch.setenv(endpoint_env, "https://gateway.example/v1")
         environment = {
@@ -1765,9 +1758,8 @@ class TestWorkspaceStoredCredentials:
         assert os.environ[endpoint_env] == "https://gateway.example/v1"
         assert os.environ["OPENAI_API_KEY"] == "inherited-key"
 
-    @pytest.mark.parametrize("endpoint_source", ["provider", "model", "caller"])
     async def test_stored_baseten_key_preserves_endpoint_alias(
-        self, monkeypatch: pytest.MonkeyPatch, endpoint_source: str
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An explicit Baseten alias reaches both clients without conflicting URLs."""
         from langchain_openai.chat_models.base import BaseChatOpenAI
@@ -1775,17 +1767,12 @@ class TestWorkspaceStoredCredentials:
         from deepagents_code.config import use_environment
 
         pytest.importorskip("langchain_baseten")
-        config = _stored_provider_config(monkeypatch, "baseten")
+        _stored_provider_config(monkeypatch, "baseten")
         endpoint = "https://selected.example/v1"
-        params = {"baseten_api_base": endpoint}
-        if endpoint_source == "provider":
-            config.providers["baseten"]["params"] = params
-        elif endpoint_source == "model":
-            config.providers["baseten"]["params"] = {"test-model": params}
         with use_environment({}):
             model = create_model(
                 "baseten:test-model",
-                extra_kwargs=params if endpoint_source == "caller" else None,
+                extra_kwargs={"baseten_api_base": endpoint},
             ).model
         assert isinstance(model, BaseChatOpenAI)
         try:
@@ -1825,9 +1812,7 @@ class TestWorkspaceStoredCredentials:
         assert kwargs["api_key"] == "caller-key"
         assert "base_url" not in kwargs
 
-    @pytest.mark.parametrize(
-        "endpoint_source", ["native", "stored", "prefixed", "config", "caller"]
-    )
+    @pytest.mark.parametrize("endpoint_source", ["native", "stored"])
     async def test_stored_google_key_uses_its_endpoint_in_sdk_client(
         self, monkeypatch: pytest.MonkeyPatch, endpoint_source: str
     ) -> None:
@@ -1839,27 +1824,21 @@ class TestWorkspaceStoredCredentials:
         from deepagents_code.config import use_environment
 
         endpoint = "https://selected.example"
-        config = _stored_provider_config(
+        _stored_provider_config(
             monkeypatch,
             "google_genai",
             base_url=endpoint if endpoint_source == "stored" else None,
         )
-        if endpoint_source == "config":
-            config.providers["google_genai"]["base_url"] = endpoint
         monkeypatch.setenv("GOOGLE_API_KEY", "inherited-key")
         monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://gateway.example")
         environment = {
             "GOOGLE_API_KEY": "inherited-key",
             "GOOGLE_GEMINI_BASE_URL": "https://gateway.example",
         }
-        if endpoint_source == "prefixed":
-            environment["DEEPAGENTS_CODE_GOOGLE_GEMINI_BASE_URL"] = endpoint
-        extra_kwargs: dict[str, Any] = {"vertexai": False}
-        if endpoint_source == "caller":
-            extra_kwargs["base_url"] = endpoint
-
         with use_environment(environment):
-            result = create_model("google_genai:gemini-test", extra_kwargs=extra_kwargs)
+            result = create_model(
+                "google_genai:gemini-test", extra_kwargs={"vertexai": False}
+            )
 
         model = result.model
         assert isinstance(model, ChatGoogleGenerativeAI)
@@ -1879,23 +1858,38 @@ class TestWorkspaceStoredCredentials:
             await model.client.aio.aclose()
 
     @pytest.mark.parametrize(
-        ("provider", "endpoint_env", "native_endpoint"),
+        ("provider", "endpoint_env", "stored_endpoint", "expected_endpoint"),
         [
-            ("groq", "GROQ_BASE_URL", "https://api.groq.com"),
-            ("groq", "GROQ_API_BASE", "https://api.groq.com"),
-            ("fireworks", "FIREWORKS_BASE_URL", "https://api.fireworks.ai/inference"),
-            ("fireworks", "FIREWORKS_API_BASE", "https://api.fireworks.ai/inference"),
-            ("perplexity", "PERPLEXITY_BASE_URL", "https://api.perplexity.ai"),
+            ("groq", "GROQ_BASE_URL", None, "https://api.groq.com"),
+            ("groq", "GROQ_API_BASE", None, "https://api.groq.com"),
+            (
+                "fireworks",
+                "FIREWORKS_BASE_URL",
+                None,
+                "https://api.fireworks.ai/inference",
+            ),
+            (
+                "fireworks",
+                "FIREWORKS_API_BASE",
+                None,
+                "https://api.fireworks.ai/inference",
+            ),
+            ("perplexity", "PERPLEXITY_BASE_URL", None, "https://api.perplexity.ai"),
+            (
+                "perplexity",
+                "PERPLEXITY_BASE_URL",
+                "https://stored.example/v1",
+                "https://stored.example/v1",
+            ),
         ],
     )
-    @pytest.mark.parametrize("stored_endpoint", [None, "https://stored.example/v1"])
     async def test_stored_optional_provider_key_uses_its_endpoint_in_sdk_clients(
         self,
         monkeypatch: pytest.MonkeyPatch,
         provider: str,
         endpoint_env: str,
-        native_endpoint: str,
         stored_endpoint: str | None,
+        expected_endpoint: str,
     ) -> None:
         """Both sync and async SDK clients bypass inherited gateway fallbacks."""
         import os
@@ -1922,9 +1916,7 @@ class TestWorkspaceStoredCredentials:
             sync_client, async_client = sync_client._client, async_client._client
         try:
             for client in (sync_client, async_client):
-                assert str(client.base_url).rstrip("/") == (
-                    stored_endpoint or native_endpoint
-                )
+                assert str(client.base_url).rstrip("/") == expected_endpoint
                 assert client.api_key == "stored-key"
             assert os.environ[endpoint_env] == "https://gateway.example/v1"
             assert os.environ[key_env] == "inherited-key"

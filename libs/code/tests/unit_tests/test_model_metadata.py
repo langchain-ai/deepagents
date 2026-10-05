@@ -446,7 +446,6 @@ async def test_auxiliary_selection_uses_server_environment_and_profile(
     [
         "/offload model",
         "/auto model",
-        "/goal model",
         "/rubric model",
     ],
 )

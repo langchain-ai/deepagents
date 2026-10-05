@@ -1055,9 +1055,7 @@ async def test_every_picker_defers_install_and_requires_authentication(
     ] == expected
 
 
-@pytest.mark.parametrize(
-    "command", ["/offload model", "/auto model", "/goal model", "/rubric model"]
-)
+@pytest.mark.parametrize("command", ["/offload model", "/auto model", "/rubric model"])
 async def test_clearing_auxiliary_choices_waits_for_active_turn(
     command: str,
     monkeypatch: pytest.MonkeyPatch,

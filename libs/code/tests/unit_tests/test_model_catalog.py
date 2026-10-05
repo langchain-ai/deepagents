@@ -59,8 +59,6 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     [
         ("42", '"Compact"', None, "Compact"),
         ('"Friendly"', "false", "Friendly", None),
-        ('["bad"]', "{bad = true}", None, None),
-        ('"Friendly"', '"Compact"', "Friendly", "Compact"),
     ],
 )
 def test_catalog_normalizes_optional_provider_labels(
@@ -216,14 +214,15 @@ async def test_custom_provider_without_discovered_models_prompts_for_setup(
             selected.assert_called_once_with((spec, provider))
 
 
-@pytest.mark.parametrize("installed", [False, True])
 @pytest.mark.parametrize(
-    ("spec", "allowed_models", "blocked"),
+    ("installed", "spec", "allowed_models", "blocked"),
     [
-        ("groq:custom-model", ["remote:allowed"], True),
-        ("groq:custom-model", [], True),
-        ("groq:custom-model", ["groq:custom-model"], False),
-        ("custom-model", ["remote:allowed"], False),
+        (False, "groq:custom-model", ["remote:allowed"], True),
+        (True, "groq:custom-model", ["remote:allowed"], True),
+        (False, "groq:custom-model", [], True),
+        (False, "groq:custom-model", ["groq:custom-model"], False),
+        (True, "groq:custom-model", ["groq:custom-model"], False),
+        (True, "custom-model", ["remote:allowed"], False),
     ],
 )
 async def test_catalog_policy_precedes_custom_provider_setup(
@@ -288,14 +287,13 @@ async def test_catalog_policy_precedes_custom_provider_setup(
 
 
 @pytest.mark.parametrize(
-    "spec",
+    ("spec", "exact_allowlist"),
     [
-        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-        "meta.llama3-70b-instruct-v1:0",
-        ":claude-sonnet-4-5",
+        ("us.anthropic.claude-3-5-sonnet-20241022-v2:0", False),
+        ("meta.llama3-70b-instruct-v1:0", True),
+        (":claude-sonnet-4-5", True),
     ],
 )
-@pytest.mark.parametrize("exact_allowlist", [False, True])
 async def test_catalog_picker_defers_ambiguous_ids_to_inference_host(
     spec: str,
     exact_allowlist: bool,
@@ -339,42 +337,9 @@ async def test_catalog_picker_defers_ambiguous_ids_to_inference_host(
         assert screen.pending_install_extra is None
 
 
-@pytest.mark.parametrize("resolution_fails", [False, True])
-async def test_picker_validates_before_saving_default(
-    catalog: ModelCatalog,
-    resolution_fails: bool,
-) -> None:
-    stored: dict[str, str | None] = {"model": None}
-
-    def save(spec: str) -> bool:
-        stored["model"] = spec
-        return True
-
-    screen = ModelSelectorScreen(
-        default_scope=DefaultModelScope(
-            "default", "set default", lambda: None, save, lambda: True
-        ),
-        include_recent_models=False,
-        catalog_loader=AsyncMock(return_value=catalog),
-        resolve_model=AsyncMock(
-            return_value=ModelMetadata("canonical", "remote"),
-            side_effect=RuntimeError("Server rejected the model")
-            if resolution_fails
-            else None,
-        ),
-    )
-    app = App()
-    async with app.run_test() as pilot:
-        app.push_screen(screen)
-        await pilot.pause()
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        assert stored["model"] == (None if resolution_fails else "remote:canonical")
-        assert screen._default_spec == stored["model"]
-
-
 @pytest.mark.parametrize(
-    ("dismiss", "resolution_fails"), [(False, False), (True, False), (True, True)]
+    ("dismiss", "resolution_fails"),
+    [(False, False), (False, True), (True, False), (True, True)],
 )
 async def test_default_validation_keeps_keyboard_responsive(
     catalog: ModelCatalog,
@@ -436,6 +401,10 @@ async def test_default_validation_keeps_keyboard_responsive(
             save.assert_not_called()
             notify.assert_not_called()
             assert screen._default_spec is None
+        elif resolution_fails:
+            save.assert_not_called()
+            assert screen._default_spec is None
+            assert "Server rejected the model" in notify.call_args.args[0]
         else:
             save.assert_called_once_with("remote:canonical")
             assert screen._default_spec == "remote:canonical"

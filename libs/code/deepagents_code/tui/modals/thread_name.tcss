@@ -3,19 +3,34 @@ ThreadNameScreen {
 
     & > Vertical {
         width: 64;
+        max-width: 90%;
         height: auto;
         padding: 1 2;
-        border: round $primary;
+        border: solid $primary;
         background: $surface;
     }
 
     .thread-name-heading {
         text-style: bold;
+        color: $primary;
+        text-align: center;
         margin-bottom: 1;
     }
 
+    #thread-name {
+        margin-bottom: 1;
+        border: solid $primary-lighten-2;
+    }
+
+    #thread-name:focus {
+        border: solid $primary;
+    }
+
     .thread-name-help {
+        height: auto;
         color: $text-muted;
+        text-style: italic;
+        text-align: center;
     }
 
     #thread-name-error {

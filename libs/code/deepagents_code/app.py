@@ -26193,6 +26193,7 @@ class DeepAgentsApp(App):
                 cost_breakdown_provider=lambda: format_cost_breakdown_table(
                     self._session_cost_usd, self._session_cost_breakdown
                 ),
+                mcp_servers_provider=lambda: self._mcp_server_info or [],
                 cleared_upto=self._debug_console_cleared_upto,
                 on_clear=persist_clear,
                 click_to_copy=self._debug_console_click_to_copy,
@@ -26280,7 +26281,7 @@ class DeepAgentsApp(App):
             servers = self._mcp_server_info or []
             if not servers:
                 return "none"
-            return ", ".join(f"{s.name} ({s.status})" for s in servers)
+            return str(len(servers))
 
         def _tokens() -> str:
             stats = self._session_stats

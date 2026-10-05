@@ -7,6 +7,7 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Overwrite
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
@@ -31,27 +32,36 @@ def greet() -> str:
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
-async def test_pins_persist_clear_and_disclose_tools(skills_dir: Path, *, asynchronous: bool) -> None:
-    model = GenericFakeChatModel(messages=iter([AIMessage(content="done")] * 3))
+async def test_pins_append_clear_and_disclose_tools(skills_dir: Path, *, asynchronous: bool) -> None:
+    directory = skills_dir / "another"
+    directory.mkdir()
+    (directory / "SKILL.md").write_text("---\nname: another\ndescription: Another skill\n---\nANOTHER SKILL INSTRUCTIONS\n")
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="done")] * 5))
     middleware = SkillsMiddleware(backend=FilesystemBackend(virtual_mode=False), sources=[str(skills_dir)], tools=[greet], system_prompt=None)
     agent = create_agent(model, middleware=[middleware], checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": "pins"}}
     inputs = [
         {"messages": [HumanMessage(content="first")], "pinned_skills": ["example", "example"]},
-        {"messages": [HumanMessage(content="second")]},
+        {"messages": [HumanMessage(content="second")], "pinned_skills": ["another"]},
         {"messages": [HumanMessage(content="third")], "pinned_skills": []},
+        {"messages": [HumanMessage(content="fourth")]},
+        {"messages": [HumanMessage(content="fifth")], "pinned_skills": Overwrite([])},
     ]
     for index, payload in enumerate(inputs):
         result = await agent.ainvoke(payload, config) if asynchronous else agent.invoke(payload, config)
         sent = model.call_history[-1]["messages"]
         pinned = [message for message in sent if "SECRET SKILL INSTRUCTIONS" in str(message.content)]
-        assert len(pinned) == (1 if index < 2 else 0)
+        assert len(pinned) == (1 if index < 4 else 0)
         assert all(isinstance(message, HumanMessage) for message in pinned)
-        if index < 2:
+        another = [message for message in sent if "ANOTHER SKILL INSTRUCTIONS" in str(message.content)]
+        assert len(another) == (1 if 0 < index < 4 else 0)
+        if index < 4:
             assert [entry.name for entry in model.call_history[-1]["tools"]] == ["greet"]
-        assert not any("SECRET SKILL INSTRUCTIONS" in str(message.content) for message in result["messages"])
+        assert not any("SKILL INSTRUCTIONS" in str(message.content) for message in result["messages"])
+        expected_pins = ["example", "example"] + (["another"] if index > 0 else []) if index < 4 else []
+        assert result["pinned_skills"] == expected_pins
         snapshot = await agent.aget_state(config) if asynchronous else agent.get_state(config)
-        assert snapshot.values["_skill_tools_disclosed"] == ({"greet": "greet"} if index < 2 else {})
+        assert snapshot.values["_skill_tools_disclosed"] == ({"greet": "greet"} if index < 4 else {})
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])
@@ -87,10 +97,10 @@ async def test_invalid_pins_fail_before_model(skills_dir: Path, *, asynchronous:
     agent = create_agent(model, middleware=[SkillsMiddleware(backend=FilesystemBackend(virtual_mode=False), sources=[str(skills_dir)])])
     payload = {"messages": [HumanMessage(content="hello")], "pinned_skills": pins}
     if asynchronous:
-        with pytest.raises((TypeError, ValueError), match=r"pinned skill|pinned_skills"):
+        with pytest.raises((TypeError, ValueError), match=r"pinned skill|pinned_skills|concatenate list"):
             await agent.ainvoke(payload)
     else:
-        with pytest.raises((TypeError, ValueError), match=r"pinned skill|pinned_skills"):
+        with pytest.raises((TypeError, ValueError), match=r"pinned skill|pinned_skills|concatenate list"):
             agent.invoke(payload)
     assert not model.call_history
 

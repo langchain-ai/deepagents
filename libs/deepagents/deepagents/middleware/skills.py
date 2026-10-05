@@ -103,6 +103,7 @@ import asyncio
 import html
 import json
 import logging
+import operator
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import PurePosixPath
@@ -345,11 +346,12 @@ class SkillMetadata(TypedDict):
 class SkillsState(AgentState):
     """State for the skills middleware."""
 
-    pinned_skills: NotRequired[list[str]]
+    pinned_skills: NotRequired[Annotated[list[str], operator.add]]
     """Skill names whose full instructions are loaded into every model request.
 
-    Pins persist in checkpointed state; pass `[]` to clear them. Instructions are
-    request-local human messages, not appended to the stored conversation.
+    Pins append across checkpointed invocations; `[]` leaves them unchanged.
+    Use `langgraph.types.Overwrite([])` to clear them. Instructions are request-local
+    human messages, not appended to the stored conversation.
     """
 
     skills_metadata: NotRequired[Annotated[list[SkillMetadata] | None, OmitFromOutput]]
@@ -871,7 +873,8 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     agent.invoke({"messages": messages, "pinned_skills": ["web-research"]}, config)
     ```
 
-    Pins persist in checkpointed state until replaced or cleared with `[]`.
+    Pins append across checkpointed invocations; passing `[]` is a no-op.
+    Use `langgraph.types.Overwrite([])` as the `pinned_skills` value to clear them.
     Instructions are injected as request-local human messages, not stored in
     conversation history. Unknown names or unreadable files fail before the model
     call. Pinning guarantees loading instructions, not model compliance.

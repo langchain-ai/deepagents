@@ -6085,8 +6085,14 @@ with deployment-specific endpoints (such as Azure) have no fixed native URL.
 _PROVIDER_BASE_URL_ALIASES: dict[str, str] = {
     "anthropic": "anthropic_api_url",
     "baseten": "baseten_api_base",
+    "deepseek": "api_base",
+    "fireworks": "fireworks_api_base",
+    "groq": "groq_api_base",
+    "mistralai": "endpoint",
     "openai": "openai_api_base",
     "openrouter": "openrouter_api_base",
+    "together": "together_api_base",
+    "xai": "xai_api_base",
 }
 """Provider endpoint fields accepted alongside the common `base_url` alias."""
 

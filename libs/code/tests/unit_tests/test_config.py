@@ -1782,6 +1782,72 @@ class TestWorkspaceStoredCredentials:
             model.root_client.close()
             await model.root_async_client.close()
 
+    @pytest.mark.parametrize(
+        ("provider", "endpoint_alias"),
+        [
+            ("deepseek", "api_base"),
+            ("fireworks", "fireworks_api_base"),
+            ("groq", "groq_api_base"),
+            ("mistralai", "endpoint"),
+            ("together", "together_api_base"),
+            ("xai", "xai_api_base"),
+        ],
+    )
+    @pytest.mark.parametrize("endpoint_source", ["provider", "model", "caller"])
+    async def test_stored_key_preserves_explicit_endpoint_alias(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        endpoint_alias: str,
+        endpoint_source: str,
+    ) -> None:
+        """Explicit aliases select both clients' endpoints over native defaults."""
+        import httpx
+
+        from deepagents_code.config import use_environment
+
+        pytest.importorskip(f"langchain_{provider}")
+        config = _stored_provider_config(monkeypatch, provider)
+        endpoint = "https://selected.example/v1"
+        params = {endpoint_alias: endpoint}
+        extra_kwargs: dict[str, object] = {}
+        if endpoint_source == "provider":
+            config.providers[provider]["params"] = params
+        elif endpoint_source == "model":
+            config.providers[provider]["params"] = {"test-model": params}
+        else:
+            extra_kwargs.update(params)
+        environment = dict.fromkeys(
+            model_config.PROVIDER_BASE_URL_ENV[provider], "https://gateway.example/v1"
+        )
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+
+        with use_environment(environment):
+            model = create_model(
+                f"{provider}:test-model", extra_kwargs=extra_kwargs
+            ).model
+
+        sync_client, async_client = (
+            getattr(model, name) for name in ("client", "async_client")
+        )
+        if provider != "mistralai":
+            sync_client, async_client = sync_client._client, async_client._client
+        try:
+            assert str(sync_client.base_url).rstrip("/") == endpoint
+            assert str(async_client.base_url).rstrip("/") == endpoint
+        finally:
+            sync_client.close()
+            if isinstance(async_client, httpx.AsyncClient):
+                await async_client.aclose()
+            else:
+                await async_client.close()
+            # OpenAI-based integrations may allocate separate root clients.
+            if root_client := getattr(model, "root_client", None):
+                root_client.close()
+            if root_async_client := getattr(model, "root_async_client", None):
+                await root_async_client.close()
+
     @patch("langchain.chat_models.init_chat_model")
     def test_explicit_key_does_not_use_stored_endpoint(
         self,

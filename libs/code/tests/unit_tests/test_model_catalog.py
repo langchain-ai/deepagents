@@ -11,6 +11,7 @@ from textual.app import App
 from textual.widgets import Input
 
 from deepagents_code import model_config
+from deepagents_code._cli_context import INHERIT_SUMMARIZATION_MODEL
 from deepagents_code.app import DeepAgentsApp, DeferredAction
 from deepagents_code.model_catalog import CatalogProfile, CatalogProvider, ModelCatalog
 from deepagents_code.model_config import ProviderAuthState
@@ -238,3 +239,52 @@ async def test_deferred_install_switch_finishes_before_thread_switch(
             answer.set_result(False)
         await drain
         await asyncio.gather(*app._modal_command_tasks.values())
+
+
+@pytest.mark.parametrize("blocked_stage", ["install", "resolve"])
+@pytest.mark.parametrize("clear", [False, True])
+async def test_newer_summary_choice_survives_older_selection(
+    blocked_stage: str, clear: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_mount_message", AsyncMock())
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def wait_for_release() -> None:
+        started.set()
+        await release.wait()
+        finished.set()
+
+    async def prepare(_extra: str, _spec: str) -> bool:
+        await wait_for_release()
+        return True
+
+    async def resolve(spec: str) -> ModelMetadata:
+        if spec == "remote:older" and blocked_stage == "resolve":
+            await wait_for_release()
+        return ModelMetadata(spec.removeprefix("remote:"), "remote")
+
+    monkeypatch.setattr(app, "_prepare_model_provider", prepare)
+    monkeypatch.setattr(app, "_resolve_auxiliary_model", resolve)
+    older = asyncio.create_task(
+        app._apply_summarization_model_selection(
+            "remote:older", "remote" if blocked_stage == "install" else None
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        if clear:
+            await app._handle_summarization_model_command("/offload model clear")
+        else:
+            await app._apply_summarization_model_selection("remote:newer", None)
+        expected = INHERIT_SUMMARIZATION_MODEL if clear else "remote:newer"
+        assert app._summarization_model_override == expected
+        release.set()
+        await asyncio.wait_for(older, timeout=2)
+        assert finished.is_set()
+        assert app._summarization_model_override == expected
+    finally:
+        release.set()
+        await older

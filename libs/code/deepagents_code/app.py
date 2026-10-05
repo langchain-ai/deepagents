@@ -3939,6 +3939,9 @@ class DeepAgentsApp(App):
         `INHERIT_SUMMARIZATION_MODEL` explicitly returns to the main model.
         """
 
+        self._summarization_model_selection = 0
+        """Latest summary selection; older workers may finish installation only."""
+
         self._last_model_unchanged: tuple[str, float] | None = None
         """Most recent same-model toast, as `(text, monotonic timestamp)`.
 
@@ -24729,8 +24732,11 @@ class DeepAgentsApp(App):
         """Prepare and apply every auxiliary picker through the same lifecycle."""
         from functools import partial
 
+        if role == "summarization":
+            await self._set_summarization_model(model_spec, extra=extra)
+            return
+
         kinds: dict[str, DeferredActionKind] = {
-            "summarization": "summarization_model_switch",
             "auto": "auto_classifier_model_switch",
             "goal": "rubric_model_switch",
             "rubric": "rubric_model_switch",
@@ -24748,9 +24754,7 @@ class DeepAgentsApp(App):
             return
         if extra and not await self._prepare_model_provider(extra, model_spec):
             return
-        if role == "summarization":
-            await self._set_summarization_model(model_spec)
-        elif role == "auto":
+        if role == "auto":
             await self._set_auto_classifier_model(
                 model_spec, persisted_as_default=persisted_as_default
             )
@@ -31412,14 +31416,41 @@ class DeepAgentsApp(App):
         """Return auxiliary metadata from the shared selection resolver."""
         return await self._resolve_model_metadata(model_spec, purpose="auxiliary")
 
-    async def _set_summarization_model(self, model_spec: str) -> None:
-        """Validate and set the session's summarization model."""
+    async def _set_summarization_model(
+        self,
+        model_spec: str,
+        *,
+        extra: str | None = None,
+        selection: int | None = None,
+    ) -> None:
+        """Apply only the latest summary choice, allowing older installs to finish.
+
+        Args:
+            model_spec: Requested summary model or the inherit sentinel.
+            extra: Provider integration to install before resolving the model.
+            selection: Original selection number when resuming deferred work.
+        """
         from functools import partial
 
+        if selection is None:
+            self._summarization_model_selection += 1
+            selection = self._summarization_model_selection
+        if selection != self._summarization_model_selection:
+            return
         if self._defer_model_selection(
             "summarization_model_switch",
-            partial(self._set_summarization_model, model_spec),
+            partial(
+                self._set_summarization_model,
+                model_spec,
+                extra=extra,
+                selection=selection,
+            ),
         ):
+            return
+        if extra:
+            if await self._prepare_model_provider(extra, model_spec):
+                # Recheck freshness and busy state after installation/restart.
+                await self._set_summarization_model(model_spec, selection=selection)
             return
         if model_spec == INHERIT_SUMMARIZATION_MODEL:
             self._summarization_model_override = INHERIT_SUMMARIZATION_MODEL
@@ -31430,10 +31461,14 @@ class DeepAgentsApp(App):
         try:
             result = await self._resolve_auxiliary_model(model_spec)
         except Exception as exc:
+            if selection != self._summarization_model_selection:
+                return
             logger.exception("Failed to resolve summarization model %s", model_spec)
             await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
             return
 
+        if selection != self._summarization_model_selection:
+            return
         display = f"{result.provider}:{result.model_name}"
         self._summarization_model_override = display
         await self._mount_message(AppMessage(f"Summarization model set to {display}."))

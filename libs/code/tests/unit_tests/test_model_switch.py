@@ -959,25 +959,22 @@ class TestSummarizationModelCommand:
         assert screen._current_provider == "anthropic"
         assert screen._current_model == "claude-sonnet-4-5"
 
-    async def test_cancelled_post_install_auth_keeps_summary_model(self) -> None:
+    async def test_cancelled_post_install_auth_keeps_summary_model(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Dismissing auth leaves the installed provider unapplied."""
         app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
         install = AsyncMock(return_value=True)
         authenticate = AsyncMock(return_value=False)
-        set_model = AsyncMock()
         mount_message = AsyncMock()
-        app._install_extra = install  # ty: ignore[invalid-assignment]
-        app._prompt_model_auth_if_needed = (  # ty: ignore[invalid-assignment]
-            authenticate
-        )
-        app._set_summarization_model = set_model  # ty: ignore[invalid-assignment]
-        app._mount_message = mount_message  # ty: ignore[invalid-assignment]
+        monkeypatch.setattr(app, "_install_extra", install)
+        monkeypatch.setattr(app, "_prompt_model_auth_if_needed", authenticate)
+        monkeypatch.setattr(app, "_mount_message", mount_message)
 
         await app._apply_summarization_model_selection(
             "baseten:moonshotai/Kimi-K3", "baseten"
         )
 
-        set_model.assert_not_awaited()
         assert app._summarization_model_override == "openai:gpt-5.4-mini"
         assert mount_message.await_args is not None
         mounted = str(mount_message.await_args.args[0]._content)

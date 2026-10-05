@@ -6454,7 +6454,17 @@ def _create_model_from_class(
         raise ModelConfigError(msg)
 
     try:
-        if provider == "perplexity" and kwargs.get("base_url"):
+        # A real subclass has already loaded the optional integration. Other
+        # custom classes must keep their normal constructor endpoint argument.
+        perplexity_class = getattr(
+            sys.modules.get("langchain_perplexity.chat_models"), "ChatPerplexity", None
+        )
+        if (
+            provider == "perplexity"
+            and kwargs.get("base_url")
+            and isinstance(perplexity_class, type)
+            and issubclass(cls, perplexity_class)
+        ):
             return _create_perplexity_model(model_name, kwargs, model_class=cls)
         return cls(model=model_name, **kwargs)
     except Exception as e:

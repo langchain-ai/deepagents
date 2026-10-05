@@ -1981,8 +1981,9 @@ class TestWorkspaceStoredCredentials:
             sync_client.close()
             await async_client.close()
 
+    @pytest.mark.parametrize("class_kind", ["perplexity", "subclass", "openai"])
     async def test_perplexity_class_path_invokes_with_resolved_endpoint(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, class_kind: str
     ) -> None:
         """Class-path models use the stored endpoint for sync and async calls."""
         import os
@@ -1993,17 +1994,34 @@ class TestWorkspaceStoredCredentials:
 
         from deepagents_code.config import use_environment
 
-        integration = pytest.importorskip("langchain_perplexity.chat_models")
         endpoint = "https://selected.example/v1"
-        config = _stored_provider_config(monkeypatch, "perplexity", base_url=endpoint)
-        config.providers["perplexity"]["class_path"] = (
-            "langchain_perplexity:ChatPerplexity"
-        )
+        config = _stored_provider_config(monkeypatch, "perplexity")
+        config.providers["perplexity"]["base_url"] = endpoint
+        integration = None
+        if class_kind == "openai":
+            class_path = "langchain_openai:ChatOpenAI"
+        else:
+            integration = pytest.importorskip("langchain_perplexity.chat_models")
+            class_path = "langchain_perplexity:ChatPerplexity"
+            if class_kind == "subclass":
+
+                class CustomPerplexity(integration.ChatPerplexity):
+                    pass
+
+                monkeypatch.setattr(
+                    sys.modules[__name__],
+                    "CustomPerplexity",
+                    CustomPerplexity,
+                    raising=False,
+                )
+                class_path = f"{__name__}:CustomPerplexity"
+        config.providers["perplexity"]["class_path"] = class_path
         monkeypatch.setenv("PERPLEXITY_BASE_URL", "https://gateway.example/v1")
 
         def respond(request: httpx.Request) -> httpx.Response:
             assert str(request.url) == endpoint + "/chat/completions"
             assert request.headers["authorization"] == "Bearer stored-key"
+            assert "base_url" not in json.loads(request.content)
             return httpx.Response(
                 200,
                 json={
@@ -2017,20 +2035,32 @@ class TestWorkspaceStoredCredentials:
             async with httpx.AsyncClient(
                 transport=httpx.MockTransport(respond)
             ) as http_async_client:
-                monkeypatch.setattr(
-                    integration,
-                    "Perplexity",
-                    partial(integration.Perplexity, http_client=http_client),
-                )
-                monkeypatch.setattr(
-                    integration,
-                    "AsyncPerplexity",
-                    partial(integration.AsyncPerplexity, http_client=http_async_client),
-                )
+                extra_kwargs: dict[str, object] = {}
+                if integration is not None:
+                    monkeypatch.setattr(
+                        integration,
+                        "Perplexity",
+                        partial(integration.Perplexity, http_client=http_client),
+                    )
+                    monkeypatch.setattr(
+                        integration,
+                        "AsyncPerplexity",
+                        partial(
+                            integration.AsyncPerplexity, http_client=http_async_client
+                        ),
+                    )
+                else:
+                    extra_kwargs.update(
+                        http_client=http_client,
+                        http_async_client=http_async_client,
+                        use_responses_api=False,
+                    )
                 with use_environment(
                     {"PERPLEXITY_BASE_URL": "https://gateway.example/v1"}
                 ):
-                    model = create_model("perplexity:test-model").model
+                    model = create_model(
+                        "perplexity:test-model", extra_kwargs=extra_kwargs
+                    ).model
                 with tracing_context(enabled=False):
                     assert model.invoke("Hi").content == "Hello"
                     assert (await model.ainvoke("Hi")).content == "Hello"

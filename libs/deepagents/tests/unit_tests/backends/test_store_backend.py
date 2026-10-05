@@ -759,3 +759,61 @@ async def test_store_backend_adelete_treats_wildcard_as_literal_key() -> None:
 
     missing = await be.adelete("*")
     assert missing.error is not None and "not found" in missing.error
+
+
+class _StringPrefixStore(InMemoryStore):
+    """Mimics SQL stores that matched namespaces as unbounded string prefixes."""
+
+    def _prefix_matches(self, namespace_prefix: tuple[str, ...], *, limit: int, offset: int) -> list[Any]:
+        joined = ".".join(namespace_prefix)
+        items = [item for item in super().search((), limit=10_000) if ".".join(item.namespace).startswith(joined)]
+        return items[offset : offset + limit]
+
+    def search(self, namespace_prefix: tuple[str, ...], /, *, limit: int = 10, offset: int = 0, **_: Any) -> list[Any]:
+        return self._prefix_matches(namespace_prefix, limit=limit, offset=offset)
+
+    async def asearch(self, namespace_prefix: tuple[str, ...], /, *, limit: int = 10, offset: int = 0, **_: Any) -> list[Any]:
+        return self._prefix_matches(namespace_prefix, limit=limit, offset=offset)
+
+
+def _tenant_backends(store: InMemoryStore) -> tuple[StoreBackend, StoreBackend, StoreBackend]:
+    own = StoreBackend(store=store, namespace=lambda _rt: ("tenant", "acme"))
+    sibling = StoreBackend(store=store, namespace=lambda _rt: ("tenant", "acme-corp"))
+    child = StoreBackend(store=store, namespace=lambda _rt: ("tenant", "acme", "child"))
+    return own, sibling, child
+
+
+def test_store_backend_confines_listing_to_exact_namespace() -> None:
+    own, sibling, child = _tenant_backends(_StringPrefixStore())
+    own.write("/own.md", "acme document")
+    sibling.write("/secret.md", "acme-corp CONFIDENTIAL")
+    child.write("/child.md", "child CONFIDENTIAL")
+
+    assert [e["path"] for e in own.ls("/").entries or []] == ["/own.md"]
+    assert [e["path"] for e in own.glob("**/*", "/").matches or []] == ["/own.md"]
+    assert own.grep("CONFIDENTIAL", "/").matches == []
+    assert own.delete("/secret.md").error is not None
+    assert sibling.read("/secret.md").file_data is not None
+
+
+def test_store_backend_recursive_delete_stays_in_namespace() -> None:
+    own, sibling, child = _tenant_backends(_StringPrefixStore())
+    for backend in (own, sibling, child):
+        backend.write("/docs/shared.txt", "keep")
+    sibling.write("/private/only.txt", "sibling only")
+
+    assert own.delete("/private").error is not None
+    assert own.delete("/docs").error is None
+    assert own.read("/docs/shared.txt").error is not None
+    assert sibling.read("/docs/shared.txt").file_data is not None
+    assert child.read("/docs/shared.txt").file_data is not None
+
+
+def test_store_backend_paginates_past_full_page_of_foreign_namespaces() -> None:
+    store = _StringPrefixStore()
+    own, sibling, _ = _tenant_backends(store)
+    for i in range(100):
+        sibling.write(f"/sibling-{i:03}.md", "sibling")
+    own.write("/own.md", "acme document")
+
+    assert [e["path"] for e in own.ls("/").entries or []] == ["/own.md"]

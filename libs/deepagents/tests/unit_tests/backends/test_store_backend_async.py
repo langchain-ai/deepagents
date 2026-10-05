@@ -423,3 +423,17 @@ async def test_store_backend_aintercept_large_tool_result_async():
     stored_content = await mem_store.aget(("filesystem",), "/large_tool_results/test_async_789")
     assert stored_content is not None
     assert stored_content.value["content"] == large_content
+
+
+async def test_store_backend_async_listing_and_delete_confined_to_exact_namespace() -> None:
+    store = InMemoryStore()
+    own = StoreBackend(store=store, namespace=lambda _rt: ("tenant", "acme"))
+    child = StoreBackend(store=store, namespace=lambda _rt: ("tenant", "acme", "child"))
+    await own.awrite("/own.md", "acme document")
+    await child.awrite("/docs/child.md", "child CONFIDENTIAL")
+
+    assert [e["path"] for e in (await own.als("/")).entries or []] == ["/own.md"]
+    assert [e["path"] for e in (await own.aglob("**/*", "/")).matches or []] == ["/own.md"]
+    assert (await own.agrep("CONFIDENTIAL", "/")).matches == []
+    assert (await own.adelete("/docs")).error is not None
+    assert (await child.aread("/docs/child.md")).file_data is not None

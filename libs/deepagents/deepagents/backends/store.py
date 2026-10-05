@@ -238,15 +238,19 @@ class StoreBackend(BackendProtocol):
     ) -> list[Item]:
         """Search store with automatic pagination to retrieve all results.
 
+        `BaseStore.search` matches by namespace prefix, so results are filtered
+        to items stored in exactly `namespace`. Pagination still advances by the
+        unfiltered page size.
+
         Args:
             store: The store to search.
-            namespace: Hierarchical path prefix to search within.
+            namespace: Namespace whose items are returned.
             query: Optional query for natural language search.
             filter: Key-value pairs to filter results.
             page_size: Number of items to fetch per page.
 
         Returns:
-            List of all items matching the search criteria.
+            List of all items in `namespace` matching the search criteria.
 
         Example:
             ```python
@@ -267,7 +271,7 @@ class StoreBackend(BackendProtocol):
             )
             if not page_items:
                 break
-            all_items.extend(page_items)
+            all_items.extend(item for item in page_items if tuple(item.namespace) == namespace)
             if len(page_items) < page_size:
                 break
             offset += page_size
@@ -296,7 +300,7 @@ class StoreBackend(BackendProtocol):
             )
             if not page_items:
                 break
-            all_items.extend(page_items)
+            all_items.extend(item for item in page_items if tuple(item.namespace) == namespace)
             if len(page_items) < page_size:
                 break
             offset += page_size

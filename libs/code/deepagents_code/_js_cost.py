@@ -26,6 +26,7 @@ from deepagents_code.cost_tracking import (
     _merge_cost_breakdowns,
     _parent_checkpoint_scope,
 )
+from deepagents_code.thread_ownership import OWNER_KEY
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -202,6 +203,8 @@ def record_cost_receipt(
             "checkpoint_ns": f"{owner}|receipt:{_digest(namespace)}",
         }
     }
+    if OWNER_KEY in configurable:
+        config["configurable"][OWNER_KEY] = configurable[OWNER_KEY]
     loop = configurable["__deepagents_js_cost_loop"]
     asyncio.run_coroutine_threadsafe(
         _put_receipt(saver, config, owner, amount, breakdown), loop

@@ -216,6 +216,7 @@ class StateBackend(BackendProtocol):
 
         existing = files.get(file_path)
         new_file_data = update_file_data(existing, content) if existing is not None else create_file_data(content)
+        new_file_data["encoding"] = "utf-8"
         self._send_files_update({file_path: self._prepare_for_storage(new_file_data)})
         return WriteResult(path=file_path)
 

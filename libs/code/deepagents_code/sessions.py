@@ -1497,6 +1497,24 @@ async def get_most_recent(
             return row[0] if row else None
 
 
+async def get_recent_thread_ids(agent_name: str | None = None) -> list[str]:
+    """List distinct threads in checkpoint recency order, optionally agent-filtered.
+
+    Returns:
+        Matching thread IDs, newest checkpoint first.
+    """
+    async with _connect() as conn:
+        if not await _table_exists(conn, "checkpoints"):
+            return []
+        query = (
+            "SELECT thread_id FROM checkpoints "
+            "WHERE (? IS NULL OR json_extract(metadata, '$.agent_name') = ?) "
+            "GROUP BY thread_id ORDER BY MAX(checkpoint_id) DESC"
+        )
+        async with conn.execute(query, (agent_name, agent_name)) as cursor:
+            return [row[0] for row in await cursor.fetchall()]
+
+
 async def get_thread_updated_at(thread_id: str) -> str | None:
     """Get the latest stored update timestamp for a thread.
 
@@ -1649,42 +1667,67 @@ async def delete_thread(thread_id: str) -> bool:
 
     Returns:
         True if thread checkpoints were deleted, False if not found.
+
+    Raises:
+        BlockingIOError: The thread is reserved by a live client.
     """
     from deepagents_code.btw_cost import delete_cost
+    from deepagents_code.thread_ownership import (
+        _finish_mutation,
+        try_acquire,
+        writer_guard,
+    )
 
-    deleted = False
-    async with _connect() as conn:
-        await delete_cost(conn, thread_id)
-        if await _table_exists(conn, "checkpoints"):
-            cursor = await conn.execute(
-                "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
-            )
-            deleted = cursor.rowcount > 0
-            if await _table_exists(conn, "writes"):
-                await conn.execute(
-                    "DELETE FROM writes WHERE thread_id = ?", (thread_id,)
+    db_path = get_db_path()
+    lease = try_acquire(thread_id, db_path=db_path)
+    if lease is None:
+        msg = f"Thread {thread_id} is open elsewhere. Close it there before deleting."
+        raise BlockingIOError(msg)
+
+    async def remove() -> bool:
+        deleted = False
+        async with _connect() as conn:
+            await delete_cost(conn, thread_id)
+            if await _table_exists(conn, "checkpoints"):
+                cursor = await conn.execute(
+                    "DELETE FROM checkpoints WHERE thread_id = ?", (thread_id,)
                 )
-            if deleted:
-                _message_count_cache.pop(thread_id, None)
-                for key, rows in list(_recent_threads_cache.items()):
-                    filtered = [row for row in rows if row["thread_id"] != thread_id]
-                    _recent_threads_cache[key] = filtered
-        await conn.commit()
+                deleted = cursor.rowcount > 0
+                if await _table_exists(conn, "writes"):
+                    await conn.execute(
+                        "DELETE FROM writes WHERE thread_id = ?", (thread_id,)
+                    )
+                if deleted:
+                    _message_count_cache.pop(thread_id, None)
+                    for key, rows in list(_recent_threads_cache.items()):
+                        filtered = [
+                            row for row in rows if row["thread_id"] != thread_id
+                        ]
+                        _recent_threads_cache[key] = filtered
+            await conn.commit()
 
-    from deepagents_code.offload import delete_offloaded_history
+        from deepagents_code.offload import delete_offloaded_history
 
-    delete_offloaded_history(thread_id)
-    return deleted
+        delete_offloaded_history(thread_id)
+        return deleted
+
+    try:
+        async with writer_guard(thread_id, db_path=db_path, token=lease.token):
+            return await _finish_mutation(remove())
+    finally:
+        lease.release()
 
 
 @asynccontextmanager
 async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
-    """Get AsyncSqliteSaver for the global database.
+    """Get a checkpointer requiring live thread ownership for database writes.
 
     Yields:
-        AsyncSqliteSaver instance for checkpoint persistence.
+        AsyncSqliteSaver enforcing thread reservations and fencing tokens.
     """
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+    from deepagents_code.thread_ownership import owned_saver_class
+
+    saver_class = owned_saver_class(db_path=get_db_path())
 
     # Built here rather than through `AsyncSqliteSaver.from_conn_string` so the
     # connection is one this module owns and can clean up after an interrupted
@@ -1692,7 +1735,7 @@ async def get_checkpointer() -> AsyncIterator[AsyncSqliteSaver]:
     conn = _new_connection()
     try:
         async with conn as opened:
-            yield AsyncSqliteSaver(opened)
+            yield saver_class(opened)
     finally:
         await _drain_aiosqlite_worker(conn)
 
@@ -1704,25 +1747,45 @@ async def save_thread_seed(
 
     Only seed an absent thread; never replace shared server checkpoints. Thread
     history still loads from the connected agent, so subsequent remote turns
-    take precedence over this discovery snapshot.
+    take precedence over this discovery snapshot. Reserve the local thread for
+    the save when this process does not already own it.
 
     Args:
         thread_id: Newly seeded remote thread identifier.
         values: Initial message and model state saved on the server.
         agent_name: Agent that owns the new thread.
         cwd: Workspace directory used for thread discovery.
+
     """
+    from deepagents_code.thread_ownership import OWNER_KEY, ensure_owned, held_lease
+
+    existing = held_lease(thread_id)
+    lease = existing or ensure_owned(thread_id)
+    try:
+        await _save_thread_seed(
+            {
+                "configurable": {
+                    "thread_id": thread_id,
+                    "checkpoint_ns": "",
+                    OWNER_KEY: lease.token,
+                },
+                "metadata": {"agent_name": agent_name, "cwd": cwd},
+            },
+            values,
+        )
+    finally:
+        if existing is None:
+            lease.release()
+
+
+async def _save_thread_seed(
+    config: RunnableConfig, values: Mapping[str, object]
+) -> None:
+    """Write the initial checkpoint while the caller holds its reservation."""
     from langgraph.checkpoint.base import empty_checkpoint
 
     checkpoint = empty_checkpoint()
-    config: RunnableConfig = {
-        "configurable": {"thread_id": thread_id, "checkpoint_ns": ""},
-        "metadata": {
-            "agent_name": agent_name,
-            "cwd": cwd,
-            "updated_at": checkpoint["ts"],
-        },
-    }
+    config.setdefault("metadata", {})["updated_at"] = checkpoint["ts"]
     async with get_checkpointer() as checkpointer:
         if await checkpointer.aget_tuple(config) is not None:
             return
@@ -1980,6 +2043,9 @@ async def delete_thread_command(
         thread_id: ID of the thread to delete.
         dry_run: If `True`, print what would happen without making changes.
         output_format: Output format — `'text'` (Rich) or `'json'`.
+
+    Raises:
+        SystemExit: The thread is occupied and cannot be deleted.
     """
     if dry_run:
         exists = await thread_exists(thread_id)
@@ -2004,7 +2070,21 @@ async def delete_thread_command(
         console.print("No changes made.", style="dim")
         return
 
-    deleted = await delete_thread(thread_id)
+    try:
+        deleted = await delete_thread(thread_id)
+    except BlockingIOError as exc:
+        if output_format == "json":
+            from deepagents_code.output import write_json
+
+            write_json(
+                "threads delete",
+                {"thread_id": thread_id, "deleted": False, "error": str(exc)},
+            )
+        else:
+            from deepagents_code.config import console
+
+            console.print(str(exc), style="red", markup=False, highlight=False)
+        raise SystemExit(1) from None
 
     if output_format == "json":
         from deepagents_code.output import write_json

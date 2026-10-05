@@ -2573,10 +2573,12 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
 
         try:
             await delete_thread(thread_id)
-        except (OSError, sqlite3.Error):
+        except (OSError, sqlite3.Error) as exc:
             logger.warning("Failed to delete thread %s", thread_id, exc_info=True)
             self.app.notify(
-                f"Failed to delete thread {thread_id[:8]}",
+                str(exc)
+                if isinstance(exc, BlockingIOError)
+                else f"Failed to delete thread {thread_id[:8]}",
                 severity="error",
                 timeout=3,
                 markup=False,

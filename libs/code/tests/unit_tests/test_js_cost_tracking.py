@@ -222,9 +222,9 @@ async def test_js_subagent_cost_is_durable(mode) -> None:
     assert snapshot.values["_session_cost_usd"] == pytest.approx(3.0)
     await _assert_accounting(agent, 3)
     assert snapshot.values["_session_cost_transfers"] == {}
-    from deepagents_code.app import _format_cost_breakdown_table
+    from deepagents_code.tui.modals.cost_breakdown import format_cost_breakdown_table
 
-    table = _format_cost_breakdown_table(
+    table = format_cost_breakdown_table(
         snapshot.values["_session_cost_usd"], snapshot.values["_session_cost_breakdown"]
     )
     assert "Entire-thread estimated breakdown" in table
@@ -311,6 +311,66 @@ async def test_completed_sibling_interrupt_fresh_runtime(
     await resumed.ainvoke(None, _CONFIG)
     assert await _total(resumed) == pytest.approx(5.0)
     await _assert_accounting(resumed, 5)
+
+
+async def test_completed_sibling_cost_survives_owned_sqlite_resume(
+    tmp_path: Path,
+) -> None:
+    from deepagents_code.thread_ownership import (
+        OWNER_KEY,
+        ensure_owned,
+        owned_saver_class,
+    )
+
+    @tool
+    def approval() -> str:
+        """Pause after a sibling has completed."""
+        return str(interrupt("approve?"))
+
+    code = (
+        'await task({description:"done", subagentType:"done"});'
+        'await task({description:"pause", subagentType:"pause"})'
+    )
+    database = tmp_path / "owned.sqlite"
+    saver_class = owned_saver_class(db_path=database)
+    lease = ensure_owned("js-cost", db_path=database)
+    config: RunnableConfig = {
+        "configurable": {"thread_id": "js-cost", OWNER_KEY: lease.token}
+    }
+    try:
+        async with saver_class.from_conn_string(str(database)) as saver:
+            agent = _parent(
+                code,
+                {
+                    "done": _child(_message("done")),
+                    "pause": _child(_tool_call("approval"), tools=[approval]),
+                },
+                saver,
+            )
+            result = await agent.ainvoke({"messages": [HumanMessage("go")]}, config)
+            assert len(result["__interrupt__"]) == 1
+            await _assert_accounting(agent, 1)
+
+        _fresh_runtime()
+        lease.release()
+        lease = ensure_owned("js-cost", db_path=database)
+        config["configurable"][OWNER_KEY] = lease.token
+        async with saver_class.from_conn_string(str(database)) as saver:
+            resumed = _parent(
+                code,
+                {
+                    "done": _child(),
+                    "pause": _child(_message("approved"), tools=[approval]),
+                },
+                saver,
+                resuming=True,
+            )
+            await resumed.ainvoke(Command(resume="yes"), config)
+            await _assert_accounting(resumed, 5)
+            await resumed.ainvoke(None, config)
+            await _assert_accounting(resumed, 5)
+    finally:
+        lease.release()
 
 
 async def test_nested_dispatch_and_multiple_eval_tools() -> None:
@@ -808,10 +868,10 @@ async def test_parallel_usage_with_partial_or_zero_pricing(
     )
     await agent.ainvoke({"messages": [HumanMessage("go")]}, _CONFIG)
     await _assert_accounting(agent, 4, priced=priced, charged=charged)
-    from deepagents_code.app import _format_cost_breakdown_table
+    from deepagents_code.tui.modals.cost_breakdown import format_cost_breakdown_table
 
     snapshot = await agent.aget_state(_CONFIG)
-    table = _format_cost_breakdown_table(
+    table = format_cost_breakdown_table(
         snapshot.values.get("_session_cost_usd", 0.0),
         snapshot.values["_session_cost_breakdown"],
     )
@@ -983,9 +1043,11 @@ async def test_legacy_dollar_only_receipt_survives_sqlite_resume(
         assert breakdown["cache_creation_cost_usd"] == pytest.approx(0.6)
         assert breakdown["cache_read_cost_usd"] == pytest.approx(0.3)
         assert breakdown["reasoning_cost_usd"] == pytest.approx(0.36)
-        from deepagents_code.app import _format_cost_breakdown_table
+        from deepagents_code.tui.modals.cost_breakdown import (
+            format_cost_breakdown_table,
+        )
 
-        assert _format_cost_breakdown_table(4.0, breakdown) == ""
+        assert format_cost_breakdown_table(4.0, breakdown) == ""
         await agent.ainvoke(None, _CONFIG)
         replayed = await agent.aget_state(_CONFIG)
         assert replayed.values["_session_cost_usd"] == pytest.approx(4.0)

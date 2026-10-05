@@ -517,125 +517,6 @@ def _coerce_session_cost_usd(value: object) -> float:
     return cost_usd
 
 
-def _format_cost_breakdown_table(
-    total_usd: float, breakdown: Mapping[str, Any] | None
-) -> str:
-    """Build the copyable entire-thread estimated token/cost table.
-
-    Returns:
-        A plain-text table, or an empty string when historical detail is missing.
-    """
-    if (
-        not isinstance(breakdown, Mapping)
-        or breakdown.get("version") != 1
-        or breakdown.get("historical_complete") is not True
-    ):
-        return ""
-
-    def _number(key: str) -> float | None:
-        value = breakdown.get(key)
-        if isinstance(value, bool) or not isinstance(value, int | float):
-            return None
-        result = float(value)
-        return result if math.isfinite(result) and result >= 0 else None
-
-    def _tokens(key: str, complete_key: str | None = None) -> str:
-        value = breakdown.get(key)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            return "unavailable"
-        if complete_key and breakdown.get(complete_key) is not True:
-            return f"{value} (partial)"
-        return str(value)
-
-    def _cost(key: str, complete_key: str | None = None) -> str:
-        value = _number(key)
-        if value is None:
-            return "unavailable"
-        text = repr(value)
-        if complete_key and breakdown.get(complete_key) is not True:
-            return f"{text} (partial)"
-        return text
-
-    def _percent(key: str) -> str:
-        value = _number(key)
-        if value is None or total_usd <= 0:
-            return "n/a"
-        return f"{value / total_usd * 100:.6g}%"
-
-    rows = [
-        (
-            "Input",
-            _percent("input_cost_usd"),
-            _tokens("input_tokens", "input_tokens_complete"),
-            _cost("input_cost_usd", "input_cost_complete"),
-        ),
-        (
-            "  cache creation",
-            _percent("cache_creation_cost_usd"),
-            _tokens("cache_creation_tokens", "cache_creation_tokens_complete"),
-            _cost("cache_creation_cost_usd", "cache_creation_cost_complete"),
-        ),
-        (
-            "  cache read",
-            _percent("cache_read_cost_usd"),
-            _tokens("cache_read_tokens", "cache_read_tokens_complete"),
-            _cost("cache_read_cost_usd", "cache_read_cost_complete"),
-        ),
-        (
-            "Output",
-            _percent("output_cost_usd"),
-            _tokens("output_tokens", "output_tokens_complete"),
-            _cost("output_cost_usd", "output_cost_complete"),
-        ),
-        (
-            "  reasoning",
-            _percent("reasoning_cost_usd"),
-            _tokens("reasoning_tokens", "reasoning_tokens_complete"),
-            _cost("reasoning_cost_usd", "reasoning_cost_complete"),
-        ),
-        (
-            "Total",
-            "100%" if total_usd > 0 else "n/a",
-            str(int(_number("input_tokens") or 0) + int(_number("output_tokens") or 0)),
-            repr(total_usd),
-        ),
-    ]
-    widths = [
-        max(
-            len(row[index])
-            for row in [("Category", "% cost", "Tokens", "Cost (USD)"), *rows]
-        )
-        for index in range(4)
-    ]
-    rendered = [
-        "  ".join(
-            value.ljust(widths[index])
-            for index, value in enumerate(
-                ("Category", "% cost", "Tokens", "Cost (USD)")
-            )
-        ).rstrip()
-    ]
-    rendered.append("  ".join("-" * width for width in widths))
-    rendered.extend(
-        "  ".join(
-            value.ljust(widths[index]) for index, value in enumerate(row)
-        ).rstrip()
-        for row in rows
-    )
-    notes: list[str] = ["Parent rows are inclusive; indented rows are subsets."]
-    attributed = (_number("input_cost_usd") or 0.0) + (
-        _number("output_cost_usd") or 0.0
-    )
-    if not math.isclose(attributed, total_usd, rel_tol=1e-12, abs_tol=1e-15):
-        notes.append(
-            f"Partial attribution: {max(total_usd - attributed, 0.0)!r} USD is "
-            "directionless/unattributed."
-        )
-    if breakdown.get("priced_request_count") != breakdown.get("request_count"):
-        notes.append("Some requests were unpriceable; costs are partial.")
-    return "Entire-thread estimated breakdown\n" + "\n".join(rendered + notes)
-
-
 _PRICING_UNAVAILABLE_MESSAGE = (
     "We couldn't calculate costs because the pricing data failed to load. "
     "Reinstalling Deep Agents Code should restore cost estimates; see the debug "
@@ -2309,6 +2190,7 @@ class ExternalInput(Message):
 
 
 DeferredActionKind = Literal[
+    "effort_change",
     "model_switch",
     "summarization_model_switch",
     "thread_switch",
@@ -18935,6 +18817,7 @@ class DeepAgentsApp(App):
         finally:
             self._offload_task_started = False
             self._offload_worker = None
+            await self._maybe_drain_deferred()
             if not self._startup_sequence_running:
                 await self._process_next_from_queue()
 
@@ -19178,6 +19061,7 @@ class DeepAgentsApp(App):
             # the part that wedges the session, and it is already handed back.
             with suppress(Exception):
                 self._chat_input.set_cursor_active(active=True)
+        await self._drain_deferred_during_cleanup()
         if not self._pending_messages:
             return
         try:
@@ -19432,6 +19316,12 @@ class DeepAgentsApp(App):
         )
 
         async def apply_effort(effort: str) -> None:
+            if self._effective_model_spec() != context.spec:
+                self.notify(
+                    "Model changed; reopen the effort selector to choose an effort.",
+                    severity="warning",
+                )
+                return
             try:
                 await self._set_effort_override(effort)
             except Exception:
@@ -19445,13 +19335,31 @@ class DeepAgentsApp(App):
 
         def handle_result(result: str | None) -> None:
             if result is not None:
-                self.run_worker(
-                    apply_effort(result),
-                    exclusive=False,
-                    group="effort-selection",
-                )
+                if (
+                    self._agent_running
+                    or self._agent_reconciling
+                    or self._shell_running
+                    or self._connecting
+                    or self._startup_sequence_running
+                ):
+                    self._defer_action(
+                        DeferredAction(
+                            kind="effort_change", execute=lambda: apply_effort(result)
+                        )
+                    )
+                    self.notify(
+                        f"Reasoning effort change to {result} is pending until "
+                        "the current task completes.",
+                        markup=False,
+                    )
+                else:
+                    self.run_worker(
+                        apply_effort(result),
+                        exclusive=False,
+                        group="effort-selection",
+                    )
             if self._chat_input:
-                self._chat_input.focus_input()
+                self.call_after_refresh(self._chat_input.focus_input)
 
         self.push_screen(screen, handle_result)
 
@@ -19990,6 +19898,20 @@ class DeepAgentsApp(App):
         if not busy and self._pending_messages:
             await self._process_next_from_queue()
 
+    async def _drain_deferred_during_cleanup(self) -> None:
+        """Apply queued actions without letting a failure skip turn cleanup."""
+        try:
+            await self._maybe_drain_deferred()
+        except Exception:
+            logger.exception("Failed to drain deferred actions during agent cleanup")
+            with suppress(Exception):
+                await self._mount_message(
+                    ErrorMessage(
+                        "A deferred action failed after task completion. "
+                        "You may need to retry the operation.",
+                    ),
+                )
+
     async def _cleanup_agent_task(
         self,
         *,
@@ -20058,19 +19980,7 @@ class DeepAgentsApp(App):
                         goal_grade=goal_grade,
                     )
 
-                try:
-                    await self._maybe_drain_deferred()
-                except Exception:
-                    logger.exception(
-                        "Failed to drain deferred actions during agent cleanup"
-                    )
-                    with suppress(Exception):
-                        await self._mount_message(
-                            ErrorMessage(
-                                "A deferred action failed after task completion. "
-                                "You may need to retry the operation.",
-                            ),
-                        )
+                await self._drain_deferred_during_cleanup()
 
                 application = self._queued_goal_application
                 if application is not None:
@@ -20108,7 +20018,13 @@ class DeepAgentsApp(App):
                     else:
                         self._queued_goal_application = None
             finally:
-                self._agent_reconciling = False
+                try:
+                    # Selections can arrive during the goal-application awaits.
+                    # Apply them before releasing queued input or continuations.
+                    if self._deferred_actions:
+                        await self._drain_deferred_during_cleanup()
+                finally:
+                    self._agent_reconciling = False
 
             # Queued user input normally takes precedence over a synthetic
             # continuation. A failed creation write is the exception: its hidden
@@ -21979,6 +21895,8 @@ class DeepAgentsApp(App):
 
     def _discard_queue(self) -> None:
         """Clear pending messages, deferred actions, and queued widgets."""
+        if any(action.kind == "effort_change" for action in self._deferred_actions):
+            self.notify("Cancelled the pending reasoning effort change.")
         self._pending_messages.clear()
         for w in self._queued_widgets:
             w.remove()
@@ -24603,11 +24521,7 @@ class DeepAgentsApp(App):
         await self._submit_footer_picker("/model")
 
     async def action_open_effort_selector(self) -> None:
-        """Open the reasoning effort picker via `/effort`.
-
-        `/effort` is `QUEUED`, so it must go through `_submit_input` to keep its
-        place behind any pending input instead of jumping an in-flight turn.
-        """
+        """Open the effort picker immediately, deferring changes while busy."""
         await self._submit_footer_picker("/effort")
 
     def _build_model_selector_screen(
@@ -26069,8 +25983,25 @@ class DeepAgentsApp(App):
             return
         self._open_debug_console()
 
+    def action_open_cost_breakdown(self) -> None:
+        """Open the session cost breakdown from the footer."""
+        from deepagents_code.tui.modals.cost_breakdown import (
+            format_cost_breakdown_table,
+            open_cost_breakdown,
+        )
+
+        open_cost_breakdown(
+            self,
+            lambda: format_cost_breakdown_table(
+                self._session_cost_usd, self._session_cost_breakdown
+            ),
+        )
+
     def _open_debug_console(self) -> None:
         """Push the read-only Debug Console modal."""
+        from deepagents_code.tui.modals.cost_breakdown import (
+            format_cost_breakdown_table,
+        )
         from deepagents_code.tui.widgets.debug_console import DebugConsoleScreen
 
         def handle_result(_: None) -> None:
@@ -26087,7 +26018,7 @@ class DeepAgentsApp(App):
                 # counts, tokens, and other in-memory fields stay current while
                 # the modal is open. The builder is intentionally I/O-free.
                 snapshot_provider=self._build_debug_snapshot,
-                cost_breakdown_provider=lambda: _format_cost_breakdown_table(
+                cost_breakdown_provider=lambda: format_cost_breakdown_table(
                     self._session_cost_usd, self._session_cost_breakdown
                 ),
                 cleared_upto=self._debug_console_cleared_upto,

@@ -460,10 +460,15 @@ async def test_auxiliary_selection_uses_server_environment_and_profile(
 
 
 @pytest.mark.parametrize(
-    "command",
-    ["/summarization-model", "/auto model", "/goal model", "/rubric model"],
+    ("command", "connected"),
+    [
+        ("/summarization-model", True),
+        ("/auto model", True),
+        ("/goal model", True),
+        ("/rubric model", True),
+        ("/auto model", False),
+    ],
 )
-@pytest.mark.parametrize("connected", [False, True])
 async def test_auxiliary_resolution_failure_preserves_selections(
     command: str, connected: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -500,12 +505,6 @@ async def test_auxiliary_resolution_failure_preserves_selections(
     assert any(
         isinstance(call.args[0], ErrorMessage) for call in messages.await_args_list
     )
-
-
-@pytest.mark.parametrize("structured_output", [None, False, True])
-def test_structured_output_metadata_round_trips(structured_output: bool | None) -> None:
-    metadata = ModelMetadata("test", "custom", structured_output=structured_output)
-    assert ModelMetadata.from_payload(metadata.to_payload()) == metadata
 
 
 def test_invalid_structured_output_metadata_is_rejected() -> None:

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
 
     from textual.app import ComposeResult
     from textual.timer import Timer
+    from textual.worker import Worker
 
     from deepagents_code.model_catalog import ModelCatalog
     from deepagents_code.model_metadata import ModelMetadata
@@ -606,6 +607,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # schedule no timer of their own, so this is the only handle that can
         # clobber an error.
         self._help_restore_timer: Timer | None = None
+        self._default_worker: Worker[None] | None = None
 
         self._unfiltered_models: list[tuple[str, str]] = []
         self._recent_specs: list[str] = []
@@ -2228,6 +2230,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     async def action_set_default(self) -> None:
         """Toggle the highlighted model as the screen's stored default.
 
+        Validation and persistence run in a worker so priority key dispatch
+        stays responsive. Ignore repeated requests until it finishes to avoid
+        overlapping writes; cancelling a thread does not stop its file I/O.
+
         If the highlighted model is already stored, clears it. Otherwise stores
         it. Which preference is written — and how the footer names it — comes
         from the screen's `DefaultModelScope`, so the `/auto` classifier picker
@@ -2256,8 +2262,20 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         scope = self._default_scope
         if scope is None:
             return
+        if self._default_worker is not None and not self._default_worker.is_finished:
+            return
 
         model_spec, provider = self._filtered_models[self._selected_index]
+        self._default_worker = self.run_worker(
+            self._set_default(model_spec, provider, scope), group="model-default"
+        )
+
+    async def _set_default(
+        self, model_spec: str, provider: str, scope: DefaultModelScope
+    ) -> None:
+        """Validate and persist the captured selection outside key dispatch."""
+        if not self.is_current:
+            return
         help_widget = self.query_one(".model-selector-help", Static)
         noun = scope.noun
         # `noun[:1]` rather than `noun[0]` so a malformed empty scope degrades to
@@ -2265,6 +2283,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         sentence_noun = noun[:1].upper() + noun[1:]
 
         def _fail(message: str, remedy: str, *, persistent: bool = True) -> None:
+            if not self.is_current:
+                return
             help_widget.update(
                 Content.styled(
                     message,
@@ -2279,17 +2299,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._stop_help_restore_timer()
             else:
                 self._restart_help_restore_timer()
-            if self.is_running:
-                self.notify(remedy, severity="error", timeout=10, markup=False)
-            else:
-                # Nothing is mounted to read the footer update, so the toast —
-                # the only text carrying the remedy — is dropped. Leave a trace
-                # rather than failing invisibly.
-                logger.warning(
-                    "Ctrl+S failed while the selector was not running: %s (%s)",
-                    message,
-                    remedy,
-                )
+            self.notify(remedy, severity="error", timeout=10, markup=False)
 
         if provider in self._install_extras and model_spec != self._default_spec:
             from deepagents_code.update_check import (
@@ -2343,7 +2353,15 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         if model_spec == self._default_spec:
             # Already stored — clear it
-            if await asyncio.to_thread(scope.clear):
+            try:
+                cleared = await asyncio.to_thread(scope.clear)
+            except Exception:
+                logger.exception("Failed to clear model default %s", model_spec)
+                _fail(f"Failed to clear {noun}", write_remedy)
+                return
+            if not self.is_current:
+                return
+            if cleared:
                 self._default_spec = None
                 self.call_after_refresh(self._update_display)
                 help_widget.update(Content.styled(f"{sentence_noun} cleared", "bold"))
@@ -2354,6 +2372,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             try:
                 if self._resolve_model is not None:
                     metadata = await self._resolve_model(model_spec)
+                    if not self.is_current:
+                        return
                     model_spec = f"{metadata.provider}:{metadata.model_name}"
                 saved = await asyncio.to_thread(scope.save, model_spec)
             except Exception as exc:
@@ -2362,6 +2382,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 )
                 # Not an I/O failure, so `write_remedy` would misdiagnose it.
                 _fail(f"Cannot store {noun}", str(exc), persistent=False)
+                return
+            if not self.is_current:
                 return
             if not saved:
                 _fail(f"Failed to save {noun}", write_remedy)

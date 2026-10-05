@@ -1,6 +1,7 @@
 """Model catalogs and persistent selections use inference-host metadata."""
 
 import asyncio
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
@@ -191,6 +192,114 @@ async def test_picker_validates_before_saving_default(
         await pilot.pause()
         assert stored["model"] == (None if resolution_fails else "remote:canonical")
         assert screen._default_spec == stored["model"]
+
+
+@pytest.mark.parametrize(
+    ("dismiss", "resolution_fails"), [(False, False), (True, False), (True, True)]
+)
+async def test_default_validation_keeps_keyboard_responsive(
+    catalog: ModelCatalog,
+    dismiss: bool,
+    resolution_fails: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalog.models.append("remote:other")
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def resolve(_spec: str) -> ModelMetadata:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            # Simulate a resolver that still returns a late response after the
+            # screen's worker has been cancelled on dismissal.
+            await release.wait()
+        if resolution_fails:
+            msg = "Server rejected the model"
+            raise RuntimeError(msg)
+        return ModelMetadata("canonical", "remote")
+
+    save = Mock(return_value=True)
+    resolver = AsyncMock(side_effect=resolve)
+    screen = ModelSelectorScreen(
+        default_scope=DefaultModelScope(
+            "default", "set default", lambda: None, save, lambda: True
+        ),
+        include_recent_models=False,
+        catalog_loader=AsyncMock(return_value=catalog),
+        resolve_model=resolver,
+    )
+    app = App()
+    notify = Mock()
+    monkeypatch.setattr(screen, "notify", notify)
+    async with app.run_test() as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        save_key = asyncio.create_task(pilot.press("ctrl+s"))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=2)
+            selected = screen._filtered_models[screen._selected_index]
+            await asyncio.wait_for(pilot.press("down"), timeout=2)
+            assert screen._filtered_models[screen._selected_index] != selected
+            await asyncio.wait_for(pilot.press("ctrl+s"), timeout=2)
+            resolver.assert_awaited_once_with("remote:resolved")
+            if dismiss:
+                await asyncio.wait_for(pilot.press("escape"), timeout=2)
+                assert app.screen is not screen
+            save.assert_not_called()
+        finally:
+            release.set()
+            await save_key
+            await app.workers.wait_for_complete()
+        await pilot.pause()
+        if dismiss:
+            save.assert_not_called()
+            notify.assert_not_called()
+            assert screen._default_spec is None
+        else:
+            save.assert_called_once_with("remote:canonical")
+            assert screen._default_spec == "remote:canonical"
+
+
+@pytest.mark.parametrize("clear", [False, True])
+async def test_default_persistence_keeps_escape_responsive(
+    catalog: ModelCatalog, clear: bool
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+
+    def persist(*_args: str) -> bool:
+        started.set()
+        try:
+            return release.wait(timeout=5)
+        finally:
+            finished.set()
+
+    original = "remote:resolved" if clear else None
+    screen = ModelSelectorScreen(
+        default_scope=DefaultModelScope(
+            "default", "set default", lambda: original, persist, persist
+        ),
+        include_recent_models=False,
+        catalog_loader=AsyncMock(return_value=catalog),
+    )
+    app = App()
+    async with app.run_test() as pilot:
+        app.push_screen(screen)
+        await pilot.pause()
+        save_key = asyncio.create_task(pilot.press("ctrl+s"))
+        try:
+            assert await asyncio.to_thread(started.wait, 2)
+            await asyncio.wait_for(pilot.press("escape"), timeout=2)
+            assert app.screen is not screen
+        finally:
+            release.set()
+            await save_key
+            assert await asyncio.to_thread(finished.wait, 2)
+        await pilot.pause()
+        assert screen._default_spec == original
 
 
 @pytest.mark.parametrize("resolution_fails", [False, True])

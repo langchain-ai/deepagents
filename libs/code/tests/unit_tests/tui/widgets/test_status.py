@@ -19,6 +19,7 @@ from deepagents_code.tui.widgets.status import (
     _PICKER_TARGET_META,
     BranchLabel,
     CwdLabel,
+    MetricsLine,
     ModelLabel,
     StatusBar,
 )
@@ -56,6 +57,9 @@ class StatusBarApp(App[None]):
 
     def action_open_effort_selector(self) -> None:
         self.opened_pickers.append("effort")
+
+    def action_open_cost_breakdown(self) -> None:
+        self.opened_pickers.append("cost")
 
     def on_click(self, event: events.Click) -> None:
         """Count clicks that reach the app, standing in for the real handler.
@@ -285,6 +289,44 @@ class TestTokenDisplay:
 
 class TestCostDisplay:
     """Tests for cumulative cost rendered inline with context tokens."""
+
+    async def test_only_cost_click_opens_breakdown(self) -> None:
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            bar = app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            bar.set_cost(1.25)
+            await pilot.pause()
+            display = app.query_one("#tokens-display", MetricsLine)
+            inset = display.content_region.x - display.region.x
+            cost_offset = (inset + str(display.render()).index("$"), 0)
+
+            await pilot.click(display, offset=(inset, 0))
+            await pilot.click(display, offset=cost_offset, button=3)
+            await pilot.pause()
+            assert app.opened_pickers == []
+            unhandled = app.unhandled_clicks
+
+            await pilot.click(display, offset=cost_offset, times=2)
+            await pilot.pause()
+            assert app.opened_pickers == ["cost"]
+            assert app.unhandled_clicks == unhandled
+
+    async def test_hidden_cost_leaves_no_click_target(self) -> None:
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            bar = app.query_one("#status-bar", StatusBar)
+            bar.set_tokens(5000)
+            bar.set_cost(1.25)
+            await pilot.pause()
+            display = app.query_one("#tokens-display", MetricsLine)
+            display.styles.width = 5
+            await pilot.pause()
+            assert "$" not in str(display.render())
+            inset = display.content_region.x - display.region.x
+            await pilot.click(display, offset=(inset, 0))
+            await pilot.pause()
+            assert app.opened_pickers == []
 
 
 class TestCacheTimingDisplay:

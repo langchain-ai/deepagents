@@ -243,10 +243,10 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/rename",
-        description="Name this thread or generate a suggested name",
+        description="Name this thread",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="title name",
-        argument_hint="[name]",
+        argument_hint="<name>",
     ),
     SlashCommand(
         name="/threads",

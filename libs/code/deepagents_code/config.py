@@ -6087,6 +6087,7 @@ _PROVIDER_BASE_URL_ALIASES: dict[str, str] = {
     "baseten": "baseten_api_base",
     "deepseek": "api_base",
     "fireworks": "fireworks_api_base",
+    "google_genai": "client_options",
     "groq": "groq_api_base",
     "mistralai": "endpoint",
     "openai": "openai_api_base",

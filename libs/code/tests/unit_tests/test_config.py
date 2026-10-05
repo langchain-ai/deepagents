@@ -1868,7 +1868,7 @@ class TestWorkspaceStoredCredentials:
         assert kwargs["api_key"] == "caller-key"
         assert "base_url" not in kwargs
 
-    @pytest.mark.parametrize("endpoint_source", ["native", "stored"])
+    @pytest.mark.parametrize("endpoint_source", ["native", "stored", "client_options"])
     async def test_stored_google_key_uses_its_endpoint_in_sdk_client(
         self, monkeypatch: pytest.MonkeyPatch, endpoint_source: str
     ) -> None:
@@ -1891,10 +1891,11 @@ class TestWorkspaceStoredCredentials:
             "GOOGLE_API_KEY": "inherited-key",
             "GOOGLE_GEMINI_BASE_URL": "https://gateway.example",
         }
+        extra_kwargs: dict[str, Any] = {"vertexai": False}
+        if endpoint_source == "client_options":
+            extra_kwargs["client_options"] = {"api_endpoint": endpoint}
         with use_environment(environment):
-            result = create_model(
-                "google_genai:gemini-test", extra_kwargs={"vertexai": False}
-            )
+            result = create_model("google_genai:gemini-test", extra_kwargs=extra_kwargs)
 
         model = result.model
         assert isinstance(model, ChatGoogleGenerativeAI)

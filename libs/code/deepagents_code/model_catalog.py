@@ -155,15 +155,14 @@ def _provider_entry(provider: str, config: ModelConfig) -> CatalogProvider:
     )
 
     status = get_provider_auth_status(provider)
-    provider_config = config.providers.get(provider, {})
     extra = provider_install_extra(provider)
     return CatalogProvider(
         state=status.state,
         source=status.source,
         env_var=status.env_var,
         detail=status.detail,
-        display_name=provider_config.get("display_name"),
-        short_name=provider_config.get("short_name"),
+        display_name=config.get_provider_display_name(provider),
+        short_name=config.get_provider_short_name(provider),
         install_extra=(
             extra if extra and not is_provider_package_installed(provider) else None
         ),

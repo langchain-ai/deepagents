@@ -54,6 +54,62 @@ def isolated_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     model_config.clear_caches()
 
 
+@pytest.mark.parametrize(
+    ("display_name", "short_name", "expected_display", "expected_short"),
+    [
+        ("42", '"Compact"', None, "Compact"),
+        ('"Friendly"', "false", "Friendly", None),
+        ('["bad"]', "{bad = true}", None, None),
+        ('"Friendly"', '"Compact"', "Friendly", "Compact"),
+    ],
+)
+def test_catalog_normalizes_optional_provider_labels(
+    display_name: str,
+    short_name: str,
+    expected_display: str | None,
+    expected_short: str | None,
+    isolated_config: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.tui.widgets.auth import (
+        provider_display_name,
+        provider_short_name,
+    )
+
+    isolated_config.write_text(
+        "[models.providers.custom]\n"
+        f"display_name = {display_name}\nshort_name = {short_name}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        model_catalog, "get_available_models", lambda: {"custom": ["model"]}
+    )
+    monkeypatch.setattr(model_catalog, "get_model_profiles", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        config_manifest, "is_provider_package_installed", lambda _provider: True
+    )
+    monkeypatch.setattr(
+        model_catalog,
+        "get_provider_auth_status",
+        lambda name: ProviderAuthStatus(
+            state=ProviderAuthState.NOT_REQUIRED, provider=name
+        ),
+    )
+
+    catalog = model_catalog.load_model_catalog()
+
+    assert catalog.models == ["custom:model"]
+    assert catalog.providers["custom"].display_name == expected_display
+    assert catalog.providers["custom"].short_name == expected_short
+    presentation = catalog.presentation_config()
+    assert provider_display_name("custom", presentation) == (
+        expected_display or "Custom"
+    )
+    assert provider_short_name("custom", presentation) == (
+        expected_short or expected_display or "Custom"
+    )
+
+
 async def test_remote_picker_uses_catalog_for_highlighting_search_and_selection(
     catalog: ModelCatalog,
     monkeypatch: pytest.MonkeyPatch,

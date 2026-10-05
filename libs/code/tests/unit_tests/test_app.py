@@ -17833,6 +17833,23 @@ class TestDeferredActions:
             await app._drain_deferred_actions()
             assert executed == ["thread", "second_model"]
 
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ("/offload model", True),
+            ("/offload  model", True),
+            ("/offload\tmodel", True),
+            ("/offload model openai:gpt-5.4-mini", False),
+            ("/offload model clear", False),
+            ("/offload", False),
+            ("/compact", False),
+        ],
+    )
+    def test_offload_model_queue_bypass(self, command: str, expected: bool) -> None:
+        app = DeepAgentsApp()
+        app._agent_running = True
+        assert app._can_bypass_queue(command) is expected
+
     async def test_summarization_model_opens_selector_while_busy(self) -> None:
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -17844,7 +17861,7 @@ class TestDeferredActions:
                 "_show_summarization_model_selector",
                 new_callable=AsyncMock,
             ) as show_selector:
-                app.post_message(ChatInput.Submitted("/summarization-model", "command"))
+                app.post_message(ChatInput.Submitted("/offload model", "command"))
                 await pilot.pause()
 
             show_selector.assert_awaited_once()

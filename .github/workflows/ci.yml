@@ -63,6 +63,8 @@ jobs:
       quickjs: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.quickjs == 'true' }}
       curated-apply-only: ${{ steps.curated-apply.outputs.only || 'false' }}
       curated-apply-parent-conclusion: ${{ steps.curated-apply.outputs.prior-conclusion }}
+      curated-apply-parent-sha: ${{ steps.curated-apply.outputs.parent-sha }}
+      curated-apply-parent-check: ${{ steps.curated-apply.outputs.parent-check }}
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -107,11 +109,15 @@ jobs:
             --bot-id "$BOT_ID")"
           if [ "$only" = true ]; then
             parent="$(git rev-parse "$HEAD_SHA^")"
-            conclusion="$(gh api \
+            parent_check="$(gh api \
               -H 'X-GitHub-Api-Version: 2022-11-28' \
               "repos/$GITHUB_REPOSITORY/commits/$parent/check-runs?check_name=%E2%9C%85%20CI%20Success&filter=latest&per_page=100" \
-              --jq '[.check_runs[] | select(.name == "✅ CI Success")] | if length == 1 then .[0].conclusion else "" end' \
+              --jq '[.check_runs[] | select(.name == "✅ CI Success")] | if length == 1 then .[0] | {id, conclusion, details_url, check_suite: {id: .check_suite.id}} else {} end' \
               2>/dev/null || true)"
+            if ! parent_check="$(printf '%s' "$parent_check" | jq -cs 'if length == 1 and (.[0] | type) == "object" then .[0] else {} end' 2>/dev/null)"; then
+              parent_check='{}'
+            fi
+            conclusion="$(printf '%s' "$parent_check" | jq -r '.conclusion // ""')"
             case "$conclusion" in
               success|failure) ;;
               *)
@@ -123,6 +129,8 @@ jobs:
           fi
           echo "only=$only" >> "$GITHUB_OUTPUT"
           echo "prior-conclusion=${conclusion:-}" >> "$GITHUB_OUTPUT"
+          echo "parent-sha=${parent:-}" >> "$GITHUB_OUTPUT"
+          echo "parent-check=${parent_check:-}" >> "$GITHUB_OUTPUT"
 
       - name: "🔍 Check for changes"
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
@@ -758,6 +766,63 @@ jobs:
           sparse-checkout: |
             .github/scripts/checks/ci_gate.py
           persist-credentials: false
+
+      - name: Report inherited CI failure
+        if: >-
+          needs.changes.outputs.curated-apply-only == 'true' &&
+          needs.changes.outputs.curated-apply-parent-conclusion == 'failure'
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          PARENT_SHA: ${{ needs.changes.outputs.curated-apply-parent-sha }}
+          PARENT_CHECK: ${{ needs.changes.outputs.curated-apply-parent-check }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const repoUrl = `${process.env.GITHUB_SERVER_URL}/${owner}/${repo}`;
+            const parentUrl = `${repoUrl}/commit/${process.env.PARENT_SHA}`;
+            const message = 'This curated-notes-only commit inherits failed parent CI. Package jobs were skipped, not passed; the CI Success gate remains failed.';
+            core.error(`${message} Parent commit: ${parentUrl}`);
+            const lines = [message, '', `Parent commit: ${parentUrl}`];
+            const jobUrl = value => {
+              const prefix = `${repoUrl}/actions/runs/`;
+              return typeof value === 'string' && value.startsWith(prefix) &&
+                /^\d+\/job\/\d+$/.test(value.slice(prefix.length)) ? value : '';
+            };
+            const escape = value => String(value).replace(/[&<>"']/g, char => ({
+              '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+            })[char]);
+            try {
+              const check = JSON.parse(process.env.PARENT_CHECK);
+              const url = jobUrl(check.details_url);
+              if (url) {
+                lines.push(`Parent CI run: ${url.split('/job/')[0]}`, `Parent CI Success check: ${url}`);
+                core.info(lines.slice(-2).join('\n'));
+              }
+              const checks = await github.paginate(github.rest.checks.listForSuite, {
+                owner, repo, check_suite_id: check.check_suite.id,
+                filter: 'latest', per_page: 100,
+              });
+              const failed = checks.filter(candidate => candidate.id !== check.id &&
+                ['failure', 'cancelled', 'timed_out', 'action_required', 'startup_failure', 'stale'].includes(candidate.conclusion));
+              lines.push('', 'Unsuccessful checks currently reported by the parent CI suite (may change after reruns):');
+              for (const candidate of failed) {
+                const link = jobUrl(candidate.details_url);
+                core.info(`${JSON.stringify(candidate.name)}: ${candidate.conclusion}${link ? ` — ${link}` : ''}`);
+                lines.push(`- <code>${escape(candidate.name)}</code>: ${candidate.conclusion}${link ? ` — ${link}` : ''}`);
+              }
+              if (!failed.length) {
+                const fallback = 'No unsuccessful sibling checks are currently available; inspect the linked parent CI check/run. The captured inherited failure is unchanged.';
+                core.info(fallback);
+                lines.push(fallback);
+              }
+            } catch {
+              const fallback = 'Parent check details could not be retrieved; inspect the parent commit checks. The inherited failure is unchanged.';
+              core.warning(fallback);
+              lines.push('', fallback);
+            }
+            lines.push('', 'Resolve the parent CI failure, then rerun this workflow to re-evaluate the parent result.');
+            await core.summary.addHeading('Inherited parent CI failure').addRaw(lines.join('\n')).write();
 
       - name: "🎉 All Checks Passed"
         env:

@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
+    from deepagents_code.thread_ownership import ThreadLease
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
@@ -3433,6 +3434,43 @@ async def run_textual_cli_async(
     return result
 
 
+def _owned_acp_server_class(
+    server_cls: type[Any], leases: "dict[str, ThreadLease]"
+) -> type[Any]:
+    """Build the ownership-aware ACP adapter.
+
+    Returns:
+        An adapter reserving sessions before restoration and checkpoint writes.
+    """
+    from langchain_core.runnables import RunnableConfig
+
+    from deepagents_code.thread_ownership import (
+        OWNER_KEY,
+        ThreadOwnershipError,
+        try_acquire,
+    )
+
+    class OwnedAgentServer(server_cls):
+        def _session_config(self, session_id: str) -> RunnableConfig:
+            config = super()._session_config(session_id)
+            lease = leases.get(session_id)
+            if lease is None:
+                lease = try_acquire(session_id)
+                if lease is None:
+                    msg = f"Thread {session_id} is open elsewhere."
+                    raise ThreadOwnershipError(msg)
+                leases[session_id] = lease
+            config["configurable"][OWNER_KEY] = lease.token
+            return config
+
+        def _forget_session(self, session_id: str) -> None:
+            super()._forget_session(session_id)
+            if lease := leases.pop(session_id, None):
+                lease.release()
+
+    return OwnedAgentServer
+
+
 async def _run_acp_cli_async(
     assistant_id: str,
     *,
@@ -3640,13 +3678,18 @@ async def _run_acp_cli_async(
             else:
                 server_cls = agent_server_cls
                 server_kwargs = {}
-            server = server_cls(
+            leases: dict[str, ThreadLease] = {}
+            server = _owned_acp_server_class(server_cls, leases)(
                 build_agent,
                 models=models,
                 load_sessions=True,
                 **server_kwargs,
             )
-            await run_acp_agent(server)
+            try:
+                await run_acp_agent(server)
+            finally:
+                for lease in leases.values():
+                    lease.release()
     except KeyboardInterrupt:
         pass
     except Exception as exc:

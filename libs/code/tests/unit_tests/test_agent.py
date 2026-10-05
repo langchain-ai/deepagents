@@ -1626,6 +1626,38 @@ class TestGetSystemPromptFilesystemTools:
         assert "`write_file` over" in prompt
 
 
+@pytest.mark.parametrize("interactive", [True, False])
+@pytest.mark.parametrize("cli_name", ["dcode", "deepagents-code", "dcode-dev"])
+def test_plugin_discovery_uses_invoked_cli_name(
+    interactive: bool, cli_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The server prompt preserves the client's CLI name in either mode."""
+    import deepagents_code.config as config_mod
+    from deepagents_code._invocation import invoked_name
+    from deepagents_code.client.launch.server import _build_server_env
+
+    for field in ("launch_langsmith_env", "user_langsmith_env"):
+        monkeypatch.setattr(
+            config_mod._bootstrap_state,
+            field,
+            dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS),
+        )
+    monkeypatch.delenv(_env_vars.INVOKED_AS, raising=False)
+    monkeypatch.setattr(sys, "argv", [f"/usr/local/bin/{cli_name}"])
+    invoked_name.cache_clear()
+    server_env = _build_server_env()
+
+    monkeypatch.setattr(sys, "argv", ["/site-packages/langgraph_cli/__main__.py"])
+    invoked_name.cache_clear()
+    with patch.dict(os.environ, server_env, clear=True):
+        prompt = get_system_prompt(
+            "test-agent", interactive=interactive, has_tavily=False
+        )
+
+    assert f"this session's CLI command is `{cli_name}`" in prompt
+    assert "`deepagents-plugin-discovery` skill" in prompt
+
+
 class TestGetSystemPromptPlaceholderValidation:
     """Tests for unreplaced placeholder detection."""
 

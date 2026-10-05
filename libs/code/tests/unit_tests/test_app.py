@@ -1371,6 +1371,88 @@ class TestStartupSequence:
         set_stored_key.assert_not_called()
 
 
+class TestFooterCostBreakdown:
+    """Tests for opening the shared cost modal directly from the footer."""
+
+    async def test_footer_cost_opens_live_modal_and_restores_focus(
+        self,
+    ) -> None:
+        from deepagents_code.cost_tracking import _empty_cost_breakdown
+        from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
+        from deepagents_code.tui.widgets.status import MetricsLine
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            breakdown = _empty_cost_breakdown()
+            breakdown["input_tokens"] = 123
+            app._set_session_cost(1.25, breakdown=breakdown)
+            app._agent_running = True
+            await pilot.pause()
+            display = app.query_one("#tokens-display", MetricsLine)
+            offset = display.content_region.x - display.region.x
+            offset += str(display.render()).index("$")
+            await pilot.click(display, offset=(offset, 0))
+            await pilot.pause()
+
+            modal = app.screen
+            assert isinstance(modal, CostBreakdownScreen)
+            body = modal.query_one(".cost-breakdown-body", Static)
+            assert "123" in str(body.render())
+            assert "1.25" in str(body.render())
+            stack_size = len(app.screen_stack)
+            app.action_open_cost_breakdown()
+            await pilot.pause()
+            assert app.screen is modal
+            assert len(app.screen_stack) == stack_size
+
+            updated = _empty_cost_breakdown()
+            updated["input_tokens"] = 456
+            app._set_session_cost(2.5, breakdown=updated)
+            await pilot.pause(delay=0.6)
+            assert "456" in str(body.render())
+            assert "2.5" in str(body.render())
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, ModalScreen)
+            assert app._is_input_focused()
+            app._agent_running = False
+
+    @pytest.mark.parametrize("incomplete", [False, True])
+    async def test_missing_breakdown_notifies_without_empty_modal(
+        self, incomplete: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.cost_tracking import _empty_cost_breakdown
+        from deepagents_code.tui.widgets.status import MetricsLine
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._set_session_cost(
+                1.25,
+                breakdown=(
+                    _empty_cost_breakdown(historical_complete=False)
+                    if incomplete
+                    else None
+                ),
+            )
+            notify = MagicMock()
+            monkeypatch.setattr(app, "notify", notify)
+            await pilot.pause()
+            display = app.query_one("#tokens-display", MetricsLine)
+            offset = display.content_region.x - display.region.x
+            offset += str(display.render()).index("$")
+            await pilot.click(display, offset=(offset, 0))
+            await pilot.pause()
+
+            assert not isinstance(app.screen, ModalScreen)
+            assert notify.call_args.args[0] == (
+                "No cost details to show for this session yet."
+            )
+            assert "$1.25" in str(display.render())
+
+
 class TestStatusBarPickerActions:
     """Tests for status-bar actions that open existing picker flows."""
 
@@ -1416,13 +1498,7 @@ class TestStatusBarPickerActions:
             offset += 0 if target == "model" else len("openai:gpt-5.5 ")
             await pilot.click(label, offset=(offset, 0))
             await pilot.pause()
-            if busy and target == "effort":
-                assert [message.text for message in app._pending_messages] == [
-                    "/effort"
-                ]
-                app._agent_running = False
-                await app._process_next_from_queue()
-                await pilot.pause()
+            assert not app._pending_messages
             expected = (
                 ModelSelectorScreen if target == "model" else EffortSelectorScreen
             )
@@ -17642,18 +17718,6 @@ class TestDeferredActions:
             await app._drain_deferred_actions()
             assert executed == ["second"]
 
-    async def test_repeated_footer_effort_click_queues_once(self) -> None:
-        """Repeated effort clicks during a turn keep one queued picker request."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent_running = True
-
-            await app.action_open_effort_selector()
-            await app.action_open_effort_selector()
-
-            assert [message.text for message in app._pending_messages] == ["/effort"]
-
     async def test_repeated_footer_model_click_keeps_one_modal(self) -> None:
         """Clicking the model label again does not stack another selector."""
         from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
@@ -17769,6 +17833,23 @@ class TestDeferredActions:
             await app._drain_deferred_actions()
             assert executed == ["thread", "second_model"]
 
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ("/offload model", True),
+            ("/offload  model", True),
+            ("/offload\tmodel", True),
+            ("/offload model openai:gpt-5.4-mini", False),
+            ("/offload model clear", False),
+            ("/offload", False),
+            ("/compact", False),
+        ],
+    )
+    def test_offload_model_queue_bypass(self, command: str, expected: bool) -> None:
+        app = DeepAgentsApp()
+        app._agent_running = True
+        assert app._can_bypass_queue(command) is expected
+
     async def test_summarization_model_opens_selector_while_busy(self) -> None:
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -17780,7 +17861,7 @@ class TestDeferredActions:
                 "_show_summarization_model_selector",
                 new_callable=AsyncMock,
             ) as show_selector:
-                app.post_message(ChatInput.Submitted("/summarization-model", "command"))
+                app.post_message(ChatInput.Submitted("/offload model", "command"))
                 await pilot.pause()
 
             show_selector.assert_awaited_once()
@@ -18345,23 +18426,100 @@ class TestRestartServerForAgentSwap:
             for text in plain
         )
 
-    async def test_cross_agent_restart_failure_restores_thread_pointer(self) -> None:
-        """A failed owner restart does not leave session state on its thread."""
+    @pytest.mark.parametrize("resume_thread_id", [None, "research-thread"])
+    async def test_reservation_failure_preserves_current_session(
+        self, monkeypatch: pytest.MonkeyPatch, resume_thread_id: str | None
+    ) -> None:
+        """An unavailable destination leaves the current client and chat usable."""
+        from deepagents_code.thread_ownership import held_lease
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
         app, server_proc = self._make_app()
-        server_proc.restart = AsyncMock(side_effect=RuntimeError("boom"))
+        monkeypatch.setattr(
+            "deepagents_code.app._new_thread_id", lambda: "fresh-thread"
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            assert app._session_state is not None
+            app._session_state.previous_thread_id = "earlier-thread"
+            app._session_state.approval_mode_key = "auto"
+            app._reserve_thread("old-thread")
+            previous_lease = held_lease("old-thread")
+            previous_client = app._agent
+            app._message_store.append(
+                MessageData(type=MessageType.ASSISTANT, content="Existing answer")
+            )
+            monkeypatch.setattr(
+                app,
+                "_reserve_thread",
+                MagicMock(side_effect=OSError("read-only ownership directory")),
+            )
+            app._agent_switching = True
+
+            assert not await app._restart_server_for_agent_swap(
+                "researcher", resume_thread_id=resume_thread_id
+            )
+
+            assert app._lc_thread_id == "old-thread"
+            assert app._session_state.thread_id == "old-thread"
+            assert app._session_state.previous_thread_id == "earlier-thread"
+            assert app._session_state.approval_mode_key == "auto"
+            assert app._agent is previous_client
+            assert app._assistant_id == "coder"
+            assert held_lease("old-thread") is previous_lease
+            assert held_lease(resume_thread_id or "fresh-thread") is None
+            assert any(
+                message.content == "Existing answer"
+                for message in app._message_store.get_all_messages()
+            )
+            assert not app._agent_switching
+            assert not app._connecting
+            assert not app._reconnecting
+            server_proc.restart.assert_not_awaited()
+
+    @pytest.mark.parametrize("resume_thread_id", [None, "research-thread"])
+    async def test_restart_failure_restores_thread_and_ownership(
+        self, monkeypatch: pytest.MonkeyPatch, resume_thread_id: str | None
+    ) -> None:
+        """Failed swaps retain only the restored thread's lease through recovery."""
+        from deepagents_code.thread_ownership import held_lease, try_acquire
+
+        app, server_proc = self._make_app()
+        server_proc.restart = AsyncMock(side_effect=[RuntimeError("boom"), None])
+        server_proc.wait_for_graph_ready = AsyncMock()
+        monkeypatch.setattr(
+            "deepagents_code.app._new_thread_id", lambda: "fresh-thread"
+        )
+        abandoned_thread_id = resume_thread_id or "fresh-thread"
         posted: list[object] = []
 
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._reserve_thread("old-thread")
+            previous_lease = held_lease("old-thread")
+            assert previous_lease is not None
             with patch.object(app, "post_message", side_effect=posted.append):
                 switched = await app._restart_server_for_agent_swap(
                     "researcher",
-                    resume_thread_id="research-thread",
-                    preloaded_payload=MagicMock(),
-                    persist_default_agent=False,
+                    resume_thread_id=resume_thread_id,
+                    preloaded_payload=MagicMock() if resume_thread_id else None,
+                    persist_default_agent=resume_thread_id is None,
                 )
+                assert switched is False
+                assert app._lc_thread_id == "old-thread"
+                assert held_lease("old-thread") is previous_lease
+                assert try_acquire("old-thread") is None
+                assert held_lease(abandoned_thread_id) is None
+                available = try_acquire(abandoned_thread_id)
+                assert available is not None
+                available.release()
 
-        assert switched is False
+                assert await app._restart_server_manual()
+                assert app._lc_thread_id == "old-thread"
+                assert held_lease("old-thread") is previous_lease
+                assert try_acquire("old-thread") is None
+                assert held_lease(abandoned_thread_id) is None
+
         assert app._assistant_id == "coder"
         assert app._default_assistant_id == "coder"
         assert app._lc_thread_id == "old-thread"
@@ -18371,6 +18529,35 @@ class TestRestartServerForAgentSwap:
         assert any(
             isinstance(message, DeepAgentsApp.ServerStartFailed) for message in posted
         )
+
+    @pytest.mark.parametrize("cancelled", [False, True])
+    async def test_confirmation_failure_releases_previous_thread(
+        self, monkeypatch: pytest.MonkeyPatch, cancelled: bool
+    ) -> None:
+        """Follow-up failures leave only the successfully adopted thread locked."""
+        from deepagents_code.thread_ownership import held_lease, try_acquire
+
+        app, _server_proc = self._make_app()
+        monkeypatch.setattr(
+            "deepagents_code.app._new_thread_id", lambda: "fresh-thread"
+        )
+        error = asyncio.CancelledError if cancelled else RuntimeError
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._reserve_thread("old-thread")
+            monkeypatch.setattr(app, "_reload_hooks", AsyncMock(side_effect=error))
+
+            with pytest.raises(error):
+                await app._restart_server_for_agent_swap("researcher")
+
+            assert app._assistant_id == "researcher"
+            assert app._agent is not None
+            assert app._lc_thread_id == "fresh-thread"
+            assert try_acquire("fresh-thread") is None
+            assert held_lease("old-thread") is None
+            available = try_acquire("old-thread")
+            assert available is not None
+            available.release()
 
     async def test_no_resume_hint_when_previous_thread_has_no_agent_output(
         self,

@@ -937,12 +937,12 @@ class TestSummarizationModelCommand:
             "deepagents_code.app._create_model_with_deepagents_import_lock",
             return_value=resolved,
         ):
-            await app._handle_command("/summarization-model openai:gpt-5.4-mini")
+            await app._handle_command("/offload model openai:gpt-5.4-mini")
 
         assert app._summarization_model_override == "openai:gpt-5.4-mini"
         assert app._model_override == "anthropic:claude-sonnet-4-5"
 
-        await app._handle_command("/summarization-model --clear")
+        await app._handle_command("/offload model --clear")
         assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
         assert app._model_override == "anthropic:claude-sonnet-4-5"
 
@@ -961,7 +961,7 @@ class TestSummarizationModelCommand:
             "deepagents_code.app._create_model_with_deepagents_import_lock",
             return_value=resolved,
         ):
-            await app._handle_command("/summarization-model haiku")
+            await app._handle_command("/offload model haiku")
 
         assert app._summarization_model_override == "anthropic:claude-haiku-4-5"
 
@@ -978,9 +978,7 @@ class TestSummarizationModelCommand:
             ) as create_model,
             patch.object(AppMessage, "__init__", capture_init),
         ):
-            await app._handle_command(
-                "/summarization-model server_provider:remote-model"
-            )
+            await app._handle_command("/offload model server_provider:remote-model")
 
         create_model.assert_not_called()
         assert app._summarization_model_override == "server_provider:remote-model"
@@ -1001,12 +999,17 @@ class TestSummarizationModelCommand:
         with patch(
             "deepagents_code.app._create_model_with_deepagents_import_lock"
         ) as create_model:
-            await app._handle_command(f"/summarization-model {word}")
+            await app._handle_command(f"/offload model {word}")
 
         create_model.assert_not_called()
         assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
 
-    async def test_no_argument_opens_selector_without_changing_override(self) -> None:
+    @pytest.mark.parametrize(
+        "command", ["/offload model", "/offload  model", "/offload\tMODEL"]
+    )
+    async def test_no_argument_opens_selector_without_changing_override(
+        self, command: str
+    ) -> None:
         app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
         app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
 
@@ -1015,7 +1018,7 @@ class TestSummarizationModelCommand:
             "_show_summarization_model_selector",
             new_callable=AsyncMock,
         ) as show_selector:
-            await app._handle_command("/summarization-model")
+            await app._handle_command(command)
 
         show_selector.assert_awaited_once()
         assert app._summarization_model_override == "openai:gpt-5.4-mini"
@@ -1192,7 +1195,7 @@ class TestSummarizationModelCommand:
             ) as create_model,
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
-            await app._handle_command("/summarization-model openai:gpt-5.4-mini extra")
+            await app._handle_command("/offload model openai:gpt-5.4-mini extra")
 
         create_model.assert_not_called()
         assert len(captured) == 1
@@ -1211,7 +1214,7 @@ class TestSummarizationModelCommand:
             ),
             patch.object(ErrorMessage, "__init__", capture_init),
         ):
-            await app._handle_command("/summarization-model invalid:model")
+            await app._handle_command("/offload model invalid:model")
 
         assert app._summarization_model_override == "openai:gpt-5.4-mini"
         # Without this the handler could swallow the failure silently:

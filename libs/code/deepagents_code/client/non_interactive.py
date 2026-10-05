@@ -3033,3 +3033,8 @@ async def run_non_interactive(
             await drain_pending_hooks()
         except Exception:
             logger.warning("Hook drain raised unexpectedly before exit", exc_info=True)
+        finally:
+            from deepagents_code.thread_ownership import held_lease
+
+            if lease := held_lease(thread_id):
+                lease.release()

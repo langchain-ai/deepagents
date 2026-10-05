@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 from urllib.parse import quote
 
-from deepagents_code._env_vars import SERVER_ENV_PREFIX
+from deepagents_code._env_vars import INVOKED_AS, SERVER_ENV_PREFIX
+from deepagents_code._invocation import invoked_name
 from deepagents_code._paths import (
     DEEPAGENTS_HOME_ENV,
     DEFAULT_PROFILE_MARKER_ENV,
@@ -246,6 +247,9 @@ def generate_langgraph_json(
         config["env"] = env_file
     if checkpointer_path:
         config["checkpointer"] = {"path": checkpointer_path}
+        from deepagents_code.thread_ownership import OWNER_KEY
+
+        config.setdefault("http", {})["configurable_headers"] = {"include": [OWNER_KEY]}
 
     output_path = Path(output_dir) / "langgraph.json"
     output_path.write_text(json.dumps(config, indent=2))
@@ -411,6 +415,7 @@ def _build_server_env() -> dict[str, str]:
     export_profile_env(env)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["LANGGRAPH_AUTH_TYPE"] = "noop"
+    env[INVOKED_AS] = invoked_name()
 
     # Capture a launch-time PYTHONPATH before stripping it. Never trust inherited
     # carrier vars: overwrite them only from bootstrap state in this process.

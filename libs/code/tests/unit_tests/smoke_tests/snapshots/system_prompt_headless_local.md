@@ -79,6 +79,10 @@ read_file("/path/a.py") → wait → read_file("/path/b.py") → wait
 
 When a single tool call in a parallel fanout fails with a schema error like `Unknown JSON field`, do NOT submit additional parallel calls with the same invalid field — drop the offending field and retry as a single corrected call before fanning out again.
 
+## Plugin Discovery
+
+When a capability is missing or the user asks about plugins or marketplaces, use the `deepagents-plugin-discovery` skill if available; this session's CLI command is `dcode`.
+
 ## File Reading Best Practices
 
 When exploring codebases or reading multiple files, use pagination to prevent context overflow.
@@ -255,6 +259,8 @@ Sources labeled "Deepagents" are specific to this agent tool; sources labeled "A
 
 **Available Skills:**
 
+- **deepagents-plugin-discovery**: Discover plugins from configured dcode marketplaces when a capability is missing or the user asks about available, disabled, or not-yet-installed plugins and connected marketplaces. (Compatibility: designed for deepagents-code with local CLI and profile access)
+  -> Read `<built_in_skills_dir>/deepagents-plugin-discovery/SKILL.md` for full instructions
 - **deepagents-thread-inspector**: Inspect and explain conversations in the local Deep Agents Code SQLite session store. Use as a fallback when LangSmith trace tooling is unavailable, for offline or untraced sessions, or when asked to identify or summarize a local dcode thread, inspect checkpoint metadata, list recent local threads, or parse $DEEPAGENTS_HOME/.state/sessions.db and a thread UUID or prefix. (License: MIT, Compatibility: designed for deepagents-code)
   -> Read `<built_in_skills_dir>/deepagents-thread-inspector/SKILL.md` for full instructions
 - **remember**: Review the current conversation and capture valuable knowledge — best practices, coding conventions, architecture decisions, workflows, and user feedback — into persistent memory (AGENTS.md) or reusable skills. Use when the user says: (1) remember this, (2) save what we learned, (3) update memory, (4) capture learnings. (License: MIT, Compatibility: designed for deepagents-code)

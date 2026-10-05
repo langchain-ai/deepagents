@@ -314,20 +314,18 @@ async def _run_model_host(
     *,
     sandbox: SandboxSession | None,
 ) -> None:
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: PLC0415
-
     from deepagents_talon.archive_saver import ConversationSaver  # noqa: PLC0415
+    from deepagents_talon.checkpoint_backends import open_checkpointer  # noqa: PLC0415
     from deepagents_talon.history_backends import open_history  # noqa: PLC0415
 
     async with (
-        AsyncSqliteSaver.from_conn_string(str(config.checkpoint_path)) as sqlite_checkpointer,
+        open_checkpointer(config) as checkpointer,
         open_history(config) as archive,
     ):
-        await sqlite_checkpointer.setup()
         agent = await _agent_runtime(
             config,
             cron_store=cron_store,
-            checkpointer=ConversationSaver(sqlite_checkpointer, archive=archive),
+            checkpointer=ConversationSaver(checkpointer, archive=archive),
             sandbox=sandbox,
         )
         await _run_host_with_agent(args, config, cron_store, channels, agent)

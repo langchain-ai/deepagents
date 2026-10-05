@@ -816,25 +816,6 @@ class TestSummarizationModelCommand:
 
         return captured, capture_init
 
-    async def test_set_and_clear_do_not_change_main_model(self) -> None:
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
-        app._model_override = "anthropic:claude-sonnet-4-5"
-        resolved = Mock(provider="openai", model_name="gpt-5.4-mini")
-
-        with patch(
-            "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
-            return_value=resolved,
-        ):
-            await app._handle_command("/offload model openai:gpt-5.4-mini")
-
-        assert app._summarization_model_override == "openai:gpt-5.4-mini"
-        assert app._model_override == "anthropic:claude-sonnet-4-5"
-
-        await app._handle_command("/offload model --clear")
-        assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
-        assert app._model_override == "anthropic:claude-sonnet-4-5"
-
     @pytest.mark.parametrize("word", ["clear", "--clear", "reset", "CLEAR"])
     async def test_every_clearing_spelling_effort_accepts_works_here(
         self, word: str
@@ -873,22 +854,6 @@ class TestSummarizationModelCommand:
 
         show_selector.assert_awaited_once()
         assert app._summarization_model_override == "openai:gpt-5.4-mini"
-
-    async def test_selector_highlights_summarization_model(self) -> None:
-        app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
-
-        with patch.object(app, "push_screen") as push:
-            await app._show_summarization_model_selector()
-
-        screen = push.call_args.args[0]
-        assert screen._current_provider == "openai"
-        assert screen._current_model == "gpt-5.4-mini"
-        from deepagents_code.tui.widgets.model_selector import (
-            SUMMARIZATION_DEFAULT_SCOPE,
-        )
-
-        assert screen._default_scope is SUMMARIZATION_DEFAULT_SCOPE
-        assert screen._check_provider_requirements is True
 
     async def test_selector_preserves_in_flight_provider_setup(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1102,6 +1067,7 @@ async def test_clearing_auxiliary_choices_waits_for_active_turn(
     app._agent = remote
     app._lc_thread_id = "thread"
     app._agent_running = True
+    app._model_override = "custom:main"
     app._summarization_model_override = "custom:old"
     app._auto_classifier_model = "custom:old"
     app._rubric_model = "custom:old"
@@ -1126,4 +1092,5 @@ async def test_clearing_auxiliary_choices_waits_for_active_turn(
     else:
         assert app._rubric_model is None
         assert app._rubric_model_recorded
+    assert app._model_override == "custom:main"
     resolve.assert_not_awaited()

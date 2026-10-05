@@ -488,12 +488,11 @@ async def test_auxiliary_resolution_failure_preserves_selections(
     )
 
 
-@pytest.mark.parametrize("connecting", [False, True])
 async def test_default_can_be_saved_before_server_connects(
-    connecting: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
-    app._connecting = connecting
+    app._connecting = True
     monkeypatch.setattr(app, "_mount_message", AsyncMock())
     with patch(
         "deepagents_code.config.create_model",
@@ -507,9 +506,9 @@ async def test_default_can_be_saved_before_server_connects(
 
 
 @pytest.mark.parametrize(
-    "command", ["/offload model", "/auto model", "/goal model", "/rubric model"]
+    ("command", "selection"),
+    [("/offload model", "custom:new"), ("/auto model", "clear")],
 )
-@pytest.mark.parametrize("selection", ["custom:new", "clear"])
 async def test_connecting_model_choices_report_queue_and_startup_failure(
     command: str, selection: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:

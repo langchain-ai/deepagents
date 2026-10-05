@@ -87,10 +87,10 @@ from deepagents.backends.utils import (
 from deepagents.middleware._blob_offload import (
     _BLOB_PAYLOADS_KEY,
     _ahydrate_messages,
-    _aoffload_human_messages,
+    _aoffload_history_messages,
     _aoffload_tool_result,
     _hydrate_messages,
-    _offload_human_messages,
+    _offload_history_messages,
     _offload_tool_result,
     _tool_blob_store,
 )
@@ -1813,9 +1813,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
 
                 Payloads are written to `blobs/` under the artifacts root and
                 state keeps a content-addressed reference; model requests are
-                rehydrated from the backend. `HumanMessage` payloads added
-                since the last model response are replaced at the next model
-                call, so the original input write stays in checkpoint history.
+                rehydrated from the backend. Inline `HumanMessage` media and
+                `read_file` results anywhere in the history, including imported
+                conversations, are replaced at the next model call. The original
+                input write stays in checkpoint history.
                 Useful with sandbox backends. Has no effect when `blobs/`
                 routes to a `StateBackend`.
             _permissions: Optional filesystem permission rules enforced directly
@@ -3279,7 +3280,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if self._offload_binary_content:
             cached = request.state.get(_BLOB_PAYLOADS_KEY) or {}
             payloads = dict(cached)
-            offloaded = _offload_human_messages(
+            offloaded = _offload_history_messages(
                 request.state.get("messages", []), _command_messages(state_command), self.backend, self._blobs_prefix, payloads
             )
             request = request.override(messages=_hydrate_messages(request.messages, self.backend, self._blobs_prefix, payloads))
@@ -3334,7 +3335,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         if self._offload_binary_content:
             cached = request.state.get(_BLOB_PAYLOADS_KEY) or {}
             payloads = dict(cached)
-            offloaded = await _aoffload_human_messages(
+            offloaded = await _aoffload_history_messages(
                 request.state.get("messages", []), _command_messages(state_command), self.backend, self._blobs_prefix, payloads
             )
             request = request.override(messages=await _ahydrate_messages(request.messages, self.backend, self._blobs_prefix, payloads))

@@ -1672,7 +1672,7 @@ class TestBinaryContentOffload:
         assert humans[0].content == "Hello"
         assert humans[1].content[1] == {"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}
 
-    def test_human_message_image_answered_before_offload_stays_inline(self, tmp_path: Path) -> None:
+    def test_human_message_image_answered_before_offload_is_offloaded(self, tmp_path: Path) -> None:
         backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
         checkpointer = InMemorySaver()
         config: dict[str, Any] = {"configurable": {"thread_id": "t"}}
@@ -1689,7 +1689,7 @@ class TestBinaryContentOffload:
         agent.invoke({"messages": [second]}, config)
 
         humans = [m for m in agent.get_state(config).values["messages"] if m.type == "human"]
-        assert humans[0].content[1]["base64"] == _OFFLOAD_PNG_B64
+        assert humans[0].content[1] == {"type": "image", "mime_type": "image/png", "deepagents_blob": _OFFLOAD_PNG_DIGEST}
         assert humans[1].content[0] == {"type": "image", "mime_type": "image/png", "deepagents_blob": hashlib.sha256(other).hexdigest()}
 
     def test_evicted_human_message_image_keeps_eviction_tag(self, tmp_path: Path) -> None:

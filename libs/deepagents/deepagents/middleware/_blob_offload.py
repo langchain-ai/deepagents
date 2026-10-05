@@ -1,8 +1,8 @@
-"""Content-addressed offload of binary `read_file` blocks to the backend.
+"""Content-addressed offload of inline human media and binary `read_file` blocks.
 
 Binary blocks are written to `{artifacts_root}/blobs/<sha256>` and replaced in
 state with a `deepagents_blob` reference. Model requests are rehydrated from the
-backend, so checkpoints never carry the base64 payload.
+backend. Initial input checkpoints can still carry inline payloads.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from contextvars import ContextVar
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Final
 
-from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AnyMessage, BaseMessage, HumanMessage, ToolMessage
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -150,11 +150,11 @@ async def _aoffload_tool_result(result: ToolMessage | Command, backend: BackendP
     return result
 
 
-def _human_candidates(state_messages: Sequence[Any], pending: Sequence[Any]) -> list[HumanMessage]:
-    """Return `HumanMessage`s with ids after the last `AIMessage`, preferring versions already queued in `pending`."""
-    last_ai = max((i for i, m in enumerate(state_messages) if isinstance(m, AIMessage)), default=-1)
+def _history_candidates(state_messages: Sequence[AnyMessage], pending: Sequence[AnyMessage]) -> list[HumanMessage | ToolMessage]:
+    """Collect human and `read_file` messages, including imported history."""
     queued = {m.id: m for m in pending if isinstance(m, BaseMessage) and m.id is not None}
-    return [queued.get(m.id, m) for m in state_messages[last_ai + 1 :] if isinstance(m, HumanMessage) and m.id is not None]
+    candidates = (queued.get(m.id, m) for m in state_messages if isinstance(m, BaseMessage) and m.id is not None)
+    return [m for m in candidates if isinstance(m, HumanMessage) or (isinstance(m, ToolMessage) and m.name == "read_file")]
 
 
 def _merge_replacements(pending: Sequence[Any], offloaded: Sequence[Any], candidates: Sequence[Any]) -> list[Any]:
@@ -163,19 +163,19 @@ def _merge_replacements(pending: Sequence[Any], offloaded: Sequence[Any], candid
     return [*(m for m in pending if getattr(m, "id", None) not in replaced_ids), *replaced]
 
 
-def _offload_human_messages(
+def _offload_history_messages(
     state_messages: Sequence[Any], pending: Sequence[Any], backend: BackendProtocol, prefix: str, cache: dict[str, str]
 ) -> list[Any]:
-    """Return `pending` plus stubbed replacements for `HumanMessage`s in state carrying inline payloads."""
-    candidates = _human_candidates(state_messages, pending)
+    """Return `pending` plus stubbed replacements for human media and `read_file` results in state."""
+    candidates = _history_candidates(state_messages, pending)
     return _merge_replacements(pending, _offload_messages(candidates, backend, prefix, cache), candidates)
 
 
-async def _aoffload_human_messages(
+async def _aoffload_history_messages(
     state_messages: Sequence[Any], pending: Sequence[Any], backend: BackendProtocol, prefix: str, cache: dict[str, str]
 ) -> list[Any]:
-    """Async version of `_offload_human_messages`."""
-    candidates = _human_candidates(state_messages, pending)
+    """Async version of `_offload_history_messages`."""
+    candidates = _history_candidates(state_messages, pending)
     return _merge_replacements(pending, await _aoffload_messages(candidates, backend, prefix, cache), candidates)
 
 

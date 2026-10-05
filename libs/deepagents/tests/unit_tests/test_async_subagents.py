@@ -508,6 +508,44 @@ async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, 
     for message in (parent_messages[0], parent_tool):
         assert all("deepagents_blob" in block and "base64" not in block for block in message.content)
 
+    await _assert_child_offloads_media(tmp_path, invocation, child_messages, [parent_messages[0], parent_tool])
+
+
+async def _assert_child_offloads_media(
+    tmp_path: Path, invocation: str, messages: list[dict[str, Any]], parent_media: list[HumanMessage | ToolMessage]
+) -> None:
+    child_backend = FilesystemBackend(root_dir=tmp_path / "child", virtual_mode=True)
+    child_model = GenericFakeChatModel(messages=iter([AIMessage(content="Reviewed"), AIMessage(content="Reviewed again")]))
+    child = create_agent(
+        child_model,
+        middleware=[
+            FilesystemMiddleware(
+                backend=CompositeBackend(default=child_backend, routes={}, artifacts_root="/child-artifacts"),
+                offload_binary_content=True,
+            )
+        ],
+        checkpointer=InMemorySaver(),
+    )
+    child_config = {"configurable": {"thread_id": "child"}}
+    for child_input in ({"messages": messages}, {"messages": [HumanMessage(content="Review again")]}):
+        if invocation == "sync":
+            child.invoke(child_input, child_config)
+        else:
+            await child.ainvoke(child_input, child_config)
+
+    child_state = child.get_state(child_config).values
+    stored = {message.id: message for message in child_state["messages"]}
+    for parent_message in parent_media:
+        assert stored[parent_message.id] == parent_message
+    for block, original in zip(stored[parent_media[0].id].content, messages[0]["content"], strict=True):
+        assert child_backend.download_files([f"/child-artifacts/blobs/{block['deepagents_blob']}"])[0].content == base64.b64decode(original["base64"])
+    first_request = child_model.call_history[0]["messages"]
+    assert first_request[0].content == messages[0]["content"]
+    received_tool = next(message for message in first_request if isinstance(message, ToolMessage))
+    assert received_tool.model_dump(exclude={"artifact"}) == next(message for message in messages if message["type"] == "tool")
+    assert child_model.call_history[1]["messages"][: len(first_request)] == first_request
+    assert "_blob_payloads" not in child_state
+
 
 @pytest.mark.filterwarnings("ignore:.*forked subagents.*:langchain_core._api.LangChainBetaWarning")
 async def test_fork_preserves_evicted_human_content(tmp_path: Path) -> None:

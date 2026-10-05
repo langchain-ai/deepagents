@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Repository Quickstart and Change Routing](quickstart.md) - Route a behavioral change to its independently released package, public entrypoint, neighboring design guide, and narrowest regression seam. Use this page to choose package-local development and avoid accidental release or dependency fan-out.
+- [Repository Quickstart and Change Routing](quickstart.md) - Route Deep Agents changes to the package, dcode session owner, durable cost state, slash-command registry, and focused Textual regression seam. Use package-local development for deterministic checks and route real-model behavior changes to evals.
 
 # Directories
 

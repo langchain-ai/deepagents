@@ -1303,6 +1303,33 @@ class TestThreadConfigCoalesced:
         assert cfg.relative_time is True
         assert cfg.sort_order == "updated_at"
         assert cfg.scope == "cwd"
+        assert cfg.auto_rename is True
+
+
+@pytest.mark.parametrize(
+    ("content", "auto_rename", "rename_model"),
+    [
+        ("", True, ""),
+        ("[threads]\nauto_rename = false\n", False, ""),
+        (
+            '[threads]\nauto_rename = true\nrename_model = "provider:model"\n',
+            True,
+            "provider:model",
+        ),
+        ('[threads]\nauto_rename = "yes"\nrename_model = 2\n', True, ""),
+    ],
+)
+def test_thread_naming_config(
+    tmp_path: Path, content: str, auto_rename: bool, rename_model: str
+) -> None:
+    from deepagents_code.model_config import load_thread_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(content)
+    config = load_thread_config(path)
+    assert config.auto_rename is auto_rename
+    assert config.rename_model == rename_model
+    assert config.columns["thread_name"] is True
 
 
 class TestResolveEnvVar:

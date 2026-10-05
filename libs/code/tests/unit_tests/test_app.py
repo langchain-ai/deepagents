@@ -14003,6 +14003,50 @@ class TestInterruptApprovalPriority:
 class TestApprovalPositionBindings:
     """Tests for app-level approval fallback shortcuts."""
 
+    async def test_tab_stays_in_thread_name_modal_with_pending_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tab cannot alter the pending approval until the rename dialog closes."""
+        from deepagents_code.tui.modals.thread_name import ThreadNameScreen
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(thread_id="thread-123")
+        monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+        rename = AsyncMock()
+        monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+        async with app.run_test(size=(110, 36)) as pilot:
+            messages = app.query_one("#messages", Container)
+            approval = ApprovalMenu({"name": "execute", "args": {"command": "pwd"}})
+            await messages.mount(approval)
+            app._pending_approval_widget = approval
+            reason = approval.query_one("#approval-reason-input", Input)
+            selected = approval.query_one(".approval-option-selected", Static)
+
+            app._offer_thread_name("thread-123", "Cache repair")
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ThreadNameScreen)
+            field = screen.query_one("#thread-name", Input)
+            assert field.has_focus
+            assert not reason.display
+
+            await pilot.press("tab")
+            assert not reason.display
+            assert selected.has_class("approval-option-selected")
+            assert field.has_focus
+            await pilot.press("end", "!")
+            assert field.value == "Cache repair!"
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is not screen
+            rename.assert_not_awaited()
+            assert app._pending_approval_widget is approval
+            approval.focus()
+            await pilot.press("tab")
+            assert reason.display
+            assert reason.has_focus
+
     async def test_tab_navigates_btw_when_background_approval_arrives(
         self, btw_app: tuple[DeepAgentsApp, MagicMock]
     ) -> None:

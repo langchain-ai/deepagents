@@ -34,7 +34,7 @@ INHERIT_SUMMARIZATION_MODEL = "__dcode_inherit_summarization__"
 """Per-run `summarization_model` value meaning "use the main agent model".
 
 An absent (or `None`) `summarization_model` leaves the graph's startup summary
-model in effect. `/summarization-model clear` needs the stronger statement that
+model in effect. `/offload model clear` needs the stronger statement that
 summaries go back to the main agent model, which this sentinel carries across
 the remote JSON boundary without being mistaken for a model spec.
 """

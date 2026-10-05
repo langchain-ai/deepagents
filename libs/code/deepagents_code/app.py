@@ -2101,7 +2101,7 @@ _RECONNECT_FORCE_TOKENS: frozenset[str] = frozenset({"force", "--force", "-f"})
 _CLEAR_TOKENS: frozenset[str] = frozenset({"clear", "--clear", "reset"})
 """Spellings that reset a per-session override back to its default.
 
-Shared by every such command -- `/effort`, `/summarization-model` -- so the
+Shared by every such command -- `/effort`, `/offload model` -- so the
 habit transfers and the accepted spellings cannot drift apart.
 """
 
@@ -12820,17 +12820,10 @@ class DeepAgentsApp(App):
                 or self._shell_running
                 or self._modal_command_running()
             )
+        if " ".join(value.split()) in IMMEDIATE_UI_ARG_FORMS:
+            return True
         if cmd in IMMEDIATE_UI:
-            # Only UI-opening forms bypass: the bare command, or an argument
-            # form whitelisted in IMMEDIATE_UI_ARG_FORMS (e.g. `/auto model`,
-            # which opens the classifier picker). Other argument forms do a
-            # direct action that shouldn't race the agent (e.g. `/model <name>`
-            # switches models, `/threads -r <id>` resumes a thread,
-            # `/auto model <spec>` mutates classifier state). Whitespace is
-            # canonicalized for the whitelist check because `_handle_command`
-            # strips and reparses the same way — `/auto  model` (double space,
-            # tab) reaches the selector branch once processed.
-            return value == cmd or " ".join(value.split()) in IMMEDIATE_UI_ARG_FORMS
+            return value == cmd
         return cmd in SIDE_EFFECT_FREE
 
     async def _cold_cache_warning_for(
@@ -17882,7 +17875,7 @@ class DeepAgentsApp(App):
             self._open_notification_center()
         elif cmd == "/effort" or cmd.startswith("/effort "):
             await self._handle_effort_command(command)
-        elif cmd == "/summarization-model" or cmd.startswith("/summarization-model "):
+        elif cmd.split()[:2] == ["/offload", "model"]:
             await self._handle_summarization_model_command(command)
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
@@ -31275,7 +31268,7 @@ class DeepAgentsApp(App):
             command: The raw slash command line as typed.
         """
         await self._mount_message(UserMessage(command))
-        argument = command.strip()[len("/summarization-model") :].strip()
+        argument = " ".join(command.split(maxsplit=2)[2:]).strip()
         if not argument:
             await self._show_summarization_model_selector()
             return
@@ -31287,7 +31280,7 @@ class DeepAgentsApp(App):
             return
         if " " in argument:
             await self._mount_message(
-                ErrorMessage("Usage: /summarization-model [<spec>|clear]")
+                ErrorMessage("Usage: /offload model [<spec>|clear]")
             )
             return
 
@@ -31338,7 +31331,7 @@ class DeepAgentsApp(App):
             title="Choose the summarization model",
             description=(
                 "Pick the model used for context-compaction summaries. Clear it "
-                "with `/summarization-model clear` to follow the main agent model."
+                "with `/offload model clear` to follow the main agent model."
             ),
             default_scope=None,
             check_provider_requirements=(

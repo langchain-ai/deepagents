@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (46)
+## Public (45)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -37,7 +37,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/mcp` |  | Manage MCP servers and authentication |
 | `/model` |  | Switch models or edit model settings |
 | `/notifications` |  | Review notifications and configure warning settings |
-| `/offload` | `/compact` | Summarize and offload older messages to free context |
+| `/offload` | `/compact` | Offload older messages or choose the summarization model |
 | `/plugins` |  | Manage plugins |
 | `/prompts` |  | Search and reuse a previous prompt |
 | `/quit` | `/q` | Exit app |
@@ -47,7 +47,6 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/rubric` | `/criteria` | Set explicit acceptance criteria for rubric grading |
 | `/scrollbar` |  | Show or hide the chat scrollbar |
 | `/skill-creator` |  | Create or refine agent skills |
-| `/summarization-model` |  | Set the model used for context-compaction summaries |
 | `/theme` |  | Change color theme |
 | `/threads` |  | Browse and resume past threads |
 | `/timestamps` |  | Show or hide message timestamps |

@@ -16462,8 +16462,8 @@ class TestInstallExtraModelSwitch:
         app = DeepAgentsApp()
         app._install_extra = AsyncMock(return_value=True)  # ty: ignore
         app._push_screen_wait = AsyncMock(return_value=AuthResult.SAVED)  # ty: ignore
-        dispatch = MagicMock()
-        app._dispatch_model_switch = dispatch  # ty: ignore
+        switch = AsyncMock()
+        monkeypatch.setattr(app, "_switch_model", switch)
         monkeypatch.setattr(
             "deepagents_code.model_config.get_provider_auth_status",
             lambda provider: ProviderAuthStatus(
@@ -16483,7 +16483,7 @@ class TestInstallExtraModelSwitch:
         app._push_screen_wait.assert_awaited_once()  # ty: ignore
         screen = app._push_screen_wait.await_args.args[0]  # ty: ignore
         assert isinstance(screen, AuthPromptScreen)
-        dispatch.assert_called_once_with(
+        switch.assert_awaited_once_with(
             "baseten:moonshotai/Kimi-K2.7-Code",
             extra_kwargs={"temperature": 0},
         )

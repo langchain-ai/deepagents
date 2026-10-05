@@ -24927,7 +24927,13 @@ class DeepAgentsApp(App):
         if not await self._prepare_model_provider(extra, model_spec):
             return
         if interactive:
-            self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
+            request = partial(
+                self._confirm_and_switch_model, model_spec, extra_kwargs=extra_kwargs
+            )
+            if not self._defer_model_selection("model_switch", request):
+                # Already running off the message pump. Keep confirmation and
+                # switching inside the worker or deferred action that owns them.
+                await request()
         else:
             await self._switch_model(model_spec, extra_kwargs=extra_kwargs)
 

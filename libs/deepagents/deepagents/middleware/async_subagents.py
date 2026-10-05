@@ -86,19 +86,7 @@ class AsyncSubAgent(TypedDict):
 
     - `isolated` (default): send only the delegated task description.
     - `fork`: send a snapshot of the parent's conversation at launch, followed
-        by the task description. Compacted history is represented by its summary;
-        unresolved delegation calls are omitted.
-
-    Both modes create a new thread on the target server without waiting for the
-    task to finish. Later messages in either thread are not copied to the other.
-
-    A fork copies conversation, not the parent's execution environment. The child
-    uses the remote agent's system prompt, tools, and runtime; parent state,
-    files, and permissions are not transferred. References to files, offloaded
-    results, or private URLs in the history may be inaccessible to the child.
-
-    Use `fork` only with a server trusted to receive the conversation and a remote
-    graph and model compatible with the inherited messages.
+        by the task description.
 
     !!! warning "Experimental"
 

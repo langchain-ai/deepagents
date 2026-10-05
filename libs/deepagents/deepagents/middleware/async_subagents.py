@@ -82,14 +82,23 @@ class AsyncSubAgent(TypedDict):
     """Additional headers to include in requests to the remote server."""
 
     mode: NotRequired[Literal["isolated", "fork"]]
-    """Use `fork` to seed a new remote thread with the parent's effective conversation.
+    """How much conversation context to send when starting a background task.
 
-    Defaults to `isolated`, which sends only the task description. A fork sends
-    a launch-time snapshot (including any summary) followed by the delegated task;
-    subsequent parent and child messages are independent. The remote agent keeps
-    its own system prompt, tools, and runtime. Other parent state is not forwarded.
-    Only enable this for servers trusted to receive the parent's conversation.
-    The inherited message history must be compatible with the remote agent's model.
+    - `isolated` (default): send only the delegated task description.
+    - `fork`: send a snapshot of the parent's conversation at launch, followed
+        by the task description. Compacted history is represented by its summary;
+        unresolved delegation calls are omitted.
+
+    Both modes create a new thread on the target server without waiting for the
+    task to finish. Later messages in either thread are not copied to the other.
+
+    A fork copies conversation, not the parent's execution environment. The child
+    uses the remote agent's system prompt, tools, and runtime; parent state,
+    files, and permissions are not transferred. References to files, offloaded
+    results, or private URLs in the history may be inaccessible to the child.
+
+    Use `fork` only with a server trusted to receive the conversation and a remote
+    graph and model compatible with the inherited messages.
 
     !!! warning "Experimental"
 

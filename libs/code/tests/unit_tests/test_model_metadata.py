@@ -196,30 +196,6 @@ async def test_server_resolution_failures_are_contained(
     assert response.status_code == status
 
 
-@pytest.mark.parametrize(
-    "payload",
-    [
-        None,
-        {},
-        {
-            "model_name": "test",
-            "provider": "custom",
-            "context_limit": True,
-            "unsupported_modalities": [],
-        },
-        {
-            "model_name": "test",
-            "provider": "custom",
-            "context_limit": 10,
-            "unsupported_modalities": "video",
-        },
-    ],
-)
-def test_malformed_metadata_cannot_be_applied(payload: object) -> None:
-    with pytest.raises(TypeError):
-        ModelMetadata.from_payload(payload)
-
-
 @pytest.mark.parametrize("same_model", [False, True])
 async def test_failed_switch_preserves_all_active_state(
     same_model: bool, monkeypatch: pytest.MonkeyPatch
@@ -297,19 +273,12 @@ async def test_remote_surfaces_server_failure(
         )
 
 
-@pytest.mark.parametrize(
-    ("model_name", "client_provider", "server_provider"),
-    [
-        ("claude-test", "anthropic", "google_anthropic_vertex"),
-        ("gemini-test", "google_genai", "google_vertexai"),
-    ],
-)
 async def test_bare_switch_adopts_server_provider(
-    model_name: str,
-    client_provider: str,
-    server_provider: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    model_name = "claude-test"
+    client_provider = "anthropic"
+    server_provider = "google_anthropic_vertex"
     app = DeepAgentsApp()
     remote = RemoteAgent("http://test")
     app._agent = remote

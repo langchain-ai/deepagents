@@ -682,6 +682,7 @@ class TestWorkspaceEnvironmentBinding:
             "provider": "openai",
             "context_limit": 4096,
             "unsupported_modalities": ["video"],
+            "structured_output": None,
         }
         # Each consumer read the workspace `.env`, not the server process env.
         assert seen["model"] == "from-workspace-dotenv"

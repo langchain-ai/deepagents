@@ -10415,31 +10415,6 @@ class TestRubricCommand:
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Max iterations cleared; using the SDK default." in rendered
 
-    async def test_set_rubric_model_auth_block_keeps_previous(self) -> None:
-        """A provider missing credentials must not change the grader model."""
-        app = DeepAgentsApp(agent=MagicMock())
-
-        class _BlockingAuth:
-            blocks_start = True
-            provider = "anthropic"
-
-            def missing_detail(self) -> str:
-                return "ANTHROPIC_API_KEY"
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._server_kwargs = {}
-            with patch(
-                "deepagents_code.model_config.get_provider_auth_status",
-                return_value=_BlockingAuth(),
-            ):
-                await app._set_rubric_model("anthropic:claude-sonnet-4-6")
-            await pilot.pause()
-
-            assert app._rubric_model is None
-            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
-            assert "Missing credentials" in rendered
-
     async def test_rubric_set_clears_stale_goal_tracking(self) -> None:
         """`/rubric set` must drop a stale status note and one-shot rubric."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -10591,10 +10566,11 @@ class TestRubricCommand:
             app._server_proc = MagicMock()
 
             with (
-                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
                 patch(
-                    "deepagents_code.model_config.get_provider_auth_status",
-                    return_value=None,
+                    "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
+                    return_value=SimpleNamespace(
+                        provider="openai", model_name="gpt-5.1"
+                    ),
                 ),
                 patch.object(
                     app,
@@ -10626,10 +10602,11 @@ class TestRubricCommand:
             app._lc_thread_id = "t-1"
 
             with (
-                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
                 patch(
-                    "deepagents_code.model_config.get_provider_auth_status",
-                    return_value=None,
+                    "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
+                    return_value=SimpleNamespace(
+                        provider="openai", model_name="gpt-5.1"
+                    ),
                 ),
                 patch.object(
                     app,
@@ -10659,10 +10636,11 @@ class TestRubricCommand:
             app._lc_thread_id = None
 
             with (
-                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
                 patch(
-                    "deepagents_code.model_config.get_provider_auth_status",
-                    return_value=None,
+                    "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
+                    return_value=SimpleNamespace(
+                        provider="openai", model_name="gpt-5.1"
+                    ),
                 ),
                 patch.object(
                     app, "_persist_goal_rubric_state", new_callable=AsyncMock
@@ -10687,10 +10665,11 @@ class TestRubricCommand:
             app._rubric_model_recorded = True
 
             with (
-                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
                 patch(
-                    "deepagents_code.model_config.get_provider_auth_status",
-                    return_value=None,
+                    "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
+                    return_value=SimpleNamespace(
+                        provider="openai", model_name="gpt-5.1"
+                    ),
                 ),
                 patch.object(
                     app,
@@ -10721,8 +10700,11 @@ class TestRubricCommand:
 
             with (
                 patch(
-                    "deepagents_code.app._create_model_with_deepagents_import_lock"
-                ) as create_model,
+                    "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
+                    return_value=SimpleNamespace(
+                        provider="openai", model_name="gpt-5.1"
+                    ),
+                ) as resolve_model,
                 patch(
                     "deepagents_code.model_config.get_provider_auth_status",
                 ) as get_auth_status,
@@ -10740,7 +10722,7 @@ class TestRubricCommand:
             assert app._rubric_model_recorded is True
             persist.assert_awaited_once_with()
             get_auth_status.assert_not_called()
-            create_model.assert_not_called()
+            resolve_model.assert_awaited_once_with("openai:gpt-5.1")
 
 
 class TestAutoClassifierModelCommand:
@@ -10825,10 +10807,13 @@ class TestAutoClassifierModelCommand:
             app._server_proc = MagicMock()
 
             with (
-                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
                 patch(
-                    "deepagents_code.model_config.get_provider_auth_status",
-                    return_value=None,
+                    "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
+                    return_value=SimpleNamespace(
+                        provider="openai",
+                        model_name="gpt-5.5-mini",
+                        structured_output=None,
+                    ),
                 ),
             ):
                 await app._handle_command("/auto model openai:gpt-5.5-mini")
@@ -10848,10 +10833,13 @@ class TestAutoClassifierModelCommand:
         async with app.run_test() as pilot:
             await pilot.pause()
             with (
-                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
                 patch(
-                    "deepagents_code.model_config.get_provider_auth_status",
-                    return_value=None,
+                    "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
+                    return_value=SimpleNamespace(
+                        provider="openai",
+                        model_name="gpt-5.5-mini",
+                        structured_output=None,
+                    ),
                 ),
             ):
                 await app._set_auto_classifier_model(
@@ -10882,10 +10870,13 @@ class TestAutoClassifierModelCommand:
         async with app.run_test() as pilot:
             await pilot.pause()
             with (
-                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
                 patch(
-                    "deepagents_code.model_config.get_provider_auth_status",
-                    return_value=None,
+                    "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
+                    return_value=SimpleNamespace(
+                        provider="openai",
+                        model_name="gpt-5.5-mini",
+                        structured_output=None,
+                    ),
                 ),
             ):
                 await app._set_auto_classifier_model(
@@ -10913,7 +10904,7 @@ class TestAutoClassifierModelCommand:
             app._auto_classifier_model = startup_spec
             app._server_kwargs = {"auto_classifier_model": startup_spec}
             with patch(
-                "deepagents_code.app._create_model_with_deepagents_import_lock"
+                "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model"
             ) as create_model:
                 await app._handle_command("/auto model :")
             await pilot.pause()
@@ -10954,10 +10945,13 @@ class TestAutoClassifierModelCommand:
             await app._set_auto_classifier_model(None)
 
             with (
-                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
                 patch(
-                    "deepagents_code.model_config.get_provider_auth_status",
-                    return_value=None,
+                    "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
+                    return_value=SimpleNamespace(
+                        provider="openai",
+                        model_name="gpt-5.5-mini",
+                        structured_output=None,
+                    ),
                 ),
             ):
                 await app._set_auto_classifier_model("openai:gpt-5.5-mini")
@@ -11007,12 +11001,8 @@ class TestAutoClassifierModelCommand:
 
             with (
                 patch(
-                    "deepagents_code.app._create_model_with_deepagents_import_lock",
+                    "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
                     side_effect=RuntimeError("no provider package"),
-                ),
-                patch(
-                    "deepagents_code.model_config.get_provider_auth_status",
-                    return_value=None,
                 ),
             ):
                 await app._handle_command("/auto model openai:missing-model")
@@ -11021,31 +11011,6 @@ class TestAutoClassifierModelCommand:
             assert app._auto_classifier_model is None
             assert "auto_classifier_model" not in app._server_kwargs
             assert app.query(ErrorMessage)
-
-    async def test_set_auto_classifier_model_auth_block_keeps_previous(self) -> None:
-        """A provider missing credentials must not become the classifier."""
-        app = DeepAgentsApp(agent=MagicMock())
-
-        class _BlockingAuth:
-            blocks_start = True
-            provider = "anthropic"
-
-            def missing_detail(self) -> str:
-                return "ANTHROPIC_API_KEY"
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._server_kwargs = {}
-            with patch(
-                "deepagents_code.model_config.get_provider_auth_status",
-                return_value=_BlockingAuth(),
-            ):
-                await app._set_auto_classifier_model("anthropic:claude-haiku-4-5")
-            await pilot.pause()
-
-            assert app._auto_classifier_model is None
-            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
-            assert "Missing credentials" in rendered
 
 
 class TestBuildAgentErrorBody:

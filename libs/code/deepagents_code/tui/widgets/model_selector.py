@@ -21,10 +21,13 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from textual.app import ComposeResult
     from textual.timer import Timer
+
+    from deepagents_code.model_catalog import ModelCatalog
+    from deepagents_code.model_metadata import ModelMetadata
 
 from deepagents_code import _env_vars, theme
 from deepagents_code._paths import PATHS
@@ -34,20 +37,18 @@ from deepagents_code.model_config import (
     CODEX_PROVIDER,
     MANAGED_CONFIG_SOURCE,
     ModelConfig,
-    ModelNotAllowedError,
     ModelProfileEntry,
     ModelSpec,
     ProviderAuthState,
     ProviderAuthStatus,
     clear_auto_classifier_model,
     clear_default_model,
-    get_available_models,
+    clear_summarization_model,
     get_credential_env_var,
-    get_model_profiles,
-    get_provider_auth_status,
     load_recent_models,
     save_auto_classifier_model,
     save_default_model,
+    save_summarization_model,
 )
 from deepagents_code.tui.widgets._copy_spans import copy_span_style, copy_span_target
 
@@ -193,8 +194,8 @@ MAIN_MODEL_DEFAULT_SCOPE = DefaultModelScope(
 )
 """Ctrl+S target for `/model`: the main agent model (`[models].default`).
 
-Persisting is validation-free, but `action_set_default` refuses rows whose
-provider integration is not installed (those can never build). `-M/--model`
+App-owned pickers validate through the inference host before persisting, and
+`action_set_default` refuses rows whose provider integration is missing. `-M/--model`
 outranks this key for a single launch.
 """
 
@@ -209,9 +210,9 @@ AUTO_CLASSIFIER_DEFAULT_SCOPE = DefaultModelScope(
 """Ctrl+S target for `/auto model`: the Auto approval classifier
 (`[models].auto_classifier`).
 
-Persisting is validation-free and, as with `/model`'s Ctrl+S,
-`action_set_default` refuses rows whose provider integration is not installed
-(those can never build). A stored classifier that cannot be built for any other
+As with `/model`, app-owned pickers validate through the inference host before
+persisting. `action_set_default` refuses rows whose provider integration is missing.
+A stored classifier that cannot be built for any other
 reason fails closed at review time — those actions are denied and repeated
 failures escalate to human approval — rather than quietly reverting to the main
 agent model.
@@ -223,6 +224,16 @@ in force. `action_set_default` says so in its success toast when the export is
 set, since otherwise a stored spec that changes nothing still renders
 `(default)`.
 """
+
+
+SUMMARIZATION_DEFAULT_SCOPE = DefaultModelScope(
+    noun="default summarization model",
+    hint="set summarization default",
+    load=lambda: ModelConfig.load().summarization_default_model,
+    save=save_summarization_model,
+    clear=clear_summarization_model,
+)
+"""Ctrl+S target for compaction summaries (`[models].summarization_default`)."""
 
 
 class _ModelData(NamedTuple):
@@ -238,6 +249,7 @@ class _ModelData(NamedTuple):
             `~/.deepagents/.state/recent_models.json`.
         install_extras: Each surfaced-but-uninstalled provider mapped to the
             extra that installs it.
+        catalog: Inference-host readiness, presentation, and policy metadata.
     """
 
     all_models: list[tuple[str, str]]
@@ -245,6 +257,7 @@ class _ModelData(NamedTuple):
     profiles: Mapping[str, ModelProfileEntry]
     recent_specs: list[str]
     install_extras: dict[str, str]
+    catalog: ModelCatalog | None = None
 
 
 class ModelOption(Static):
@@ -515,6 +528,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         default_scope: DefaultModelScope | None,
         check_provider_requirements: bool = True,
         result_callback: Callable[[tuple[str, str] | None], None] | None = None,
+        catalog_loader: Callable[[Sequence[str], str | None], Awaitable[ModelCatalog]]
+        | None = None,
+        resolve_model: Callable[[str], Awaitable[ModelMetadata]] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
 
@@ -548,6 +564,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 and credentials before returning a selection.
             result_callback: Optional callback for selector results when the
                 screen is displayed without a `push_screen` result callback.
+            catalog_loader: Load discovery and readiness from the inference host.
+                Without it, use the shared loader in the current process.
+            resolve_model: Validate and normalize a choice before persisting it.
         """
         super().__init__()
         self._current_model = current_model
@@ -565,6 +584,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._default_scope = default_scope
         self._check_provider_requirements = check_provider_requirements
         self._result_callback = result_callback
+        self._catalog_loader = catalog_loader
+        self._resolve_model = resolve_model
+        self._catalog: ModelCatalog | None = None
+        self._catalog_config: ModelConfig | None = None
         # Standard /model defaults to the curated recommended subset so users
         # face less decision fatigue; onboarding (`curated=True`) already
         # constrains the list via `_curated`, so leaving this False there
@@ -600,7 +623,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._options_container: Container | None = None
         self._option_widgets: list[ModelOption] = []
         self._filter_text = ""
-        self._current_spec: str | None = None
+        self._current_spec: str | None = current_model
         if current_model and current_provider:
             self._current_spec = f"{current_provider}:{current_model}"
         self._default_spec: str | None = None
@@ -793,79 +816,36 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             A `_ModelData` bundle of the discovered models, default spec,
                 profiles, recent specs, and install-required provider extras.
         """
-        available = get_available_models()
-        config = ModelConfig.load()
-        all_models: list[tuple[str, str]] = [
-            (f"{provider}:{model}", provider)
-            for provider, models in available.items()
-            for model in models
-        ]
+        from deepagents_code.model_catalog import load_model_catalog
 
-        install_extras: dict[str, str] = {}
-        if include_uninstalled:
-            from deepagents_code.config_manifest import (
-                is_provider_package_installed,
-                provider_install_extra,
-            )
+        catalog = load_model_catalog(
+            profile_overrides=cli_override,
+            recommended_models=(
+                tuple(
+                    _RECOMMENDED_MODELS
+                    if recommended_models is None
+                    else recommended_models
+                )
+                if include_uninstalled
+                else ()
+            ),
+            current_spec=current_spec,
+        )
+        return ModelSelectorScreen._catalog_model_data(
+            catalog,
+            include_recent=include_recent,
+            default_scope=default_scope,
+        )
 
-            # Seeded from the discovered models; a recommended spec already
-            # surfaced here is skipped below. Recommended specs are unique (dict
-            # keys iterated once), so this entry guard is the only dedup needed
-            # and the set never has to grow inside the loop.
-            existing_specs = {spec for spec, _ in all_models}
-            installed_recommended: list[tuple[str, str]] = []
-            uninstalled_recommended: list[tuple[str, str]] = []
-            recommendations = (
-                _RECOMMENDED_MODELS
-                if recommended_models is None
-                else recommended_models
-            )
-            for spec in sorted(recommendations):
-                if spec in existing_specs or not config.is_model_allowed(spec):
-                    continue
-                provider = spec.split(":", 1)[0]
-                try:
-                    if not config.is_provider_enabled(provider):
-                        continue
-                    extra = provider_install_extra(provider)
-                    provider_installed = is_provider_package_installed(provider)
-                except Exception:
-                    # Isolate per-provider probe failures so one bad recommended
-                    # provider can't take down the entire model list (the caller
-                    # degrades any raise here to an empty selector). The append
-                    # bookkeeping below stays outside this guard so genuine logic
-                    # bugs surface instead of being silently swallowed.
-                    logger.warning(
-                        "Skipping recommended model %r while merging "
-                        "recommendations into the model list",
-                        spec,
-                        exc_info=True,
-                    )
-                    continue
-                if provider in available and provider_installed:
-                    # Provider is installed and discoverable, but its upstream
-                    # profiles don't surface this curated model (missing entry
-                    # or filtered out). Add it as a normal selectable row so the
-                    # hardcoded recommendation isn't silently dropped when the
-                    # profile list lags.
-                    installed_recommended.append((spec, provider))
-                    continue
-                if extra is None or provider_installed:
-                    continue
-                install_extras[provider] = extra
-                uninstalled_recommended.append((spec, provider))
-            all_models.extend(installed_recommended)
-            all_models.extend(uninstalled_recommended)
-
-        if (
-            current_spec
-            and config.is_model_allowed(current_spec)
-            and all(spec != current_spec for spec, _ in all_models)
-        ):
-            provider = current_spec.split(":", 1)[0]
-            all_models.append((current_spec, provider))
-
-        profiles = get_model_profiles(cli_override=cli_override)
+    @staticmethod
+    def _catalog_model_data(
+        catalog: ModelCatalog,
+        *,
+        include_recent: bool,
+        default_scope: DefaultModelScope | None,
+    ) -> _ModelData:
+        """Return inference-host discovery with the user's local preferences."""
+        config = catalog.presentation_config()
         recent_specs = load_recent_models() if include_recent else []
         stored_default = default_scope.load() if default_scope is not None else None
         if stored_default is not None:
@@ -890,12 +870,37 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             )
             stored_default = None
         return _ModelData(
-            all_models,
+            [(spec, spec.split(":", 1)[0]) for spec in catalog.models],
             stored_default,
-            profiles,
+            catalog.profile_entries(),
             recent_specs,
-            install_extras,
+            {
+                provider: info.install_extra
+                for provider, info in catalog.providers.items()
+                if info.install_extra is not None
+            },
+            catalog,
         )
+
+    def _presentation_config(self) -> ModelConfig:
+        """Return catalog policy and labels when discovery is server-backed."""
+        if self._catalog_config is not None:
+            return self._catalog_config
+        if self._catalog_loader is not None:
+            return ModelConfig()
+        return ModelConfig.load()
+
+    def _provider_status(self, provider: str) -> ProviderAuthStatus:
+        """Return readiness reported by the inference host."""
+        if self._catalog is not None and provider in self._catalog.providers:
+            return self._catalog.providers[provider].auth_status(provider)
+        if self._catalog_loader is not None:
+            return ProviderAuthStatus(
+                state=ProviderAuthState.UNKNOWN, provider=provider
+            )
+        from deepagents_code.model_catalog import get_provider_auth_status
+
+        return get_provider_auth_status(provider)
 
     def _apply_subset(
         self,
@@ -990,22 +995,32 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         # Offload to thread because get_available_models does filesystem I/O
         try:
-            data = await asyncio.to_thread(
-                self._load_model_data,
-                self._cli_profile_override,
-                include_uninstalled=True,
-                include_recent=self._include_recent_models and not self._curated,
-                recommended_models=self._recommended_models,
-                current_spec=self._current_spec,
-                default_scope=self._default_scope,
-            )
+            if self._catalog_loader is not None:
+                catalog = await self._catalog_loader(
+                    tuple(self._recommended_models), self._current_spec
+                )
+                data = await asyncio.to_thread(
+                    self._catalog_model_data,
+                    catalog,
+                    include_recent=self._include_recent_models and not self._curated,
+                    default_scope=self._default_scope,
+                )
+            else:
+                data = await asyncio.to_thread(
+                    self._load_model_data,
+                    self._cli_profile_override,
+                    include_uninstalled=True,
+                    include_recent=self._include_recent_models and not self._curated,
+                    recommended_models=self._recommended_models,
+                    current_spec=self._current_spec,
+                    default_scope=self._default_scope,
+                )
         except Exception:
             logger.exception("Failed to load model data for /model selector")
             self._loaded = True
             if self.is_running:
                 self.notify(
-                    "Could not load model list. "
-                    "Check provider packages and config.toml.",
+                    "Could not load model list. Check the connection and retry.",
                     severity="error",
                     timeout=10,
                     markup=False,
@@ -1018,6 +1033,18 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if not self.is_running:
             return
 
+        self._catalog = data.catalog
+        self._catalog_config = (
+            data.catalog.presentation_config() if data.catalog else None
+        )
+        if data.catalog is not None and data.catalog.current_spec:
+            self._current_spec = data.catalog.current_spec
+            parsed = ModelSpec.try_parse(self._current_spec)
+            if parsed:
+                self._current_provider, self._current_model = (
+                    parsed.provider,
+                    parsed.model,
+                )
         self._unfiltered_models = data.all_models
         self._default_spec = data.default_spec
         self._profiles = data.profiles
@@ -1127,7 +1154,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # existing muscle-memory queries keep working.
         from deepagents_code.tui.widgets.auth import provider_display_name
 
-        config = ModelConfig.load()
+        config = self._presentation_config()
         provider_labels: dict[str, str] = {}
 
         # Resolve the display labels up front, *outside* the try below. That
@@ -1278,7 +1305,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 )
             else:
                 typed = self._filter_text.strip()
-                policy = ModelConfig.load()
+                policy = self._presentation_config()
                 # Blame the policy only when the user typed something that
                 # resolves to a real model and the policy rejects it. `typed`
                 # is filter text, so an empty box or a substring ("clade",
@@ -1287,7 +1314,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 # filter would make this branch fire for every allowlist.
                 # Canonicalizing also judges a supported bare name the way
                 # `create_model` will judge it.
-                canonical = policy.canonical_model_spec(typed) if typed else None
+                canonical = (
+                    typed
+                    if self._catalog_loader is not None and ":" in typed
+                    else policy.canonical_model_spec(typed)
+                    if typed and self._catalog_loader is None
+                    else None
+                )
                 blocked_spec = canonical is not None and not policy.is_model_allowed(
                     canonical
                 )
@@ -1367,7 +1400,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         # Resolve provider auth upfront so it can both drive the
         # availability-first ordering below and feed the widget-building loop.
-        auth_statuses = {p: get_provider_auth_status(p) for p in by_provider}
+        auth_statuses = {p: self._provider_status(p) for p in by_provider}
 
         # In the default (unfiltered) view, float providers the user can
         # actually use to the top so a usable model is reachable without
@@ -1461,7 +1494,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # user-configured `display_name` before the built-in map.
         from deepagents_code.tui.widgets.auth import provider_display_name
 
-        config = ModelConfig.load()
+        config = self._presentation_config()
 
         for provider, model_entries in by_provider.items():
             # Provider header; auth/readiness indicator appended only when non-empty.
@@ -1596,7 +1629,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         if show_provider:
             from deepagents_code.tui.widgets.auth import provider_short_name
 
-            provider_label = provider_short_name(provider)
+            provider_label = provider_short_name(provider, self._presentation_config())
         # `_show_specs` (Ctrl+N) renders the raw `provider:model` spec instead
         # of the friendly name; `display_name=None` makes `_format_option_label`
         # fall back to the spec and drop the redundant `(provider)` tag, which
@@ -2019,8 +2052,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         custom_input = filter_input.value.strip()
 
         blocked = (
-            ModelConfig.load().policy_error(custom_input, canonicalize=True)
-            if custom_input
+            self._presentation_config().policy_error(custom_input, canonicalize=True)
+            if custom_input and self._catalog_loader is None
             else None
         )
         if blocked is not None:
@@ -2057,8 +2090,22 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             provider_install_extra,
         )
 
-        extra = provider_install_extra(provider)
-        if extra is not None and not is_provider_package_installed(provider):
+        info = (
+            self._catalog.providers.get(provider) if self._catalog is not None else None
+        )
+        extra = (
+            info.install_extra
+            if info is not None
+            else (
+                provider_install_extra(provider)
+                if self._catalog_loader is None
+                else None
+            )
+        )
+        missing_package = extra is not None and (
+            info is not None or not is_provider_package_installed(provider)
+        )
+        if missing_package:
             if self._curated:
                 # Onboarding installs first, then prompts for credentials from the
                 # launch flow, matching the dependency screen's auto-install copy.
@@ -2067,7 +2114,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             self._prompt_install_provider(model_spec, provider, extra)
             return
 
-        status = get_provider_auth_status(provider)
+        status = self._provider_status(provider)
         if not status.blocks_start:
             self._dismiss_with_result((model_spec, provider))
             return
@@ -2305,8 +2352,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 _fail(f"Failed to clear {noun}", write_remedy)
         else:
             try:
+                if self._resolve_model is not None:
+                    metadata = await self._resolve_model(model_spec)
+                    model_spec = f"{metadata.provider}:{metadata.model_name}"
                 saved = await asyncio.to_thread(scope.save, model_spec)
-            except ModelNotAllowedError as exc:
+            except Exception as exc:
+                logger.exception(
+                    "Failed to validate or save model default %s", model_spec
+                )
                 # Not an I/O failure, so `write_remedy` would misdiagnose it.
                 _fail(f"Cannot store {noun}", str(exc), persistent=False)
                 return

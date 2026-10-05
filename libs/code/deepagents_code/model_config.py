@@ -4204,6 +4204,34 @@ def save_auto_classifier_model(
     return _save_model_field("auto_classifier", model_spec, config_path)
 
 
+def save_summarization_model(model_spec: str, config_path: Path | None = None) -> bool:
+    """Persist the default model for compaction summaries.
+
+    Args:
+        model_spec: Validated model specification to store.
+        config_path: Config file; production callers use the active profile.
+
+    Returns:
+        Whether the preference was saved.
+
+    Raises:
+        ModelNotAllowedError: If policy excludes the model.
+    """  # noqa: DOC502 - propagates from `_save_model_field`
+    return _save_model_field("summarization_default", model_spec, config_path)
+
+
+def clear_summarization_model(config_path: Path | None = None) -> bool:
+    """Clear the stored summary model so future sessions inherit the main model.
+
+    Args:
+        config_path: Config file; production callers use the active profile.
+
+    Returns:
+        Whether the preference was cleared.
+    """
+    return _clear_model_field("summarization_default", config_path)
+
+
 def clear_default_model(config_path: Path | None = None) -> bool:
     """Remove the default model from the config file.
 

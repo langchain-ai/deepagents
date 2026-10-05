@@ -149,3 +149,78 @@ async def model_metadata(request: Request) -> JSONResponse:
             },
             status_code=503,
         )
+
+
+async def model_catalog(request: Request) -> JSONResponse:
+    """Discover selectable models in a thread's bound inference environment.
+
+    Args:
+        request: Catalog request, including workspace binding and model purpose.
+
+    Returns:
+        A catalog containing only model presentation and readiness metadata.
+    """
+    from deepagents_code.server_graph import (
+        _resolve_bound_workspace_config,
+        _workspace_runtime,
+    )
+
+    try:
+        body = await request.json()
+        if not isinstance(body, dict) or body.keys() - {
+            "workspace",
+            "purpose",
+            "recommended_models",
+            "current_spec",
+        }:
+            return JSONResponse(
+                {"detail": "Invalid model catalog request."}, status_code=422
+            )
+        purpose = body.get("purpose", "main")
+        recommendations = body.get("recommended_models", [])
+        current_spec = body.get("current_spec")
+        if (
+            not isinstance(purpose, str)
+            or purpose not in {"main", "auxiliary"}
+            or not isinstance(recommendations, list)
+            or not all(isinstance(spec, str) for spec in recommendations)
+            or (current_spec is not None and not isinstance(current_spec, str))
+        ):
+            return JSONResponse(
+                {"detail": "Invalid model catalog parameters."}, status_code=422
+            )
+        binding = await require_thread_workspace(
+            request.path_params["thread_id"], body.get("workspace")
+        )
+        runtime = await _workspace_runtime(binding)
+        config = await _resolve_bound_workspace_config(binding)
+        if runtime.model_environment is None:
+            return JSONResponse(
+                {"detail": "Model environment is unavailable."}, status_code=503
+            )
+
+        def discover() -> dict[str, object]:
+            from deepagents_code.config import use_environment
+            from deepagents_code.model_catalog import load_model_catalog
+
+            with use_environment(runtime.model_environment):
+                catalog = load_model_catalog(
+                    profile_overrides=config.profile_overrides
+                    if purpose == "main"
+                    else None,
+                    recommended_models=recommendations,
+                    current_spec=current_spec,
+                )
+            return catalog.model_dump(mode="json")
+
+        return JSONResponse(await asyncio.to_thread(discover))
+    except WorkspaceConflictError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+    except (ModelConfigError, TypeError, ValueError) as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+    except (Exception, SystemExit):
+        logger.exception("Server model catalog discovery failed")
+        return JSONResponse(
+            {"detail": "Model catalog is unavailable. Check the server log and retry."},
+            status_code=503,
+        )

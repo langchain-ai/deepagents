@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from deepagents_code.client.session_cost import SessionCost
     from deepagents_code.cost_tracking import CostBreakdown
     from deepagents_code.mcp_tools import MCPServerInfo
+    from deepagents_code.model_catalog import ModelCatalog
     from deepagents_code.model_metadata import ModelMetadata, ModelPurpose
     from deepagents_code.offload_middleware import OffloadResult
     from deepagents_code.workspace_diagnostics import WorkspaceDiagnostics
@@ -417,6 +418,43 @@ class RemoteAgent:
             msg = "Startup model metadata timed out. Restart the server and retry."
             raise RuntimeError(msg) from exc
         return ModelMetadata.from_payload(response)
+
+    async def aget_model_catalog(
+        self,
+        config: Mapping[str, Any],
+        *,
+        purpose: ModelPurpose = "main",
+        recommended_models: Sequence[str] = (),
+        current_spec: str | None = None,
+    ) -> ModelCatalog:
+        """Load discovery, readiness, and profiles from the inference host.
+
+        Args:
+            config: Thread configuration used to bind the workspace.
+            purpose: Which role's profile overrides apply.
+            recommended_models: Known models to include alongside discovery.
+            current_spec: Active model to retain in the catalog.
+
+        Returns:
+            Validated provider-independent catalog data.
+        """
+        from deepagents_code.model_catalog import ModelCatalog
+
+        async def discover() -> ModelCatalog:
+            workspace = await self._workspace_for_thread(config)
+            thread_id = _require_thread_id(config)
+            payload = await self._get_graph().client.http.post(
+                f"/dcode/threads/{thread_id}/models",
+                json={
+                    "workspace": workspace,
+                    "purpose": purpose,
+                    "recommended_models": list(recommended_models),
+                    "current_spec": current_spec,
+                },
+            )
+            return ModelCatalog.model_validate(payload)
+
+        return await asyncio.wait_for(discover(), timeout=60)
 
     async def aresolve_model(
         self,

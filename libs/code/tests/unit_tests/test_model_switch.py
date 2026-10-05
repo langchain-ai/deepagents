@@ -1,8 +1,9 @@
 """Tests for model switching functionality."""
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -932,48 +933,52 @@ class TestSummarizationModelCommand:
         screen = push.call_args.args[0]
         assert screen._current_provider == "openai"
         assert screen._current_model == "gpt-5.4-mini"
-        assert screen._default_scope is None
+        from deepagents_code.tui.widgets.model_selector import (
+            SUMMARIZATION_DEFAULT_SCOPE,
+        )
+
+        assert screen._default_scope is SUMMARIZATION_DEFAULT_SCOPE
         assert screen._check_provider_requirements is True
 
-    async def test_selector_resolves_bare_summarization_model_provider(self) -> None:
-        """Bare startup specs still identify the active picker row."""
-        app = DeepAgentsApp(summarization_model="gpt-5.4-mini")
-
-        with patch.object(app, "push_screen") as push:
-            await app._show_summarization_model_selector()
-
-        screen = push.call_args.args[0]
-        assert screen._current_provider == "openai"
-        assert screen._current_model == "gpt-5.4-mini"
-
-    async def test_selector_replaces_in_flight_selection_worker(self) -> None:
-        """The latest picker result cancels an older validation worker."""
+    async def test_selector_preserves_in_flight_provider_setup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second selection must not cancel an installation already running."""
         app = DeepAgentsApp()
+        host = App()
+        started = asyncio.Event()
+        release = asyncio.Event()
+        completed: list[str] = []
 
+        async def apply_selection(spec: str, _extra: str | None) -> None:
+            if spec == "custom:first":
+                started.set()
+                await release.wait()
+            completed.append(spec)
+
+        monkeypatch.setattr(app, "run_worker", host.run_worker)
+        monkeypatch.setattr(
+            app, "_apply_summarization_model_selection", apply_selection
+        )
         with (
             patch.object(app, "push_screen") as push,
-            patch.object(app, "run_worker") as run_worker,
             patch.object(
                 app,
                 "call_after_refresh",
                 side_effect=lambda callback: callback(),
             ),
-            patch.object(
-                app,
-                "_apply_summarization_model_selection",
-                new_callable=AsyncMock,
-            ) as apply_selection,
         ):
-            await app._show_summarization_model_selector()
-            handle_result = push.call_args.args[1]
-            handle_result(("openai:gpt-5.6-sol", "openai"))
+            async with host.run_test() as pilot:
+                await app._show_summarization_model_selector()
+                handle_result = push.call_args.args[1]
+                handle_result(("custom:first", "custom"))
+                await asyncio.wait_for(started.wait(), timeout=2)
+                handle_result(("custom:second", "custom"))
+                await pilot.pause()
+                release.set()
+                await host.workers.wait_for_complete()
 
-            run_worker.assert_called_once()
-            assert run_worker.call_args.kwargs["exclusive"] is True
-            assert run_worker.call_args.kwargs["group"] == "summarization-model"
-            await run_worker.call_args.args[0]
-
-        apply_selection.assert_awaited_once_with("openai:gpt-5.6-sol", None)
+        assert set(completed) == {"custom:first", "custom:second"}
 
     async def test_external_remote_selector_skips_local_provider_requirements(
         self,
@@ -1133,3 +1138,109 @@ class _StatusBarHarness(App[None]):
     def compose(self) -> ComposeResult:
         """Yield a single status bar."""
         yield StatusBar(id="status-bar")
+
+
+@pytest.mark.parametrize("role", ["main", "summarization", "auto", "goal", "rubric"])
+@pytest.mark.parametrize("authenticated", [False, True])
+async def test_every_picker_defers_install_and_requires_authentication(
+    role: Literal["main", "summarization", "auto", "goal", "rubric"],
+    authenticated: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.model_metadata import ModelMetadata
+
+    app = DeepAgentsApp()
+    remote = _make_remote_agent()
+    app._agent = remote
+    app._server_kwargs = {}
+    app._lc_thread_id = "thread"
+    app._agent_running = True
+    app._model_override = "custom:main"
+    app._summarization_model_override = "custom:summary"
+    app._auto_classifier_model = "custom:classifier"
+    app._rubric_model = "custom:grader"
+    app._rubric_model_recorded = True
+    install = AsyncMock(return_value=True)
+    authenticate = AsyncMock(return_value=authenticated)
+    monkeypatch.setattr(app, "_install_extra", install)
+    monkeypatch.setattr(app, "_prompt_model_auth_if_needed", authenticate)
+    monkeypatch.setattr(app, "_mount_message", AsyncMock())
+    monkeypatch.setattr(app, "notify", Mock())
+    monkeypatch.setattr(app, "_restore_effort_override", AsyncMock())
+    monkeypatch.setattr(app, "_persist_goal_rubric_state", AsyncMock(return_value=True))
+    monkeypatch.setattr(
+        remote, "aresolve_model", AsyncMock(return_value=ModelMetadata("new", "custom"))
+    )
+    monkeypatch.setattr(model_config, "save_recent_model", Mock(return_value=True))
+    monkeypatch.setattr(model_config, "touch_recent_model", Mock())
+    previous = (
+        app._model_override,
+        app._summarization_model_override,
+        app._auto_classifier_model,
+        app._rubric_model,
+    )
+
+    if role == "main":
+        await app._install_extra_then_switch(
+            "test-extra", "custom:new", interactive=False
+        )
+    else:
+        await app._apply_auxiliary_model_selection(
+            "custom:new", "test-extra", role=role
+        )
+    install.assert_not_awaited()
+    assert len(app._deferred_actions) == 1
+    app._agent_running = False
+    await app._deferred_actions.pop().execute()
+
+    install.assert_awaited_once_with("test-extra", auto_restart=True)
+    authenticate.assert_awaited_once_with("custom:new")
+    expected = list(previous)
+    if authenticated:
+        index = {"main": 0, "summarization": 1, "auto": 2, "goal": 3, "rubric": 3}[role]
+        expected[index] = "custom:new"
+    assert [
+        app._model_override,
+        app._summarization_model_override,
+        app._auto_classifier_model,
+        app._rubric_model,
+    ] == expected
+
+
+@pytest.mark.parametrize(
+    "command", ["/summarization-model", "/auto model", "/goal model", "/rubric model"]
+)
+async def test_clearing_auxiliary_choices_waits_for_active_turn(
+    command: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    remote = _make_remote_agent()
+    app._agent = remote
+    app._lc_thread_id = "thread"
+    app._agent_running = True
+    app._summarization_model_override = "custom:old"
+    app._auto_classifier_model = "custom:old"
+    app._rubric_model = "custom:old"
+    app._rubric_model_recorded = True
+    monkeypatch.setattr(app, "notify", Mock())
+    monkeypatch.setattr(app, "_mount_message", AsyncMock())
+    monkeypatch.setattr(app, "_persist_goal_rubric_state", AsyncMock(return_value=True))
+    resolve = AsyncMock()
+    monkeypatch.setattr(remote, "aresolve_model", resolve)
+
+    await app._handle_command(f"{command} clear")
+    assert app._summarization_model_override == "custom:old"
+    assert app._auto_classifier_model == "custom:old"
+    assert app._rubric_model == "custom:old"
+    app._agent_running = False
+    await app._deferred_actions.pop().execute()
+    if command == "/summarization-model":
+        assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
+    elif command == "/auto model":
+        assert app._auto_classifier_model is None
+        assert app._auto_classifier_model_cleared
+    else:
+        assert app._rubric_model is None
+        assert app._rubric_model_recorded
+    resolve.assert_not_awaited()

@@ -12,7 +12,7 @@ from deepagents_code.client.remote_client import RemoteAgent
 from deepagents_code.config import runtime_state
 from deepagents_code.model_api import model_metadata
 from deepagents_code.model_config import ModelConfigError
-from deepagents_code.model_metadata import ModelMetadata
+from deepagents_code.model_metadata import ModelMetadata, ModelPurpose
 from deepagents_code.workspace import WorkspaceConflictError
 
 
@@ -513,3 +513,89 @@ def test_invalid_structured_output_metadata_is_rejected() -> None:
     payload["structured_output"] = "false"
     with pytest.raises(TypeError, match="structured output"):
         ModelMetadata.from_payload(payload)
+
+
+@pytest.mark.parametrize("purpose", ["main", "auxiliary"])
+async def test_catalog_uses_workspace_environment_and_filters_profile_extensions(
+    purpose: ModelPurpose,
+    model_runtime: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents_code.config import active_environment
+    from deepagents_code.model_api import model_catalog
+    from deepagents_code.model_config import (
+        ModelConfig,
+        ProviderAuthState,
+        ProviderAuthStatus,
+    )
+
+    model_runtime.model_environment = {"MODEL_VERSION": "server"}
+    monkeypatch.setattr(
+        "deepagents_code.model_catalog.ModelConfig.load",
+        Mock(return_value=ModelConfig()),
+    )
+
+    def available() -> dict[str, list[str]]:
+        return {active_environment()["MODEL_VERSION"]: ["test"]}
+
+    def profiles(*, cli_override: dict[str, object] | None) -> dict[str, object]:
+        return {
+            "server:test": {
+                "profile": {
+                    "max_input_tokens": cli_override["max_input_tokens"]
+                    if cli_override
+                    else 2048,
+                    "private_extension": "must stay on the server",
+                },
+                "overridden_keys": frozenset({"max_input_tokens"})
+                if cli_override
+                else frozenset(),
+            }
+        }
+
+    monkeypatch.setattr("deepagents_code.model_catalog.get_available_models", available)
+    monkeypatch.setattr("deepagents_code.model_catalog.get_model_profiles", profiles)
+    monkeypatch.setattr(
+        "deepagents_code.model_catalog.get_provider_auth_status",
+        lambda provider: ProviderAuthStatus(
+            state=ProviderAuthState.NOT_REQUIRED,
+            provider=provider,
+        ),
+    )
+    remote = RemoteAgent("http://test")
+    monkeypatch.setattr(remote, "_workspace_for_thread", AsyncMock(return_value={}))
+
+    async def post(_path: str, *, json: dict[str, object]) -> dict[str, object]:
+        response = await model_catalog(_request(json))
+        assert response.status_code == 200
+        import json as json_module
+
+        return json_module.loads(bytes(response.body))
+
+    monkeypatch.setattr(
+        remote,
+        "_get_graph",
+        Mock(
+            return_value=SimpleNamespace(
+                client=SimpleNamespace(http=SimpleNamespace(post=post))
+            )
+        ),
+    )
+    catalog = await remote.aget_model_catalog(
+        {"configurable": {"thread_id": "thread"}},
+        purpose=purpose,
+    )
+    assert catalog.models == ["server:test"]
+    assert catalog.profiles["server:test"].profile == {
+        "max_input_tokens": 4096 if purpose == "main" else 2048,
+    }
+
+
+@pytest.mark.parametrize(
+    "payload", [[], {"purpose": []}, {"recommended_models": [3]}, {"current_spec": 4}]
+)
+async def test_catalog_rejects_invalid_requests(payload: object) -> None:
+    from deepagents_code.model_api import model_catalog
+
+    response = await model_catalog(_request(payload))
+    assert response.status_code == 422

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:0b6de32f026794faf93edcf900367af204823f45a6759beaf82d0d898f7337d1",
+  "pageVersion": "sha256:db8c10afc5191782a3d9d8afa00a59e75f6cbb5672983359b163931d486b221f",
   "claims": [
     {
       "id": "claim_e455c61b9b6c44638b6c8233625fec69",
@@ -283,10 +283,114 @@
           "version": "repo-lines-v1:sha256:289af6c752d5985dea75d5762fd12b0f7fe6f56d8c542224ab805052b8bb50c0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxMWZkMmIxMGU2ZjQ0MTU0M2UwNzQ4ZWMyMTk3ZDlhOGIyYjdjNjZjMjY5Y2Y0YmVjMDhlOGZhZjkzM2FkZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0YjkyODQxZmIwNzU1Y2I4NjExY2M4NmE5OTM2ZTg3OGFjZGJkNzAyYWE4MTNhMzVjOTI1YjViOGU3M2YzMmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczOGY3MmRjZDljY2Y4ODNlYWRiYTdmODBkZDhhNmI2MTExMGYzMWU2NmIzYzc1ZDRhZmVmZjE5MzU1ZDIxNWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwYTk1MWUyOTNmMTliODE2MDZmYWFlMzYyOTE0ZGYyODc5ZWExNzhmZjUyZDg5NDZiOGNkZjc5OTRhN2E5MGYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_076572482a714a3fae91ec9164e7e64f",
+      "statement": "On `ServerReady`, dcode settles connection state, installs the agent and MCP snapshot, removes transient startup-failure widgets, refreshes MCP state, and synchronizes the existing status bar model; it warns rather than silently leaving stale UI when the status bar or runtime model identity is missing.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L6402-L6458",
+          "version": "repo-lines-v1:sha256:d7317092d9f05e4ffb965cd0521870561f64c78f6e68be65a6741f782fb5c933:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyNjQ5YzQ0Mjc3NDdkYTdmMmM5YzRjMjNmZjI4N2I2ZmY1YTQwYWZkMDU2MTk2OWY1NzFjOGZhYmRmNjY4NDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI5Zjk0OTQ0Njk2OWY5MDMxMjZhYTRkMTJhNzg1N2IzZDA5MzI4ZGRmMzUxNWRkZWY0ZTY4MjEyZDJlOTJiZTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZlODNkZDNhZDhlMjU2OWMwMmExNmFiZmI0MDkyZjM5YTQ2MGY2Nzk2NDU0NmZjNDJkZGIzZDc0MGQ2NDA0ZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc4NTU3ZjQ1NjRjZjM0OTYxMDMxN2M0MTBmMjA1YWM5MTUxNjMwN2MxNzZjNjUyNTljMTFmMjQzNTMzZTBiYTkifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_app.py#L206-L272",
+          "version": "repo-lines-v1:sha256:4696e478fca8ee8f35a49c75549b5ac7060f63c5e10bac17adff3a754878e72c:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMzOWMyZDg0YzI4NThmMDI3YjE3ZmYxOGZiNmJiZjU5YzZmYjcwYzY1OTgyNzA1NDYxYjM5ZDE2NGE5MTg4ZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNlMDJhOWJmY2Q3NGNkYTRkYmU2ZjgxMTU0MjJiMzJmOTZhYzljYzYyOTljOGVkOTFlNTQzNGFjM2Q0OWQ1MDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQzYmNlZTQ0YjBjNTA2NzFiYWU3ZTRjMmRlYjE1N2QxYjE3ODM1MzY3MjhmMGU1ZDQwNTJkM2QzNmQ3MDY2MDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c973078dd29f4b0cbbab98b07d1c88f3",
+      "statement": "ChatInput submission pauses allow only commands derived from `ALWAYS_IMMEDIATE | HIDDEN_COMMANDS` through the ordinary Enter path, while ordinary messages and other commands remain editable; blocked attempts preserve pasted text and image attachments.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/chat_input.py#L3176-L3203",
+          "version": "repo-lines-v1:sha256:a74b749b8773eb03cd37ebf85903098e8b4ef5be75f6417efd6983cc9d0368d7:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4NWFkZjNjZjFlYWVjMzIxNmMxOWZkYmFiN2VkNjBmOGUzOWQzOTgwYzM0OTQwMjlmNDBkMjhmZDUzY2MzNDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlN2JjZDM2ZWY1M2I0NDUyM2U2NWU5OGQxOTQ0OTkzZTBmZjE3NDZmNTUzNmMxYTUxMTc0NmYzZTAxZTc1NmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE4YjhjMDFiNDIwMTk0NDJkZGM0ZmM5YWQ2N2EzZGY1ZTZiZTI1Zjg5MzFlYTcwYzNjZmE1ZjI4NzY5ZjIyYmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI5ZGJiMTc3YzFiMjZiYjQ4MDg3MzhiZDk4NzdmOTdjYWE4YTI1ZWY4OGI4MTI5M2E0OWYzYTc2MzMwYmE5NzgifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/tui/widgets/test_chat_input.py#L339-L400",
+          "version": "repo-lines-v1:sha256:319762ce5586c1605475b783de8293e0f8f14a6408cc40ed7d6c699f4583de71:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjODIyM2RkNzRiYmMyMjA4ODA3NzY4Yjg5MTE1OGQ1MTFlNDkxM2RhMzlkM2QzOTEwNTZmNDM5YmE0Mzk2ZTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxMmI3NmE1YzhlYzE0MmIxMGFlMjE4ZWRlZWY5NTkxM2JlNGU1NGQwOGIzZGIyYjg5N2QwNzIzMTA5YjhjYTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRlMjE0ZjEzODA2Nzg0ODQyMTc2ZmMzNjJlNTVjNjQ3MWJhM2JmYTE1MzI3MTBlOWRmMDk0OGQxZjVkMjJmZDIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f085cbd199974f7597378f8d6bdb00ac",
+      "statement": "The command registry marks `/install`, `/reload`, and `/update` as normally queue-bound startup-recovery commands; after a startup error they bypass the queue only with no active agent or shell work, while unrelated queued commands remain pending.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/command_registry.py#L431-L451",
+          "version": "repo-lines-v1:sha256:d714710794febfda6b7006706a9adc13e15266ef233f6863b4375601e4147db6:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIxMTVmOGE3NDkwMTE3MjFiNGVhMDA1NTk0MmMxNTc2YmYxYzk0ZTNhOTU0N2YzNGU3NzM3NDZhODdiNjQ4ZmMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ1ZTA1OGEyNTM4M2FhZTU0YjNlOWJiZjZjNDk5YWY3MWFiM2M1NzIzY2JmMjFiN2FlNTg2OWVhMmM2ODM5ZTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE3ZGYxMTU5Y2M1MzM0ZTk1YWEyMWE2YTJmYWIxYzZlNjhjNWIxYzEyNzFiNmUxZTY5ZWJkZmU3Yjk4ZmM2ZDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY1MTBlY2I3ZjU3OTBhMTE5NDNhMWU1OWI0NTI5YzNiODQ4YTg1NWRmYzdhNjQzMmQwZGFkYTBkM2I4MTEwYjcifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_app.py#L26019-L26122",
+          "version": "repo-lines-v1:sha256:ae9af1cf6e71029ba0f626bd639eacfbedaa0c1d18f5136bd7bfd6b2dedd6f33:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlYmQ3ZDRiYzJmMjQ4ZTY1MTI5NTcxOTg2NDJkMDY5MTBmOTExMDk1MzRiNzc1NTUzZGMxMjQ4NWQ5OGUyYWZlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkOWQ0NWNiNTM0ZTExM2FlYTlkZDEwY2U3MWZhZWFjM2U0M2UzMTNmNzE3Y2E2NGUyMjk5MGY1YjdjMTcyYzk4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNmRmYmY0NTNmN2YxYmViYWI3MjgzNjFiMGYzOTNlZWI0YzFmYjY2OGY5ZWEyMmI5MTZkYWNmNWRmZjgxZDgzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyMzE1MmE4NWVjY2VjMmJlNDdlNDRhYTZjYWRiNzJiZjEyZTJiZmFlZDBmZDcxMzNhMDU1NGM4ZGI5ODUzMzRhIn0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_command_registry.py#L24-L33",
+          "version": "repo-lines-v1:sha256:489cd6281b9a7cb94073f65cc3f148fc09abe00d30fc2af1e1a3f7276eed00c1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3N2ExYzJjMWQ2ZGY4ZDdjZmIxNzFkZTJjZTdlNWI3Nzc5MmUwNTExZTg3ZGU0YWNhOGQ5ZmVhN2NlYmE5YTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxNThiNjE2M2I1NjZhZDA4ZDhkMTExMGM3MTVmOWE4YmNjOGVkZjZiOGQ3MmE4NWY0MzQwZDMyYzhmMDI5MmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5NThlMTMxYWVmMDUwMjRjNzZiNjcxNzc4ODFjYjI1NzY0ZTU4ZDM4NjZhMmEyNzM0ZDA3YjVjM2MwMTQ2NjAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMxMzAzNzE2MjhlZDRiMzQ1NjVlYzgxZTM5NDMwYjRkNzZjYWIyZmQ5ZDliMzliNDg5Yzc5NjQ3YTM1Yjk3NzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_03e87157654245b5bde2a767f3c5a899",
+      "statement": "Status-bar model and effort picker hit testing is driven by metadata on rendered text spans, so mounted Textual tests locate painted cells and verify picker clicks do not bubble, focus recovery does not consume later clicks, and Ctrl-click copies the full model slug.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/status.py#L188-L300",
+          "version": "repo-lines-v1:sha256:4757978ac11d63e8f23b0f76d01ee3bf903b7eb0b1558f37420e737e9d2b6423:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0MWFiY2QwY2M2OTEzZDRmNTFlYjIxZTRmNWFmYzJlOTBmODZkMzZhNDUwYmI0MmNiMDVjNmYzZTBkNzA2ZjhjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyZjAzYjlmOGFlODIzN2RiM2M2M2VlYzliN2NkMzcwNTgyNjY5ZDE4ZWQ4ZmVmMGRkMDQ1OGExNDY3YmZlNGQ4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4NDhmNTIzYTJhNjBlMTQ4MGVlNTM2NWY5Y2RmMGRhOGFkNTA0NzU0ZGU4NjI4MWVhMDQ0ZmViNjkxMGNhZTU3IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxNjJjN2EyMDUwNWIwMjg0NGFiMTNhMjI0ZTM5M2IwOTEzMGRmOTc2Mzc0NGFjMjA2ZDc4MWZmYzk5M2Y4YjNmIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/status.py#L54-L99",
+          "version": "repo-lines-v1:sha256:324437c0531e054a6d510d3c3929fc9a9ce738695bf1e9ff9a8911d6bb400225:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmYjY2M2IxYWNhN2UwODA4M2QwZjUwZWRkOTE1MWE2MWY1YjNhZmEyYTgwODc2MDBiODg1NWQxZGJjNDBlMjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiNzU2MzgyYmIyMzJlYjg3NjJiMjhkN2Y4YmZjNGYxY2FmZmY2MzMwM2ExYmVlNzEwOThiNjZlNDc0NWE2NDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgwOTBjZDk5MjA5Njc0OGMxMjE4ZTg5ZDlkOGI3ZmQxNDE1ZGI5ZmQxNDdlMjNmZTQ4MmJkNjIxMDIxMjhmNzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY3ZmQwMWY1OTBjY2E5YWI0NTU3Mjg5YWI4MzdlMGExNzBmZTQ3MDZjNjdjOGU3NjNkYzZhNDdmZTRmNGRmNDIifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/tui/widgets/test_status.py#L488-L632",
+          "version": "repo-lines-v1:sha256:c4304b8fd814344e208b1d47c63c710c0d40e91ce1df60f8454ada5e79a7ed5c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQ1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxMzc0YjU1ZTk5NjRmZDFhMDZjOTNmYjAzYTZiODVlZTBiZWQ3NzFmNjlkMzFlMWM3YTJlNzQ0ZTViNzRlNGI4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NDIyMWFmMDExMmMzNTg2YTJmZmY4OTFhMTU3YWNhZDY3ODA2MjI3ZTAyMjQzMzMyNDgyNjY0Nzk3MDA3MTAxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiODE2NTc0NTI5OTY2MTc5MzRiZmQ2ZWE0Mzg5YjRmOTFiNTcxY2QyNDU1ODRhNmQxNjYwZmMwOTE4Y2Y2OTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1MmM3N2QyNjNlY2Y1MmM0MDRkNjE4ZDRhYjZlYzg2ZDA1NjA2OGEwZTQ1ODk1ODI4YmM4MGRjNWQzZWE4YmY5In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_1a194a678b184a5aa37f472e7e6095b5",
+      "statement": "QuickJS subagent dispatch persists child cost receipts in checkpoint storage and transfers their settled total and breakdown to the parent, deduplicating receipt namespaces on replay; cost tests verify durable totals and complete breakdowns across fresh-runtime resume, interruption, cancellation, and failures.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/_js_cost.py#L181-L268",
+          "version": "repo-lines-v1:sha256:4792213e811b928c4ec8de29df29b0c9604105e4ae820be2e635470931872d17:eyJzZWxlY3RlZExpbmVDb3VudCI6ODgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmNGQyY2RhOTBiYzZjODI1Mjk1NGNhYjRkYjVkMWI0NDA4ZDAwMGM5OTFkNjNhYTRhNmQyNWI0MmJiMmIwZDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3NzMyNGEwMThhZWY5Yzg0MGJhMjA3YmNhYjIzN2QzM2FiZTdjOTJjNmM1OGNkNzJhMjg3OWQ1NzJhYTUwMDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY1NzYwZTczY2E5MGNhOWRhM2JkNzAzNjExYjMxYjkwMThmNjY1ZDVhNTJlYWUxNzg2NjU3YTUwMjg2MjQ4OTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/_js_cost.py#L52-L120",
+          "version": "repo-lines-v1:sha256:a77aa76a5af3608784b484228370b4aeb8bd75ea9f55e575c97d147b9f75e725:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0YzM3OWJkMGI4ZGY3OWM2NjIyNDQ5OTIzZDE0MDdlOTBiYzEzZTBhYzNkMGFmNTlhMGJiZGNhN2NiYjg3NjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjljYTM2YzVmZGQzZTQwNTBlMzQxMmYzMTI1MGUzYTRlNmVmNDM3MmI1Y2Q3YjQwMzBhMmVhNWMxZTJlMTdmM2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgwYjgzZDUwNjg4MWU0Y2QwZTNlMWRjNzM5YmNkNjkxYzgyNjM4MTAyY2VmYzUxYjY2MTg5OGFhNDY4NzA2NGEifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py#L211-L245",
+          "version": "repo-lines-v1:sha256:6088c602a628f258d714a3d1c5eca843a6567d9d6976a245d286e81dd6f85c8b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxY2IxODgzYjRhM2NiMjhiNjQ2ZmQ2ZjUwOGM0NjQ1ZThkZDRjNTRjZGVjY2U1ZTQyYjZkM2U0N2FjMzEwOGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4NDQ0MmU4ZjQ3YWI2MjViOTQwMjY4NzkzYWVhNTNiNTY5NGYxZThjYjQ5ZWJlYzU0ZDhhMzU0M2NlODY3MzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNhMWZjMjkyOTFiZDUzODg1MjQzOGViOGNkNmRhMmQzNjExNzYyZTNhYmJkMjM4ZjE3YmFlMWFmOTRiZWEwMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py#L340-L400",
+          "version": "repo-lines-v1:sha256:1fd75c3f0694c8c403993336202e8988386ffa837fd2216e267fb2ef3ffd9a47:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4ZmU3Y2NiZjRjNGJiZmJmODA3Mjg5NDZlNmQ2NDAxODA1ZTkxN2Q4MWNhYmMzYjYyZjIwMTdjOTI1ODRjNDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMzhlMzcyOTlhZTUwZGQxY2EyYjc5YmY3NDY3NzY5M2I3MzE5MjRmYmI3YWY4MDg0YTAxYWI3MDcwMGZlNDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEzY2ZhNjFiMTlmNjUwZjVhMjQxZDE5NTE1YjRjNzVhNjEwZjU5MGIzMTRkYjBkOTdmMWFmZTA3YThmMjc1NzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE5NmJkMGJlMzE5YjRiZDQ4N2M1YjM3ZGFmYWRhMGFmNGRhMjMzYjM5MGMyNWNhZTc4MjZjNDUwODQ4MjBmNjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_24604e6e773c4ab8be6d475f2b061a5d",
+      "statement": "The entire-thread cost formatter suppresses detail unless a version-one breakdown has complete history; otherwise it formats inclusive input/output rows and subsets, marks incomplete values and unpriceable requests as partial, and reports unattributed cost, while legacy dollar-only receipts remain chargeable but produce no table.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/modals/_cost_breakdown.py#L7-L123",
+          "version": "repo-lines-v1:sha256:9a64be063dfc6b7b336f8792386cca93963c73a32d0dd2854263225aa7aec148:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1YTM2NWJlOTZmNGIxYTA2ZDM0ODU4M2I5YmU5N2I3YTNmMjA1ODQ5ZTA5NTlkMzg2MjM4MTk0NjM5MmE4ODAyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzNDk4Yzg3YTY5OWJmNzExNTc1NTk2ZmVjOGNkNmFjMTUwZjc2NDI0YjMzY2U3MzE0YTBlMDZlMTUxNzgwNWVlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI2ZTdhNDFkMGI5ZDI2OGFkYzgxOTExNDc4OTIxMmYzNTY2MWUxOTVkZTg5NTUwNTYwYTViNTYxMmRjY2I3OTM5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py#L781-L825",
+          "version": "repo-lines-v1:sha256:5a4816868e11b4182ca06728067cfb961a528e0def4b02cb91b776e3d03563bc:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyMjRlN2Q4Y2U2Yzk2Y2E4NDNiNWI1NTViYmU5NjAwYmFlYjRlZjhhMGU1YjZhMzkzYTc1Zjg1MGFlMzlkYmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmNjgzNTJiYjFhMGQxZjcyZDgwOWIwNzA0ODg4OGFlZDljMzNhNzdlZmMwZGMyYWVjMmE1OGZiMjhlMmU1NWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUyNjkzNGU0MGI1NGFiMDE4OWQ5ZTZkOWZmNDdkZTg3OTM2ZGIzYTNhNjY2MWJiNzE2ZDIxNjBkZDAwMjkyOGQifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py#L931-L994",
+          "version": "repo-lines-v1:sha256:6af5a4bf7f127af9ae58fb2a738ee8eb8346d8a67ba257f55616766047ee09f6:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliMjRlOTA5ZjU5ODRjNGRlYWJlY2UwMGRhYzYzMzUxNmI1ODMwMWUwNTMyNThlMmM2ZjYyYjQyNTNiYWI3YTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlkNTM4OTQ0ZjFjMTRjMjg1ZTQ0MTA3M2Y3YzIxNjVjZGM3NWQzZGFjNzk4NTFmMTRkZGNjNTVlY2U2MjJkMDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk0OWJjMDZlNGEzMWRmMDk2ODM0YWE2ZDY1YmYwZTMxZTI3YjYzZDI1MTEwNThlZTY1OTdlNmZlZWQ4OTU3NWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-03T08:05:07.881Z"
+    "at": "2026-10-05T08:14:03.003Z"
   }
 }

@@ -1,6 +1,7 @@
 """Behavioral coverage for cache-expiry handoffs."""
 
 import asyncio
+from collections.abc import Iterator
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,10 +26,25 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
-def checkpoint_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def checkpoint_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    from deepagents_code.thread_ownership import release_all
+
     monkeypatch.setattr(
         "deepagents_code.sessions.get_db_path", lambda: tmp_path / "sessions.db"
     )
+    yield
+    release_all()
+
+
+def _owned_config(config: "RunnableConfig") -> "RunnableConfig":
+    """Supply the reservation normally attached by the local HTTP client."""
+    from deepagents_code.thread_ownership import OWNER_KEY, ensure_owned
+
+    configurable = config["configurable"]
+    lease = ensure_owned(configurable["thread_id"])
+    return {**config, "configurable": {**configurable, OWNER_KEY: lease.token}}
 
 
 def _prepare(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -479,7 +495,7 @@ async def test_seeding_handoff_preserves_active_workspace(
 ) -> None:
     from deepagents_code.client.remote_client import RemoteAgent
 
-    remote = RemoteAgent("http://localhost:8123")
+    remote = RemoteAgent("http://localhost:8123", local_ownership=False)
     bindings: dict[str, str] = {}
 
     def bind(
@@ -568,7 +584,9 @@ async def test_handoff_child_is_discoverable_and_resumable(
         ) -> None:
             # The HTTP state API forwards the thread ID, but drops config metadata.
             await graph.aupdate_state(
-                {"configurable": {"thread_id": config["configurable"]["thread_id"]}},
+                _owned_config(
+                    {"configurable": {"thread_id": config["configurable"]["thread_id"]}}
+                ),
                 values,
                 as_node=as_node,
             )
@@ -594,10 +612,12 @@ async def test_handoff_child_is_discoverable_and_resumable(
         assert await sessions.get_thread_agent(child_id) == owner
         continued = await graph.ainvoke(
             {"messages": [HumanMessage("Continue from the summary.")]},
-            {
-                "configurable": {"thread_id": child_id},
-                "metadata": {"agent_name": owner, "cwd": app._cwd},
-            },
+            _owned_config(
+                {
+                    "configurable": {"thread_id": child_id},
+                    "metadata": {"agent_name": owner, "cwd": app._cwd},
+                }
+            ),
         )
         assert [message.text for message in continued["messages"]] == [
             state.values["messages"][0].text,
@@ -699,7 +719,7 @@ async def test_handoff_with_separate_server_checkpoints(
 
     app = DeepAgentsApp(assistant_id="researcher")
     app._lc_thread_id = "source"
-    remote = RemoteAgent("http://server:8123")
+    remote = RemoteAgent("http://server:8123", local_ownership=False)
     graph = create_agent(
         FakeListChatModel(responses=["Unused"]),
         middleware=[ResumeStateMiddleware()],
@@ -834,7 +854,9 @@ async def test_handoff_preserves_shell_context(
             middleware=[ResumeStateMiddleware()],
             checkpointer=checkpointer,
         )
-        await graph.ainvoke({"messages": [HumanMessage("original")]}, source_config)
+        await graph.ainvoke(
+            {"messages": [HumanMessage("original")]}, _owned_config(source_config)
+        )
 
         async def update_state(
             config: "RunnableConfig",
@@ -851,7 +873,9 @@ async def test_handoff_preserves_shell_context(
                 raise asyncio.CancelledError
             # Cross the same serialization boundary as the HTTP client: the graph
             # must not assign IDs back onto the app's buffered message objects.
-            await graph.aupdate_state(config, deepcopy(values), as_node=as_node)
+            await graph.aupdate_state(
+                _owned_config(config), deepcopy(values), as_node=as_node
+            )
             if outcome == "lost_response":
                 msg = "response lost"
                 raise RuntimeError(msg)

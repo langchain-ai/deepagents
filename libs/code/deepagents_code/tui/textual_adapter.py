@@ -839,8 +839,11 @@ class TextualUIAdapter:
         on_approval_mode_fallback: Callable[[str], None] | None = None,
         *,
         show_diff_line_numbers: bool = True,
+        on_model_streaming: Callable[[bool], None] | None = None,
     ) -> None:
         """Initialize the adapter."""
+        self._on_model_streaming = on_model_streaming
+        self._model_streaming = False
         self._mount_message = mount_message
         """Async callback to mount a message widget to the chat."""
 
@@ -948,6 +951,17 @@ class TextualUIAdapter:
 
         self._on_stream_complete: Callable[[], None] | None = None
         """Called only after the agent stream reaches a clean end."""
+
+    def _set_model_streaming(self, streaming: bool) -> None:
+        """Report main-model streaming independently of turn-level visible output."""
+        if streaming == self._model_streaming:
+            return
+        self._model_streaming = streaming
+        if self._on_model_streaming:
+            try:
+                self._on_model_streaming(streaming)
+            except Exception:
+                logger.warning("Model streaming callback failed", exc_info=True)
 
     def _reset_auto_mode_review_tracking(self) -> None:
         """Start each user turn with no in-flight batch and no replay guard.
@@ -2189,6 +2203,8 @@ async def execute_task_textual(
                     if isinstance(data, dict) and data.get("type") == "model_attempt":
                         attempt_event = model_attempt_from_event(data)
                         if attempt_event is not None:
+                            if is_main_agent and attempt_event["phase"] == "complete":
+                                adapter._set_model_streaming(False)
                             attempt_scope = _ModelAttemptScope(
                                 ns_key,
                                 cast("str", attempt_event["call_id"]),
@@ -2290,6 +2306,8 @@ async def execute_task_textual(
                         continue
 
                     if isinstance(data, dict) and data.get("type") == "model_retry":
+                        if is_main_agent:
+                            adapter._set_model_streaming(False)
                         retry_correlation = model_retry_from_event(data)
                         if is_main_agent and adapter._set_spinner is not None:
                             # Runs for valid, malformed, and legacy (uncorrelated)
@@ -2487,6 +2505,8 @@ async def execute_task_textual(
 
                 # Handle UPDATES stream - for interrupts and todos
                 if current_stream_mode == "updates":
+                    if is_main_agent:
+                        adapter._set_model_streaming(False)
                     if not isinstance(data, dict):
                         continue
 
@@ -2759,6 +2779,7 @@ async def execute_task_textual(
                         continue
 
                     if isinstance(message, ToolMessage):
+                        adapter._set_model_streaming(False)
                         tool_name = getattr(message, "name", "")
                         # Normalize to the two-value hook domain, fail-closed: an
                         # unexpected provider status is logged and treated as an
@@ -3086,6 +3107,12 @@ async def execute_task_textual(
 
                     # Process content blocks
                     blocks = message.content_blocks
+                    if any(
+                        block.get("type")
+                        in {"text", "reasoning", "tool_call_chunk", "tool_call"}
+                        for block in blocks
+                    ):
+                        adapter._set_model_streaming(True)
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
                             "content_blocks count=%d blocks=%s",
@@ -3291,6 +3318,7 @@ async def execute_task_textual(
                                 tool_call_buffers.pop(buffer_key, None)
 
                     if getattr(message, "chunk_position", None) == "last":
+                        adapter._set_model_streaming(False)
                         pending_text = pending_text_by_namespace.get(ns_key, "")
                         if pending_text:
                             await _flush_assistant_text_ns(
@@ -3301,6 +3329,8 @@ async def execute_task_textual(
                             )
                             pending_text_by_namespace[ns_key] = ""
                             assistant_message_by_namespace.pop(ns_key, None)
+
+            adapter._set_model_streaming(False)
 
             # Reset summarization state if stream ended mid-summarization
             # (e.g. middleware error, stream exhausted before regular chunks).
@@ -4140,6 +4170,7 @@ async def execute_task_textual(
                 )
         raise
     finally:
+        adapter._set_model_streaming(False)
         # A clean stream can leave its successful final attempt open when the
         # best-effort completion event was lost. Commit those scopes; only an
         # aborted stream owns incomplete records that must be discarded.

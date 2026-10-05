@@ -109,11 +109,13 @@ async def test_cache_expiring_notification_waits_for_output_to_finish(
     monkeypatch.setattr(app, "_maybe_drain_deferred", AsyncMock())
 
     app._on_user_visible_output_started()
+    app._on_model_streaming(True)
     await app._notify_cache_expiring()
     notify.assert_not_awaited()
     toast.assert_not_called()
 
-    await app._cleanup_agent_task()
+    app._on_model_streaming(False)
+    assert app._active_turn_visible_output_started
     await app._notify_cache_expiring()
     await app._notify_cache_expiring()
     notify.assert_awaited_once()

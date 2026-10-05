@@ -3,6 +3,7 @@
 import asyncio
 from asyncio import Future
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator, Mapping
+from contextlib import nullcontext
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
@@ -3293,6 +3294,168 @@ def _tool_call_message(
 def _text_message(text: str) -> SimpleNamespace:
     """Build a message-like object with content_blocks containing one text block."""
     return SimpleNamespace(content_blocks=[{"type": "text", "text": text}])
+
+
+class TestModelStreaming:
+    @pytest.mark.parametrize("boundary", ["complete", "last", "updates"])
+    async def test_releases_cache_countdown_before_tools(self, boundary: str) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from deepagents_code.tui.widgets.status import StatusBar
+
+        bar = StatusBar()
+        now = datetime.now(UTC)
+        with patch(
+            "deepagents_code.tui.widgets.status.datetime", wraps=datetime
+        ) as clock:
+            clock.now.return_value = now
+            bar.set_cache_timing(now, ttl_seconds=300)
+
+            class Agent(_FakeAgent):
+                async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple]:
+                    yield ((), "messages", (_text_message("Working"), {}))
+                    clock.now.return_value = now + timedelta(seconds=60)
+                    assert bar._cache_timing_segment().endswith(" / 5:00")
+                    if boundary == "complete":
+                        yield (
+                            (),
+                            "custom",
+                            {
+                                "type": "model_attempt",
+                                "phase": "complete",
+                                "call_id": "call-1",
+                                "attempt": 1,
+                            },
+                        )
+                    elif boundary == "last":
+                        yield (
+                            (),
+                            "messages",
+                            (
+                                SimpleNamespace(
+                                    content_blocks=[],
+                                    chunk_position="last",
+                                ),
+                                {},
+                            ),
+                        )
+                    else:
+                        yield ((), "updates", {"model": {"messages": []}})
+                    clock.now.return_value = now + timedelta(seconds=120)
+                    assert bar._cache_timing_segment().endswith(" / 3:00")
+                    yield (("child",), "messages", (_text_message("Hidden"), {}))
+                    assert not bar.cache_timing_paused
+                    yield ((), "messages", (_text_message("Done"), {}))
+                    clock.now.return_value = now + timedelta(seconds=130)
+                    assert bar._cache_timing_segment().endswith(" / 3:00")
+
+            adapter = TextualUIAdapter(
+                mount_message=_mock_mount,
+                update_status=_noop_status,
+                request_approval=_mock_approval,
+                on_model_streaming=lambda streaming: bar.set_cache_timing_paused(
+                    paused=streaming
+                ),
+            )
+            await execute_task_textual(
+                user_input="hi",
+                agent=Agent([]),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=True),
+                adapter=adapter,
+            )
+            assert bar._cache_timing_segment().endswith(" / 2:50")
+
+    @pytest.mark.parametrize("ask_user", [False, True])
+    async def test_unpaused_while_awaiting_user(self, ask_user: bool) -> None:
+        from deepagents_code.tui.widgets.status import StatusBar
+
+        bar = StatusBar()
+        waited = False
+
+        async def request_input(*_: Any, **__: Any) -> asyncio.Future:
+            nonlocal waited
+            waited = True
+            await asyncio.sleep(0)
+            assert not bar.cache_timing_paused
+            future = asyncio.Future()
+            future.set_result(
+                {"type": "answered", "answers": ["Alice"]}
+                if ask_user
+                else {"type": "approve"}
+            )
+            return future
+
+        interrupt = (
+            _ask_user_interrupt_chunk(
+                {
+                    "type": "ask_user",
+                    "tool_call_id": "ask-1",
+                    "questions": [{"question": "Name?", "type": "text"}],
+                }
+            )
+            if ask_user
+            else _hitl_interrupt_chunk(
+                {
+                    "action_requests": [
+                        {"name": "execute", "args": {"command": "echo hi"}}
+                    ],
+                    "review_configs": [
+                        {
+                            "action_name": "execute",
+                            "allowed_decisions": ["approve", "reject"],
+                        }
+                    ],
+                }
+            )
+        )
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=request_input,
+            request_ask_user=request_input,
+            on_model_streaming=lambda streaming: bar.set_cache_timing_paused(
+                paused=streaming
+            ),
+        )
+        await execute_task_textual(
+            user_input="hi",
+            agent=_SequencedAgent(
+                [[((), "messages", (_text_message("Working"), {})), interrupt], []]
+            ),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=False),
+            adapter=adapter,
+        )
+        assert waited
+        assert not bar.cache_timing_paused
+
+    @pytest.mark.parametrize(
+        "error", [RuntimeError("failed"), asyncio.CancelledError()]
+    )
+    async def test_unpaused_after_stream_failure(self, error: BaseException) -> None:
+        streaming = MagicMock()
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_model_streaming=streaming,
+        )
+        with (
+            nullcontext()
+            if isinstance(error, asyncio.CancelledError)
+            else pytest.raises(type(error))
+        ):
+            await execute_task_textual(
+                user_input="hi",
+                agent=_RaisingAgent(
+                    [((), "messages", (_text_message("Working"), {}))], error
+                ),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=True),
+                adapter=adapter,
+            )
+        assert [call.args for call in streaming.call_args_list] == [(True,), (False,)]
 
 
 class TestExecuteTaskTextualUserVisibleOutputStarted:

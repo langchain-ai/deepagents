@@ -1198,6 +1198,11 @@ class StatusBar(Vertical):
         )
         return f"{written} / {countdown}" if written else countdown
 
+    @property
+    def cache_timing_paused(self) -> bool:
+        """Whether streaming has frozen the cache countdown display."""
+        return self._cache_paused_at is not None
+
     def set_cache_timing_paused(self, *, paused: bool) -> None:
         """Freeze the displayed countdown without changing the recorded expiry."""
         self._cache_paused_at = (

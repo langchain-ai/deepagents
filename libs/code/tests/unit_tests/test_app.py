@@ -6293,6 +6293,7 @@ class TestCacheTiming:
 
                 def execute(*_args: object, **_kwargs: object) -> None:
                     app._on_user_visible_output_started()
+                    app._on_model_streaming(True)
                     clock.now.return_value = requested_at + timedelta(seconds=90)
                     bar.set_cache_tokens(2000, 1000, input_tokens=3000)
                     assert bar._cache_timing_segment().endswith(" / 1:00")

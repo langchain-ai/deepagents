@@ -5329,6 +5329,7 @@ class DeepAgentsApp(App):
             set_spinner=self._set_spinner,
             set_active_message=self._set_active_message,
             on_user_visible_output_started=self._on_user_visible_output_started,
+            on_model_streaming=self._on_model_streaming,
             sync_message_content=self._sync_message_content,
             sync_tool_message=self._sync_tool_message_state,
             request_ask_user=self._request_ask_user,
@@ -9702,7 +9703,7 @@ class DeepAgentsApp(App):
             or self._thread_switching
             or not thread_id
             or expires_at is None
-            or self._active_turn_visible_output_started
+            or (self._status_bar is not None and self._status_bar.cache_timing_paused)
             or self._cache_expiring_seen.get(thread_id) == expires_at
             or not 0
             < (expires_at - datetime.now(UTC)).total_seconds()
@@ -21738,8 +21739,11 @@ class DeepAgentsApp(App):
         seen work produced from it.
         """
         self._active_turn_visible_output_started = True
+
+    def _on_model_streaming(self, streaming: bool) -> None:
+        """Pause cache timing only while the main model is producing output."""
         if self._status_bar:
-            self._status_bar.set_cache_timing_paused(paused=True)
+            self._status_bar.set_cache_timing_paused(paused=streaming)
 
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).

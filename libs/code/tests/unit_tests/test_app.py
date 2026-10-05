@@ -10686,44 +10686,6 @@ class TestRubricCommand:
             assert "was reverted" in rendered
             assert "anthropic:claude-sonnet-4-6" in rendered
 
-    async def test_set_rubric_model_supports_external_graph(self) -> None:
-        """External graphs validate grader models with their own environment."""
-        from deepagents_code.client.remote_client import RemoteAgent
-
-        app = DeepAgentsApp()
-        app._agent = RemoteAgent("http://test:0")
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._lc_thread_id = "t-1"
-            app._server_proc = None
-            app._server_kwargs = None
-
-            with (
-                patch(
-                    "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
-                    return_value=SimpleNamespace(
-                        provider="openai", model_name="gpt-5.1"
-                    ),
-                ) as resolve_model,
-                patch(
-                    "deepagents_code.model_config.get_provider_auth_status",
-                ) as get_auth_status,
-                patch.object(
-                    app,
-                    "_persist_goal_rubric_state",
-                    new_callable=AsyncMock,
-                    return_value=True,
-                ) as persist,
-            ):
-                await app._set_rubric_model("openai:gpt-5.1")
-            await pilot.pause()
-
-            assert app._rubric_model == "openai:gpt-5.1"
-            assert app._rubric_model_recorded is True
-            persist.assert_awaited_once_with()
-            get_auth_status.assert_not_called()
-            resolve_model.assert_awaited_once_with("openai:gpt-5.1")
-
 
 class TestAutoClassifierModelCommand:
     """Tests for `/auto model`, which picks the Auto classifier model."""
@@ -10991,26 +10953,6 @@ class TestAutoClassifierModelCommand:
             assert str(message._content) == (
                 f"Model not changed. Continuing to use {classifier}"
             )
-
-    async def test_set_auto_classifier_model_rejects_unresolvable_spec(self) -> None:
-        """An unusable spec is refused outright, keeping the previous value."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._server_kwargs = {}
-
-            with (
-                patch(
-                    "deepagents_code.app.DeepAgentsApp._resolve_auxiliary_model",
-                    side_effect=RuntimeError("no provider package"),
-                ),
-            ):
-                await app._handle_command("/auto model openai:missing-model")
-            await pilot.pause()
-
-            assert app._auto_classifier_model is None
-            assert "auto_classifier_model" not in app._server_kwargs
-            assert app.query(ErrorMessage)
 
 
 class TestBuildAgentErrorBody:

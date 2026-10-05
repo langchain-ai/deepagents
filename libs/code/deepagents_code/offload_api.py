@@ -740,7 +740,7 @@ def _checkpoint_model_context(
     A bare spec cannot carry an endpoint, but it can still name a provider the
     server holds credentials for, which would send conversation history
     somewhere the thread's owner never chose. A mid-session
-    `/summarization-model` override therefore does not apply to `/offload`.
+    `/offload model` override therefore does not apply to `/offload`.
 
     Args:
         context: Validated request context.

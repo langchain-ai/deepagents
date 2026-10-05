@@ -17,7 +17,7 @@ import anyio
 import httpx
 import httpx2
 import pytest
-from mcp.client.auth import OAuthClientProvider, TokenStorage
+from mcp.client.auth import OAuthClientProvider, OAuthRegistrationError, TokenStorage
 from mcp.shared.auth import OAuthToken
 
 from deepagents_code.mcp_auth import (
@@ -2451,6 +2451,26 @@ class TestFormatLoginFailure:
         summary = format_login_failure(exc)
         assert sentinel not in summary
         assert "FakeMcpError" in summary
+
+    def test_formats_nested_oauth_registration_error(self) -> None:
+        """Registration failures expose the status without SDK exception names."""
+        group = ExceptionGroup(
+            "task group",
+            [OAuthRegistrationError("Registration failed: 403 Forbidden")],
+        )
+        exc = RuntimeError("login failed")
+        exc.__cause__ = group
+
+        summary = format_login_failure(exc)
+
+        assert "403" in summary
+        assert "ExceptionGroup" not in summary
+
+    def test_uses_generic_message_for_unparseable_registration_error(self) -> None:
+        """Registration failures without a status use a generic safe message."""
+        summary = format_login_failure(OAuthRegistrationError("registration failed"))
+
+        assert "OAuth client registration failed" in summary
 
     def test_preserves_message_for_config_errors(self) -> None:
         """Config errors are pre-handshake and token-free, so keep the message.

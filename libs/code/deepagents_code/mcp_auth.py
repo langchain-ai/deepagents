@@ -33,7 +33,7 @@ import httpx
 import httpx2
 from anyio import CancelScope
 from filelock import FileLock, Timeout
-from mcp.client.auth import OAuthClientProvider, TokenStorage
+from mcp.client.auth import OAuthClientProvider, OAuthRegistrationError, TokenStorage
 from mcp.client.auth.utils import (
     build_oauth_authorization_server_metadata_discovery_urls,
     build_protected_resource_metadata_discovery_urls,
@@ -2017,6 +2017,22 @@ def format_login_failure(exc: BaseException) -> str:
         # field-scoped messages are safe (and useful) to render verbatim.
         return str(exc)
 
+    registration_error = _find_oauth_registration_error(exc)
+    if registration_error is not None:
+        status_match = re.search(
+            r"Registration failed: (\d{3})", str(registration_error)
+        )
+        if status_match is not None:
+            return (
+                "OAuth client registration was rejected by the server "
+                f"(HTTP {status_match.group(1)}). The server may only accept "
+                "pre-approved OAuth clients."
+            )
+        return (
+            "OAuth client registration failed. The server may only accept "
+            "pre-approved OAuth clients."
+        )
+
     safe_types = (
         _LoopbackCallbackTimeoutError,
         _LoopbackCallbackUnavailableError,
@@ -2041,6 +2057,24 @@ def format_login_failure(exc: BaseException) -> str:
             break
         current = current.__cause__ or current.__context__
     return " -> ".join(parts) if parts else type(exc).__name__
+
+
+def _find_oauth_registration_error(exc: BaseException) -> OAuthRegistrationError | None:
+    visited: set[int] = set()
+    stack: list[BaseException] = [exc]
+    while stack:
+        current = stack.pop()
+        if id(current) in visited:
+            continue
+        visited.add(id(current))
+        if isinstance(current, OAuthRegistrationError):
+            return current
+        if isinstance(current, BaseExceptionGroup):
+            stack.extend(current.exceptions)
+        cause = current.__cause__ or current.__context__
+        if cause is not None:
+            stack.append(cause)
+    return None
 
 
 def find_reauth_required(exc: BaseException) -> MCPReauthRequiredError | None:

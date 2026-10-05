@@ -1371,6 +1371,88 @@ class TestStartupSequence:
         set_stored_key.assert_not_called()
 
 
+class TestFooterCostBreakdown:
+    """Tests for opening the shared cost modal directly from the footer."""
+
+    async def test_footer_cost_opens_live_modal_and_restores_focus(
+        self,
+    ) -> None:
+        from deepagents_code.cost_tracking import _empty_cost_breakdown
+        from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
+        from deepagents_code.tui.widgets.status import MetricsLine
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            breakdown = _empty_cost_breakdown()
+            breakdown["input_tokens"] = 123
+            app._set_session_cost(1.25, breakdown=breakdown)
+            app._agent_running = True
+            await pilot.pause()
+            display = app.query_one("#tokens-display", MetricsLine)
+            offset = display.content_region.x - display.region.x
+            offset += str(display.render()).index("$")
+            await pilot.click(display, offset=(offset, 0))
+            await pilot.pause()
+
+            modal = app.screen
+            assert isinstance(modal, CostBreakdownScreen)
+            body = modal.query_one(".cost-breakdown-body", Static)
+            assert "123" in str(body.render())
+            assert "1.25" in str(body.render())
+            stack_size = len(app.screen_stack)
+            app.action_open_cost_breakdown()
+            await pilot.pause()
+            assert app.screen is modal
+            assert len(app.screen_stack) == stack_size
+
+            updated = _empty_cost_breakdown()
+            updated["input_tokens"] = 456
+            app._set_session_cost(2.5, breakdown=updated)
+            await pilot.pause(delay=0.6)
+            assert "456" in str(body.render())
+            assert "2.5" in str(body.render())
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert not isinstance(app.screen, ModalScreen)
+            assert app._is_input_focused()
+            app._agent_running = False
+
+    @pytest.mark.parametrize("incomplete", [False, True])
+    async def test_missing_breakdown_notifies_without_empty_modal(
+        self, incomplete: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.cost_tracking import _empty_cost_breakdown
+        from deepagents_code.tui.widgets.status import MetricsLine
+
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            app._set_session_cost(
+                1.25,
+                breakdown=(
+                    _empty_cost_breakdown(historical_complete=False)
+                    if incomplete
+                    else None
+                ),
+            )
+            notify = MagicMock()
+            monkeypatch.setattr(app, "notify", notify)
+            await pilot.pause()
+            display = app.query_one("#tokens-display", MetricsLine)
+            offset = display.content_region.x - display.region.x
+            offset += str(display.render()).index("$")
+            await pilot.click(display, offset=(offset, 0))
+            await pilot.pause()
+
+            assert not isinstance(app.screen, ModalScreen)
+            assert notify.call_args.args[0] == (
+                "No cost details to show for this session yet."
+            )
+            assert "$1.25" in str(display.render())
+
+
 class TestStatusBarPickerActions:
     """Tests for status-bar actions that open existing picker flows."""
 
@@ -1416,13 +1498,7 @@ class TestStatusBarPickerActions:
             offset += 0 if target == "model" else len("openai:gpt-5.5 ")
             await pilot.click(label, offset=(offset, 0))
             await pilot.pause()
-            if busy and target == "effort":
-                assert [message.text for message in app._pending_messages] == [
-                    "/effort"
-                ]
-                app._agent_running = False
-                await app._process_next_from_queue()
-                await pilot.pause()
+            assert not app._pending_messages
             expected = (
                 ModelSelectorScreen if target == "model" else EffortSelectorScreen
             )
@@ -17641,18 +17717,6 @@ class TestDeferredActions:
             assert len(app._deferred_actions) == 1
             await app._drain_deferred_actions()
             assert executed == ["second"]
-
-    async def test_repeated_footer_effort_click_queues_once(self) -> None:
-        """Repeated effort clicks during a turn keep one queued picker request."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._agent_running = True
-
-            await app.action_open_effort_selector()
-            await app.action_open_effort_selector()
-
-            assert [message.text for message in app._pending_messages] == ["/effort"]
 
     async def test_repeated_footer_model_click_keeps_one_modal(self) -> None:
         """Clicking the model label again does not stack another selector."""

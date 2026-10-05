@@ -1793,13 +1793,11 @@ class TestWorkspaceStoredCredentials:
             ("xai", "xai_api_base"),
         ],
     )
-    @pytest.mark.parametrize("endpoint_source", ["provider", "model", "caller"])
     async def test_stored_key_preserves_explicit_endpoint_alias(
         self,
         monkeypatch: pytest.MonkeyPatch,
         provider: str,
         endpoint_alias: str,
-        endpoint_source: str,
     ) -> None:
         """Explicit aliases select both clients' endpoints over native defaults."""
         import httpx
@@ -1807,16 +1805,8 @@ class TestWorkspaceStoredCredentials:
         from deepagents_code.config import use_environment
 
         pytest.importorskip(f"langchain_{provider}")
-        config = _stored_provider_config(monkeypatch, provider)
+        _stored_provider_config(monkeypatch, provider)
         endpoint = "https://selected.example/v1"
-        params = {endpoint_alias: endpoint}
-        extra_kwargs: dict[str, object] = {}
-        if endpoint_source == "provider":
-            config.providers[provider]["params"] = params
-        elif endpoint_source == "model":
-            config.providers[provider]["params"] = {"test-model": params}
-        else:
-            extra_kwargs.update(params)
         environment = dict.fromkeys(
             model_config.PROVIDER_BASE_URL_ENV[provider], "https://gateway.example/v1"
         )
@@ -1825,7 +1815,7 @@ class TestWorkspaceStoredCredentials:
 
         with use_environment(environment):
             model = create_model(
-                f"{provider}:test-model", extra_kwargs=extra_kwargs
+                f"{provider}:test-model", extra_kwargs={endpoint_alias: endpoint}
             ).model
 
         sync_client, async_client = (

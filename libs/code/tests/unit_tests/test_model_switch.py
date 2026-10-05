@@ -19,7 +19,6 @@ from deepagents_code.model_config import (
     ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
-    clear_caches,
 )
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 from deepagents_code.tui.widgets.status import StatusBar
@@ -92,6 +91,7 @@ def mock_create_model() -> Iterator[Mock]:
     }
 
     def fake_create_model(
+        _config: object,
         model_spec: str,
         *,
         extra_kwargs: dict[str, object] | None = None,
@@ -115,7 +115,7 @@ def mock_create_model() -> Iterator[Mock]:
         )
 
     with patch(
-        "deepagents_code.config.create_model",
+        "deepagents_code.client.remote_client.RemoteAgent.aresolve_model",
         side_effect=fake_create_model,
     ) as mock:
         yield mock
@@ -314,6 +314,13 @@ class TestModelSwitchErrorHandling:
             original_init(self, message, **kwargs)
 
         with (
+            patch.object(
+                RemoteAgent,
+                "aresolve_model",
+                AsyncMock(
+                    side_effect=RuntimeError("Missing credentials: ANTHROPIC_API_KEY")
+                ),
+            ),
             patch(
                 "deepagents_code.model_config.get_provider_auth_status",
                 return_value=ProviderAuthStatus(
@@ -439,10 +446,9 @@ class TestModelSwitchErrorHandling:
         assert runtime_state.model_provider == "anthropic"
         assert runtime_state.model_context_limit == 200_000
         mock_create_model.assert_called_once_with(
+            {"configurable": {"thread_id": app._lc_thread_id}},
             "anthropic:claude-sonnet-4-5",
             extra_kwargs={"temperature": 0.7},
-            profile_overrides={"max_input_tokens": 180_000},
-            cli_max_retries=None,
         )
 
     async def test_remote_agent_sets_model_params_override(self) -> None:
@@ -675,84 +681,6 @@ class TestModelSwitchFailedStartupRecovery:
         assert any("server-backed session" in msg for msg in captured_errors)
 
 
-class TestModelSwitchConfigProvider:
-    """Tests for switching to config-file-defined providers."""
-
-    def setup_method(self) -> None:
-        """Clear model config cache before each test."""
-        clear_caches()
-
-    async def test_switch_config_provider_missing_credentials(self, tmp_path) -> None:
-        """Config provider with missing credentials shows appropriate error."""
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("""
-[models.providers.fireworks]
-models = ["llama-v3p1-70b"]
-api_key_env = "FIREWORKS_API_KEY"
-""")
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "gpt-5.5"
-        runtime_state.model_provider = "openai"
-
-        captured_errors: list[str] = []
-        original_err_init = ErrorMessage.__init__
-
-        def capture_err(self: ErrorMessage, message: str, **kwargs: Any) -> None:
-            captured_errors.append(message)
-            original_err_init(self, message, **kwargs)
-
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch.dict("os.environ", {}, clear=True),
-            patch.object(ErrorMessage, "__init__", capture_err),
-        ):
-            await app._switch_model("fireworks:llama-v3p1-70b")
-
-        app._mount_message.assert_called_once()  # ty: ignore
-        assert len(captured_errors) == 1
-        assert "Missing credentials" in captured_errors[0]
-        assert "FIREWORKS_API_KEY" in captured_errors[0]
-
-    async def test_switch_to_ollama_no_key_required(self, tmp_path) -> None:
-        """Ollama (no api_key_env) passes credential check and switches."""
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("""
-[models.providers.ollama]
-models = ["llama3"]
-""")
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "gpt-5.5"
-        runtime_state.model_provider = "openai"
-
-        captured_messages: list[str] = []
-        original_app_init = AppMessage.__init__
-
-        def capture_app(self: AppMessage, message: str, **kwargs: Any) -> None:
-            captured_messages.append(message)
-            original_app_init(self, message, **kwargs)
-
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch(
-                "deepagents_code.model_config.save_recent_model", return_value=True
-            ) as mock_save,
-            patch.object(AppMessage, "__init__", capture_app),
-        ):
-            await app._switch_model("ollama:llama3")
-
-        mock_save.assert_called_once_with("ollama:llama3")
-        assert app._model_override == "ollama:llama3"
-        assert runtime_state.model_name == "llama3"
-        assert runtime_state.model_provider == "ollama"
-        assert any("Switched to ollama:llama3" in m for m in captured_messages)
-
-
 class TestModelSwitchBareModelName:
     """Tests for _switch_model with bare model names (no provider prefix)."""
 
@@ -794,10 +722,8 @@ class TestModelSwitchBareModelName:
     async def test_fireworks_qualified_id_gets_provider_prefix(self) -> None:
         """A Fireworks `accounts/...` ID resolves to a `fireworks:` prefix.
 
-        Without provider inference the raw ID would surface unprefixed in the
-        confirmation message and the status bar (which reads
-        `runtime_state.model_provider`). `detect_provider` recognizes the
-        fully-qualified Fireworks ID so both reflect the `fireworks` provider.
+        The server's resolved provider appears in the confirmation message,
+        status bar, and subsequent inference override.
         """
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # ty: ignore
@@ -815,6 +741,15 @@ class TestModelSwitchBareModelName:
 
         model_id = "accounts/fireworks/models/kimi-k2p7-code"
         with (
+            patch.object(
+                RemoteAgent,
+                "aresolve_model",
+                AsyncMock(
+                    return_value=_FakeModelResult(
+                        model_name=model_id, provider="fireworks", context_limit=131_072
+                    )
+                ),
+            ),
             patch(
                 "deepagents_code.model_config.get_provider_auth_status",
                 return_value=_CONFIGURED_AUTH_STATUS,
@@ -831,41 +766,6 @@ class TestModelSwitchBareModelName:
         assert runtime_state.model_name == model_id
         assert runtime_state.model_provider == "fireworks"
         assert any(f"Switched to fireworks:{model_id}" in m for m in captured_messages)
-
-    async def test_bare_model_name_missing_credentials(self) -> None:
-        """Bare model name shows credential error when provider creds are missing."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "claude-sonnet-4-5"
-        runtime_state.model_provider = "anthropic"
-
-        captured_errors: list[str] = []
-        original_init = ErrorMessage.__init__
-
-        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
-            captured_errors.append(message)
-            original_init(self, message, **kwargs)
-
-        with (
-            patch("deepagents_code.config.detect_provider", return_value="openai"),
-            patch(
-                "deepagents_code.model_config.get_provider_auth_status",
-                return_value=ProviderAuthStatus(
-                    state=ProviderAuthState.MISSING,
-                    provider="openai",
-                    env_var="OPENAI_API_KEY",
-                ),
-            ),
-            patch.object(ErrorMessage, "__init__", capture_init),
-        ):
-            await app._switch_model("gpt-5.5")
-
-        app._mount_message.assert_called_once()  # ty: ignore
-        assert len(captured_errors) == 1
-        assert "Missing credentials" in captured_errors[0]
-        assert "OPENAI_API_KEY" in captured_errors[0]
 
 
 class TestExtractModelParamsFlag:

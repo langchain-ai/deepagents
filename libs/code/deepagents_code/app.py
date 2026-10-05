@@ -6314,11 +6314,7 @@ class DeepAgentsApp(App):
                 logger.exception("Failed to restore startup tip after resume fallback")
 
     async def _start_server_background(self) -> None:
-        """Background worker: resolve resume-thread intent, start server + MCP preload.
-
-        Also runs deferred model creation if `model_kwargs` was provided,
-        so the langchain import + init doesn't block first paint.
-        """
+        """Start the server and fetch model metadata without importing providers."""
         # Phase 1: Resolve resume thread (if any) before server startup
         if self._resume_thread_intent:
             await self._resolve_resume_thread()
@@ -6337,19 +6333,6 @@ class DeepAgentsApp(App):
                 self.exit(return_code=1)
                 return
 
-        # Run deferred model creation. runtime_state.model_name / model_provider
-        # are already set eagerly for the status bar display; this call
-        # does the heavy langchain import + SDK init and may refine them
-        # (e.g., context_limit from the model profile).
-        # Persist the user-chosen default so a later bare `deepagents`
-        # relaunch brings the user back to it. See
-        # `_restart_server_for_agent_swap` for why one-off resumes don't
-        # mutate `_default_assistant_id` and why the persisted default
-        # is decoupled from the per-session `_assistant_id`.
-        # Runs BEFORE deferred model creation so a `ModelConfigError`
-        # (e.g., missing API key) doesn't prevent the recent-agent write
-        # — the user's intent to use this agent shouldn't depend on
-        # whether their credentials happened to be valid this launch.
         if self._default_assistant_id:
             from deepagents_code.model_config import save_recent_agent
 
@@ -6373,36 +6356,7 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
 
-        if self._model_kwargs is not None:
-            # Block on prewarm before re-entering the import graph; see
-            # `_await_prewarm_imports` for the deadlock rationale.
-            await self._await_prewarm_imports()
-
-            from deepagents_code.model_config import (
-                ModelConfigError,
-                ModelNotAllowedError,
-                save_recent_model,
-                touch_recent_model,
-            )
-
-            try:
-                result = await asyncio.to_thread(
-                    _create_model_with_deepagents_import_lock,
-                    **self._model_kwargs,
-                )
-            except ModelConfigError as exc:
-                self.post_message(self.ServerStartFailed(error=exc))
-                return
-            result.apply_to_runtime_state()
-            resolved_spec = f"{result.provider}:{result.model_name}"
-            await self._restore_effort_override(resolved_spec)
-            # Best-effort persistence. `resolved_spec` came out of `create_model`, so
-            # it already passed the policy gate; a refusal here means the config changed
-            # mid-session, which must not take down a session that is already running.
-            with suppress(ModelNotAllowedError):
-                save_recent_model(resolved_spec)
-            touch_recent_model(resolved_spec)
-            self._model_kwargs = None  # consumed
+        await self._await_prewarm_imports()
 
         # Install the managed `rg` and prepend it to `PATH` BEFORE spawning
         # the langgraph subprocess: `ServerProcess.start()` snapshots
@@ -6448,6 +6402,29 @@ class DeepAgentsApp(App):
         # clean up the server even if the ServerReady message is never
         # processed (e.g. user quits during startup).
         self._server_proc = server_proc
+
+        if self._model_kwargs is not None:
+            from deepagents_code.model_config import (
+                ModelNotAllowedError,
+                save_recent_model,
+                touch_recent_model,
+            )
+
+            try:
+                result = await agent.aget_model_metadata()
+            except Exception as exc:
+                logger.exception("Failed to read startup model metadata")
+                await asyncio.to_thread(server_proc.stop)
+                self._server_proc = None
+                self.post_message(self.ServerStartFailed(error=exc))
+                return
+            result.apply_to_runtime_state()
+            resolved_spec = f"{result.provider}:{result.model_name}"
+            await self._restore_effort_override(resolved_spec)
+            with suppress(ModelNotAllowedError):
+                save_recent_model(resolved_spec)
+            touch_recent_model(resolved_spec)
+            self._model_kwargs = None  # consumed
 
         mcp_info = None
         if len(results) > 1 and not isinstance(results[1], BaseException):
@@ -31462,11 +31439,8 @@ class DeepAgentsApp(App):
                 messaging (which model couldn't be restored and what the session
                 is falling back to) rather than the interactive `/model` errors.
         """
-        from deepagents_code.config import detect_provider, runtime_state
+        from deepagents_code.config import runtime_state
         from deepagents_code.model_config import (
-            ModelSpec,
-            ProviderAuthState,
-            get_provider_auth_status,
             save_recent_model,
             touch_recent_model,
         )
@@ -31483,7 +31457,8 @@ class DeepAgentsApp(App):
             # treat ":claude-opus-4-6" as "claude-opus-4-6"
             model_spec = model_spec.removeprefix(":")
 
-            if not self._remote_agent():
+            remote = self._remote_agent()
+            if remote is None:
                 if self._connecting:
                     from functools import partial
 
@@ -31522,47 +31497,43 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            parsed = ModelSpec.try_parse(model_spec)
-            if parsed:
-                provider: str | None = parsed.provider
-                model_name = parsed.model
-            else:
-                model_name = model_spec
-                provider = detect_provider(model_spec)
+            # Provider inference belongs to the server's workspace environment.
+            display = model_spec
 
-            # Check credentials
-            auth_status = get_provider_auth_status(provider) if provider else None
-            if auth_status is not None and auth_status.blocks_start:
+            if self._status_bar:
+                self._status_bar.set_busy("Switching model")
+            try:
+                result = await remote.aresolve_model(
+                    {"configurable": {"thread_id": self._lc_thread_id}},
+                    display,
+                    extra_kwargs=extra_kwargs,
+                )
+                unchanged = (
+                    result.model_name == runtime_state.model_name
+                    and result.provider == runtime_state.model_provider
+                )
+                result.apply_to_runtime_state()
+            except Exception as exc:
+                logger.exception("Failed to resolve model metadata for %s", display)
                 if from_resume:
                     await self._mount_resume_adoption_failure(
-                        model_spec,
-                        f"missing credentials for '{auth_status.provider}'",
-                        hint=f"Run `/auth` then `/model {model_spec}` to use it.",
+                        display, "the model could not be initialized"
                     )
                 else:
                     await self._mount_message(
-                        ErrorMessage(
-                            f"Missing credentials: {auth_status.missing_detail()}\n\n"
-                            f"Run `/auth` for the '{auth_status.provider}' provider, "
-                            f"then re-issue `/model {model_spec}`.",
-                        ),
+                        ErrorMessage(_build_model_switch_error_body(exc)),
                     )
                 return
-            if (
-                auth_status is not None
-                and auth_status.state is ProviderAuthState.UNKNOWN
-            ):
-                logger.debug(
-                    "Credentials for provider '%s' cannot be verified;"
-                    " proceeding anyway",
-                    provider,
-                )
+            finally:
+                if self._status_bar:
+                    self._status_bar.set_busy("")
+
+            resolved_spec = f"{result.provider}:{result.model_name}"
+            display = resolved_spec
 
             # Check if already using this exact model
-            if model_name == runtime_state.model_name and (
-                not provider or provider == runtime_state.model_provider
-            ):
-                current = f"{runtime_state.model_provider}:{runtime_state.model_name}"
+            if unchanged:
+                current = resolved_spec
                 # Mirror the regular-switch path so `--model-params` semantics
                 # are consistent across same-model and different-model cases:
                 # passing params applies them, omitting params clears any
@@ -31584,46 +31555,11 @@ class DeepAgentsApp(App):
                 )
                 return
 
-            # Build the provider:model spec for the configurable middleware.
-            display = model_spec
-            if provider and not parsed:
-                display = f"{provider}:{model_name}"
-
-            # Provider package imports (e.g. langchain_google_genai) can take a
-            # noticeable moment; show an animated busy indicator so it doesn't look
-            # frozen. The work itself already runs off the event loop via
-            # `asyncio.to_thread`, so the UI stays responsive meanwhile.
-            if self._status_bar:
-                self._status_bar.set_busy("Switching model")
-            try:
-                result = await asyncio.to_thread(
-                    _create_model_with_deepagents_import_lock,
-                    display,
-                    extra_kwargs=extra_kwargs,
-                    profile_overrides=self._profile_override,
-                )
-                result.apply_to_runtime_state()
-            except Exception as exc:
-                logger.exception("Failed to resolve model metadata for %s", display)
-                if from_resume:
-                    await self._mount_resume_adoption_failure(
-                        display, "the model could not be initialized"
-                    )
-                else:
-                    await self._mount_message(
-                        ErrorMessage(_build_model_switch_error_body(exc)),
-                    )
-                return
-            finally:
-                if self._status_bar:
-                    self._status_bar.set_busy("")
-
             # Set the model override for ConfigurableModelMiddleware.
             # The next stream call passes CLIContext via context= and the
             # middleware swaps the model per-invocation — no graph recreation.
             self._model_override = display
             self._model_params_override = extra_kwargs
-            resolved_spec = f"{result.provider}:{result.model_name}"
             await self._restore_effort_override(resolved_spec)
 
             self._sync_status_model()
@@ -31650,11 +31586,7 @@ class DeepAgentsApp(App):
                 )
             if persist:
                 # Best-effort MRU update for the `/model` Recent section.
-                # `display` may be a bare model name when provider
-                # auto-detection fails; use the post-resolution spec so
-                # touch_recent_model always gets a valid "provider:model"
-                # string -- and so it is matched against `models.allowed` in
-                # the same canonical form `create_model` just approved.
+                # Use the canonical spec approved by the server's policy gate.
                 # Silent on failure — the debug log captures it when
                 # debug logging is enabled.
                 await asyncio.to_thread(touch_recent_model, resolved_spec)

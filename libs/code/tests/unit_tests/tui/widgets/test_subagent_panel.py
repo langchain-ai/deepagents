@@ -247,6 +247,8 @@ class TestReplayTiming:
             panel.on_subagent_event(_start("a", "E1"))
             record = panel._find_record("a")
             assert record is not None
+            # Exact timestamps keep millisecond truncation independent of uptime.
+            record.started_monotonic = 100.0
             clock = SimpleNamespace(monotonic=lambda: record.started_monotonic + 12.5)
             monkeypatch.setattr(
                 "deepagents_code.tui.widgets.subagent_panel.time", clock

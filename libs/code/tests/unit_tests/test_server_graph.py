@@ -374,6 +374,9 @@ asyncio.run(main())
                 return_value=SimpleNamespace(
                     model=model_obj,
                     provider="openai",
+                    model_name="test",
+                    context_limit=4096,
+                    unsupported_modalities=frozenset({"video"}),
                     apply_to_runtime_state=MagicMock(),
                     model_retries=5,
                     cli_max_retries=None,
@@ -487,6 +490,9 @@ asyncio.run(main())
                 return_value=SimpleNamespace(
                     model=model_obj,
                     provider="openai",
+                    model_name="test",
+                    context_limit=4096,
+                    unsupported_modalities=frozenset({"video"}),
                     apply_to_runtime_state=MagicMock(),
                     model_retries=5,
                     cli_max_retries=None,
@@ -636,6 +642,9 @@ class TestWorkspaceEnvironmentBinding:
             return SimpleNamespace(
                 model=object(),
                 provider="openai",
+                model_name="test",
+                context_limit=4096,
+                unsupported_modalities=frozenset({"video"}),
                 apply_to_runtime_state=lambda: None,
                 model_retries=5,
                 cli_max_retries=None,
@@ -665,6 +674,15 @@ class TestWorkspaceEnvironmentBinding:
             runtime = await module._make_graphs(config_override=config)
 
         assert runtime.agent is graph_obj
+        assert runtime.model_environment is not None
+        assert runtime.model_environment["WORKSPACE_ONLY"] == "from-workspace-dotenv"
+        assert runtime.model_metadata is not None
+        assert runtime.model_metadata.to_payload() == {
+            "model_name": "test",
+            "provider": "openai",
+            "context_limit": 4096,
+            "unsupported_modalities": ["video"],
+        }
         # Each consumer read the workspace `.env`, not the server process env.
         assert seen["model"] == "from-workspace-dotenv"
         assert seen["agent"] == "from-workspace-dotenv"

@@ -29,6 +29,7 @@ from deepagents_code._paths import (
     PATHS,
     export_profile_env,
 )
+from deepagents_code._startup_error import startup_error_from_output
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     _USER_LANGSMITH_ENV_CARRIER,
@@ -320,8 +321,9 @@ async def wait_for_server_healthy(
         local: Use a shorter poll interval for local servers.
 
     Raises:
+        ModelConfigError: If startup reports missing credentials or a provider package.
         RuntimeError: If the server doesn't become healthy in time.
-    """
+    """  # noqa: DOC502  # recovery error types are reconstructed from subprocess output
     import httpx
 
     poll_interval = (
@@ -342,7 +344,8 @@ async def wait_for_server_healthy(
                     if summary:
                         msg += f": {summary}"
                     msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
-                raise RuntimeError(msg)
+                error = startup_error_from_output(output, msg)
+                raise error
 
             try:
                 resp = await client.get(health_url, timeout=2)
@@ -1026,9 +1029,11 @@ class ServerProcess:
             timeout: Max seconds to wait for the graph readiness request.
 
         Raises:
+            ModelConfigError: If startup reports missing credentials or a
+                provider package.
             RuntimeError: If the server process exits or the graph endpoint
                 does not return a successful response.
-        """
+        """  # noqa: DOC502  # recovery errors are reconstructed from subprocess output
         import httpx
 
         if self._process is None:
@@ -1048,7 +1053,8 @@ class ServerProcess:
                         if summary:
                             msg += f": {summary}"
                         msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
-                    raise RuntimeError(msg)
+                    error = startup_error_from_output(output, msg)
+                    raise error
 
                 remaining = max(0.1, deadline - time.monotonic())
                 try:
@@ -1070,7 +1076,8 @@ class ServerProcess:
                         msg += f": {summary}"
                     if output:
                         msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
-                    raise RuntimeError(msg) from exc
+                    error = startup_error_from_output(output, msg)
+                    raise error from exc
 
                 if resp.status_code == 200:  # noqa: PLR2004
                     logger.info("Server graph %s is ready at %s", graph_name, self.url)
@@ -1086,7 +1093,8 @@ class ServerProcess:
                     msg += f": {summary}"
                 if output:
                     msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
-                raise RuntimeError(msg)
+                error = startup_error_from_output(output, msg)
+                raise error
 
         msg = f"Server graph '{graph_name}' did not initialize within {timeout}s"
         raise RuntimeError(msg)

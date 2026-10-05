@@ -22,7 +22,9 @@ from deepagents_code.app import (
     _EffortContext,
     _GoalApplication,
 )
+from deepagents_code.client.remote_client import RemoteAgent
 from deepagents_code.config import runtime_state
+from deepagents_code.model_metadata import ModelMetadata
 from deepagents_code.reasoning_effort import (
     current_effort_from_model_params,
     has_explicit_effort_model_params,
@@ -39,11 +41,15 @@ def _restore_runtime_state(
 ) -> Iterator[None]:
     original_name = runtime_state.model_name
     original_provider = runtime_state.model_provider
+    original_context_limit = runtime_state.model_context_limit
+    original_modalities = runtime_state.model_unsupported_modalities
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
     model_config.clear_caches()
     yield
     runtime_state.model_name = original_name
     runtime_state.model_provider = original_provider
+    runtime_state.model_context_limit = original_context_limit
+    runtime_state.model_unsupported_modalities = original_modalities
     model_config.clear_caches()
 
 
@@ -230,7 +236,11 @@ async def test_effort_selected_during_startup_survives_model_restoration(
 
     monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
     monkeypatch.setattr(app, "_load_thread_history", load_history)
-    monkeypatch.setattr(app, "_remote_agent", Mock(return_value=MagicMock()))
+    remote = MagicMock(spec=RemoteAgent)
+    remote.aresolve_model.return_value = ModelMetadata(
+        model_name="gpt-5.5", provider="openai"
+    )
+    monkeypatch.setattr(app, "_remote_agent", Mock(return_value=remote))
     monkeypatch.setattr(
         model_config, "get_provider_auth_status", Mock(return_value=None)
     )

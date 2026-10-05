@@ -2078,38 +2078,141 @@ class TestWorkspaceStoredCredentials:
             model.client.close()
             await model.client.aio.aclose()
 
-    @patch("langchain.chat_models.init_chat_model")
-    def test_stored_anthropic_key_clears_endpoint_and_headers(
+    @pytest.mark.parametrize(
+        "provider", ["openai", "anthropic", "fireworks", "perplexity"]
+    )
+    @pytest.mark.parametrize("endpoint_source", ["native", "stored", "caller"])
+    async def test_stored_key_drops_gateway_headers_only_for_native_requests(
         self,
-        mock_init_chat_model: Mock,
         monkeypatch: pytest.MonkeyPatch,
+        provider: str,
+        endpoint_source: str,
     ) -> None:
-        """A native Anthropic key gets explicit native transport settings."""
-        from deepagents_code.config import create_model, use_environment
+        """Requests use native auth without changing another workspace's gateway."""
+        import os
 
-        mock_model = Mock()
-        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
-        mock_init_chat_model.return_value = mock_model
+        import httpx
+        from langsmith import tracing_context
+
+        from deepagents_code.config import use_environment
+
+        pytest.importorskip(f"langchain_{provider}")
+        endpoint = "https://selected.example"
+        _stored_provider_config(
+            monkeypatch,
+            provider,
+            base_url=endpoint if endpoint_source == "stored" else None,
+        )
+        prefix = provider.upper()
+        auth_header = "X-Api-Key" if provider == "anthropic" else "Authorization"
+        native_auth = "stored-key" if provider == "anthropic" else "Bearer stored-key"
+        environment = {
+            f"{prefix}_BASE_URL": "https://gateway.example",
+            f"{prefix}_CUSTOM_HEADERS": (
+                f"{auth_header}: gateway-key\nX-Gateway-Token: gateway-token\n"
+                "x-request-source: inherited"
+            ),
+        }
+        for name, value in environment.items():
+            monkeypatch.setenv(name, value)
+        requests: list[httpx.Request] = []
+
+        def respond(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
+            if provider == "anthropic":
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": "test-message",
+                        "type": "message",
+                        "role": "assistant",
+                        "model": "test-model",
+                        "content": [{"type": "text", "text": "Hello"}],
+                        "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "id": "test-completion",
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "message": {"role": "assistant", "content": "Hello"},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                },
+            )
+
+        transport = httpx.MockTransport(respond)
         monkeypatch.setattr(
-            "deepagents_code.model_config.auth_store.get_stored_key",
-            lambda provider: "stored-key" if provider == "anthropic" else None,
+            httpx.Client, "_transport_for_url", lambda *_args: transport
         )
         monkeypatch.setattr(
-            "deepagents_code.model_config.auth_store.get_stored_base_url",
-            lambda _provider: None,
+            httpx.AsyncClient, "_transport_for_url", lambda *_args: transport
         )
-        with use_environment(
-            {
-                "ANTHROPIC_BASE_URL": "https://workspace.example/v1",
-                "ANTHROPIC_CUSTOM_HEADERS": "X-Api-Key: gateway-key",
-            }
-        ):
-            create_model("anthropic:claude-sonnet-4-6")
-
-        kwargs = mock_init_chat_model.call_args.kwargs
-        assert kwargs["api_key"] == "stored-key"
-        assert kwargs["base_url"] == "https://api.anthropic.com"
-        assert kwargs["default_headers"] == {}
+        if provider in {"openai", "anthropic"}:
+            module = (
+                "langchain_openai.chat_models.base"
+                if provider == "openai"
+                else "langchain_anthropic.chat_models"
+            )
+            monkeypatch.setattr(
+                f"{module}._get_default_httpx_client",
+                lambda *_args, **_kwargs: httpx.Client(transport=transport),
+            )
+            monkeypatch.setattr(
+                f"{module}._get_default_async_httpx_client",
+                lambda *_args, **_kwargs: httpx.AsyncClient(transport=transport),
+            )
+        extra_kwargs: dict[str, object] = {}
+        if provider in {"openai", "anthropic"} and endpoint_source == "native":
+            extra_kwargs["default_headers"] = {"X-Request-Source": "caller"}
+        if provider == "openai":
+            extra_kwargs["use_responses_api"] = False
+        if endpoint_source == "caller":
+            extra_kwargs["base_url"] = endpoint
+        with use_environment(environment):
+            model = create_model(
+                f"{provider}:test-model",
+                extra_kwargs=extra_kwargs,
+            ).model
+        clients = {
+            "openai": ("root_client", "root_async_client"),
+            "anthropic": ("_client", "_async_client"),
+            "fireworks": ("_sdk_client", "_async_sdk_client"),
+            "perplexity": ("client", "async_client"),
+        }[provider]
+        native_host = {
+            "openai": "api.openai.com",
+            "anthropic": "api.anthropic.com",
+            "fireworks": "api.fireworks.ai",
+            "perplexity": "api.perplexity.ai",
+        }[provider]
+        try:
+            with tracing_context(enabled=False):
+                assert model.invoke("Hi").content == "Hello"
+                assert (await model.ainvoke("Hi")).content == "Hello"
+            assert len(requests) == 2
+            for request in requests:
+                native = endpoint_source == "native"
+                assert request.url.host == (
+                    native_host if native else "selected.example"
+                )
+                assert request.headers[auth_header] == (
+                    native_auth if native else "gateway-key"
+                )
+                assert request.headers.get("x-gateway-token") == (
+                    None if native else "gateway-token"
+                )
+                if native and provider in {"openai", "anthropic"}:
+                    assert request.headers["x-request-source"] == "caller"
+            assert all(os.environ[name] == value for name, value in environment.items())
+        finally:
+            getattr(model, clients[0]).close()
+            await getattr(model, clients[1]).close()
 
     @patch("langchain.chat_models.init_chat_model")
     def test_corrupt_store_drops_the_inherited_endpoint(

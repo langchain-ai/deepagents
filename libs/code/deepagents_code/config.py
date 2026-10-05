@@ -6014,17 +6014,21 @@ def _apply_scoped_endpoint(
     provider: str,
     kwargs: dict[str, Any],
     extra_kwargs: dict[str, Any] | None,
-) -> None:
+) -> bool:
     """Pair the resolved key with its endpoint on the workspace-scoped path.
 
     `apply_stored_credentials` is skipped while an environment is bound, so this
     is the only thing keeping a gateway key from reaching an endpoint that key
     was not issued for.
+
+    Returns:
+        Whether constructed clients must discard inherited gateway headers.
     """
     if not (extra_kwargs and "api_key" in extra_kwargs):
-        _apply_scoped_stored_endpoint(provider, kwargs)
+        clear_headers = _apply_scoped_stored_endpoint(provider, kwargs)
         if extra_kwargs and "base_url" in extra_kwargs:
             kwargs["base_url"] = extra_kwargs["base_url"]
+            clear_headers = False
         if (
             provider == "openai"
             and kwargs.get("base_url") == _PROVIDER_NATIVE_BASE_URLS["openai"]
@@ -6032,9 +6036,9 @@ def _apply_scoped_endpoint(
             # An explicit URL disables LangChain's native streaming-usage default.
             # Restore it after endpoint overrides, preserving explicit opt-outs.
             kwargs.setdefault("stream_usage", True)
-        return
+        return clear_headers
     if "base_url" in extra_kwargs:
-        return
+        return False
 
     from deepagents_code.model_config import auth_store
 
@@ -6054,9 +6058,10 @@ def _apply_scoped_endpoint(
             provider,
         )
         kwargs.pop("base_url", None)
-        return
+        return False
     if stored_base_url and kwargs.get("base_url") == stored_base_url:
         kwargs.pop("base_url", None)
+    return False
 
 
 _PROVIDER_NATIVE_BASE_URLS: dict[str, str] = {
@@ -6115,10 +6120,13 @@ def _google_genai_uses_vertexai(kwargs: dict[str, Any]) -> bool:
     return kwargs.get("credentials") is not None or kwargs.get("project") is not None
 
 
-def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None:
-    """Pair stored credentials with their endpoint without mutating the process."""
+def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> bool:
+    """Pair stored credentials with their endpoint without mutating the process.
+
+    Returns:
+        Whether a native endpoint replaced inherited gateway settings.
+    """
     from deepagents_code.model_config import (
-        PROVIDER_CUSTOM_HEADERS_ENV,
         ModelConfig,
         _configured_base_url_survives_env_clear,
         auth_store,
@@ -6143,28 +6151,71 @@ def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None
         stored_base_url = None
     else:
         if not stored_key:
-            return
+            return False
     provider_config = ModelConfig.load().providers.get(provider)
     configured_url = provider_config.get("base_url") if provider_config else None
     if configured_url or _configured_base_url_survives_env_clear(provider):
-        return
+        return False
     if stored_base_url:
         kwargs["base_url"] = stored_base_url
-        return
+        return False
     kwargs.pop("base_url", None)
     # Omitting the kwarg lets the integration/SDK reread the process's gateway
     # env vars, which a workspace-scoped construction must leave untouched.
     if provider == "google_genai" and _google_genai_uses_vertexai(kwargs):
         # Vertex has regional endpoints; the Gemini URL is not its default.
-        return
+        return False
     endpoint_alias = _PROVIDER_BASE_URL_ALIASES.get(provider)
     if (not endpoint_alias or kwargs.get(endpoint_alias) is None) and (
         native_url := _PROVIDER_NATIVE_BASE_URLS.get(provider)
     ):
         kwargs["base_url"] = native_url
-    custom_headers = PROVIDER_CUSTOM_HEADERS_ENV.get(provider)
-    if custom_headers:
-        kwargs["default_headers"] = {}
+        return True
+    return False
+
+
+def _clear_inherited_client_headers(
+    model: BaseChatModel, kwargs: Mapping[str, object]
+) -> None:
+    """Remove SDK environment headers from newly constructed native clients.
+
+    These SDKs merge their environment headers even with `default_headers={}`.
+    Filter the instance headers before any request, preserving explicit headers
+    and caller-owned clients without touching the shared process environment.
+    """
+    from collections.abc import Mapping
+
+    inherited = {
+        line.partition(":")[0].strip().lower()
+        for prefix in ("OPENAI", "ANTHROPIC", "FIREWORKS", "PERPLEXITY")
+        for line in os.environ.get(f"{prefix}_CUSTOM_HEADERS", "").splitlines()
+        if ":" in line
+    }
+    explicit = kwargs.get("default_headers")
+    explicit_names = set(explicit) if isinstance(explicit, Mapping) else set()
+    if not inherited:
+        return
+    for attribute in (
+        "client",
+        "async_client",
+        "root_client",
+        "root_async_client",
+        "_client",
+        "_async_client",
+    ):
+        if kwargs.get(attribute) is not None:
+            continue
+        client = getattr(model, attribute, None)
+        if not isinstance(getattr(client, "_custom_headers", None), Mapping):
+            # Chat-completion resources hold their owning SDK client here.
+            client = getattr(client, "_client", None)
+        headers = getattr(client, "_custom_headers", None)
+        if client is not None and isinstance(headers, Mapping):
+            client._custom_headers = {
+                name: value
+                for name, value in headers.items()
+                if name.lower() not in inherited or name in explicit_names
+            }
 
 
 def _apply_google_anthropic_vertex_kwargs(
@@ -6905,8 +6956,11 @@ def create_model(
         reasoning_effort_override = extra_kwargs.get("reasoning_effort")
         reasoning_override = extra_kwargs.get("reasoning")
         kwargs.update(extra_kwargs)
-    if provider and scoped_environment:
-        _apply_scoped_endpoint(provider, kwargs, extra_kwargs)
+    clear_inherited_headers = (
+        provider
+        and scoped_environment
+        and (_apply_scoped_endpoint(provider, kwargs, extra_kwargs))
+    )
     kwargs = _compose_openai_reasoning_effort(
         provider,
         kwargs,
@@ -6984,6 +7038,9 @@ def create_model(
         model = _create_model_from_class(class_path, model_name, provider, kwargs)
     else:
         model = _create_model_via_init(model_name, provider, kwargs)
+
+    if clear_inherited_headers:
+        _clear_inherited_client_headers(model, kwargs)
 
     resolved_provider = provider or getattr(model, "_model_provider", provider)
     from deepagents_code.cost_tracking import _set_configured_model_metadata

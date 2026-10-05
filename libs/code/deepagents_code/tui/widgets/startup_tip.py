@@ -38,7 +38,6 @@ _TIPS: dict[str, int] = {
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
     "Use /offload model to choose a model for compaction summaries": 1,
-    "Press ctrl+s in /offload model to save your default summary model": 1,
     "Use /uninstall to remove an optional integration": 1,
     "Use /effort to change the current model's reasoning effort": 1,
     "Start with --show-reasoning to display provider-visible reasoning": 1,

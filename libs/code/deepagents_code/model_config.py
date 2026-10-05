@@ -6215,8 +6215,10 @@ def load_terminal_tab_title(config_path: Path | None = None) -> str:
         config_path: Optional explicit config file, excluding managed policy.
 
     Returns:
-        Configured template, or `"{app_name}"` by default.
+        Configured template, or `"{app_name} - {thread_name}"` by default.
     """
+    from deepagents_code.terminal_title import DEFAULT_TERMINAL_TAB_TITLE
+
     try:
         data, _ = _load_effective_config_data(config_path)
         terminal = data.get("terminal", {})
@@ -6227,7 +6229,7 @@ def load_terminal_tab_title(config_path: Path | None = None) -> str:
         logger.warning(
             "Could not read terminal title config; using default", exc_info=True
         )
-    return "{app_name}"
+    return DEFAULT_TERMINAL_TAB_TITLE
 
 
 def invalidate_thread_config_cache() -> None:

@@ -11,6 +11,7 @@ from deepagents_code._env_vars import NO_TERMINAL_ESCAPE, is_env_truthy
 from deepagents_code._invocation import invoked_name
 
 logger = logging.getLogger(__name__)
+DEFAULT_TERMINAL_TAB_TITLE = "{app_name} - {thread_name}"
 _FIELDS = frozenset({"app_name", "thread_name", "cwd", "branch"})
 
 
@@ -34,7 +35,9 @@ class TerminalTitle:
         Args:
             template: Title with app_name, thread_name, cwd, and branch fields.
         """
-        self._template = template if _valid_template(template) else "{app_name}"
+        self._template = (
+            template if _valid_template(template) else DEFAULT_TERMINAL_TAB_TITLE
+        )
         self._stream: TextIO | None = None
         self._last_title: str | None = None
 
@@ -71,7 +74,10 @@ class TerminalTitle:
             cwd: Active working directory.
             branch: Active Git branch.
         """
-        title = self._template.format(
+        template = self._template
+        if template == DEFAULT_TERMINAL_TAB_TITLE and not thread_name:
+            template = "{app_name}"
+        title = template.format(
             app_name=invoked_name(), thread_name=thread_name, cwd=cwd, branch=branch
         )
         title = "".join(char for char in title if char.isprintable())[:512]

@@ -1335,12 +1335,9 @@ def test_thread_naming_config(
 @pytest.mark.parametrize(
     ("content", "expected"),
     [
-        ("", "{app_name}"),
-        (
-            '[terminal]\ntab_title = "{app_name} - {thread_name}"\n',
-            "{app_name} - {thread_name}",
-        ),
-        ("[terminal]\ntab_title = false\n", "{app_name}"),
+        ("", "{app_name} - {thread_name}"),
+        ('[terminal]\ntab_title = "{app_name}"\n', "{app_name}"),
+        ("[terminal]\ntab_title = false\n", "{app_name} - {thread_name}"),
     ],
 )
 def test_terminal_tab_title_config(tmp_path: Path, content: str, expected: str) -> None:

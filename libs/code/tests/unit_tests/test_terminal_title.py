@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import io
+from typing import TYPE_CHECKING
 
 import pytest
 
 from deepagents_code._env_vars import NO_TERMINAL_ESCAPE
 from deepagents_code.terminal_title import TerminalTitle
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TerminalStream(io.StringIO):
@@ -65,6 +69,24 @@ def test_title_lifecycle_deduplicates_and_restores(terminal: TerminalStream) -> 
     )
 
 
+def test_default_title_tracks_named_and_unnamed_threads(
+    terminal: TerminalStream, tmp_path: Path
+) -> None:
+    from deepagents_code.model_config import load_terminal_tab_title
+
+    title = TerminalTitle(load_terminal_tab_title(tmp_path / "config.toml"))
+    title.start()
+    title.update()
+    title.update(thread_name="Cache repair")
+    title.update()
+    assert terminal.getvalue() == (
+        "\x1b[22;0t"
+        "\x1b]0;dcode-dev\x07"
+        "\x1b]0;dcode-dev - Cache repair\x07"
+        "\x1b]0;dcode-dev\x07"
+    )
+
+
 def test_terminal_control_characters_are_never_emitted_in_title(
     terminal: TerminalStream,
 ) -> None:
@@ -101,7 +123,7 @@ def test_invalid_template_uses_safe_default(
     title = TerminalTitle(template)
     title.start()
     title.update(thread_name="Cache repair")
-    assert terminal.getvalue() == "\x1b[22;0t\x1b]0;dcode-dev\x07"
+    assert terminal.getvalue() == "\x1b[22;0t\x1b]0;dcode-dev - Cache repair\x07"
 
 
 def test_title_length_is_bounded(terminal: TerminalStream) -> None:

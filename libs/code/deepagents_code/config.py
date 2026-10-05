@@ -6082,6 +6082,14 @@ URLs: Fireworks appends `/v1/chat/completions` to an explicit base URL. Provider
 with deployment-specific endpoints (such as Azure) have no fixed native URL.
 """
 
+_PROVIDER_BASE_URL_ALIASES: dict[str, str] = {
+    "anthropic": "anthropic_api_url",
+    "baseten": "baseten_api_base",
+    "openai": "openai_api_base",
+    "openrouter": "openrouter_api_base",
+}
+"""Provider endpoint fields accepted alongside the common `base_url` alias."""
+
 
 def _google_genai_uses_vertexai(kwargs: dict[str, Any]) -> bool:
     """Match the integration's backend selection before choosing a native URL.
@@ -6142,7 +6150,10 @@ def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None
     if provider == "google_genai" and _google_genai_uses_vertexai(kwargs):
         # Vertex has regional endpoints; the Gemini URL is not its default.
         return
-    if native_url := _PROVIDER_NATIVE_BASE_URLS.get(provider):
+    endpoint_alias = _PROVIDER_BASE_URL_ALIASES.get(provider)
+    if (not endpoint_alias or kwargs.get(endpoint_alias) is None) and (
+        native_url := _PROVIDER_NATIVE_BASE_URLS.get(provider)
+    ):
         kwargs["base_url"] = native_url
     custom_headers = PROVIDER_CUSTOM_HEADERS_ENV.get(provider)
     if custom_headers:

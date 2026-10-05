@@ -1660,6 +1660,9 @@ class TestWorkspaceStoredCredentials:
             ("prefixed", "default", "OPENAI_BASE_URL"),
             ("config", "default", "OPENAI_BASE_URL"),
             ("caller", "default", "OPENAI_BASE_URL"),
+            ("provider_alias", "default", "OPENAI_BASE_URL"),
+            ("model_alias", "default", "OPENAI_BASE_URL"),
+            ("caller_alias", "default", "OPENAI_BASE_URL"),
         ],
     )
     async def test_stored_openai_streaming_usage(
@@ -1686,6 +1689,10 @@ class TestWorkspaceStoredCredentials:
         provider = config.providers["openai"]
         if endpoint_source == "config":
             provider["base_url"] = endpoint
+        elif endpoint_source == "provider_alias":
+            provider["params"] = {"openai_api_base": endpoint}
+        elif endpoint_source == "model_alias":
+            provider["params"] = {"gpt-5.5": {"openai_api_base": endpoint}}
         if usage_override == "provider":
             provider["params"] = {"stream_usage": False}
         elif usage_override == "model":
@@ -1701,6 +1708,8 @@ class TestWorkspaceStoredCredentials:
         extra_kwargs: dict[str, object] = {"use_responses_api": False}
         if endpoint_source == "caller":
             extra_kwargs["base_url"] = endpoint
+        elif endpoint_source == "caller_alias":
+            extra_kwargs["openai_api_base"] = endpoint
         if usage_override == "caller":
             extra_kwargs["stream_usage"] = False
         elif usage_override == "stream_options":
@@ -1755,6 +1764,36 @@ class TestWorkspaceStoredCredentials:
                     )
         assert os.environ[endpoint_env] == "https://gateway.example/v1"
         assert os.environ["OPENAI_API_KEY"] == "inherited-key"
+
+    @pytest.mark.parametrize("endpoint_source", ["provider", "model", "caller"])
+    async def test_stored_baseten_key_preserves_endpoint_alias(
+        self, monkeypatch: pytest.MonkeyPatch, endpoint_source: str
+    ) -> None:
+        """An explicit Baseten alias reaches both clients without conflicting URLs."""
+        from langchain_openai.chat_models.base import BaseChatOpenAI
+
+        from deepagents_code.config import use_environment
+
+        pytest.importorskip("langchain_baseten")
+        config = _stored_provider_config(monkeypatch, "baseten")
+        endpoint = "https://selected.example/v1"
+        params = {"baseten_api_base": endpoint}
+        if endpoint_source == "provider":
+            config.providers["baseten"]["params"] = params
+        elif endpoint_source == "model":
+            config.providers["baseten"]["params"] = {"test-model": params}
+        with use_environment({}):
+            model = create_model(
+                "baseten:test-model",
+                extra_kwargs=params if endpoint_source == "caller" else None,
+            ).model
+        assert isinstance(model, BaseChatOpenAI)
+        try:
+            assert str(model.root_client.base_url).rstrip("/") == endpoint
+            assert str(model.root_async_client.base_url).rstrip("/") == endpoint
+        finally:
+            model.root_client.close()
+            await model.root_async_client.close()
 
     @patch("langchain.chat_models.init_chat_model")
     def test_explicit_key_does_not_use_stored_endpoint(

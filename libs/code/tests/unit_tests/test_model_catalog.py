@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from pydantic import ValidationError
 from textual.app import App
-from textual.widgets import Input
+from textual.widgets import Input, Static
 
 from deepagents_code import config_manifest, model_catalog, model_config
 from deepagents_code._cli_context import INHERIT_SUMMARIZATION_MODEL
@@ -285,6 +285,58 @@ async def test_catalog_policy_precedes_custom_provider_setup(
         else:
             selected.assert_called_once_with((spec, ""))
             notify.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "meta.llama3-70b-instruct-v1:0",
+        ":claude-sonnet-4-5",
+    ],
+)
+@pytest.mark.parametrize("exact_allowlist", [False, True])
+async def test_catalog_picker_defers_ambiguous_ids_to_inference_host(
+    spec: str,
+    exact_allowlist: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = "anthropic" if spec.startswith(":") else "bedrock"
+    canonical = f"{provider}:{spec.removeprefix(':')}"
+    catalog = ModelCatalog(
+        models=[],
+        profiles={},
+        providers={provider: CatalogProvider(state=ProviderAuthState.NOT_REQUIRED)},
+        allowed_models=[canonical if exact_allowlist else f"{provider}:*"],
+    )
+
+    def client_probe(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("Ambiguous model IDs must be resolved by the inference host")
+
+    monkeypatch.setattr(model_config.ModelConfig, "canonical_model_spec", client_probe)
+    monkeypatch.setattr("deepagents_code.config.detect_provider", client_probe)
+    selected = Mock()
+    notify = Mock()
+    screen = ModelSelectorScreen(
+        default_scope=None,
+        include_recent_models=False,
+        catalog_loader=AsyncMock(return_value=catalog),
+    )
+    monkeypatch.setattr(screen, "notify", notify)
+    app = App()
+    async with app.run_test() as pilot:
+        app.push_screen(screen, selected)
+        await pilot.pause()
+        screen.query_one("#model-filter", Input).value = spec
+        await pilot.pause()
+        assert "models.allowed" not in str(
+            screen.query_one("#model-options Static", Static).content
+        )
+        await pilot.press("enter")
+        await pilot.pause()
+        selected.assert_called_once_with((spec, ""))
+        notify.assert_not_called()
+        assert screen.pending_install_extra is None
 
 
 @pytest.mark.parametrize("resolution_fails", [False, True])

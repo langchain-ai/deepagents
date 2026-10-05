@@ -892,6 +892,19 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             return ModelConfig()
         return ModelConfig.load()
 
+    def _has_catalog_provider(self, model_spec: str) -> bool:
+        """Return whether the host recognizes an explicit provider prefix.
+
+        A colon alone is ambiguous: bare Bedrock IDs have version suffixes.
+        Leave inputs without a known prefix to the app's inference-host resolver.
+        """
+        parsed = ModelSpec.try_parse(model_spec)
+        return (
+            parsed is not None
+            and self._catalog is not None
+            and parsed.provider in self._catalog.providers
+        )
+
     def _provider_status(self, provider: str) -> ProviderAuthStatus:
         """Return readiness reported by the inference host."""
         if self._catalog is not None and provider in self._catalog.providers:
@@ -1318,7 +1331,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 # `create_model` will judge it.
                 canonical = (
                     typed
-                    if self._catalog_loader is not None and ":" in typed
+                    if self._catalog_loader is not None
+                    and self._has_catalog_provider(typed)
                     else policy.canonical_model_spec(typed)
                     if typed and self._catalog_loader is None
                     else None
@@ -2052,26 +2066,29 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # No matches - check if user typed a custom provider:model spec
         filter_input = self.query_one("#model-filter", Input)
         custom_input = filter_input.value.strip()
+        if not custom_input:
+            return
+        if self._catalog_loader is not None and not self._has_catalog_provider(
+            custom_input
+        ):
+            self._dismiss_with_result((custom_input, ""))
+            return
 
-        blocked = (
-            self._presentation_config().policy_error(
-                custom_input, canonicalize=self._catalog_loader is None
-            )
-            if custom_input and (self._catalog_loader is None or ":" in custom_input)
-            else None
+        blocked = self._presentation_config().policy_error(
+            custom_input, canonicalize=self._catalog_loader is None
         )
         if blocked is not None:
             # Reject before provider setup can install packages or request auth.
             # Catalog-backed pickers check explicit specs without local provider
-            # inference; bare names are resolved by the inference host. Standalone
-            # pickers canonicalize locally to match the model-construction gate.
+            # inference; ambiguous inputs are resolved by the inference host.
+            # Standalone pickers canonicalize locally to match model construction.
             self.notify(str(blocked), severity="error", timeout=8)
             return
 
-        if custom_input and ":" in custom_input:
+        if ":" in custom_input:
             provider = custom_input.split(":", 1)[0]
             self._select_with_auth_check(custom_input, provider)
-        elif custom_input:
+        else:
             self._dismiss_with_result((custom_input, ""))
 
     def _select_with_auth_check(self, model_spec: str, provider: str) -> None:

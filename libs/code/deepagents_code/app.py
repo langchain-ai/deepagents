@@ -135,6 +135,7 @@ from deepagents_code.goal_state_notice import (
     latest_goal_state_message_index,
     latest_goal_state_notice,
     log_malformed_summarization_event as _log_malformed_summarization_event,
+    message_source,
     validated_summarization_cutoff as _validated_summarization_cutoff,
 )
 from deepagents_code.iterm_cursor_guide import restore_iterm_cursor_guide
@@ -13829,7 +13830,11 @@ class DeepAgentsApp(App):
             "</result>\n"
             "</user_shell_command>"
         )
-        self._pending_shell_messages.append(HumanMessage(content=content))
+        self._pending_shell_messages.append(
+            HumanMessage(
+                content=content, additional_kwargs={"lc_source": "user_shell_command"}
+            )
+        )
 
     async def _flush_pending_shell_messages(self) -> None:
         """Write buffered `!` command/output into thread state, then clear it.
@@ -19373,7 +19378,12 @@ class DeepAgentsApp(App):
                         self.notify("Send a message before generating a thread name.")
                     return
                 if automatic and (
-                    sum(isinstance(message, HumanMessage) for message in messages) != 1
+                    sum(
+                        isinstance(message, HumanMessage)
+                        and message_source(message) != "user_shell_command"
+                        for message in messages
+                    )
+                    != 1
                     or not any(isinstance(message, AIMessage) for message in messages)
                 ):
                     return

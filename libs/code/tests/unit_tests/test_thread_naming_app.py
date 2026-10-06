@@ -543,6 +543,45 @@ async def test_auto_name_skips_resumed_conversation(
     generate.assert_not_awaited()
 
 
+@pytest.mark.parametrize("turns", [0, 1, 2])
+async def test_auto_naming_counts_prompts_after_flushing_shell_context(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch, turns: int
+) -> None:
+    """Persisted shell commands do not count as conversation turns."""
+    agent = MagicMock()
+    agent.aupdate_state = AsyncMock()
+    monkeypatch.setattr(naming_app, "_agent", agent)
+    monkeypatch.setattr(naming_app, "_remote_agent", lambda: None)
+    naming_app._buffer_shell_for_model_context("pwd", "/tmp/project", 0)
+    naming_app._buffer_shell_for_model_context("git status", "Clean", 0)
+    await naming_app._flush_pending_shell_messages()
+    messages = agent.aupdate_state.call_args.args[1]["messages"]
+    for _ in range(turns):
+        messages.extend([HumanMessage("Fix caching"), AIMessage("Here is the fix")])
+    monkeypatch.setattr(
+        naming_app,
+        "_get_thread_state_values",
+        AsyncMock(return_value={"messages": [m.model_dump() for m in messages]}),
+    )
+    generate = AsyncMock(return_value="Cache repair")
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    rename = AsyncMock(return_value=False)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+
+    naming_app._maybe_auto_name_thread("original", "provider:chat")
+    await asyncio.gather(*naming_app._thread_name_tasks.values())
+
+    if turns == 1:
+        rename.assert_awaited_once_with(
+            "original", "Cache repair", only_if_unnamed=True
+        )
+        # The shell output is still useful context for choosing the name.
+        assert "<user_shell_command>" in generate.call_args.args[1][0].content
+    else:
+        generate.assert_not_awaited()
+        rename.assert_not_awaited()
+
+
 def test_auto_name_can_be_disabled(
     naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:

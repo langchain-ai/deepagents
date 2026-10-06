@@ -5544,16 +5544,17 @@ def _is_bedrock_model_id(model_lower: str) -> bool:
 def _bedrock_init_provider(model_name: str) -> str:
     """Return the `init_chat_model` provider for a `bedrock` model ID.
 
-    `ChatBedrock` (InvokeModel) binds tools only for Anthropic models and drops
-    them for every other vendor without an error, which would leave the agent
-    with no tools. Non-Anthropic IDs go to `ChatBedrockConverse`, which carries
-    tools for all vendors -- the same switch `ChatBedrock` already makes
-    internally for Amazon Nova. ARNs and other non-ID names stay on `bedrock`.
+    `ChatBedrock` (InvokeModel) binds tools only for Anthropic models. Amazon
+    Nova already routes through Converse internally, translating `model_kwargs`
+    into inference settings. Keep that route to preserve existing Nova configs.
+    Other vendors use `ChatBedrockConverse` so tools reach the model. ARNs and
+    other non-ID names stay on `bedrock`.
     """
     model_lower = model_name.lower()
     if (
         _is_bedrock_model_id(model_lower)
         and "anthropic" not in model_lower.split(".")[:2]
+        and "amazon.nova" not in model_lower
     ):
         return "bedrock_converse"
     return "bedrock"

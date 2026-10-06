@@ -5559,6 +5559,74 @@ class TestCreateModelEdgeCaseParsing:
         assert result.provider == "bedrock"
         assert mock_init_chat_model.call_args.kwargs["model_provider"] == init_provider
 
+    @pytest.mark.parametrize(
+        "model_spec",
+        [
+            "amazon.nova-pro-v1:0",
+            "us.amazon.nova-pro-v1:0",
+            "bedrock:eu.amazon.nova-pro-v1:0",
+        ],
+    )
+    @pytest.mark.parametrize("override_params", [False, True])
+    def test_nova_preserves_inference_settings_and_tools(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        model_spec: str,
+        override_params: bool,
+    ) -> None:
+        """Nova sends configured inference settings and tools through Converse."""
+        from langsmith import tracing_context
+
+        pytest.importorskip("langchain_aws")
+        model_id = model_spec.removeprefix("bedrock:")
+        (tmp_path / "config.toml").write_text(f"""
+[models.providers.bedrock]
+models = ["{model_id}"]
+[models.providers.bedrock.params."{model_id}".model_kwargs]
+max_tokens = 123
+temperature = 0.25
+top_p = 0.9
+stop_sequences = ["DONE"]
+""")
+        clear_caches()
+        client = Mock()
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "OK"}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+            "metrics": {"latencyMs": 1},
+        }
+        monkeypatch.setattr(
+            "langchain_aws.llms.bedrock.create_aws_client", lambda **_: Mock()
+        )
+        monkeypatch.setattr(
+            "langchain_aws.chat_models.bedrock_converse.create_aws_client",
+            lambda **_: Mock(),
+        )
+        kwargs: dict[str, object] = {"client": client, "region_name": "us-east-1"}
+        expected = {
+            "maxTokens": 123,
+            "temperature": 0.25,
+            "topP": 0.9,
+            "stopSequences": ["DONE"],
+        }
+        if override_params:
+            kwargs.update(max_tokens=456, temperature=0.0, stop_sequences=["STOP"])
+            expected.update(maxTokens=456, temperature=0.0, stopSequences=["STOP"])
+        with config_module.use_environment({}), tracing_context(enabled=False):
+            result = create_model(model_spec, extra_kwargs=kwargs)
+            result.model.bind_tools(
+                [{"name": "lookup", "description": "Look up a value", "parameters": {}}]
+            ).invoke("Hello")
+
+        request = client.converse.call_args.kwargs
+        assert result.provider == "bedrock"
+        assert request["modelId"] == model_id
+        assert request["inferenceConfig"] == expected
+        assert not request.get("additionalModelRequestFields")
+        assert request["toolConfig"]["tools"][0]["toolSpec"]["name"] == "lookup"
+
     @patch("langchain.chat_models.init_chat_model")
     def test_explicit_provider_not_hijacked_by_bedrock(
         self, mock_init_chat_model: Mock

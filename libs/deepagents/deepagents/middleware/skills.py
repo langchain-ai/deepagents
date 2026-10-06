@@ -392,17 +392,11 @@ class SkillsState(AgentState):
 class SkillsStateUpdate(TypedDict):
     """State update for the skills middleware."""
 
-    skills_metadata: NotRequired[list[SkillMetadata]]
+    skills_metadata: list[SkillMetadata]
     """List of loaded skill metadata to merge into state."""
 
     skills_load_errors: NotRequired[list[str]]
     """Skill source loading errors to merge into state."""
-
-    messages: NotRequired[list[HumanMessage]]
-    """Messages activating the skills named in `activate_skills`, to append to the conversation."""
-
-    activate_skills: NotRequired[Overwrite]
-    """`Overwrite([])`, clearing the consumed skill names past the append reducer."""
 
 
 def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
@@ -863,9 +857,9 @@ def _skill_activation_message(skill: SkillMetadata, body: str) -> HumanMessage:
     )
 
 
-def _activation_update(skills: Sequence[SkillMetadata], responses: Sequence[FileDownloadResponse]) -> SkillsStateUpdate:
+def _activation_update(skills: Sequence[SkillMetadata], responses: Sequence[FileDownloadResponse]) -> dict[str, Any]:
     """Return the update appending a message for each readable skill and clearing `activate_skills`."""
-    update = SkillsStateUpdate(activate_skills=Overwrite([]))
+    update: dict[str, Any] = {"activate_skills": Overwrite([])}
     messages = [
         _skill_activation_message(skill, body)
         for skill, response in zip(skills, responses, strict=True)
@@ -1263,7 +1257,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         # Always write the errors so warnings from an earlier load are cleared
         return SkillsStateUpdate(skills_metadata=skills, skills_load_errors=skills_load_errors)
 
-    def before_model(self, state: SkillsState, runtime: Runtime) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
+    def before_model(self, state: SkillsState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002
         """Activate the skills named in `activate_skills` before the model call (synchronous).
 
         Appends one message per named skill, in the order named, carrying its
@@ -1285,7 +1279,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         responses = self._backend.download_files([skill["path"] for skill in skills]) if skills else []
         return _activation_update(skills, responses)
 
-    async def abefore_model(self, state: SkillsState, runtime: Runtime) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
+    async def abefore_model(self, state: SkillsState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002
         """Activate the skills named in `activate_skills` before the model call (async).
 
         Appends one message per named skill, in the order named, carrying its

@@ -506,7 +506,11 @@ async def test_default_can_be_saved_before_server_connects(
 
 @pytest.mark.parametrize(
     ("command", "selection"),
-    [("/offload model", "custom:new"), ("/auto model", "clear")],
+    [
+        ("/model", "custom:new"),
+        ("/offload model", "custom:new"),
+        ("/auto model", "clear"),
+    ],
 )
 async def test_connecting_model_choices_report_queue_and_startup_failure(
     command: str, selection: str, monkeypatch: pytest.MonkeyPatch
@@ -518,6 +522,7 @@ async def test_connecting_model_choices_report_queue_and_startup_failure(
     async with app.run_test() as pilot:
         await pilot.pause()
         app._connecting = True
+        app._model_override = "custom:old"
         app._summarization_model_override = "custom:old"
         app._auto_classifier_model = "custom:old"
         app._rubric_model = "custom:old"
@@ -537,6 +542,7 @@ async def test_connecting_model_choices_report_queue_and_startup_failure(
         failure = str(app._startup_failure_widget._content)
         assert "Queued changes were not applied" in failure
         assert "Reissue those commands to try again" in failure
+        assert app._model_override == "custom:old"
         assert app._summarization_model_override == "custom:old"
         assert app._auto_classifier_model == "custom:old"
         assert app._rubric_model == "custom:old"

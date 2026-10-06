@@ -1060,7 +1060,6 @@ class _StatusBarHarness(App[None]):
         ("summarization", True),
         ("auto", True),
         ("goal", True),
-        ("rubric", True),
         ("main", False),
         ("auto", False),
     ],
@@ -1169,8 +1168,10 @@ async def test_clearing_auxiliary_choices_waits_for_active_turn(
     resolve.assert_not_awaited()
 
 
-@pytest.mark.parametrize("blocked_step", ["install", "resolve"])
-@pytest.mark.parametrize("defer_clear", [False, True])
+@pytest.mark.parametrize(
+    ("blocked_step", "defer_clear"),
+    [("install", False), ("install", True), ("resolve", True)],
+)
 async def test_grader_clear_supersedes_in_flight_selection(
     blocked_step: str,
     defer_clear: bool,

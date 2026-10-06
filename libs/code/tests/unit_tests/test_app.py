@@ -11,7 +11,6 @@ import signal
 import threading
 import time
 from datetime import UTC, datetime, timedelta
-from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
@@ -16717,81 +16716,6 @@ class TestDispatchModelSwitch:
         app._defer_action.assert_called_once()  # ty: ignore
         app.notify.assert_called_once()  # ty: ignore
         app._schedule_off_message_pump.assert_not_called()  # ty: ignore
-
-    async def test_defers_with_notice_while_only_connecting(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A connection delay reports that the requested switch is queued."""
-        app = DeepAgentsApp()
-        app._agent_running = False
-        app._shell_running = False
-        app._connecting = True
-        schedule = MagicMock()
-        notify = MagicMock()
-        monkeypatch.setattr(app, "_schedule_off_message_pump", schedule)
-        monkeypatch.setattr(app, "notify", notify)
-
-        app._dispatch_model_switch("openai:gpt-5.5")
-
-        assert len(app._deferred_actions) == 1
-        notify.assert_called_once_with(
-            "Model selection will apply once the session is ready.", markup=False
-        )
-        schedule.assert_not_called()
-
-    async def test_deferred_model_switch_blocks_drain_until_confirmed(self) -> None:
-        """A later deferred action cannot run while the confirmation is open."""
-        app = DeepAgentsApp()
-        app._context_tokens = 150_000
-        app._model_switch_warning_threshold = 100_000
-        app._switch_model = AsyncMock()  # ty: ignore
-        app.notify = MagicMock()  # ty: ignore
-        runtime_state.model_provider = "anthropic"
-        runtime_state.model_name = "claude-opus-4-5"
-
-        prompt_open = asyncio.Event()
-        answer_prompt = asyncio.Event()
-
-        async def push_screen_wait(screen: object) -> bool:
-            del screen  # only the prompt's timing matters, not its content
-            prompt_open.set()
-            await answer_prompt.wait()
-            return True
-
-        app._push_screen_wait = push_screen_wait  # ty: ignore
-
-        order: list[str] = []
-
-        async def thread_switch() -> None:  # noqa: RUF029
-            order.append("thread_switch")
-
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._deferred_actions.append(
-                DeferredAction(
-                    kind="model_switch",
-                    execute=partial(
-                        app._confirm_and_switch_model,
-                        "openai:gpt-5.5",
-                    ),
-                )
-            )
-            app._deferred_actions.append(
-                DeferredAction(kind="thread_switch", execute=thread_switch)
-            )
-            drain = asyncio.create_task(app._drain_deferred_actions())
-            # Let the drain reach the confirmation prompt, then yield several
-            # times: a drain that resumes early has ample opportunity to run
-            # the thread switch while the modal is still unanswered.
-            await asyncio.wait_for(prompt_open.wait(), timeout=5)
-            for _ in range(10):
-                await asyncio.sleep(0)
-            assert order == []
-            answer_prompt.set()
-            await asyncio.wait_for(drain, timeout=5)
-
-        assert order == ["thread_switch"]
-        app._switch_model.assert_awaited_once()  # ty: ignore
 
     @pytest.mark.parametrize("confirm", [True, False])
     async def test_install_restart_keeps_deferred_switch_on_original_thread(

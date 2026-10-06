@@ -756,37 +756,6 @@ def _goal_state_change_notice(
     return build_goal_state_notice(current, prior_blocker=prior_blocker)
 
 
-def _create_model_with_deepagents_import_lock(
-    model_spec: str | None = None,
-    *,
-    extra_kwargs: dict[str, Any] | None = None,
-    profile_overrides: dict[str, Any] | None = None,
-    cli_max_retries: int | None = None,
-) -> ModelResult:
-    """Create a model while serializing Deep Agents SDK import entry.
-
-    Args:
-        model_spec: Model specification in `provider:model` format.
-        extra_kwargs: Extra model constructor kwargs.
-        profile_overrides: Model profile metadata overrides.
-        cli_max_retries: Explicit `--max-retries` value, or `None` when the
-            call path carries no launch-time override. `create_model` defaults
-            this to `None` too, so passing it is the same as omitting it.
-
-    Returns:
-        Created model and resolved metadata.
-    """
-    with _DEEPAGENTS_IMPORT_LOCK:
-        from deepagents_code.config import create_model
-
-        return create_model(
-            model_spec,
-            extra_kwargs=extra_kwargs,
-            profile_overrides=profile_overrides,
-            cli_max_retries=cli_max_retries,
-        )
-
-
 def _resolve_parent_dir(path: str | Path) -> str:
     """Return the resolved parent directory for a path."""
     return str(Path(path).resolve().parent)
@@ -1121,7 +1090,6 @@ if TYPE_CHECKING:
         ColdCacheWarning,
         PromptCachePolicy,
     )
-    from deepagents_code.config import ModelResult
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.configuration.types import ProviderStatus
     from deepagents_code.event_bus import EventSource, ExternalEvent
@@ -1133,7 +1101,9 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.presenter import HookNoticeSeverity
     from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo
+    from deepagents_code.model_catalog import ModelCatalog
     from deepagents_code.model_config import MissingProviderPackageError
+    from deepagents_code.model_metadata import ModelMetadata, ModelPurpose
     from deepagents_code.plugins.models import (
         PluginDiscoveryResult,
         PluginInstance,
@@ -2193,6 +2163,7 @@ class ExternalInput(Message):
 DeferredActionKind = Literal[
     "effort_change",
     "model_switch",
+    "auto_classifier_model_switch",
     "summarization_model_switch",
     "thread_switch",
     "chat_output",
@@ -3444,8 +3415,7 @@ class DeepAgentsApp(App):
             profile_override: Extra profile fields from `--profile-override`,
                 retained so later profile-aware behavior stays consistent with
                 the app override, including model selection details,
-                offload budget display, and on-demand `create_model()`
-                calls such as `/offload`.
+                and offload budget display.
             summarization_model: Initial model used only for compaction summaries.
             server_proc: LangGraph server process for the interactive session.
             server_kwargs: When provided, server startup is deferred.
@@ -3455,10 +3425,10 @@ class DeepAgentsApp(App):
                 for `start_server_and_get_agent`.
             mcp_preload_kwargs: Kwargs for `_preload_session_mcp_server_info`,
                 run concurrently with server startup when `server_kwargs` is set.
-            model_kwargs: Kwargs for deferred `create_model()`.
+            model_kwargs: Startup model selection retained for recovery.
 
-                When provided, model creation runs in a background worker after
-                first paint instead of blocking startup.
+                When provided, the startup worker reads metadata from the server
+                after first paint.
             model_explicitly_set: Whether the user passed `--model` on the
                 command line.
 
@@ -3801,8 +3771,8 @@ class DeepAgentsApp(App):
 
         self._profile_override = profile_override
         """Extra profile fields from `--profile-override`, retained so later
-        profile-aware behavior (model selection, offload budget display,
-        on-demand `create_model()`) stays consistent with the app override."""
+        profile-aware behavior (model selection and offload budget display)
+        stays consistent with the app override."""
 
         self._server_proc = server_proc
         """Handle to the langgraph dev subprocess, when the app owns one.
@@ -3850,10 +3820,10 @@ class DeepAgentsApp(App):
         with server startup when `server_kwargs` is set."""
 
         self._model_kwargs = model_kwargs
-        """Kwargs for deferred `create_model()`.
+        """Startup model selection retained for recovery.
 
-        When non-`None`, model creation runs in a background worker after
-        first paint; consumed by the startup worker and reset to `None`.
+        When non-`None`, the startup worker reads server model metadata after
+        first paint, then resets this to `None`.
         """
 
         self._model_explicitly_set = model_explicitly_set
@@ -3969,6 +3939,9 @@ class DeepAgentsApp(App):
         `INHERIT_SUMMARIZATION_MODEL` explicitly returns to the main model.
         """
 
+        self._summarization_model_selection = 0
+        """Latest summary selection; older workers may finish installation only."""
+
         self._last_model_unchanged: tuple[str, float] | None = None
         """Most recent same-model toast, as `(text, monotonic timestamp)`.
 
@@ -4012,6 +3985,9 @@ class DeepAgentsApp(App):
 
         self._rubric_model: str | None = self._rubric_startup_model
         """Thread-scoped grader model; `None` follows the active main model."""
+
+        self._rubric_model_selection = 0
+        """Invalidates older grader selections across resolution and installation."""
 
         self._rubric_model_recorded: bool = False
         """Whether the active thread has a recorded grader selection, including
@@ -4376,6 +4352,9 @@ class DeepAgentsApp(App):
         """Re-entry guard for `/model` switches while the new model is being
         resolved."""
 
+        self._model_selection = 0
+        """Generation invalidating older model lookups and confirmations."""
+
         self._agent_switching = False
         """Re-entry guard for `/agents` switches while the backing server is
         being restarted with a new `assistant_id`."""
@@ -4455,6 +4434,9 @@ class DeepAgentsApp(App):
 
         self._deferred_actions: list[DeferredAction] = []
         """Deferred actions executed after the current busy state resolves."""
+
+        self._draining_deferred_actions = False
+        """Keep one drain in charge across restarts and awaited modal results."""
 
         # Session stats & tokens
         self._session_stats: SessionStats = SessionStats()
@@ -6626,11 +6608,17 @@ class DeepAgentsApp(App):
         # drains them. Deferred actions (model/thread switches queued during
         # the initial connect) are dropped because the failure invalidates
         # their assumptions; the user can re-issue them after recovery.
+        had_deferred_actions = bool(self._deferred_actions)
         self._deferred_actions.clear()
 
         # Failure surfaces only in chat — keeps recovery hint adjacent to the
         # input. Banner is set to idle above to drop the connecting spinner.
         text = f"Server failed to start: {self._server_startup_error}"
+        if had_deferred_actions:
+            text += (
+                "\n\nQueued changes were not applied. "
+                "Reissue those commands to try again."
+            )
         if (
             self._server_startup_missing_credentials_provider is not None
             and self._server_kwargs is not None
@@ -6864,18 +6852,9 @@ class DeepAgentsApp(App):
         )
 
     async def _prewarm_model_caches(self) -> None:
-        """Prewarm model discovery and profile caches without blocking startup."""
+        """Warm inference-host discovery without blocking startup."""
         try:
-            from deepagents_code.model_config import (
-                get_available_models,
-                get_model_profiles,
-            )
-
-            await asyncio.to_thread(get_available_models)
-            await asyncio.to_thread(
-                get_model_profiles,
-                cli_override=self._profile_override,
-            )
+            await self._load_model_catalog((), self._effective_model_spec())
         except Exception:
             logger.warning("Could not prewarm model caches", exc_info=True)
 
@@ -17146,28 +17125,28 @@ class DeepAgentsApp(App):
             if parsed:
                 current_provider = parsed.provider
                 current_model = parsed.model
+            else:
+                current_model = current_spec
 
         def handle_result(result: tuple[str, str] | None) -> None:
-            if result is None:
+            async def apply_selection() -> None:
+                if result is None:
+                    await self._mount_message(AppMessage("Model not changed."))
+                    return
+                await self._apply_auxiliary_model_selection(
+                    result[0],
+                    screen.pending_install_extra,
+                    role=source,
+                )
+
+            def start_selection_worker() -> None:
                 self.run_worker(
-                    self._mount_message(AppMessage("Model not changed.")),
-                    exclusive=False,
-                    group="rubric-model",
+                    apply_selection(), exclusive=False, group="rubric-model"
                 )
                 if self._chat_input:
                     self._chat_input.focus_input()
-                return
-            model_spec, _ = result
-            extra = screen.pending_install_extra
 
-            async def apply_selection() -> None:
-                if extra and not await self._install_extra(extra, auto_restart=True):
-                    return
-                await self._set_rubric_model(model_spec, source=source)
-
-            self.run_worker(apply_selection(), exclusive=False, group="rubric-model")
-            if self._chat_input:
-                self._chat_input.focus_input()
+            self.call_after_refresh(start_selection_worker)
 
         if source == "goal":
             title = "Choose grader model for goal"
@@ -17184,7 +17163,11 @@ class DeepAgentsApp(App):
         screen = ModelSelectorScreen(
             current_model=current_model,
             current_provider=current_provider,
-            cli_profile_override=self._profile_override,
+            catalog_loader=self._load_auxiliary_model_catalog,
+            resolve_model=self._resolve_auxiliary_model,
+            check_provider_requirements=(
+                self._remote_agent() is None or self._server_kwargs is not None
+            ),
             title=title,
             description=description,
             # Grader models have no persistent config key yet, so there is
@@ -17286,6 +17269,8 @@ class DeepAgentsApp(App):
         model_spec: str | None,
         *,
         source: Literal["goal", "rubric"] = "rubric",
+        extra: str | None = None,
+        selection: int | None = None,
     ) -> None:
         """Set the thread's grader model without rebuilding the graph.
 
@@ -17297,67 +17282,57 @@ class DeepAgentsApp(App):
             model_spec: Model spec to grade with, or `None` to follow the
                 active main model.
             source: Which command invoked this, for wording and `show` hints.
+            extra: Provider integration to install before resolving the model.
+            selection: Original selection number when resuming deferred work.
         """
         from functools import partial
 
-        from deepagents_code.config import detect_provider
-        from deepagents_code.model_config import ModelSpec, get_provider_auth_status
-
         label = "Goal grader" if source == "goal" else "Rubric grader"
 
-        if self._agent_running or self._shell_running or self._connecting:
-            self._defer_action(
-                DeferredAction(
-                    kind="rubric_model_switch",
-                    execute=partial(self._set_rubric_model, model_spec, source=source),
-                ),
-            )
-            self.notify(f"{label} model will switch after current work finishes.")
+        if selection is None:
+            self._rubric_model_selection += 1
+            selection = self._rubric_model_selection
+        if selection != self._rubric_model_selection:
+            return
+        if self._defer_model_selection(
+            "rubric_model_switch",
+            partial(
+                self._set_rubric_model,
+                model_spec,
+                source=source,
+                extra=extra,
+                selection=selection,
+            ),
+        ):
+            return
+        if extra and model_spec is not None:
+            if await self._prepare_model_provider(extra, model_spec):
+                await self._set_rubric_model(
+                    model_spec, source=source, selection=selection
+                )
             return
 
         display: str | None = None
         if model_spec is not None:
             model_spec = model_spec.removeprefix(":")
-            parsed = ModelSpec.try_parse(model_spec)
-            provider = parsed.provider if parsed else detect_provider(model_spec)
-            model_name = parsed.model if parsed else model_spec
-            display = (
-                model_spec if parsed or not provider else f"{provider}:{model_name}"
-            )
+            try:
+                result = await self._resolve_auxiliary_model(model_spec)
+            except Exception as exc:
+                if selection != self._rubric_model_selection:
+                    return
+                logger.exception("Failed to resolve %s model %s", label, model_spec)
+                await self._mount_message(
+                    ErrorMessage(_build_model_switch_error_body(exc))
+                )
+                return
+            if selection != self._rubric_model_selection:
+                return
+            display = f"{result.provider}:{result.model_name}"
             if display == self._rubric_model and self._rubric_model_recorded:
                 await self._mount_message(
                     AppMessage(f"{label} model already set to {display}.")
                 )
                 return
-            # An external graph owns its provider packages, credentials, and
-            # model allowlist. Persist the spec and let that server validate it.
-            if self._remote_agent() is None or self._server_proc is not None:
-                auth_status = get_provider_auth_status(provider) if provider else None
-                if auth_status is not None and auth_status.blocks_start:
-                    await self._mount_message(
-                        ErrorMessage(
-                            f"Missing credentials: {auth_status.missing_detail()}\n\n"
-                            f"Run `/auth` for the '{auth_status.provider}' provider, "
-                            f"then set the grader model again.",
-                        ),
-                    )
-                    return
-                try:
-                    await asyncio.to_thread(
-                        _create_model_with_deepagents_import_lock,
-                        display,
-                        profile_overrides=self._profile_override,
-                    )
-                except Exception as exc:
-                    logger.exception(
-                        "Failed to resolve %s model %s",
-                        label.lower(),
-                        display,
-                    )
-                    await self._mount_message(
-                        ErrorMessage(_build_model_switch_error_body(exc))
-                    )
-                    return
         elif self._rubric_model is None and self._rubric_model_recorded:
             await self._mount_message(
                 AppMessage(f"{label} model already follows the active model.")
@@ -17377,24 +17352,28 @@ class DeepAgentsApp(App):
             )
             return
 
-        previous = self._rubric_model
-        previous_recorded = self._rubric_model_recorded
-        self._rubric_model = display
-        self._rubric_model_recorded = True
-        persisted = False
-        try:
-            async with self._goal_state_mutation_boundary():
+        async with self._goal_state_mutation_boundary():
+            # Another choice may arrive while a checkpoint write holds the lock.
+            if selection != self._rubric_model_selection:
+                return
+            previous = self._rubric_model
+            previous_recorded = self._rubric_model_recorded
+            self._rubric_model = display
+            self._rubric_model_recorded = True
+            persisted = False
+            try:
                 persisted = await self._persist_goal_rubric_state()
-        except Exception:
-            logger.exception(
-                "Failed to persist %s model %r for thread %s",
-                label.lower(),
-                display,
-                self._lc_thread_id,
-            )
+            except Exception:
+                logger.exception(
+                    "Failed to persist %s model %r for thread %s",
+                    label.lower(),
+                    display,
+                    self._lc_thread_id,
+                )
+            if not persisted:
+                self._rubric_model = previous
+                self._rubric_model_recorded = previous_recorded
         if not persisted:
-            self._rubric_model = previous
-            self._rubric_model_recorded = previous_recorded
             await self._mount_message(
                 ErrorMessage(
                     f"{label} model could not be saved to the thread and was "
@@ -22195,31 +22174,47 @@ class DeepAgentsApp(App):
             await self._drain_deferred_actions()
 
     async def _drain_deferred_actions(self) -> None:
-        """Execute deferred actions queued while busy (e.g. model/thread switch)."""
-        while self._deferred_actions:
-            action = self._deferred_actions.pop(0)
+        """Execute queued actions until the session becomes busy again."""
+        # ServerReady can request another drain while an action is still
+        # installing/authenticating. The original drain owns the queue until
+        # that action and its selection continuation have finished.
+        if self._draining_deferred_actions:
+            return
+        self._draining_deferred_actions = True
+        try:
+            # An action can yield during installation/authentication while new
+            # work starts. Leave any requeued selection for the next completion.
+            while self._deferred_actions and not (
+                self._agent_running or self._shell_running or self._connecting
+            ):
+                await self._execute_deferred_action(self._deferred_actions.pop(0))
+        finally:
+            self._draining_deferred_actions = False
+
+    async def _execute_deferred_action(self, action: DeferredAction) -> None:
+        """Report an action's failure without blocking later queued work."""
+        try:
+            await action.execute()
+        except Exception:
+            logger.exception(
+                "Failed to execute deferred action %r (callable=%r)",
+                action.kind,
+                action.execute,
+            )
+            label = action.kind.replace("_", " ")
             try:
-                await action.execute()
-            except Exception:
-                logger.exception(
-                    "Failed to execute deferred action %r (callable=%r)",
-                    action.kind,
-                    action.execute,
+                await self._mount_message(
+                    ErrorMessage(
+                        f"Deferred {label} failed unexpectedly. "
+                        "You may need to retry the operation.",
+                    ),
                 )
-                label = action.kind.replace("_", " ")
-                try:
-                    await self._mount_message(
-                        ErrorMessage(
-                            f"Deferred {label} failed unexpectedly. "
-                            "You may need to retry the operation.",
-                        ),
-                    )
-                except Exception:
-                    logger.debug(
-                        "Could not mount error message for deferred %r",
-                        action.kind,
-                        exc_info=True,
-                    )
+            except Exception:
+                logger.debug(
+                    "Could not mount error message for deferred %r",
+                    action.kind,
+                    exc_info=True,
+                )
 
     def _warn_dropped_mcp_reconnect(self) -> None:
         """Warn when an interrupt discards a queued MCP reconnect.
@@ -23646,7 +23641,7 @@ class DeepAgentsApp(App):
 
     async def _show_auto_classifier_model_selector(self) -> None:
         """Open the model selector for choosing the Auto classifier model."""
-        from deepagents_code.config import detect_provider, runtime_state
+        from deepagents_code.config import runtime_state
         from deepagents_code.model_config import ModelSpec
         from deepagents_code.tui.widgets.model_selector import (
             AUTO_CLASSIFIER_DEFAULT_SCOPE,
@@ -23661,10 +23656,8 @@ class DeepAgentsApp(App):
                 current_provider = parsed.provider
                 current_model = parsed.model
             else:
-                provider = detect_provider(display)
-                if provider:
-                    current_provider = provider
-                    current_model = display
+                current_provider = None
+                current_model = display
 
         current_spec = (
             f"{current_provider}:{current_model}"
@@ -23687,10 +23680,11 @@ class DeepAgentsApp(App):
                         )
                     )
                     return
-                if extra and not await self._install_extra(extra, auto_restart=True):
-                    return
-                await self._set_auto_classifier_model(
-                    model_spec, persisted_as_default=persisted_as_default
+                await self._apply_auxiliary_model_selection(
+                    model_spec,
+                    extra,
+                    role="auto",
+                    persisted_as_default=persisted_as_default,
                 )
 
             def start_selection_worker() -> None:
@@ -23750,7 +23744,11 @@ class DeepAgentsApp(App):
         screen = ModelSelectorScreen(
             current_model=current_model,
             current_provider=current_provider,
-            cli_profile_override=self._profile_override,
+            catalog_loader=self._load_auxiliary_model_catalog,
+            resolve_model=self._resolve_auxiliary_model,
+            check_provider_requirements=(
+                self._remote_agent() is None or self._server_kwargs is not None
+            ),
             recommended_models=_AUTO_CLASSIFIER_RECOMMENDED_MODELS,
             include_recent_models=False,
             title="Choose the Auto classifier model",
@@ -23769,17 +23767,27 @@ class DeepAgentsApp(App):
 
         The value rides on the per-run graph context, so it applies from the
         next turn without restarting the agent server. A spec that cannot be
-        resolved here is rejected outright rather than staged, because a
+        resolved by a connected server is rejected rather than staged, because a
         classifier the server cannot build denies every action it is asked to
         review — those deterministic policy could not already clear — and only
-        escalates to approval once failures repeat.
+        escalates to approval once failures repeat. Before a server connects,
+        choices are checked against local policy so startup can be repaired.
 
         Args:
             model_spec: `provider:model` spec, or `None` to reuse the main model.
             persisted_as_default: Whether the selector already stored this spec.
         """
-        from deepagents_code.config import detect_provider
-        from deepagents_code.model_config import ModelSpec, get_provider_auth_status
+        from functools import partial
+
+        if self._defer_model_selection(
+            "auto_classifier_model_switch",
+            partial(
+                self._set_auto_classifier_model,
+                model_spec,
+                persisted_as_default=persisted_as_default,
+            ),
+        ):
+            return
 
         display: str | None = None
         unchanged = False
@@ -23793,56 +23801,23 @@ class DeepAgentsApp(App):
                     )
                 )
                 return
-            parsed = ModelSpec.try_parse(model_spec)
-            provider = parsed.provider if parsed else detect_provider(model_spec)
-            model_name = parsed.model if parsed else model_spec
-            display = (
-                model_spec if parsed or not provider else f"{provider}:{model_name}"
-            )
-            # Deliberately no early return when the spec is unchanged: re-issuing
-            # the same spec is how a user retries after fixing credentials, and
-            # short-circuiting made that a no-op that reported success. The
-            # checks below re-run, so they get a real answer either way.
-            unchanged = display == self._auto_classifier_model
-            auth_status = get_provider_auth_status(provider) if provider else None
-            if auth_status is not None and auth_status.blocks_start:
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Missing credentials: {auth_status.missing_detail()}\n\n"
-                        f"Run `/auth` for the '{auth_status.provider}' provider, "
-                        "then set the Auto classifier model again.",
-                    ),
-                )
-                return
             try:
-                # No profile overrides: `--profile-override` describes the main
-                # model, and the server resolves the classifier without them, so
-                # validating with them would test a different model than the one
-                # Auto will actually build.
-                result = await asyncio.to_thread(
-                    _create_model_with_deepagents_import_lock,
-                    display,
-                )
+                result = await self._resolve_auxiliary_model(model_spec)
             except Exception as exc:
-                logger.exception("Failed to resolve Auto classifier model %s", display)
-                # This check runs in the client; the classifier is built in the
-                # agent server, which may be a separate process or a remote
-                # deployment with different credentials and provider packages. Say
-                # so rather than asserting the model is broken everywhere.
+                logger.exception(
+                    "Failed to resolve Auto classifier model %s", model_spec
+                )
                 await self._mount_message(
-                    ErrorMessage(
-                        f"{_build_model_switch_error_body(exc)}\n\n"
-                        "This check ran in the client. If the agent server has "
-                        "credentials or provider packages this machine lacks, set "
-                        "`[models].auto_classifier` in config.toml instead."
-                    )
+                    ErrorMessage(_build_model_switch_error_body(exc))
                 )
                 return
+            display = f"{result.provider}:{result.model_name}"
+            # Reissuing the same spec revalidates it after environment changes.
+            unchanged = display == self._auto_classifier_model
             # Profiles are incomplete, and the classifier already fails closed
             # at runtime, so an unsupported-looking model warns instead of being
             # blocked.
-            profile = getattr(result.model, "profile", None)
-            if isinstance(profile, dict) and profile.get("structured_output") is False:
+            if result.structured_output is False:
                 await self._mount_message(
                     AppMessage(
                         f"{display} does not advertise structured output. Auto "
@@ -24652,6 +24627,11 @@ class DeepAgentsApp(App):
             current_model=runtime_state.model_name,
             current_provider=runtime_state.model_provider,
             cli_profile_override=self._profile_override,
+            catalog_loader=self._load_model_catalog,
+            resolve_model=self._resolve_model_metadata,
+            check_provider_requirements=(
+                self._remote_agent() is None or self._server_kwargs is not None
+            ),
             curated=curated,
             title="Choose a Recommended Model" if curated else None,
             description=(
@@ -24683,10 +24663,13 @@ class DeepAgentsApp(App):
 
         def handle_result(result: tuple[str, str] | None) -> None:
             """Handle the model selector result."""
-            self._handle_model_selection(screen, result, extra_kwargs=extra_kwargs)
-            # Refocus input after modal closes
-            if self._chat_input:
-                self._chat_input.focus_input()
+
+            def apply_selection() -> None:
+                self._handle_model_selection(screen, result, extra_kwargs=extra_kwargs)
+                if self._chat_input:
+                    self._chat_input.focus_input()
+
+            self.call_after_refresh(apply_selection)
 
         screen = self._build_model_selector_screen()
         self.push_screen(screen, handle_result)
@@ -24775,6 +24758,79 @@ class DeepAgentsApp(App):
         else:
             self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
 
+    def _defer_model_selection(
+        self,
+        kind: DeferredActionKind,
+        execute: Callable[[], Awaitable[None]],
+    ) -> bool:
+        """Return whether a model change was queued until current work finishes."""
+        if not (self._agent_running or self._shell_running or self._connecting):
+            return False
+        self._defer_action(DeferredAction(kind=kind, execute=execute))
+        message = (
+            "Model selection will apply once the session is ready."
+            if self._connecting
+            else "Model selection will apply after current work finishes."
+        )
+        self.notify(message, markup=False)
+        return True
+
+    async def _apply_auxiliary_model_selection(
+        self,
+        model_spec: str,
+        extra: str | None,
+        *,
+        role: Literal["summarization", "auto", "goal", "rubric"],
+        persisted_as_default: bool = False,
+    ) -> None:
+        """Prepare and apply every auxiliary picker through the same lifecycle."""
+        from functools import partial
+
+        if role == "summarization":
+            await self._set_summarization_model(model_spec, extra=extra)
+            return
+        if role in {"goal", "rubric"}:
+            await self._set_rubric_model(model_spec, source=role, extra=extra)
+            return
+        if self._defer_model_selection(
+            "auto_classifier_model_switch",
+            partial(
+                self._apply_auxiliary_model_selection,
+                model_spec,
+                extra,
+                role=role,
+                persisted_as_default=persisted_as_default,
+            ),
+        ):
+            return
+        if extra and not await self._prepare_model_provider(extra, model_spec):
+            return
+        await self._set_auto_classifier_model(
+            model_spec, persisted_as_default=persisted_as_default
+        )
+
+    async def _prepare_model_provider(self, extra: str, model_spec: str) -> bool:
+        """Return whether provider installation and authentication succeeded."""
+        if self._remote_agent() is not None and self._server_kwargs is None:
+            await self._mount_message(
+                ErrorMessage(
+                    "Install provider packages on the remote server "
+                    "before selecting this model."
+                )
+            )
+            return False
+        if not await self._install_extra(extra, auto_restart=True):
+            return False
+        if await self._prompt_model_auth_if_needed(model_spec):
+            return True
+        await self._mount_message(
+            AppMessage(
+                f"Installed '{extra}'. Set {model_spec} after adding "
+                "its credentials with `/auth`."
+            )
+        )
+        return False
+
     def _dispatch_model_switch(
         self,
         model_spec: str,
@@ -24789,26 +24845,7 @@ class DeepAgentsApp(App):
             model_spec,
             extra_kwargs=extra_kwargs,
         )
-        if self._agent_running or self._shell_running or self._connecting:
-            # The deferred action awaits the confirmation and the switch itself
-            # rather than detaching them. `_drain_deferred_actions` awaits each
-            # action to keep the queue serialized, so returning after only
-            # scheduling the prompt would let a queued thread switch (or any
-            # later deferred mutation) resume while `ModelSwitchWarningScreen`
-            # is still open: the prompt's token count would describe a thread
-            # the user has already left, and accepting it would mutate model
-            # state concurrently with that switch. The drain runs from worker
-            # or cleanup tasks, never the App message pump, so awaiting the
-            # modal here cannot starve it of key events — the pump stays free
-            # to route input to the screen.
-            self._defer_action(
-                DeferredAction(kind="model_switch", execute=request),
-            )
-            if self._agent_running or self._shell_running:
-                self.notify(
-                    "Model switch will continue after the current task completes.",
-                    timeout=3,
-                )
+        if self._defer_model_selection("model_switch", request):
             return
         self._schedule_off_message_pump(
             self._confirm_and_switch_model(model_spec, extra_kwargs=extra_kwargs),
@@ -24827,17 +24864,37 @@ class DeepAgentsApp(App):
         callers reach it through `_schedule_off_message_pump` because their
         continuation starts on the App message pump.
         """
-        from deepagents_code.config import detect_provider, runtime_state
+        from deepagents_code.config import runtime_state
         from deepagents_code.model_config import ModelSpec
 
+        self._model_selection += 1
+        selection = self._model_selection
         target = model_spec.removeprefix(":")
+        metadata: ModelMetadata | None = None
+        if self._remote_agent() is not None:
+            try:
+                metadata = await self._resolve_model_metadata(
+                    target, extra_kwargs=extra_kwargs
+                )
+            except Exception as exc:
+                if selection != self._model_selection:
+                    return
+                logger.exception("Failed to resolve proposed model switch %s", target)
+                await self._mount_message(
+                    ErrorMessage(_build_model_switch_error_body(exc))
+                )
+                return
+            if selection != self._model_selection:
+                return
+            target = f"{metadata.provider}:{metadata.model_name}"
         parsed = ModelSpec.try_parse(target)
-        provider = parsed.provider if parsed else detect_provider(target)
+        provider = parsed.provider if parsed else None
         model_name = parsed.model if parsed else target
+        switch_kwargs = {"resolved_metadata": metadata} if metadata is not None else {}
         if model_name == runtime_state.model_name and (
             not provider or provider == runtime_state.model_provider
         ):
-            await self._switch_model(target, extra_kwargs=extra_kwargs)
+            await self._switch_model(target, extra_kwargs=extra_kwargs, **switch_kwargs)
             return
 
         from deepagents_code._env_vars import DEBUG_MODEL_SWITCH, is_env_truthy
@@ -24894,7 +24951,9 @@ class DeepAgentsApp(App):
                 return
             if confirmed is not True:
                 return
-        await self._switch_model(target, extra_kwargs=extra_kwargs)
+        if selection != self._model_selection:
+            return
+        await self._switch_model(target, extra_kwargs=extra_kwargs, **switch_kwargs)
 
     async def _install_extra_then_switch(
         self,
@@ -24912,24 +24971,29 @@ class DeepAgentsApp(App):
             extra_kwargs: Extra constructor kwargs from `--model-params`.
             interactive: Whether the switch was explicitly requested by the user.
         """
-        # `_install_extra` already surfaced the reason on any failure.
-        if not await self._install_extra(extra, auto_restart=True):
+        from functools import partial
+
+        if self._defer_model_selection(
+            "model_switch",
+            partial(
+                self._install_extra_then_switch,
+                extra,
+                model_spec,
+                extra_kwargs=extra_kwargs,
+                interactive=interactive,
+            ),
+        ):
             return
-        # The extra is now installed regardless of what happens next. If the
-        # user dismisses the credential prompt, only the switch is cancelled —
-        # the extra stays installed so they can switch later once a key is set.
-        # The selector is already gone, so confirm the install landed rather
-        # than leaving a silent no-op after a multi-step flow.
-        if not await self._prompt_model_auth_if_needed(model_spec):
-            await self._mount_message(
-                AppMessage(
-                    f"Installed '{extra}'. Switch to {model_spec} anytime with "
-                    f"`/model` — you'll be prompted for credentials.",
-                ),
-            )
+        if not await self._prepare_model_provider(extra, model_spec):
             return
         if interactive:
-            self._dispatch_model_switch(model_spec, extra_kwargs=extra_kwargs)
+            request = partial(
+                self._confirm_and_switch_model, model_spec, extra_kwargs=extra_kwargs
+            )
+            if not self._defer_model_selection("model_switch", request):
+                # Already running off the message pump. Keep confirmation and
+                # switching inside the worker or deferred action that owns them.
+                await request()
         else:
             await self._switch_model(model_spec, extra_kwargs=extra_kwargs)
 
@@ -31233,8 +31297,8 @@ class DeepAgentsApp(App):
         """Set, clear, or select the session's summary-model override.
 
         The override is session-scoped: unlike `/model --default` there is no
-        persistent tier, so `[models].summarization_default` is the only way to
-        carry a choice across launches. A single bare spec is the whole grammar
+        command-line default flag; Ctrl+S in its picker persists
+        `[models].summarization_default`. A single bare spec is the whole grammar
         -- no params and no trailing words, unlike `/model`.
 
         Args:
@@ -31246,10 +31310,7 @@ class DeepAgentsApp(App):
             await self._show_summarization_model_selector()
             return
         if argument.lower() in _CLEAR_TOKENS:
-            self._summarization_model_override = INHERIT_SUMMARIZATION_MODEL
-            await self._mount_message(
-                AppMessage("Summarization model cleared; using the main agent model.")
-            )
+            await self._set_summarization_model(INHERIT_SUMMARIZATION_MODEL)
             return
         if " " in argument:
             await self._mount_message(
@@ -31261,9 +31322,11 @@ class DeepAgentsApp(App):
 
     async def _show_summarization_model_selector(self) -> None:
         """Open the model selector for choosing the summarization model."""
-        from deepagents_code.config import detect_provider
         from deepagents_code.model_config import ModelSpec
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            SUMMARIZATION_DEFAULT_SCOPE,
+            ModelSelectorScreen,
+        )
 
         current_spec = self._summarization_model_override
         if current_spec in {None, INHERIT_SUMMARIZATION_MODEL}:
@@ -31272,8 +31335,7 @@ class DeepAgentsApp(App):
         current_provider = parsed.provider if parsed else None
         current_model = parsed.model if parsed else None
         if current_spec and parsed is None:
-            current_provider = detect_provider(current_spec)
-            current_model = current_spec if current_provider else None
+            current_model = current_spec
 
         def handle_result(result: tuple[str, str] | None) -> None:
             if result is None:
@@ -31289,7 +31351,7 @@ class DeepAgentsApp(App):
             def start_selection_worker() -> None:
                 self.run_worker(
                     apply_selection(),
-                    exclusive=True,
+                    exclusive=False,
                     group="summarization-model",
                 )
                 if self._chat_input:
@@ -31300,13 +31362,14 @@ class DeepAgentsApp(App):
         screen = ModelSelectorScreen(
             current_model=current_model,
             current_provider=current_provider,
-            cli_profile_override=self._profile_override,
+            catalog_loader=self._load_auxiliary_model_catalog,
+            resolve_model=self._resolve_auxiliary_model,
             title="Choose the summarization model",
             description=(
                 "Pick the model used for context-compaction summaries. Clear it "
                 "with `/offload model clear` to follow the main agent model."
             ),
-            default_scope=None,
+            default_scope=SUMMARIZATION_DEFAULT_SCOPE,
             check_provider_requirements=(
                 self._remote_agent() is None or self._server_kwargs is not None
             ),
@@ -31316,87 +31379,152 @@ class DeepAgentsApp(App):
     async def _apply_summarization_model_selection(
         self, model_spec: str, extra: str | None
     ) -> None:
-        """Install any provider extra, then apply a picker selection."""
-        if self._defer_summarization_model_install_if_busy(model_spec, extra):
-            return
-        if extra and not await self._install_summarization_model_extra(
-            extra, model_spec
-        ):
-            return
-        await self._set_summarization_model(model_spec)
+        """Apply a summary picker selection through the shared lifecycle."""
+        await self._apply_auxiliary_model_selection(
+            model_spec, extra, role="summarization"
+        )
 
-    def _defer_summarization_model_install_if_busy(
-        self, model_spec: str, extra: str | None
-    ) -> bool:
-        """Defer an install-backed summary selection while the app is busy.
+    async def _load_model_catalog(
+        self,
+        recommendations: Sequence[str],
+        current_spec: str | None,
+        *,
+        purpose: ModelPurpose = "main",
+    ) -> ModelCatalog:
+        """Return discovery from the inference host or shared bootstrap loader."""
+        remote = self._remote_agent()
+        if remote is not None:
+            return await remote.aget_model_catalog(
+                {"configurable": {"thread_id": self._lc_thread_id}},
+                purpose=purpose,
+                recommended_models=recommendations,
+                current_spec=current_spec,
+            )
+        from deepagents_code.model_catalog import load_model_catalog
+
+        return await asyncio.to_thread(
+            load_model_catalog,
+            profile_overrides=self._profile_override if purpose == "main" else None,
+            recommended_models=recommendations,
+            current_spec=current_spec,
+        )
+
+    async def _load_auxiliary_model_catalog(
+        self,
+        recommendations: Sequence[str],
+        current_spec: str | None,
+    ) -> ModelCatalog:
+        """Return secondary models without main-model profile overrides."""
+        return await self._load_model_catalog(
+            recommendations, current_spec, purpose="auxiliary"
+        )
+
+    async def _resolve_model_metadata(
+        self,
+        model_spec: str,
+        *,
+        purpose: ModelPurpose = "main",
+        extra_kwargs: dict[str, Any] | None = None,
+    ) -> ModelMetadata:
+        """Validate a choice before switching or saving it as a default.
 
         Returns:
-            Whether the selection was deferred.
+            Metadata from the workspace that will run the model, or a
+                policy-checked model identity before the server connects.
+        """
+        remote = self._remote_agent()
+        if remote is None:
+            return await asyncio.to_thread(self._resolve_disconnected_model, model_spec)
+        return await remote.aresolve_model(
+            {"configurable": {"thread_id": self._lc_thread_id}},
+            model_spec.removeprefix(":"),
+            extra_kwargs=extra_kwargs,
+            **({"purpose": purpose} if purpose != "main" else {}),
+        )
+
+    @staticmethod
+    def _resolve_disconnected_model(model_spec: str) -> ModelMetadata:
+        """Check config choices without requiring provider packages or credentials.
+
+        Returns:
+            Model identity with runtime capabilities left unknown.
+
+        Raises:
+            ModelConfigError: If the model identity cannot be determined.
+        """
+        from deepagents_code.model_config import (
+            ModelConfig,
+            ModelConfigError,
+            ModelSpec,
+        )
+        from deepagents_code.model_metadata import ModelMetadata
+
+        config = ModelConfig.load()
+        canonical = config.canonical_model_spec(model_spec.removeprefix(":"))
+        parsed = ModelSpec.try_parse(canonical) if canonical else None
+        if parsed is None:
+            msg = "Specify a model as provider:model (for example, openai:my-model)."
+            raise ModelConfigError(msg)
+        config.require_model_allowed(str(parsed))
+        return ModelMetadata(model_name=parsed.model, provider=parsed.provider)
+
+    async def _resolve_auxiliary_model(self, model_spec: str) -> ModelMetadata:
+        """Return auxiliary metadata from the shared selection resolver."""
+        return await self._resolve_model_metadata(model_spec, purpose="auxiliary")
+
+    async def _set_summarization_model(
+        self,
+        model_spec: str,
+        *,
+        extra: str | None = None,
+        selection: int | None = None,
+    ) -> None:
+        """Apply only the latest summary choice, allowing older installs to finish.
+
+        Args:
+            model_spec: Requested summary model or the inherit sentinel.
+            extra: Provider integration to install before resolving the model.
+            selection: Original selection number when resuming deferred work.
         """
         from functools import partial
 
-        if not extra or not (
-            self._agent_running or self._shell_running or self._connecting
+        if selection is None:
+            self._summarization_model_selection += 1
+            selection = self._summarization_model_selection
+        if selection != self._summarization_model_selection:
+            return
+        if self._defer_model_selection(
+            "summarization_model_switch",
+            partial(
+                self._set_summarization_model,
+                model_spec,
+                extra=extra,
+                selection=selection,
+            ),
         ):
-            return False
-        self._defer_action(
-            DeferredAction(
-                kind="summarization_model_switch",
-                execute=partial(
-                    self._apply_summarization_model_selection, model_spec, extra
-                ),
-            )
-        )
-        self.notify(
-            "Summarization model will switch after current work finishes.",
-            markup=False,
-        )
-        return True
-
-    async def _install_summarization_model_extra(
-        self, extra: str, model_spec: str
-    ) -> bool:
-        """Install and authenticate a summary model provider.
-
-        Returns:
-            Whether model selection may continue.
-        """
-        if not await self._install_extra(extra, auto_restart=True):
-            return False
-        if await self._prompt_model_auth_if_needed(model_spec):
-            return True
-        await self._mount_message(
-            AppMessage(
-                f"Installed '{extra}'. Set {model_spec} after adding its "
-                "credentials with `/auth`."
-            )
-        )
-        return False
-
-    async def _set_summarization_model(self, model_spec: str) -> None:
-        """Validate and set the session's summarization model."""
-        if self._remote_agent() is not None and self._server_kwargs is None:
-            self._summarization_model_override = model_spec
+            return
+        if extra:
+            if await self._prepare_model_provider(extra, model_spec):
+                # Recheck freshness and busy state after installation/restart.
+                await self._set_summarization_model(model_spec, selection=selection)
+            return
+        if model_spec == INHERIT_SUMMARIZATION_MODEL:
+            self._summarization_model_override = INHERIT_SUMMARIZATION_MODEL
             await self._mount_message(
-                AppMessage(
-                    f"Summarization model requested: {model_spec}. The remote server "
-                    "will validate it at compaction time and use the main agent "
-                    "model if initialization fails."
-                )
+                AppMessage("Summarization model cleared; using the main agent model.")
             )
             return
-
         try:
-            result = await asyncio.to_thread(
-                _create_model_with_deepagents_import_lock,
-                model_spec,
-                cli_max_retries=(self._server_kwargs or {}).get("cli_max_retries"),
-            )
+            result = await self._resolve_auxiliary_model(model_spec)
         except Exception as exc:
+            if selection != self._summarization_model_selection:
+                return
             logger.exception("Failed to resolve summarization model %s", model_spec)
             await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
             return
 
+        if selection != self._summarization_model_selection:
+            return
         display = f"{result.provider}:{result.model_name}"
         self._summarization_model_override = display
         await self._mount_message(AppMessage(f"Summarization model set to {display}."))
@@ -31409,6 +31537,7 @@ class DeepAgentsApp(App):
         announce_unchanged: bool = True,
         persist: bool = True,
         from_resume: bool = False,
+        resolved_metadata: ModelMetadata | None = None,
     ) -> None:
         """Switch to a new model, preserving conversation history.
 
@@ -31438,6 +31567,7 @@ class DeepAgentsApp(App):
                 When `True`, failures are reported with resume-specific
                 messaging (which model couldn't be restored and what the session
                 is falling back to) rather than the interactive `/model` errors.
+            resolved_metadata: Metadata already validated for the switch confirmation.
         """
         from deepagents_code.config import runtime_state
         from deepagents_code.model_config import (
@@ -31451,6 +31581,9 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Model switch already in progress."))
             return
 
+        # Direct switches (such as thread resume) also supersede any pending
+        # lookup or confirmation. The guard serializes application/persistence.
+        self._model_selection += 1
         self._model_switching = True
         try:
             # Defensively strip leading colon in case of empty provider,
@@ -31503,10 +31636,8 @@ class DeepAgentsApp(App):
             if self._status_bar:
                 self._status_bar.set_busy("Switching model")
             try:
-                result = await remote.aresolve_model(
-                    {"configurable": {"thread_id": self._lc_thread_id}},
-                    display,
-                    extra_kwargs=extra_kwargs,
+                result = resolved_metadata or await self._resolve_model_metadata(
+                    display, extra_kwargs=extra_kwargs
                 )
                 unchanged = (
                     result.model_name == runtime_state.model_name
@@ -31750,23 +31881,14 @@ class DeepAgentsApp(App):
         Args:
             model_spec: The model specification (e.g., `'anthropic:claude-opus-4-6'`).
         """
-        from deepagents_code.config import detect_provider
-        from deepagents_code.model_config import ModelSpec, save_default_model
-
-        model_spec = model_spec.removeprefix(":")
-
-        parsed = ModelSpec.try_parse(model_spec)
-        if not parsed:
-            provider = detect_provider(model_spec)
-            if provider:
-                model_spec = f"{provider}:{model_spec}"
-
-        from deepagents_code.model_config import ModelNotAllowedError
+        from deepagents_code.model_config import save_default_model
 
         try:
+            result = await self._resolve_model_metadata(model_spec)
+            model_spec = f"{result.provider}:{result.model_name}"
             saved = await asyncio.to_thread(save_default_model, model_spec)
-        except ModelNotAllowedError as exc:
-            # Policy, not permissions -- render the reason the user can act on.
+        except Exception as exc:
+            logger.exception("Failed to validate or save default model %s", model_spec)
             await self._mount_message(ErrorMessage(str(exc)))
             return
         if saved:
@@ -31905,17 +32027,16 @@ async def run_textual_app(
         mcp_server_info: MCP server metadata for the `/mcp` viewer.
         profile_override: Extra profile fields from `--profile-override`,
             retained so later profile-aware behavior stays consistent with
-            the app override, including model selection details, offload
-            budget display, and on-demand `create_model()` calls such
-            as `/offload`.
+            the app override, including model selection details and offload
+            budget display.
         summarization_model: Initial model used only for compaction summaries.
         server_proc: LangGraph server process for the interactive session.
         server_kwargs: Kwargs for deferred `start_server_and_get_agent` call.
         mcp_preload_kwargs: Kwargs for concurrent MCP metadata preload.
-        model_kwargs: Kwargs for deferred `create_model()` call.
+        model_kwargs: Startup model selection retained for recovery.
 
-            When provided, model creation runs in a background worker after
-            first paint so the splash screen appears immediately.
+            When provided, the startup worker reads metadata from the server
+            after first paint so the splash screen appears immediately.
         model_explicitly_set: Whether the user passed `--model` on the command
             line.
 

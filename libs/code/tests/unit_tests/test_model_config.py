@@ -1,5 +1,6 @@
 """Tests for model_config module."""
 
+import importlib.util
 import io
 import logging
 import sys
@@ -1875,6 +1876,59 @@ class TestModelPersistenceBetweenSessions:
 
 class TestGetAvailableModels:
     """Tests for get_available_models() function."""
+
+    @pytest.mark.parametrize("override", [None, {"max_output_tokens": 123}])
+    def test_discovery_follows_workspace_environment(
+        self, monkeypatch: pytest.MonkeyPatch, override: dict[str, int] | None
+    ) -> None:
+        """Model lists and profiles stay with their daemon, including overrides."""
+        from deepagents_code.config import use_environment
+
+        monkeypatch.setattr(ModelConfig, "load", lambda: ModelConfig())
+        monkeypatch.setattr(
+            model_config,
+            "_get_provider_profile_modules",
+            lambda: [("ollama", "langchain_ollama.data._profiles")],
+        )
+        monkeypatch.setattr(model_config, "_load_provider_profiles", lambda _: {})
+        monkeypatch.setattr(importlib.util, "find_spec", lambda _: object())
+        models = {
+            "http://localhost:11434": ["first"],
+            "http://localhost:11435": ["second"],
+        }
+        monkeypatch.setattr(model_config, "_get_ollama_installed_models", models.get)
+        monkeypatch.setattr(
+            model_config,
+            "_fetch_ollama_installed_model_profiles",
+            lambda endpoint, names: {
+                name: {"max_input_tokens": 1000 if "11434" in endpoint else 2000}
+                for name in names
+            },
+        )
+
+        for port, enabled in [
+            (11434, True),
+            (11435, True),
+            (11435, False),
+            (11434, True),
+        ]:
+            with use_environment(
+                {
+                    "OLLAMA_HOST": f"http://localhost:{port}",
+                    "DEEPAGENTS_CODE_OLLAMA_DISCOVERY": "1" if enabled else "0",
+                }
+            ):
+                expected = models[f"http://localhost:{port}"] if enabled else []
+                assert get_available_models().get("ollama", []) == expected
+                profiles = get_model_profiles(cli_override=override)
+                assert set(profiles) == {f"ollama:{name}" for name in expected}
+                for name in expected:
+                    profile = profiles[f"ollama:{name}"]["profile"]
+                    assert profile["max_input_tokens"] == (
+                        1000 if port == 11434 else 2000
+                    )
+                    if override:
+                        assert profile["max_output_tokens"] == 123
 
 
 class TestGetAvailableModelsMergesConfig:

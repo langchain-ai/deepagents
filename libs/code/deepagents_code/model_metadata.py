@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Literal
+
+ModelPurpose = Literal["main", "auxiliary"]
 
 
 @dataclass(frozen=True)
@@ -13,6 +16,7 @@ class ModelMetadata:
     provider: str
     context_limit: int | None = None
     unsupported_modalities: frozenset[str] = frozenset()
+    structured_output: bool | None = field(default=None, kw_only=True)
 
     @classmethod
     def from_payload(cls, payload: object) -> ModelMetadata:
@@ -31,6 +35,7 @@ class ModelMetadata:
         provider = payload.get("provider")
         limit = payload.get("context_limit")
         modalities = payload.get("unsupported_modalities")
+        structured_output = payload.get("structured_output")
         if not isinstance(name, str) or not name or not isinstance(provider, str):
             msg = "Model metadata has an invalid model name or provider."
             raise TypeError(msg)
@@ -40,13 +45,22 @@ class ModelMetadata:
         if not isinstance(modalities, list):
             msg = "Model metadata has invalid unsupported modalities."
             raise TypeError(msg)
+        if structured_output is not None and not isinstance(structured_output, bool):
+            msg = "Model metadata has invalid structured output support."
+            raise TypeError(msg)
         validated: set[str] = set()
         for item in modalities:
             if not isinstance(item, str):
                 msg = "Model metadata has invalid unsupported modalities."
                 raise TypeError(msg)
             validated.add(item)
-        return cls(name, provider, limit, frozenset(validated))
+        return cls(
+            name,
+            provider,
+            limit,
+            frozenset(validated),
+            structured_output=structured_output,
+        )
 
     def to_payload(self) -> dict[str, object]:
         """Return only JSON-safe properties, never a model or its credentials."""
@@ -55,6 +69,7 @@ class ModelMetadata:
             "provider": self.provider,
             "context_limit": self.context_limit,
             "unsupported_modalities": sorted(self.unsupported_modalities),
+            "structured_output": self.structured_output,
         }
 
     def apply_to_runtime_state(self) -> None:

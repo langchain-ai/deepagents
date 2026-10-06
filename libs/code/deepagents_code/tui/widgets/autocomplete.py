@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 
 _THREAD_LABEL_LIMIT = 80
-"""Maximum initial-prompt label length shown in thread completion."""
+"""Maximum label length shown in thread completion."""
 
 _THREAD_REFERENCE_PREFIX = "@@(thread:"
 """Prefix for durable thread-reference tokens."""
@@ -51,8 +51,9 @@ _THREAD_TRIGGER = "@@"
 
 
 def _thread_label(thread: ThreadInfo) -> str:
-    """Return a single-line initial-prompt label for a completion row."""
-    label = " ".join(sanitize_control_chars(thread.get("initial_prompt") or "").split())
+    """Return a single-line name or initial-prompt label for a completion row."""
+    title = thread.get("thread_name") or thread.get("initial_prompt") or ""
+    label = " ".join(sanitize_control_chars(title).split())
     if not label:
         return thread["thread_id"][:8]
     if len(label) > _THREAD_LABEL_LIMIT:
@@ -450,6 +451,7 @@ class ThreadCompletionController:
         """
         values = (
             thread["thread_id"],
+            thread.get("thread_name"),
             thread.get("initial_prompt"),
             thread.get("agent_name"),
             thread.get("git_branch"),

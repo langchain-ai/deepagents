@@ -1,7 +1,7 @@
 {
   "libs/deepagents": "0.7.22",
   "libs/acp": "0.0.12",
-  "libs/code": "0.1.80",
+  "libs/code": "0.1.81",
   "libs/talon": "0.0.9",
   "libs/partners/daytona": "0.0.8",
   "libs/partners/modal": "0.0.6",

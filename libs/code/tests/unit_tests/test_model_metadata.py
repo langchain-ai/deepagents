@@ -62,6 +62,27 @@ def model_runtime(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     return runtime
 
 
+@pytest.fixture
+def model_api_client(monkeypatch: pytest.MonkeyPatch) -> RemoteAgent:
+    """Connect the real client to the model endpoints without network I/O."""
+    from json import loads
+
+    from deepagents_code.model_api import model_catalog
+
+    async def post(path: str, *, json: dict[str, object]) -> dict[str, object]:
+        handler = model_catalog if path.endswith("/models") else model_metadata
+        response = await handler(_request(json))
+        assert response.status_code == 200
+        return loads(bytes(response.body))
+
+    remote = RemoteAgent("http://test")
+    monkeypatch.setattr(remote, "_workspace_for_thread", AsyncMock(return_value={}))
+    graph = Mock()
+    graph.client.http.post = AsyncMock(side_effect=post)
+    monkeypatch.setattr(remote, "_get_graph", lambda: graph)
+    return remote
+
+
 async def test_startup_metadata_works_despite_thread_workspace_conflicts() -> None:
     import httpx
 
@@ -361,14 +382,14 @@ async def test_auxiliary_selection_uses_server_environment_and_profile(
     command: str,
     attribute: str,
     model_runtime: SimpleNamespace,
+    model_api_client: RemoteAgent,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Selectors consume server metadata without retargeting the main model."""
     from deepagents_code.config import active_environment
 
     app = DeepAgentsApp()
-    remote = RemoteAgent("http://test")
-    app._agent = remote
+    app._agent = model_api_client
     app._lc_thread_id = "thread"
     app._model_override = "custom:main"
     model_runtime.model_environment = {"MODEL_VERSION": "server"}
@@ -379,24 +400,6 @@ async def test_auxiliary_selection_uses_server_environment_and_profile(
     messages = AsyncMock()
     monkeypatch.setattr(app, "_mount_message", messages)
     monkeypatch.setattr(app, "_persist_goal_rubric_state", AsyncMock(return_value=True))
-    monkeypatch.setattr(remote, "_workspace_for_thread", AsyncMock(return_value={}))
-
-    async def post(_path: str, *, json: dict[str, object]) -> dict[str, object]:
-        response = await model_metadata(_request(json))
-        assert response.status_code == 200
-        import json as json_module
-
-        return json_module.loads(bytes(response.body))
-
-    monkeypatch.setattr(
-        remote,
-        "_get_graph",
-        Mock(
-            return_value=SimpleNamespace(
-                client=SimpleNamespace(http=SimpleNamespace(post=post))
-            )
-        ),
-    )
 
     def resolve(spec: str, **kwargs: object) -> SimpleNamespace:
         assert spec == "alias"
@@ -644,10 +647,10 @@ def test_invalid_structured_output_metadata_is_rejected() -> None:
 async def test_catalog_uses_workspace_environment_and_filters_profile_extensions(
     purpose: ModelPurpose,
     model_runtime: SimpleNamespace,
+    model_api_client: RemoteAgent,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from deepagents_code.config import active_environment
-    from deepagents_code.model_api import model_catalog
     from deepagents_code.model_config import (
         ModelConfig,
         ProviderAuthState,
@@ -687,26 +690,7 @@ async def test_catalog_uses_workspace_environment_and_filters_profile_extensions
             provider=provider,
         ),
     )
-    remote = RemoteAgent("http://test")
-    monkeypatch.setattr(remote, "_workspace_for_thread", AsyncMock(return_value={}))
-
-    async def post(_path: str, *, json: dict[str, object]) -> dict[str, object]:
-        response = await model_catalog(_request(json))
-        assert response.status_code == 200
-        import json as json_module
-
-        return json_module.loads(bytes(response.body))
-
-    monkeypatch.setattr(
-        remote,
-        "_get_graph",
-        Mock(
-            return_value=SimpleNamespace(
-                client=SimpleNamespace(http=SimpleNamespace(post=post))
-            )
-        ),
-    )
-    catalog = await remote.aget_model_catalog(
+    catalog = await model_api_client.aget_model_catalog(
         {"configurable": {"thread_id": "thread"}},
         purpose=purpose,
     )

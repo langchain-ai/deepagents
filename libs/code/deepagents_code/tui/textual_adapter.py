@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from pydantic import TypeAdapter
 
     from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code.cold_cache import CacheActivity
     from deepagents_code.hooks.models.domain import ToolCallData
     from deepagents_code.resume_state import RubricResult
 
@@ -839,11 +840,16 @@ class TextualUIAdapter:
         on_approval_mode_fallback: Callable[[str], None] | None = None,
         *,
         show_diff_line_numbers: bool = True,
-        on_model_streaming: Callable[[bool], None] | None = None,
+        on_cache_reconciliation: Callable[
+            [bool, CacheActivity | None, bool], Awaitable[None]
+        ]
+        | None = None,
     ) -> None:
         """Initialize the adapter."""
-        self._on_model_streaming = on_model_streaming
-        self._model_streaming = False
+        self._on_cache_reconciliation = on_cache_reconciliation
+        self._cache_attempt: tuple[str, int] | None = None
+        self._cache_activity: CacheActivity | None = None
+        self._cache_settled: set[tuple[str, int]] = set()
         self._mount_message = mount_message
         """Async callback to mount a message widget to the chat."""
 
@@ -952,16 +958,58 @@ class TextualUIAdapter:
         self._on_stream_complete: Callable[[], None] | None = None
         """Called only after the agent stream reaches a clean end."""
 
-    def _set_model_streaming(self, streaming: bool) -> None:
-        """Report main-model streaming independently of turn-level visible output."""
-        if streaming == self._model_streaming:
+    async def _reconcile_cache(
+        self, *, pending: bool = False, read: bool = False, write: bool = False
+    ) -> None:
+        """Settle the active request before releasing expiry notifications."""
+        if self._on_cache_reconciliation:
+            await self._on_cache_reconciliation(
+                pending, self._cache_activity if read or write else None, write
+            )
+        if not pending and self._cache_attempt is not None:
+            self._cache_settled.add(self._cache_attempt)
+
+    async def _cache_attempt_event(self, event: dict[str, Any]) -> None:
+        """Ignore stale boundaries and renew only from confirmed cache usage."""
+        from deepagents_code.cold_cache import parse_cache_activity
+        from deepagents_code.model_retry import model_attempt_from_event
+
+        parsed = model_attempt_from_event(event)
+        if parsed is None:
             return
-        self._model_streaming = streaming
-        if self._on_model_streaming:
-            try:
-                self._on_model_streaming(streaming)
-            except Exception:
-                logger.warning("Model streaming callback failed", exc_info=True)
+        scope = (cast("str", parsed["call_id"]), cast("int", parsed["attempt"]))
+        if scope in self._cache_settled:
+            return
+        if parsed["phase"] == "start":
+            if scope == self._cache_attempt:
+                return
+            if self._cache_attempt is not None:
+                self._cache_settled.add(self._cache_attempt)
+            self._cache_attempt = scope
+            self._cache_activity = parse_cache_activity(event.get("cache_activity"))
+            await self._reconcile_cache(pending=self._cache_activity is not None)
+        elif scope == self._cache_attempt:
+            await self._reconcile_cache(
+                read=event.get("cache_read") is True,
+                write=event.get("cache_write") is True,
+            )
+
+    async def _cache_usage(self, message: object, metadata: object) -> None:
+        """Use correlated main-model cache usage as soon as it is streamed."""
+        from deepagents_code.cost_tracking import cache_token_counts
+
+        if (
+            self._cache_attempt is None
+            or self._cache_attempt in self._cache_settled
+            or not isinstance(metadata, dict)
+        ):
+            return
+        scope = metadata.get("dcode_cache_attempt")
+        if not isinstance(scope, (tuple, list)) or tuple(scope) != self._cache_attempt:
+            return
+        reads, writes = cache_token_counts(getattr(message, "usage_metadata", None))
+        if reads or any(writes):
+            await self._reconcile_cache(read=bool(reads), write=any(writes))
 
     def _reset_auto_mode_review_tracking(self) -> None:
         """Start each user turn with no in-flight batch and no replay guard.
@@ -1786,6 +1834,9 @@ async def execute_task_textual(
 
     hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
     ask_user_adapter = _get_ask_user_adapter()
+    adapter._cache_attempt = None
+    adapter._cache_activity = None
+    adapter._cache_settled.clear()
     adapter._reset_auto_mode_review_tracking()
 
     message_content: str | list[dict[str, Any]] | None = None
@@ -2203,8 +2254,8 @@ async def execute_task_textual(
                     if isinstance(data, dict) and data.get("type") == "model_attempt":
                         attempt_event = model_attempt_from_event(data)
                         if attempt_event is not None:
-                            if is_main_agent and attempt_event["phase"] == "complete":
-                                adapter._set_model_streaming(False)
+                            if is_main_agent:
+                                await adapter._cache_attempt_event(data)
                             attempt_scope = _ModelAttemptScope(
                                 ns_key,
                                 cast("str", attempt_event["call_id"]),
@@ -2306,9 +2357,17 @@ async def execute_task_textual(
                         continue
 
                     if isinstance(data, dict) and data.get("type") == "model_retry":
-                        if is_main_agent:
-                            adapter._set_model_streaming(False)
                         retry_correlation = model_retry_from_event(data)
+                        if (
+                            is_main_agent
+                            and retry_correlation is not None
+                            and adapter._cache_attempt
+                            == (
+                                retry_correlation["call_id"],
+                                retry_correlation["failed_attempt"],
+                            )
+                        ):
+                            await adapter._reconcile_cache()
                         if is_main_agent and adapter._set_spinner is not None:
                             # Runs for valid, malformed, and legacy (uncorrelated)
                             # retries alike: the spinner status predates attempt
@@ -2506,7 +2565,7 @@ async def execute_task_textual(
                 # Handle UPDATES stream - for interrupts and todos
                 if current_stream_mode == "updates":
                     if is_main_agent:
-                        adapter._set_model_streaming(False)
+                        await adapter._reconcile_cache()
                     if not isinstance(data, dict):
                         continue
 
@@ -2722,6 +2781,8 @@ async def execute_task_textual(
                     if _is_auto_mode_classifier_chunk(metadata):
                         continue
 
+                    await adapter._cache_usage(message, metadata)
+
                     # Only a visible top-level model call represents the active
                     # conversation context. Hidden usage was still recorded above.
                     if recorded_usage is not None:
@@ -2779,7 +2840,7 @@ async def execute_task_textual(
                         continue
 
                     if isinstance(message, ToolMessage):
-                        adapter._set_model_streaming(False)
+                        await adapter._reconcile_cache()
                         tool_name = getattr(message, "name", "")
                         # Normalize to the two-value hook domain, fail-closed: an
                         # unexpected provider status is logged and treated as an
@@ -3107,12 +3168,6 @@ async def execute_task_textual(
 
                     # Process content blocks
                     blocks = message.content_blocks
-                    if any(
-                        block.get("type")
-                        in {"text", "reasoning", "tool_call_chunk", "tool_call"}
-                        for block in blocks
-                    ):
-                        adapter._set_model_streaming(True)
                     if logger.isEnabledFor(logging.DEBUG):
                         logger.debug(
                             "content_blocks count=%d blocks=%s",
@@ -3318,7 +3373,6 @@ async def execute_task_textual(
                                 tool_call_buffers.pop(buffer_key, None)
 
                     if getattr(message, "chunk_position", None) == "last":
-                        adapter._set_model_streaming(False)
                         pending_text = pending_text_by_namespace.get(ns_key, "")
                         if pending_text:
                             await _flush_assistant_text_ns(
@@ -3330,7 +3384,7 @@ async def execute_task_textual(
                             pending_text_by_namespace[ns_key] = ""
                             assistant_message_by_namespace.pop(ns_key, None)
 
-            adapter._set_model_streaming(False)
+            await adapter._reconcile_cache()
 
             # Reset summarization state if stream ended mid-summarization
             # (e.g. middleware error, stream exhausted before regular chunks).
@@ -4170,7 +4224,7 @@ async def execute_task_textual(
                 )
         raise
     finally:
-        adapter._set_model_streaming(False)
+        await adapter._reconcile_cache()
         # A clean stream can leave its successful final attempt open when the
         # best-effort completion event was lost. Commit those scopes; only an
         # aborted stream owns incomplete records that must be discarded.

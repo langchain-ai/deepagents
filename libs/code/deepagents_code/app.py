@@ -4488,6 +4488,7 @@ class DeepAgentsApp(App):
 
         self._last_cache_write: CacheActivity | None = None
         self._last_cache_use: CacheActivity | None = None
+        self._cache_reconciliation_pending = False
 
         self._last_model_request_at: str | None = None
         """Latest successful main-model request start restored from graph state."""
@@ -5329,7 +5330,7 @@ class DeepAgentsApp(App):
             set_spinner=self._set_spinner,
             set_active_message=self._set_active_message,
             on_user_visible_output_started=self._on_user_visible_output_started,
-            on_model_streaming=self._on_model_streaming,
+            on_cache_reconciliation=self._on_cache_reconciliation,
             sync_message_content=self._sync_message_content,
             sync_tool_message=self._sync_tool_message_state,
             request_ask_user=self._request_ask_user,
@@ -9175,6 +9176,7 @@ class DeepAgentsApp(App):
         self._thread_has_completed_turn = False
         self._last_cache_write = None
         self._last_cache_use = None
+        self._cache_reconciliation_pending = False
         self._last_model_request_at = None
         self._last_cache_model_spec = ""
         self._last_cache_model_params = None
@@ -9527,7 +9529,13 @@ class DeepAgentsApp(App):
 
         for key in ("_last_cache_write", "_last_cache_use"):
             if key in state_values:
-                setattr(self, key, parse_cache_activity(state_values[key]))
+                activity = parse_cache_activity(state_values[key])
+                current = getattr(self, key)
+                if current is None or (
+                    activity is not None
+                    and activity["requested_at"] >= current["requested_at"]
+                ):
+                    setattr(self, key, activity)
         if "_last_model_request_at" not in state_values:
             return
         from deepagents_code.cold_cache import parse_cache_timestamp
@@ -9703,7 +9711,7 @@ class DeepAgentsApp(App):
             or self._thread_switching
             or not thread_id
             or expires_at is None
-            or (self._status_bar is not None and self._status_bar.cache_timing_paused)
+            or self._cache_reconciliation_pending
             or self._cache_expiring_seen.get(thread_id) == expires_at
             or not 0
             < (expires_at - datetime.now(UTC)).total_seconds()
@@ -20075,8 +20083,7 @@ class DeepAgentsApp(App):
         self._agent_turn_started = False
         self._active_user_message = None
         self._active_turn_visible_output_started = False
-        if self._status_bar:
-            self._status_bar.set_cache_timing_paused(paused=False)
+        self._cache_reconciliation_pending = False
         queued_result: _GoalApplicationResult | None = None
         queued_objective: str | None = None
         try:
@@ -21740,10 +21747,16 @@ class DeepAgentsApp(App):
         """
         self._active_turn_visible_output_started = True
 
-    def _on_model_streaming(self, streaming: bool) -> None:
-        """Pause cache timing only while the main model is producing output."""
-        if self._status_bar:
-            self._status_bar.set_cache_timing_paused(paused=streaming)
+    async def _on_cache_reconciliation(
+        self, pending: bool, activity: CacheActivity | None, written: bool
+    ) -> None:
+        """Keep expiry notifications suppressed until request usage is reconciled."""
+        if activity is not None:
+            self._last_cache_use = activity
+            if written:
+                self._last_cache_write = activity
+            await self._refresh_cache_timing()
+        self._cache_reconciliation_pending = pending
 
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).

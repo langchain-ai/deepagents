@@ -26321,7 +26321,10 @@ class DeepAgentsApp(App):
         from deepagents_code._debug import installed_debug_log_path
         from deepagents_code._env_vars import DEBUG, EXPERIMENTAL, is_env_truthy
         from deepagents_code._version import __version__
-        from deepagents_code.config import _get_editable_install_path
+        from deepagents_code.config import (
+            _get_editable_install_path,
+            _is_editable_install,
+        )
         from deepagents_code.tui.widgets.debug_console import SnapshotField
 
         def _safe(
@@ -26434,7 +26437,14 @@ class DeepAgentsApp(App):
             "Install path", lambda: _get_editable_install_path() or "", copyable=True
         )
         return [
-            _safe("Version", lambda: __version__, copyable=True),
+            _safe(
+                "Version",
+                lambda: (
+                    f"{__version__} "
+                    f"({'editable' if _is_editable_install() else 'non-editable'})"
+                ),
+                copyable=True,
+            ),
             *([install_path] if install_path.value else []),
             _model_field(),
             _thread_field(),

@@ -542,8 +542,8 @@ async def test_cursor_line_highlight_follows_multiline_editing(theme: str) -> No
             assert style is not None
             return style.bgcolor
 
-        normal = background(0)
-        assert background(1) == normal
+        normal = background(1)
+        assert background(0) != normal
         await pilot.press("down")
         assert area.cursor_location[0] == 1
         assert background(0) == normal
@@ -558,17 +558,25 @@ async def test_cursor_line_highlight_follows_multiline_editing(theme: str) -> No
         await pilot.pause()
         assert background(2) != normal
         await pilot.press("up", "up")
-        assert background(0) == background(1) == normal
+        assert background(0) != normal
+        assert background(1) == normal
         area.text = ""
         await pilot.press("a", "ctrl+j", "b")
         assert background(1) != normal
         area.text = "single line"
         await pilot.pause()
         assert background(0) == normal
+        area.text = "single line\n"
+        await pilot.pause()
+        assert area.cursor_location == (0, 0)
+        assert background(0) != normal
+        area.text = "single line"
+        await pilot.pause()
+        assert background(0) == normal
 
 
 @pytest.mark.parametrize("cursor_style", ["underline", "block"])
-@pytest.mark.parametrize("location", [(1, 3), (1, 6), (2, 0)])
+@pytest.mark.parametrize("location", [(0, 3), (1, 3), (1, 6), (2, 0)])
 async def test_cursor_preserves_line_highlight_when_blinking(
     cursor_style: CursorStyle, location: tuple[int, int]
 ) -> None:

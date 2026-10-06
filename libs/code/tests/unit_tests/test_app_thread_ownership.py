@@ -98,3 +98,65 @@ async def test_explicit_conflict_does_not_load_history(
     load.assert_not_awaited()
     assert owned_app._lc_thread_id == "current"
     assert try_acquire("current") is None
+
+
+@pytest.mark.parametrize("click", [False, True])
+async def test_picker_conflict_keeps_filter_and_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, click: bool
+) -> None:
+    from textual.widgets import Input
+
+    from deepagents_code.thread_ownership import ThreadOwnershipError
+    from deepagents_code.tui.widgets.messages import AppMessage
+    from deepagents_code.tui.widgets.thread_selector import (
+        ThreadOption,
+        ThreadSelectorScreen,
+    )
+
+    monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+    threads: list[sessions.ThreadInfo] = [
+        {
+            "thread_id": "target",
+            "initial_prompt": "Saved conversation",
+            "agent_name": "agent",
+            "updated_at": "2026-10-06T12:00:00+00:00",
+            "cwd": str(tmp_path),
+        }
+    ]
+    monkeypatch.setattr(sessions, "get_cached_threads", lambda **_kwargs: threads)
+    monkeypatch.setattr(sessions, "list_threads", AsyncMock(return_value=threads))
+    error = "Thread target is open elsewhere. Close it there to resume."
+    reserve = MagicMock(side_effect=ThreadOwnershipError(error))
+    app = DeepAgentsApp(thread_id="current", cwd=tmp_path)
+    monkeypatch.setattr(app, "_reserve_thread", reserve)
+    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    load = AsyncMock()
+    monkeypatch.setattr(app, "_resume_owned_thread", load)
+    async with app.run_test(size=(120, 36)) as pilot:
+        await app._handle_command("/threads")
+        await pilot.pause()
+        selector = app.screen
+        assert isinstance(selector, ThreadSelectorScreen)
+        await pilot.press("s", "a", "v", "e", "d")
+        await pilot.pause()
+        messages = list(app.query(AppMessage))
+        if click:
+            await pilot.click(ThreadOption)
+        else:
+            await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.screen is selector
+        assert selector.query_one("#thread-filter", Input).value == "saved"
+        assert selector._selected_index == 0
+        assert any(
+            n.message == error and n.severity == "error" for n in app._notifications
+        )
+        assert list(app.query(AppMessage)) == messages
+        assert app._lc_thread_id == "current"
+        load.assert_not_awaited()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.screen is not selector
+        assert app._chat_input is not None
+        assert app.focused is app._chat_input.input_widget

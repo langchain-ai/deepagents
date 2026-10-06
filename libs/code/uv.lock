@@ -1307,7 +1307,7 @@ requires-dist = [
     { name = "langchain-google-vertexai", marker = "extra == 'vertex'", specifier = ">=3.2.4,<4.0.0" },
     { name = "langchain-groq", marker = "extra == 'groq'", specifier = ">=1.1.3,<2.0.0" },
     { name = "langchain-huggingface", marker = "extra == 'huggingface'", specifier = ">=1.2.2,<2.0.0" },
-    { name = "langchain-ibm", marker = "extra == 'ibm'", specifier = ">=1.1.1,<2.0.0" },
+    { name = "langchain-ibm", marker = "extra == 'ibm'", specifier = ">=1.1.2,<2.0.0" },
     { name = "langchain-litellm", marker = "extra == 'litellm'", specifier = ">=0.11.0,<2.0.0" },
     { name = "langchain-meta", marker = "extra == 'meta'", specifier = ">=0.5.0,<2.0.0" },
     { name = "langchain-mistralai", marker = "extra == 'mistralai'", specifier = ">=1.1.6,<2.0.0" },
@@ -2981,16 +2981,16 @@ wheels = [
 
 [[package]]
 name = "langchain-ibm"
-version = "1.1.1"
+version = "1.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ibm-watsonx-ai", marker = "python_full_version < '3.15'" },
     { name = "json-repair" },
     { name = "langchain-core" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ed/d5/a358208718ea278a558ed251db3289b8dfde32d7c65458c51b9b074e2d9e/langchain_ibm-1.1.1.tar.gz", hash = "sha256:9d240503654672ebc323e5e28fede197569e8af30db76ad8403a74d820bbbd8b", size = 74655, upload-time = "2026-09-24T09:58:15.88Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/42/77/f1729121f208ddfeae5995631ebd4011a8a7f9dee81456396548a303d23d/langchain_ibm-1.1.2.tar.gz", hash = "sha256:ae162e7a8eaaf72a945abc92609638049619691e3f4a7c338b80a360574f0bbc", size = 75138, upload-time = "2026-10-05T10:14:17.145Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/99/c4/2c2f10a95722db9780b898cc79cbf0a30d30c05aef59643d2a4cc00e269e/langchain_ibm-1.1.1-py3-none-any.whl", hash = "sha256:c0d2f4ca90826a909636e7ca6ed0cd1532bb7f62a25006fcce06962d9523bfe3", size = 54771, upload-time = "2026-09-24T09:58:14.646Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/0a/1afc846f961f1509f30b685babf19e62e6ebfb9822fdf200696aeb33fd0a/langchain_ibm-1.1.2-py3-none-any.whl", hash = "sha256:bf62265f8734072746e6e804e9af73d934fb578fedc0388b81778d45352642b0", size = 54788, upload-time = "2026-10-05T10:14:15.998Z" },
 ]
 
 [[package]]
@@ -3169,7 +3169,7 @@ requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
     { name = "langchain", specifier = ">=1.4.3,<2.0.0" },
     { name = "langchain-core", specifier = ">=1.6.6,<2.0.0" },
-    { name = "langgraph", specifier = ">=1.2.12,<2.0.0" },
+    { name = "langgraph", specifier = ">=1.2.13,<2.0.0" },
     { name = "quickjs-rs", specifier = ">=0.2.5,<0.3.0" },
 ]
 
@@ -3284,7 +3284,7 @@ wheels = [
 
 [[package]]
 name = "langgraph"
-version = "1.2.12"
+version = "1.2.13"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "langchain-core" },
@@ -3294,9 +3294,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "xxhash" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/99/7e/c9e4431adb5eb78d15f0035aae162a113c80d037ceb433ddd78835217848/langgraph-1.2.12.tar.gz", hash = "sha256:5fae9fa4ce771e90f10ff19ce0d5aaef4b41d7632c713d769e89cbce1241a4b9", size = 734541, upload-time = "2026-09-21T14:43:29.684Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c3/22/75ab5e7d13c842d8dc68f115cf6cc5a651a8d5a993e72a621c98bfb2b1cd/langgraph-1.2.13.tar.gz", hash = "sha256:a3cae71d4cb88455d7a8887109665525aefe4ab13fe941d653cd4b6de2af45c6", size = 752793, upload-time = "2026-10-05T17:51:21.566Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/52/27/5a02054c535ed6fcfb2ab1e5c33c51c810cf1e773194ad28c928f0473509/langgraph-1.2.12-py3-none-any.whl", hash = "sha256:95403af7b510de8d79164742f71daaf866c69ca804a8cb72bef2cc1fa1ab9813", size = 250206, upload-time = "2026-09-21T14:43:28.196Z" },
+    { url = "https://files.pythonhosted.org/packages/da/8e/b7471af7fc72c218e545c74454c386a4b0867a8a15c9893db1d28464f492/langgraph-1.2.13-py3-none-any.whl", hash = "sha256:5d45a021e043aaf39f32122e620eacfd1245aa84dfaa84b0814cef0f4ac78eb4", size = 255979, upload-time = "2026-10-05T17:51:20.221Z" },
 ]
 
 [[package]]

@@ -283,7 +283,9 @@ async def test_deferred_name_is_discarded_when_stale(
         chat_screen = naming_app.screen
         naming_app.push_screen(AuthConfirmScreen(title="Auth", body="Continue?"))
         await pilot.pause()
-        naming_app._offer_thread_name("original", "Stale proposal")
+        naming_app._offer_thread_name(
+            "original", "Stale proposal", naming_app._thread_name_revision
+        )
         if manual_name:
             await naming_app._save_thread_name("original", "My choice")
         else:
@@ -616,6 +618,52 @@ async def test_manual_name_cancels_pending_proposal(
     rename.assert_awaited_once_with("original", "My choice")
     assert task.cancelled()
     assert naming_app._thread_name == "My choice"
+
+
+@pytest.mark.parametrize("save_pending", [False, True])
+async def test_manual_name_invalidates_proposal_awaiting_refresh(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    save_pending: bool,
+) -> None:
+    """A completed generation cannot reopen its dialog after a manual rename."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def save_name(_thread_id: str, _name: str) -> bool:
+        started.set()
+        await release.wait()
+        return True
+
+    rename = AsyncMock(side_effect=save_name)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    monkeypatch.setattr(
+        "deepagents_code.thread_titles.generate_thread_name",
+        AsyncMock(return_value="Stale proposal"),
+    )
+    async with naming_app.run_test() as pilot:
+        chat_screen = naming_app.screen
+        queued = MagicMock()
+        with monkeypatch.context() as generation:
+            generation.setattr(naming_app, "call_after_refresh", queued)
+            await naming_app._handle_command("/rename")
+            await asyncio.gather(*naming_app._thread_name_tasks.values())
+        callback, *args = queued.call_args.args
+        save = asyncio.create_task(naming_app._handle_command("/rename My choice"))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            if not save_pending:
+                release.set()
+                await save
+            callback(*args)
+            await pilot.pause()
+            assert naming_app.screen is chat_screen
+            assert naming_app._pending_thread_name_proposal is None
+        finally:
+            release.set()
+            await save
+        assert naming_app._thread_name == "My choice"
+        rename.assert_awaited_once_with("original", "My choice")
 
 
 @pytest.mark.parametrize("manual_name", [False, True])

@@ -14022,7 +14022,9 @@ class TestApprovalPositionBindings:
             reason = approval.query_one("#approval-reason-input", Input)
             selected = approval.query_one(".approval-option-selected", Static)
 
-            app._offer_thread_name("thread-123", "Cache repair")
+            app._offer_thread_name(
+                "thread-123", "Cache repair", app._thread_name_revision
+            )
             await pilot.pause()
             screen = app.screen
             assert isinstance(screen, ThreadNameScreen)

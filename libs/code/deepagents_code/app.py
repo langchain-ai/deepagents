@@ -19228,6 +19228,8 @@ class DeepAgentsApp(App):
 
         if thread_id != self._lc_thread_id or self._exiting:
             return
+        # Invalidate callbacks already queued for refresh before saving yields.
+        self._thread_name_revision += 1
         self._pending_thread_name_proposal = None
         if pending := self._thread_name_tasks.get(thread_id):
             pending.cancel()
@@ -19321,6 +19323,7 @@ class DeepAgentsApp(App):
             if not automatic:
                 self.notify("A thread name is already being generated.")
             return
+        self._thread_name_revision += 1
         self._pending_thread_name_proposal = None
         task = asyncio.create_task(
             self._generate_thread_name(
@@ -19353,6 +19356,7 @@ class DeepAgentsApp(App):
         from deepagents_code.sessions import get_thread_name, rename_thread
         from deepagents_code.thread_titles import generate_thread_name
 
+        revision = self._thread_name_revision
         try:
             async with asyncio.timeout(30):
                 if automatic and await get_thread_name(thread_id):
@@ -19385,7 +19389,9 @@ class DeepAgentsApp(App):
                     if thread_id == self._lc_thread_id:
                         await self._load_thread_name()
                 elif thread_id == self._lc_thread_id and not self._exiting:
-                    self.call_after_refresh(self._offer_thread_name, thread_id, name)
+                    self.call_after_refresh(
+                        self._offer_thread_name, thread_id, name, revision
+                    )
         except Exception as exc:
             logger.warning("Thread name generation failed", exc_info=True)
             if not automatic and thread_id == self._lc_thread_id and not self._exiting:
@@ -19398,8 +19404,14 @@ class DeepAgentsApp(App):
                     markup=False,
                 )
 
-    def _offer_thread_name(self, thread_id: str, name: str) -> None:
+    def _offer_thread_name(self, thread_id: str, name: str, revision: int) -> None:
         """Offer a proposal only on its original thread after other modals unwind."""
+        if (
+            revision != self._thread_name_revision
+            or thread_id != self._lc_thread_id
+            or self._exiting
+        ):
+            return
         self._pending_thread_name_proposal = (thread_id, name)
         self._show_pending_thread_name()
 

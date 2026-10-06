@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Repository Quickstart and Change Routing](quickstart.md) - Route Deep Agents changes to the package, dcode session owner, durable cost state, slash-command registry, and focused Textual regression seam. Use package-local development for deterministic checks and route real-model behavior changes to evals.
+- [Repository Quickstart and Change Routing](quickstart.md) - Find the owning package, lifecycle boundary, focused regression neighborhood, and companion guide for Deep Agents SDK, dcode, ACP, Talon, evals, partners, and repository automation changes.
 
 # Directories
 

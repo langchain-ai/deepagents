@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:7aa623d2c3dd7ffe556f8f11ea2238d0d4cdd07c16159f4ea3241f0cd5d507bb",
+  "pageVersion": "sha256:99f7687bc554dcc2b68a44f3e8cae53174f4281081f06264fa842cd8138f2e3a",
   "claims": [
     {
       "id": "claim_2b3bce19bf9e4eefa1dd9dc076b9b387",
@@ -54,11 +54,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/tui/widgets/subagent_panel.py",
-          "version": "repo-file-v1:sha256:3894275615d00771fd63981ee78f1b2d1ce15444860c7052c771721b75f27d93"
+          "version": "repo-file-v1:sha256:b4c7ef5837aecf8cd81955358688a397959b175f47e6aaee90381324f6f0ca97"
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/tui/widgets/test_subagent_panel.py",
-          "version": "repo-file-v1:sha256:cd51a51917c8867e9caf2578295e2a9353c57f88d16fc2e10d61ff63ce688d82"
+          "version": "repo-file-v1:sha256:fc3e64c43b4f22d9b7e98b8bc0becfb34b8fc7ade2bdec4f3d8e898c6546ce74"
         }
       ]
     },
@@ -68,7 +68,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/tests/unit_tests/smoke_tests/test_system_prompt.py",
-          "version": "repo-file-v1:sha256:a23ee8c48b866c01418a0268e86bf8db97ad2c47c5457705337aadae2e6f61b8"
+          "version": "repo-file-v1:sha256:ae18fcdd61e18399e57e3aafca70ba85dfbd99b148dd7b5bd9544b4fbcbca6a9"
         }
       ]
     },
@@ -114,7 +114,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
-          "version": "repo-file-v1:sha256:30ae0790edfb9b0b747b1c24e462f4c50b7ffb2cdf130889c7a30f2ca61f4b3d"
+          "version": "repo-file-v1:sha256:6e1cd2e6bbfdbdf130be2e7d4bd38fae74c71ae63527492cee8227a017d9e477"
         }
       ]
     },
@@ -174,7 +174,7 @@
         },
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:c07bd2615c48a984d7bc5e7ad2d9290220c0b58b41e0404a3cd11c5f147f48a7"
+          "version": "repo-file-v1:sha256:261470cd2c2fea59bc21fff682b16d84503bbbf3d23fa5994a81991e232c1e30"
         },
         {
           "resource": "repo://libs/ARCHITECTURE.md",
@@ -188,17 +188,71 @@
       "evidence": [
         {
           "resource": "repo://.github/workflows/ci.yml",
-          "version": "repo-file-v1:sha256:c07bd2615c48a984d7bc5e7ad2d9290220c0b58b41e0404a3cd11c5f147f48a7"
+          "version": "repo-file-v1:sha256:261470cd2c2fea59bc21fff682b16d84503bbbf3d23fa5994a81991e232c1e30"
         },
         {
           "resource": "repo://libs/partners/AGENTS.md",
           "version": "repo-file-v1:sha256:34a9fbced5f655cc34c107caf5dc9b1eff12b3d491d5a6cba1f509d51e1585ad"
         }
       ]
+    },
+    {
+      "id": "claim_649ce770bd3d475da4fab9e766c6f127",
+      "statement": "dcode's CLI keeps the version fast path ahead of heavyweight dependency loading, allows diagnostic config, doctor, and auth-path commands before managed-policy validation, and blocks remaining acting commands when managed configuration is unhealthy.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L5294-L5396",
+          "version": "repo-lines-v1:sha256:97100a3084eb21cd3f19fdb851930d38828f6e38663471850aa44af86a1b141f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyNTM3MWRmZGY3MWI4NjE1ZTY2NTExZGFkMTc0YjM1ZWI2YjAzNTQwMjUwYjRjZmRmN2U4MDYzMjM1NjhmZmI5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmZDY4ZjZlNzlmYTI1ODU0ODg2MjhjZjJhMDRhY2Y2NjllZTFkNGY1NmUyNjZjYmE5N2I1YWFiY2Q1OWFjZWRiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjMjgyNDE5NzBkZjI1ZTk1OTI3NjRlYTZlNjFiMDgxYzU0ZDcyYWZkZWU4MDdlMjU0NDhjNzYzM2Y5ZjM2ZmUzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkMDM5NDQxMDg5YTdhZjhmODk1NjQ4ZjZkODc1YTQ5OGNkOTU2MWQ2YWQ4YmQxZjM5N2MxNTZhOGQyNWZlZmNjIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_615c7f4b28f64338befcda9a97b4ebeb",
+      "statement": "dcode's server builds and caches workspace runtime resources so graph and offload share one backend; execution-context requests require a thread id and validated workspace binding, while policy drift refuses the binding and runtime-only changes select a rebuilt cache entry.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L1104-L1124",
+          "version": "repo-lines-v1:sha256:61fe1f2ab8e41d2ec36909ec456da58537c10cedeb17025a90e28a9bf0f2809d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyNWY1YWQzNjU2YzhmYzJmNjgxNTllOTVjMmQ4YjM2Yjk0NjM1YjIxMTdkZDc5YTE4NWNiODRiOGU1ZGYwZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxNjNkZjE0MzFkYjFhNmQ3MGMyYjM3OWM2OWJkYzg1NjdmZTVhZTY3ZmRiZjcwZDEyMjcyOTBmYTYxNmU3NDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU4ZWY5ODEzNjc0YTVhNzljNDVmZjI3MTUyMGZmNzNmZTVmYWE2Mzg1NGMxZDhiZTFlNjY0ODc3OWRjZjQxNzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L666-L714",
+          "version": "repo-lines-v1:sha256:9285106d0fe2d58492c5d3893a9940df0924957a276ee21818141d7f21291e54:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlY2ExN2U4MGFiOThiMGU1YTY5YjBjNGNlMTk0YTgxYWJiNGM2MTVkNDNlMDIzZTlhZjk0MjMyZmU0ZjA5MDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRlNjIwY2JkNTRlMjdiMGM3NmVjNGI0YjVjMGRiODNiMWFhOWYzZWYxMGYzMTZkNTZiZTFhZTZjYjJiZDgzNTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM5ZWZkOWUxNzJlNTE2NDhjYzY1N2RiZWEwNDYxM2ZiNzc5M2Q2ZjZjYmViOTIyZjE2YWVkYTZmZDRhMTlmNTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjExNGE5ZjFkMzJmMWIxYjQ3NjE1YjExYWIxYzQwYTJmNjBjYTRkZTVkMWFkN2ZmNzdhMTQyNGFmYTU0Njk4ZTgifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L875-L1000",
+          "version": "repo-lines-v1:sha256:704a72a5e98aac53d0718c036f66fd9e490a3086da74aca050c61e272865c0b2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2MTM1NmQ5ZjJmMmNlNjY1MjQwODg4ODE0YWVhZDhjMzQ2ZDVlNzMxNjdlNDBlZWVlMTgzODQ3ODdjMTY3MmI2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NmU1ZjBhZTEyMGUwZjAzNDJlYmEyMmZhOWMzMzhjOTc1MGQ4ZjI3MGYxM2YwNjMyZmZhZDdjZjk5YTI4ZjhhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NThmYmU2ZjZhODlhMGQ0MDJkMzYzNmM5YTY4YWVjN2U4ZThlYzhkMmUwNGZlMTAyMGNiM2E3MjM3OGIxZDdkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1ZmQ4YzgwZDc2ZmNhNjliZGNkOTAyMGMzZGUxNTJhMzQ4OTdhNDdmZmQwMGNjZWExMWUxMDRlZGU4YmI3ODdkIn0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_server_graph.py#L57-L95",
+          "version": "repo-lines-v1:sha256:e91e9f46c7c6f314318e7da9f80f54b9a441dc3b7b6bbe585e82614697177e5e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEyNjE1ZDQ2NDAxMTE5OWVhN2Q0N2YwNDRjZDE2YzdkOWEwNzlkODQ4OGNlMWNiODYyOTA0ZGY4YWJiY2I3OTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmMDQ4MTBiMzI0N2RjYWQ3M2VhZjZhNWU4YTUxOGE2NzNmNWRhZmJjZmFkMzZiMzJjOGQzNjg2NWY3OTBmZTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIxNWY2YWE3OTAyMzE4MmE2NzYzNDRhMmQ5YmZhNDdkNDk5MjViY2M1OTYwYThlOGE5NGQxMjE0ZWY4N2UyZDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZhODFiM2MwZWI2ZmE5ZmUyMzIzYWE5YWQ1N2NlODFlNzQ1NWE0YzFjMjAzNTBlMTFkOWQyNjU2MWEwNjk2ZGEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_13eba0671cbb4d2e998634991e820b39",
+      "statement": "The CI workflow runs a QuickJS prompt smoke test on SDK-only pull requests when the partner suite would otherwise be skipped, and treats a release-bot changelog-only apply as inheriting only a conclusive parent CI result; inherited failures remain blocking while diagnostics are non-blocking and sanitize reported check data.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/tests/workflows/test_inherited_ci_diagnostics.py#L69-L179",
+          "version": "repo-lines-v1:sha256:1e1c9d559e0184dc67cbe83a07c3980aeba64cbbc33b44aea53db3224450aadd:eyJzZWxlY3RlZExpbmVDb3VudCI6MTExLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhNjZlMjlkMTY2NWU0MjlhOGE5Y2JkMzE1ZTcwMmNmYzkwOThjNWI2ZTA1YWQ2MDA5YWI0MzAzNjE0YTVjZjBlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1ZGY2ZmVlMGU4NDEzMWUxM2QxOGRiNjBmMGFhNTBlODIyOWUyOTc0NDVlYjAyNjNiYTkzMzRlOGE0NjllOGNhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5NmRiMDdkNGFmNzA1OWNmMGI5NTdiM2Y5ZTA2MzkwMGVhOTNkMTk0YmQyNTQwMWY1ZGUxODMxNTQ2ZWJiY2YwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NjgwYjBmMjkyOGFjMGRiZjNkZDRhMzFkNWMxNmU5MTk4YTI5YTYwODZkMzljZmI1N2MyMGY2MGJlMzNhNjVkIn0"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L424-L493",
+          "version": "repo-lines-v1:sha256:434329736004784ed4696aee9e72e058e493cdcb4e4bf7ca7ad5471287dc540d:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExYmNhYmQwYTEyNjk5NGNiYmQ0ZjhkMjVhNDYyNTg2Zjk0OTdkYjc4YjJjYTAzMTFhYmZiODJjNmU1MDcwY2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEwYTQ0OWIzYzQ3YjVlMmJjNzRiMzNkYjI1ZTYwYzkxMmU4MjkwMDUwZDgyMGZhNDgzYmJmMTA5OWFlOTlkZWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQwOTFmYmI4NzE2YTI5MzMwMjEyZTc0YzhiZDM0YzczNTllMWY0ODc5ZWU3MmIyNWY3NzQ2ZWIzMjExYzQ3ODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYyNGNlY2QyNTk0NDkxMTM5ZThkMzk4YzgzOGJjMGM5MDI0OGQ0ZDk2OGJjMjdkYzJlZGFiOWY4NzhmZTRiYWEifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L770-L825",
+          "version": "repo-lines-v1:sha256:9d6bf11fdb5c1dbac1d1d1c23aadcda3eae232cacdbaa1073e20f0800650c885:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjZTQ5ZjYxOGQ4YjFhM2VjODMzNGU0MjMxMDQxZTI2MDJhNTU2ZjE4ZDliOTFkODM5M2ZmNjBlZjQzMWVhMzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmYzIyNjMzNjAzNjEzMjY0NmMyYThjMzYyZjE3ZWRkYTBlZDkyMWViMzAzNmYyYjg5YzdlM2YxY2Q0NDU3MDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU5ZjIxMGI2N2I2MmY3ZmQ1OWQ1MGQ2YzFiMTRlMjdhZDcwZDJkN2M4ZmM4MDhhYjNiMGJiZDU0YjZmOWM5ZmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZmOTk1MTEyZjVjN2VlZjQ0MjA2NTlmYTg4MjVmNzNmMTk1Y2NlNjUyMzI5ZjBjYzdiYmIxYmRmZWVjOGI0MTgifQ"
+        },
+        {
+          "resource": "repo://.github/workflows/ci.yml#L89-L133",
+          "version": "repo-lines-v1:sha256:c25f97d69bd67f0c669fd193c68996c4b9fccc5a61b0a1ef66e3cea8fbd10fab:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZmZWQ2M2Q2MWIyYWU4MzFjNDUxZWNkOTkyZmNhODdkZjNjYzhjMDU3MDlmYTgyODU1ZmM5NDYxZmJlMTA1ZTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3ZWUzMjI4NDA0YWU0MTY0NTIyMzhiYzIwYTRkNmEwMzk4ZTMxOTBmYmY4MWJlYWU1MGMxMGQxOWZkMDkwZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdiNzA5NjJlZWJlMTA1NTIxOTAwY2QxOTQ4OThlZWU3ZWEwNGNmMGQ4MTUxZTM5YWFiMWJlNmVjMjFiYjQ5YzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZmYjUwY2U5ZDVlZTE4Njg3YmQzMjBmYTJjNjU1OTQ4NzcyZTM0Y2RjYjA0YmZjZDRkMzkzNTVjMWUzOGZiZGMifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-03T08:05:07.881Z"
+    "at": "2026-10-06T08:06:27.683Z"
   }
 }

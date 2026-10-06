@@ -2,11 +2,29 @@
 type: delegation and progressive-disclosure concept
 title: Subagents and Skills
 description: Deep Agents delegates local, forked, compiled, and remote work across explicit state and lifecycle boundaries. Skills separately discover instruction bundles and can disclose and gate skill-selected tools according to provider request capabilities.
-tags: [deepagents, subagents, delegation, skills, middleware, tool-gating, agent-protocol]
+tags: [deepagents, subagents, delegation, skills, middleware, tool-gating, agent-protocol, plugins]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-03T08:05:07.881Z
+    at: 2026-10-06T08:06:27.683Z
 sources:
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-fdf5afeb1dd1d11652374e88
+    resource: repo://libs/code/deepagents_code/app.py
+  - id: openwiki-source-ffc86ac7fa55a1590266f17a
+    resource: repo://libs/code/deepagents_code/built_in_skills/deepagents-plugin-discovery/SKILL.md
+  - id: openwiki-source-dc1e984fa4e6a51458e9ff9d
+    resource: repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py
+  - id: openwiki-source-a212c04b024619b9d16833e6
+    resource: repo://libs/code/deepagents_code/plugins/adapters/skills.py
+  - id: openwiki-source-1eafe6f1154067896b272b26
+    resource: repo://libs/code/deepagents_code/skills/invocation.py
+  - id: openwiki-source-090c6e0a873de04d273989ad
+    resource: repo://libs/code/deepagents_code/skills/load.py
+  - id: openwiki-source-07ceaf2cb5ec707fa4d2010f
+    resource: repo://libs/code/tests/unit_tests/skills/test_load.py
+  - id: openwiki-source-de10df56a1b3fb50cedb6f30
+    resource: repo://libs/code/tests/unit_tests/test_skill_invocation.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-5c9c6a877b43f30407158658
@@ -25,7 +43,7 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
     resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-06T08:06:27.683Z" }
 ---
 
 # Subagents and Skills
@@ -118,17 +136,29 @@ On models without supported mid-conversation tool additions, disclosed tools are
 
 Anthropic disclosure rejects a tool schema with a root `oneOf`, `anyOf`, or `allOf`, because that provider rejects it; the tool is neither disclosed nor admitted. OpenAI Responses can receive the corresponding additional tool schema. In every provider path, the private disclosure record is derived from what was actually shown to the latest model call, so execution uses the same boundary.
 
+## dcode skill discovery and `/skill` invocation
+
+The dcode client uses a filesystem-facing loader rather than the SDK's per-thread `SkillsMiddleware` state. When skills are enabled, `create_cli_agent` builds `PluginSkillsMiddleware` from an ordered source list: shipped built-ins; discovered plugin sources; user and project `.deepagents` and `.agents` directories; then experimental user and project `.claude` directories. Later sources have higher precedence for ordinary duplicate names. A missing directory is skipped, and one source failure is logged without preventing the other sources from loading.
+
+The shipped `deepagents-plugin-discovery` skill is consequently available even when no plugin skill sources exist. It instructs the agent to use the local CLI's read-only `plugin list --json` or `plugin marketplace list --json` with the current `DEEPAGENTS_HOME` profile when a needed capability may be in a configured marketplace. Catalog discovery neither enables nor installs a plugin, and a result with `enabled: false` must not be presented as proof that the plugin is installed. It also cannot inspect the host profile when `execute` or the local CLI/profile is unavailable in a remote sandbox.
+
+Plugins contribute each inventory skill directory with the plugin ID as a namespace. dcode recursively walks a plugin source until it finds directories containing `SKILL.md`, stops descending below such a directory, and names a discovered skill as lowercase `plugin_id:subfolder:skill-name`. This makes separately packaged plugin skills collision-safe while preserving ordinary source precedence. Plugin discovery failure degrades to no plugin sources; it does not suppress built-in or user/project skills.
+
+A user can invoke a discovered skill explicitly with `/skill:<name> [args]`. dcode re-discovers on a cache miss, reads the selected `SKILL.md`, wraps its complete content and optional request into the initial user message, and records name, description, source, and arguments in `additional_kwargs["__skill"]` for trace attribution. Before reading, `load_skill_content` resolves the path and requires it to fall under an allowed root—built-in, plugin, configured, or previously trusted—so a symlink escape is refused. An out-of-bounds path in the interactive app is a trust decision: an approval adds the resolved target directory for the session and attempts to persist that trust; a target that changes before the retry is refused.
+
 ## Operations and focused tests
 
 Choose an isolated declarative subagent for a focused task with explicit inputs and independently configured tools. Choose a fork only for context-dependent continuation, accepting its experimental and nonrecursive behavior. Use a compiled worker when a separately built graph is the intended ownership boundary, and an async worker for remote, long-running work that needs persistent status management.
 
-Focused tests cover task argument validation, state isolation, fork reconstruction and refusal, structured-result forwarding, tracing identity, remote launch/check/update/cancel/list behavior, skill source precedence and reload, and skill propagation to the right worker. The skill-tool tests additionally verify pre-read and same-turn rejection, compaction withdrawal, resolver behavior, approval integration, and provider payload placement for Anthropic, OpenAI, and fallback binding paths.
+Focused SDK tests cover task argument validation, state isolation, fork reconstruction and refusal, structured-result forwarding, tracing identity, remote launch/check/update/cancel/list behavior, skill source precedence and reload, and skill propagation to the right worker. The skill-tool tests additionally verify pre-read and same-turn rejection, compaction withdrawal, resolver behavior, approval integration, and provider payload placement for Anthropic, OpenAI, and fallback binding paths. dcode loader tests confirm the shipped plugin-discovery skill is present without plugin sources and that an inaccessible source does not block a healthy one; invocation tests cover containment and symlink-escape rejection.
 
 ## Related
 
+- [Code agent architecture](/openwiki/architecture/code-agent.md)
 - [Middleware stack](/openwiki/architecture/middleware-stack.md)
 - [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md)
 - [Permissions and HITL](/openwiki/concepts/permissions-hitl.md)
+- [MCP integration](/openwiki/integrations/mcp.md)
 - [Tools and filesystem](/openwiki/concepts/tools-filesystem.md)
 - [Testing guide](/openwiki/testing/testing-guide.md)
 - [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md)

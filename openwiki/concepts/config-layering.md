@@ -4,21 +4,33 @@ title: Configuration Layering and Workspace Binding
 description: How dcode resolves ranked configuration, safely writes and reloads TOML policy, controls MCP trust and disablement, and binds server runtimes to workspace policy with drift diagnostics.
 tags: [configuration, config-layering, resolver, precedence, reload, workspace-binding, mcp, deepagents-code, dcode]
 sources:
+  - id: openwiki-source-1728494bdd59604ce9b5f65b
+    resource: repo://libs/code/deepagents_code/_server_config.py
+  - id: openwiki-source-7f6b98925b5f1ba065df3a04
+    resource: repo://libs/code/deepagents_code/config.py
+  - id: openwiki-source-52d96f61bc4737f02a18cf79
+    resource: repo://libs/code/deepagents_code/configuration/resolver.py
   - id: openwiki-source-216ca680d81dc35eb4d3e76e
     resource: repo://libs/code/deepagents_code/mcp_config.py
   - id: openwiki-source-20b5bbd05beabea1df7e2b53
     resource: repo://libs/code/deepagents_code/mcp_disabled.py
   - id: openwiki-source-f6d553e7afdf54acac36e7d3
     resource: repo://libs/code/deepagents_code/mcp_tools.py
+  - id: openwiki-source-a9eb680bb6bdae179f52a3ac
+    resource: repo://libs/code/deepagents_code/server_graph.py
   - id: openwiki-source-17253964e859bb0abf2094e8
     resource: repo://libs/code/deepagents_code/workspace_diagnostics.py
   - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
     resource: repo://libs/code/deepagents_code/workspace.py
+  - id: openwiki-source-149abfd7a1ab6a5a2d1a0e71
+    resource: repo://libs/code/tests/unit_tests/test_configuration_resolver.py
   - id: openwiki-source-5a5147d4654f226b03e92ab9
     resource: repo://libs/code/tests/unit_tests/test_workspace_diagnostics.py
+  - id: openwiki-source-877b53371bf970f1b38a1809
+    resource: repo://libs/code/tests/unit_tests/test_workspace.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-25T08:06:00.203Z
+    at: 2026-10-06T08:06:27.683Z
 generated: { by: "openwiki/0.4.2", at: "2026-09-25T08:06:00.203Z" }
 ---
 

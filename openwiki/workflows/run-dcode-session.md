@@ -1,30 +1,38 @@
 ---
 type: operator workflow guide
 title: Run and Change a dcode Session
-description: Run dcode's interactive, headless, or ACP modes and safely change the server-ready, slash-command queue, cost-inspection, and session-recovery contracts. Includes the focused tests that protect these UI and session lifecycles.
-tags: [dcode, deepagents-code, cli, sessions, textual, commands, costs]
+description: Operate dcode in interactive, headless, or ACP mode and safely change server startup, queued work, retries, prompt-cache recovery, and durable thread ownership.
+tags: [dcode, cli, sessions, server, retries, hooks, persistence]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-06T08:06:27.683Z
 sources:
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
+  - id: openwiki-source-b9ef532d79a0667acf40e58b
+    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
+  - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
+    resource: repo://libs/code/deepagents_code/client/non_interactive.py
   - id: openwiki-source-fcc71dc507b62bee0432e12e
     resource: repo://libs/code/deepagents_code/command_registry.py
-  - id: openwiki-source-f8c8eb69e25f569e0f8a5adb
-    resource: repo://libs/code/deepagents_code/tui/modals/cost_breakdown.py
-  - id: openwiki-source-2c41bc0b19795204a48854ee
-    resource: repo://libs/code/deepagents_code/tui/widgets/status.py
+  - id: openwiki-source-2e03fee957625ca21a1c21af
+    resource: repo://libs/code/deepagents_code/main.py
+  - id: openwiki-source-c101168dc0286ff6c29ed37f
+    resource: repo://libs/code/deepagents_code/model_retry.py
+  - id: openwiki-source-91c9283d1547adfffd627c43
+    resource: repo://libs/code/deepagents_code/thread_ownership.py
   - id: openwiki-source-11d6c59d85493653aee76558
     resource: repo://libs/code/tests/unit_tests/test_app.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-05T08:14:03.003Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-05T08:14:03.003Z" }
+  - id: openwiki-source-a5e918d96b1dae3f7adec3f5
+    resource: repo://libs/code/tests/unit_tests/test_thread_ownership.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-06T08:06:27.683Z" }
 ---
 
 # Run and Change a dcode Session
 
-`dcode` has three separate operating boundaries: the default Textual terminal UI, one-task headless execution (`-n`), and ACP over standard input/output (`--acp`). Interactive and headless are clients of a temporary loopback LangGraph server; ACP constructs its own model, MCP tools, SQLite checkpointer, and ACP context. Diagnose graph startup, models, tools, checkpointing, and policy on the server side; diagnose typing, queueing, modals, and rendering in the client. See [code agent architecture](../architecture/code-agent.md), [configuration layering](../concepts/config-layering.md), [MCP](../integrations/mcp.md), [costs and sessions](../operations/cost-and-sessions.md), and the [testing guide](../testing/testing-guide.md).
+`dcode` has three entry modes: the default Textual UI, one-task headless execution with `-n`, and an ACP server over standard input/output with `--acp`. Interactive and headless runs use a temporary local LangGraph server and a remote client; ACP is a separate stdio integration boundary. For the broader design, see [code agent architecture](../architecture/code-agent.md), [profiles and models](../concepts/profiles-models.md), [state persistence](../concepts/state-persistence.md), [ACP](../integrations/acp.md), [costs and sessions](../operations/cost-and-sessions.md), and the [testing guide](../testing/testing-guide.md).
 
-## Choose a mode and bound the run
+## Select the execution mode
 
 ```bash
 # Interactive Textual UI
@@ -37,117 +45,104 @@ dcode -n "run the focused tests" --max-turns 8 --timeout 600
 dcode --acp
 ```
 
-Use the TUI for approvals, `ask_user`, `/threads`, `/effort`, and a durable conversation. `-n` creates a new thread for one task rather than resuming a TUI thread. Its turn or timeout budget exits with status `124`; `-q` keeps agent output on stdout and operational output on stderr, while `--no-stream` buffers the reply. ACP is for an ACP-capable editor or client, not a shortcut to the temporary TUI server.
+Use the TUI for a durable conversation, approvals, thread selection, and interactive recovery. Use `-n` when an automation caller needs one task and an exit code: it creates an autonomous, non-interactive agent, so the system prompt directs it to make reasonable assumptions rather than ask clarifying questions. With `-q`, response text remains on stdout while headers, diagnostics, tool notifications, and errors go to stderr. `--no-stream` buffers response text until completion. A turn-budget excess and an outer `--timeout` both use exit status `124`; Ctrl-C is `130`.
 
-`-M/--model` selects a model with provider auto-detection. `--model-params` must be a JSON object and overrides configured provider values. dcode owns the model-node retry budget through `--max-retries` or configuration, so provider-native retry parameters are disabled rather than allowed to multiply attempts. Reasoning effort is determined by the effective model profile; `/effort` exposes only supported levels, with Anthropic `between_tools` limited to low, medium, and high.
+`-M/--model` accepts a model specification and auto-detects its provider. `--model-params` is JSON extra model input and overrides configured values. `--max-retries N` overrides `[retries]`; `0` disables retries. Choose a summarization model separately with `--summarization-model` when context compaction needs a different model.
 
-> **Startup is a trust boundary.** Launch can resolve configuration and discover project files, skills, hooks, and MCP configuration before a tool-approval prompt. Explicit MCP configuration loads directly, while project-discovered MCP servers require applicable trust and persisted approval policy. `dcode mcp login` follows the same discovery and trust distinction.
+> **Trust before execution.** Headless project hooks are disabled unless `--trust-project-hooks` is supplied. Likewise, project stdio MCP servers are skipped unless `--trust-project-mcp` is supplied; an explicit MCP config is preflight-validated before a server is spawned. Treat project code, hooks, extensions, and MCP configuration as code-execution boundaries rather than ordinary display configuration.
 
-## Trace a server-backed session
+## Server-backed turn execution
 
 ```mermaid
 sequenceDiagram
     participant User
     participant CLI
     participant Client as TUI or Headless
-    participant Server as Loopback Server
-    participant Graph as Workspace Graph
-    participant Store as Checkpoints
-    User->>CLI: launch with model and configuration
-    CLI->>Client: resolved launch options
-    Client->>Server: start and wait for agent graph
+    participant Server as Local LangGraph server
+    participant Graph as Agent graph
+    participant Store as SQLite checkpoints
+    User->>CLI: launch with options
+    CLI->>Client: resolved configuration
+    Client->>Server: scaffold and start on loopback port
+    Server-->>Client: agent graph ready
     Client->>Server: bind workspace and thread
-    Client->>Graph: stream prompt
-    Graph->>Store: checkpoint durable state
-    alt Approval or ask_user interrupt
-        Graph-->>Client: interrupt
+    Client->>Graph: stream task
+    Graph->>Store: guarded checkpoint writes
+    alt Interrupt
+        Graph-->>Client: approval or hook request
         Client-->>User: request decision
-        User-->>Client: answer or approval
-        Client->>Graph: resume same turn
-    else Normal completion
-        Graph-->>Client: stream response and cost total
+        User-->>Client: decision
+        Client->>Graph: resume
+    else Completion
+        Graph-->>Client: stream events and response
     end
-    Client->>Server: stop session on exit
+    Client->>Server: stop on exit
 ```
 
-*Interactive and headless turns share the temporary-server, binding, streaming, checkpointing, and cleanup lifecycle.*
+*Interactive and headless execution starts a local graph server, binds a workspace and thread, streams the graph, and tears down its owned process.*
 
-Interactive and headless launch a loopback server with a temporary configuration directory and ephemeral port, wait for the `agent` graph, and bind a `RemoteAgent` to the workspace. Failed startup, cancellation, and normal exit tear down the subprocess. Interactive startup resolves a displayable model identity before provider construction and can defer server startup when credentials are absent.
+The launch manager resolves `ServerConfig`, writes server environment values, scaffolds a fresh temporary runtime directory containing a checkpointer, `pyproject.toml`, and `langgraph.json`, starts `langgraph dev` on an ephemeral loopback port, waits for the `agent` graph, and constructs a `RemoteAgent`. It then binds the resolved workspace before returning control. If any step after process start fails or is cancelled, the manager stops the server; this must remain true for `CancelledError`, not just ordinary exceptions.
 
-A workspace claim is not authorization by itself. The server durably creates or verifies a per-thread binding before graph execution, rejects policy drift, and rebuilds the runtime for runtime-only identity changes without discarding checkpoint history. Refusal diagnostics contain only a bounded allowlisted policy snapshot, excluding paths, credentials, environment values, model details, prompts, and profile overrides.
+The generated checkpointer uses the normal sessions SQLite database, but wraps it in ownership fencing. A client reserves a thread with an OS file lock and an owner token. Every checkpoint mutation validates both: a stale server cannot write after its client exits, releases the lease, or another client takes ownership. The writer gate also keeps an in-flight mutation from racing a successor takeover. Do not replace this with an in-memory “active thread” flag.
 
-`create_cli_agent` is the graph-construction extension boundary for backends, filesystem and shell exposure, skills, memory, `ask_user`, subagents, MCP tools, approval middleware, persistence, and generated system context. Model retry wraps the model node—not the whole graph—so transient failures do not replay completed tool calls. Correlated retry/model-attempt events let TUI and headless output distinguish tentative partial text from a replayed response. MCP middleware normalizes empty optional strings, warns that retrying a timeout can duplicate server work, and reports expired authentication as an actionable tool error.
+## Startup and recovery lifecycle
 
-## Preserve server-ready and resume lifecycle
-
-The TUI queues input while `_connecting` is true. A successful `ServerReady` event is the transition that installs the remote agent and server process, settles connection state, refreshes MCP and model UI state, starts the serialized post-connect sequence, and then drains deferred actions. The initial sequence hydrates resumed history, runs `--startup-cmd`, then dispatches an initial prompt or skill and queued user messages in that order.
-
-Resume progress has two distinct phases. `_resuming` is armed only for the initial `-r` connection. At `ServerReady`, the app must latch it into `_restoring_resumed_history` **before** clearing `_connecting`, because status synchronization consumes `_resuming`. The status bar therefore continues to say “Resuming” while transcript restoration runs. Clear the restoring flag through its repainting helper on restoration completion or start failure. Do not re-arm it on `/restart` or MCP reconnect: later `ServerReady` events must not rehydrate an already populated transcript or resurrect a stale resume indicator.
-
-A failed server startup is terminal for that session and records a formatted error plus structured missing-credential/provider-package context. This makes recovery commands meaningful rather than merely informational: `/model` and `/auth` can open their UI immediately, while the allowlisted repair commands `/install`, `/reload`, and `/update` may escape the otherwise parked queue only after startup failed and only when no agent, shell, or modal command is running.
-
-## Change slash commands from the registry
-
-`command_registry.COMMANDS` is the single declaration point for a static slash command’s canonical name, description, aliases, autocomplete metadata, experimental visibility, and queue classification. Do not add a hard-coded command list to the input widget or queue handler. The registry projects command entries for autocomplete and derives the command-name sets used by each bypass tier, including aliases.
-
-| Tier | Busy-state behavior | Change rule |
-| --- | --- | --- |
-| `ALWAYS` | Runs even during agent work or thread switching. | Reserve for recovery/exit behavior such as `/restart`, `/force-clear`, and `/quit`. |
-| `CONNECTING` | Runs only during initial connection when no work is active. | Use for connection-safe information such as `/version`. |
-| `IMMEDIATE_UI` | Opens a modal now; deferred callback performs real work. | Only bare commands bypass. Add an exact entry to `IMMEDIATE_UI_ARG_FORMS` only for an argument form that merely opens UI. |
-| `SIDE_EFFECT_FREE` | Performs its side effect now; chat output waits for idle. | Do not use for state-changing operations that race a turn. |
-| `QUEUED` | Waits for idle. | This is the default for graph/session mutation. Startup recovery is a narrow additional exemption, not a new tier. |
-
-`_can_bypass_queue` canonicalizes command input and applies the registry-derived classes. Consequently, `/auto model` may open its picker while `/auto model <spec>` and `/auto model clear` remain queue-bound; the latter mutate classifier state. Keep aliases in the registered command so the derived tier set, autocomplete, and Enter-key recovery path agree. Dynamic `/skill:<name>` entries are discovered separately and must not be confused with static registry aliases.
-
-## Inspect costs without interrupting a turn
-
-Session cost is graph-owned and checkpointed. The graph emits an absolute cumulative `session_cost` event, so clients converge on the server total rather than retaining an independent lifetime ledger. The TUI may display provisional spend until that total arrives.
-
-The footer’s rendered cost span is clickable. A left single click stops event propagation and dispatches `app.open_cost_breakdown`; other clicks do not open it. This matters because an unhandled click could also invoke the app’s input-refocus behavior. The action obtains a live formatted breakdown from the app: if historical detail is unavailable it shows a notification rather than an empty modal; if a `CostBreakdownScreen` is already on the screen stack it does not stack another one.
-
-The modal is intentionally live and safe to copy: it refreshes from its provider every 0.5 seconds, sanitizes control characters while retaining line breaks, renders plain content, supports `c` to copy its current complete text, and closes with Escape. Preserve those properties when changing formatting or the cost data contract.
-
-Set `[warnings].session_cost_threshold_usd` to a positive amount to show an acknowledgement-only warning on the first strictly over-threshold total for a thread; `0` disables it. A restored above-threshold thread is already warned. The acknowledgement neither cancels the agent nor changes cost accounting.
-
-## Keep and recover durable threads
-
-`dcode -r` selects the most recent eligible thread, and `dcode -r ID` requests a named thread. Resume observes the configured age policy, falls back to a new session for missing threads or database errors, and can offer a switch to the stored working directory.
-
-`/offload` is server-owned checkpoint work. It serializes a thread; rejects active, interrupted, pending, unbound, or changed checkpoints; and commits only allowlisted state channels rather than `messages`. Cancellation requests server-side cancellation and waits for a terminal operation status. A handoff summarizes a source without compacting it and can seed a new bound thread.
-
-## Change UI and prompt contracts deliberately
-
-Subagent lifecycle events from model-authored JavaScript are validated by the adapter and rendered in `SubagentPanel` by `js_eval` phase. The panel preserves user expansion and phase selection across events, while an interrupted turn finalizes unfinished rows as cancelled. Sanitize and bound all model-authored labels, descriptions, types, and errors before plain Textual rendering; they must not introduce controls, terminal escapes, bidi text, or markup.
-
-`system_prompt.md` is model-visible instruction text. Its smoke test captures the complete first system message for reproducible interactive and headless runs, normalizes machine-specific values, and asserts that headless does not receive unreachable user-question guidance. Treat a snapshot change as a behavioral change: explain it, review the full diff, and use `--update-snapshots` only deliberately.
-
-## Run focused checks
-
-From `libs/code`, debug mode preserves the server log and attaches a per-thread client log:
-
-```bash
-make bootstrap
-export DEEPAGENTS_CODE_DEBUG=1
-uv run deepagents-code
+```mermaid
+stateDiagram-v2
+    [*] --> Connecting
+    Connecting --> Ready: server and graph ready
+    Connecting --> StartupFailed: startup error
+    Ready --> Restoring: initial resume history
+    Restoring --> Ready: restoration complete
+    Ready --> Reconnecting: restart or reconnect
+    Reconnecting --> Ready: replacement ready
+    StartupFailed --> Connecting: model auth or repair retry
+    StartupFailed --> [*]: exit
+    Ready --> [*]: exit
 ```
 
-Use server logs for graph construction, MCP, sandbox, and model initialization; use client logs for UI and remote-stream behavior. The in-app Debug Console remains available when secure file logging cannot be used.
+*The TUI distinguishes initial resume restoration from later server replacement and exposes a terminal startup-failure recovery state.*
 
-For this workflow, test the observable boundary you changed before broad checks:
+`ServerReady` owns the settled transition: it clears connection and reconnect flags, installs the agent and process, refreshes MCP counters and model presentation, schedules the one-time session-start sequence, and drains deferred actions when no agent work is active. The startup sequence serializes resumed-history hydration, `--startup-cmd`, initial prompt or skill dispatch, and then user-queued messages. Do not independently drain user input before that sequence.
+
+On the initial `-r` connection, `ServerReady` copies `_resuming` into `_restoring_resumed_history` **before** clearing connection state. Status synchronization consumes `_resuming`, so the latch preserves the “resuming” indicator while history is mounted. A reconnect must not re-arm it or reload the transcript. Startup failure clears both flags and settles connection-related UI instead of leaving it loading.
+
+A startup error is terminal until the user repairs or replaces the configuration. The app retains formatted failure information, including missing credentials or provider-package context, while `/model` and `/auth` can open their recovery UI. `/install`, `/reload`, and `/update` remain normally queue-bound but bypass the parked queue after startup failure only when agent work, shell work, and modal commands are all idle. This narrow exemption avoids swapping an installation during a running turn.
+
+## Queue and command changes
+
+`COMMANDS` in `command_registry.py` is the single declaration point for static slash commands: canonical name, aliases, description, autocomplete hints, experimental visibility, and queue tier. The registry derives each tier’s set—including aliases—and autocomplete filters experimental entries unless experimental mode is enabled. Regenerate `COMMANDS.md` with `make commands-catalog` after changing catalog metadata; do not edit that generated file manually.
+
+| Tier | Meaning |
+| --- | --- |
+| `ALWAYS` | Execute regardless of busy state; reserve for quit/restart/recovery behavior. |
+| `CONNECTING` | Execute only during initial connection when no work is active. |
+| `IMMEDIATE_UI` | Open a modal immediately; defer its actual work. Bare commands only, except explicit selector-only forms. |
+| `SIDE_EFFECT_FREE` | Perform a safe immediate side effect while delaying chat output as needed. |
+| `QUEUED` | Wait for idle; this is the default for session and graph mutations. |
+
+`_can_bypass_queue` normalizes input and applies those sets. Exact `IMMEDIATE_UI_ARG_FORMS` exist for selector forms such as `/auto model` and `/offload model`; argument forms that mutate state stay queued. Dynamic `/skill:<name>` completions are discovered separately from static command aliases.
+
+## Model retries, hooks, and prompt-cache notices
+
+Model retry is intentionally scoped to the model node, not the entire graph turn. Completed tools therefore do not replay after a transient provider failure. The middleware classifies transport, selected status-code, and provider SDK failures; applies jittered exponential backoff or a bounded `Retry-After`; and emits attempt/retry events. Clients use those events to mark streamed partial output as incomplete and distinguish a replay from a final response. Preserve that event contract when changing retry behavior.
+
+Client lifecycle hooks are active in headless execution as well as the TUI. They can observe stream and session events, and a hook stop is an intentional outcome rather than an unhandled failure. Drain pending hooks at session end, including after interrupts or stream failures, so lifecycle work is not silently abandoned.
+
+The TUI tracks cache activity from checkpointed model state. Near the end of a retention window it emits one warning per thread/window and hook notification. Once expired, the `warnings.cache_prompt = "expiry"` policy offers a cache handoff only while the application is genuinely idle; it will not interrupt an active agent, shell, queue, thread switch, startup sequence, or modal. A submitted interactive message can instead offer handoff, send in the current thread, or cancel; handoff and cancellation restore the draft. Failures in cold-cache estimation fail open with a one-time notice rather than blocking a message indefinitely.
+
+## Focused validation
+
+Run checks from `libs/code` and start with the boundary changed:
 
 ```bash
 make test TEST_FILE=tests/unit_tests/test_app.py
+make test TEST_FILE=tests/unit_tests/test_non_interactive.py
+make test TEST_FILE=tests/unit_tests/test_thread_ownership.py
+make test TEST_FILE=tests/unit_tests/test_cache_expiry.py
 make test TEST_FILE=tests/unit_tests/test_command_registry.py
-make test TEST_FILE=tests/unit_tests/tui/widgets/test_chat_input.py
-make test TEST_FILE=tests/unit_tests/tui/widgets/test_status.py
-make test TEST_FILE=tests/unit_tests/tui/modals/test_cost_breakdown.py
-make test TEST_FILE=tests/unit_tests/test_main.py
-make test TEST_FILE=tests/unit_tests/test_offload_api.py
-make test TEST_FILE=tests/unit_tests/test_remote_client.py
 make test TEST_FILE=tests/unit_tests/test_model_retry.py
-make test TEST_FILE=tests/unit_tests/smoke_tests/test_system_prompt.py
 make check
 ```
 
-For a server-ready change, drive the real event handler and assert the resume latch ordering, failure clearing, and reconnect non-rearm behavior. For queue changes, test both the registry invariant and the full Enter/submission route: recovery commands must pass while paused, ordinary input must remain editable and unsent. For a footer/modal change, use `run_test()` to click the rendered dollar span, verify duplicate-modal suppression, live refresh, Escape focus restoration, and the no-detail notification. For status-bar picker or model-label changes, assert painted hit-target metadata and non-bubbling clicks, including narrow layouts and Ctrl-click copy behavior.
+For server-ready work, call the real event handler under `run_test()` and assert the resume latch precedes connection clearing, failure clears it, and a replacement server does not resurrect it. For startup recovery, cover both idle bypass and each busy guard. For headless changes, assert stdout/stderr routing, streaming versus buffering, timeout/turn exit codes, tool policy, interrupts, and session-end hooks. For ownership changes, use separate processes or leases: assert same-thread exclusion, client-exit fencing, stale-token rejection, and takeover only after the writer gate releases. For cache-expiry changes, cover once-per-window notices, every idle guard, draft restoration, and a failed continuation.

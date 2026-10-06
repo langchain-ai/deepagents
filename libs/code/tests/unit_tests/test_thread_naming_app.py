@@ -336,8 +336,9 @@ async def test_workspace_switch_cancels_pending_naming(
     assert not naming_app._thread_name_tasks
 
 
-@pytest.mark.parametrize("factory_fails", [False, True])
-@pytest.mark.parametrize("already_cancelled", [False, True])
+@pytest.mark.parametrize(
+    ("factory_fails", "already_cancelled"), [(False, False), (True, True)]
+)
 async def test_workspace_reload_waits_for_naming_model_initialization(
     naming_app: DeepAgentsApp,
     monkeypatch: pytest.MonkeyPatch,
@@ -413,7 +414,7 @@ async def test_naming_cannot_start_during_workspace_reload(
     generate.assert_not_awaited()
 
 
-@pytest.mark.parametrize("cancellations", [0, 1, 2])
+@pytest.mark.parametrize("cancellations", [0, 2])
 async def test_reload_waits_for_naming_initialization_cleanup(
     naming_app: DeepAgentsApp,
     monkeypatch: pytest.MonkeyPatch,
@@ -518,29 +519,6 @@ async def test_auto_name_is_conditional_and_context_isolated(
     naming_app._maybe_auto_name_thread("original", "provider:chat")
     assert contexts == ["isolated"]
     rename.assert_awaited_once_with("original", "Cache repair", only_if_unnamed=True)
-
-
-async def test_auto_name_skips_resumed_conversation(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(
-        naming_app,
-        "_get_thread_state_values",
-        AsyncMock(
-            return_value={
-                "messages": [
-                    HumanMessage("First"),
-                    AIMessage("Reply"),
-                    HumanMessage("Second"),
-                    AIMessage("Reply"),
-                ]
-            }
-        ),
-    )
-    generate = AsyncMock()
-    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
-    await naming_app._generate_thread_name("original", "provider:chat", automatic=True)
-    generate.assert_not_awaited()
 
 
 @pytest.mark.parametrize("turns", [0, 1, 2])

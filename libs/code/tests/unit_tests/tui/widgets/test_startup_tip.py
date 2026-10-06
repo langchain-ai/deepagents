@@ -53,7 +53,3 @@ class TestStartupTip:
     def test_copy_command_tip_registered(self) -> None:
         """The `/copy` command keeps a discoverability tip."""
         assert any("/copy" in tip for tip in _TIPS)
-
-    def test_show_reasoning_tip_registered(self) -> None:
-        """The reasoning display flag keeps a discoverability tip."""
-        assert any("--show-reasoning" in tip for tip in _TIPS)

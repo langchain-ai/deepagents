@@ -16893,6 +16893,108 @@ class TestDispatchModelSwitch:
 class TestDeferredActions:
     """Test deferred action queueing and draining."""
 
+    @pytest.mark.parametrize(
+        "busy_flag", ["_agent_running", "_shell_running", "_connecting"]
+    )
+    async def test_busy_session_keeps_deferred_actions_queued(
+        self, busy_flag: str
+    ) -> None:
+        """A drain requested while busy leaves actions for the next completion."""
+        app = DeepAgentsApp()
+        action = AsyncMock()
+        app._defer_action(DeferredAction(kind="model_switch", execute=action))
+        setattr(app, busy_flag, True)
+
+        await app._drain_deferred_actions()
+
+        action.assert_not_awaited()
+        assert len(app._deferred_actions) == 1
+        setattr(app, busy_flag, False)
+        await app._maybe_drain_deferred()
+        action.assert_awaited_once()
+        assert not app._deferred_actions
+
+    @pytest.mark.parametrize(
+        "busy_flag", ["_agent_running", "_shell_running", "_connecting"]
+    )
+    async def test_drain_pauses_when_session_becomes_busy(self, busy_flag: str) -> None:
+        """Work starting during an action postpones the remaining actions."""
+        app = DeepAgentsApp()
+        remaining = AsyncMock()
+
+        async def start_work() -> None:
+            setattr(app, busy_flag, True)
+            await asyncio.sleep(0)
+
+        app._defer_action(DeferredAction(kind="model_switch", execute=start_work))
+        app._defer_action(DeferredAction(kind="thread_switch", execute=remaining))
+
+        await app._drain_deferred_actions()
+
+        remaining.assert_not_awaited()
+        assert len(app._deferred_actions) == 1
+        setattr(app, busy_flag, False)
+        await app._maybe_drain_deferred()
+        remaining.assert_awaited_once()
+        assert not app._deferred_actions
+
+    @pytest.mark.parametrize("role", ["summarization", "auto"])
+    async def test_auxiliary_selection_waits_for_work_started_during_auth(
+        self, monkeypatch: pytest.MonkeyPatch, role: Literal["summarization", "auto"]
+    ) -> None:
+        """A post-install selection requeued during auth resumes after agent cleanup."""
+        from deepagents_code.model_metadata import ModelMetadata
+
+        app = DeepAgentsApp()
+        install = AsyncMock(return_value=True)
+        resolve = AsyncMock(return_value=ModelMetadata("test-model", "baseten"))
+        monkeypatch.setattr(app, "_install_extra", install)
+        monkeypatch.setattr(app, "_resolve_auxiliary_model", resolve)
+        auth_started = asyncio.Event()
+        auth_finished = asyncio.Event()
+
+        async def authenticate(_model_spec: str) -> bool:
+            auth_started.set()
+            await auth_finished.wait()
+            return True
+
+        monkeypatch.setattr(app, "_prompt_model_auth_if_needed", authenticate)
+        override = (
+            "_summarization_model_override"
+            if role == "summarization"
+            else "_auto_classifier_model"
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            original = getattr(app, override)
+            app._shell_running = True
+            await app._apply_auxiliary_model_selection(
+                "baseten:test-model", "baseten", role=role
+            )
+            drain = asyncio.create_task(app._cleanup_shell_task())
+            try:
+                await asyncio.wait_for(auth_started.wait(), timeout=5)
+                # A queued prompt starts after provider restart, before auth ends.
+                app._agent_running = True
+                auth_finished.set()
+                await asyncio.wait_for(drain, timeout=5)
+
+                resolve.assert_not_awaited()
+                assert getattr(app, override) == original
+                assert len(app._deferred_actions) == 1
+                await pilot.press("a")  # Keyboard handling remains responsive.
+
+                await app._cleanup_agent_task()
+
+                assert getattr(app, override) == "baseten:test-model"
+                assert not app._deferred_actions
+                resolve.assert_awaited_once_with("baseten:test-model")
+                install.assert_awaited_once_with("baseten", auto_restart=True)
+            finally:
+                drain.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await drain
+
     async def test_cancelled_drain_allows_remaining_actions_to_resume(self) -> None:
         """Cancellation releases queue ownership for a later drain."""
         app = DeepAgentsApp()

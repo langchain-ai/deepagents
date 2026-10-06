@@ -22171,7 +22171,7 @@ class DeepAgentsApp(App):
             await self._drain_deferred_actions()
 
     async def _drain_deferred_actions(self) -> None:
-        """Execute deferred actions queued while busy (e.g. model/thread switch)."""
+        """Execute queued actions until the session becomes busy again."""
         # ServerReady can request another drain while an action is still
         # installing/authenticating. The original drain owns the queue until
         # that action and its selection continuation have finished.
@@ -22179,7 +22179,11 @@ class DeepAgentsApp(App):
             return
         self._draining_deferred_actions = True
         try:
-            while self._deferred_actions:
+            # An action can yield during installation/authentication while new
+            # work starts. Leave any requeued selection for the next completion.
+            while self._deferred_actions and not (
+                self._agent_running or self._shell_running or self._connecting
+            ):
                 await self._execute_deferred_action(self._deferred_actions.pop(0))
         finally:
             self._draining_deferred_actions = False

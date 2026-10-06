@@ -471,6 +471,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `invoke(files={...})`. With `FilesystemBackend`, skills are loaded
             from disk relative to the backend's `root_dir`. Later sources
             override earlier ones for skills with the same name (last one wins).
+
+            Pass `pinned_skills=["skill-name"]` in invocation state to load full
+            instructions deterministically into each model request as human messages,
+            without changing stored message history. Pins append across checkpointed
+            invocations; `pinned_skills=[]` is a no-op. Use
+            `pinned_skills=langgraph.types.Overwrite([])` to clear them. Unknown names
+            or unreadable files raise an error before the model is called. Pinning
+            guarantees loading, not that the model follows the instructions.
         memory: List of memory file paths (`AGENTS.md` files) to load
             (e.g., `["/memory/AGENTS.md"]`).
 

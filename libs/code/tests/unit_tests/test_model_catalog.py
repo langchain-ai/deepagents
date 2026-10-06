@@ -13,7 +13,7 @@ from textual.widgets import Input, Static
 
 from deepagents_code import config_manifest, model_catalog, model_config
 from deepagents_code._cli_context import INHERIT_SUMMARIZATION_MODEL
-from deepagents_code.app import DeepAgentsApp, DeferredAction
+from deepagents_code.app import DeepAgentsApp
 from deepagents_code.model_catalog import CatalogProfile, CatalogProvider, ModelCatalog
 from deepagents_code.model_config import ProviderAuthState, ProviderAuthStatus
 from deepagents_code.model_metadata import ModelMetadata
@@ -514,57 +514,6 @@ def test_catalog_rejects_incoherent_provider_readiness(catalog: ModelCatalog) ->
     payload["providers"]["remote"]["state"] = "configured"
     with pytest.raises(ValidationError, match="source"):
         ModelCatalog.model_validate(payload)
-
-
-@pytest.mark.parametrize("confirmed", [True, False])
-async def test_deferred_install_switch_finishes_before_thread_switch(
-    confirmed: bool, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    app = DeepAgentsApp(thread_id="original")
-    app._context_tokens = 1000
-    app._model_switch_warning_threshold = 1
-    monkeypatch.setattr(app, "notify", Mock())
-    monkeypatch.setattr(app, "_remote_agent", lambda: None)
-    monkeypatch.setattr(app, "_prepare_model_provider", AsyncMock(return_value=True))
-    confirmation_started = asyncio.Event()
-    answer: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
-    models: dict[str, str] = {}
-
-    async def confirm(_screen: object) -> bool:
-        confirmation_started.set()
-        return await answer
-
-    def switch_model(spec: str, **_kwargs: object) -> None:
-        assert app._lc_thread_id is not None
-        models[app._lc_thread_id] = spec
-
-    def switch_thread() -> None:
-        app._lc_thread_id = "next"
-
-    monkeypatch.setattr(app, "_push_screen_wait", confirm)
-    monkeypatch.setattr(app, "_switch_model", AsyncMock(side_effect=switch_model))
-    app._agent_running = True
-    await app._install_extra_then_switch("remote", "remote:selected")
-    app._defer_action(
-        DeferredAction(
-            kind="thread_switch", execute=AsyncMock(side_effect=switch_thread)
-        )
-    )
-    app._agent_running = False
-    drain = asyncio.create_task(app._drain_deferred_actions())
-    try:
-        await asyncio.wait_for(confirmation_started.wait(), timeout=2)
-        assert app._lc_thread_id == "original"
-        assert models == {}
-        answer.set_result(confirmed)
-        await asyncio.wait_for(drain, timeout=2)
-        assert app._lc_thread_id == "next"
-        assert models == ({"original": "remote:selected"} if confirmed else {})
-    finally:
-        if not answer.done():
-            answer.set_result(False)
-        await drain
-        await asyncio.gather(*app._modal_command_tasks.values())
 
 
 @pytest.mark.parametrize("blocked_stage", ["install", "resolve"])

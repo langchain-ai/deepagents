@@ -16896,29 +16896,10 @@ class TestDeferredActions:
     @pytest.mark.parametrize(
         "busy_flag", ["_agent_running", "_shell_running", "_connecting"]
     )
-    async def test_busy_session_keeps_deferred_actions_queued(
+    async def test_drain_waits_for_idle_before_and_between_actions(
         self, busy_flag: str
     ) -> None:
-        """A drain requested while busy leaves actions for the next completion."""
-        app = DeepAgentsApp()
-        action = AsyncMock()
-        app._defer_action(DeferredAction(kind="model_switch", execute=action))
-        setattr(app, busy_flag, True)
-
-        await app._drain_deferred_actions()
-
-        action.assert_not_awaited()
-        assert len(app._deferred_actions) == 1
-        setattr(app, busy_flag, False)
-        await app._maybe_drain_deferred()
-        action.assert_awaited_once()
-        assert not app._deferred_actions
-
-    @pytest.mark.parametrize(
-        "busy_flag", ["_agent_running", "_shell_running", "_connecting"]
-    )
-    async def test_drain_pauses_when_session_becomes_busy(self, busy_flag: str) -> None:
-        """Work starting during an action postpones the remaining actions."""
+        """Busy sessions retain actions before a drain and after an awaited action."""
         app = DeepAgentsApp()
         remaining = AsyncMock()
 
@@ -16928,6 +16909,13 @@ class TestDeferredActions:
 
         app._defer_action(DeferredAction(kind="model_switch", execute=start_work))
         app._defer_action(DeferredAction(kind="thread_switch", execute=remaining))
+        setattr(app, busy_flag, True)
+
+        await app._drain_deferred_actions()
+
+        remaining.assert_not_awaited()
+        assert len(app._deferred_actions) == 2
+        setattr(app, busy_flag, False)
 
         await app._drain_deferred_actions()
 

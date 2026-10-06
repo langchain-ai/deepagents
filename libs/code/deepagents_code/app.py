@@ -30038,6 +30038,12 @@ class DeepAgentsApp(App):
 
         initial_threads = get_cached_threads(limit=thread_limit)
 
+        def validate_selection(thread_id: str) -> None:
+            already_owned = thread_id in self._thread_leases
+            self._reserve_thread(thread_id)
+            if not already_owned:
+                self._release_thread(thread_id)
+
         async def resume_and_refocus(thread_id: str) -> None:
             """Resume a selected thread, then restore focus to chat input."""
             try:
@@ -30081,6 +30087,7 @@ class DeepAgentsApp(App):
             current_thread=current,
             thread_limit=thread_limit,
             initial_threads=initial_threads,
+            validate_selection=validate_selection,
         )
         self.push_screen(screen, handle_result)
 
@@ -30976,7 +30983,7 @@ class DeepAgentsApp(App):
             try:
                 self._reserve_thread(thread_id)
             except (OSError, RuntimeError) as exc:
-                await self._mount_message(AppMessage(str(exc)))
+                self.notify(str(exc), severity="error", markup=False)
                 return
             try:
                 await self._resume_owned_thread(thread_id)

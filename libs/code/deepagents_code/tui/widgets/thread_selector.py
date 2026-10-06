@@ -929,6 +929,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
         filter_cwd: str | _Sentinel | None = _CWD_DEFAULT,
         initial_query: str = "",
         reference_mode: bool = False,
+        validate_selection: Callable[[str], None] | None = None,
     ) -> None:
         """Initialize the `ThreadSelectorScreen`.
 
@@ -947,12 +948,14 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             initial_query: Search text carried from the compact picker.
             reference_mode: Whether selection returns a reference instead of
                 resuming the selected thread.
+            validate_selection: Optional check that raises if selection is blocked.
         """
         super().__init__()
         self._current_thread = current_thread
         self._thread_limit = thread_limit
         self._initial_query = initial_query
         self._reference_mode = reference_mode
+        self._validate_selection = validate_selection
 
         from deepagents_code.model_config import load_thread_config
 
@@ -2369,7 +2372,16 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
         if self._filtered_threads:
             thread_id = self._filtered_threads[self._selected_index]["thread_id"]
-            self.dismiss(thread_id)
+            self._select_thread(thread_id)
+
+    def _select_thread(self, thread_id: str) -> None:
+        if self._validate_selection is not None:
+            try:
+                self._validate_selection(thread_id)
+            except (OSError, RuntimeError) as exc:
+                self.notify(str(exc), severity="error", markup=False)
+                return
+        self.dismiss(thread_id)
 
     def action_copy_thread_id(self) -> None:
         """Copy the highlighted thread ID without dismissing the selector."""
@@ -2624,7 +2636,7 @@ class ThreadSelectorScreen(ModalScreen[str | None]):
             return
         if 0 <= event.index < len(self._filtered_threads):
             self._selected_index = event.index
-            self.dismiss(event.thread_id)
+            self._select_thread(event.thread_id)
 
     def action_cancel(self) -> None:
         """Cancel the selection."""

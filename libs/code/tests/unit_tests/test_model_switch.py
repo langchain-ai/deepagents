@@ -1,6 +1,7 @@
 """Tests for model switching functionality."""
 
 import asyncio
+import tomllib
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Literal
@@ -21,6 +22,8 @@ from deepagents_code.model_config import (
     ProviderAuthState,
     ProviderAuthStatus,
 )
+from deepagents_code.model_metadata import ModelMetadata
+from deepagents_code.tui.modals.model_switch import ModelSwitchWarningScreen
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 from deepagents_code.tui.widgets.status import StatusBar
 
@@ -517,6 +520,78 @@ class TestModelSwitchErrorHandling:
 
 class TestModelSwitchConcurrencyGuard:
     """Tests for _model_switching concurrency guard."""
+
+    @pytest.mark.parametrize("pending_stage", ["resolution", "confirmation"])
+    @pytest.mark.parametrize("newer_request", ["command", "resume"])
+    async def test_deferred_switch_cannot_overwrite_newer_selection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        pending_stage: str,
+        newer_request: str,
+    ) -> None:
+        """Late lookup or confirmation preserves the newer model and preference."""
+        app = DeepAgentsApp()
+        app._agent = _make_remote_agent()
+        app._context_tokens = 100_001
+        app._model_switch_warning_threshold = 100_000
+        runtime_state.model_provider = "openai"
+        runtime_state.model_name = "original"
+        mount = AsyncMock()
+        monkeypatch.setattr(app, "_mount_message", mount)
+        monkeypatch.setattr(app, "notify", Mock())
+        pending = asyncio.Event()
+        release = asyncio.Event()
+
+        async def resolve(
+            _config: object, model_spec: str, **_kwargs: object
+        ) -> ModelMetadata:
+            if model_spec == "openai:older" and pending_stage == "resolution":
+                pending.set()
+                await release.wait()
+            return ModelMetadata(model_spec.removeprefix("openai:"), "openai")
+
+        async def confirm(screen: ModelSwitchWarningScreen) -> bool:
+            if (
+                screen._target_model == "openai:older"
+                and pending_stage == "confirmation"
+            ):
+                pending.set()
+                await release.wait()
+            return True
+
+        monkeypatch.setattr(app._agent, "aresolve_model", resolve)
+        monkeypatch.setattr(app, "_push_screen_wait", confirm)
+        app._agent_running = True
+        await app._handle_command("/model openai:older")
+        app._agent_running = False
+        drain = asyncio.create_task(app._drain_deferred_actions())
+        try:
+            await asyncio.wait_for(pending.wait(), timeout=5)
+            if newer_request == "command":
+                await app._handle_command("/model openai:newer")
+                await asyncio.wait_for(
+                    asyncio.gather(*app._modal_command_tasks.values()), timeout=5
+                )
+            else:
+                await app._switch_model("openai:newer", persist=False, from_resume=True)
+            assert app._model_override == "openai:newer"
+        finally:
+            release.set()
+            await asyncio.wait_for(drain, timeout=5)
+
+        assert app._model_override == "openai:newer"
+        assert runtime_state.model_name == "newer"
+        announcements = [
+            call.args[0]._content
+            for call in mount.call_args_list
+            if isinstance(call.args[0], AppMessage)
+        ]
+        assert announcements == ["Switched to openai:newer"]
+        if newer_request == "command":
+            config = tomllib.loads(model_config.DEFAULT_CONFIG_PATH.read_text())
+            assert config["models"]["recent"] == "openai:newer"
+        else:
+            assert not model_config.DEFAULT_CONFIG_PATH.exists()
 
     async def test_concurrent_model_switch_blocked(self) -> None:
         """Second _switch_model call is rejected while first is in-flight."""

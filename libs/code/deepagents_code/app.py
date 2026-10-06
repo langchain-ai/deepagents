@@ -4352,6 +4352,9 @@ class DeepAgentsApp(App):
         """Re-entry guard for `/model` switches while the new model is being
         resolved."""
 
+        self._model_selection = 0
+        """Generation invalidating older model lookups and confirmations."""
+
         self._agent_switching = False
         """Re-entry guard for `/agents` switches while the backing server is
         being restarted with a new `assistant_id`."""
@@ -24864,6 +24867,8 @@ class DeepAgentsApp(App):
         from deepagents_code.config import runtime_state
         from deepagents_code.model_config import ModelSpec
 
+        self._model_selection += 1
+        selection = self._model_selection
         target = model_spec.removeprefix(":")
         metadata: ModelMetadata | None = None
         if self._remote_agent() is not None:
@@ -24872,10 +24877,14 @@ class DeepAgentsApp(App):
                     target, extra_kwargs=extra_kwargs
                 )
             except Exception as exc:
+                if selection != self._model_selection:
+                    return
                 logger.exception("Failed to resolve proposed model switch %s", target)
                 await self._mount_message(
                     ErrorMessage(_build_model_switch_error_body(exc))
                 )
+                return
+            if selection != self._model_selection:
                 return
             target = f"{metadata.provider}:{metadata.model_name}"
         parsed = ModelSpec.try_parse(target)
@@ -24942,6 +24951,8 @@ class DeepAgentsApp(App):
                 return
             if confirmed is not True:
                 return
+        if selection != self._model_selection:
+            return
         await self._switch_model(target, extra_kwargs=extra_kwargs, **switch_kwargs)
 
     async def _install_extra_then_switch(
@@ -31570,6 +31581,9 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Model switch already in progress."))
             return
 
+        # Direct switches (such as thread resume) also supersede any pending
+        # lookup or confirmation. The guard serializes application/persistence.
+        self._model_selection += 1
         self._model_switching = True
         try:
             # Defensively strip leading colon in case of empty provider,

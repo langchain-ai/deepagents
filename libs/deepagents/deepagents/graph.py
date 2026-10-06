@@ -202,6 +202,11 @@ def _merge_fs_interrupt_on(
     return merged
 
 
+def _passed_skills_sources(middleware: Sequence[AgentMiddleware[Any, Any, Any]]) -> list[str] | None:
+    """Sources of a `SkillsMiddleware` passed to take the skills slot by name, if any."""
+    return next((m.sources for m in middleware if isinstance(m, SkillsMiddleware) and m.name == "SkillsMiddleware"), None)
+
+
 def _apply_custom_middleware(
     base: list[AgentMiddleware[Any, Any, Any]],
     custom: Sequence[AgentMiddleware[Any, Any, Any]],
@@ -671,7 +676,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # only exists when `skills` is passed. Take `skills` from its sources so it
     # lands in the default's slot and reaches the general-purpose subagent.
     if skills is None:
-        skills = next((m.sources for m in middleware or () if isinstance(m, SkillsMiddleware) and m.name == "SkillsMiddleware"), None)
+        skills = _passed_skills_sources(middleware or ())
 
     # Process caller-supplied subagents first so the decision of whether to
     # auto-add the default general-purpose subagent can factor in an explicit
@@ -699,11 +704,17 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Resolve permissions: subagent's own rules take priority, else inherit parent's
             subagent_permissions = spec.get("permissions", permissions)
 
+            # A fork inherits the main agent's skills and can't set its own. As
+            # for the main agent, a `SkillsMiddleware` in the spec's own
+            # `middleware` takes the skills slot when there are no `skills`.
+            subagent_skills = skills if is_forked else (spec.get("skills") or None)
+            if subagent_skills is None:
+                subagent_skills = _passed_skills_sources(spec.get("middleware", []))
+
             # Build middleware: base stack + user's middleware + profile + skills (if specified).
             # A fork also mirrors the parent's prompt-producing middleware, in the
             # parent's order, so its own stack rebuilds the parent's system message
             # from the inherited state.
-            subagent_skills = spec.get("skills")
             subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
                 FilesystemMiddleware(
                     backend=backend,
@@ -719,9 +730,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             _subagent_core_names = {m.name for m in subagent_middleware}
             # Harness-profile middleware for this subagent's model
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
-            if is_forked and skills is not None:
-                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
-            elif subagent_skills and not is_forked:
+            if subagent_skills is not None:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
 
             append_prompt_caching_middleware(subagent_middleware)

@@ -197,7 +197,7 @@ class _Disclosure:
 
 
 _SkillRead = tuple[int, "SkillMetadata"]
-"""A successful read of a skill's `SKILL.md`: the tool result's message index, and the skill."""
+"""A read of a skill's `SKILL.md`: the index of the tool result or activation message, and the skill."""
 
 
 def _unclaimed_include_names(reads: Sequence[_SkillRead], request_tools: Sequence[BaseTool | dict[str, Any]]) -> list[str]:
@@ -280,10 +280,12 @@ def _normalized_path(path: object) -> str | None:
 
 
 def _find_skill_reads(messages: Sequence[AnyMessage], skills: Sequence[SkillMetadata]) -> list[_SkillRead]:
-    """Return `(index, skill)` for every successful `read_file` result of a `SKILL.md` naming tools.
+    """Return `(index, skill)` for every read of a `SKILL.md` naming tools.
 
-    Any `offset` or `limit` counts, and so does a result whose content was later
-    truncated or clipped, since only the call and the result's status are read.
+    A read is a successful `read_file` result or a message activating the
+    skill. Any `offset` or `limit` counts, and so does a result whose content was
+    later truncated or clipped, since only the call and the result's status are
+    read.
     """
     skills_by_path = {
         path: skill
@@ -301,9 +303,15 @@ def _find_skill_reads(messages: Sequence[AnyMessage], skills: Sequence[SkillMeta
     }
     reads: list[_SkillRead] = []
     for index, message in enumerate(messages):
-        if not isinstance(message, ToolMessage) or message.status == "error":
+        # A tool result's path is on the `read_file` call it answers; an activation message carries its own.
+        if isinstance(message, ToolMessage) and message.status != "error":
+            path = read_paths.get(message.tool_call_id)
+        elif isinstance(message, HumanMessage) and message.additional_kwargs.get("lc_source") == "skill_activation":
+            marker = message.additional_kwargs.get("skill")
+            path = marker.get("path") if isinstance(marker, dict) else None
+        else:
             continue
-        skill = skills_by_path.get(_normalized_path(read_paths.get(message.tool_call_id)) or "")
+        skill = skills_by_path.get(_normalized_path(path) or "")
         if skill is not None:
             reads.append((index, skill))
     return reads

@@ -110,6 +110,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import yaml
 from langchain.agents.middleware.types import OmitFromOutput, PrivateStateAttr
+from langchain_core.messages import HumanMessage
 from langchain_core.tools import BaseTool
 from langgraph.runtime import Runtime, get_runtime
 
@@ -133,7 +134,7 @@ from langchain.agents.middleware.types import (
     TracePolicy,
     omit_payload,
 )
-from langgraph.types import Command
+from langgraph.types import Command, Overwrite
 
 from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
 from deepagents.backends.utils import to_posix_path
@@ -163,6 +164,9 @@ MAX_SKILL_FILE_SIZE = 10 * 1024 * 1024
 MAX_SKILLS_LOAD_WARNINGS = 20
 MAX_SKILL_LOAD_WARNING_LENGTH = 1000
 _SKILL_LOAD_WARNING_TRUNCATION_SUFFIX = "... [truncated]"
+
+_FRONTMATTER_PATTERN = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
+"""YAML frontmatter between `---` delimiters at the start of a `SKILL.md`."""
 
 # Agent Skills specification constraints (https://agentskills.io/specification)
 MAX_SKILL_NAME_LENGTH = 64
@@ -341,8 +345,28 @@ class SkillMetadata(TypedDict):
     """
 
 
+def _append_skill_names(left: list[str] | None, right: list[str] | None) -> list[str]:
+    """Combine two writes of `activate_skills`, treating a missing value as empty."""
+    return [*(left or []), *(right or [])]
+
+
 class SkillsState(AgentState):
     """State for the skills middleware."""
+
+    # The reducer must be the last `Annotated` entry, where LangGraph looks for it.
+    activate_skills: NotRequired[Annotated[list[str], OmitFromOutput, _append_skill_names]]
+    """Names of skills to activate before the next model call.
+
+    Each named skill's `SKILL.md`, without its frontmatter, is appended to the
+    conversation as its own `HumanMessage`. The message is a snapshot: editing the
+    file later doesn't change it, and naming the skill again appends a new copy.
+
+    Names only, matched exactly against `skills_metadata`. A name that isn't
+    loaded, or whose file can't be read, is skipped without an error. The key is
+    cleared once consumed, so a later run activates nothing unless it names skills
+    again. Writes in the same step add up, so parallel tool calls can each
+    activate skills.
+    """
 
     skills_metadata: NotRequired[Annotated[list[SkillMetadata] | None, OmitFromOutput]]
     """List of loaded skill metadata from configured sources. Not propagated to parent agents.
@@ -368,11 +392,17 @@ class SkillsState(AgentState):
 class SkillsStateUpdate(TypedDict):
     """State update for the skills middleware."""
 
-    skills_metadata: list[SkillMetadata]
+    skills_metadata: NotRequired[list[SkillMetadata]]
     """List of loaded skill metadata to merge into state."""
 
     skills_load_errors: NotRequired[list[str]]
     """Skill source loading errors to merge into state."""
+
+    messages: NotRequired[list[HumanMessage]]
+    """Messages activating the skills named in `activate_skills`, to append to the conversation."""
+
+    activate_skills: NotRequired[Overwrite]
+    """`Overwrite([])`, clearing the consumed skill names past the append reducer."""
 
 
 def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
@@ -458,9 +488,7 @@ def _parse_skill_metadata(
         logger.warning("Skipping %s: content too large (%d bytes)", skill_path, len(content))
         return None
 
-    # Match YAML frontmatter between --- delimiters
-    frontmatter_pattern = r"^---\s*\n(.*?)\n---\s*\n"
-    match = re.match(frontmatter_pattern, content, re.DOTALL)
+    match = _FRONTMATTER_PATTERN.match(content)
 
     if not match:
         logger.warning("Skipping %s: no valid YAML frontmatter found", skill_path)
@@ -794,6 +822,60 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     return skills
 
 
+def _skills_to_activate(names: Sequence[str], skills: Sequence[SkillMetadata]) -> list[SkillMetadata]:
+    """Return the loaded skill each distinct name refers to, in first-seen order, skipping unknown names."""
+    by_name = {skill["name"]: skill for skill in skills}
+    resolved: list[SkillMetadata] = []
+    for name in dict.fromkeys(names):
+        skill = by_name.get(name)
+        if skill is None:
+            logger.debug("Not activating skill '%s': unknown skill", name)
+        else:
+            resolved.append(skill)
+    return resolved
+
+
+def _activation_body(skill: SkillMetadata, response: FileDownloadResponse) -> str | None:
+    """Return the text to activate `skill` with, or `None` if `response` can't be activated."""
+    if response.error or not response.content:
+        logger.debug("Not activating skill '%s': unreadable %s (%s)", skill["name"], skill["path"], response.error or "empty")
+        return None
+    if len(response.content) > MAX_SKILL_FILE_SIZE:
+        logger.debug("Not activating skill '%s': %s is too large (%d bytes)", skill["name"], skill["path"], len(response.content))
+        return None
+    try:
+        content = response.content.decode("utf-8")
+    except UnicodeDecodeError:
+        logger.debug("Not activating skill '%s': unreadable %s (not UTF-8)", skill["name"], skill["path"])
+        return None
+    match = _FRONTMATTER_PATTERN.match(content)
+    return (content[match.end() :] if match else content).rstrip()
+
+
+def _skill_activation_message(skill: SkillMetadata, body: str) -> HumanMessage:
+    """Return the message that activates `skill`, carrying its `SKILL.md` `body`."""
+    name = html.escape(skill["name"], quote=True)
+    path = html.escape(skill["path"], quote=True)
+    marker = {"name": skill["name"], "path": skill["path"], "description": skill["description"]}
+    return HumanMessage(
+        content=f'<skill name="{name}" path="{path}">\n{body}\n</skill>',
+        additional_kwargs={"lc_source": "skill_activation", "skill": marker},
+    )
+
+
+def _activation_update(skills: Sequence[SkillMetadata], responses: Sequence[FileDownloadResponse]) -> SkillsStateUpdate:
+    """Return the update appending a message for each readable skill and clearing `activate_skills`."""
+    update = SkillsStateUpdate(activate_skills=Overwrite([]))
+    messages = [
+        _skill_activation_message(skill, body)
+        for skill, response in zip(skills, responses, strict=True)
+        if (body := _activation_body(skill, response)) is not None
+    ]
+    if messages:
+        update["messages"] = messages
+    return update
+
+
 SKILLS_SYSTEM_PROMPT = """## Skills System
 
 You have access to a skills library that provides specialized capabilities and domain knowledge.
@@ -856,6 +938,23 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     agent.update_state(config, {"skills_metadata": None})
     ```
 
+    To guarantee the model gets a skill's instructions, for example when the
+    user names it, pass its name in `activate_skills`. Before the next model
+    call, each named skill's `SKILL.md` is appended to the conversation as its
+    own `HumanMessage`, with `additional_kwargs["lc_source"]` set to
+    `"skill_activation"` and the skill's `name`, `path` and `description` under
+    `additional_kwargs["skill"]`:
+
+    ```python
+    agent.invoke(
+        {
+            "messages": [{"role": "user", "content": "/write-tests /house-style for auth.py"}],
+            "activate_skills": ["write-tests", "house-style"],
+        },
+        config,
+    )
+    ```
+
     Example:
         ```python
         from deepagents.backends.filesystem import FilesystemBackend
@@ -886,13 +985,14 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
     Pass those tools as `tools`, either as a list or as a
     `SkillToolResolver` that looks them up by name. The model sees a skill tool
-    only after it uses `read_file` on a skill that lists it, and only while that
-    read stays in context. Until then, calling the tool fails as an unknown tool.
+    only after it uses `read_file` on a skill that lists it, or the skill is
+    activated, and only while that read or activation stays in context. Until
+    then, calling the tool fails as an unknown tool.
 
     `include_tools` can also list a tool passed to the agent rather than to
     this middleware. If that tool is deferred
-    (`extras={"defer_loading": True}`), reading the skill discloses it
-    automatically.
+    (`extras={"defer_loading": True}`), reading or activating the skill
+    discloses it automatically.
 
     ## Placement
 
@@ -1162,6 +1262,50 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         skills = list(all_skills.values())
         # Always write the errors so warnings from an earlier load are cleared
         return SkillsStateUpdate(skills_metadata=skills, skills_load_errors=skills_load_errors)
+
+    def before_model(self, state: SkillsState, runtime: Runtime) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
+        """Activate the skills named in `activate_skills` before the model call (synchronous).
+
+        Appends one message per named skill, in the order named, carrying its
+        `SKILL.md` without frontmatter. Names are matched against
+        `skills_metadata`; unknown or unreadable skills are skipped.
+
+        Args:
+            state: Current agent state.
+            runtime: Runtime context.
+
+        Returns:
+            State update appending the skills' messages and clearing
+                `activate_skills`, or `None` if no skills are named.
+        """
+        names = state.get("activate_skills")
+        if not names:
+            return None
+        skills = _skills_to_activate(names, state.get("skills_metadata") or [])
+        responses = self._backend.download_files([skill["path"] for skill in skills]) if skills else []
+        return _activation_update(skills, responses)
+
+    async def abefore_model(self, state: SkillsState, runtime: Runtime) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
+        """Activate the skills named in `activate_skills` before the model call (async).
+
+        Appends one message per named skill, in the order named, carrying its
+        `SKILL.md` without frontmatter. Names are matched against
+        `skills_metadata`; unknown or unreadable skills are skipped.
+
+        Args:
+            state: Current agent state.
+            runtime: Runtime context.
+
+        Returns:
+            State update appending the skills' messages and clearing
+                `activate_skills`, or `None` if no skills are named.
+        """
+        names = state.get("activate_skills")
+        if not names:
+            return None
+        skills = _skills_to_activate(names, state.get("skills_metadata") or [])
+        responses = await self._backend.adownload_files([skill["path"] for skill in skills]) if skills else []
+        return _activation_update(skills, responses)
 
     def _disclose_skill_tools(
         self, request: ModelRequest[ContextT], reads: list[_SkillRead], resolved: Mapping[str, Sequence[BaseTool]]

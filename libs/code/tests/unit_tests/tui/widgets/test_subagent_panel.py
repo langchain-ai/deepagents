@@ -111,16 +111,55 @@ class TestSelection:
 
 
 class TestHeaderToggle:
-    async def test_user_collapse_persists_across_turn_reset(self) -> None:
+    async def test_manual_collapse_lasts_until_next_workflow(self) -> None:
         async with PanelApp().run_test(size=(160, 24)) as pilot:
             panel = pilot.app.query_one("#panel", SubagentPanel)
             panel.on_subagent_event(_start("a", "E1"))
             await pilot.pause()
-            panel.toggle()  # user closes it
-            panel.reset()  # new user turn
+            await pilot.click("#subagent-header-summary")
             panel.on_subagent_event(_start("b", "E2"))
             await pilot.pause()
-            assert panel.expanded is False  # preference persists
+            assert panel.expanded is False
+            panel.on_subagent_event(_complete("a", "E1"))
+            panel.on_subagent_event(_complete("b", "E2"))
+            panel.on_subagent_event(_start("c", "E3"))
+            await pilot.pause()
+            assert panel.expanded is True
+
+    @pytest.mark.parametrize("outcome", ["complete", "error", "cancel"])
+    async def test_idle_collapses_and_new_work_reopens(self, outcome: str) -> None:
+        async with PanelApp().run_test(size=(160, 24)) as pilot:
+            panel = pilot.app.query_one("#panel", SubagentPanel)
+            panel.on_subagent_event(_start("a", "E1"))
+            panel.on_subagent_event(_start("b", "E2"))
+            panel.on_subagent_event(_complete("a", "E1"))
+            await pilot.pause()
+            assert panel.expanded is True
+            if outcome == "cancel":
+                panel.finalize_running()
+            else:
+                event = _complete if outcome == "complete" else _error
+                panel.on_subagent_event(event("b", "E2"))
+            await pilot.pause()
+            assert panel.has_class("-visible")
+            assert not panel.expanded
+            assert panel.query_one("#subagent-body").has_class("-collapsed")
+            summary = _render(panel.query_one("#subagent-header-summary", Static))
+            assert {
+                "complete": "2/2 done",
+                "error": "1 failed",
+                "cancel": "1 cancelled",
+            }[outcome] in summary
+            panel.on_subagent_event(_start("b", "E2"))
+            await pilot.pause()
+            assert not panel.expanded
+            await pilot.click("#subagent-header-summary")
+            assert panel.expanded
+            await pilot.click("#subagent-header-summary")
+            panel.on_subagent_event(_start("c", "E3"))
+            await pilot.pause()
+            assert panel.expanded
+            assert not panel.query_one("#subagent-body").has_class("-collapsed")
 
     # 34 columns is the supported floor: the hint plus its 2-cell margin claims
     # 29 of the 30 content columns, leaving the summary at its 1-cell minimum.
@@ -141,7 +180,7 @@ class TestHeaderToggle:
 
             summary = pilot.app.query_one("#subagent-header-summary", Static)
             hint = pilot.app.query_one("#subagent-header-hint", Static)
-            text = "click or Ctrl+T to collapse"
+            text = "click or Ctrl+T to expand"
             # `_render` returns the unclipped content, so this is the "summary
             # really is overflowing" precondition; the ellipsis assertion below
             # reads the painted strip, which is where truncation happens.

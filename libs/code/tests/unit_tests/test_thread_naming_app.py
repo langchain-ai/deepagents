@@ -108,3 +108,55 @@ async def test_rename_refreshes_open_thread_selector(
         await naming_app._handle_command("/rename Cache repair")
         await pilot.pause()
         assert str(selector.query_one(name_cell, Static).render()) == "Cache repair"
+
+
+async def test_rename_refreshes_thread_autocomplete(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread: ThreadInfo = {
+        "thread_id": "original",
+        "agent_name": "agent",
+        "updated_at": None,
+        "thread_name": "Old name",
+    }
+    monkeypatch.setattr(
+        "deepagents_code.sessions.list_threads",
+        AsyncMock(side_effect=lambda **_: [thread.copy()]),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.sessions.populate_thread_checkpoint_details", AsyncMock()
+    )
+
+    def rename(_thread_id: str, name: str) -> bool:
+        thread["thread_name"] = name
+        return True
+
+    monkeypatch.setattr(
+        "deepagents_code.sessions.rename_thread", AsyncMock(side_effect=rename)
+    )
+    async with naming_app.run_test() as pilot:
+        chat = naming_app._chat_input
+        assert chat is not None
+        assert chat._text_area is not None
+        await naming_app.workers.wait_for_complete()
+        chat._text_area.insert("compare @@Old")
+        await pilot.pause()
+        assert chat._current_suggestions[0][0] == "Old name"
+
+        chat._text_area.load_text("/rename Release audit")
+        chat._text_area.move_cursor_to_end()
+        await pilot.press("enter")
+        await pilot.pause()
+        await naming_app.workers.wait_for_complete()
+        assert naming_app._thread_name == "Release audit"
+
+        chat._text_area.insert("compare @@Release")
+        await pilot.pause()
+        assert [label for label, _ in chat._current_suggestions] == ["Release audit"]
+        await pilot.press("tab")
+        assert chat._text_area.text == "compare @@(thread:original) "
+
+        chat._text_area.load_text("compare @@Old")
+        chat._text_area.move_cursor_to_end()
+        await pilot.pause()
+        assert not chat._current_suggestions

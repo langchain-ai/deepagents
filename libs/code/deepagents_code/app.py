@@ -19227,6 +19227,8 @@ class DeepAgentsApp(App):
                 self.notify("Send a message before naming this thread.")
                 return
             self._refresh_thread_name_selectors()
+            if self._chat_input:
+                self._chat_input._warm_thread_cache()
             if thread_id == self._lc_thread_id:
                 self._thread_name_revision += 1
                 self._thread_name = name

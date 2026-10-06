@@ -381,6 +381,8 @@ class SubagentPanel(Vertical):
             id=sub_id,
             label=_sanitize(self._row_label(event), max_chars=200),
         )
+        if not self._any_running():
+            self.expanded = True
         phase.add(record)
         self._show()
         self._apply_body_height()
@@ -455,6 +457,7 @@ class SubagentPanel(Vertical):
             )
         if not self._any_running():
             self._stop_timer()
+            self.expanded = False
 
     def _adopt_orphan_finish(
         self, sub_id: str, eval_key: str, event: dict[str, Any]
@@ -615,6 +618,7 @@ class SubagentPanel(Vertical):
         if not changed:
             return
         self._stop_timer()
+        self.expanded = False
         self._refresh()
 
     def _show(self) -> None:
@@ -622,7 +626,7 @@ class SubagentPanel(Vertical):
         self.add_class("-visible")
 
     def toggle(self) -> None:
-        """Toggle the body open/closed. This is the only thing that changes it."""
+        """Toggle the body open or closed for manual inspection."""
         self.expanded = not self.expanded
 
     def watch_expanded(self, expanded: bool) -> None:
@@ -755,7 +759,7 @@ class SubagentPanel(Vertical):
             icon, tint = glyphs.checkmark, colors.success
         lead_text = f"{caret} {icon}  dynamic subagents"
         parts: list[Content] = [Content.styled(lead_text, tint)]
-        if self.expanded and total:
+        if total:
             parts.extend(
                 self._header_meta_parts(done, total, failed, cancelled, colors)
             )
@@ -775,7 +779,7 @@ class SubagentPanel(Vertical):
         cancelled: int,
         colors: Any,  # noqa: ANN401 — ThemeColors
     ) -> list[Content]:
-        """Whole-turn totals (phase count, failures, cancellations) when expanded.
+        """Whole-turn totals (phase count, failures, cancellations).
 
         Returns:
             The styled `Content` pieces appended after the header label.

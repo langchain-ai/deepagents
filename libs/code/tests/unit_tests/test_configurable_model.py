@@ -1307,3 +1307,78 @@ class TestRuntimeModelRetryBudget:
                 request, lambda r: (captured.append(r), _make_response())[1]
             )
         return create, captured[0]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_retry_cache_activity_uses_each_attempt_start(asynchronous: bool) -> None:
+    from datetime import UTC, datetime
+
+    import httpx
+
+    from deepagents_code.cold_cache import cache_request
+    from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+    middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=False)
+    retry = CodeModelRetryMiddleware(max_retries=1)
+    request = _make_request(_make_model("gpt-5.4"))
+    events: list[dict[str, Any]] = []
+    request.runtime.stream_writer = events.append
+    clock = [datetime(2026, 9, 21, 12, minute, tzinfo=UTC) for minute in (1, 2)]
+    response = ModelResponse(
+        result=[
+            AIMessage(
+                content="ok",
+                usage_metadata={
+                    "input_tokens": 2000,
+                    "output_tokens": 1,
+                    "total_tokens": 2001,
+                    "input_token_details": {"cache_read": 2000},
+                },
+            )
+        ]
+    )
+    handler = MagicMock(side_effect=[httpx.ReadError("retry"), response])
+    async_handler = AsyncMock(side_effect=[httpx.ReadError("retry"), response])
+    with (
+        patch("deepagents_code.model_retry.datetime") as timer,
+        patch("deepagents_code.model_retry.time.sleep"),
+        patch("asyncio.sleep", new_callable=AsyncMock),
+        patch(
+            "deepagents_code.configurable_model._cache_endpoint_identity",
+            return_value="endpoint-id",
+        ),
+        patch(
+            "deepagents_code.configurable_model._effective_cache_params",
+            return_value={"prompt_cache_retention": "24h"},
+        ),
+    ):
+        timer.now.side_effect = clock
+        if asynchronous:
+
+            async def call(resolved: ModelRequest) -> ModelResponse:
+                return await retry.awrap_model_call(resolved, async_handler)
+
+            result = await middleware.awrap_model_call(request, call)
+        else:
+            result = middleware.wrap_model_call(
+                request, lambda resolved: retry.wrap_model_call(resolved, handler)
+            )
+    assert cache_request.get() is None
+    starts = [
+        event["cache_activity"] for event in events if event.get("phase") == "start"
+    ]
+    assert [activity["requested_at"] for activity in starts] == [
+        time.isoformat() for time in clock
+    ]
+    assert all(
+        activity["model_spec"] == "openai:gpt-5.4"
+        and activity["endpoint"] == "endpoint-id"
+        and activity["params"] == {"prompt_cache_retention": "24h"}
+        for activity in starts
+    )
+    assert events[-1]["cache_read"] is True
+    assert events[-1]["cache_write"] is False
+    assert isinstance(result, ExtendedModelResponse)
+    assert result.command is not None
+    assert isinstance(result.command.update, dict)
+    assert result.command.update["_last_cache_use"] == starts[-1]

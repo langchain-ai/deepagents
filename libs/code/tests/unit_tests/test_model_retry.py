@@ -585,6 +585,13 @@ async def test_failed_attempt_is_retried_after_streaming(
         if mode == "custom"
     ]
 
+    starts = [event for event in events if event.get("phase") == "start"]
+    scopes = {
+        tuple(cast("dict[str, Any]", data[1])["dcode_cache_attempt"])
+        for _, mode, data in chunks
+        if mode == "messages"
+    }
+    assert scopes == {(event["call_id"], event["attempt"]) for event in starts}
     assert model.attempts == 2
     assert message_text == "orphanedfinal"
     call_ids = {event["call_id"] for event in events}

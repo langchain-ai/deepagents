@@ -1095,6 +1095,7 @@ if TYPE_CHECKING:
     )
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.configuration.types import ProviderStatus
+    from deepagents_code.cost_tracking import CostState
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
     from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
@@ -19358,6 +19359,7 @@ class DeepAgentsApp(App):
         from langchain_core.messages import AIMessage, HumanMessage
         from langchain_core.messages.utils import convert_to_messages
 
+        from deepagents_code.btw_cost import answer_with_cost
         from deepagents_code.sessions import get_thread_name, rename_thread
         from deepagents_code.thread_titles import generate_thread_name
 
@@ -19387,12 +19389,20 @@ class DeepAgentsApp(App):
                     or not any(isinstance(message, AIMessage) for message in messages)
                 ):
                     return
-                name = await generate_thread_name(
-                    model_spec,
-                    messages,
-                    model_params=model_params,
-                    initialization_lock=self._environment_mutation_lock,
-                )
+                try:
+                    name, _ = await answer_with_cost(
+                        generate_thread_name(
+                            model_spec,
+                            messages,
+                            thread_id=thread_id,
+                            model_params=model_params,
+                            initialization_lock=self._environment_mutation_lock,
+                        ),
+                        thread_id=thread_id,
+                        state=cast("CostState", {**values, "_model_spec": model_spec}),
+                    )
+                finally:
+                    await self._refresh_thread_name_cost(thread_id)
                 if automatic:
                     if await rename_thread(thread_id, name, only_if_unnamed=True):
                         self._refresh_thread_name_selectors()
@@ -19413,6 +19423,31 @@ class DeepAgentsApp(App):
                     severity="error",
                     markup=False,
                 )
+
+    async def _refresh_thread_name_cost(self, thread_id: str) -> None:
+        """Publish saved naming spend without settling a concurrent main request."""
+        from deepagents_code.btw_cost import load_cost
+
+        remote = self._remote_agent()
+        if remote is None or self._exiting:
+            return
+        try:
+            breakdown = await asyncio.to_thread(load_cost, thread_id)
+            if breakdown is None:
+                return
+            await remote._refresh_side_cost(thread_id, breakdown=breakdown)
+            cost = remote.get_cached_session_cost(
+                {"configurable": {"thread_id": thread_id}}
+            )
+            if cost is not None:
+                self._set_session_cost(
+                    cost["total"],
+                    thread_id=thread_id,
+                    breakdown=cost["breakdown"],
+                    preserve_provisional=True,
+                )
+        except Exception:
+            logger.warning("Could not refresh thread naming costs", exc_info=True)
 
     def _offer_thread_name(self, thread_id: str, name: str, revision: int) -> None:
         """Offer a proposal only on its original thread after other modals unwind."""

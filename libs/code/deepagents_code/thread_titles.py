@@ -97,6 +97,7 @@ async def generate_thread_name(
     model_spec: str,
     messages: Sequence[BaseMessage],
     *,
+    thread_id: str | None = None,
     model_params: dict[str, object] | None = None,
     initialization_lock: asyncio.Lock | None = None,
 ) -> str:
@@ -108,6 +109,7 @@ async def generate_thread_name(
     Args:
         model_spec: Configured provider/model specification.
         messages: Conversation to name; only user and assistant text is sent.
+        thread_id: Thread that owns the request's usage for cost accounting.
         model_params: Active conversation model overrides when inheriting its model,
             including connection settings such as `base_url`.
         initialization_lock: Excludes environment mutations while the model factory
@@ -128,6 +130,10 @@ async def generate_thread_name(
             result = await _create_naming_model(model_spec, model_params)
         response = await result.model.ainvoke(
             [("system", _TITLE_PROMPT), ("human", conversation)],
-            config={"callbacks": [], "run_name": "thread-title"},
+            config={
+                "callbacks": [],
+                "run_name": "thread-title",
+                "metadata": {"thread_id": thread_id},
+            },
         )
     return _normalize_name(response.text)

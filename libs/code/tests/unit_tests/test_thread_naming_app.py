@@ -26,6 +26,22 @@ def naming_app(monkeypatch: pytest.MonkeyPatch) -> DeepAgentsApp:
     return app
 
 
+@pytest.mark.parametrize("busy_flag", ["_agent_running", "_shell_running"])
+async def test_rename_submission_runs_while_busy(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch, busy_flag: str
+) -> None:
+    rename = AsyncMock(return_value=True)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    async with naming_app.run_test() as pilot:
+        await pilot.pause()
+        with monkeypatch.context() as busy:
+            busy.setattr(naming_app, busy_flag, True)
+            await naming_app._submit_input("/rename Release audit", "command")
+            assert naming_app._thread_name == "Release audit"
+            assert not naming_app._pending_messages
+            rename.assert_awaited_once_with("original", "Release audit")
+
+
 @pytest.mark.parametrize("manual_name", [False, True])
 async def test_stale_load_cannot_overwrite_current_name(
     naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch, *, manual_name: bool

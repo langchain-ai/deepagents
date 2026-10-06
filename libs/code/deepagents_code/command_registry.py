@@ -244,7 +244,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         name="/rename",
         description="Name this thread",
-        bypass_tier=BypassTier.IMMEDIATE_UI,
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
         hidden_keywords="title name",
         argument_hint="<name>",
     ),

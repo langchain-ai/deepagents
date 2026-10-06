@@ -408,10 +408,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             freshly loaded `skills_metadata` in `before_agent` /
             `before_model`, and can't edit the skills section of the system
             prompt in `wrap_model_call`. Passing a middleware whose `name` is
-            `"SkillsMiddleware"` still replaces it in place, and a
-            `SkillsMiddleware` with that name takes the slot even without
-            `skills`. The same rule applies to a subagent's or fork's own
-            `middleware`, within that subagent's stack.
+            `"SkillsMiddleware"` still replaces it in place.
 
             After assembly, any entries in the profile's
             `excluded_middleware` are filtered from the final stack. Class

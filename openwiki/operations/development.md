@@ -5,57 +5,17 @@ description: Package-local uv and Makefile workflows, editable sibling dependenc
 tags: [development, packaging, dependencies, uv, lockfiles, releases]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-03T08:05:07.881Z
+    at: 2026-10-06T08:06:27.683Z
 sources:
-  - id: openwiki-source-baf30c604828cfde90a8ab63
-    resource: repo://.githooks/pre-push
-  - id: openwiki-source-9a1c436646ef8c4f6dde787a
-    resource: repo://.github/RELEASING.md
-  - id: openwiki-source-9d81aa681a56a98960013750
-    resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
-  - id: openwiki-source-594b8b7a84e0fb527fbafd52
-    resource: repo://.github/scripts/checks/raise_langchain_minimums.py
-  - id: openwiki-source-164e2da859b5277df81c7d94
-    resource: repo://.github/workflows/ci.yml
-  - id: openwiki-source-bc54cf7ca3addab1b243d7a6
-    resource: repo://.github/workflows/raise_langchain_minimums.yml
-  - id: openwiki-source-46fa34397e41ebf7491c7359
-    resource: repo://.github/workflows/release-please.yml
-  - id: openwiki-source-4d1d392666be6dfdd7a91a2e
-    resource: repo://.github/workflows/release.yml
-  - id: openwiki-source-4d1645cb6317345817452838
-    resource: repo://.pre-commit-config.yaml
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
-  - id: openwiki-source-bb78950c8b36b7b9f6746e96
-    resource: repo://libs/acp/pyproject.toml
   - id: openwiki-source-6c2e9cfaa20096e021221d47
     resource: repo://libs/code/CHANGELOG.md
   - id: openwiki-source-ac769408e1d61a20b9874382
     resource: repo://libs/code/deepagents_code/_version.py
-  - id: openwiki-source-006b62af9993da1b48c11de8
-    resource: repo://libs/code/Makefile
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-0f308f1610986e2f3ed6d53c
-    resource: repo://libs/deepagents/Makefile
-  - id: openwiki-source-478a579b56d29c6928ec2320
-    resource: repo://libs/deepagents/pyproject.toml
-  - id: openwiki-source-fb60ee46c55b974b8341651c
-    resource: repo://libs/DEVELOPMENT.md
-  - id: openwiki-source-49fbcc45434b619b68220bf9
-    resource: repo://libs/Makefile
-  - id: openwiki-source-e2a176528c4d510dcc417820
-    resource: repo://libs/talon/CHANGELOG.md
-  - id: openwiki-source-131e2d6a1f4084abdc5cf240
-    resource: repo://libs/talon/deepagents_talon/_version.py
-  - id: openwiki-source-ba53b2ab73965694b2510a58
-    resource: repo://libs/talon/Makefile
-  - id: openwiki-source-686a5e2ba1fe4ce0f98b9bf2
-    resource: repo://libs/talon/pyproject.toml
-  - id: openwiki-source-482fa4ca84f42b04ba025fc1
-    resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-06T08:06:27.683Z" }
 ---
 
 # Development, Packaging, and Releases
@@ -141,9 +101,9 @@ The release manifest records last-released baselines, not ordinary development i
 
 | Manifest path | Baseline |
 | --- | --- |
-| `libs/deepagents` | `0.7.21` |
+| `libs/deepagents` | `0.7.22` |
 | `libs/acp` | `0.0.12` |
-| `libs/code` | `0.1.80` |
+| `libs/code` | `0.1.81` |
 | `libs/talon` | `0.0.9` |
 | `libs/partners/daytona` | `0.0.8` |
 | `libs/partners/modal` | `0.0.6` |
@@ -153,7 +113,7 @@ The release manifest records last-released baselines, not ordinary development i
 
 A new release-please-managed package must appear in both the config and manifest. For an unreleased `0.0.1` package, its manifest baseline must be `0.0.0`; recording `0.0.1` says that version is already released and makes the first release PR `0.0.2`.
 
-Code currently declares `deepagents-code` version `0.1.80` in both its project metadata and release-please marker; its changelog records that release, and it requires the exact local SDK version `deepagents==0.7.21`. Talon similarly declares `deepagents-talon` version `0.0.9` in its project metadata and release-please marker, with a matching changelog entry. Unlike Code’s exact SDK pin, Talon accepts `deepagents>=0.7.0` and `deepagents-code>=0.1.71,<1.0.0`; update and validate these consumer constraints deliberately.
+Code currently declares `deepagents-code` version `0.1.81` in both its project metadata and release-please marker; its changelog records that release, and its `dcode` distribution requires the exact local SDK version `deepagents==0.7.22`. Talon similarly declares `deepagents-talon` version `0.0.9` in its project metadata and release-please marker, with a matching changelog entry. Unlike Code’s exact SDK pin, Talon accepts `deepagents>=0.7.0` and `deepagents-code>=0.1.71,<1.0.0`; update and validate these consumer constraints deliberately.
 
 ```mermaid
 flowchart TD

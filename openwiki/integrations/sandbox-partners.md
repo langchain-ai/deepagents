@@ -1,8 +1,11 @@
 ---
-type: sandbox provider integration guide
+type: integration guide
 title: Sandbox Provider Integrations
-description: Explains dcode and Talon remote sandbox-provider discovery, provisioning, ownership, and routing, and distinguishes those execution capabilities from host-resident integrations and QuickJS middleware.
-tags: [sandbox, providers, dcode, talon, execution-boundaries, quickjs]
+description: Install and operate dcode sandbox providers, with their ownership and lifetime rules. Distinguishes provider-backed remote execution from Talon routing and the in-process QuickJS middleware.
+tags: [sandbox, providers, dcode, talon, quickjs]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-06T08:06:27.683Z
 sources:
   - id: openwiki-source-9f207ab48c42b84dcfd05f43
     resource: repo://libs/code/deepagents_code/integrations/sandbox_config.py
@@ -20,6 +23,16 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-d4463137befa776cd47750d4
     resource: repo://libs/deepagents/deepagents/backends/sandbox.py
+  - id: openwiki-source-da577cbe81ec29338f1388b2
+    resource: repo://libs/partners/daytona/pyproject.toml
+  - id: openwiki-source-936554ac5f0a201f8696be25
+    resource: repo://libs/partners/modal/pyproject.toml
+  - id: openwiki-source-b38d20ec21c25c8c726dc1b6
+    resource: repo://libs/partners/quickjs/pyproject.toml
+  - id: openwiki-source-8d2c8381956c1c023bcdb565
+    resource: repo://libs/partners/runloop/pyproject.toml
+  - id: openwiki-source-03a39f44d8ccfde2fd47e57a
+    resource: repo://libs/partners/vercel/pyproject.toml
   - id: openwiki-source-81698d033a5726401d48b135
     resource: repo://libs/talon/deepagents_talon/config.py
   - id: openwiki-source-580d91c607e0a09e0659e565
@@ -28,26 +41,18 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-57a0613315e23277d358df76
     resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-02T08:06:05.669Z" }
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-02T08:06:05.669Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-06T08:06:27.683Z" }
 ---
 
 # Sandbox Provider Integrations
 
-This page covers two deliberately different integration boundaries:
+A **sandbox provider** acquires or attaches to an environment that implements filesystem and shell execution. It is not the same thing as `langchain-quickjs`: QuickJS is JavaScript REPL middleware running in the agent process, not a selectable remote-sandbox provider. Provider containment, network policy, credentials, and retention are properties of the provider and its deployment; protocol conformance alone is not an isolation guarantee.
 
-- A **sandbox provider** provisions or attaches to an execution environment that implements filesystem and shell capabilities.
-- `langchain-quickjs` is an **in-process JavaScript execution and middleware integration**. It gives an agent a constrained QuickJS REPL and can bridge selected agent tools or the existing Deep Agents `task` tool. It is not a remote sandbox provider and must not be represented as one.
+## The backend and provider boundary
 
-The distinction matters for security and operations. Provider-backed execution gets its containment, credentials, network policy, and retention from the chosen provider and deployment. QuickJS supplies VM limits and a deliberately narrow host API, but tool bridges carry the authority of the surrounding agent process. See [Subagents and Skills](../concepts/subagents-skills.md), [Talon](talon.md), [Cost, Session, and Context Operations](../operations/cost-and-sessions.md), and the [System Ownership Map](../architecture/source-map.md).
+`SandboxBackendProtocol` extends the generic backend contract with an `id` plus `execute()`/`aexecute()` for shell commands. `BaseSandbox` supplies the standard filesystem behavior on top of four provider-adapter primitives: `id`, `execute()`, `upload_files()`, and `download_files()`. Implement transfers as ordered, per-file responses: a failed file is reported in that response while unrelated transfers may succeed.
 
-## Provider-backed sandbox contract
-
-`SandboxBackendProtocol` extends the generic backend contract with an `id` and synchronous/asynchronous command execution. It is intended for isolated containers, VMs, and remote hosts, but protocol conformance is not an isolation guarantee: the deployment and backend implementation establish the real trust boundary.
-
-`BaseSandbox` implements that protocol by deriving filesystem operations from four adapter primitives: `id`, `execute()`, `upload_files()`, and `download_files()`. Reads, lists, searches, globs, writes, and edits are then implemented as generated commands or byte transfers. A transfer batch must return an ordered response for every requested file and carry individual errors, allowing partial success rather than turning one failed file into a lost batch.
+The base class is a convenience layer, not a security boundary. In particular, its recursive-delete quoting makes the supplied path one shell argument; it does not restrict deletion to a workspace root. Capture-at-source offload is also deliberately opt-in. When an adapter enables it, oversized output is captured in the sandbox and represented by a head/tail preview; capture can be capped without killing the command, preserving its exit code. With the default disabled setting, the command is unwrapped and full output is returned.
 
 ```mermaid
 sequenceDiagram
@@ -65,34 +70,39 @@ sequenceDiagram
     Base-->>Agent: structured result
 ```
 
-*Shared filesystem behavior is layered over provider-specific command and transfer primitives.*
+*Provider-specific execution and transfer primitives support the shared sandbox filesystem interface.*
 
-These helpers do not reduce `execute()` authority. Shell quoting in recursive deletion merely ensures a path is one shell argument; it does not confine reachable paths. Likewise, output offload is not automatically enabled: `execute_with_offload()` returns normal full output unless an adapter opts in. With capture enabled, it stores excess output in the sandbox, returns a head/tail preview, caps captured bytes without killing the command, and therefore preserves its exit code.
+## dcode installation and selection
 
-## dcode provider discovery and ownership
+The `deepagents-code` distribution is version `0.1.81`, requires Python `>=3.12,<4.0`, and pins `deepagents==0.7.22`. It bundles `langsmith[sandbox]>=0.14.4` and `langchain-quickjs>=0.3.4,<0.4.0`. Thus LangSmith is available without a sandbox extra, and QuickJS is installed with dcode but remains middleware rather than a provider. The backward-compatible `quickjs` extra is empty.
 
-`SandboxProviderMetadata` supports provider discovery without creating credential-dependent clients: it advertises installation guidance, capability flags, working-directory information, and dependency probes. `SandboxProvider` owns synchronous create/attach/delete operations and supplies async wrappers through `asyncio.to_thread`.
+The curated provider adapters are optional extras. Install only the needed adapter, or all five:
 
-The registry merges curated providers, packages advertised through `deepagents_code.sandbox_providers`, and local `[sandboxes.providers]` declarations. A name resolves in this order: **configuration, entry point, built-in**. Treat a configured `class_path` as operator-trusted code. The `[sandboxes].default` selection is considered only after sandbox mode has been explicitly enabled, so declaring a default does not silently redirect normal execution.
-
-The base `deepagents-code` distribution includes `langsmith[sandbox]`. The other curated remote providers are optional extras; install the extra matching `DEEPAGENTS_TALON_SANDBOX`, or install them all:
-
-| Talon provider | `deepagents-code` extra | Adapter dependency declared by that extra |
-| --- | --- | --- |
-| `agentcore` | `agentcore` | `langchain-agentcore-codeinterpreter>=0.0.5,<1.0.0` |
-| `daytona` | `daytona` | `langchain-daytona>=0.0.7` |
-| `modal` | `modal` | `langchain-modal>=0.0.5` |
-| `runloop` | `runloop` | `langchain-runloop>=0.0.6` |
-| `vercel` | `vercel` | `langchain-vercel-sandbox>=0.0.1` |
+| Provider name | dcode extra and adapter constraint | Current partner package | Provider SDK dependency |
+| --- | --- | --- | --- |
+| `agentcore` | `agentcore`: `langchain-agentcore-codeinterpreter>=0.0.5,<1.0.0` | — | — |
+| `daytona` | `daytona`: `langchain-daytona>=0.0.7` | `langchain-daytona` `0.0.8` | `daytona` |
+| `modal` | `modal`: `langchain-modal>=0.0.5` | `langchain-modal` `0.0.6` | `modal` |
+| `runloop` | `runloop`: `langchain-runloop>=0.0.6` | `langchain-runloop` `0.0.7` | `runloop-api-client` |
+| `vercel` | `vercel`: `langchain-vercel-sandbox>=0.0.1` | `langchain-vercel-sandbox` `0.0.2` | `vercel>=0.5.9,<0.6` |
 
 ```bash
+pip install 'deepagents-code[daytona]'
 pip install 'deepagents-code[agentcore,daytona,modal,runloop,vercel]'
 pip install 'deepagents-code[all-sandboxes]'
 ```
 
-`deepagents-code` 0.1.80 requires Python `>=3.12,<4.0`, pins `deepagents==0.7.21`, and includes `langsmith[sandbox]>=0.14.2` and `langchain-quickjs>=0.3.4,<0.4.0` as base dependencies. `langchain-quickjs` therefore installs with dcode, but it remains an in-process JavaScript integration rather than a provider selectable through `DEEPAGENTS_TALON_SANDBOX`. The retained `quickjs` extra is empty, so it is only compatible with older install commands; it does not install an additional package.
+All listed partner packages require Python `>=3.11,<4.0` and `deepagents>=0.7.0,<0.8.0`; dcode's Python and Deep Agents constraints are therefore the effective constraints when it owns the installation. Package installation is separate from configuring provider credentials and any provider-specific operational setup.
 
-`create_sandbox()` resolves metadata before construction, rejects unsupported snapshot requests and snapshot-plus-attached-ID combinations, and merges configured parameters with call parameters taking precedence. A supplied host setup file is expanded against the workspace environment and run as `bash -c` after acquisition. The context deletes only an environment it created. If setup or the body fails, cleanup still runs; cleanup errors are reported without concealing the original exception.
+`SandboxProviderMetadata` lets the CLI show install hints, working directory, and capability flags without creating credential-dependent clients. A provider then implements synchronous `get_or_create()` and `delete()`; the base interface exposes asynchronous wrappers using `asyncio.to_thread`.
+
+The registry combines curated providers, third-party entry points in `deepagents_code.sandbox_providers`, and `[sandboxes.providers]` declarations. On a duplicate name, configuration wins over an entry point, which wins over a built-in. A configured `class_path` imports executable Python and is operator-trusted configuration. `[sandboxes].default` is considered only after the user enables sandbox mode; setting it does not silently enable remote execution.
+
+Built-in working directories are provider metadata: AgentCore `/tmp`, Daytona `/home/daytona`, LangSmith `/root`, Modal `/workspace`, Runloop `/home/user`, and Vercel `/vercel/sandbox`. Snapshot names are supported by LangSmith and Runloop; AgentCore does not support attachment by sandbox ID. Capability metadata is the authority for validation, so extensions should advertise accurate flags rather than relying on provider-name special cases.
+
+## Factory lifecycle and server ownership
+
+`create_sandbox()` resolves metadata before constructing the provider. It rejects a snapshot unsupported by that provider and rejects a snapshot combined with `sandbox_id`, because snapshots apply only to newly created sandboxes. Configured provider parameters are loaded first and explicit call parameters override them. After acquisition, an optional host setup script is expanded using the workspace environment and executed with `bash -c` inside the sandbox.
 
 ```mermaid
 flowchart TD
@@ -107,104 +117,27 @@ flowchart TD
     Exit -->|"attached ID"| Retain["Leave resource running"]
 ```
 
-*The factory owns only newly created resources; an attached resource remains the caller's responsibility.*
+*The factory deletes an environment it created but never takes ownership of an attached ID.*
 
-A dcode server keeps that context open for its process lifetime. Runtime construction is cached, so creation and cleanup registration occur once. The first sandboxed workspace claims the process-wide backend; another sandboxed workspace is rejected rather than receiving the first workspace's remote filesystem or credentials. Use a separate server process for an independent sandboxed workspace.
+Setup failure still enters cleanup for an owned sandbox. Cleanup exceptions are reported but do not mask the setup or caller failure. This ownership rule is important for scripts and tests: attaching an ID is a deliberate retention decision.
 
-## Talon: shared provisioning, deliberately mixed plane
+A dcode server opens the factory context for the server-process lifetime. Its runtime factory is cached because repeated construction would recreate sandboxes and duplicate cleanup registration. The first sandboxed workspace reserves that process-wide backend; a request for another sandboxed workspace is rejected rather than sharing the first workspace's remote filesystem and credentials. Start a distinct server process for an independent sandboxed workspace.
 
-Talon reuses dcode's provider registry and `create_sandbox()` rather than implementing provider SDKs. `DEEPAGENTS_TALON_SANDBOX` opts in; otherwise Talon has no sandbox and uses its ordinary host backend. `DEEPAGENTS_TALON_SANDBOX_ID`, `_SNAPSHOT`, and `_SETUP` respectively attach an existing resource, choose a supported snapshot, and name a host setup script.
+## Talon reuse and routing
 
-For a newly created LangSmith sandbox, Talon defaults to `talon-<assistant_id>`. An explicit Talon value wins; when `LANGSMITH_SANDBOX_SNAPSHOT_NAME` or its `DEEPAGENTS_CODE_` override is set, Talon defers to provider configuration. It keeps the context open for the host lifetime and deletes owned resources but not attachments. Provider startup happens in a worker thread; failures become `SandboxStartupError` instead of falling back to host execution, and cancellation handoff closes a sandbox whose worker completes after cancellation.
+Talon does not implement separate provider adapters. `DEEPAGENTS_TALON_SANDBOX` opts into the dcode registry and factory; when it is unset, Talon yields no sandbox and uses its normal host backend. `DEEPAGENTS_TALON_SANDBOX_ID` attaches an existing environment, while `DEEPAGENTS_TALON_SANDBOX_SNAPSHOT` and `DEEPAGENTS_TALON_SANDBOX_SETUP` select a snapshot and host-side setup script.
 
-Talon's `CompositeBackend` routes default filesystem work and all `execute` calls to the remote backend. Only virtual host routes for the assistant's `skills/` and `memory/` directories remain local. This is a convenience and state-boundary design, not complete host containment: MCP and web tools, channel media, and provider credentials remain in the Talon process.
+For a new LangSmith sandbox, Talon proposes `talon-<assistant_id>` by default. An explicit Talon snapshot takes precedence. If `LANGSMITH_SANDBOX_SNAPSHOT_NAME`, including its dcode-prefixed resolution path, is set, Talon defers to that provider-level setting instead. Talon holds the factory context for its host lifetime, deletes owned resources, and retains an attached one. Configured startup failures become `SandboxStartupError`; Talon does not fall back to host execution. Its thread handoff also closes an owned resource if startup completes after the awaiting task was cancelled.
 
-## QuickJS: JavaScript execution middleware, not sandboxing
+Talon constructs a `CompositeBackend` whose default target, including every `execute` call, is the remote sandbox. Only the assistant `skills/` and `memory/` directories route to host virtual filesystem backends; `tools.json` and other assistant state remain off those host routes. This is a mixed-plane routing decision, not complete host containment: Talon's MCP and web tools, channel media handling, and provider credentials remain in the Talon process.
 
-`CodeInterpreterMiddleware` publishes an `eval` tool (or a configured name) whose input is JavaScript. The package uses `quickjs-rs`, requires Python `>=3.11,<4.0`, and is a middleware package rather than a sandbox-adapter package. The tool schema explicitly documents no direct filesystem, network, or real-clock access. It captures `console.log`, `warn`, and `error` when enabled, bounds collected stdout and tool output, awaits a final Promise, and returns structured success or error text to the model.
+## QuickJS is not a provider
 
-Each private QuickJS slot owns a dedicated worker thread, runtime, and context. A slot is keyed by a private ID in agent state, not directly by a shared environment. This prevents one conversation's JavaScript globals from leaking to another and keeps `quickjs-rs` objects on their owning worker thread. Concurrent evals against the same context fail loudly rather than being silently queued.
+`langchain-quickjs` version `0.3.8` is a JavaScript REPL middleware package, requiring Python `>=3.11,<4.0` and using `quickjs-rs>=0.2.5,<0.3.0`. It is installed by dcode's base dependency range, but it neither provisions an environment nor appears in the sandbox registry or `DEEPAGENTS_TALON_SANDBOX` choices. Use a provider for remote filesystem and shell execution; use QuickJS when the intended capability is in-process JavaScript evaluation and explicitly configured middleware/tool bridges.
 
-The middleware offers three persistence modes:
+## Extension and verification guidance
 
-| Mode | State behavior |
-| --- | --- |
-| `thread` (default) | State persists within a run and is snapshotted after the agent so it can be restored on a later turn. |
-| `turn` | State persists for calls in the current agent run only; the slot is evicted after it. |
-| `call` | The REPL is reset after every `eval` call. |
-
-Thread-mode snapshots are stored as a replayable delta chain and the live runtime is evicted after snapshotting. Snapshot creation or restoration failures clear the persisted payload rather than executing questionable state. Set `snapshot_signing_key` when the checkpointer is not fully trusted: the middleware signs reconstructed snapshot bytes with an HMAC tied to the slot ID and rejects missing or mismatched signatures. Snapshot size is bounded by `max_snapshot_bytes` (defaulting to the memory limit).
-
-The default limits are a 64 MiB QuickJS heap, five seconds of VM execution, 4,000 output characters, and 256 programmatic-tool calls per eval. The VM timeout does **not** include time spent awaiting Python host calls, so it is not a wall-clock execution guarantee. Disabling `max_ptc_calls` permits unbounded host-call loops and is appropriate only in trusted settings.
-
-### Tool and subagent bridges
-
-With `ptc` configured, selected agent tools are exposed as asynchronous `tools.<camelCase>(input)` functions. The bridge normalizes JavaScript input, injects runtime/state/store values that the normal `ToolNode` would supply, and runs the actual tool on the parent loop so callbacks and runtime affinity remain correct. It deliberately bypasses the usual `ToolNode`, so parent-level `interrupt_on` and HITL approval are not applied to each bridged tool invocation. Do not expose approval-sensitive tools this way unless the `eval` tool itself is gated or the tool/subagent has its own approval policy.
-
-When `subagents=True` and the active tool set contains the Deep Agents `task` tool, QuickJS also installs a top-level async `task({description, subagentType, label, responseSchema})`. It validates its payload, finds the existing task tool, and invokes it on the parent loop. Calls are limited to 32 concurrently active `task()` dispatches per REPL; extra calls wait. A task invocation is distinct from the PTC tool-call budget, but it inherits the same key approval caveat: dispatch occurs inside the already-approved `eval` invocation.
-
-```mermaid
-sequenceDiagram
-    participant Model as Parent model
-    participant Eval as eval tool
-    participant QJS as QuickJS worker
-    participant Bridge as task bridge
-    participant Task as Deep Agents task tool
-    participant Child as Subagent
-    participant Stream as Custom stream
-
-    Model->>Eval: JavaScript with task calls
-    Eval->>QJS: eval async
-    QJS->>Bridge: task payload and ordinal
-    Bridge->>Stream: start event
-    Bridge->>Task: invoke with derived child ID
-    Task->>Child: run delegated work
-    Child-->>Task: result or failure
-    Task-->>Bridge: result or exception
-    Bridge->>Stream: complete or error event
-    Bridge-->>QJS: JavaScript visible value
-    QJS-->>Eval: formatted outcome
-```
-
-*QuickJS orchestrates the existing task mechanism; it does not provision an execution environment for the child.*
-
-## Replay-stable fan-out and stream lifecycle
-
-For a `task()` dispatch, the bridge derives a child ID from the parent eval tool-call ID, task-tool name, host-invocation ordinal, and canonicalized request payload. Replaying the same eval and reaching calls in the same order therefore reproduces IDs; otherwise-identical sibling calls remain distinct through their ordinal. Without a usable parent eval ID, it mints a random ID and omits `eval_id` from events. The digest is an idempotency mechanism, not a security boundary.
-
-The bridge emits `type: "subagent"` lifecycle records to LangGraph's custom stream:
-
-- `start` has the child `id`, optional `eval_id`, subagent type, and bounded label and description.
-- `complete` has the same ID and elapsed `duration_ms`.
-- `error` has the same ID, elapsed duration, and the raised error string, then re-raises the dispatch failure.
-
-An interrupt propagates without an error event. A stream-writer failure is intentionally swallowed so observability cannot alter dispatch semantics. Consumers should upsert a row on `start` using `id`, rather than append blindly: an interrupted replay may emit `start` again before later emitting `complete`. Consumers should also tolerate future lifecycle phases.
-
-The replay integration tests exercise a three-way `Promise.all` fan-out across checkpoint resumes. They establish that logical workers keep their IDs, completed work is not restarted while sibling hooks interrupt, and the parent receives one successful eval tool result once all work finishes.
-
-## Cost ownership for JavaScript fan-out
-
-dcode's `CostAwareCodeInterpreterMiddleware` is an accounting transport layered over the QuickJS middleware. For an async eval it replaces the visible Deep Agents `task` tool with a proxy that gives each child invocation a request-isolated checkpoint namespace and a shared owner identity for the enclosing eval. It waits for active proxy tasks to settle or cancel before the eval returns.
-
-Each nested graph records a durable local receipt before returning its graph update; a replay sees an existing receipt and does not replace it. At the outer eval boundary, the middleware aggregates receipts owned by that eval and adds one `_session_cost_transfers` entry addressed to the parent checkpoint scope. An already-owned nested invocation returns normally instead of forwarding another transfer, preventing double accounting. The result is that child spend survives interruptions, child failure, cancellation after a checkpoint, and fresh-process resume, while the parent cost middleware remains the final owner of session totals.
-
-```mermaid
-flowchart TD
-    Eval["Async JavaScript eval"] --> Proxy["Cost-aware task proxy"]
-    Proxy --> Child["Child graph with isolated checkpoint namespace"]
-    Child --> Receipt["Durable local cost receipt"]
-    Receipt --> Aggregate["Aggregate receipts by eval owner"]
-    Aggregate --> Transfer["One cost transfer to parent scope"]
-    Transfer --> Parent["Parent session cost channels"]
-```
-
-*Receipts make child cost replay-safe before the enclosing eval transfers its aggregate to the parent.*
-
-## Change and verification guidance
-
-- Implement a provider adapter through the four `BaseSandbox` primitives; put credentials, create/attach readiness, capability metadata, and deletion in `SandboxProvider`.
-- Choose a provider by its actual image, network, filesystem, credential, and retention policy. Protocol conformance alone does not establish containment.
-- Use QuickJS for computation, orchestration, and controlled access to explicitly bridged tools. Do not describe it as a sandbox or assume its VM timeout bounds slow host tools.
-- Gate `eval`, disable `subagents`, or configure approvals inside child specifications when each delegated task must be approved independently.
-- Run `libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py` for REPL lifecycle, limits, tool bridges, snapshots, and modes; `test_subagent_events.py` for event semantics and IDs; `test_subagent_replay.py` for checkpoint fan-out; and `libs/code/tests/unit_tests/test_js_cost_tracking.py` for durable cost receipt ownership.
-- Run dcode and Talon sandbox tests after changing provider selection, ownership, startup, routing, or cancellation behavior.
+- New provider adapters should implement the four `BaseSandbox` primitives and supply `SandboxProvider` lifecycle methods plus truthful metadata. Publish external providers through `deepagents_code.sandbox_providers`, or use a trusted config `class_path` for local deployment.
+- Verify an adapter's create, attach, setup-failure cleanup, snapshot, and transfer partial-success behavior. dcode coverage is concentrated in `libs/code/tests/unit_tests/test_sandbox_factory.py`, `test_sandbox_provider.py`, `test_sandbox_registry.py`, and `test_sandbox_config.py`; provider integration coverage lives in `libs/code/integration_tests/test_sandbox_factory.py` and `test_sandbox_operations.py`.
+- After changing Talon selection, ownership, cancellation, or routes, run `libs/talon/tests/unit_tests/test_sandbox.py`.
+- Before selecting any provider for sensitive workloads, evaluate its image, filesystem persistence, network controls, credential exposure, and cleanup policy. Neither `BaseSandbox` nor Talon's routing changes those provider-level controls.

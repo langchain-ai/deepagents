@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f4e503353698a9a6d47cafef0b0260f58cb78b0ace63e62b0e57557771d05106",
+  "pageVersion": "sha256:e974d5e02464ece785ad94399f07811fd841f30626ac808ec526108325dbd5d1",
   "claims": [
     {
       "id": "claim_c627c2402b31442da711a9d57f722fba",
@@ -73,10 +73,144 @@
           "version": "repo-lines-v1:sha256:88429062899212922e68cb58fdc438477aad2baf027411ba455c7fa07a8fe941:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4ZDI5YjE1YmEwMmMwNDk5OWI1YWNiODVlMThmNmRhZGQ4NmMwMTgzOGNhZWQ4NmFmOWEyYjZhMTBlNzg1YjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0MjIxYWYwMTEyYzM1ODZhMmZmZjg5MWExNTdhY2FkNjc4MDYyMjdlMDIyNDMzMzI0ODI2NjQ3OTcwMDcxMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkzMzRiMWE2NDE2MjUyYmRhYjQ3NWZkZDIxNjE4MzZlYjdiNmI1NjEzMDU3ODU1M2UxNjZkZGYzYjEyMGIxODMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA4YjUzNzU3MTgwNjEzZjY3NjZkZTgzZWI5YWY3YTZhNTI2MmQzYTA3ODRmY2U1OWQ4ZTVkOWMyOTljYjdmNzkifQ"
         }
       ]
+    },
+    {
+      "id": "claim_fc8cf92f56fb46c3b4b357c59a592676",
+      "statement": "`CostTrackingMiddleware` owns additive private checkpoint channels for cumulative dollars and structured cost detail, drains completed records after model work and agent completion, and keeps tracking failures from failing a user turn by restoring records where possible.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L2762-L2791",
+          "version": "repo-lines-v1:sha256:0ea4e0fb2f1d0cb50fa7fbed2e72defa9981acf3d743b1aeff11e688f3b6f8b0:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5MjcwZmFhNWFmZTBiZDgzYzcxZTRkMzFkM2NmOGUzMzdkMDJiZTA5ZWM5YmE5NWQ3ZWY1Nzk1ZmEzOTliYWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2YTcxNTI1NzJlZTg0ZjEwOTA2Yzc0YjlmMmE5MjQzNGRkYWIwZTNjNDI4MTNiMDRlNTk3ZWZjZWM5NTFiMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY2N2NiNzNhNzUwMDUyNDliZWFjMjM3NmY1YTUyNjBjZTM5ZjZlNGJkM2I0MjFiZjlhODJkOWJkMGE1YWM4ZDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIwZjE3MmI0MzgyYWZhODVhZGRiMTRiNDJjOWJlZDg2NzIwY2VhMWVkMjkzNmQwYmY0ZDk5OTQ4Zjg5MzI2NmQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L2869-L3009",
+          "version": "repo-lines-v1:sha256:f19aeb1dec014f67b9294aeb1eb7b1206d498f40b24de2d3343fd01178066214:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlZmYyNDY5ODkzNjgyNzc1N2U4MTAyNTY3YjM4Yzk1ODY0OTM0N2NiZjM2MjFiMzQwNDUzODU4MjZlMmY1ZGRiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0MjA3ODM5MmZmZTkzNTEzYTRjZWMwNjI0Njg2YTk3MjNmODM4MWIzOGEzYzYwZmFkNDZmM2IxMGE3NjY1ZTdlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkNzAxNDllMDY5YWQ2N2VjY2Y0NzM2NDZmZjFjNzUwMDUwZDMyOWQxMTAwMThkYzU3NjY4NzhlYWZhMWQ2MDdkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1MWQyNjAzM2Y3YWY1Njg0ZDg1YWQyM2I5ODY5ZDg1MWRiNDc2YmE4OTYwOTlkZGI1MTkzODcwMGYzOGM2NTVlIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L3-L37",
+          "version": "repo-lines-v1:sha256:cb8674d3eebb6e18a2e7b5c62b1ab2d623ce8370b90c5d8a70f2b654e5a4e3f5:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxZGZhMmQxOTE0ZTc4ZGM3NDY3NTU3YWQ4Y2VhNzRkZDQwNWZkYmNiOThlMzU2MmY0ZTdiZjMzMDhlMTM0OTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxNjAxOTc4MzUwMDc0Mzg0YzI4NzdiYzQzZWY3Y2IxMzI4YzQ2MzFmZmNiNDg1ODdhM2UyZDA5ZmU0YmE2NzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRlMDkxYjU2MjlkY2I3MzkzZTc4ODI2YzkzMjdlN2EwYWI3Y2M4MmZlNWYzNDVjMDQxMmU4MzQ0YjUwN2E5N2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5MTFhYzMyN2JjZDNkMjk5ZmFlMGM2OWQ2MWU5NGNkYjYxYWI1YzVjMzYxNzZjZDFmYjM0ZWQwZTBiZjkyNmQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4e6b622512164e58aa095d85f3426bab",
+      "statement": "Pricing is best effort: unsupported models and malformed usage return no estimate rather than interrupting the model turn, while the version-one breakdown records total versus priced request counts and completeness for categories.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L124-L155",
+          "version": "repo-lines-v1:sha256:4e19a554b6922b0eb31dd0e8e5478fe2a8f2066fec5297401ffa41f9ee40521f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiYWU4YjU5ZTY1MDU0NTEwMTAzZWZlNTA2ZTI0NGI3YTg0YWNiNWI1M2QxOGI3N2RlNTM2MTQ2YmYwNjU0MzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkMjgzODljN2MwYTEzZTU5MDgwNmM3YWQ2NGU1Mzk0MDFjMTcwNzc4ZGIzOWEzNjAzNTJkMWMzODhiMGEwYmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRmYjQwMWQ0NzI4YTI0MGY0MWQyNjMyNDRlMGQyYTNhNTY3MGFhZjNkZDA1NTI5ZTI2MTk0OGEwMTllZTYwYTciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhOGI5Y2MwZmJmZGU2Y2ZlMGRiNjFlMTBjOGFmYTkzNzg4NDkxZTY5ZWViZGRhMjJkNWZjOWUzODkxODNlMzYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L269-L319",
+          "version": "repo-lines-v1:sha256:db67a2da1142543999b4baf36d78b24a49280805d4e9f86ea94e7bae8f184a69:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1NWNhZmU0YjUxZjYyZDIxZmRiZTI5YzE0YWIwODY5ZmUzZGM3OWFiOTMxYjZkMjRkOTU5YTU5ZTU2YjYxMDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMTFjMDU2N2QwYTVmOWU5YjEzNWY2NWNkMjUzNzJkZmQ2Mjg3NzVmN2MxZWQyNTNmOGJhZDQyZGQyZDY2NjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MjIzMTA2ZmQ4NzQyYjcwZWEyMzNmOWRjMzU5ZjRiMDJiYmIwNjliNzI4M2VlZjc2MjQ5OTUxNmJkN2I5YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFkMDg5ZmJmYWI3MGM2OWNiY2E5YTUzYzQ4OGI5ODJiMzQwNDNiMGU0ZjI4MDAxZjViZGE0ZjJkZDAxYzdhMjkifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L39-L52",
+          "version": "repo-lines-v1:sha256:c7c28e2d434604f3fdd8deea50fd005ee233269198a9ffe9d8d75dd6f8864470:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YWRjN2ExZWMxNDhhZTQyY2ZhYjExNjkyNjMxYjliZmUzZGI5ZDBkNTg4OWExNGZiY2I1ODM5NzRjM2YzMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1NDRkYTMzNzA1Y2RjZDljYzM0YWQzYmEwMmMwMzQ1NTRiZDE2ZjA0NzE2NzA4ZGIzMmM0NDM3MDgyMTEwODYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZiNTJhOTIzYzMzNzIyM2EyMWE4ZjI5YjU4ZDRkNTgxZjU5NDIwNTI0MmRhMjllMzc5MTZjMjBhZGEyZjY0YTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_cd29dad0c22243c9a0d8218e833f91e7",
+      "statement": "`PreparedOperationCost` destructively claims recorder entries and must be committed with its additive checkpoint update or rolled back; restoring after a landed write can double charge, whereas abandoning a prepared value permanently loses its claimed spend.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L2562-L2641",
+          "version": "repo-lines-v1:sha256:cd5475b5af0c4a4573e230fed45562a58390ab4c505179fe4d76496355952a9e:eyJzZWxlY3RlZExpbmVDb3VudCI6ODAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4MWFhZDk0Zjc0Zjk0NGYyMmIwYmYxZTU5ZTQxOTgwNmE5YzkzYWY0YTBhZmExODYwZjgxYTFiNGQ5MWI5Y2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlNzU3NWMzYjc3NzZjZjJmOWMyYmZiY2E0NGYyMTQ4MTNhNzgyN2VhYTljMzg0NTRjNzAzYjY4OWE3NDQzODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE4OWE5YTgzNDY1OTZiZTk1OGZlNzczMzY5NmIzOTkwOTNhODY4YWZhNGMxNjA5YTM2MGQxYjU1YjZkYTI2N2UifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/cost_tracking.py#L2707-L2751",
+          "version": "repo-lines-v1:sha256:89a8b0b25973087827af4ebb73189b1dff3702d412912947996dca640bfa920c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJlOGM1ZGMyZmNjYzA2YjRmZjc3MmNjNDI3YTdiNWVjNzY5NWQ1YjczMzQ2YTlmMzgxOTE0NTMyMDZiOTE1OTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5NGZiMTQxYjhjZWM1YmE3ODMxMjQ5NDJjM2RjZWViYzEyNjFhZWJiNmE5NGZmNmFiNmU3MWVmYWQwNDc2MzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4MjAyZThlMjBjZTZmMjBlYTYxODI3ZGZhZjU5MzEzOGJjNzIyMGQ3MDg3NTBiYzkzNGFjMGQ5MTM0YzI1YjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_400cc92bb1aa440b82af9eb454e10a0f",
+      "statement": "Prompt-cache policy is intentionally available only for official provider endpoints or exact user-trusted hosts, and routes that cross provider wire formats resolve to no policy rather than asserting a cache-retention guarantee.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/cold_cache.py#L815-L930",
+          "version": "repo-lines-v1:sha256:e3e0d6f7a82b0db749c9af995c9c4997b58a86a664dd57d08c402afd6de07de3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0M2UzNTJjNTQzMmQ1M2RiNmEzNWJhNzE2ZDQ4NDBmOWI2MjRjMTE2ZjAwOTE4YTJlMjMzNjY2Y2QzYTA1OTgzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiOTdjNzEyNDdhZjNjZDFlZGY1NTVhN2QxMDc1OTMxNTdmNmRjMmEyMmFmMGRlODJlNzc3NGFiZjEwZjhhZGUxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NzIzODEyOGI4Mzc5ZTQzNzYyOGQ2ZjJmYmQzNGNjM2ZmOGE0OTUxODY0YmI4ZjVmZGE5OTc2NjE3MjdmYTU5In0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_cold_cache.py#L266-L347",
+          "version": "repo-lines-v1:sha256:0538e0bd0b053343edaf7dbd8ffb98f7e547c2e2008c367b65a0272ae4a7f1b0:eyJzZWxlY3RlZExpbmVDb3VudCI6ODIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYxNWFhNjAxNDFhNDEyMTg4NmEwYWQ5ZDY2ZTBiM2Q0ODUxMDI1MzYzNWExYzBjMGNmMjZlMzhkY2RiODViOWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyN2MxNTEwZWZhMzMyNTZlYzdhZDMxZDZhNWQ4ZTBkNjQ5MmY2N2MxYTQ2N2JiNWUwMmQyNDI5MGFmMGUyYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5NDg1NDA3YmFlZDFiY2Q0N2M3MTk0YWY0YTQxM2IzOTMxODc3NTZjMDE0ZTJmMzRmZDE0ZTAyMjVhMzAyYzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlYzBkZTJhZTEzNTVlNWVhMzUzZWE5OWNlMDFkOThhYzY4ZTcwYWY2MjFmNGNkMWZhYjVkZDU1MTVmZDUxZjIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3717e9a2cd224b459d443a040494eb32",
+      "statement": "Thread checkpoint writes are fenced by an operating-system-backed per-thread lease and token: the owned SQLite saver validates the reservation and token inside a serialized writer guard, rejecting stale writers after release or ownership change.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/thread_ownership.py#L238-L301",
+          "version": "repo-lines-v1:sha256:beea43c8e0f66195c7fd480127b28ac86f316d5d8755da1cf3bbd85b9c3a2b87:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjMzJmM2FhODgzZGZmMzlkNDFjNWUxYTc2MjQ5OTMyZjA4MGQ1YWYzNGJkM2ExNWI0MjJmNTY0YzQ4ZjIyMDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhZTBmYjMxMWM0NmZiNzU4MWNkNGJmYmI3NzA4NDhmNDkyNjM4YWY5YTg1N2ZiZjE1NWJlNzU3MmExYzg4ZTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3MjIzMTA2ZmQ4NzQyYjcwZWEyMzNmOWRjMzU5ZjRiMDJiYmIwNjliNzI4M2VlZjc2MjQ5OTUxNmJkN2I5YzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcwN2ZkY2I1MzkzOWY0YWEwNzU4NDEyOGIxZDg5ZTQ5YzA2ODc5OWQ3ZWRjNGE5MDcxYTFjMmNiYjM5ZDlhMTcifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/thread_ownership.py#L29-L54",
+          "version": "repo-lines-v1:sha256:41452ce2a7059aff9824d65c0a8e5e044dbbdcb0476f7c8c058db29a5ab8802a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjllNmJkMDNlOGUyODY5OGQwZjUwZDM0MTIyMTE1MjJlNTdiYTRmMzE2MmUwZmNhZDY5ZGEyMGE4MzQ0MTgxOTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczNDM0YzE4YjI3YWE1OWE2NGE4NmFiMWIzNDA3ZmE1Yzk3ODQ2NDRiMjNhNjdjNWNmMzZhYjk4OWUxMTQ0ZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdmZTU5YzUzOWIzODdhMzY5Yjg4YjA4OTk2MTM0YzU0YzU0NGNmZTM1Njg3NzM3NGFiNWZlM2Y2OTA2N2EyYjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjMWYwMmZkN2VjMWQ0NjJjMGNiODE4Yjk0OGZmZTRmNzE1YjJjMmM0MzI2MzBjMjMyZGZlMzRkNDI3NDNmYTkifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/thread_ownership.py#L91-L235",
+          "version": "repo-lines-v1:sha256:b705ec62df56ff3f14eb03e039487804fc607b9747907a400111b3af5333dd94:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQ1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MTczODg5NDI4NTMxMjhiNjRkYjM3YzBlYjEzOWRiNWJjZTE5OWFhMmZjYjljZDdlNjY2ODYyNjIwNzAxNmEyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJmYTExYzA1NjdkMGE1ZjllOWIxMzVmNjVjZDI1MzcyZGZkNjI4Nzc1ZjdjMWVkMjUzZjhiYWQ0MmRkMmQ2NjY5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiY2JlZTZhZGUzZDYxMTRlODg5N2I1ODc4NGFhODM0MmEzNmYyZjU3NzNjOTZjZTJlOGEwYzc4M2Y2ZTlhZDk0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkN2VkYjljMzVmZGYxMTVhMjlmZWMyZjZlNjZiYzFlN2M3N2IwODU3MGJmMGQwN2I2ZGFjMjhjOTFlOTg5Y2JmIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_c9f90148cb5242bfb92e64a99b709230",
+      "statement": "Thread deletion acquires the ownership reservation, rejects a live thread owned elsewhere, removes checkpoint/write rows and side-question cost, then best-effort deletes offloaded history; its return value reports checkpoint deletion rather than archive cleanup.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/sessions.py#L1659-L1718",
+          "version": "repo-lines-v1:sha256:6bf761865ee60b1a4d359cfc26317a1ae224b27a9c6e032c92cd526700295ffd:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlODkxZmVkNGNiNDE4MDQ4NTBiZWNiNGIyMTE2OWRkMGIxMzE5NGY2Zjg1NDdhMWIxOTk1Zjk1M2E3MWE5NDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxMTBjYmFhNmU4YmVhMjQ5ODU5MTBmMWI5NmJjZGZjODU1YjM3N2JlOGM2OWM5YTIwOWY5ZmVkN2ExODZmMDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjAxMzZmYTMyYjhmMzZmMmM0ODQxMTIyZDE0ZWFkNzc1MjhlNzM0OWYyYWYzMDg1ZWQ0YWM3OGI2OWVjY2Q0MTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxNDJhMTBkZGU0YWEzMzFlNzY1MGM2MGNhY2VjMTljNzkyYmQyM2EzZWZkOTA0MTBmZmM5YzZkOThjZWQzMWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_51a3a6494c694821bb0dbf82a8e3e01d",
+      "statement": "The server-side offload route serializes work per thread, requires a registered idle thread without pending graph work, validates that the checkpoint did not advance before commit, and allowlists its state update so it cannot write conversation messages.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1047-L1208",
+          "version": "repo-lines-v1:sha256:eb6155048e9195d81698da3a1e95d92477fe48969c7511f99bb1846fe4ef1764:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MTk1NGRhYjdiZjdkY2E2ZGFjZGRiZWQ0M2JlZjViYjY2MGQ3NmE5NmQ3ZTUwZDJmNDBkNmQ5ZjEzNDMzZGRhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhNWZlNzhmOTBkNzdmYjFiYjlhOTVmNDYxMDY4MjkzOTgwNzNmOWJiNTU0OGQ3OGQ2NmNjYmRmN2M5YjQ4MjQzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlZjkwNGQ4OGRlN2ZiZTIwZDQ2ZTA5NzA0ZjFlNWY4ZmNkMzI1N2RlNjAzN2EwNDFhMzQ5NGQ5ZTgxZjZlOWFjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5N2ZmOWIwOTMzZTdlY2Y4MmViMTE5NTVhOTRmNzI4YjA0NTFhZjUzNGY1MmEwYTRhZmUwNGUwYTc1NDIyNDg3In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L772-L800",
+          "version": "repo-lines-v1:sha256:0c0906cee8e7b22decdda6202f29c8e4d2500d9fb254f59417663c0bfda5424b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI5NmIwNWEyYThlYjgxZDI2ZGQ4OWJlMmU2MDVmOGE0MWM2ZTZlNjkzYTQ3ZGIwNGQyMzAwOGIxMmNiM2MyN2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3MThmZTEyYmE1YWExOTU3MGM3NzMxNzU5YzFmNDIwZmUxNDMyZDk0Nzc2ODQ0MGE3ZGIzZTU0NTBkZjVmMzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjczNmJkYjE3NmRhN2RlZGI0NTk1YjRmMGFjNTM2MWUwN2U4YzRhZTk1NDIzOTZlZTMxOTY2ZjA2MGRmODQ5YzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhYzRkZDZjOTgyMmY1Mzc2ZjBkM2EwYTRiOWI3YjJiOTAzMzdjOWFlYmM1NGM1NGQ0NTFiMzBlNGM5NWVkOGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1489b8411dd9441e964b59574297f4b2",
+      "statement": "Offload settles prepared model cost with the checkpoint update: it rolls back only when a failed write is confirmed unchanged, keeps records claimed for advanced or unreadable writes to avoid double charging, and completes commit work before re-raising cancellation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1178-L1244",
+          "version": "repo-lines-v1:sha256:a7787bd7100af11b0991777e1d5779aea29cad8824be74bd01410d70f3953135:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyNTc5Zjc0YjRhODlhNDQ3YTQ5NjM2MDRmNGYyYzg0MjBiZjQ4NjRkYmE1YzI4MzM4NTIzZGE0ZWNkNGE4MGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhN2RiNGQyY2RlM2YyNjUxMGVlNGNmYzJlNWRkZTdlMjM5N2E3ODY5YjE2MjQ4MjU5ODg3M2YxOWRlNTdkNzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk0OWExYmRhODA3NjEyMDcyZTY3YjUzOWRlODM1MTQ0NjBkNmM4NmY3OTM1Zjc4NmI0Mjk5NjcxY2Q0ZjMxNzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI0NmRmNGJkZGUyYTcwZDgwNzgzYzEwOGM1NTgzZmEyYTRlZjJlOWZkYjRlZmJkZTFmYjY3MTAxZDY0YWYxZDYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L803-L912",
+          "version": "repo-lines-v1:sha256:e078713d7d453c337f40d95fd33f8924e46796b62fce7859c69e00368b27b341:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwNjY0OTBmNmNiNDNiY2RmOTEyZjI0ZWVjNTAxMzY5Mjg5ZWE2MGMyZTdlYTZiYWFlYmJiNjY5NDg4YTM3MGQ5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlNGI1OTkyMDZjZWEzOTIxNDU5ZmM4ZTY2YzA4MjUxZjZlOTA4ZDI0ODFiODk3NGQ0YmNhOTAzNjZkNTc5NDNiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxZDgyY2M0M2Y1MjVhNGRjNzQ0OTA2MTZmNTZiNTdmMDY4MTk3MGU1NWE1YTMxOTJlNDgxYTZmZDc3Y2I3YTQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxMTYxNGY5NzAyMzc1NDdkOGEwOTk3ZDg3MWVkNzE3YmI3MjI3MzMyYTU1MGM4ZTU5MWVlZDcwZTQ1MmUyODUwIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_a842bdd0e6c34644999ac2828ea65552",
+      "statement": "Normal server offload commits summary state and cost before deferred archive append and link, while a handoff preserves source context and commits only source cost channels plus a source-owned recovery transcript.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L938-L1045",
+          "version": "repo-lines-v1:sha256:97251f1c2c98d0c84fb6b64a8ea31bafef854e62a2eb9a0a06f91a51795ac29c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI0ZGE1ZTcxMjc5YjhmNjA0Y2EwOGEyZGU4YjAyMDdiMTVhNWYwMDAyMWYyOTEyMjUzZTc4NWE3ZGNmOGNjZWNlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0M2E4ZmFiYTEzYjRlYTlkMTdlMDE5ZGY4YzQ5YWQyNzgxZjM3MzRkMzEyMjJlMjBhODllOGI4MjIyYTk3MzU2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0ZGM2NmYwNWU1NjczZmI4ODg0MDkwNWJhOTQ2MzQzNWU4ZDU2ZmYxYzQxODUxZDMwYTk5MmVkOTlkYWJjYjA1In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_middleware.py#L1802-L1909",
+          "version": "repo-lines-v1:sha256:2c8f8cb6530dba263427331c66f6be8b59032fc31159248c785628c727db1805:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhMTM5ZmNmNzEwOTIxOGE3NDVlMzVmNTJkZmEwMDE4YTcyNWQ3ZGJmOGE2OTUyODc0Y2I1ZTEyNmQ4ZjU0ZjllIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0ZDZjNDUzMTgyZDZlYjJmNDdkYWQzNDBiMDA0NzFkYWJiMGNhZjIxODM1NDU0Nzg4NTUxM2FiZmExYThmMmI0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-05T08:14:03.003Z"
+    "at": "2026-10-06T08:06:27.683Z"
   }
 }

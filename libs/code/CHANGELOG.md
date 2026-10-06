@@ -2,6 +2,34 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.81](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.80...deepagents-code==0.1.81) (2026-10-06)
+
+
+### Features
+
+* **code:** add `--no-tracing` and explicit tracing status ([#6721](https://github.com/langchain-ai/deepagents/issues/6721)) ([df20c07](https://github.com/langchain-ai/deepagents/commit/df20c0748015af173bc60588d69fef6865c01319))
+* **code:** highlight the active multiline chat input line ([#6746](https://github.com/langchain-ai/deepagents/issues/6746)) ([99e1e9a](https://github.com/langchain-ai/deepagents/commit/99e1e9a4f9e58b7e436df29e7458731e9fd5bd89))
+* **code:** open cost breakdown from the footer ([#6723](https://github.com/langchain-ai/deepagents/issues/6723)) ([4c55f5a](https://github.com/langchain-ai/deepagents/commit/4c55f5a80c376f61144e91cb796ca4303e7bc2a4))
+* **code:** open effort selector during active runs ([#6724](https://github.com/langchain-ai/deepagents/issues/6724)) ([6ac63cf](https://github.com/langchain-ai/deepagents/commit/6ac63cf2cead6adb50e4404adc1cbf1b27ccdc41))
+* **code:** rename `/summarization-model` to `/offload model` ([#6774](https://github.com/langchain-ai/deepagents/issues/6774)) ([b643f6f](https://github.com/langchain-ai/deepagents/commit/b643f6f34be0142fc3e33cd7402f171e62e69cc3))
+* **code:** teach the agent to discover marketplace plugins ([#6719](https://github.com/langchain-ai/deepagents/issues/6719)) ([52cc3e2](https://github.com/langchain-ai/deepagents/commit/52cc3e2f52b5dac038da9f56ddfeb6898c3e8c85))
+
+
+### Bug Fixes
+
+* **code:** clarify clear hint starts a new thread ([#6726](https://github.com/langchain-ai/deepagents/issues/6726)) ([8468bad](https://github.com/langchain-ai/deepagents/commit/8468bad7054cb778aa8b199ee5a644a5acca0332))
+* **code:** collapse idle subagents and reopen new work ([#6782](https://github.com/langchain-ai/deepagents/issues/6782)) ([70288ad](https://github.com/langchain-ai/deepagents/commit/70288ad564d31631ed409566c71f0cb58fc6c437))
+* **code:** fail closed when hook context changes on resume ([#6712](https://github.com/langchain-ai/deepagents/issues/6712)) ([3086f7b](https://github.com/langchain-ai/deepagents/commit/3086f7b918b53b12a6ad675231ebd4752d4a420a))
+* **code:** highlight the first line of multiline chat input ([#6781](https://github.com/langchain-ai/deepagents/issues/6781)) ([2fd6686](https://github.com/langchain-ai/deepagents/commit/2fd66863c277cacc82dbcb39021e01691fb43e1f))
+* **code:** isolate stored provider endpoints in workspace models ([#6771](https://github.com/langchain-ai/deepagents/issues/6771)) ([7803173](https://github.com/langchain-ai/deepagents/commit/78031730dbe1ae418f39be96f6d2b1e60fbe4545))
+* **code:** move debug MCP server details into a modal ([#6720](https://github.com/langchain-ai/deepagents/issues/6720)) ([40df83f](https://github.com/langchain-ai/deepagents/commit/40df83ff74ddeba9c3e8575a2b8f228b3819a7be))
+* **code:** preserve dispatch timers across interrupt replays ([#6722](https://github.com/langchain-ai/deepagents/issues/6722)) ([899a9f7](https://github.com/langchain-ai/deepagents/commit/899a9f79161ef9a19bc5a378cbd4215bb946f583))
+* **code:** prevent concurrent local thread writers ([#6717](https://github.com/langchain-ai/deepagents/issues/6717)) ([b0f9b41](https://github.com/langchain-ai/deepagents/commit/b0f9b41cad6089640ea479a3fbc255a1fb0171b6))
+* **code:** reconcile cache expiry during model requests ([#6763](https://github.com/langchain-ai/deepagents/issues/6763)) ([a282003](https://github.com/langchain-ai/deepagents/commit/a282003b502e5b7a97cee97b792efd1ec87e9972))
+* **code:** resolve interactive model metadata on the server ([#6772](https://github.com/langchain-ai/deepagents/issues/6772)) ([3d16423](https://github.com/langchain-ai/deepagents/commit/3d16423afbcbb11ea428265c91c203235c2e82b2))
+* **code:** unify model catalogs and selection on the server ([#6773](https://github.com/langchain-ai/deepagents/issues/6773)) ([4b94102](https://github.com/langchain-ai/deepagents/commit/4b9410272a4e4885ec70fb1ec8549e307a15e585))
+* **code:** use `ChatBedrockConverse` for non-Anthropic Bedrock models ([#6718](https://github.com/langchain-ai/deepagents/issues/6718)) ([1d468d9](https://github.com/langchain-ai/deepagents/commit/1d468d9f3d7f43de096a342dabd7abafbad61f73))
+
 ## [0.1.80](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.79...deepagents-code==0.1.80) (2026-10-01)
 
 ### Features

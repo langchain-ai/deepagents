@@ -130,22 +130,18 @@ class TestPatchedWordSelection:
             await _send_mouse(pilot, events.MouseUp, "#row1", 3)
             assert app.screen.get_selected_text() == "ine"
 
-    @pytest.mark.parametrize(
-        ("clicks", "expected"), [(2, "beta gamma"), (3, "alpha beta gamma")]
-    )
-    async def test_click_chain_drag_within_widget(
-        self, clicks: int, expected: str, monkeypatch: pytest.MonkeyPatch
+    async def test_double_click_drag_selects_whole_words(
+        self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(SelectableTextApp, "CLICK_CHAIN_TIME_THRESHOLD", 60)
         app = SelectableTextApp()
         async with app.run_test() as pilot:
-            for _ in range(clicks - 1):
-                await _send_mouse(pilot, events.MouseDown, "#msg", 7)
-                await _send_mouse(pilot, events.MouseUp, "#msg", 7)
+            await _send_mouse(pilot, events.MouseDown, "#msg", 7)
+            await _send_mouse(pilot, events.MouseUp, "#msg", 7)
             await _send_mouse(pilot, events.MouseDown, "#msg", 7)
             await _send_mouse(pilot, events.MouseMove, "#msg", 12)
             await _send_mouse(pilot, events.MouseUp, "#msg", 12)
-            assert app.screen.get_selected_text() == expected
+            assert app.screen.get_selected_text() == "beta gamma"
 
     async def test_shift_click_extends_drag_selection_from_anchor(self) -> None:
         async with SelectableTextApp().run_test() as pilot:

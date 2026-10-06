@@ -769,7 +769,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             subagent_interrupt_on = spec.get("interrupt_on", interrupt_on)
             subagent_interrupt_on = _merge_fs_interrupt_on(
-                _build_interrupt_on_from_permissions(subagent_permissions or []),
+                _build_interrupt_on_from_permissions(subagent_permissions or [], backend),
                 subagent_interrupt_on,
             )
 
@@ -868,7 +868,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         else:
             general_purpose_spec["system_prompt"] = _apply_profile_prompt(_profile, GENERAL_PURPOSE_SUBAGENT["system_prompt"])
         gp_interrupt_on = _merge_fs_interrupt_on(
-            _build_interrupt_on_from_permissions(permissions or []),
+            _build_interrupt_on_from_permissions(permissions or [], backend),
             interrupt_on,
         )
         if gp_interrupt_on is not None:
@@ -935,7 +935,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             )
         )
     main_interrupt_on = _merge_fs_interrupt_on(
-        _build_interrupt_on_from_permissions(permissions or []),
+        _build_interrupt_on_from_permissions(permissions or [], backend),
         interrupt_on,
     )
     if main_interrupt_on is not None:

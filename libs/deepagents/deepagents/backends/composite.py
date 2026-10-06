@@ -9,6 +9,7 @@ from collections import defaultdict
 from collections.abc import Sequence
 from typing import cast
 
+from deepagents.backends._real_path import get_real_path
 from deepagents.backends.protocol import (
     BackendProtocol,
     DeleteResult,
@@ -289,6 +290,26 @@ class CompositeBackend(BackendProtocol):
             path=key,
         )
         return backend, stripped_key
+
+    def _deepagents_real_path(self, path: str) -> str:
+        """Resolve `path` via the backend that owns it, re-adding the route prefix.
+
+        Internal hook used by filesystem permissions (see
+        `deepagents.backends._real_path`). Returns `path` unchanged when that
+        backend has no real-path hook.
+        """
+        backend, backend_path, route_prefix = _route_for_path(
+            default=self.default,
+            sorted_routes=self.sorted_routes,
+            path=path,
+        )
+        real_path = get_real_path(backend)
+        if real_path is None:
+            return path
+        resolved = real_path(backend_path)
+        if route_prefix is None:
+            return resolved
+        return route_prefix.rstrip("/") + resolved
 
     @staticmethod
     def _coerce_ls_result(raw: LsResult | list[FileInfo]) -> LsResult:

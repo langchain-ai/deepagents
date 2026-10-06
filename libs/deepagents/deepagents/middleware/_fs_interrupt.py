@@ -15,8 +15,9 @@ from typing import Literal
 from langchain.agents.middleware import InterruptOnConfig
 from langchain.tools.tool_node import ToolCallRequest
 
+from deepagents.backends.protocol import BackendProtocol
 from deepagents.backends.utils import _glob_anchor, _paths_overlap, to_posix_path, validate_path
-from deepagents.middleware.filesystem import FilesystemOperation, FilesystemPermission, _check_fs_permission
+from deepagents.middleware.filesystem import FilesystemOperation, FilesystemPermission, _check_fs_permission, _resolve_real_path
 
 # Scope of a filesystem tool's path argument:
 #   - "exact": the call operates on exactly the named path (read_file,
@@ -52,6 +53,7 @@ def _make_fs_when_predicate(
     path_arg_name: str,
     scope: ToolScope,
     pattern_arg_name: str | None = None,
+    backend: BackendProtocol | None = None,
 ) -> Callable[[ToolCallRequest], bool]:
     """Build a `when` predicate that fires on interrupt-mode rule matches.
 
@@ -69,14 +71,28 @@ def _make_fs_when_predicate(
         the search root independently of `path`.
     """
     if scope == "exact":
-        return _make_exact_when_predicate(rules, operation, path_arg_name)
-    return _make_bulk_when_predicate(rules, operation, path_arg_name, pattern_arg_name)
+        return _make_exact_when_predicate(rules, operation, path_arg_name, backend)
+    return _make_bulk_when_predicate(rules, operation, path_arg_name, pattern_arg_name, backend)
+
+
+def _candidate_paths(backend: BackendProtocol | None, normalized: str) -> list[str]:
+    """Return `normalized` plus, when `backend` resolves it, its symlink-resolved target.
+
+    A path the backend cannot resolve yields no candidates.
+    """
+    if backend is None:
+        return [normalized]
+    try:
+        return [normalized, _resolve_real_path(backend, normalized)]
+    except (ValueError, OSError, RuntimeError):
+        return []
 
 
 def _make_exact_when_predicate(
     rules: list[FilesystemPermission],
     operation: FilesystemOperation,
     path_arg_name: str,
+    backend: BackendProtocol | None = None,
 ) -> Callable[[ToolCallRequest], bool]:
     def when(req: ToolCallRequest) -> bool:
         raw_path = req.tool_call.get("args", {}).get(path_arg_name)
@@ -86,7 +102,8 @@ def _make_exact_when_predicate(
             normalized = validate_path(raw_path)
         except ValueError:
             return False
-        return _check_fs_permission(rules, operation, normalized) == "interrupt"
+        decisions = {_check_fs_permission(rules, operation, path) for path in _candidate_paths(backend, normalized)}
+        return "interrupt" in decisions and "deny" not in decisions
 
     return when
 
@@ -96,6 +113,7 @@ def _make_bulk_when_predicate(
     operation: FilesystemOperation,
     path_arg_name: str,
     pattern_arg_name: str | None = None,
+    backend: BackendProtocol | None = None,
 ) -> Callable[[ToolCallRequest], bool]:
     # Precompute interrupt-mode rule anchors for this op so the predicate is
     # a single pass per call.
@@ -123,7 +141,7 @@ def _make_bulk_when_predicate(
         # this, an agent could pass `path="."` to bypass HITL.
         if normalized == "/.":
             normalized = "/"
-        if any(_paths_overlap(normalized, anchor) for anchor in interrupt_anchors):
+        if any(_paths_overlap(root, anchor) for root in _candidate_paths(backend, normalized) for anchor in interrupt_anchors):
             return True
         # `glob`'s `pattern` can redirect the search root away from `path`, so
         # gating on `path` alone would let `glob(pattern="/secrets/**",
@@ -155,13 +173,15 @@ def _bulk_pattern_fires(raw_pattern: str, interrupt_anchors: list[str]) -> bool:
 
 def _build_interrupt_on_from_permissions(
     rules: list[FilesystemPermission],
+    backend: BackendProtocol | None = None,
 ) -> dict[str, InterruptOnConfig]:
     """Generate `interrupt_on` configs from interrupt-mode permissions.
 
     Returns an entry for each filesystem tool whose operation could be triggered
     by at least one interrupt-mode rule. Each entry uses a `when` predicate so
     the interrupt only fires when the tool call's path argument matches an
-    interrupt-mode rule.
+    interrupt-mode rule. When `backend` is given, the path's symlink-resolved
+    target is matched too.
     """
     if not any(r.mode == "interrupt" for r in rules):
         return {}
@@ -178,6 +198,6 @@ def _build_interrupt_on_from_permissions(
             continue
         result[tool_name] = InterruptOnConfig(
             allowed_decisions=allowed,
-            when=_make_fs_when_predicate(rules, op, arg, scope, pattern_arg),
+            when=_make_fs_when_predicate(rules, op, arg, scope, pattern_arg, backend),
         )
     return result

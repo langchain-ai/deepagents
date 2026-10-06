@@ -444,8 +444,6 @@ else:
                 widget = select_state.start.content_widget
                 if widget is not None:
                     self.selections = {widget: Selection(None, None)}
-            else:
-                self.selections = dict.fromkeys(self.selections, Selection(None, None))
             return
         if not getattr(self, _DEEPAGENTS_WORD_SELECT_ACTIVE, False):
             return
@@ -649,8 +647,13 @@ else:
         # Textual stores the new dict before invoking this watcher. Clamp that
         # object synchronously before returning the original watcher's awaitable;
         # assigning `self.selections` here would schedule this watcher again.
+        block_select = getattr(self, _DEEPAGENTS_BLOCK_SELECT_ACTIVE, False)
         for widget, selection in list(selections.items()):
-            clamped = clamp_selection(widget, selection)
+            # Expand before clamping: a partial endpoint at the first source
+            # column would otherwise be dropped as a gutter-only selection.
+            clamped = clamp_selection(
+                widget, Selection(None, None) if block_select else selection
+            )
             if clamped is None:
                 del selections[widget]
             elif clamped != selection:

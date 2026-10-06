@@ -100,6 +100,27 @@ async def _send_mouse(
 
 
 class TestPatchedWordSelection:
+    @pytest.mark.parametrize(
+        ("start", "end"),
+        [("#diff-before", "#diff-row"), ("#diff-row", "#diff-before")],
+    )
+    async def test_triple_click_drag_keeps_diff_endpoint_at_source_start(
+        self, start: str, end: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(SelectableDiffApp, "CLICK_CHAIN_TIME_THRESHOLD", 60)
+        app = SelectableDiffApp()
+        async with app.run_test() as pilot:
+            for _ in range(2):
+                await _send_mouse(pilot, events.MouseDown, start, 8)
+                await _send_mouse(pilot, events.MouseUp, start, 8)
+            await _send_mouse(pilot, events.MouseDown, start, 8)
+            await _send_mouse(pilot, events.MouseMove, end, 5)
+            await _send_mouse(pilot, events.MouseUp, end, 5)
+
+            assert app.screen.get_selected_text() == "removed word\nadded word"
+            for row in app.query(_DiffRowStatic):
+                assert app.screen.selections[row].get_span(0) == (5, -1)
+
     @pytest.mark.parametrize(("start", "end"), [(2, 4), (4, 2)])
     async def test_triple_click_drag_selects_whole_blocks(
         self, start: int, end: int, monkeypatch: pytest.MonkeyPatch

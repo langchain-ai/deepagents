@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -98,6 +98,7 @@ async def generate_thread_name(
     messages: Sequence[BaseMessage],
     *,
     model_params: dict[str, object] | None = None,
+    initialization_lock: asyncio.Lock | None = None,
 ) -> str:
     """Generate a safe name using the selected model without conversation callbacks.
 
@@ -109,6 +110,8 @@ async def generate_thread_name(
         messages: Conversation to name; only user and assistant text is sent.
         model_params: Active conversation model overrides when inheriting its model,
             including connection settings such as `base_url`.
+        initialization_lock: Excludes environment mutations while the model factory
+            runs, including cancellation cleanup. Released before the model request.
 
     Returns:
         A single-line name of at most 50 characters.
@@ -121,7 +124,8 @@ async def generate_thread_name(
         msg = "Send a message before generating a thread name."
         raise ValueError(msg)
     async with asyncio.timeout(10):
-        result = await _create_naming_model(model_spec, model_params)
+        async with initialization_lock or nullcontext():
+            result = await _create_naming_model(model_spec, model_params)
         response = await result.model.ainvoke(
             [("system", _TITLE_PROMPT), ("human", conversation)],
             config={"callbacks": [], "run_name": "thread-title"},

@@ -411,6 +411,71 @@ async def test_naming_cannot_start_during_workspace_reload(
     generate.assert_not_awaited()
 
 
+@pytest.mark.parametrize("cancellations", [0, 1, 2])
+async def test_reload_waits_for_naming_initialization_cleanup(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    cancellations: int,
+) -> None:
+    """Reload cannot race the factory, even after repeated cancellation."""
+    started, release = asyncio.Event(), threading.Event()
+    response_ready, reloaded = asyncio.Event(), asyncio.Event()
+    loop = asyncio.get_running_loop()
+    settings = {"version": "original"}
+
+    async def respond(*_args: object, **_kwargs: object) -> AIMessage:
+        await response_ready.wait()
+        return AIMessage("Cache repair")
+
+    model = AsyncMock()
+    model.ainvoke.side_effect = respond
+
+    def create_model(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(timeout=5)
+        settings["version"] = "original"
+        return SimpleNamespace(model=model)
+
+    def reload_settings() -> None:
+        settings["version"] = "reloaded"
+        reloaded.set()
+
+    monkeypatch.setattr("deepagents_code.config.create_model", create_model)
+    monkeypatch.setattr(
+        naming_app, "_run_reload_unlocked", AsyncMock(side_effect=reload_settings)
+    )
+    monkeypatch.setattr(naming_app, "call_after_refresh", MagicMock())
+    naming_app._start_thread_name_generation(
+        "original", "provider:chat", automatic=False
+    )
+    task = naming_app._thread_name_tasks["original"]
+    reload: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        reload = asyncio.create_task(naming_app._run_reload())
+        for _ in range(cancellations):
+            task.cancel()
+            await asyncio.sleep(0)
+        done, _ = await asyncio.wait({reload}, timeout=0.05)
+        assert not done
+        assert not reloaded.is_set()
+        release.set()
+        await asyncio.wait_for(reloaded.wait(), timeout=5)
+        # The lock protects initialization, not the network response.
+        if not cancellations:
+            assert not task.done()
+    finally:
+        release.set()
+        response_ready.set()
+        await asyncio.gather(
+            task, *([reload] if reload is not None else []), return_exceptions=True
+        )
+    assert settings["version"] == "reloaded"
+    assert task.cancelled() == bool(cancellations)
+    if cancellations:
+        model.ainvoke.assert_not_awaited()
+
+
 async def test_auto_name_is_conditional_and_context_isolated(
     naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:

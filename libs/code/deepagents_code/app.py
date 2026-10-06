@@ -19374,7 +19374,10 @@ class DeepAgentsApp(App):
                 ):
                     return
                 name = await generate_thread_name(
-                    model_spec, messages, model_params=model_params
+                    model_spec,
+                    messages,
+                    model_params=model_params,
+                    initialization_lock=self._environment_mutation_lock,
                 )
                 if automatic:
                     if await rename_thread(thread_id, name, only_if_unnamed=True):
@@ -30433,6 +30436,10 @@ class DeepAgentsApp(App):
         from deepagents_code import config as config_module
         from deepagents_code.model_config import clear_caches
 
+        # Stop factories before waiting for their lock, so they cannot advance
+        # to a model request while the workspace switch is queued.
+        for task in list(self._thread_name_tasks.values()):
+            task.cancel()
         async with self._environment_mutation_lock:
             # Naming clients resolve provider defaults lazily. Cancel and drain
             # old-workspace requests before any new connection settings load.

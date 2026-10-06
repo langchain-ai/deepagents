@@ -634,6 +634,30 @@ class TestDebugConsoleToggle:
             assert snapshot["Approval mode"] == "manual"
             assert snapshot["MCP servers"] == "none"
 
+    @pytest.mark.parametrize(
+        ("editable", "suffix"), [(True, "editable"), (False, "non-editable")]
+    )
+    async def test_version_shows_install_type(
+        self, monkeypatch: pytest.MonkeyPatch, editable: bool, suffix: str
+    ) -> None:
+        import deepagents_code.config as config_mod
+        from deepagents_code._version import __version__
+
+        monkeypatch.setattr(config_mod, "_editable_cache", (editable, None))
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test() as pilot:
+            await pilot.press("ctrl+backslash")
+            await pilot.pause()
+            assert isinstance(app.screen, DebugConsoleScreen)
+            snapshot = app.screen.query_one(".debug-console-snapshot", Static)
+            assert f"{__version__} ({suffix})" in _widget_text(snapshot)
+            field = next(
+                field
+                for field in app._build_debug_snapshot()
+                if field.label == "Version"
+            )
+            assert field.copyable is True
+
     async def test_build_snapshot_session_length_uses_first_invocation(self) -> None:
         import time
 

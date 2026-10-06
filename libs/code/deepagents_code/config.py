@@ -5541,6 +5541,25 @@ def _is_bedrock_model_id(model_lower: str) -> bool:
     return bool(dot) and vendor.isalnum()
 
 
+def _bedrock_init_provider(model_name: str) -> str:
+    """Return the `init_chat_model` provider for a `bedrock` model ID.
+
+    `ChatBedrock` (InvokeModel) binds tools only for Anthropic models. Amazon
+    Nova already routes through Converse internally, translating `model_kwargs`
+    into inference settings. Keep that route to preserve existing Nova configs.
+    Other vendors use `ChatBedrockConverse` so tools reach the model. ARNs and
+    other non-ID names stay on `bedrock`.
+    """
+    model_lower = model_name.lower()
+    if (
+        _is_bedrock_model_id(model_lower)
+        and "anthropic" not in model_lower.split(".")[:2]
+        and "amazon.nova" not in model_lower
+    ):
+        return "bedrock_converse"
+    return "bedrock"
+
+
 def _detection_credentials() -> Credentials | CredentialsSnapshot:
     """Return the credential source that matches the active environment scope.
 
@@ -7050,7 +7069,10 @@ def create_model(
     elif class_path:
         model = _create_model_from_class(class_path, model_name, provider, kwargs)
     else:
-        model = _create_model_via_init(model_name, provider, kwargs)
+        init_provider = (
+            _bedrock_init_provider(model_name) if provider == "bedrock" else provider
+        )
+        model = _create_model_via_init(model_name, init_provider, kwargs)
 
     if clear_inherited_headers:
         _clear_inherited_client_headers(model, kwargs)

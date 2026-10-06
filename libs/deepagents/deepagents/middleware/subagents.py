@@ -109,14 +109,18 @@ class SubAgent(TypedDict):
             or rate limiting. To restrict filesystem tools, include a
             `FilesystemMiddleware(tools=...)` instance here — it
             will be used as the subagent's filesystem middleware instead of
-            the default one.
+            the default one. Likewise, a `SkillsMiddleware` here whose
+            `name` is `"SkillsMiddleware"` takes the subagent's skills slot,
+            just before prompt caching, wherever it appears in the list.
         interrupt_on: Configure human-in-the-loop for specific tools.
 
             Requires a checkpointer.
         skills: Skill source paths for `SkillsMiddleware`.
 
             List of paths to skill directories
-            (e.g., `["/skills/user/", "/skills/project/"]`).
+            (e.g., `["/skills/user/", "/skills/project/"]`). Not needed
+            when a `SkillsMiddleware` in `middleware` takes the skills slot,
+            since it brings its own sources.
         permissions: Filesystem permission rules for this subagent.
 
             If omitted, inherits the parent agent's permissions. If provided,

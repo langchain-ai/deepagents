@@ -3562,6 +3562,7 @@ class DeepAgentsApp(App):
         self._thread_name_tasks: dict[str, asyncio.Task[None]] = {}
         self._pending_thread_name_proposal: tuple[str, str] | None = None
         self._auto_named_threads: set[str] = set()
+        self._thread_response_completed: dict[str, bool] = {}
 
         self._btw_history: dict[str, list[tuple[str, str]]] = {}
         """Completed side exchanges per thread, retained only for this app instance."""
@@ -19899,13 +19900,17 @@ class DeepAgentsApp(App):
         # `_agent_turn_started`.
         self._agent_turn_started = True
         title_thread_id = self._lc_thread_id
-        first_response = not any(
-            item.type == MessageType.ASSISTANT
-            and not item.assistant_local_only
-            and not item.is_streaming
-            and item.content.strip()
-            for item in self._message_store.get_all_messages()
-        )
+        if title_thread_id and title_thread_id not in self._thread_response_completed:
+            # Seed resumed history once. Live interrupted rows are finalized for
+            # display too, so subsequent turns must use actual stream completion.
+            self._thread_response_completed[title_thread_id] = any(
+                item.type == MessageType.ASSISTANT
+                and not item.assistant_local_only
+                and not item.is_streaming
+                and item.content.strip()
+                for item in self._message_store.get_all_messages()
+            )
+        first_response = not self._thread_response_completed.get(title_thread_id, False)
         title_model_spec = self._effective_model_spec()
         title_model_params = dict(self._model_params_override or {})
         if self._first_invocation_at is None:
@@ -20118,6 +20123,7 @@ class DeepAgentsApp(App):
                 and graph_input is None
                 and title_thread_id
             ):
+                self._thread_response_completed[title_thread_id] = True
                 self._maybe_auto_name_thread(
                     title_thread_id, title_model_spec, model_params=title_model_params
                 )

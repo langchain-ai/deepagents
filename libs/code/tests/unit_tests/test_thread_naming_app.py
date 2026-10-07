@@ -18,6 +18,7 @@ from textual.widgets import Input, OptionList, Static
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.model_config import ThreadConfig
 from deepagents_code.tui.modals.thread_name import ThreadNameScreen
+from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -605,8 +606,13 @@ def test_auto_name_can_be_disabled(
 
 
 @pytest.mark.parametrize("completed", [False, True])
+@pytest.mark.parametrize("prior_response", [False, True])
 async def test_auto_naming_waits_for_completed_response(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch, *, completed: bool
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    completed: bool,
+    prior_response: bool,
 ) -> None:
     started, release = asyncio.Event(), asyncio.Event()
     adapter = MagicMock(stream_completed=False)
@@ -630,12 +636,16 @@ async def test_auto_naming_waits_for_completed_response(
     schedule = MagicMock()
     monkeypatch.setattr(naming_app, "_maybe_auto_name_thread", schedule)
     async with naming_app.run_test():
+        if prior_response:
+            naming_app._message_store.append(
+                MessageData(type=MessageType.ASSISTANT, content="Restored reply")
+            )
         task = asyncio.create_task(naming_app._run_agent_task("Fix caching"))
         await asyncio.wait_for(started.wait(), timeout=5)
         schedule.assert_not_called()
         release.set()
         await task
-        if completed:
+        if completed and not prior_response:
             schedule.assert_called_once_with(
                 "original",
                 "provider:chat",
@@ -643,6 +653,60 @@ async def test_auto_naming_waits_for_completed_response(
             )
         else:
             schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_auto_naming_recovers_after_partial_interruption(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch, *, cancelled: bool
+) -> None:
+    """Finalizing partial text must leave naming eligible for a successful turn."""
+    from deepagents_code.tui.textual_adapter import _stop_assistant_streams
+
+    adapter = MagicMock(
+        stream_completed=False, _sync_message_content=naming_app._sync_message_content
+    )
+    interrupted = True
+
+    async def execute(*_args: object, **_kwargs: object) -> None:
+        row = MessageData(type=MessageType.ASSISTANT, content="", is_streaming=True)
+        naming_app._message_store.append(row)
+        widget = SimpleNamespace(
+            id=row.id,
+            _content="Partial reply" if interrupted else "Done",
+            stop_stream=AsyncMock(),
+        )
+        await _stop_assistant_streams(adapter, {(): widget})
+        adapter.stream_completed = not interrupted
+        if interrupted and cancelled:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(naming_app, "_ui_adapter", adapter)
+    monkeypatch.setattr(naming_app, "_agent", MagicMock())
+    monkeypatch.setattr(naming_app, "_cleanup_agent_task", AsyncMock())
+    monkeypatch.setattr(naming_app, "_sync_session_cost_from_checkpoint", AsyncMock())
+    monkeypatch.setattr(naming_app, "_refresh_cache_timing", AsyncMock())
+    monkeypatch.setattr(
+        "deepagents_code.tui.textual_adapter.execute_task_textual", execute
+    )
+    schedule = MagicMock()
+    monkeypatch.setattr(naming_app, "_maybe_auto_name_thread", schedule)
+    async with naming_app.run_test():
+        if cancelled:
+            with pytest.raises(asyncio.CancelledError):
+                await naming_app._run_agent_task("Fix caching")
+        else:
+            await naming_app._run_agent_task("Fix caching")
+        schedule.assert_not_called()
+        interrupted = False
+        await naming_app._run_agent_task("Continue")
+        schedule.assert_called_once_with("original", "provider:chat", model_params={})
+        await naming_app._run_agent_task("Another prompt")
+        schedule.assert_called_once()
+        naming_app._lc_thread_id = "new-thread"
+        naming_app._message_store.clear()
+        await naming_app._run_agent_task("New topic")
+        assert schedule.call_count == 2
+        schedule.assert_called_with("new-thread", "provider:chat", model_params={})
 
 
 async def test_manual_name_cancels_pending_proposal(

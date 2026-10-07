@@ -606,14 +606,33 @@ def lock_dirs_for(
     return stale_lock_dirs(changed_manifests)
 
 
-def edits_markdown(edits: Sequence[RequirementEdit], *, heading: str) -> str:
-    """Render applied edits as a Markdown table for the PR body/summary."""
-    lines = [heading, "", "| Manifest | Dependency | Change |", "|---|---|---|"]
-    lines.extend(
-        f"| `{edit.manifest_path}` | `{edit.dependency_name}` | "
-        f"`{edit.old_requirement}` → `{edit.new_requirement}` |"
-        for edit in edits
+def _edit_markdown(edit: RequirementEdit) -> str:
+    """Render a requirement's identity and changed lower bound without its ceiling."""
+    old = Requirement(edit.old_requirement)
+    new = Requirement(edit.new_requirement)
+    dependency = edit.dependency_name
+    if old.extras:
+        dependency += f"[{','.join(sorted(old.extras))}]"
+    if old.marker:
+        dependency += f"; {old.marker}"
+    dependency = dependency.replace("|", r"\|")
+    return (
+        f"| `{dependency}` | `{_raiseable_specifier(old.specifier)}` → "
+        f"`{_raiseable_specifier(new.specifier)}` |"
     )
+
+
+def edits_markdown(edits: Sequence[RequirementEdit], *, heading: str) -> str:
+    """Render compact lower-bound tables grouped by manifest for the PR/summary."""
+    grouped: dict[str, list[str]] = {}
+    for edit in edits:
+        grouped.setdefault(edit.manifest_path, []).append(_edit_markdown(edit))
+    lines = [heading]
+    for manifest, rows in grouped.items():
+        lines.extend(
+            ["", f"### `{manifest}`", "", "| Dependency | Minimum |", "|---|---|"]
+        )
+        lines.extend(rows)
     return "\n".join(lines)
 
 
@@ -787,7 +806,10 @@ def _run(
     for plan in plans:
         (REPO_ROOT / plan.manifest_path).write_text(plan.new_text, encoding="utf-8")
 
-    summary = edits_markdown(all_edits, heading=f"Raised {len(all_edits)} minimum(s):")
+    noun = "minimum" if len(all_edits) == 1 else "minimums"
+    summary = edits_markdown(
+        all_edits, heading=f"Raised {len(all_edits)} dependency {noun}:"
+    )
     if fetch_failures or plan_failures:
         summary += "\n\n" + failures_markdown(fetch_failures, plan_failures)
     print(summary)

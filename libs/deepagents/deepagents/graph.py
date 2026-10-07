@@ -47,7 +47,7 @@ from deepagents.middleware._prompt_caching import append_prompt_caching_middlewa
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware, _runs_on_parent
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -59,6 +59,7 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
     _is_compiled_subagent,
     _is_forked_subagent,
+    create_sub_agent,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
@@ -272,6 +273,10 @@ _REQUIRED_MIDDLEWARE_NAMES: frozenset[str] = frozenset(name for cls, aliases in 
 
 Derived from `_REQUIRED_MIDDLEWARE` and used for quick membership testing.
 """
+
+
+_INLINE_ONLY_KEYS = frozenset({"tools", "model", "middleware", "interrupt_on", "skills", "permissions"})
+"""Spec keys that only make sense for a subagent defined inline, not a remote graph."""
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
@@ -684,11 +689,19 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # `extra_middleware`) isn't built and then discarded.
     inline_subagents: list[SubAgent | CompiledSubAgent] = []
     async_subagents: list[AsyncSubAgent] = []
-    for spec in subagents or []:
-        if "graph_id" in spec:
-            # Then spec is an AsyncSubAgent
-            async_subagents.append(cast("AsyncSubAgent", spec))
+    for raw_spec in subagents or []:
+        if raw_spec.get("graph_id") == "self" and "system_prompt" not in raw_spec and _INLINE_ONLY_KEYS & raw_spec.keys():
+            msg = f"Async subagent '{raw_spec['name']}' is defined inline (graph_id='self') but has no system_prompt."
+            raise ValueError(msg)
+        if "graph_id" in raw_spec and (not _runs_on_parent(raw_spec) or "runnable" in raw_spec):
+            # An AsyncSubAgent on a separate graph, or an inline one already compiled
+            async_subagents.append(cast("AsyncSubAgent", raw_spec))
             continue
+        # A `graph_id="self"` spec is declared like a regular subagent and built the same way below.
+        spec = cast("SubAgent | CompiledSubAgent", raw_spec)
+        if "graph_id" in raw_spec and _is_forked_subagent(spec):
+            msg = f"Async subagent '{spec['name']}' can't use mode='fork': it runs on its own thread, without this conversation."
+            raise ValueError(msg)
         if _is_compiled_subagent(spec):
             # CompiledSubAgent - use as-is
             inline_subagents.append(spec)
@@ -809,8 +822,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 processed["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec.get("system_prompt", ""))
             if subagent_interrupt_on is not None:
                 processed["interrupt_on"] = subagent_interrupt_on
-            if is_forked:
-                inline_subagents.append(cast("SubAgent", processed))
+            if "graph_id" in raw_spec:
+                # Inline async subagent: compiled here, run on this agent's own graph per task
+                runnable = create_sub_agent(cast("SubAgent", processed), state_schema=state_schema)
+                async_subagents.append(cast("AsyncSubAgent", {**raw_spec, "runnable": runnable}))
             else:
                 inline_subagents.append(cast("SubAgent", processed))
 

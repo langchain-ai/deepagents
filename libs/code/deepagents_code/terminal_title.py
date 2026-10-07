@@ -29,6 +29,10 @@ def _valid_template(template: str) -> bool:
 class TerminalTitle:
     """Manage one balanced terminal title save/restore lifecycle."""
 
+    # This does not use `terminal_escape.write_terminal_escape`: that helper
+    # opens `/dev/tty` for each write, so a push could fail while the later pop
+    # succeeds. Holding one stream lets `restore` pop only after a real push.
+
     def __init__(self, template: str) -> None:
         """Set the template, falling back when its replacement fields are invalid.
 

@@ -2,8 +2,9 @@
 
 import json
 import urllib.parse
+from pathlib import Path
 from typing import Any, TypeVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -12,6 +13,7 @@ from langsmith import tracing_context
 from langsmith.run_helpers import get_tracing_context
 from langsmith.run_trees import RunTree
 
+from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
@@ -20,6 +22,8 @@ from deepagents.middleware.async_subagents import (
     _build_async_subagent_tools,
     _resolve_headers,
     _tasks_reducer,
+    parent_reference,
+    parent_sandbox_id,
     parent_trace_context,
     with_parent_trace,
 )
@@ -1056,3 +1060,113 @@ class TestWithParentTrace:
             async with with_parent_trace(graph)(_child_config(**{"langsmith-metadata": {}})) as built:
                 assert get_tracing_context()["parent"] is None
         assert built is graph
+
+
+def _parent_runtime(tool_call_id: str = "tc_parent") -> ToolRuntime:
+    """A runtime for a parent agent running on the Agent Server."""
+    return ToolRuntime(
+        state={},
+        context=None,
+        tool_call_id=tool_call_id,
+        store=None,
+        stream_writer=lambda _: None,
+        config={"configurable": {"thread_id": "thread_parent"}, "metadata": {"assistant_id": "assistant_parent"}},
+    )
+
+
+def _launch(mock_get_client: MagicMock, backend: Any = None) -> MagicMock:  # noqa: ANN401
+    """Launch a subagent with `backend` as the parent's and return the mocked client."""
+    mock_client = MagicMock()
+    mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
+    mock_client.runs.create.return_value = {"run_id": "run_xyz"}
+    mock_get_client.return_value = mock_client
+    launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha")], backend), "start_async_task")
+    launch.func(description="analyze data", subagent_type="alpha", runtime=_parent_runtime())
+    return mock_client
+
+
+def _sent_reference(mock_client: MagicMock) -> dict[str, Any]:
+    return mock_client.runs.create.call_args.kwargs["config"]["configurable"]["deepagents_parent"]
+
+
+LOCAL_SHELL = "deepagents.backends.local_shell.LocalShellBackend"
+
+
+class TestParentReference:
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_launch_sends_parent_thread_and_assistant(self, mock_get_client: MagicMock) -> None:
+        client = _launch(mock_get_client)
+        assert _sent_reference(client) == {"thread_id": "thread_parent", "assistant_id": "assistant_parent"}
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_launch_sends_parent_sandbox(self, mock_get_client: MagicMock, tmp_path: Path) -> None:
+        sandbox = LocalShellBackend(root_dir=tmp_path)
+        reference = _sent_reference(_launch(mock_get_client, sandbox))
+        assert reference["sandbox_id"] == sandbox.id
+        assert reference["sandbox_provider"] == LOCAL_SHELL
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_launch_finds_sandbox_behind_composite_backend(self, mock_get_client: MagicMock, tmp_path: Path) -> None:
+        sandbox = LocalShellBackend(root_dir=tmp_path)
+        backend = CompositeBackend(default=sandbox, routes={"/memories/": StateBackend()})
+        assert _sent_reference(_launch(mock_get_client, backend))["sandbox_id"] == sandbox.id
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_launch_without_sandbox_sends_no_sandbox(self, mock_get_client: MagicMock) -> None:
+        reference = _sent_reference(_launch(mock_get_client, StateBackend()))
+        assert "sandbox_id" not in reference
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_unreadable_sandbox_id_still_launches(self, mock_get_client: MagicMock, tmp_path: Path) -> None:
+        sandbox = LocalShellBackend(root_dir=tmp_path)
+        with patch.object(LocalShellBackend, "id", new_callable=PropertyMock, side_effect=RuntimeError("down")):
+            client = _launch(mock_get_client, sandbox)
+        assert client.runs.create.called
+        assert "sandbox_id" not in _sent_reference(client)
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_update_resends_parent_reference(self, mock_get_client: MagicMock, tmp_path: Path) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.create.return_value = {"run_id": "run_new"}
+        mock_get_client.return_value = mock_client
+        sandbox = LocalShellBackend(root_dir=tmp_path)
+        update = _get_tool(_build_async_subagent_tools([_make_spec()], sandbox), "update_async_task")
+        runtime = _make_runtime_with_task()
+        runtime.config = _parent_runtime().config
+        update.func(task_id="thread_abc", message="more", runtime=runtime)
+        assert _sent_reference(mock_client)["sandbox_id"] == sandbox.id
+
+
+class TestParentSandboxId:
+    def _config(self, **reference: str) -> dict[str, Any]:
+        return {"configurable": {"deepagents_parent": reference}}
+
+    def test_returns_id_for_matching_provider(self) -> None:
+        config = self._config(sandbox_id="sb-1", sandbox_provider=LOCAL_SHELL)
+        assert parent_sandbox_id(config, LocalShellBackend) == "sb-1"
+
+    def test_other_provider_gets_its_own_sandbox(self) -> None:
+        config = self._config(sandbox_id="sb-1", sandbox_provider="langchain_modal.sandbox.ModalSandbox")
+        assert parent_sandbox_id(config, LocalShellBackend) is None
+
+    def test_no_parent_sandbox(self) -> None:
+        assert parent_sandbox_id(self._config(thread_id="t"), LocalShellBackend) is None
+        assert parent_sandbox_id({}, LocalShellBackend) is None
+        assert parent_sandbox_id(self._config(sandbox_provider=LOCAL_SHELL), LocalShellBackend) is None
+
+    def test_parent_reference_reads_config(self) -> None:
+        assert parent_reference(self._config(thread_id="t")) == {"thread_id": "t"}
+        assert parent_reference({"configurable": {}}) is None
+
+
+@patch("deepagents.middleware.async_subagents.get_sync_client")
+def test_launch_reads_assistant_from_configurable_when_metadata_lacks_it(mock_get_client: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
+    mock_client.runs.create.return_value = {"run_id": "run_xyz"}
+    mock_get_client.return_value = mock_client
+    runtime = _parent_runtime()
+    runtime.config = {"configurable": {"thread_id": "thread_parent", "assistant_id": "assistant_parent"}}
+    launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha")]), "start_async_task")
+    launch.func(description="analyze data", subagent_type="alpha", runtime=runtime)
+    assert _sent_reference(mock_client)["assistant_id"] == "assistant_parent"

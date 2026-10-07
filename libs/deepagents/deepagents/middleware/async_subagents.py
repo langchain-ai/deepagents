@@ -16,7 +16,7 @@ import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, NotRequired, TypedDict, TypeVar
+from typing import Annotated, Any, Literal, NotRequired, TypedDict, TypeVar, cast
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT, TracePolicy, omit_payload
 from langchain.tools import ToolRuntime
@@ -33,6 +33,8 @@ from langsmith.run_trees import RunTree
 from langsmith.utils import tracing_is_enabled
 from pydantic import BaseModel, Field
 
+from deepagents.backends.composite import CompositeBackend
+from deepagents.backends.protocol import BackendProtocol, SandboxBackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 
 logger = logging.getLogger(__name__)
@@ -62,7 +64,8 @@ class AsyncSubAgent(TypedDict):
 
     The subagent's run nests under the parent's trace in LangSmith only if its
     graph is wrapped with `with_parent_trace` (or its factory uses
-    `parent_trace_context`).
+    `parent_trace_context`). To work in the parent's sandbox, its graph factory
+    reconnects to the ID from `parent_sandbox_id`.
     """
 
     name: str
@@ -319,6 +322,140 @@ def _launching_parent(configurable: Mapping[str, Any]) -> RunTree | None:
         return None
 
 
+_PARENT_KEY = "deepagents_parent"
+"""`configurable` key carrying the launching agent's `ParentReference` to an async subagent's run."""
+
+
+class ParentReference(TypedDict):
+    """What an async subagent's run knows about the agent that launched it.
+
+    !!! warning "Experimental"
+
+        This shape may change without notice.
+    """
+
+    thread_id: NotRequired[str]
+    """The parent's thread, where notifications for the parent go."""
+
+    assistant_id: NotRequired[str]
+    """The parent's assistant, which handles runs queued on its thread."""
+
+    sandbox_id: NotRequired[str]
+    """The parent's sandbox, for a child that shares it. Absent when the parent has none."""
+
+    sandbox_provider: NotRequired[str]
+    """`__module__.__qualname__` of the parent's sandbox backend class."""
+
+
+def _provider_name(backend_type: type) -> str:
+    return f"{backend_type.__module__}.{backend_type.__qualname__}"
+
+
+def _parent_sandbox(backend: BackendProtocol | None) -> SandboxBackendProtocol | None:
+    """Return the sandbox behind `backend`, looking through a `CompositeBackend`'s default."""
+    if isinstance(backend, CompositeBackend):
+        backend = backend.default
+    return backend if isinstance(backend, SandboxBackendProtocol) else None
+
+
+def _parent_reference(config: RunnableConfig, backend: BackendProtocol | None) -> ParentReference:
+    """Describe the running agent so the async subagent it launches can find it."""
+    reference: ParentReference = {}
+    if thread_id := (config.get("configurable") or {}).get("thread_id"):
+        reference["thread_id"] = str(thread_id)
+    if assistant_id := (config.get("metadata") or {}).get("assistant_id") or (config.get("configurable") or {}).get("assistant_id"):
+        reference["assistant_id"] = str(assistant_id)
+    sandbox = _parent_sandbox(backend)
+    if sandbox is not None:
+        try:
+            reference["sandbox_id"] = sandbox.id
+            reference["sandbox_provider"] = _provider_name(type(sandbox))
+        except Exception:  # noqa: BLE001  # provider errors; the child then creates its own sandbox
+            logger.warning("Could not read the sandbox ID; async subagents get their own sandbox", exc_info=True)
+    return reference
+
+
+def _run_options(runtime: ToolRuntime, backend: BackendProtocol | None) -> dict[str, Any]:
+    """Keyword arguments for `runs.create` that link a launched run to this agent."""
+    options: dict[str, Any] = {"headers": _trace_headers()}
+    if reference := _parent_reference(runtime.config, backend):
+        options["config"] = {"configurable": {_PARENT_KEY: reference}}
+    return options
+
+
+def parent_reference(config: RunnableConfig) -> ParentReference | None:
+    """Return the reference to the agent that launched this async subagent run.
+
+    !!! warning "Experimental"
+
+        This helper may change without notice.
+
+    Args:
+        config: The run config the Agent Server passes to the graph factory.
+
+    Returns:
+        The parent reference, or `None` when the run wasn't launched by an async subagent tool.
+    """
+    reference = (config.get("configurable") or {}).get(_PARENT_KEY)
+    return cast("ParentReference", reference) if isinstance(reference, dict) else None
+
+
+# TODO(review): remove before merge. If reconnecting to the returned ID fails, the  # noqa: FIX002  # reviewer note, removed before merge
+# subagent's run errors out. The alternative is to create a new sandbox with a warning;
+# we chose failing so users can check the connection and retry instead of a subagent
+# silently working in a sandbox the parent never sees.
+# https://github.com/langchain-ai/deepagents/issues/6581
+def parent_sandbox_id(config: RunnableConfig, provider: type[SandboxBackendProtocol]) -> str | None:
+    """Return the launching agent's sandbox ID when it uses the same sandbox provider.
+
+    !!! warning "Experimental"
+
+        This helper may change without notice.
+
+    Use it in an async subagent's graph factory to share the parent's sandbox:
+    reconnect to the returned ID with the provider's SDK, and create a new
+    sandbox when it returns `None`. The subagent must not stop or delete the
+    parent's sandbox.
+
+    Sharing is best effort: if the parent uses another provider, this returns
+    `None` (with a warning) and the subagent works in its own sandbox. If
+    reconnecting to a returned ID fails, the subagent's run errors out.
+
+    Args:
+        config: The run config the Agent Server passes to the graph factory.
+        provider: The sandbox backend class the subagent uses, e.g. `ModalSandbox`.
+
+    Returns:
+        The parent's sandbox ID, or `None` if the parent has no sandbox or uses another provider.
+
+    Example:
+        ```python
+        from contextlib import asynccontextmanager
+
+        import modal
+        from langchain_modal import ModalSandbox
+
+        from deepagents import create_deep_agent
+        from deepagents.middleware import parent_sandbox_id
+
+
+        @asynccontextmanager
+        async def researcher(config):
+            sandbox_id = parent_sandbox_id(config, ModalSandbox)
+            sandbox = modal.Sandbox.from_id(sandbox_id) if sandbox_id else modal.Sandbox.create(app=...)
+            yield create_deep_agent(model=..., backend=ModalSandbox(sandbox=sandbox))
+        ```
+    """
+    reference = parent_reference(config) or {}
+    sandbox_id = reference.get("sandbox_id")
+    if not sandbox_id:
+        return None
+    if reference.get("sandbox_provider") != _provider_name(provider):
+        logger.warning("Parent sandbox uses %s, not %s; creating a separate sandbox", reference.get("sandbox_provider"), _provider_name(provider))
+        return None
+    return sandbox_id
+
+
 class _ClientCache:
     """Lazily-created, cached Agent Protocol clients keyed by (url, headers)."""
 
@@ -369,6 +506,7 @@ def _build_start_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
     tool_description: str,
+    backend: BackendProtocol | None,
 ) -> StructuredTool:
     """Build the `start_async_task` tool."""
 
@@ -388,7 +526,7 @@ def _build_start_tool(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": description}]},
-                headers=_trace_headers(),
+                **_run_options(runtime, backend),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -429,7 +567,7 @@ def _build_start_tool(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": description}]},
-                headers=_trace_headers(),
+                **_run_options(runtime, backend),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -601,6 +739,7 @@ def _build_check_tool(  # noqa: C901  # complexity from necessary error handling
 def _build_update_tool(
     agent_map: dict[str, AsyncSubAgent],
     clients: _ClientCache,
+    backend: BackendProtocol | None,
 ) -> StructuredTool:
     """Build the `update_async_task` tool.
 
@@ -626,7 +765,7 @@ def _build_update_tool(
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
                 multitask_strategy="interrupt",
-                headers=_trace_headers(),
+                **_run_options(runtime, backend),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
@@ -666,7 +805,7 @@ def _build_update_tool(
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
                 multitask_strategy="interrupt",
-                headers=_trace_headers(),
+                **_run_options(runtime, backend),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
@@ -941,11 +1080,13 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
 
 def _build_async_subagent_tools(
     agents: list[AsyncSubAgent],
+    backend: BackendProtocol | None = None,
 ) -> list[StructuredTool]:
     """Build the async subagent tools from agent specs.
 
     Args:
         agents: List of async subagent specifications.
+        backend: The parent agent's backend, whose sandbox launched subagents may share.
 
     Returns:
         List of `StructuredTools` for launch, check, update, cancel, and list operations.
@@ -956,9 +1097,9 @@ def _build_async_subagent_tools(
     launch_desc = ASYNC_TASK_TOOL_DESCRIPTION.format(available_agents=agents_desc)
 
     return [
-        _build_start_tool(agent_map, clients, launch_desc),
+        _build_start_tool(agent_map, clients, launch_desc, backend),
         _build_check_tool(clients),
-        _build_update_tool(agent_map, clients),
+        _build_update_tool(agent_map, clients, backend),
         _build_cancel_tool(clients),
         _build_list_tasks_tool(clients),
     ]
@@ -986,6 +1127,11 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             optional — omit it to use ASGI transport for local servers.
         system_prompt: Instructions appended to the main agent's system prompt
             about how to use the async subagent tools.
+        backend: The main agent's backend. When it is (or routes by default to)
+            a sandbox, launched subagents receive its ID so they can share it
+            (see `parent_sandbox_id`). Only a sandbox backend itself or a
+            `CompositeBackend`'s default is detected, not one wrapped by another
+            backend.
 
     Example:
         ```python
@@ -1014,6 +1160,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         *,
         async_subagents: list[AsyncSubAgent],
         system_prompt: str | None = None,
+        backend: BackendProtocol | None = None,
     ) -> None:
         """Initialize the `AsyncSubAgentMiddleware`."""
         super().__init__()
@@ -1027,7 +1174,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             msg = f"Duplicate async subagent names: {dupes}"
             raise ValueError(msg)
 
-        self.tools = _build_async_subagent_tools(async_subagents)
+        self.tools = _build_async_subagent_tools(async_subagents, backend)
 
         if system_prompt:
             agents_desc = "\n".join(f"- {a['name']}: {a['description']}" for a in async_subagents)

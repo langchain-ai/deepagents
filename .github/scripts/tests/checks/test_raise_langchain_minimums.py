@@ -382,22 +382,81 @@ class TestInScope:
 
 
 class TestEditsMarkdown:
-    def test_renders_one_table_row_per_edit(self) -> None:
+    @pytest.mark.parametrize(
+        ("old", "new", "minimum"),
+        [
+            (">=0.1.0,<1.0", ">=0.4.0,<1.0", "`>=0.1.0` → `>=0.4.0`"),
+            ("~=0.1.0", "~=0.1.9", "`~=0.1.0` → `~=0.1.9`"),
+            ("~=0.1,>=0.2", "~=0.1,>=0.4", "`>=0.2` → `>=0.4`"),
+        ],
+    )
+    def test_renders_only_the_changed_floor(
+        self, old: str, new: str, minimum: str
+    ) -> None:
         edit = raise_langchain_minimums.RequirementEdit(
             manifest_path="libs/code/pyproject.toml",
             dependency_name="langsmith",
-            old_requirement="langsmith>=0.1.0",
-            new_requirement="langsmith>=0.4.0",
+            old_requirement=f"langsmith{old}",
+            new_requirement=f"langsmith{new}",
         )
 
-        assert edits_markdown([edit], heading="Raised 1 minimum(s):") == (
-            "Raised 1 minimum(s):\n"
+        assert edits_markdown([edit], heading="Raised 1 dependency minimum:") == (
+            "Raised 1 dependency minimum:\n"
             "\n"
-            "| Manifest | Dependency | Change |\n"
-            "|---|---|---|\n"
-            "| `libs/code/pyproject.toml` | `langsmith` | "
-            "`langsmith>=0.1.0` → `langsmith>=0.4.0` |"
+            "### `libs/code/pyproject.toml`\n"
+            "\n"
+            "| Dependency | Minimum |\n"
+            "|---|---|\n"
+            f"| `langsmith` | {minimum} |"
         )
+
+    def test_groups_manifests_without_repeating_paths(self) -> None:
+        edits = [
+            raise_langchain_minimums.RequirementEdit(
+                manifest, name, f"{name}>=0.1,<1.0", f"{name}>=0.4,<1.0"
+            )
+            for manifest, name in [
+                ("libs/code/pyproject.toml", "langsmith"),
+                ("libs/deepagents/pyproject.toml", "langsmith"),
+                ("libs/code/pyproject.toml", "langgraph"),
+            ]
+        ]
+
+        result = edits_markdown(edits, heading="Raised 3 dependency minimums:")
+
+        assert result.count("libs/code/pyproject.toml") == 1
+        assert result.count("libs/deepagents/pyproject.toml") == 1
+        assert result.count("| Dependency | Minimum |") == 2
+        assert (
+            "| `langsmith` | `>=0.1` → `>=0.4` |\n"
+            "| `langgraph` | `>=0.1` → `>=0.4` |\n\n"
+            "### `libs/deepagents/pyproject.toml`"
+        ) in result
+
+    def test_preserves_extras_and_markers_for_distinct_declarations(self) -> None:
+        identities = [
+            "langsmith",
+            'langsmith[otel]; python_version < "3.12"',
+            'langsmith[otel]; python_version >= "3.12"',
+            'langsmith; os_name == "a|b"',
+        ]
+        edits = []
+        for identity in identities:
+            name, separator, marker = identity.partition(";")
+            edits.append(
+                raise_langchain_minimums.RequirementEdit(
+                    "libs/code/pyproject.toml",
+                    "langsmith",
+                    f"{name}>=0.1,<1.0{separator}{marker}",
+                    f"{name}>=0.4,<1.0{separator}{marker}",
+                )
+            )
+
+        result = edits_markdown(edits, heading="Raised 4 dependency minimums:")
+
+        for identity in identities:
+            escaped = identity.replace("|", r"\|")
+            assert f"| `{escaped}` | `>=0.1` → `>=0.4` |" in result
 
 
 class TestParseDependencyCsv:
@@ -434,6 +493,32 @@ class TestRunNarrowing:
         monkeypatch.setattr(
             raise_langchain_minimums, "load_release_packages", lambda: {"libs/x": "pkg"}
         )
+
+    @pytest.mark.parametrize("count", [1, 2])
+    def test_summary_uses_natural_singular_and_plural(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, count: int
+    ) -> None:
+        names = ["langsmith", "langchain-core"][:count]
+        dependencies = ", ".join(f'"{name}>=0.1"' for name in names)
+        self._package(
+            tmp_path,
+            monkeypatch,
+            f'[project]\nname = "pkg"\ndependencies = [{dependencies}]\n',
+        )
+        monkeypatch.setattr(
+            raise_langchain_minimums,
+            "_fetch_available_versions",
+            lambda _: ({name: _versions("0.4") for name in names}, []),
+        )
+        outputs: dict[str, str] = {}
+        monkeypatch.setattr(
+            raise_langchain_minimums, "_write_output", outputs.__setitem__
+        )
+
+        assert _run("pkg", skip_dependent_locks=True) == 0
+        noun = "minimum" if count == 1 else "minimums"
+        assert outputs["summary"].startswith(f"Raised {count} dependency {noun}:\n")
+        assert "| Dependency | Minimum |" in outputs["summary"]
 
     def test_unknown_requested_name_fails_closed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

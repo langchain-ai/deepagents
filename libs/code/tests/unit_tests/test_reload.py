@@ -1620,6 +1620,96 @@ class TestReloadInputResponsiveness:
             assert app._restart_respawn_task is None
 
 
+@pytest.mark.parametrize("owned_server", [False, True])
+async def test_reload_refreshes_only_current_threads_next_ordinary_turn(
+    monkeypatch: pytest.MonkeyPatch, *, owned_server: bool
+) -> None:
+    """Reload survives restart, thread switches, and an incomplete turn."""
+    from deepagents_code.app import DeepAgentsApp, _ServerRespawnResult
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+    from deepagents_code.plugins.models import PluginDiscoveryResult
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="reload-thread")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        thread_id = app._lc_thread_id
+        monkeypatch.setattr(app, "_discover_skills", AsyncMock(return_value=True))
+        monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
+        monkeypatch.setattr(
+            Credentials, "reload_from_environment", MagicMock(return_value=[])
+        )
+        monkeypatch.setattr(
+            app,
+            "_discover_plugins_with_fingerprints",
+            lambda: (PluginDiscoveryResult(plugins=()), {}),
+        )
+        restart = AsyncMock(return_value=_ServerRespawnResult(restarted=True))
+        monkeypatch.setattr(app, "_restart_server_manual_result", restart)
+        if owned_server:
+            app._server_proc = MagicMock()
+            app._server_kwargs = {}
+        await app._handle_command("/reload")
+        assert app._reload_task is not None
+        await app._reload_task
+        assert restart.await_count == int(owned_server)
+
+        execute = AsyncMock()
+        monkeypatch.setattr(
+            "deepagents_code.tui.textual_adapter.execute_task_textual", execute
+        )
+        monkeypatch.setattr(
+            app, "_ensure_goal_state_notice", AsyncMock(return_value=True)
+        )
+        adapter = MagicMock(stream_completed=True)
+        monkeypatch.setattr(app, "_ui_adapter", adapter)
+        app._lc_thread_id = "other-thread"
+        await app._run_agent_task("another thread")
+        assert execute.call_args.kwargs["refresh_skills"] is False
+        app._lc_thread_id = thread_id
+        await app._run_agent_task("", graph_input={"goal_criteria_request": {}})
+        assert execute.call_args.kwargs["refresh_skills"] is False
+        adapter.stream_completed = False
+        await app._run_agent_task("interrupted")
+        assert execute.call_args.kwargs["refresh_skills"] is True
+        adapter.stream_completed = True
+        execute.side_effect = ClientHookStopError("stopped before sending")
+        await app._run_agent_task("blocked by hook")
+        assert execute.call_args.kwargs["refresh_skills"] is True
+        execute.side_effect = None
+        await app._run_agent_task("retry")
+        assert execute.call_args.kwargs["refresh_skills"] is True
+        await app._run_agent_task("cached again")
+        assert execute.call_args.kwargs["refresh_skills"] is False
+
+
+async def test_reload_during_refresh_turn_is_not_consumed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A finishing turn must not acknowledge a newer reload."""
+    from deepagents_code.app import DeepAgentsApp
+
+    app = DeepAgentsApp(agent=MagicMock(), thread_id="reload-thread")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        thread_id = "reload-thread"
+        app._pending_skill_refreshes[thread_id] = object()
+        newer = object()
+
+        def reload_during_turn(**_: object) -> None:
+            app._pending_skill_refreshes[thread_id] = newer
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.textual_adapter.execute_task_textual",
+            AsyncMock(side_effect=reload_during_turn),
+        )
+        monkeypatch.setattr(
+            app, "_ensure_goal_state_notice", AsyncMock(return_value=True)
+        )
+        monkeypatch.setattr(app, "_ui_adapter", MagicMock(stream_completed=True))
+        await app._run_agent_task("refresh")
+        assert app._pending_skill_refreshes[thread_id] is newer
+
+
 class TestReloadModelProfileHints:
     """`/reload` should refresh profile-derived command hints."""
 

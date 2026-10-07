@@ -5,12 +5,20 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+import pytest
 from deepagents.backends.filesystem import FilesystemBackend
+from langchain.agents import create_agent
+from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from deepagents.middleware.skills import SkillsState
+    from langchain_core.runnables import RunnableConfig
 
 
 _MERGE_LOGGER = "deepagents_code.skills.merge"
@@ -25,6 +33,61 @@ description: {description}
 ---
 Content
 """)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("namespace", [None, "plugin"])
+async def test_invalidated_catalog_rediscovers_skills(
+    tmp_path: Path, *, asynchronous: bool, namespace: str | None
+) -> None:
+    """Reload adds, removes, and edits cached skills without losing history."""
+    source = (
+        (str(tmp_path), "Skills")
+        if namespace is None
+        else (str(tmp_path), "Skills", namespace)
+    )
+    middleware = PluginSkillsMiddleware(
+        backend=FilesystemBackend(virtual_mode=False), sources=[source]
+    )
+    agent = create_agent(
+        FakeMessagesListChatModel(
+            responses=[AIMessage(content="done", id=f"reply-{i}") for i in range(5)]
+        ),
+        middleware=[middleware],
+        checkpointer=InMemorySaver(),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "skills"}}
+
+    async def turn(*, refresh: bool = False) -> dict:
+        payload: SkillsState = {"messages": [HumanMessage(content="continue")]}
+        if refresh:
+            payload["skills_metadata"] = None
+        if asynchronous:
+            return await agent.ainvoke(payload, config)
+        return agent.invoke(payload, config)
+
+    await turn()
+    _create_skill(tmp_path / "removed", "removed", "Old skill")
+    _create_skill(tmp_path / "edited", "edited", "Old description")
+    await turn()
+    assert agent.get_state(config).values["skills_metadata"] == []
+    await turn(refresh=True)
+    (tmp_path / "removed" / "SKILL.md").unlink()
+    _create_skill(tmp_path / "edited", "edited", "New description")
+    _create_skill(tmp_path / "added", "added", "Added skill")
+    await turn()
+    cached = agent.get_state(config).values["skills_metadata"]
+    assert {skill["description"] for skill in cached} == {
+        "Old skill",
+        "Old description",
+    }
+    result = await turn(refresh=True)
+    prefix = "plugin:" if namespace else ""
+    assert {
+        skill["name"]: skill["description"]
+        for skill in agent.get_state(config).values["skills_metadata"]
+    } == {f"{prefix}edited": "New description", f"{prefix}added": "Added skill"}
+    assert len(result["messages"]) == 10
 
 
 class TestMergeSkillHelper:

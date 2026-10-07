@@ -2,6 +2,18 @@
 
 # Deep Agents Changelog
 
+## [0.7.23](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.22...deepagents==0.7.23) (2026-10-07)
+
+
+### Features
+
+* **sdk:** pin skills by name via `pinned_skills` ([#6810](https://github.com/langchain-ai/deepagents/issues/6810)) ([7022633](https://github.com/langchain-ai/deepagents/commit/70226333bac013b1b1e37acedfb7955f7e6cd6f8))
+
+
+### Bug Fixes
+
+* **sdk:** put a subagent's own `SkillsMiddleware` in the skills slot ([#6820](https://github.com/langchain-ai/deepagents/issues/6820)) ([9a91d79](https://github.com/langchain-ai/deepagents/commit/9a91d79e18dacfe900ac62e59c756e87f3b586a7))
+
 ## [0.7.22](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.21...deepagents==0.7.22) (2026-10-05)
 
 ### Features

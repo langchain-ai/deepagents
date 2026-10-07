@@ -834,6 +834,37 @@ def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
 class TestSkillReadMessage:
     """Skill reads retain normal tool output and lifecycle behavior."""
 
+    @pytest.mark.parametrize("file_path", ["/skills/review/SKILL.md", "main.py"])
+    @pytest.mark.parametrize("restored", [False, True])
+    async def test_running_indicator_color(
+        self, file_path: str, restored: bool
+    ) -> None:
+        app = _tool_msg_app("read_file", {"file_path": file_path})
+        async with app.run_test() as pilot:
+            app.msg.set_running()
+            if restored:
+                widget = MessageData.from_widget(app.msg).to_widget()
+                assert isinstance(widget, ToolCallMessage)
+                await app.msg.remove()
+                app.msg = widget
+                await app.mount(widget)
+            await pilot.pause()
+            status = app.msg.query_one("#status", Static)
+            assert "Running..." in str(status.render())
+            colors = theme.get_theme_colors(app.msg)
+            expected = (
+                colors.skill if file_path.endswith("SKILL.md") else colors.warning
+            )
+            segments = [
+                segment for segment in status.render_line(0) if segment.text.strip()
+            ]
+            assert segments
+            assert all(
+                segment.style is not None
+                and segment.style.color == Style.parse(expected).color
+                for segment in segments
+            )
+
     @pytest.mark.parametrize("error", [False, True])
     async def test_skill_read_output_and_round_trip(self, error: bool) -> None:
         app = _tool_msg_app("read_file", {"file_path": "/skills/[review]/SKILL.md"})

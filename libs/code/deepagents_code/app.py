@@ -3559,6 +3559,8 @@ class DeepAgentsApp(App):
         Named `_lc_thread_id` to avoid collision with Textual's `App._thread_id`.
         """
         self._thread_name = ""
+        self._thread_name_owner: str | None = None
+        """Thread that `_thread_name` belongs to, so reloads of it keep the name."""
         self._thread_name_revision = 0
         self._thread_name_tasks: dict[str, asyncio.Task[None]] = {}
         self._pending_thread_name_proposal: tuple[str, str] | None = None
@@ -19236,8 +19238,12 @@ class DeepAgentsApp(App):
         thread_id = self._lc_thread_id
         self._thread_name_revision += 1
         revision = self._thread_name_revision
-        self._thread_name = ""
-        self._update_terminal_title()
+        if thread_id != self._thread_name_owner:
+            # Clear only on a switch; a reload of the same thread keeps its name
+            # so the tab does not flash the bare app name.
+            self._thread_name = ""
+            self._thread_name_owner = thread_id
+            self._update_terminal_title()
         try:
             name = await get_thread_name(thread_id) if thread_id else None
         except Exception:
@@ -19276,6 +19282,7 @@ class DeepAgentsApp(App):
             if thread_id == self._lc_thread_id:
                 self._thread_name_revision += 1
                 self._thread_name = name
+                self._thread_name_owner = thread_id
                 self._update_terminal_title()
                 self.notify(f"Thread renamed: {name}", markup=False)
         except Exception as exc:

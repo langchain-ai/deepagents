@@ -1538,6 +1538,7 @@ def _convert_ai_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
         "content": content,
         "id": data.get("id"),
         "response_metadata": response_metadata,
+        "chunk_position": data.get("chunk_position"),
     }
 
     if tool_call_chunks:

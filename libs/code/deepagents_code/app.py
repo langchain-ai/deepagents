@@ -19353,21 +19353,24 @@ class DeepAgentsApp(App):
         """Keep first-response eligibility when a later prompt races the state read.
 
         Returns:
-            First-turn context, or an empty list if it has no prompt or response.
+            Context through the first response, or an empty list without one.
         """
         from langchain_core.messages import AIMessage, HumanMessage
 
         seen_prompt = False
+        seen_response = False
         for index, message in enumerate(messages):
             if (
                 isinstance(message, HumanMessage)
                 and message_source(message) != "user_shell_command"
             ):
-                if seen_prompt:
+                if seen_response:
                     messages = messages[:index]
                     break
                 seen_prompt = True
-        if seen_prompt and any(isinstance(message, AIMessage) for message in messages):
+            elif seen_prompt and isinstance(message, AIMessage):
+                seen_response = True
+        if seen_response:
             return messages
         return []
 

@@ -561,12 +561,18 @@ async def test_auto_naming_counts_prompts_after_flushing_shell_context(
         rename.assert_not_awaited()
 
 
+@pytest.mark.parametrize("interrupted_prompts", [0, 1, 2])
 async def test_auto_naming_survives_second_prompt_during_state_read(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupted_prompts: int,
 ) -> None:
     """A subsequent turn cannot consume the first completed turn's naming attempt."""
     started, release = asyncio.Event(), asyncio.Event()
-    messages = [HumanMessage("Fix caching"), AIMessage("Here is the fix")]
+    messages: list[HumanMessage | AIMessage] = [
+        HumanMessage("Interrupted prompt") for _ in range(interrupted_prompts)
+    ]
+    messages.extend([HumanMessage("Fix caching"), AIMessage("Here is the fix")])
 
     async def read_state(_thread_id: str) -> dict[str, object]:
         started.set()
@@ -589,6 +595,7 @@ async def test_auto_naming_survives_second_prompt_during_state_read(
 
     rename.assert_awaited_once_with("original", "Cache repair", only_if_unnamed=True)
     assert [message.content for message in generate.call_args.args[1]] == [
+        *(["Interrupted prompt"] * interrupted_prompts),
         "Fix caching",
         "Here is the fix",
     ]

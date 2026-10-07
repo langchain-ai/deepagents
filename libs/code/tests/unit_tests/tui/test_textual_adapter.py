@@ -1762,6 +1762,33 @@ class TestExecuteTaskTextualStreamCompletion:
         assert not adapter.stream_completed
 
 
+@pytest.mark.parametrize("refresh", [False, True])
+async def test_skill_refresh_reaches_ordinary_run_input(*, refresh: bool) -> None:
+    """Refresh invalidates graph state without replacing the user's message."""
+    agent = _SequencedAgent([[]])
+    adapter = TextualUIAdapter(
+        mount_message=_mock_mount,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+    )
+    await execute_task_textual(
+        user_input="continue",
+        agent=agent,
+        assistant_id="assistant",
+        session_state=_session_state(),
+        adapter=adapter,
+        refresh_skills=refresh,
+    )
+    payload = agent.stream_inputs[0]
+    assert isinstance(payload, dict)
+    assert payload["messages"][-1]["content"] == "continue"
+    if refresh:
+        assert "skills_metadata" in payload
+        assert payload["skills_metadata"] is None
+    else:
+        assert "skills_metadata" not in payload
+
+
 class TestExecuteTaskTextualTurnMarkers:
     """End-to-end: turn markers advance and reach the stream config metadata."""
 

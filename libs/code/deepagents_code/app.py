@@ -20124,6 +20124,9 @@ class DeepAgentsApp(App):
                 self._ui_adapter.stream_completed
                 and first_response
                 and graph_input is None
+                and not is_internal_message(
+                    {"type": "human", "content": message, **(message_kwargs or {})}
+                )
                 and title_thread_id
             ):
                 self._thread_response_completed[title_thread_id] = True

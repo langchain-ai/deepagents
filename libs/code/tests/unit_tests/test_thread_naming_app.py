@@ -716,6 +716,60 @@ async def test_auto_naming_recovers_after_partial_interruption(
         schedule.assert_called_with("new-thread", "provider:chat", model_params={})
 
 
+async def test_auto_naming_remains_eligible_after_goal_continuations(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hidden goal work leaves automatic naming available for a normal prompt."""
+    adapter = MagicMock(stream_completed=True)
+    messages: list[HumanMessage | AIMessage] = []
+
+    def execute(
+        *, user_input: str, message_kwargs: dict[str, object] | None, **_kwargs: object
+    ) -> None:
+        metadata = (message_kwargs or {}).get("additional_kwargs", {})
+        assert isinstance(metadata, dict)
+        messages.extend(
+            [HumanMessage(user_input, additional_kwargs=metadata), AIMessage("Done")]
+        )
+        naming_app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="Done")
+        )
+
+    monkeypatch.setattr(naming_app, "_ui_adapter", adapter)
+    monkeypatch.setattr(naming_app, "_agent", MagicMock())
+    monkeypatch.setattr(naming_app, "_cleanup_agent_task", AsyncMock())
+    monkeypatch.setattr(naming_app, "_sync_session_cost_from_checkpoint", AsyncMock())
+    monkeypatch.setattr(naming_app, "_refresh_cache_timing", AsyncMock())
+    monkeypatch.setattr(naming_app, "_send_to_agent", naming_app._run_agent_task)
+    monkeypatch.setattr(
+        naming_app,
+        "_get_thread_state_values",
+        AsyncMock(return_value={"messages": messages}),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.tui.textual_adapter.execute_task_textual",
+        AsyncMock(side_effect=execute),
+    )
+    generate = AsyncMock(return_value="Cache repair")
+    rename = AsyncMock(return_value=False)
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    async with naming_app.run_test():
+        await naming_app._continue_goal_work("created")
+        await naming_app._continue_goal_work("resumed")
+        await asyncio.gather(*naming_app._thread_name_tasks.values())
+        generate.assert_not_awaited()
+        rename.assert_not_awaited()
+        await naming_app._run_agent_task("Fix caching")
+        await asyncio.gather(*naming_app._thread_name_tasks.values())
+        rename.assert_awaited_once_with(
+            "original", "Cache repair", only_if_unnamed=True
+        )
+        await naming_app._run_agent_task("Another prompt")
+        await asyncio.gather(*naming_app._thread_name_tasks.values())
+        rename.assert_awaited_once()
+
+
 async def test_manual_name_cancels_pending_proposal(
     naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
 ) -> None:

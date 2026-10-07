@@ -122,6 +122,13 @@ class SubAgent(TypedDict):
     interrupt_on: NotRequired[dict[str, bool | InterruptOnConfig]]
     """Configure human-in-the-loop for specific tools. Requires a checkpointer."""
 
+    interrupt_mode: NotRequired[Literal["batched", "per_call"]]
+    """How human-in-the-loop pauses: `"batched"` (one interrupt per model turn) or
+    `"per_call"` (one interrupt per gated tool call).
+
+    Defaults to the parent agent's `interrupt_mode`.
+    """
+
     skills: NotRequired[list[str]]
     """Skill source paths for `SkillsMiddleware`. Forbidden under `mode="fork"`.
 
@@ -560,7 +567,7 @@ def create_sub_agent(
 
     interrupt_on = spec.get("interrupt_on")
     if interrupt_on:
-        middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on))
+        middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on, interrupt_mode=spec.get("interrupt_mode", "batched")))
 
     if not any(m.name == UnsupportedContentMiddleware.__name__ for m in middleware):
         middleware.append(UnsupportedContentMiddleware())

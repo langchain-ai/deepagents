@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Annotated, Any, Required, cast
+from typing import Annotated, Any, Literal, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -286,6 +286,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     permissions: list[FilesystemPermission] | None = None,
     backend: BackendProtocol | None = None,
     interrupt_on: dict[str, bool | InterruptOnConfig] | None = None,
+    interrupt_mode: Literal["batched", "per_call"] = "batched",
     response_format: ResponseFormat[ResponseT] | type[ResponseT] | dict[str, Any] | None = None,
     state_schema: type[DeepAgentState] | None = None,
     context_schema: type[ContextT] | None = None,
@@ -530,6 +531,24 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             For example, `interrupt_on={"edit_file": True}` pauses before
             every edit.
+        interrupt_mode: How human-in-the-loop pauses for `interrupt_on`.
+
+            - `"batched"` (default): one interrupt per model turn, listing every
+                gated tool call.
+            - `"per_call"`: one interrupt per gated tool call, with a typed
+                `response_schema`, each answered with a single decision keyed by
+                interrupt ID.
+
+            Applies to the main agent and to declarative `SubAgent` specs, unless
+            a spec sets its own `interrupt_mode`.
+
+            In `"per_call"` mode the approval happens while the tool call runs,
+            inside middleware passed in `middleware` (or a subagent spec's
+            `middleware`). A tool retry middleware there asks the reviewer again on
+            each retry, and an invalid answer is retried or turned into a tool
+            error instead of raising.
+
+            See [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware].
         response_format: A structured output response format to use for the agent.
         state_schema: Custom state schema for the agent graph. Must be a
             `TypedDict` subclass of
@@ -809,6 +828,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 processed["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec.get("system_prompt", ""))
             if subagent_interrupt_on is not None:
                 processed["interrupt_on"] = subagent_interrupt_on
+                processed["interrupt_mode"] = spec.get("interrupt_mode", interrupt_mode)
             if is_forked:
                 inline_subagents.append(cast("SubAgent", processed))
             else:
@@ -882,6 +902,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         )
         if gp_interrupt_on is not None:
             general_purpose_spec["interrupt_on"] = gp_interrupt_on
+            general_purpose_spec["interrupt_mode"] = interrupt_mode
 
         inline_subagents.insert(0, general_purpose_spec)
 
@@ -948,7 +969,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         interrupt_on,
     )
     if main_interrupt_on is not None:
-        deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on))
+        deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on, interrupt_mode=interrupt_mode))
     deepagent_middleware.append(UnsupportedContentMiddleware())
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,

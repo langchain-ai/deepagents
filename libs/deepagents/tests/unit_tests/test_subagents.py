@@ -10,7 +10,7 @@ import json
 import uuid
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 from unittest.mock import MagicMock
 
 import pytest
@@ -1134,6 +1134,104 @@ class TestSubAgents:
         assert action_request["args"] == {}
         assert "requires_approval" in action_request["description"]
         assert interrupt_value["review_configs"][0]["action_name"] == "requires_approval"
+
+    def test_main_agent_pauses_per_call_with_interrupt_mode(self) -> None:
+        ran: list[str] = []
+
+        @tool
+        def requires_approval() -> str:
+            """A tool that should trigger HITL."""
+            ran.append("requires_approval")
+            return "approved"
+
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="",
+                            tool_calls=[{"name": "requires_approval", "args": {}, "id": "call_gated", "type": "tool_call"}],
+                        ),
+                        AIMessage(content="done"),
+                    ]
+                )
+            ),
+            tools=[requires_approval],
+            checkpointer=InMemorySaver(),
+            interrupt_on={"requires_approval": True},
+            interrupt_mode="per_call",
+        )
+        config: RunnableConfig = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+        [interrupt] = agent.invoke({"messages": [HumanMessage(content="Go.")]}, config)["__interrupt__"]
+        assert interrupt.value["type"] == "tool_approval"
+        assert (interrupt.value["name"], interrupt.value["tool_call_id"]) == ("requires_approval", "call_gated")
+        assert interrupt.response_schema is not None
+        assert ran == []
+
+        agent.invoke(Command(resume={interrupt.id: {"type": "approve"}}), config)
+        assert ran == ["requires_approval"]
+
+    @pytest.mark.parametrize(
+        ("subagent_mode", "expected_type"),
+        [(None, "tool_approval"), ("batched", None)],
+        ids=["inherits_parent", "own_setting_wins"],
+    )
+    def test_subagent_interrupt_mode_defaults_to_the_parent_agent(self, subagent_mode: Literal["batched"] | None, expected_type: str | None) -> None:
+        @tool
+        def requires_approval() -> str:
+            """A tool that should trigger HITL."""
+            return "approved"
+
+        specialist: SubAgent = {
+            "name": "specialist",
+            "description": "Uses an approval-gated tool.",
+            "system_prompt": "Use the approval-gated tool.",
+            "model": GenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="",
+                            tool_calls=[{"name": "requires_approval", "args": {}, "id": "call_gated", "type": "tool_call"}],
+                        )
+                    ]
+                )
+            ),
+            "tools": [requires_approval],
+        }
+        if subagent_mode is not None:
+            specialist["interrupt_mode"] = subagent_mode
+        parent_agent = create_deep_agent(
+            model=GenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "task",
+                                    "args": {"description": "Use the approval-gated tool.", "subagent_type": "specialist"},
+                                    "id": "call_task",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        )
+                    ]
+                )
+            ),
+            checkpointer=InMemorySaver(),
+            interrupt_on={"requires_approval": True},
+            interrupt_mode="per_call",
+            subagents=[specialist],
+        )
+
+        result = parent_agent.invoke(
+            {"messages": [HumanMessage(content="Delegate to the specialist.")]},
+            config={"configurable": {"thread_id": str(uuid.uuid4())}},
+        )
+
+        [interrupt] = result["__interrupt__"]
+        assert interrupt.value.get("type") == expected_type
 
     def test_subagent_interrupt_on_override_disables_parent_interrupt(self) -> None:
         called = False

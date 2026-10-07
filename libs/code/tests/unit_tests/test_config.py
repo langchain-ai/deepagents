@@ -5168,7 +5168,9 @@ class TestCreateModelAnthropicThinkingBinding:
         }
         assert kwargs["betas"] == ["thinking-binding-controls-2026-08-01"]
 
-    @pytest.mark.parametrize("model_name", ["claude-opus-5", "claude-sonnet-5-5"])
+    @pytest.mark.parametrize(
+        "model_name", ["claude-opus-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+    )
     @pytest.mark.parametrize("display", [None, "summarized", "omitted"])
     def test_preserves_reasoning_display_in_anthropic_payload(
         self, display: str | None, model_name: str
@@ -5195,6 +5197,51 @@ class TestCreateModelAnthropicThinkingBinding:
         }
         assert payload["output_config"]["effort"] == "high"
         assert "thinking-binding-controls-2026-08-01" in payload["betas"]
+
+    def test_haiku_sidecar_profile_and_forced_tool_payload(self) -> None:
+        from langchain_anthropic import ChatAnthropic
+        from langchain_core.messages import HumanMessage
+        from langchain_core.runnables import RunnableBinding
+        from pydantic import BaseModel
+
+        class Decision(BaseModel):
+            allowed: bool
+
+        result = create_model(
+            "anthropic:claude-haiku-5-5",
+            extra_kwargs={"api_key": "test-key", "reasoning_effort": "medium"},
+            bind_preserved_thinking=False,
+        )
+        model = result.model
+        assert isinstance(model, ChatAnthropic)
+        assert result.context_limit == 1_000_000
+        assert model.profile is not None
+        assert model.profile["max_output_tokens"] == 128_000
+        bound = model.bind_tools([Decision], tool_choice="Decision")
+        assert isinstance(bound, RunnableBinding)
+        payload = model._get_request_payload(
+            [HumanMessage("Is this allowed?")], **bound.kwargs
+        )
+        assert payload["tool_choice"] == {"type": "tool", "name": "Decision"}
+        assert payload["output_config"]["effort"] == "medium"
+        assert payload["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert not {"temperature", "top_p", "top_k", "betas"} & payload.keys()
+
+    def test_haiku_fallback_preserves_upstream_and_explicit_profiles(self) -> None:
+        result = create_model(
+            "anthropic:claude-haiku-5-5",
+            extra_kwargs={
+                "api_key": "test-key",
+                "profile": {"max_input_tokens": 250_000},
+            },
+        )
+        assert result.context_limit == 250_000
+        overridden = create_model(
+            "anthropic:claude-haiku-5-5",
+            extra_kwargs={"api_key": "test-key"},
+            profile_overrides={"max_input_tokens": 500_000},
+        )
+        assert overridden.context_limit == 500_000
 
     @patch("langchain.chat_models.init_chat_model")
     def test_opt_out_leaves_thinking_unset(self, mock_init: Mock) -> None:

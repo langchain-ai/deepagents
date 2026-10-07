@@ -24,9 +24,6 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-03T08:05:07.881Z
 generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
 ---
 

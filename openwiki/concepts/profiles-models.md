@@ -3,9 +3,6 @@ type: model resolution and runtime profiles
 title: Models and Harness Profiles
 description: Describes server-owned model discovery and safe client presentation data, model construction and request-time switching, retry ownership, and prompt-cache identity state. Explains the boundaries between capability profiles, credentials, constructor settings, and persisted session metadata.
 tags: [models, model-catalog, runtime-selection, retries, prompt-cache, capability-profiles, dcode]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-06T08:06:27.683Z
 sources:
   - id: openwiki-source-c0415071c1e2979d2795bd05
     resource: repo://libs/code/deepagents_code/cold_cache.py
@@ -29,9 +26,14 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_configurable_model.py
   - id: openwiki-source-e012c5898b6bc6cb1317467d
     resource: repo://libs/code/tests/unit_tests/test_model_catalog.py
+  - id: openwiki-source-0dfd43fc1de1af401946bc38
+    resource: repo://libs/code/tests/unit_tests/test_model_config.py
   - id: openwiki-source-c04c6318f6e59e0d1c9d6182
     resource: repo://libs/code/tests/unit_tests/test_model_retry.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-06T08:06:27.683Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-07T08:06:51.789Z
 ---
 
 # Models and Harness Profiles
@@ -78,6 +80,16 @@ The metadata endpoints use the same boundary. `GET /dcode/model` returns cached 
 `create_model()` parses or infers a provider and turns the requested model into a concrete `BaseChatModel` plus a `ModelResult`. The allowlist is checked after provider inference but before stored credentials are bridged, provider hooks run, or provider packages are imported. A denied request therefore has no credential or provider-initialization side effect.
 
 For ordinary constructors, static provider parameters and per-model parameter-table entries form configuration defaults, with the per-model table winning per key; runtime or CLI `extra_kwargs` then win. Provider profiles may contribute construction defaults before that merge. Stored credentials are resolved on the inference host and wired into construction rather than returned to the client. `openai_codex` uses its OAuth-aware builder; a configured `class_path` is an explicit extension point and executes user-configured Python, so the configuration file must be trusted.
+
+### Credentials and environment precedence
+
+Credential lookup and credential presentation are deliberately different concerns. The inference host can use a stored credential and can bridge it to the canonical environment name a provider SDK reads, but catalog and metadata payloads communicate only readiness, source category, and an environment-variable *name* where useful. They never carry a credential value, endpoint secret, or model instance to the client.
+
+For an ordinary canonical environment-variable name, `resolve_env_var()` first looks for `DEEPAGENTS_CODE_<NAME>` in the active environment and only then looks for `<NAME>`. Presence is the decision: an empty prefixed variable shadows a non-empty canonical variable and resolves as missing. This is useful for a scoped environment that must suppress an inherited credential, but it also means operators should remove the prefixed variable—not merely set it empty—when they want the canonical value to apply. The same per-variable rule applies to registered endpoint variables, so a key and endpoint can resolve from different tiers; dcode diagnoses that split by variable name only and does not log sensitive values.
+
+A stored `/auth` credential is a server-side source. During ordinary construction, dcode applies stored credentials before provider initialization and gives them precedence over a plain canonical environment value; its paired endpoint handling clears alternate endpoint variables when necessary so a provider-native credential is not accidentally sent to an inherited gateway. A prefixed environment variable remains authoritative for `resolve_env_var()` because only unprefixed names are bridged. Do not attempt to reproduce this precedence in a remote client or copy a credential into a catalog request.
+
+Failures are typed so callers can offer a safe, targeted recovery instead of parsing SDK text. `ModelNotAllowedError` distinguishes a policy denial—including deny-all policy and an unqualified unmatchable spec—and identifies the policy source and permitted models. `MissingCredentialsError` identifies the selected provider and its canonical credential variable when one is known. Provider readiness additionally distinguishes configured, missing, implicit, provider-managed, no-auth-required, and unknown cases; unknown means the provider SDK must decide at construction time, not that the client should solicit or transmit a secret.
 
 Capability metadata has a separate precedence chain:
 
@@ -146,6 +158,7 @@ Cache policy is conservative. It applies only to documented Anthropic and OpenAI
 
 ## Focused test coverage and change guidance
 
+- `test_model_config.py` covers exact allowlist parsing and policy diagnostics, prefixed-variable precedence (including empty-shadow behavior), stored-credential and endpoint pairing, split-source diagnostics that do not log values, provider readiness, and gateway/custom-provider boundaries.
 - `test_model_catalog.py` verifies that a remote picker uses catalog data rather than local provider configuration, preserves server policy, retains readiness for setup flows, and rejects incoherent readiness payloads.
 - `test_configurable_model.py` checks request-time overrides, failure fallback and strict behavior, checkpoint timing, cache-activity attribution, and the no-persistence subagent path.
 - `test_model_retry.py` covers transient classification, exception-group traversal, `Retry-After`, total-delay guards, model-specific budgets, lifecycle events, and streamed-output supersession.

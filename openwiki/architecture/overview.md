@@ -3,9 +3,6 @@ type: system architecture
 title: Architecture Overview
 description: How the Deep Agents monorepo separates the reusable SDK from dcode, ACP, Talon, evaluations, and optional provider integrations. Covers dependency direction, state ownership, package versions, and the lifecycle boundaries of the long-running host.
 tags: [architecture, deepagents, langgraph, sdk, talon, integrations]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-06T08:06:27.683Z
 sources:
   - id: openwiki-source-ffc41789c892ca61e2829a4c
     resource: repo://libs/acp/deepagents_acp/server.py
@@ -27,6 +24,8 @@ sources:
     resource: repo://libs/evals/pyproject.toml
   - id: openwiki-source-8565b7f246ed6e34051d8dfe
     resource: repo://libs/evals/README.md
+  - id: openwiki-source-b38d20ec21c25c8c726dc1b6
+    resource: repo://libs/partners/quickjs/pyproject.toml
   - id: openwiki-source-7da6afe7fe64c6589cf1fed0
     resource: repo://libs/README.md
   - id: openwiki-source-6a038e6e1a11f450bcafce54
@@ -49,7 +48,10 @@ sources:
     resource: repo://libs/talon/tests/test_host.py
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-10-06T08:06:27.683Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-07T08:06:51.789Z
 ---
 
 # Architecture Overview
@@ -65,15 +67,16 @@ This repository is a monorepo of independently versioned packages, not one deplo
 
 ## Package map and supported baselines
 
-| Package | Current version | Role and key dependency direction |
+| Package | Current version and Python baseline | Role and manifest-backed direct dependencies |
 | --- | --- | --- |
-| `deepagents` | `0.7.22` | Reusable agent harness; depends on LangChain and exposes `create_deep_agent()`. Python `>=3.11,<4.0`. |
-| `deepagents-code` (`dcode`) | `0.1.81` | Reference terminal coding-agent product; pins `deepagents==0.7.22` and depends on `deepagents-acp`. Python `>=3.12,<4.0`. |
-| `deepagents-acp` | `0.0.12` | Agent Client Protocol bridge over Deep Agents graphs. Python `>=3.11`. |
-| `deepagents-talon` | `0.0.9` | Experimental local channel-and-scheduler host; depends on both `deepagents` and `deepagents-code`. Python `>=3.12`. |
-| `deepagents-evals` | `0.0.1` | End-to-end evaluation suite and Harbor integration. Python `>=3.12,<3.14`. |
+| `deepagents` | `0.7.22`; Python `>=3.11,<4.0` | Reusable harness exposing `create_deep_agent()`. It requires LangChain `>=1.4.3,<2.0.0`, LangChain Core `>=1.6.6,<2.0.0`, Anthropic and Google GenAI integrations, LangSmith, packaging, and wcmatch. AWS, QuickJS, and video support are extras. |
+| `deepagents-acp` | `0.0.12`; Python `>=3.11` | Agent Client Protocol bridge. It directly requires `deepagents` (without a version bound), `agent-client-protocol>=0.10.1`, and `python-dotenv>=1.2.2`. |
+| `deepagents-code` (`dcode`) | `0.1.81`; Python `>=3.12,<4.0` | Reference terminal product. It pins `deepagents==0.7.22`, requires `deepagents-acp>=0.0.10,<1.0.0`, and brings client/server, terminal UI, model-provider, MCP, sandbox, and QuickJS dependencies; most additional model and sandbox providers are extras. |
+| `deepagents-talon` | `0.0.9`; Python `>=3.12` | Experimental local channel-and-scheduler host. It directly requires `deepagents>=0.7.0`, `deepagents-code>=0.1.71,<1.0.0`, and LangChain/LangGraph, channel, MCP, SQLite, and scheduler-facing dependencies. History, MongoDB, PostgreSQL, and media support are extras. |
+| `deepagents-evals` | `0.0.1`; Python `>=3.12,<3.14` | End-to-end evaluation suite. It directly requires `deepagents>=0.6.12`, `deepagents-code>=0.1.27`, Harbor/LangSmith, model integrations, and sandbox runtimes. |
+| `langchain-quickjs` | `0.3.8`; Python `>=3.11,<4.0` | Optional partner package providing JavaScript REPL middleware. It requires `deepagents>=0.7.0,<0.8.0` plus LangChain, LangGraph, `quickjs-rs`, and `bsdiff4`. |
 
-The `partners` group contains Daytona, Modal, Runloop, Vercel, and QuickJS integrations. They are optional integrations selected by an embedding product or host, not a required layer beneath every SDK graph.
+The `partners` group contains Daytona, Modal, Runloop, Vercel, and QuickJS integrations. They are optional integrations selected by an embedding product or host, not a required layer beneath every SDK graph. In the development manifests, dcode maps all five partner packages to local editable sources; the evals package maps QuickJS that way as well.
 
 ## Runtime layers and dependency direction
 
@@ -81,20 +84,18 @@ Deep Agents is not another graph runtime. LangGraph owns stateful graph executio
 
 ```mermaid
 flowchart TD
-  Product["Application or product"] --> SDK["deepagents SDK"]
-  DcodeClient["dcode terminal client"] --> DcodeServer["dcode agent server"]
-  DcodeServer --> SDK
-  Editor["ACP editor client"] --> ACP["deepagents-acp server"]
+  Dcode["deepagents-code"] --> SDK["deepagents SDK"]
+  Dcode --> ACP["deepagents-acp"]
   ACP --> SDK
-  Channel["Talon channel adapter"] --> Host["TalonHost"]
-  Scheduler["Talon cron scheduler"] --> Host
-  Host --> Runtime["DeepAgentRuntime"]
-  Runtime --> SDK
+  Talon["deepagents-talon"] --> SDK
+  Talon --> Dcode
   Evals["deepagents-evals"] --> SDK
+  Evals --> Dcode
+  QuickJS["langchain-quickjs"] --> SDK
   SDK --> LangChain["LangChain create_agent"]
   LangChain --> LangGraph["LangGraph runtime"]
 ```
-This shows the intended consumption direction: products and protocol adapters use the SDK, while LangChain and LangGraph provide the layers below it.
+This shows the direct, internal package dependencies declared by the current manifests, plus the SDK's runtime layering. The arrows point from a consumer to what it requires. Dcode, Talon, and QuickJS also declare direct LangChain and/or LangGraph dependencies, so this is not a claim that every runtime dependency is mediated only by the SDK.
 
 `create_deep_agent()` is the SDK assembly point. It resolves the model and harness profile, resolves the backend (defaulting to `StateBackend`), builds the main middleware stack, prepares caller and profile prompt content, processes supplied subagents, adds a default general-purpose subagent when applicable, then delegates to `langchain.agents.create_agent(...)`. The result is the compiled graph that applications and hosts invoke.
 

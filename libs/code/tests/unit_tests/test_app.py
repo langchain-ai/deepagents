@@ -29579,8 +29579,18 @@ class TestToolGroupCollapse:
             assert isinstance(rendered, Content)
             assert "Read 1 file, ran 1 shell command" in rendered.plain
 
-    @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
-    async def test_regroup_leaves_excluded_tools_expanded(self, tool_name: str) -> None:
+    @pytest.mark.parametrize(
+        ("tool_name", "args"),
+        [
+            ("ask_user", {}),
+            ("edit_file", {}),
+            ("write_todos", {}),
+            ("read_file", {"file_path": "/skills/review/SKILL.md"}),
+        ],
+    )
+    async def test_regroup_leaves_excluded_tools_expanded(
+        self, tool_name: str, args: dict[str, Any]
+    ) -> None:
         """Excluded tools stay visible and split adjacent tool groups.
 
         `edit_file` is included deliberately: a row only self-hides once
@@ -29599,7 +29609,7 @@ class TestToolGroupCollapse:
                 messages,
                 [
                     ("before", "read_file", {"file_path": "a.py"}, "success"),
-                    ("excluded", tool_name, {}, "success"),
+                    ("excluded", tool_name, args, "success"),
                     ("after", "execute", {"command": "ls"}, "success"),
                 ],
             )
@@ -29968,9 +29978,17 @@ class TestToolGroupCollapse:
             assert not diff.has_class("-grouped")
             assert app._active_tool_group is None
 
-    @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
+    @pytest.mark.parametrize(
+        ("tool_name", "args"),
+        [
+            ("ask_user", {}),
+            ("edit_file", {}),
+            ("write_todos", {}),
+            ("read_file", {"path": "/skills/review/skill.md"}),
+        ],
+    )
     async def test_mount_excluded_tool_closes_open_live_group(
-        self, tool_name: str
+        self, tool_name: str, args: dict[str, Any]
     ) -> None:
         """An excluded tool closes the live group; the next tool opens a new one."""
         from deepagents_code.tui.widgets.messages import ToolCallMessage
@@ -29982,7 +30000,7 @@ class TestToolGroupCollapse:
             await messages.remove_children()
 
             first = ToolCallMessage("execute", {"command": "ls"})
-            excluded = ToolCallMessage(tool_name, {})
+            excluded = ToolCallMessage(tool_name, args)
             later = ToolCallMessage("read_file", {"file_path": "a.py"})
 
             await app._mount_message(first)

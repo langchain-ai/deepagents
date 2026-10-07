@@ -147,6 +147,7 @@ from deepagents_code.notifications import (
     PendingNotification,
     UpdateAvailablePayload,
 )
+from deepagents_code.tool_display import is_skill_read
 from deepagents_code.tui.widgets._links import open_url_async
 from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.context_usage import ContextUsageScreen
@@ -20700,6 +20701,7 @@ class DeepAgentsApp(App):
                 message.type == MessageType.TOOL
                 and message.tool_status == ToolStatus.SUCCESS
                 and message.tool_name not in _TOOL_GROUP_EXCLUSIONS
+                and not is_skill_read(message.tool_name, message.tool_args)
                 and not message.tool_display_caveat
             ),
         ):
@@ -21667,6 +21669,7 @@ class DeepAgentsApp(App):
         is_groupable_tool = (
             isinstance(widget, ToolCallMessage)
             and widget.tool_name not in _TOOL_GROUP_EXCLUSIONS
+            and not is_skill_read(widget.tool_name, widget.args)
         )
         is_groupable_diff = (
             isinstance(widget, DiffMessage)
@@ -21983,6 +21986,7 @@ class DeepAgentsApp(App):
                 if isinstance(child, ToolCallMessage):
                     groupable = (
                         child.tool_name not in _TOOL_GROUP_EXCLUSIONS
+                        and not is_skill_read(child.tool_name, child.args)
                         and child.is_success
                         # A caveat is carried in the row's own output and the
                         # summary line is built from tool names, so folding one

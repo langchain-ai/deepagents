@@ -35,9 +35,15 @@ class TerminalTitle:
         Args:
             template: Title with app_name, thread_name, cwd, and branch fields.
         """
-        self._template = (
-            template if _valid_template(template) else DEFAULT_TERMINAL_TAB_TITLE
-        )
+        if not _valid_template(template):
+            logger.warning(
+                "Ignoring [terminal].tab_title=%r: use only plain %s fields; using %r",
+                template,
+                ", ".join(f"{{{field}}}" for field in sorted(_FIELDS)),
+                DEFAULT_TERMINAL_TAB_TITLE,
+            )
+            template = DEFAULT_TERMINAL_TAB_TITLE
+        self._template = template
         self._stream: TextIO | None = None
         self._last_title: str | None = None
 

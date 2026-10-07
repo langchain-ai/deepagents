@@ -1872,6 +1872,8 @@ class TestExecuteTaskTextualTurnMarkers:
         )
 
         assert agent.configs[0]["metadata"]["ls_skill_name"] == "code-review"
+        assert agent.stream_inputs[0]["pinned_skills"] == ["code-review"]
+        assert agent.stream_inputs[0]["messages"][0]["content"] == "review this"
 
 
 class TestExecuteTaskTextualClientLifecycle:
@@ -1899,6 +1901,7 @@ class TestExecuteTaskTextualClientLifecycle:
         ):
             await execute_task_textual(
                 user_input="secret prompt",
+                skill_name="code-review",
                 agent=agent,
                 assistant_id="assistant",
                 session_state=_session_state(),
@@ -1908,6 +1911,7 @@ class TestExecuteTaskTextualClientLifecycle:
         on_user_prompt.assert_awaited_once()
         stream_input = agent.stream_inputs[0]
         assert isinstance(stream_input, dict)
+        assert "pinned_skills" not in stream_input
         assert stream_input["messages"] == [
             {"role": "system", "content": "replacement context"}
         ]

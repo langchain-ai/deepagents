@@ -20586,20 +20586,39 @@ class DeepAgentsApp(App):
         result: list[MessageData] = []
         # Maps tool_call_id -> index into result list
         pending_tool_indices: dict[str, int] = {}
+        pending_skill: MessageData | None = None
 
         for msg in messages:
             if is_internal_message(msg):
                 continue
+            invocation = pending_skill
+            pending_skill = None
             if isinstance(msg, HumanMessage):
                 content = (
                     msg.content if isinstance(msg.content, str) else str(msg.content)
                 )
 
-                # Detect skill invocations persisted via additional_kwargs
-                skill_meta = (msg.additional_kwargs or {}).get("__skill")
+                metadata = msg.additional_kwargs or {}
+                pinned = metadata.get("lc_source") == "pinned_skill"
+                if (
+                    pinned
+                    and content.startswith("<skill ")
+                    and content.endswith("\n</skill>")
+                ):
+                    content = content.partition("\n")[2].removesuffix("\n</skill>")
+                skill_meta = metadata.get("skill" if pinned else "__skill")
                 if isinstance(skill_meta, dict) and skill_meta.get("name"):
-                    result.append(
-                        MessageData(
+                    if (
+                        pinned
+                        and invocation is not None
+                        and invocation.skill_name == skill_meta["name"]
+                    ):
+                        invocation.skill_body = content
+                        invocation.skill_description = str(
+                            skill_meta.get("description", "")
+                        )
+                    else:
+                        row = MessageData(
                             type=MessageType.SKILL,
                             content="",
                             skill_name=skill_meta["name"],
@@ -20607,8 +20626,10 @@ class DeepAgentsApp(App):
                             skill_source=str(skill_meta.get("source", "")),
                             skill_args=str(skill_meta.get("args", "")),
                             skill_body=content,
-                        ),
-                    )
+                        )
+                        result.append(row)
+                        if not pinned:
+                            pending_skill = row
                 else:
                     result.append(MessageData(type=MessageType.USER, content=content))
 

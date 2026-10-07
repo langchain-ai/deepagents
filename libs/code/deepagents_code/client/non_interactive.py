@@ -2277,6 +2277,14 @@ async def _run_agent_loop(
         )
         raise
 
+    skill = user_msg.get("additional_kwargs", {}).get("__skill")
+    if (
+        user_msg in stream_input["messages"]
+        and isinstance(skill, dict)
+        and isinstance(skill.get("name"), str)
+    ):
+        stream_input["pinned_skills"] = [skill["name"]]
+
     start_time = time.monotonic()
 
     run_completed = False
@@ -2632,8 +2640,8 @@ async def run_non_interactive(
         sandbox_snapshot_name: Snapshot (langsmith) or blueprint (runloop) name.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
-        initial_skill: Optional skill name whose `SKILL.md` instructions wrap
-            the user message before sending it to the agent.
+        initial_skill: Optional skill name whose instructions the SDK pins
+            before the first model call.
         startup_cmd: Shell command to run at startup, before the agent runs.
 
             Output follows the same console routing as other app messages:

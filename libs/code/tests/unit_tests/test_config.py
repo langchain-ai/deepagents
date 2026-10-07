@@ -3156,6 +3156,107 @@ class TestLangsmithSecretRedaction:
         assert secret not in redacted
         assert "[SECRET_DETECTED]" in redacted
 
+    @pytest.mark.parametrize(
+        "template",
+        [
+            (
+                'langsmithLicenseKey: "{license}"\napiKeySalt: "{salt}"\n'
+                "hostname: langsmith.example.test\nreplicas: 2\n"
+            ),
+            (
+                "langsmithLicenseKey: '{license}'\napiKeySalt: '{salt}'\n"
+                "hostname: langsmith.example.test\nreplicas: 2\n"
+            ),
+            (
+                "langsmithLicenseKey: {license}\napiKeySalt: {salt}\n"
+                "hostname: langsmith.example.test\nreplicas: 2\n"
+            ),
+            (
+                '{{"langsmithLicenseKey": "{license}", "apiKeySalt": "{salt}", '
+                '"hostname": "langsmith.example.test", "replicas": 2}}'
+            ),
+            (
+                "LANGSMITH_LICENSE_KEY={license}\nAPI_KEY_SALT={salt}\n"
+                "HOSTNAME=langsmith.example.test\nREPLICAS=2\n"
+            ),
+            (
+                'langsmithLicenseKey = "{license}"\napiKeySalt = "{salt}"\n'
+                'hostname = "langsmith.example.test"\nreplicas = 2\n'
+            ),
+        ],
+    )
+    def test_redacts_license_keys_and_salts_in_config_files(
+        self,
+        template: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Config file secrets are redacted without changing their surroundings."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client") as client_cls,
+            patch("langsmith.configure"),
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        license_key = "lcl" + "FAKEONLY0123456789" * 3
+        salt = "0123456789abcdef" * 4
+        source = template.format(license=license_key, salt=salt)
+        redacted = client_cls.call_args.kwargs["anonymizer"]([{"text": source}])
+        assert redacted == [
+            {
+                "text": template.format(
+                    license="[SECRET_DETECTED]", salt="[SECRET_DETECTED]"
+                )
+            }
+        ]
+        assert license_key not in str(redacted)
+        assert salt not in str(redacted)
+
+    @pytest.mark.parametrize(
+        ("source", "expected"),
+        [
+            (
+                "apiKeySalt: ZmFrZS1zYWx0LW5vdC1hLWNyZWRlbnRpYWw=",
+                "apiKeySalt: [SECRET_DETECTED]",
+            ),
+            ("CUSTOM_LICENSE=FAKEVALUE0123456", "CUSTOM_LICENSE=[SECRET_DETECTED]"),
+            ("apiKeySalt: FAKEVALUE012345", "apiKeySalt: FAKEVALUE012345"),
+            ("apiKeyMaterial: FAKEVALUE0123456", "apiKeyMaterial: [SECRET_DETECTED]"),
+            (
+                "sessionTokenValue=FAKEVALUE0123456",
+                "sessionTokenValue=[SECRET_DETECTED]",
+            ),
+            ("dbSecretValue=FAKEVALUE0123456", "dbSecretValue=[SECRET_DETECTED]"),
+            ("dbPasswdValue=FAKEVALUE0123456", "dbPasswdValue=[SECRET_DETECTED]"),
+            ("passwordValue=FAKEVALUE0123456", "passwordValue=[SECRET_DETECTED]"),
+            ("PRIVATE-KEY-DATA=FAKEVALUE0123456", "PRIVATE-KEY-DATA=[SECRET_DETECTED]"),
+            ("customSalt=FAKEVALUE0123456;FAKE", "customSalt=[SECRET_DETECTED]"),
+            ('customSalt: "FAKEVALUE0123456;{}\'"', 'customSalt: "[SECRET_DETECTED]"'),
+            ("hostname: langsmith.example.test", "hostname: langsmith.example.test"),
+            ("output: lclFAKEVALUE0123456789", "output: [SECRET_DETECTED]"),
+            ("output: lsv2_FAKEVALUE0123456789", "output: [SECRET_DETECTED]"),
+        ],
+    )
+    def test_redacts_sensitive_assignments_and_standalone_prefixes(
+        self,
+        source: str,
+        expected: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Sensitive names and key prefixes cover otherwise unknown secret formats."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "lsv2_test")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        with (
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client") as client_cls,
+            patch("langsmith.configure"),
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        assert client_cls.call_args.kwargs["anonymizer"](source) == expected
+
     def test_workspace_environment_configures_redaction(self) -> None:
         """Workspace-only tracing settings configure the SDK client."""
         from deepagents_code.config import use_environment
@@ -3430,8 +3531,13 @@ class TestLangsmithSecretRedaction:
         client_cls.assert_not_called()
         configure.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "failing_component",
+        ["langsmith.Client", "langsmith.anonymizer.create_secret_anonymizer"],
+    )
     def test_fails_closed_by_disabling_tracing_on_setup_error(
         self,
+        failing_component: str,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """A redaction setup failure disables tracing to avoid leaking secrets."""
@@ -3440,7 +3546,7 @@ class TestLangsmithSecretRedaction:
 
         with (
             patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
-            patch("langsmith.Client", side_effect=RuntimeError("boom")),
+            patch(failing_component, side_effect=RuntimeError("boom")),
             patch("langsmith.configure") as configure,
         ):
             assert configure_langsmith_secret_redaction() is False

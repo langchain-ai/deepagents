@@ -4816,7 +4816,33 @@ def configure_langsmith_secret_redaction() -> bool:
             "LANGSMITH_API_KEY",
         ) or _resolve_env_var_from(env, "LANGCHAIN_API_KEY")
         api_url = _tracing_endpoint_from(env)
-        kwargs: dict[str, Any] = {"anonymizer": create_secret_anonymizer()}
+        assignment = (
+            r"\b([A-Za-z0-9_.-]*(?:license|salt|secret|token|passw(?:or)?d|"
+            r"api[_-]?key|private[_-]?key)[A-Za-z0-9_.-]*"
+            r"[\"']?[ \t]*[:=][ \t]*)"
+        )
+        kwargs: dict[str, Any] = {
+            "anonymizer": create_secret_anonymizer(
+                extra_rules=[
+                    {
+                        "pattern": re.compile(
+                            assignment + r"([\"'])(?:(?!\2)\S){16,}\2", re.IGNORECASE
+                        ),
+                        "replace": r"\g<1>\g<2>[SECRET_DETECTED]\g<2>",
+                    },
+                    {
+                        "pattern": re.compile(
+                            assignment + r"[^\s\"',{}\[\]]{16,}", re.IGNORECASE
+                        ),
+                        "replace": r"\g<1>[SECRET_DETECTED]",
+                    },
+                    {
+                        "pattern": re.compile(r"\b(?:lcl|lsv2_)[A-Za-z0-9_+/=-]{16,}"),
+                        "replace": "[SECRET_DETECTED]",
+                    },
+                ]
+            )
+        }
         if api_key:
             kwargs["api_key"] = api_key
         if api_url:

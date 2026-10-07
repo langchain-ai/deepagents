@@ -37,6 +37,8 @@ from langchain_core.runnables import RunnableBinding
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
+from deepagents_code._tool_free import tool_free_model, tool_free_settings
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
@@ -60,17 +62,6 @@ _MAX_SNAPSHOTS = 16
 _MAX_RETRY_DELAY = 60
 """Leave generation time within the API's 120-second request deadline."""
 BTW_OPERATION_ATTR = "_dcode_btw"
-_TOOL_OPTIONS = frozenset(
-    {
-        "tools",
-        "tool_choice",
-        "functions",
-        "function_call",
-        "parallel_tool_calls",
-        "mcp_servers",
-    }
-)
-_OPTION_CONTAINERS = ("model_kwargs", "extra_body")
 
 
 class _InstructionState(MemoryState, SkillsState):
@@ -114,54 +105,6 @@ async def _restore_system(
             local.update(update)
         request = item.modify_request(request)
     return request.system_message or system
-
-
-def _tool_free_options(options: Mapping[str, Any]) -> dict[str, Any]:
-    """Copy request defaults, including nested provider payload overrides.
-
-    Returns:
-        Options with tool configuration removed.
-    """
-    return {
-        key: (
-            _tool_free_options(value)
-            if key in _OPTION_CONTAINERS and isinstance(value, Mapping)
-            else deepcopy(value)
-        )
-        for key, value in options.items()
-        if key not in _TOOL_OPTIONS
-    }
-
-
-def _tool_free_model(model: BaseChatModel) -> BaseChatModel:
-    """Isolate request defaults while sharing the provider's HTTP clients.
-
-    Returns:
-        A model copy with tool-free provider defaults.
-    """
-    updates: dict[str, object] = {
-        key: _tool_free_options(value)
-        for key in _OPTION_CONTAINERS
-        if isinstance(value := getattr(model, key, None), Mapping)
-    }
-    if hasattr(model, "mcp_servers"):
-        updates["mcp_servers"] = None
-    return model.model_copy(update=updates)
-
-
-def _tool_free_settings(
-    model: object, settings: Mapping[str, object]
-) -> dict[str, Any]:
-    """Flatten bound defaults with request overrides taking precedence.
-
-    Returns:
-        Isolated generation settings without tool configuration.
-    """
-    merged = dict(settings)
-    while isinstance(model, RunnableBinding):
-        merged = {**model.kwargs, **merged}
-        model = model.bound
-    return _tool_free_options(merged)
 
 
 def _retry_budget(model: object) -> int | None:
@@ -424,7 +367,7 @@ class BtwOperation(AgentMiddleware):
             return Command(
                 update={
                     "_btw_system_prompt": (request.system_message or self._system).text,
-                    "_btw_model_settings": _tool_free_settings(
+                    "_btw_model_settings": tool_free_settings(
                         request.model, request.model_settings
                     ),
                     "_btw_model_retries": _retry_budget(request.model),
@@ -504,7 +447,7 @@ class BtwOperation(AgentMiddleware):
                 cli_max_retries=retries if type(retries) is int else None,
             )
             model = result.model
-        settings = _tool_free_settings(model, settings)
+        settings = tool_free_settings(model, settings)
         while isinstance(model, RunnableBinding):
             model = model.bound
         if not isinstance(model, BaseChatModel):
@@ -518,7 +461,7 @@ class BtwOperation(AgentMiddleware):
                 system = await _restore_system(
                     system, model, state, self._instruction_middleware
                 )
-        model = _tool_free_model(model)
+        model = tool_free_model(model)
         if snapshot is None and type(retries := state.get("_btw_model_retries")) is int:
             setattr(model, MODEL_RETRIES_ATTR, retries)
         return model, system, settings

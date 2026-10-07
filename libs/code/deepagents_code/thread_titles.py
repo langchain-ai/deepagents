@@ -119,8 +119,14 @@ async def generate_thread_name(
         A single-line name of at most 50 characters.
 
     Raises:
+        TypeError: If the configured model is not a chat model.
         ValueError: If the conversation or generated name is empty.
     """
+    from langchain_core.language_models import BaseChatModel
+    from langchain_core.runnables import RunnableBinding
+
+    from deepagents_code._tool_free import tool_free_model, tool_free_settings
+
     conversation = _conversation_text(messages)
     if not conversation:
         msg = "Send a message before generating a thread name."
@@ -128,7 +134,15 @@ async def generate_thread_name(
     async with asyncio.timeout(10):
         async with initialization_lock or nullcontext():
             result = await _create_naming_model(model_spec, model_params)
-        response = await result.model.ainvoke(
+        model = result.model
+        settings = tool_free_settings(model, {})
+        while isinstance(model, RunnableBinding):
+            model = model.bound
+        if not isinstance(model, BaseChatModel):
+            msg = "Thread naming requires a chat model."
+            raise TypeError(msg)
+        naming_model = tool_free_model(model).bind(**settings)
+        response = await naming_model.ainvoke(
             [("system", _TITLE_PROMPT), ("human", conversation)],
             config={
                 "callbacks": [],

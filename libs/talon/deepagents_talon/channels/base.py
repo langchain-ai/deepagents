@@ -15,7 +15,13 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, MessageHandler, SendResult
+from deepagents_talon.interfaces import (
+    ChannelMedia,
+    ChannelMessage,
+    DeferredMessageHandler,
+    MessageHandler,
+    SendResult,
+)
 from deepagents_talon.media import resolve_bounded_media_path
 
 if TYPE_CHECKING:
@@ -113,6 +119,7 @@ async def dispatch_message(
     message: ChannelMessage,
     *,
     provider: str,
+    prepare: Callable[[ChannelMessage], Awaitable[ChannelMessage]] | None = None,
 ) -> None:
     """Dispatch an inbound message to the registered handler.
 
@@ -120,6 +127,7 @@ async def dispatch_message(
         handler: Host callback for inbound messages, or ``None``.
         message: Channel message to dispatch.
         provider: Provider name for log messages.
+        prepare: Optional preparation performed after host admission.
 
     Raises:
         AssertionError: If no handler is registered (internal programming error).
@@ -127,6 +135,11 @@ async def dispatch_message(
     if handler is None:
         logger.warning("Dropping %s message because no handler is registered", provider)
         return
+    if prepare is not None:
+        if isinstance(handler, DeferredMessageHandler):
+            await handler.admit_message(message, prepare)
+            return
+        message = await prepare(message)
     await handler(message)
 
 

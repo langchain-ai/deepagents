@@ -4524,6 +4524,25 @@ class TestLoadMcpServerTrustLists:
 class TestGetModelProfiles:
     """Tests for get_model_profiles() function."""
 
+    def test_haiku_discovery_and_effort_without_upstream_profile(self) -> None:
+        from deepagents_code.reasoning_effort import (
+            default_effort_for_model,
+            supported_efforts_for_model,
+        )
+
+        clear_caches()
+        assert "claude-haiku-5-5" in get_available_models()["anthropic"]
+        spec = "anthropic:claude-haiku-5-5"
+        assert get_model_profiles()[spec]["profile"]["max_input_tokens"] == 1_000_000
+        assert default_effort_for_model(spec) == "medium"
+        assert supported_efforts_for_model(spec) == (
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        )
+
 
 class TestCodexProviderMirror:
     """`openai_codex` mirrors the curated `CODEX_MODELS` subset of `openai`.

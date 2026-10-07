@@ -1405,6 +1405,28 @@ def _get_provider_profile_modules() -> list[tuple[str, str]]:
     return result
 
 
+ANTHROPIC_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
+    "claude-haiku-5-5": {
+        "name": "Claude Haiku 5.5",
+        "max_input_tokens": 1_000_000,
+        "max_output_tokens": 128_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "audio_inputs": False,
+        "video_inputs": False,
+        "text_outputs": True,
+        "reasoning_output": True,
+        "tool_calling": True,
+        "tool_choice": True,
+        "structured_output": True,
+        "temperature": False,
+        "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoning_effort_default": "medium",
+    },
+}
+"""Capability fallbacks from https://platform.claude.com/docs/en/models/haiku-5-5/overview."""
+
+
 def _load_provider_profiles(module_path: str) -> dict[str, Any]:
     """Load `_PROFILES` from a provider's data module.
 
@@ -1466,6 +1488,8 @@ def _load_provider_profiles(module_path: str) -> dict[str, Any]:
         module = importlib.util.module_from_spec(file_spec)
         file_spec.loader.exec_module(module)
         profiles = getattr(module, "_PROFILES", {})
+        if module_path == "langchain_anthropic.data._profiles":
+            profiles = {**ANTHROPIC_MODEL_PROFILE_FALLBACKS, **profiles}
         _provider_profiles_cache[module_path] = profiles
         return profiles
 

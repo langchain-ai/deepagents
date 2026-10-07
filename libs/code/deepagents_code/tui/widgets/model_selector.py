@@ -148,6 +148,13 @@ credentials for.
 """
 
 
+AUXILIARY_RECOMMENDED_MODELS: dict[str, str] = {
+    "anthropic:claude-haiku-5-5": "Claude Haiku 5.5",
+    **_RECOMMENDED_MODELS,
+}
+"""Sidecar recommendations without changing the main-agent recommendations."""
+
+
 class DefaultModelScope(NamedTuple):
     """Which stored preference Ctrl+S toggles, and how the footer names it.
 

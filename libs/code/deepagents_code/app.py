@@ -242,6 +242,7 @@ _DEFERRED_START_NOTICE = (
 )
 
 _AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
+    "anthropic:claude-haiku-5-5": "Claude Haiku 5.5",
     "anthropic:claude-sonnet-5": "Claude Sonnet 5",
     "google_genai:gemini-3.8-flash": "Gemini 3.8 Flash",
     "openai:gpt-6-luna": "GPT-6 Luna",
@@ -17160,7 +17161,10 @@ class DeepAgentsApp(App):
     ) -> None:
         """Open the model selector for choosing a grader model."""
         from deepagents_code.model_config import ModelSpec
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            AUXILIARY_RECOMMENDED_MODELS,
+            ModelSelectorScreen,
+        )
 
         current_provider = None
         current_model = None
@@ -17215,6 +17219,7 @@ class DeepAgentsApp(App):
             ),
             title=title,
             description=description,
+            recommended_models=AUXILIARY_RECOMMENDED_MODELS,
             # Grader models have no persistent config key yet, so there is
             # nothing for Ctrl+S to own here. `None` disables it; the main-model
             # scope would persist `[models].default` and retarget the model the
@@ -31782,6 +31787,7 @@ class DeepAgentsApp(App):
         """Open the model selector for choosing the summarization model."""
         from deepagents_code.model_config import ModelSpec
         from deepagents_code.tui.widgets.model_selector import (
+            AUXILIARY_RECOMMENDED_MODELS,
             SUMMARIZATION_DEFAULT_SCOPE,
             ModelSelectorScreen,
         )
@@ -31828,6 +31834,7 @@ class DeepAgentsApp(App):
                 "with `/offload model clear` to follow the main agent model."
             ),
             default_scope=SUMMARIZATION_DEFAULT_SCOPE,
+            recommended_models=AUXILIARY_RECOMMENDED_MODELS,
             check_provider_requirements=(
                 self._remote_agent() is None or self._server_kwargs is not None
             ),

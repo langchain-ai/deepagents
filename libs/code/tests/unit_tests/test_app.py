@@ -10766,6 +10766,25 @@ class TestRubricCommand:
 class TestAutoClassifierModelCommand:
     """Tests for `/auto model`, which picks the Auto classifier model."""
 
+    @pytest.mark.parametrize("role", ["auto", "summarization", "rubric", "goal"])
+    async def test_sidecar_picker_recommends_haiku(self, role: str) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        with patch.object(app, "push_screen") as push:
+            if role == "auto":
+                await app._show_auto_classifier_model_selector()
+            elif role == "summarization":
+                await app._show_summarization_model_selector()
+            else:
+                await app._show_rubric_model_selector(
+                    source="goal" if role == "goal" else "rubric"
+                )
+
+        screen = push.call_args.args[0]
+        haiku = ("anthropic:claude-haiku-5-5", "anthropic")
+        assert haiku in screen._apply_subset(
+            [haiku, ("anthropic:claude-haiku-4-5", "anthropic")]
+        )
+
     async def test_auto_model_selector_persists_to_auto_classifier_key(self) -> None:
         """Ctrl+S in the classifier picker must not retarget the agent's model."""
         from deepagents_code.model_config import save_auto_classifier_model

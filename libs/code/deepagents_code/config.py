@@ -7082,6 +7082,19 @@ def create_model(
 
     _set_configured_model_metadata(model, model_name, resolved_provider)
 
+    if provider == "anthropic":
+        from deepagents_code.model_config import ANTHROPIC_MODEL_PROFILE_FALLBACKS
+
+        fallback = ANTHROPIC_MODEL_PROFILE_FALLBACKS.get(model_name)
+        if fallback:
+            upstream = getattr(model, "profile", None)
+            _apply_profile_overrides(
+                model,
+                {**fallback, **(upstream if isinstance(upstream, dict) else {})},
+                model_name,
+                label="bundled fallback",
+            )
+
     # Apply profile overrides from config.toml (e.g., max_input_tokens)
     if provider:
         config_profile_overrides = config.get_profile_overrides(

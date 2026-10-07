@@ -2056,6 +2056,50 @@ class TestFilesystemGrepContext:
             },
         ]
 
+    @pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+    @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+    async def test_real_ripgrep_match_and_context_line_endings(
+        self,
+        tmp_path: Path,
+        newline: bytes,
+        *,
+        asynchronous: bool,
+    ) -> None:
+        """Match and context text agree when real ripgrep searches LF or CRLF files."""
+        require_ripgrep()
+        (tmp_path / "sample.txt").write_bytes(newline.join([b"before", b"needle", b"after", b""]))
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        result = await backend.agrep("needle", path="/", context_lines=1) if asynchronous else backend.grep("needle", path="/", context_lines=1)
+        assert result.error is None
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 2,
+                "text": "needle",
+                "context_before": [{"line": 1, "text": "before"}],
+                "context_after": [{"line": 3, "text": "after"}],
+            },
+        ]
+
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            (b"needle", "needle"),
+            (b"needle\r", "needle\r"),
+            (b"needle\r\r\n", "needle\r"),
+            (b"needle\v\n", "needle\v"),
+        ],
+        ids=["no-terminator", "bare-cr", "content-cr-before-crlf", "vertical-tab"],
+    )
+    def test_real_ripgrep_preserves_nonterminating_characters(self, tmp_path: Path, content: bytes, expected: str) -> None:
+        """Removing a line terminator must preserve carriage returns within the content."""
+        require_ripgrep()
+        (tmp_path / "sample.txt").write_bytes(content)
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        result = backend.grep("needle", path="/")
+        assert result.error is None
+        assert result.matches == [{"path": "/sample.txt", "line": 1, "text": expected}]
+
     def test_ripgrep_context_strips_crlf_terminators(
         self,
         tmp_path: Path,

@@ -1108,7 +1108,9 @@ class FilesystemBackend(BackendProtocol):
         ln = pdata.get("line_number")
         if ln is None:
             return None
-        lt = pdata.get("lines", {}).get("text", "").rstrip("\n")
+        lt = pdata.get("lines", {}).get("text", "")
+        # Match context's CRLF normalization without deleting bare CR content.
+        lt = lt[:-2] if lt.endswith("\r\n") else lt.rstrip("\n")
         return virt, int(ln), lt
 
     @staticmethod

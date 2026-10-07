@@ -4930,6 +4930,7 @@ class DeepAgentsApp(App):
         self._terminal_title.start()
         self._update_terminal_title()
         self.screen_change_signal.subscribe(self, self._on_thread_name_screen_change)
+        self.app_resume_signal.subscribe(self, self._on_terminal_resume)
 
         chat = self.query_one("#chat", VerticalScroll)
         self._message_measure_width = chat.size.width
@@ -19222,6 +19223,11 @@ class DeepAgentsApp(App):
             cwd=self._cwd,
             branch=self._status_bar.branch if self._status_bar else "",
         )
+
+    def _on_terminal_resume(self, _app: App) -> None:
+        """Reclaim the tab title from programs that ran while suspended."""
+        self._terminal_title.invalidate()
+        self._update_terminal_title()
 
     async def _load_thread_name(self) -> None:
         """Restore a name without letting an old read replace the active name."""

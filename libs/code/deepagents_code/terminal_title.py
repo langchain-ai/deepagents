@@ -105,6 +105,14 @@ class TerminalTitle:
         )
         return "".join(char for char in title if char.isprintable())[:512]
 
+    def invalidate(self) -> None:
+        """Rewrite the title on the next update even if it has not changed.
+
+        Programs that run while the app is suspended, such as an external
+        editor, can set their own title without this instance knowing.
+        """
+        self._last_title = None
+
     def restore(self) -> None:
         """Restore the saved title at most once, including on repeated cleanup."""
         self._write("\x1b[23;0t")

@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from langchain.tools import ToolRuntime
+from langgraph.constants import CONFIG_KEY_CHECKPOINTER
 from langgraph.types import Command
 from langsmith import tracing_context
 from langsmith.run_helpers import get_tracing_context
@@ -98,13 +99,14 @@ class TestAsyncSubAgentMiddleware:
         with pytest.raises(ValueError, match="At least one async subagent"):
             AsyncSubAgentMiddleware(async_subagents=[])
 
-    def test_init_creates_five_tools(self) -> None:
+    def test_init_creates_six_tools(self) -> None:
         mw = AsyncSubAgentMiddleware(async_subagents=[_make_spec()])
         tool_names = {t.name for t in mw.tools}
         assert tool_names == {
             "start_async_task",
             "check_async_task",
             "update_async_task",
+            "resume_async_task",
             "cancel_async_task",
             "list_async_tasks",
         }
@@ -200,9 +202,8 @@ class TestTasksReducer:
 
 
 class TestBuildAsyncSubagentTools:
-    def test_returns_five_tools(self) -> None:
+    def test_returns_six_tools(self) -> None:
         tools = _build_async_subagent_tools([_make_spec()])
-        assert len(tools) == 5
         names = [t.name for t in tools]
         assert names == [
             "start_async_task",
@@ -210,6 +211,7 @@ class TestBuildAsyncSubagentTools:
             "update_async_task",
             "cancel_async_task",
             "list_async_tasks",
+            "resume_async_task",
         ]
 
     def test_launch_description_includes_agent_info(self) -> None:
@@ -1170,3 +1172,204 @@ def test_launch_reads_assistant_from_configurable_when_metadata_lacks_it(mock_ge
     launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha")]), "start_async_task")
     launch.func(description="analyze data", subagent_type="alpha", runtime=runtime)
     assert _sent_reference(mock_client)["assistant_id"] == "assistant_parent"
+
+
+_QUESTION = {"id": "int_q", "value": "Which repo should I use?"}
+_APPROVAL = {
+    "id": "int_a",
+    "value": {
+        "action_requests": [{"name": "deploy", "args": {"env": "prod"}, "description": "Deploy to prod"}],
+        "review_configs": [{"action_name": "deploy", "allowed_decisions": ["approve", "reject"]}],
+    },
+}
+
+
+def _paused_client(*interrupts: dict[str, Any]) -> MagicMock:
+    """A client whose tracked run finished with the thread paused on `interrupts`."""
+    client = MagicMock()
+    client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
+    client.threads.get.return_value = {"status": "interrupted", "values": {}, "interrupts": {"task_1": list(interrupts)}}
+    client.runs.create.return_value = {"run_id": "run_resumed"}
+    return client
+
+
+def _waiting_runtime(*, checkpointer: bool = False) -> ToolRuntime:
+    rt = _make_runtime_with_task(status="waiting", tool_call_id="tc_resume")
+    configurable: dict[str, Any] = {"thread_id": "parent_thread"}
+    if checkpointer:
+        configurable[CONFIG_KEY_CHECKPOINTER] = object()
+    return ToolRuntime(
+        state=rt.state, context=None, tool_call_id="tc_resume", store=None, stream_writer=lambda _: None, config={"configurable": configurable}
+    )
+
+
+def _resume(client: MagicMock, response: Any = None, *, checkpointer: bool = False) -> Any:  # noqa: ANN401
+    with patch("deepagents.middleware.async_subagents.get_sync_client", return_value=client):
+        resume = _get_tool(_build_async_subagent_tools([_make_spec()]), "resume_async_task")
+        return resume.func(task_id="thread_abc", runtime=_waiting_runtime(checkpointer=checkpointer), response=response)
+
+
+class TestPausedSubagentStatus:
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_check_reports_waiting_with_question(self, mock_get_client: MagicMock) -> None:
+        mock_get_client.return_value = _paused_client(_QUESTION)
+        check = _get_tool(_build_async_subagent_tools([_make_spec()]), "check_async_task")
+
+        result = check.func(task_id="thread_abc", runtime=_make_runtime_with_task())
+
+        parsed = json.loads(result.update["messages"][0].content)
+        assert parsed["status"] == "waiting"
+        assert parsed["interrupts"] == [_QUESTION]
+        assert "resume_async_task" in parsed["how_to_resume"]
+        assert "result" not in parsed
+        assert result.update["async_tasks"]["thread_abc"]["status"] == "waiting"
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_check_says_approvals_go_to_a_human(self, mock_get_client: MagicMock) -> None:
+        mock_get_client.return_value = _paused_client(_APPROVAL)
+        check = _get_tool(_build_async_subagent_tools([_make_spec()]), "check_async_task")
+
+        parsed = json.loads(check.func(task_id="thread_abc", runtime=_make_runtime_with_task()).update["messages"][0].content)
+
+        assert "human" in parsed["how_to_resume"]
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_check_follows_a_resume_from_elsewhere(self, mock_get_client: MagicMock) -> None:
+        client = MagicMock()
+        client.runs.get.return_value = {"run_id": "run_xyz", "status": "success"}
+        client.threads.get.return_value = {"status": "busy", "values": {}, "interrupts": {}}
+        client.runs.list.return_value = [{"run_id": "run_external", "status": "running"}]
+        mock_get_client.return_value = client
+        check = _get_tool(_build_async_subagent_tools([_make_spec()]), "check_async_task")
+
+        result = check.func(task_id="thread_abc", runtime=_make_runtime_with_task(status="waiting"))
+
+        assert json.loads(result.update["messages"][0].content)["status"] == "running"
+        assert result.update["async_tasks"]["thread_abc"]["run_id"] == "run_external"
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_list_refreshes_waiting_tasks(self, mock_get_client: MagicMock) -> None:
+        client = _paused_client(_QUESTION)
+        mock_get_client.return_value = client
+        list_tool = _get_tool(_build_async_subagent_tools([_make_spec()]), "list_async_tasks")
+
+        result = list_tool.func(runtime=_make_runtime_with_task(status="waiting"), status_filter="waiting")
+
+        assert "status: waiting" in result.update["messages"][0].content
+        client.runs.get.assert_called_once()
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_update_notes_the_dropped_question(self, mock_get_client: MagicMock) -> None:
+        mock_get_client.return_value = _paused_client(_QUESTION)
+        update = _get_tool(_build_async_subagent_tools([_make_spec()]), "update_async_task")
+
+        result = update.func(task_id="thread_abc", message="new plan", runtime=_make_runtime_with_task(status="waiting"))
+
+        assert "question was dropped" in result.update["messages"][0].content
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_cancel_while_waiting_stays_cancelled(self, mock_get_client: MagicMock) -> None:
+        client = _paused_client(_QUESTION)
+        mock_get_client.return_value = client
+        tools = _build_async_subagent_tools([_make_spec()])
+
+        cancelled = _get_tool(tools, "cancel_async_task").func(task_id="thread_abc", runtime=_make_runtime_with_task(status="waiting"))
+        checked = _get_tool(tools, "check_async_task").func(task_id="thread_abc", runtime=_make_runtime_with_task(status="cancelled"))
+
+        client.runs.cancel.assert_not_called()
+        assert cancelled.update["async_tasks"]["thread_abc"]["status"] == "cancelled"
+        assert json.loads(checked.update["messages"][0].content)["status"] == "cancelled"
+
+
+class TestResumeTool:
+    def test_answers_a_question(self) -> None:
+        client = _paused_client(_QUESTION)
+
+        result = _resume(client, "langchain-ai/deepagents")
+
+        kwargs = client.runs.create.call_args.kwargs
+        assert kwargs["thread_id"] == "thread_abc"
+        assert kwargs["command"] == {"resume": {"int_q": "langchain-ai/deepagents"}}
+        assert kwargs["config"]["configurable"]["deepagents_parent"]["thread_id"] == "parent_thread"
+        task = result.update["async_tasks"]["thread_abc"]
+        assert (task["status"], task["run_id"]) == ("running", "run_resumed")
+
+    def test_several_questions_need_answers_by_id(self) -> None:
+        second = {"id": "int_q2", "value": "Which branch?"}
+
+        error = _resume(_paused_client(_QUESTION, second), "main")
+        client = _paused_client(_QUESTION, second)
+        _resume(client, {"int_q": "deepagents", "int_q2": "main"})
+
+        assert isinstance(error, str)
+        assert "int_q2" in error
+        assert client.runs.create.call_args.kwargs["command"] == {"resume": {"int_q": "deepagents", "int_q2": "main"}}
+
+    def test_missing_answer_is_an_error(self) -> None:
+        client = _paused_client(_QUESTION)
+
+        assert isinstance(_resume(client), str)
+        client.runs.create.assert_not_called()
+
+    def test_approval_asks_this_agents_human(self) -> None:
+        client = _paused_client(_APPROVAL)
+        decisions = {"decisions": [{"type": "approve"}]}
+
+        with patch("deepagents.middleware.async_subagents.interrupt", return_value=decisions) as ask:
+            _resume(client, "approve it", checkpointer=True)
+
+        asked = ask.call_args.args[0]
+        assert "test-agent" in asked["action_requests"][0]["description"]
+        assert asked["review_configs"] == _APPROVAL["value"]["review_configs"]
+        assert client.runs.create.call_args.kwargs["command"] == {"resume": {"int_a": decisions}}
+
+    def test_approval_without_checkpointer_is_an_error(self) -> None:
+        client = _paused_client(_APPROVAL)
+
+        with patch("deepagents.middleware.async_subagents.interrupt") as ask:
+            result = _resume(client)
+
+        assert "human approval" in result
+        ask.assert_not_called()
+        client.runs.create.assert_not_called()
+
+    def test_disallowed_decision_is_not_sent(self) -> None:
+        client = _paused_client(_APPROVAL)
+
+        with patch("deepagents.middleware.async_subagents.interrupt", return_value={"decisions": [{"type": "edit"}]}):
+            result = _resume(client, checkpointer=True)
+
+        assert "isn't allowed" in result
+        client.runs.create.assert_not_called()
+
+    def test_breakpoint_continues_without_input(self) -> None:
+        client = _paused_client()
+
+        _resume(client)
+
+        assert "command" not in client.runs.create.call_args.kwargs
+        assert "input" not in client.runs.create.call_args.kwargs
+
+    def test_task_not_waiting_is_not_resumed(self) -> None:
+        client = _paused_client(_QUESTION)
+        client.threads.get.return_value = {"status": "idle", "values": {}, "interrupts": {}}
+
+        result = _resume(client, "anything")
+
+        assert "nothing to resume" in result
+        client.runs.create.assert_not_called()
+
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_async_resume(self, mock_get_client: MagicMock) -> None:
+        client = MagicMock()
+        client.runs.get = _async_return({"run_id": "run_xyz", "status": "success"})
+        client.threads.get = _async_return({"status": "interrupted", "values": {}, "interrupts": {"t": [_QUESTION]}})
+        create = MagicMock(return_value={"run_id": "run_resumed"})
+        client.runs.create = lambda **kwargs: _async_return(create(**kwargs))()
+        mock_get_client.return_value = client
+        resume = _get_tool(_build_async_subagent_tools([_make_spec()]), "resume_async_task")
+
+        result = await resume.coroutine(task_id="thread_abc", runtime=_waiting_runtime(), response="yes")
+
+        assert create.call_args.kwargs["command"] == {"resume": {"int_q": "yes"}}
+        assert result.update["async_tasks"]["thread_abc"]["run_id"] == "run_resumed"

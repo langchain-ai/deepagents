@@ -549,7 +549,7 @@ async def test_auto_naming_counts_prompts_after_flushing_shell_context(
     naming_app._maybe_auto_name_thread("original", "provider:chat")
     await asyncio.gather(*naming_app._thread_name_tasks.values())
 
-    if turns == 1:
+    if turns:
         rename.assert_awaited_once_with(
             "original", "Cache repair", only_if_unnamed=True
         )
@@ -558,6 +558,39 @@ async def test_auto_naming_counts_prompts_after_flushing_shell_context(
     else:
         generate.assert_not_awaited()
         rename.assert_not_awaited()
+
+
+async def test_auto_naming_survives_second_prompt_during_state_read(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A subsequent turn cannot consume the first completed turn's naming attempt."""
+    started, release = asyncio.Event(), asyncio.Event()
+    messages = [HumanMessage("Fix caching"), AIMessage("Here is the fix")]
+
+    async def read_state(_thread_id: str) -> dict[str, object]:
+        started.set()
+        await release.wait()
+        return {"messages": messages}
+
+    monkeypatch.setattr(naming_app, "_get_thread_state_values", read_state)
+    generate = AsyncMock(return_value="Cache repair")
+    rename = AsyncMock(return_value=False)
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    naming_app._maybe_auto_name_thread("original", "provider:chat")
+    task = naming_app._thread_name_tasks["original"]
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        messages.extend([HumanMessage("Now fix logging"), AIMessage("Logging fixed")])
+    finally:
+        release.set()
+        await task
+
+    rename.assert_awaited_once_with("original", "Cache repair", only_if_unnamed=True)
+    assert [message.content for message in generate.call_args.args[1]] == [
+        "Fix caching",
+        "Here is the fix",
+    ]
 
 
 def test_auto_name_can_be_disabled(

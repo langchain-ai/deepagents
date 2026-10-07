@@ -19347,6 +19347,29 @@ class DeepAgentsApp(App):
         if not automatic:
             self.notify("Generating a thread name...")
 
+    @staticmethod
+    def _first_thread_name_turn(messages: list[BaseMessage]) -> list[BaseMessage]:
+        """Keep first-response eligibility when a later prompt races the state read.
+
+        Returns:
+            First-turn context, or an empty list if it has no prompt or response.
+        """
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        seen_prompt = False
+        for index, message in enumerate(messages):
+            if (
+                isinstance(message, HumanMessage)
+                and message_source(message) != "user_shell_command"
+            ):
+                if seen_prompt:
+                    messages = messages[:index]
+                    break
+                seen_prompt = True
+        if seen_prompt and any(isinstance(message, AIMessage) for message in messages):
+            return messages
+        return []
+
     async def _generate_thread_name(
         self,
         thread_id: str,
@@ -19356,7 +19379,6 @@ class DeepAgentsApp(App):
         model_params: dict[str, object] | None = None,
     ) -> None:
         """Generate off the message pump, then persist or offer a proposal."""
-        from langchain_core.messages import AIMessage, HumanMessage
         from langchain_core.messages.utils import convert_to_messages
 
         from deepagents_code.btw_cost import answer_with_cost
@@ -19375,19 +19397,13 @@ class DeepAgentsApp(App):
                     if not is_internal_message(message)
                     and not is_conversation_control_message(message)
                 ]
+                if automatic:
+                    # The caller captured eligibility before detaching; the
+                    # checkpoint may already include subsequent prompts.
+                    messages = self._first_thread_name_turn(messages)
                 if not messages:
                     if not automatic:
                         self.notify("Send a message before generating a thread name.")
-                    return
-                if automatic and (
-                    sum(
-                        isinstance(message, HumanMessage)
-                        and message_source(message) != "user_shell_command"
-                        for message in messages
-                    )
-                    != 1
-                    or not any(isinstance(message, AIMessage) for message in messages)
-                ):
                     return
                 try:
                     name, _ = await answer_with_cost(

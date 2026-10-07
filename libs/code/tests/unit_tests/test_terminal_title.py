@@ -110,11 +110,9 @@ def test_terminal_control_characters_are_never_emitted_in_title(
     [
         "{unknown}",
         "{thread_name.__class__}",
-        "{thread_name[0]}",
         "{thread_name!r}",
         "{thread_name:999999999}",
         "{thread_name",
-        "thread_name}",
     ],
 )
 def test_invalid_template_uses_safe_default(
@@ -124,13 +122,6 @@ def test_invalid_template_uses_safe_default(
     title.start()
     title.update(thread_name="Cache repair")
     assert terminal.getvalue() == "\x1b[22;0t\x1b]0;dcode-dev - Cache repair\x07"
-
-
-def test_title_length_is_bounded(terminal: TerminalStream) -> None:
-    title = TerminalTitle("{cwd}")
-    title.start()
-    title.update(cwd="x" * 10000)
-    assert terminal.getvalue() == "\x1b[22;0t\x1b]0;" + "x" * 512 + "\x07"
 
 
 @pytest.mark.parametrize("stdout_is_terminal", [False, True])

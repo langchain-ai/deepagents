@@ -943,7 +943,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 examples = [
-    { name = "langchain-baseten", specifier = ">=0.2.4" },
+    { name = "langchain-baseten", specifier = ">=0.2.5" },
     { name = "langchain-openai", specifier = ">=1.6.7" },
 ]
 test = [
@@ -1025,7 +1025,7 @@ requires-dist = [
     { name = "langchain-anthropic", specifier = ">=1.7.5,<2.0.0" },
     { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.7.5,<2.0.0" },
     { name = "langchain-aws", marker = "extra == 'bedrock'", specifier = ">=1.8.1,<2.0.0" },
-    { name = "langchain-baseten", marker = "extra == 'baseten'", specifier = ">=0.2.4,<1.0.0" },
+    { name = "langchain-baseten", marker = "extra == 'baseten'", specifier = ">=0.2.5,<1.0.0" },
     { name = "langchain-cohere", marker = "extra == 'cohere'", specifier = ">=0.6.0,<1.0.0" },
     { name = "langchain-daytona", marker = "extra == 'daytona'", editable = "../partners/daytona" },
     { name = "langchain-deepseek", marker = "extra == 'deepseek'", specifier = ">=1.1.1,<2.0.0" },
@@ -1052,7 +1052,7 @@ requires-dist = [
     { name = "langchain-vercel-sandbox", marker = "extra == 'vercel'", editable = "../partners/vercel" },
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.3.0,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.1,<4.0.0" },
-    { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.32,<1.0.0" },
+    { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.33,<1.0.0" },
     { name = "langgraph-runtime-inmem", specifier = ">=0.35.2,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.6,<1.0.0" },
     { name = "langsmith", extras = ["sandbox"], specifier = ">=0.14.4" },
@@ -2464,7 +2464,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-cli"
-version = "0.4.32"
+version = "0.4.33"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -2473,9 +2473,9 @@ dependencies = [
     { name = "pathspec" },
     { name = "python-dotenv" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/00/39/c8a77a0e5ab87c9cebf135e6cfcf3456570eba0b56f931b49ffac5362849/langgraph_cli-0.4.32.tar.gz", hash = "sha256:d06d6311ca9804f3b9940a6c44f9993a8a0bfc3479e0321a26a9b4c73eedaf0e", size = 1087298, upload-time = "2026-09-23T18:02:35.759Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/78/8c/3264f1fb1168681dbe28c08a14dbdd4e0ad404fc881f5e0e63ffc809a3ec/langgraph_cli-0.4.33.tar.gz", hash = "sha256:ad11ee1271176a48bf60a20b8356f59b2aac42f7166e5e4a0f040f3aab2186f6", size = 1092179, upload-time = "2026-10-07T13:38:30.782Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/03/b7adc066578ecefbee953cea4432201a9e36a86ba5b07ea2f55c275c7e9e/langgraph_cli-0.4.32-py3-none-any.whl", hash = "sha256:1bd6e4ccd90ffa5659da5d4d4592864407a9e6d66e9cb51a81f41e5a52204509", size = 89483, upload-time = "2026-09-23T18:02:34.603Z" },
+    { url = "https://files.pythonhosted.org/packages/24/06/1ffa188545bee9d73bd6df18750894c4351c38d3755dde77e3ea9071b608/langgraph_cli-0.4.33-py3-none-any.whl", hash = "sha256:09d76c0aed5b661a22760547997038de05f18d7598bb698d921f701831875b41", size = 91602, upload-time = "2026-10-07T13:38:29.655Z" },
 ]
 
 [package.optional-dependencies]

@@ -1460,6 +1460,15 @@ class TestInlineAsyncSubagents:
         spec["runnable"].invoke.assert_called_once_with(state)
         assert update == {"messages": spec["runnable"].invoke.return_value["messages"], "jump_to": "end"}
 
+    def test_helper_does_not_get_task_tracking_state(self) -> None:
+        spec = _worker_spec()
+        middleware = AsyncSubAgentMiddleware(async_subagents=[spec])
+
+        with patch("deepagents.middleware.async_subagents.get_config", return_value={"configurable": {"deepagents_worker": "helper"}}):
+            middleware.before_agent({"messages": [], "async_tasks": {"t": {}}, "files": {}}, MagicMock())
+
+        assert spec["runnable"].invoke.call_args.args[0] == {"messages": [], "files": {}}
+
     async def test_async_run_asking_for_a_helper_runs_it_instead(self) -> None:
         spec = _worker_spec()
         spec["runnable"].ainvoke = MagicMock(side_effect=_async_return(spec["runnable"].invoke.return_value))
@@ -1500,6 +1509,28 @@ class TestInlineAsyncSubagents:
         result = agent.invoke({"messages": [HumanMessage(content="dig in")]}, config)
 
         assert [message.content for message in result["messages"]] == ["dig in", "helper done"]
+
+    def test_helper_keeps_its_files_between_runs(self) -> None:
+        write = {"name": "write_file", "args": {"file_path": "/report.md", "content": "draft one"}, "id": "w1"}
+        read = {"name": "read_file", "args": {"file_path": "/report.md"}, "id": "r1"}
+        model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="", tool_calls=[write]),
+                    AIMessage(content="wrote it"),
+                    AIMessage(content="", tool_calls=[read]),
+                    AIMessage(content="read it"),
+                ]
+            )
+        )
+        agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([])), subagents=[_inline_spec(model=model)], checkpointer=InMemorySaver())
+        config = {"configurable": {"thread_id": "helper_thread", "deepagents_worker": "helper"}}
+
+        agent.invoke({"messages": [HumanMessage(content="write the report")]}, config)
+        second = agent.invoke({"messages": [HumanMessage(content="read it back")]}, config)
+
+        assert "/report.md" in second["files"]
+        assert "draft one" in second["messages"][-2].content
 
     def test_helper_can_pause_and_resume(self) -> None:
         @tool

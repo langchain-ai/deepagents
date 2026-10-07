@@ -89,6 +89,11 @@ class AsyncSubAgent(TypedDict):
     then runs on the main agent's own deployment, on its own thread, using the
     main agent's backend. This needs the main agent to run on an Agent Server.
 
+    Anyone who can start runs on the main agent can also run its inline
+    helpers directly, as with separately deployed helper graphs. Helpers
+    inherit the main agent's `interrupt_on` and `permissions` unless they set
+    their own, so don't give a helper looser ones than the main agent.
+
     Example:
         ```python
         create_deep_agent(
@@ -569,6 +574,10 @@ def _launch_target(spec: AsyncSubAgent, runtime: ToolRuntime, backend: BackendPr
         msg = "it runs on this agent's own deployment, which needs an Agent Server"
         raise ValueError(msg)
     return {**options, "assistant_id": assistant_id}
+
+
+_NOT_SHARED_WITH_WORKERS = frozenset({"async_tasks", "jump_to", "structured_response"})
+"""Main-graph state an inline helper neither receives nor returns: task tracking and per-run control keys."""
 
 
 def _is_worker(spec: Mapping[str, Any]) -> bool:
@@ -1524,6 +1533,8 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         self.tools = _build_async_subagent_tools(async_subagents, backend)
         self._workers: dict[str, Runnable] = {a["name"]: a["runnable"] for a in async_subagents if _is_worker(a)}
+        self.state_keys: frozenset[str] = frozenset({"messages"})
+        """State keys of the main graph an inline helper's result may update; `create_deep_agent` sets them."""
 
         if system_prompt:
             agents_desc = "\n".join(f"- {a['name']}: {a['description']}" for a in async_subagents)
@@ -1537,8 +1548,8 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         worker = self._requested_worker()
         if worker is None:
             return None
-        result = worker.invoke({"messages": state["messages"]})
-        return {"messages": result["messages"], "jump_to": "end"}
+        result = worker.invoke(self._worker_input(state))
+        return self._worker_update(result)
 
     @hook_config(can_jump_to=["end"])
     async def abefore_agent(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
@@ -1546,8 +1557,18 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         worker = self._requested_worker()
         if worker is None:
             return None
-        result = await worker.ainvoke({"messages": state["messages"]})
-        return {"messages": result["messages"], "jump_to": "end"}
+        result = await worker.ainvoke(self._worker_input(state))
+        return self._worker_update(result)
+
+    @staticmethod
+    def _worker_input(state: Mapping[str, Any]) -> dict[str, Any]:
+        """The task thread's state (files, todos, summaries, ...) the helper continues from."""
+        return {key: value for key, value in state.items() if key not in _NOT_SHARED_WITH_WORKERS}
+
+    def _worker_update(self, result: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep the helper's state on the task thread so its next run picks up where this one ended."""
+        update = {key: value for key, value in result.items() if key in self.state_keys and key not in _NOT_SHARED_WITH_WORKERS}
+        return {**update, "jump_to": "end"}
 
     def _requested_worker(self) -> Runnable | None:
         """Return the inline subagent this run should execute as, or `None` for a normal run.

@@ -67,6 +67,26 @@ async def test_generation_bounds_conversation_sent_to_model(
     assert "Must not be included" not in conversation
 
 
+@pytest.mark.parametrize("shell_index", [0, 1])
+async def test_shell_output_cannot_crowd_out_conversation(
+    title_model: AsyncMock, shell_index: int
+) -> None:
+    messages = [
+        HumanMessage("Fix caching"),
+        AIMessage("Investigating stale cache entries"),
+    ]
+    messages.insert(
+        shell_index,
+        HumanMessage(
+            "Verbose shell output\n" * 1000,
+            additional_kwargs={"lc_source": "user_shell_command"},
+        ),
+    )
+    await generate_thread_name("provider:rename-model", messages)
+    conversation = title_model.ainvoke.call_args.args[0][1][1]
+    assert conversation == "human: Fix caching\nai: Investigating stale cache entries"
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -102,9 +122,20 @@ async def test_empty_generated_names_are_rejected(
         await generate_thread_name("provider:rename-model", [HumanMessage("Fix cache")])
 
 
-async def test_no_conversation_does_not_call_model(title_model: AsyncMock) -> None:
+@pytest.mark.parametrize(
+    "message",
+    [
+        SystemMessage("Rules"),
+        HumanMessage(
+            "Shell output", additional_kwargs={"lc_source": "user_shell_command"}
+        ),
+    ],
+)
+async def test_no_conversation_does_not_call_model(
+    title_model: AsyncMock, message: SystemMessage | HumanMessage
+) -> None:
     with pytest.raises(ValueError, match="Send a message"):
-        await generate_thread_name("provider:rename-model", [SystemMessage("Rules")])
+        await generate_thread_name("provider:rename-model", [message])
     title_model.ainvoke.assert_not_awaited()
 
 

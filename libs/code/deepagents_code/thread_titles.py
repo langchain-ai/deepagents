@@ -23,10 +23,11 @@ _MAX_INPUT_CHARS = 8000
 
 
 def _conversation_text(messages: Sequence[BaseMessage]) -> str:
-    """Return bounded user and assistant text, excluding hidden messages."""
+    """Return bounded conversation text, excluding hidden and shell messages."""
     from deepagents_code.goal_state_notice import (
         is_conversation_control_message,
         is_internal_message,
+        message_source,
     )
 
     parts: list[str] = []
@@ -36,6 +37,7 @@ def _conversation_text(messages: Sequence[BaseMessage]) -> str:
             message.type not in {"human", "ai"}
             or is_internal_message(message)
             or is_conversation_control_message(message)
+            or message_source(message) == "user_shell_command"
         ):
             continue
         text = message.text[:remaining]

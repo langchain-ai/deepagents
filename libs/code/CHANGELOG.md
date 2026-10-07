@@ -2,6 +2,13 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.83](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.82...deepagents-code==0.1.83) (2026-10-07)
+
+
+### Features
+
+* **code:** recommend Haiku 5.5 for sidecar models ([#6844](https://github.com/langchain-ai/deepagents/issues/6844)) ([9597f95](https://github.com/langchain-ai/deepagents/commit/9597f95948b7b018af919448a0d67b4c3d71c2b1))
+
 ## [0.1.82](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.81...deepagents-code==0.1.82) (2026-10-07)
 
 ### Features

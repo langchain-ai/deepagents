@@ -100,10 +100,13 @@ class TerminalTitle:
         template = self._template
         if template == DEFAULT_TERMINAL_TAB_TITLE and not thread_name:
             template = "{app_name}"
+        app_name = invoked_name()
         title = template.format(
-            app_name=invoked_name(), thread_name=thread_name, cwd=cwd, branch=branch
+            app_name=app_name, thread_name=thread_name, cwd=cwd, branch=branch
         )
-        return "".join(char for char in title if char.isprintable())[:512]
+        title = "".join(char for char in title if char.isprintable())[:512]
+        # A blank title leaves an unlabeled tab, so name the app instead.
+        return title if title.strip() else app_name
 
     def invalidate(self) -> None:
         """Rewrite the title on the next update even if it has not changed.

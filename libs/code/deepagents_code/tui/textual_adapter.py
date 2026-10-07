@@ -2059,6 +2059,8 @@ async def execute_task_textual(
             "messages": messages,
             "goal_criteria_request": None,
         }
+        if skill_name and not prompt_outcome.suppress_original_prompt:
+            stream_input["pinned_skills"] = [skill_name]
         if rubric:
             stream_input["rubric"] = rubric
     else:

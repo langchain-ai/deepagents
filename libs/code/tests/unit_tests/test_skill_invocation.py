@@ -112,7 +112,7 @@ class TestBuildSkillInvocationEnvelope:
     """Direct unit tests for `build_skill_invocation_envelope`."""
 
     def test_happy_path_with_args(self) -> None:
-        """Envelope should contain wrapped prompt and full metadata."""
+        """Keep the request and metadata without embedding skill instructions."""
         from deepagents_code.skills.invocation import build_skill_invocation_envelope
 
         skill = {
@@ -127,10 +127,11 @@ class TestBuildSkillInvocationEnvelope:
             "review this patch",
         )
         assert "I'm invoking the skill `code-review`." in envelope.prompt
-        assert "---\n# Instructions\nDo stuff\n---" in envelope.prompt
+        assert "# Instructions" not in envelope.prompt
         assert "**User request:** review this patch" in envelope.prompt
         meta = envelope.message_kwargs["additional_kwargs"]["__skill"]
         assert meta["name"] == "code-review"
+        assert meta["path"] == "/skills/code-review/SKILL.md"
         assert meta["description"] == "Review code changes"
         assert meta["source"] == "user"
         assert meta["args"] == "review this patch"
@@ -271,7 +272,8 @@ class TestPromptSkillTrustAndRetry:
 
         mock_trust.assert_called_once_with(self._target_dir())
         app._send_to_agent.assert_awaited_once()
-        assert "# Instructions" in app._send_to_agent.call_args[0][0]
+        assert "# Instructions" not in app._send_to_agent.call_args[0][0]
+        assert app._send_to_agent.call_args.kwargs["skill_name"] == "test-skill"
         # The approved directory joins the in-session containment allowlist.
         assert Path(self._target_dir()) in app._skill_allowed_roots
 
@@ -587,7 +589,11 @@ class TestSkillTrustRealContainment:
             await app._handle_skill_command("/skill:linked-skill")
 
         app._send_to_agent.assert_awaited_once()
-        assert "Do real stuff" in app._send_to_agent.call_args[0][0]
+        assert "Do real stuff" not in app._send_to_agent.call_args[0][0]
+        metadata = app._send_to_agent.call_args.kwargs["message_kwargs"]
+        assert metadata["additional_kwargs"]["__skill"]["path"] == str(
+            outside / "SKILL.md"
+        )
         # The resolved outside dir was actually admitted to the allowlist by the
         # real retry, not just asserted via a mock.
         assert outside.resolve() in app._skill_allowed_roots

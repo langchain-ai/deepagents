@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from deepagents_code._paths import (
@@ -16,8 +17,6 @@ from deepagents_code._paths import (
 )
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from deepagents_code.skills.load import ExtendedSkillMetadata
 
 
@@ -26,8 +25,7 @@ class SkillInvocationEnvelope:
     """Structured prompt and checkpoint metadata for a skill invocation.
 
     Attributes:
-        prompt: Composed prompt that wraps `SKILL.md` content with
-            invocation instructions.
+        prompt: User request identifying the skill for the SDK to pin.
         message_kwargs: Extra fields merged into the initial HumanMessage.
         skill_name: Invoked skill name for trace attribution.
     """
@@ -120,23 +118,19 @@ def build_skill_invocation_envelope(
     content: str,
     args: str = "",
 ) -> SkillInvocationEnvelope:
-    """Build the wrapped prompt and persisted metadata for a skill.
+    """Build the user request and persisted metadata for SDK skill pinning.
 
     Args:
         skill: Loaded skill metadata.
-        content: Raw `SKILL.md` content.
-        args: Optional user request appended after the skill body.
+        content: Preflight-loaded content, retained for caller compatibility.
+        args: Optional user request accompanying the skill invocation.
 
     Returns:
         A `SkillInvocationEnvelope` with the composed prompt and
             `message_kwargs` containing persisted skill metadata.
     """
-    prompt = (
-        f"I'm invoking the skill `{skill['name']}`. "
-        "Below are the full instructions from the skill's SKILL.md file. "
-        "Follow these instructions to complete the task.\n\n"
-        f"---\n{content}\n---"
-    )
+    del content
+    prompt = f"I'm invoking the skill `{skill['name']}`."
     if args:
         prompt += f"\n\n**User request:** {args}"
 
@@ -144,6 +138,7 @@ def build_skill_invocation_envelope(
         "additional_kwargs": {
             "__skill": {
                 "name": skill["name"],
+                "path": str(Path(skill["path"]).resolve()),
                 "description": str(skill.get("description", "")),
                 "source": str(skill.get("source", "")),
                 "args": args,

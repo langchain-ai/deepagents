@@ -1,4 +1,4 @@
-"""Skill activation through `create_deep_agent`, observed at the model's call history and the thread's state."""
+"""Skill pinning through `create_deep_agent`, observed at the model's call history and the thread's state."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from langgraph.graph.state import CompiledStateGraph
     from langgraph.runtime import Runtime
 
-CONFIG: RunnableConfig = {"configurable": {"thread_id": "activation"}}
+CONFIG: RunnableConfig = {"configurable": {"thread_id": "pinning"}}
 
 
 def _skill_md(name: str, description: str, body: str) -> str:
@@ -45,9 +45,9 @@ def _skill_md(name: str, description: str, body: str) -> str:
 
 
 CRM = _skill_md("crm", "Manage customer requests", "File the request in the CRM.")
-CRM_ACTIVATION = '<skill name="crm" path="/skills/crm/SKILL.md">\nFile the request in the CRM.\n</skill>'
+CRM_PINNED = '<skill name="crm" path="/skills/crm/SKILL.md">\nFile the request in the CRM.\n</skill>'
 HOUSE_STYLE = _skill_md("house-style", "Follow house style", "Use snake_case.")
-HOUSE_STYLE_ACTIVATION = '<skill name="house-style" path="/skills/house-style/SKILL.md">\nUse snake_case.\n</skill>'
+HOUSE_STYLE_PINNED = '<skill name="house-style" path="/skills/house-style/SKILL.md">\nUse snake_case.\n</skill>'
 
 
 @pytest.fixture(params=["sync", "async"])
@@ -67,9 +67,9 @@ def _agent(root: Path, model: GenericFakeChatModel, **kwargs: Any) -> CompiledSt
     return create_deep_agent(model=model, backend=skills_backend(root), skills=[SKILLS_SOURCE], checkpointer=InMemorySaver(), **kwargs)
 
 
-def _activations(messages: list[Any]) -> list[str]:
-    """Return the content of every skill activation message in `messages`."""
-    return [m.content for m in messages if m.additional_kwargs.get("lc_source") == "skill_activation"]
+def _pinned_messages(messages: list[Any]) -> list[str]:
+    """Return the content of every pinned skill message in `messages`."""
+    return [m.content for m in messages if m.additional_kwargs.get("lc_source") == "pinned_skill"]
 
 
 def test_named_skills_follow_the_users_message_in_list_order(tmp_path: Path, mode: str) -> None:
@@ -79,7 +79,7 @@ def test_named_skills_follow_the_users_message_in_list_order(tmp_path: Path, mod
 
     invoke(
         _agent(tmp_path, model),
-        {"messages": [HumanMessage("/write-tests /house-style for auth.py")], "activate_skills": ["write-tests", "house-style"]},
+        {"messages": [HumanMessage("/write-tests /house-style for auth.py")], "pinned_skills": ["write-tests", "house-style"]},
         mode,
         CONFIG,
     )
@@ -91,58 +91,58 @@ def test_named_skills_follow_the_users_message_in_list_order(tmp_path: Path, mod
             "human",
             '<skill name="write-tests" path="/skills/write-tests/SKILL.md">\nStart with a failing test.\n</skill>',
             {
-                "lc_source": "skill_activation",
+                "lc_source": "pinned_skill",
                 "skill": {"name": "write-tests", "path": "/skills/write-tests/SKILL.md", "description": "Write tests first"},
             },
         ),
         (
             "human",
-            HOUSE_STYLE_ACTIVATION,
+            HOUSE_STYLE_PINNED,
             {
-                "lc_source": "skill_activation",
+                "lc_source": "pinned_skill",
                 "skill": {"name": "house-style", "path": "/skills/house-style/SKILL.md", "description": "Follow house style"},
             },
         ),
     ]
 
 
-def test_activation_is_stored_once_and_left_out_of_the_result(tmp_path: Path) -> None:
+def test_pin_is_stored_once_and_left_out_of_the_result(tmp_path: Path) -> None:
     write_skill(tmp_path, "crm", content=CRM)
     agent = _agent(tmp_path, _model())
 
-    result = agent.invoke({"messages": [HumanMessage("turn 1")], "activate_skills": ["crm"]}, CONFIG)
+    result = agent.invoke({"messages": [HumanMessage("turn 1")], "pinned_skills": ["crm"]}, CONFIG)
     agent.invoke({"messages": [HumanMessage("turn 2")]}, CONFIG)
 
-    assert "activate_skills" not in result
+    assert "pinned_skills" not in result
     stored = agent.get_state(CONFIG).values["messages"]
-    assert [m.content for m in stored] == ["turn 1", CRM_ACTIVATION, "done", "turn 2", "done"]
+    assert [m.content for m in stored] == ["turn 1", CRM_PINNED, "done", "turn 2", "done"]
 
 
-def test_activation_is_a_snapshot_and_activating_again_appends_the_current_text(tmp_path: Path) -> None:
+def test_pin_is_a_snapshot_and_pinning_again_appends_the_current_text(tmp_path: Path) -> None:
     write_skill(tmp_path, "crm", content=_skill_md("crm", "Manage customer requests", "Version one."))
     model = _model()
     agent = _agent(tmp_path, model)
 
-    agent.invoke({"messages": [HumanMessage("turn 1")], "activate_skills": ["crm"]}, CONFIG)
+    agent.invoke({"messages": [HumanMessage("turn 1")], "pinned_skills": ["crm"]}, CONFIG)
     write_skill(tmp_path, "crm", content=_skill_md("crm", "Manage customer requests", "Version two."))
     agent.invoke({"messages": [HumanMessage("turn 2")]}, CONFIG)
-    turn_2 = _activations(model.call_history[-1]["messages"])
-    agent.invoke({"messages": [HumanMessage("turn 3")], "activate_skills": ["crm"]}, CONFIG)
+    turn_2 = _pinned_messages(model.call_history[-1]["messages"])
+    agent.invoke({"messages": [HumanMessage("turn 3")], "pinned_skills": ["crm"]}, CONFIG)
 
     v1 = '<skill name="crm" path="/skills/crm/SKILL.md">\nVersion one.\n</skill>'
     v2 = '<skill name="crm" path="/skills/crm/SKILL.md">\nVersion two.\n</skill>'
     assert turn_2 == [v1]
-    assert _activations(model.call_history[-1]["messages"]) == [v1, v2]
+    assert _pinned_messages(model.call_history[-1]["messages"]) == [v1, v2]
 
 
-def test_repeated_names_activate_once(tmp_path: Path) -> None:
+def test_repeated_names_pin_once(tmp_path: Path) -> None:
     write_skill(tmp_path, "crm", content=CRM)
     write_skill(tmp_path, "house-style", content=HOUSE_STYLE)
     model = _model()
 
-    _agent(tmp_path, model).invoke({"messages": [HumanMessage("go")], "activate_skills": ["crm", "crm", "house-style"]}, CONFIG)
+    _agent(tmp_path, model).invoke({"messages": [HumanMessage("go")], "pinned_skills": ["crm", "crm", "house-style"]}, CONFIG)
 
-    assert _activations(model.call_history[0]["messages"]) == [CRM_ACTIVATION, HOUSE_STYLE_ACTIVATION]
+    assert _pinned_messages(model.call_history[0]["messages"]) == [CRM_PINNED, HOUSE_STYLE_PINNED]
 
 
 def test_unknown_names_are_skipped_and_cleared(tmp_path: Path) -> None:
@@ -150,23 +150,23 @@ def test_unknown_names_are_skipped_and_cleared(tmp_path: Path) -> None:
     model = _model()
     agent = _agent(tmp_path, model)
 
-    agent.invoke({"messages": [HumanMessage("turn 1")], "activate_skills": ["no-such-skill", "crm"]}, CONFIG)
+    agent.invoke({"messages": [HumanMessage("turn 1")], "pinned_skills": ["no-such-skill", "crm"]}, CONFIG)
     agent.invoke({"messages": [HumanMessage("turn 2")]}, CONFIG)
 
-    assert _activations(model.call_history[0]["messages"]) == [CRM_ACTIVATION]
-    assert _activations(model.call_history[1]["messages"]) == [CRM_ACTIVATION]
+    assert _pinned_messages(model.call_history[0]["messages"]) == [CRM_PINNED]
+    assert _pinned_messages(model.call_history[1]["messages"]) == [CRM_PINNED]
 
 
-def test_all_unknown_names_activate_nothing_and_are_cleared(tmp_path: Path) -> None:
+def test_all_unknown_names_pin_nothing_and_are_cleared(tmp_path: Path) -> None:
     write_skill(tmp_path, "crm", content=CRM)
     model = _model()
     agent = _agent(tmp_path, model)
 
-    result = agent.invoke({"messages": [HumanMessage("go")], "activate_skills": ["no-such-skill"]}, CONFIG)
+    result = agent.invoke({"messages": [HumanMessage("go")], "pinned_skills": ["no-such-skill"]}, CONFIG)
 
     assert result["messages"][-1].content == "done"
-    assert _activations(model.call_history[0]["messages"]) == []
-    assert not agent.get_state(CONFIG).values.get("activate_skills")
+    assert _pinned_messages(model.call_history[0]["messages"]) == []
+    assert not agent.get_state(CONFIG).values.get("pinned_skills")
 
 
 @pytest.mark.parametrize(
@@ -190,57 +190,57 @@ def test_skill_unreadable_since_it_was_loaded_is_skipped(tmp_path: Path, content
     else:
         skill_md.write_bytes(content)
 
-    result = agent.invoke({"messages": [HumanMessage("go")], "activate_skills": ["crm", "house-style"]}, CONFIG)
+    result = agent.invoke({"messages": [HumanMessage("go")], "pinned_skills": ["crm", "house-style"]}, CONFIG)
 
     assert result["messages"][-1].content == "done"
-    assert _activations(model.call_history[-1]["messages"]) == [HOUSE_STYLE_ACTIVATION]
+    assert _pinned_messages(model.call_history[-1]["messages"]) == [HOUSE_STYLE_PINNED]
 
 
 @tool
-def activate_skill(skill: str, runtime: ToolRuntime) -> Command:
-    """Activate `skill`."""
-    return Command(update={"activate_skills": [skill], "messages": [ToolMessage(f"activating {skill}", tool_call_id=runtime.tool_call_id)]})
+def pin_skill(skill: str, runtime: ToolRuntime) -> Command:
+    """Pin `skill`."""
+    return Command(update={"pinned_skills": [skill], "messages": [ToolMessage(f"pinning {skill}", tool_call_id=runtime.tool_call_id)]})
 
 
-def test_parallel_tool_calls_each_activate_a_skill(tmp_path: Path) -> None:
+def test_parallel_tool_calls_each_pin_a_skill(tmp_path: Path) -> None:
     write_skill(tmp_path, "crm", content=CRM)
     write_skill(tmp_path, "house-style", content=HOUSE_STYLE)
-    model = _model(ai(call("activate_skill", "a1", skill="crm"), call("activate_skill", "a2", skill="house-style")))
+    model = _model(ai(call("pin_skill", "a1", skill="crm"), call("pin_skill", "a2", skill="house-style")))
 
-    _agent(tmp_path, model, tools=[activate_skill]).invoke({"messages": [HumanMessage("go")]}, CONFIG)
+    _agent(tmp_path, model, tools=[pin_skill]).invoke({"messages": [HumanMessage("go")]}, CONFIG)
 
     _system, _user, _calls, *rest = model.call_history[1]["messages"]
-    assert [m.content for m in rest] == ["activating crm", "activating house-style", CRM_ACTIVATION, HOUSE_STYLE_ACTIVATION]
+    assert [m.content for m in rest] == ["pinning crm", "pinning house-style", CRM_PINNED, HOUSE_STYLE_PINNED]
 
 
-def test_activated_skill_discloses_its_tools_until_summarized_away(tmp_path: Path) -> None:
+def test_pinned_skill_discloses_its_tools_until_summarized_away(tmp_path: Path) -> None:
     write_skill(tmp_path, "crm", "create_customer_request")
     model = _model(
         ai(call("create_customer_request", "c1", title="a")),
-        # Six messages: summarization keeps only the c2 exchange, dropping the activation.
+        # Six messages: summarization keeps only the c2 exchange, dropping the pinned skill.
         ai(call("create_customer_request", "c2", title="b")),
     )
     summary_model = GenericFakeChatModel(messages=iter(["summary"] * 10))
     summarization = SummarizationMiddleware(model=summary_model, backend=skills_backend(tmp_path), trigger=("messages", 5), keep=("messages", 2))
     agent = skills_agent(tmp_path, model, middleware=[summarization], checkpointer=InMemorySaver())
 
-    result = agent.invoke({"messages": [HumanMessage("file two requests")], "activate_skills": ["crm"]}, CONFIG)
+    result = agent.invoke({"messages": [HumanMessage("file two requests")], "pinned_skills": ["crm"]}, CONFIG)
 
     assert [m.content for m in tool_messages(result, "create_customer_request")] == ["created a (c1)", "created b (c2)"]
     assert "create_customer_request" in bound_tool_names(model.call_history[1])
     assert "create_customer_request" not in bound_tool_names(model.call_history[2])
 
 
-def test_subagent_result_never_activates_skills_in_the_parent(tmp_path: Path) -> None:
+def test_subagent_result_never_pins_skills_in_the_parent(tmp_path: Path) -> None:
     write_skill(tmp_path, "crm", content=CRM)
-    worker = RunnableLambda(lambda _state: {"messages": [AIMessage("worker done")], "activate_skills": ["crm"]})
+    worker = RunnableLambda(lambda _state: {"messages": [AIMessage("worker done")], "pinned_skills": ["crm"]})
     subagent = CompiledSubAgent(name="worker", description="Does work.", runnable=worker)
     model = _model(ai(call("task", "t1", description="do it", subagent_type="worker")))
 
     _agent(tmp_path, model, subagents=[subagent]).invoke({"messages": [HumanMessage("delegate")]}, CONFIG)
 
     assert model.call_history[1]["messages"][-1].content == "worker done"
-    assert _activations(model.call_history[1]["messages"]) == []
+    assert _pinned_messages(model.call_history[1]["messages"]) == []
 
 
 class _SyncOnlyBeforeModel(SkillsMiddleware):

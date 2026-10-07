@@ -346,7 +346,7 @@ class SkillMetadata(TypedDict):
 
 
 def _append_skill_names(left: list[str] | None, right: list[str] | None) -> list[str]:
-    """Combine two writes of `activate_skills`, treating a missing value as empty."""
+    """Combine two writes of `pinned_skills`, treating a missing value as empty."""
     return [*(left or []), *(right or [])]
 
 
@@ -354,8 +354,8 @@ class SkillsState(AgentState):
     """State for the skills middleware."""
 
     # The reducer must be the last `Annotated` entry, where LangGraph looks for it.
-    activate_skills: NotRequired[Annotated[list[str], OmitFromOutput, _append_skill_names]]
-    """Names of skills to activate before the next model call.
+    pinned_skills: NotRequired[Annotated[list[str], OmitFromOutput, _append_skill_names]]
+    """Names of skills to pin before the next model call.
 
     Each named skill's `SKILL.md`, without its frontmatter, is appended to the
     conversation as its own `HumanMessage`. The message is a snapshot: editing the
@@ -363,9 +363,9 @@ class SkillsState(AgentState):
 
     Names only, matched exactly against `skills_metadata`. A name that isn't
     loaded, or whose file can't be read, is skipped without an error. The key is
-    cleared once consumed, so a later run activates nothing unless it names skills
+    cleared once consumed, so a later run pins nothing unless it names skills
     again. Writes in the same step add up, so parallel tool calls can each
-    activate skills.
+    pin skills.
     """
 
     skills_metadata: NotRequired[Annotated[list[SkillMetadata] | None, OmitFromOutput]]
@@ -816,54 +816,54 @@ async def _alist_skills(backend: BackendProtocol, source_path: str) -> list[Skil
     return skills
 
 
-def _skills_to_activate(names: Sequence[str], skills: Sequence[SkillMetadata]) -> list[SkillMetadata]:
+def _skills_to_pin(names: Sequence[str], skills: Sequence[SkillMetadata]) -> list[SkillMetadata]:
     """Return the loaded skill each distinct name refers to, in first-seen order, skipping unknown names."""
     by_name = {skill["name"]: skill for skill in skills}
     resolved: list[SkillMetadata] = []
     for name in dict.fromkeys(names):
         skill = by_name.get(name)
         if skill is None:
-            logger.debug("Not activating skill '%s': unknown skill", name)
+            logger.debug("Not pinning skill '%s': unknown skill", name)
         else:
             resolved.append(skill)
     return resolved
 
 
-def _activation_body(skill: SkillMetadata, response: FileDownloadResponse) -> str | None:
-    """Return the text to activate `skill` with, or `None` if `response` can't be activated."""
+def _pinned_skill_body(skill: SkillMetadata, response: FileDownloadResponse) -> str | None:
+    """Return the text to pin `skill` with, or `None` if `response` can't be pinned."""
     if response.error or not response.content:
-        logger.debug("Not activating skill '%s': unreadable %s (%s)", skill["name"], skill["path"], response.error or "empty")
+        logger.debug("Not pinning skill '%s': unreadable %s (%s)", skill["name"], skill["path"], response.error or "empty")
         return None
     if len(response.content) > MAX_SKILL_FILE_SIZE:
-        logger.debug("Not activating skill '%s': %s is too large (%d bytes)", skill["name"], skill["path"], len(response.content))
+        logger.debug("Not pinning skill '%s': %s is too large (%d bytes)", skill["name"], skill["path"], len(response.content))
         return None
     try:
         content = response.content.decode("utf-8")
     except UnicodeDecodeError:
-        logger.debug("Not activating skill '%s': unreadable %s (not UTF-8)", skill["name"], skill["path"])
+        logger.debug("Not pinning skill '%s': unreadable %s (not UTF-8)", skill["name"], skill["path"])
         return None
     match = _FRONTMATTER_PATTERN.match(content)
     return (content[match.end() :] if match else content).rstrip()
 
 
-def _skill_activation_message(skill: SkillMetadata, body: str) -> HumanMessage:
-    """Return the message that activates `skill`, carrying its `SKILL.md` `body`."""
+def _pinned_skill_message(skill: SkillMetadata, body: str) -> HumanMessage:
+    """Return the message that pins `skill`, carrying its `SKILL.md` `body`."""
     name = html.escape(skill["name"], quote=True)
     path = html.escape(skill["path"], quote=True)
     marker = {"name": skill["name"], "path": skill["path"], "description": skill["description"]}
     return HumanMessage(
         content=f'<skill name="{name}" path="{path}">\n{body}\n</skill>',
-        additional_kwargs={"lc_source": "skill_activation", "skill": marker},
+        additional_kwargs={"lc_source": "pinned_skill", "skill": marker},
     )
 
 
-def _activation_update(skills: Sequence[SkillMetadata], responses: Sequence[FileDownloadResponse]) -> dict[str, Any]:
-    """Return the update appending a message for each readable skill and clearing `activate_skills`."""
-    update: dict[str, Any] = {"activate_skills": Overwrite([])}
+def _pin_update(skills: Sequence[SkillMetadata], responses: Sequence[FileDownloadResponse]) -> dict[str, Any]:
+    """Return the update appending a message for each readable skill and clearing `pinned_skills`."""
+    update: dict[str, Any] = {"pinned_skills": Overwrite([])}
     messages = [
-        _skill_activation_message(skill, body)
+        _pinned_skill_message(skill, body)
         for skill, response in zip(skills, responses, strict=True)
-        if (body := _activation_body(skill, response)) is not None
+        if (body := _pinned_skill_body(skill, response)) is not None
     ]
     if messages:
         update["messages"] = messages
@@ -933,17 +933,17 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     ```
 
     To guarantee the model gets a skill's instructions, for example when the
-    user names it, pass its name in `activate_skills`. Before the next model
+    user names it, pass its name in `pinned_skills`. Before the next model
     call, each named skill's `SKILL.md` is appended to the conversation as its
     own `HumanMessage`, with `additional_kwargs["lc_source"]` set to
-    `"skill_activation"` and the skill's `name`, `path` and `description` under
+    `"pinned_skill"` and the skill's `name`, `path` and `description` under
     `additional_kwargs["skill"]`:
 
     ```python
     agent.invoke(
         {
             "messages": [{"role": "user", "content": "/write-tests /house-style for auth.py"}],
-            "activate_skills": ["write-tests", "house-style"],
+            "pinned_skills": ["write-tests", "house-style"],
         },
         config,
     )
@@ -980,12 +980,12 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
     Pass those tools as `tools`, either as a list or as a
     `SkillToolResolver` that looks them up by name. The model sees a skill tool
     only after it uses `read_file` on a skill that lists it, or the skill is
-    activated, and only while that read or activation stays in context. Until
+    pinned, and only while that read or pinned skill stays in context. Until
     then, calling the tool fails as an unknown tool.
 
     `include_tools` can also list a tool passed to the agent rather than to
     this middleware. If that tool is deferred
-    (`extras={"defer_loading": True}`), reading or activating the skill
+    (`extras={"defer_loading": True}`), reading or pinning the skill
     discloses it automatically.
 
     ## Placement
@@ -1258,7 +1258,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         return SkillsStateUpdate(skills_metadata=skills, skills_load_errors=skills_load_errors)
 
     def before_model(self, state: SkillsState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002
-        """Activate the skills named in `activate_skills` before the model call (synchronous).
+        """Pin the skills named in `pinned_skills` before the model call (synchronous).
 
         Appends one message per named skill, in the order named, carrying its
         `SKILL.md` without frontmatter. Names are matched against
@@ -1270,17 +1270,17 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         Returns:
             State update appending the skills' messages and clearing
-                `activate_skills`, or `None` if no skills are named.
+                `pinned_skills`, or `None` if no skills are named.
         """
-        names = state.get("activate_skills")
+        names = state.get("pinned_skills")
         if not names:
             return None
-        skills = _skills_to_activate(names, state.get("skills_metadata") or [])
+        skills = _skills_to_pin(names, state.get("skills_metadata") or [])
         responses = self._backend.download_files([skill["path"] for skill in skills]) if skills else []
-        return _activation_update(skills, responses)
+        return _pin_update(skills, responses)
 
     async def abefore_model(self, state: SkillsState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002
-        """Activate the skills named in `activate_skills` before the model call (async).
+        """Pin the skills named in `pinned_skills` before the model call (async).
 
         Appends one message per named skill, in the order named, carrying its
         `SKILL.md` without frontmatter. Names are matched against
@@ -1292,14 +1292,14 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         Returns:
             State update appending the skills' messages and clearing
-                `activate_skills`, or `None` if no skills are named.
+                `pinned_skills`, or `None` if no skills are named.
         """
-        names = state.get("activate_skills")
+        names = state.get("pinned_skills")
         if not names:
             return None
-        skills = _skills_to_activate(names, state.get("skills_metadata") or [])
+        skills = _skills_to_pin(names, state.get("skills_metadata") or [])
         responses = await self._backend.adownload_files([skill["path"] for skill in skills]) if skills else []
-        return _activation_update(skills, responses)
+        return _pin_update(skills, responses)
 
     def _disclose_skill_tools(
         self, request: ModelRequest[ContextT], reads: list[_SkillRead], resolved: Mapping[str, Sequence[BaseTool]]

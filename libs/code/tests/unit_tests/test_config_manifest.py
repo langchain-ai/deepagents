@@ -370,6 +370,50 @@ def test_show_message_timestamps_env_overrides_config(monkeypatch) -> None:
     assert source == f"env ({_env_vars.SHOW_MESSAGE_TIMESTAMPS})"
 
 
+@pytest.mark.parametrize(
+    ("config_value", "env_value", "cli_flag", "expected"),
+    [
+        (None, None, False, True),
+        (False, None, False, False),
+        (True, "0", False, False),
+        (False, "1", False, True),
+        (False, "invalid", False, False),
+        (None, "invalid", False, True),
+        (False, "0", True, True),
+    ],
+)
+def test_reasoning_display_default_and_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    config_value: bool | None,
+    env_value: str | None,
+    cli_flag: bool,
+    expected: bool,
+) -> None:
+    """Reasoning is visible by default without overriding explicit opt-outs."""
+    from deepagents_code.app import _load_show_reasoning
+    from deepagents_code.config_manifest import load_bool_display_preference
+    from deepagents_code.main import _install_cli_provider, parse_args
+
+    config = tmp_path / "config.toml"
+    if config_value is not None:
+        config.write_text(f"[ui]\nshow_reasoning = {str(config_value).lower()}\n")
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+    monkeypatch.delenv(_env_vars.SHOW_REASONING, raising=False)
+    if env_value is not None:
+        monkeypatch.setenv(_env_vars.SHOW_REASONING, env_value)
+    monkeypatch.setattr(
+        "sys.argv", ["dcode", *(["--show-reasoning"] if cli_flag else [])]
+    )
+    _install_cli_provider(parse_args())
+
+    assert _load_show_reasoning() is expected
+    assert (
+        load_bool_display_preference("display.show_reasoning", fallback=True)
+        is expected
+    )
+
+
 def test_is_openai_prompt_cache_key_enabled_reads_env(monkeypatch) -> None:
     """`is_openai_prompt_cache_key_enabled` honors the env override."""
     from deepagents_code import config_manifest

@@ -6654,7 +6654,6 @@ class TestRunAgentTaskMediaTracker:
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._show_reasoning = True
 
             with patch(
                 "deepagents_code.tui.textual_adapter.execute_task_textual",
@@ -15017,9 +15016,9 @@ class TestFetchThreadHistoryData:
         mock_agent.aget_state.return_value = state
         app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
 
-        hidden = await app._fetch_thread_history_data("t-1")
-        app._show_reasoning = True
         visible = await app._fetch_thread_history_data("t-1")
+        app._show_reasoning = False
+        hidden = await app._fetch_thread_history_data("t-1")
 
         assert [(message.type, message.content) for message in hidden.messages] == [
             (MessageType.ASSISTANT, "Before after"),

@@ -2351,9 +2351,9 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     ConfigOption(
         key="display.show_reasoning",
         group="Display",
-        summary="Show provider-visible reasoning in local output (off by default).",
+        summary="Show provider-visible reasoning in local output (on by default).",
         kind=OptionKind.BOOL,
-        default=False,
+        default=True,
         env_var=_env_vars.SHOW_REASONING,
         toml_keys=("ui", "show_reasoning"),
         cli_flag="--show-reasoning",

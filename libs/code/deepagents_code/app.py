@@ -1484,9 +1484,9 @@ def _load_show_reasoning() -> bool:
     """Resolve whether local output shows provider-visible reasoning.
 
     Returns:
-        The resolved preference, defaulting to `False`.
+        The resolved preference, defaulting to `True`.
     """
-    return _load_bool_display_preference("display.show_reasoning", fallback=False)
+    return _load_bool_display_preference("display.show_reasoning", fallback=True)
 
 
 def _load_show_scrollbar() -> bool:

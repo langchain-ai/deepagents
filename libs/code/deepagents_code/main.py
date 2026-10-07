@@ -2620,7 +2620,7 @@ def parse_args() -> argparse.Namespace:
         "--show-reasoning",
         action="store_true",
         default=None,
-        help="Show provider-visible reasoning (off by default).",
+        help="Show provider-visible reasoning (on by default).",
     )
 
     parser.add_argument(
@@ -6374,7 +6374,7 @@ def cli_main() -> None:
                             quiet=args.quiet,
                             stream=not args.no_stream,
                             show_reasoning=load_bool_display_preference(
-                                "display.show_reasoning", fallback=False
+                                "display.show_reasoning", fallback=True
                             ),
                             mcp_config_path=getattr(args, "mcp_config", None),
                             no_mcp=getattr(args, "no_mcp", False),

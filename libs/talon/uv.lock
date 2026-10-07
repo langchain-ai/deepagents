@@ -1029,12 +1029,12 @@ requires-dist = [
     { name = "langchain-cohere", marker = "extra == 'cohere'", specifier = ">=0.6.0,<1.0.0" },
     { name = "langchain-daytona", marker = "extra == 'daytona'", editable = "../partners/daytona" },
     { name = "langchain-deepseek", marker = "extra == 'deepseek'", specifier = ">=1.1.1,<2.0.0" },
-    { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.7.0,<2.0.0" },
+    { name = "langchain-fireworks", marker = "extra == 'fireworks'", specifier = ">=1.7.1,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.0,<5.0.0" },
     { name = "langchain-google-genai", marker = "extra == 'google-genai'", specifier = ">=4.4.0,<5.0.0" },
     { name = "langchain-google-vertexai", marker = "extra == 'vertex'", specifier = ">=3.2.4,<4.0.0" },
     { name = "langchain-groq", marker = "extra == 'groq'", specifier = ">=1.1.3,<2.0.0" },
-    { name = "langchain-huggingface", marker = "extra == 'huggingface'", specifier = ">=1.2.2,<2.0.0" },
+    { name = "langchain-huggingface", marker = "extra == 'huggingface'", specifier = ">=1.2.3,<2.0.0" },
     { name = "langchain-ibm", marker = "extra == 'ibm'", specifier = ">=1.1.2,<2.0.0" },
     { name = "langchain-litellm", marker = "extra == 'litellm'", specifier = ">=0.11.0,<2.0.0" },
     { name = "langchain-meta", marker = "extra == 'meta'", specifier = ">=0.5.0,<2.0.0" },
@@ -1053,7 +1053,7 @@ requires-dist = [
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.3.0,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.1,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.33,<1.0.0" },
-    { name = "langgraph-runtime-inmem", specifier = ">=0.35.2,<1.0.0" },
+    { name = "langgraph-runtime-inmem", specifier = ">=0.35.3,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.6,<1.0.0" },
     { name = "langsmith", extras = ["sandbox"], specifier = ">=0.14.4" },
     { name = "markdownify", specifier = ">=1.2.3,<2.0.0" },
@@ -2499,7 +2499,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-runtime-inmem"
-version = "0.35.2"
+version = "0.35.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "blockbuster" },
@@ -2510,9 +2510,9 @@ dependencies = [
     { name = "starlette" },
     { name = "structlog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/98/c4/4c4a97f047ba33bd238ea36c4d85a7be2618cf5b9d2de3683ef53a9abb19/langgraph_runtime_inmem-0.35.2.tar.gz", hash = "sha256:2e4036ecc25c894f1e0e870286ca3138550e11f02163586690300bc9e89008e9", size = 133738, upload-time = "2026-10-06T23:45:14.137Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/61/61/3f6ca961b5fd90ffacece91e66c4e648dd818d8f667d0797015c5c3ab725/langgraph_runtime_inmem-0.35.3.tar.gz", hash = "sha256:fb58a5652563e029acd09e0ece6d51e3958ce195260e9151c7296c461813f126", size = 133743, upload-time = "2026-10-07T20:21:37.415Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/43/85/600e0d91ec64d042ab752fee81968ebe51ec01804f221052cef3a3bc4c5e/langgraph_runtime_inmem-0.35.2-py3-none-any.whl", hash = "sha256:bc6133fe2c80108449fc6a1ee2e102f0120d9d6777f7b4b0647ba8a27b1d5557", size = 52987, upload-time = "2026-10-06T23:45:12.917Z" },
+    { url = "https://files.pythonhosted.org/packages/94/66/d4b1c4ee1a85e15a0ce2729770ef6d8be2fe4e0dbf98e15e74bb9cae229a/langgraph_runtime_inmem-0.35.3-py3-none-any.whl", hash = "sha256:1a52e5821e4266baa0a5599658e1b58501f71fef6e3c2298e6a99114dfcd2ffc", size = 52987, upload-time = "2026-10-07T20:21:36.087Z" },
 ]
 
 [[package]]

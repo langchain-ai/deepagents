@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:22ac49d71faa365aad3685bd8bb6353799cab4dc3e66a7640e6401ea1f82a29d",
+  "pageVersion": "sha256:eecc0a4cd216013a225619260c33e892373772cadfae6ab04c8587de3bca0067",
   "claims": [
     {
       "id": "claim_f69e854889dc465d8c71bec1dd14bbd5",
@@ -26,7 +26,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/model_config.py",
-          "version": "repo-file-v1:sha256:f1803801d02236427cedb2cd164f32d4f6e5b84423bdbfa76ea38d5cbc124b97"
+          "version": "repo-file-v1:sha256:0af330b5920719a306ecc355ffd56617cd2559c22121a4a652cc832cde24d69b"
         },
         {
           "resource": "repo://libs/code/deepagents_code/model_config.py#L3970-L4026",
@@ -50,7 +50,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/model_config.py",
-          "version": "repo-file-v1:sha256:f1803801d02236427cedb2cd164f32d4f6e5b84423bdbfa76ea38d5cbc124b97"
+          "version": "repo-file-v1:sha256:0af330b5920719a306ecc355ffd56617cd2559c22121a4a652cc832cde24d69b"
         }
       ]
     },
@@ -249,10 +249,60 @@
           "version": "repo-lines-v1:sha256:37df1f3f550d96970289f37e46a49b72a55ee53c526af3cfecbeeef4183b92df:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhYzUwZDljMTE2MzUyNmUzOWQzMTZmM2U1N2UxODg5M2U1MDIxMjM0NGE5N2FkOTgxNjkzYmRhODYwMGFhODk2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyMjg0ZDQ1NjYxMWJhNjk4MGQ3YjRmYjNlMjk5OTFkNjAwZmE0YWU4Nzg1ZWZmMTgxMWU4MjAxNWZjMjI1YjZhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiYzI1N2IwZDc4NTkyMTZiOTVhZmY3ZDg1MWRlODAzNGQzMzlmOTE3MDJmMzkwM2ZlZDI4NGQzNmM1YTIzOTk1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxZDAzZThhNzMzMmViMjUyYjAzNmI1ZTg0ZjFmNjMzMzY3ZmEzZjhjOTcwOTE5YmQzY2ViYmMxY2M1YTk4NmNmIn0"
         }
       ]
+    },
+    {
+      "id": "claim_4af0b4f68f8e423099bf7aef64bff55c",
+      "statement": "For a canonical environment-variable name, resolve_env_var gives a present DEEPAGENTS_CODE_ prefixed variant precedence over the canonical name; an empty prefixed value suppresses the canonical value and resolves as absent.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L102-L148",
+          "version": "repo-lines-v1:sha256:0a5021b16c5743a18bbedce165b23e6f1ab4d90841a4b9428d66f56938cc275f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0ZmIyNTAzNDU5MDRiNjNkNGE5NGVjNTExNWFlYzBjM2E2ZmM1MjA0M2MzZGE3MGVlYzM5ZWM5NjViOWM4OGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjMmExMDgxMTQ3NjBjMmMyZTIxOGFlM2ZlZWQ4NTYzMzg3ZDNlOGIyMGRhMWJhZmExNTBlZjI1MzAzYTEwOWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwZmRlMjNkY2Y0MDJkMjliMjJhZWMzMzljYjNmYTIyZTUyMWRjZTk2ZWUwMmVlODA2NTcxNzRjNzZkODk5YmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNmZGMzZDVmMmJlYjQzZmMxNjNmY2MzZTE0OTNhYzAzMjhjNmM3ZmZlNWM3MTg3MjcyZDEzZjBlYmIwODhkNTAifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_model_config.py#L1308-L1396",
+          "version": "repo-lines-v1:sha256:dd17de906f3dbf42e902bee6ea260589dd2967836d49e6d0cc9dd047d73ee363:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY4N2YxYTc1NzQ2NTIyMTAyYWRjMDk0Zjc2NDU3ZWNlMmNjZGIxM2I2OWVhODFjYjdhODVhZWQ0MTZlOTc1MmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2YWJkNzA2MGNmZTExNDdiYzNiYTQyYjZiNzdiM2YwY2Q0MmUzMzc4ZmI1ZmQyOGE5OTc4MTk5M2JiYTM1MzQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwYzY3YThmMGQyNjFiZWU1YzRhYTdmNjcxYWQxOWJjMTU5MTA3ODhjNDZlYzEzMThlMDlkODE2OWU1MTdkYzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMyMzFiZWJiY2FhZjU4MDc0OGFlMGZkOWFlODZiM2ZlZDI5NDBmMWMxYmQ3ZmUzMzZlZDAyMzFiMmJlMWQ2NWUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ba4efd1fe53f414fa1141c6cf3c2d42c",
+      "statement": "Stored provider credentials are applied only on the inference host, overwrite plain canonical SDK environment names, and reconcile paired endpoint variables; the implementation writes only unprefixed names so prefixed environment overrides remain authoritative, while split key/endpoint tiers are diagnostic-only and log names rather than values.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L2944-L3059",
+          "version": "repo-lines-v1:sha256:b17ac64d668365c4fc368a4872a826022ffb4e3227d0590e8fe7ffb39f2f5ecc:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkMmMxNjBmOWNmM2IwZjRkMmY2ZTQxYmQ4MWIyODhkNWYxNmNlMGE1YjkyZTBjNjc0NWY4NGNlOTcwYzQ3Y2QwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NTAzMmU5NjRkMDkzMjM1MWU1ZDE4NTI2OTI4MWIxNzFhM2EwOWIwOGIyODZlNjYxZWE0NzAzMjNjODJlYjRkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmODNlMjA2M2IwZDNhMjA1NmQ3MWZkNDRjM2ZmOGEzNmZlZTM5Njg1ZWEzN2NmMzA4NDAzMzY2YmRiYzRhZDdjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjOGM0YWJhZWJiMWUxNmE0MDMyMDQwOTNkNzA0NDFlNzk5MDg3MGViNWM5Y2JhMjNjZjcwNTBiNzI3ZjUzYTllIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L3077-L3096",
+          "version": "repo-lines-v1:sha256:e751ad71d2b5ceae146805eaf8bdddf8ab41e4bb33991c6ead635ce77ec7800d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwNWRhNzQyZTkyMjM5ZWY2NjkzY2VlZGU2MjcwNGQ4ZDgzYTFhNDExNGI3YjIxZGM2ZGYwYzAzOGMxZTMyZGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzZWExYTU1NjE3NGEwMjE1NmYyZjA5ZjYxYWUyNzY1OWI1MTk4MzY2YTk4YmMwMmYxYzBkY2M4NGE2ZGY0YTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUwYjIxYmY4OTVmYWUyZDczOTIwZDkzMTc4Y2ZkNTg0MWNkZjhmOTUyNDUxNmM4YTU2NTg0MzZhNGFjNDhmM2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZkYjA1OTIzZTAxMGE2NDE5YmZmYzIzYzdhYWIxNGQxNDM2MWU4Y2MwZjJiZjk3ZGUxOTUzOTQzMjQ4MDdkMzYifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_model_config.py#L1085-L1273",
+          "version": "repo-lines-v1:sha256:c0f3339131ea71ea119fd70272af23a83c827e36fbd6b4c9bec425c909548c29:eyJzZWxlY3RlZExpbmVDb3VudCI6MTg5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5YjU0NGFjZGE1MzdjNmY3N2QwOTg2MmIzMzM1NjAwYzhlNzkwNzk4YTgyN2EwOWM5OWJiN2M0MWYzNTkxNzQ3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0NGQ0ZGFjMTUzOWI4NDJhMTRjOTE1NjU3Mjc1YzI1ZWNkMjEwNzBiNTJiNjM1ZTJiZmM3YTJkZWExNDRkMDg1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI5MDdiNzgyMGM4NzkwOTgwNGUyZDIyMmUxOGE5MDhkOTc1ODU5Yjk4NzY4ZTk5OWQzOWIzY2NlYTE1MTUwOTIwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiNDZhNzk4ZGJkYWJlMmU0MzhhNzJkMjNlMDhlMjdlODBiMjA3ZDFlN2YyNGRlNzUzZDJkZDE0YTY3YjA0YjUwIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_405efdd19c884be49f7c7d35549a7d2c",
+      "statement": "Model policy and credential failures are actionable typed configuration errors: ModelNotAllowedError reports deny-all, unmatched, or excluded allowlist cases with policy provenance, while MissingCredentialsError carries the selected provider and canonical credential-variable name when available; readiness models distinguish missing, implicit, managed, no-auth-required, and unknown auth states.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L176-L235",
+          "version": "repo-lines-v1:sha256:809f158ff0ca16a1a87349d5d223b96579d1e1e5005834cbbe0f7615112f0c02:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFjOTIwNDc1NTUxYTM4YTBiNDQ0MDFhNmQ0NmM4N2EzYWEzM2E5NDgyYzBjZGU5OGYyOTgwZjg0NGFhN2EzYTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiOGNkMjhiMWJhMDlhODg1ZGFhMmE1MTcxNGMyNDQ1MTBlMzc5MDhiYzBjZDY4YmY0Y2FiYmE5NDA4YTJiMTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg3ODNmZGY4ODk1YjQ3Mzg4ZDdhOTlmNTc5MWRmMWE3NWU5NzYyYjgwNDhmZjY4NGZiNzdkNGUwY2UyZmI2Y2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNkMzczYTAzMzVlMGZhNmViMGIyODZlYWU3ZmY1MGQ1MzM4ODIxMTMyZmYzMzA1OWEyZTZlY2ZlYjNiODAzM2MifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L2609-L2759",
+          "version": "repo-lines-v1:sha256:7d39592888928853ab611269878ba6e2de0f2534fea80f23c3304d4d1e777876:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlYTkwMTIxYWJkMTI3NmMzMmFjY2QyNDZiZjRiMTM0NTI0MTIyOTQwNWI5NDc3ZWExY2VjZTVkMDliNWUzOTE5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzMGMxZjE4OGYxNDJlZDdhODI0NjgwYjIwNzE3MmM1NTE5YmM2MTRhNDhmZGE3Y2YxNjdlZGI4ZGRmNzk5NTZjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3ZmNiNDlhYTlhOGRkNTJhNTZmYmFmOTRiYmMzOGYwNTQ0Y2ZjMzZjNTYwOTc0YmFjY2YwNTUxZTNmNjEyMDlkIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L298-L405",
+          "version": "repo-lines-v1:sha256:0325295bb6f46d926dfce1b115d19e334e0058e4ee509bd6837ef293f414b263:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2OWY5M2I5YTlmNjM4ODE4NzVjODU5YjZhMjIwMmQwZmFiODE3MDlmZDYwZWQwNTMzNTA0YzBmNmVmMzQxOTYyIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ZjU2YTM1YTgwYzAyZDAyYmYyODNkYTVmNzE2ZmQ0YWUzZmM1OWQzMDE5MWJhNzNlYjk4MGU3NTI0NzBkZWE2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI1YzgyZTU5ZTlhMDcyMDUwYTkxZDk4ZDhjODM1NzA0MTAyZTlmOWY4MjNmOGM1OTA4ZThjNjI2MjdkZTRhZjEwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4NDVkZGEwNjQ3OTk5NDA2MTdhYTkzNTA3ZDVmZjczOWEwMjRhZjgxM2FhNWE3MmJkNWNmN2RjYzQxN2E0MWU3In0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-06T08:06:27.683Z"
+    "at": "2026-10-07T08:06:51.789Z"
   }
 }

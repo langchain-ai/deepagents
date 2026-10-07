@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a2d298428acbeffccf198c19cd9d191cb017c54339393aacf8b675ad0e280a68",
+  "pageVersion": "sha256:28f13653eedcedad69304cb4e1c9b6c8897fd069e54e99dfee971e69b50ae91e",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -106,7 +106,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/app.py",
-          "version": "repo-file-v1:sha256:a2f3a4fcc212d1c2a466deef8ab27ed01c859fa8ba1cf48c7df0de1c0ab2010b"
+          "version": "repo-file-v1:sha256:7318b58d729cf339d819de53c28e549c73bbbf16f9a332d04db1f66a4c366ce0"
         },
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
@@ -169,10 +169,52 @@
           "version": "repo-lines-v1:sha256:526b2d2e7ed16de7872f0c819b4789245b45576d42df1f6e8bc4cd2de401675a:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZGNjYTlkNWM2YTFjMDRhN2MxMjFmNDlhMjJiOTY5ZmI5YzMzMjQyYmYzZjRmOWE0M2JlOWIwMGE1NjhiZGE5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzMwOTE5ODM5MThmNWQxMDllOTE4OTYwNmYxYWNiYjBhNmIxNzhlMGViNjU0ZDBhOTg2NzkzZjk4YTNhMjRiMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjIsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZmYzZTI5NWFkYTllNDgyYTc0NzgzMmQyMjEzMTJkNzAxNWM3MjdhZWQ1MzIxOGU5MzQ2MDkxNmEwNzkyYTE1NyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTI4MjgyYWNmZGY5YTI3MTM1NmEwNTA3YWMyNTAxY2IzYmVmMzI3NjUzZDMwYWMzYjc2MDMwNjdmMzg2MDAyOSJ9"
         }
       ]
+    },
+    {
+      "id": "claim_247b9387c5f94ba38a7ded8d849e44c5",
+      "statement": "dcode's model configuration resolves `DEEPAGENTS_CODE_<NAME>` before an unprefixed environment variable; a present prefixed variable, including an empty one, prevents use of the canonical variable.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L102-L110",
+          "version": "repo-lines-v1:sha256:f6e88d0c4a871ac005073b18f94fad4a30940cea01e520bd6287d88ea2bd72e2:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDRmYjI1MDM0NTkwNGI2M2Q0YTk0ZWM1MTE1YWVjMGMzYTZmYzUyMDQzYzNkYTcwZWVjMzllYzk2NWI5Yzg4YSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZWM1NzI0NDVkMmI0ZjlkNzQ0YTJlNjI2MDdkOTYyODRlNjE5ZGJmMTA5NjIxMTM3YmFjYjM3ZjU1ZTQ3M2YxZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjBmZGUyM2RjZjQwMmQyOWIyMmFlYzMzOWNiM2ZhMjJlNTIxZGNlOTZlZTAyZWU4MDY1NzE3NGM3NmQ4OTliYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWMyZmZjMzRjYWE1NjhlMmU5ZjFiOGZhMWZmMTNmYzNlZGI3YjAxZTE1YTU5NGQ4NjNjNjEyMjJiMjlmNjZhZCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_d3f9c6c61bda4c919d54c58cd141bfab",
+      "statement": "`app.py` applies dcode's `_textual_patches` at import time before any Textual `App` is created, so compatibility changes belong to that patch boundary and need behavioral patch tests.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L39-L62",
+          "version": "repo-lines-v1:sha256:831a35d60bb02c31d3cc8339e861b7616149a1491b059e66dd18caf904270f39:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjZjAzNGNhMjU2ZmMxYTBiNjBiZTA4ZmRiNTg4ZGMzODVhMzUxNTU2ZTRlMGE0YzAyZGYxYWRiNDk2YTUyY2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhZmJhMDUyN2MzOTUzYzRiNmUwZTViNTczOWJhODM2MTJmODA1M2JjZGM5NDY2NzMwMTkzY2QxZDU5MGI0MDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcxNDhhMjY5MDU0MjI4ZDBlNDFlMjhkODcxNDRkNTMwYmM1ZmNhZjlmOGY0OTI5NDI5ZWVmNmMzNGE1NThjYzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3YmJiNzQ3MmRmMWQyNjk1NjJlODQwYmVhMDVjYzYxMzFkMGE1ZmM1NDk2ZTMwYmRkZDVkNTMwZTJkODdhYzUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_textual_patches.py#L22-L61",
+          "version": "repo-lines-v1:sha256:b9b88fe2f5bbeaed4d0e03d8732522902aef5486132aa27ed650b81ac9107e16:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhiNTVlMzZkZmYzY2RiZTRmMzQzMWEzZmUyNTBkMzA5YmY3MWRlZTBhNWJlOTdmYTEzMzQ5NTlkNjhjYmFiYzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzMzdlNTU0MzIyZGQ2NmEzMTU2NGMzNjdiOWI0ZmU4YTU4ZmYwOTNkOThhYjM5YTYyYTZlZGFlNDgxNDhlZWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY5MjMyNTdmY2YyNDVlODBjZmMzODg3Njk0MDQzODM1MDk2ODdiNGFjZGUzOGE3MmNkZmM3MTdiODhhNzk2MjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiZTg5MDY0NmIyMTYzNjk4MzAwMTc3MjZlM2Q0OWQ2MDVhMTk4N2E2OWExODA0OWRlZjhmNjAwZGU3MzFlZTcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0685391728ec447089268dd68ed0304c",
+      "statement": "`create_deep_agent` owns public SDK graph assembly: supplied same-named middleware replaces a base entry in place, while protected filesystem and synchronous-subagent scaffolding cannot be excluded by a harness profile.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L210-L261",
+          "version": "repo-lines-v1:sha256:bb942db4a5f162cb8e69d35093049ab0d9fa343afcfd60aa38fd6a7638457588:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzY2JlOWQ0MmMxNGU4ZDU0MzZhNDg5ODI4MDdlMDhiZmU3NGU4NjlkYjUyMjJkODkwMWU0NTg4YjIxYWYzYzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjExNzY0MmQ1MTliY2JkMTcxNjMyMGEzMDVmMjljODJkNjlkZWY0YmM2MDJlMGQxNGM2N2RhODg4MWE0MDE1ZDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQwOWM0MmVmZGNiYmI1NzAxYmM0YWE5MWY5ZjhmNWEzNGY2NGI5ZmJjMjg4Zjc2NzE0YTQwZWU0OWZiY2ZkMGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlkYWY3NmFjZGE4NWM3OGIwMTdlNTdkZTVkODU1OThhYjBlMTY4MjgzMmIxNWFkMzgwNjdiMTZiNzgzNmMyYjYifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L372-L422",
+          "version": "repo-lines-v1:sha256:346e2afd5bc99ab4046a43887d5a48ea900d80671ec4a56810121106b25d5594:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY4YTE4ZDUyNTQ5MWI4MzU2ZjdlZmVmOWM4YzljMDRmYjBlMDE1ZWY3MTMxYjg3MjQwZTI2Y2Y4OGZiYmZiMTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNlZjgxMzQ4NzA5OTY3NDRiYzg0YjljYzdjMTYzZDk2ZGEyZTQwZDliMWI0NDNlM2M1ODJkYjlmMjhmOWU2ZTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY0M2Q1NjEwNDljYzE5NmU5MzcyNjk0MmI4NzY2NjZiYzY1ODMzZGQxZGZiM2RkMzRmY2U5ZWE3MDUyMDJhNGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4MDg0MDM5Y2M2Y2U3MWUzNTlmYzRlYjViZWI0ZmZjNTczN2MwZDFhZmRlMzk0OThmYzVhOTc1Y2M2OTAzNDkifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py#L25-L49",
+          "version": "repo-lines-v1:sha256:c26d435eaaf3b481bd8ff536afd1cfaf61f09702a124b4cd3bc30949f1176fdd:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxNDk1MGFhOTQ5ZjU1NzNkMTNmYjU0ZDc4ZWYxODE5YWZmYWJlYTZhY2RiMWY0ZTJlNzUwYzg3OGVkNDYwYzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjN2MwYzE0ZGZlMzdiNTQ0ZTQyNGE0Y2JlNDg5M2VkZjgxYjNiMTg3YjcyOGQxNDgzMjE2MzgzZDFiZjI5ZTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzNWM5N2IwZTI4MTZmNjQ2YzViYzE1MDQxOWU0NjZmNmRiNzM2MDE4MDk0MGVhNTgyMWJkZWNkNTZmZTIxYzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRiZTNmNjczYzQ5NjU1YzM1Y2QxMTFjOTI1ODAyNTZjOThkMmRiNDcwZWIxMWM5NzI2ZDQ0ODMyOTMyYzlmOTMifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-06T08:06:27.683Z"
+    "at": "2026-10-07T08:06:51.789Z"
   }
 }

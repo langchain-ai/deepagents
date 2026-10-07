@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Repository Quickstart and Change Routing](quickstart.md) - Find the owning package, lifecycle boundary, focused regression neighborhood, and companion guide for Deep Agents SDK, dcode, ACP, Talon, evals, partners, and repository automation changes.
+- [Repository Quickstart and Change Routing](quickstart.md) - Find the owning package, lifecycle boundary, focused regression neighborhood, and companion guide for SDK, dcode, protocol hosts, partners, evals, and repository automation changes.
 
 # Directories
 

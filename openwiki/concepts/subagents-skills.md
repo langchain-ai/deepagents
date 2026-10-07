@@ -1,11 +1,8 @@
 ---
 type: delegation and progressive-disclosure concept
 title: Subagents and Skills
-description: Deep Agents delegates local, forked, compiled, and remote work across explicit state and lifecycle boundaries. Skills separately discover instruction bundles and can disclose and gate skill-selected tools according to provider request capabilities.
-tags: [deepagents, subagents, delegation, skills, middleware, tool-gating, agent-protocol, plugins]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-06T08:06:27.683Z
+description: Deep Agents delegates local, forked, compiled, and remote work across explicit state and lifecycle boundaries. Skills separately discover instruction bundles, disclose and gate skill-selected tools, and include a dcode-only read-only local thread inspector.
+tags: [deepagents, subagents, delegation, skills, middleware, tool-gating, agent-protocol, plugins, thread-inspection]
 sources:
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
@@ -13,6 +10,10 @@ sources:
     resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-ffc86ac7fa55a1590266f17a
     resource: repo://libs/code/deepagents_code/built_in_skills/deepagents-plugin-discovery/SKILL.md
+  - id: openwiki-source-1f9226665e99f6f846936c59
+    resource: repo://libs/code/deepagents_code/built_in_skills/deepagents-thread-inspector/scripts/inspect_sessions.py
+  - id: openwiki-source-73a12d41c3ec5c3f079ed79e
+    resource: repo://libs/code/deepagents_code/built_in_skills/deepagents-thread-inspector/SKILL.md
   - id: openwiki-source-dc1e984fa4e6a51458e9ff9d
     resource: repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py
   - id: openwiki-source-a212c04b024619b9d16833e6
@@ -23,6 +24,8 @@ sources:
     resource: repo://libs/code/deepagents_code/skills/load.py
   - id: openwiki-source-07ceaf2cb5ec707fa4d2010f
     resource: repo://libs/code/tests/unit_tests/skills/test_load.py
+  - id: openwiki-source-140e3a9397d67359bab19562
+    resource: repo://libs/code/tests/unit_tests/skills/test_thread_inspector.py
   - id: openwiki-source-de10df56a1b3fb50cedb6f30
     resource: repo://libs/code/tests/unit_tests/test_skill_invocation.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
@@ -43,7 +46,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
     resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-06T08:06:27.683Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-07T08:06:51.789Z
 ---
 
 # Subagents and Skills
@@ -142,6 +148,18 @@ The dcode client uses a filesystem-facing loader rather than the SDK's per-threa
 
 The shipped `deepagents-plugin-discovery` skill is consequently available even when no plugin skill sources exist. It instructs the agent to use the local CLI's read-only `plugin list --json` or `plugin marketplace list --json` with the current `DEEPAGENTS_HOME` profile when a needed capability may be in a configured marketplace. Catalog discovery neither enables nor installs a plugin, and a result with `enabled: false` must not be presented as proof that the plugin is installed. It also cannot inspect the host profile when `execute` or the local CLI/profile is unavailable in a remote sandbox.
 
+### Built-in local thread inspection
+
+`deepagents-thread-inspector` is another dcode built-in skill, but it is not an SDK subagent, an Agent Protocol task, or a general remote-trace reader. It is an operational boundary for **trusted local dcode session state**: use LangSmith tooling for traced threads when it is available; otherwise use the skill to inspect a saved local thread, its checkpoint metadata, a recent-thread list, or an offline/untraced conversation. The skill directs the agent to invoke its packaged `scripts/inspect_sessions.py` rather than manually decode checkpoint blobs.
+
+The script opens the selected SQLite database with `mode=ro`, requires the `checkpoints` and `writes` tables, and considers only the root checkpoint namespace (`checkpoint_ns = ''`). Thus a parent thread's summary and transcript do not accidentally blend in subagent-namespace checkpoints. It accepts an exact thread ID or one unambiguous, SQL-escaped prefix; `--list N` is the alternative when an ID is unknown. `summary`, `latest-turn` (the default), and `transcript` emit JSON; the latter two reconstruct materialized messages, while `--include-metadata` adds the latest checkpoint metadata.
+
+The default store follows dcode's profile resolution: `DEEPAGENTS_SESSIONS_DB` wins, otherwise the script uses `$DEEPAGENTS_HOME/.state/sessions.db` or `~/.deepagents/.state/sessions.db`. Invalid relative or `~user` profile forms are rejected instead of silently inspecting a different store. It prefers a durable `dcode_thread_names` entry over checkpoint metadata for `thread_name`, retaining the latter only as a legacy fallback.
+
+For messages, strict MsgPack is enabled and LangGraph's serializer is used. The fast path reads `channel_values["messages"]` from the latest root checkpoint and applies pending writes from that checkpoint; when that is unavailable or malformed, it replays root `messages` writes in checkpoint, task, and index order. Corrupt checkpoints or writes are reported in a `warnings` array while reconstruction continues where possible; channel `Overwrite` replaces the accumulated list only when its payload is a list. Output bounds every message, tool result, and tool-call argument with `--max-content` (4,000 by default), omits reasoning/thinking blocks from rendered content, and marks truncation.
+
+This read-only guarantee does not make arbitrary databases safe to deserialize. The skill explicitly limits the workflow to trusted local Deep Agents state; users should not ask it to expose unrelated credentials, personal data, or hidden reasoning that may be stored in records. If the selected Python lacks dcode dependencies, the script can re-exec a Python associated with a `dcode` or `deepagents-code` launcher on `PATH`; it otherwise exits with a clear dependency error.
+
 Plugins contribute each inventory skill directory with the plugin ID as a namespace. dcode recursively walks a plugin source until it finds directories containing `SKILL.md`, stops descending below such a directory, and names a discovered skill as lowercase `plugin_id:subfolder:skill-name`. This makes separately packaged plugin skills collision-safe while preserving ordinary source precedence. Plugin discovery failure degrades to no plugin sources; it does not suppress built-in or user/project skills.
 
 A user can invoke a discovered skill explicitly with `/skill:<name> [args]`. dcode re-discovers on a cache miss, reads the selected `SKILL.md`, wraps its complete content and optional request into the initial user message, and records name, description, source, and arguments in `additional_kwargs["__skill"]` for trace attribution. Before reading, `load_skill_content` resolves the path and requires it to fall under an allowed root—built-in, plugin, configured, or previously trusted—so a symlink escape is refused. An out-of-bounds path in the interactive app is a trust decision: an approval adds the resolved target directory for the session and attempts to persist that trust; a target that changes before the retry is refused.
@@ -150,7 +168,7 @@ A user can invoke a discovered skill explicitly with `/skill:<name> [args]`. dco
 
 Choose an isolated declarative subagent for a focused task with explicit inputs and independently configured tools. Choose a fork only for context-dependent continuation, accepting its experimental and nonrecursive behavior. Use a compiled worker when a separately built graph is the intended ownership boundary, and an async worker for remote, long-running work that needs persistent status management.
 
-Focused SDK tests cover task argument validation, state isolation, fork reconstruction and refusal, structured-result forwarding, tracing identity, remote launch/check/update/cancel/list behavior, skill source precedence and reload, and skill propagation to the right worker. The skill-tool tests additionally verify pre-read and same-turn rejection, compaction withdrawal, resolver behavior, approval integration, and provider payload placement for Anthropic, OpenAI, and fallback binding paths. dcode loader tests confirm the shipped plugin-discovery skill is present without plugin sources and that an inaccessible source does not block a healthy one; invocation tests cover containment and symlink-escape rejection.
+Focused SDK tests cover task argument validation, state isolation, fork reconstruction and refusal, structured-result forwarding, tracing identity, remote launch/check/update/cancel/list behavior, skill source precedence and reload, and skill propagation to the right worker. The skill-tool tests additionally verify pre-read and same-turn rejection, compaction withdrawal, resolver behavior, approval integration, and provider payload placement for Anthropic, OpenAI, and fallback binding paths. dcode loader tests confirm the shipped plugin-discovery skill is present without plugin sources and that an inaccessible source does not block a healthy one; invocation tests cover containment and symlink-escape rejection. The thread-inspector tests exercise read-only opening, literal prefix matching, root-namespace filtering, durable and legacy thread names, checkpoint/write reconstruction including malformed fallbacks and overwrites, and end-to-end JSON views.
 
 ## Related
 

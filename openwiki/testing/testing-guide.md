@@ -1,136 +1,132 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Focused deterministic regression guidance for dcode server lifecycle, model selection and retries, cache and thread safety, skills, prompts, Textual UI, integration recovery, and CI workflow contracts.
-tags: [testing, dcode, regression, textual, models, lifecycle]
+description: Focused regression guidance for the Deep Agents middleware stack and dcode session, inspector, command catalog, and Textual interfaces. Use observable lifecycle boundaries and deterministic fixtures to protect ordering, ownership, persistence, and terminal behavior.
+tags: [testing, regression, middleware, sessions, textual, dcode]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-06T08:06:27.683Z
+    at: 2026-10-07T08:06:51.789Z
 sources:
-  - id: openwiki-source-5ec08fb431e595bde89de502
-    resource: repo://.github/scripts/tests/workflows/test_inherited_ci_diagnostics.py
-  - id: openwiki-source-fdf5afeb1dd1d11652374e88
-    resource: repo://libs/code/deepagents_code/app.py
+  - id: openwiki-source-30dce6a219e3f1a3175c3de9
+    resource: repo://libs/code/COMMANDS.md
+  - id: openwiki-source-1f9226665e99f6f846936c59
+    resource: repo://libs/code/deepagents_code/built_in_skills/deepagents-thread-inspector/scripts/inspect_sessions.py
   - id: openwiki-source-006b62af9993da1b48c11de8
     resource: repo://libs/code/Makefile
-  - id: openwiki-source-c8dacdfd6192dd22d24a9362
-    resource: repo://libs/code/tests/integration_tests/test_pending_work_recovery.py
-  - id: openwiki-source-5d8ba8d4a18a79ed18cff663
-    resource: repo://libs/code/tests/unit_tests/smoke_tests/test_system_prompt.py
-  - id: openwiki-source-7246ad9a05cb1ad11e4569a6
-    resource: repo://libs/code/tests/unit_tests/test_agent.py
-  - id: openwiki-source-11d6c59d85493653aee76558
-    resource: repo://libs/code/tests/unit_tests/test_app.py
-  - id: openwiki-source-42e76fc26f690f7d6dab298d
-    resource: repo://libs/code/tests/unit_tests/test_cache_expiry.py
-  - id: openwiki-source-e012c5898b6bc6cb1317467d
-    resource: repo://libs/code/tests/unit_tests/test_model_catalog.py
-  - id: openwiki-source-c04c6318f6e59e0d1c9d6182
-    resource: repo://libs/code/tests/unit_tests/test_model_retry.py
-  - id: openwiki-source-784e764f7f5eb5169220c3d2
-    resource: repo://libs/code/tests/unit_tests/test_server_graph.py
-  - id: openwiki-source-a5951057e151512583e7fd3f
-    resource: repo://libs/code/tests/unit_tests/test_thread_ownership_transitions.py
-  - id: openwiki-source-6e1b5f814914e0803f7035eb
-    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_subagent_panel.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-06T08:06:27.683Z" }
+  - id: openwiki-source-140e3a9397d67359bab19562
+    resource: repo://libs/code/tests/unit_tests/skills/test_thread_inspector.py
+  - id: openwiki-source-1877bdac86a4c04c85c4fd2e
+    resource: repo://libs/code/tests/unit_tests/test_app_thread_ownership.py
+  - id: openwiki-source-4a1c43d9b711698f20494eb8
+    resource: repo://libs/code/tests/unit_tests/test_debug_console.py
+  - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
+    resource: repo://libs/code/tests/unit_tests/test_sessions.py
+  - id: openwiki-source-d1add1f969d9ef0a3687cc02
+    resource: repo://libs/code/tests/unit_tests/test_textual_patches.py
+  - id: openwiki-source-b7beeddb49bcfbe0565494c8
+    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_autocomplete.py
+  - id: openwiki-source-2b513b9d29f3d558bc092d72
+    resource: repo://libs/code/tests/unit_tests/tui/widgets/test_thread_selector.py
+  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
+    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
 ---
 
 # Testing Guide
 
-Test dcode at the boundary where a user, a persisted thread, or the server observes behavior. Prefer a fake model, `AsyncMock`, temporary paths, a fixed clock, and Textual's `run_test()` pilot over a provider, real sleep, or a private call-order assertion. The goal is to keep regressions deterministic while exercising the actual ownership and lifecycle boundary. Related context: [Code agent architecture](../architecture/code-agent.md), [Source map](../architecture/source-map.md), [Profiles and models](../concepts/profiles-models.md), [State persistence](../concepts/state-persistence.md), and [Development](../operations/development.md).
+Choose the narrowest test that exercises the observable contract: a compiled agent's middleware list, a SQLite-backed session lifecycle, or a mounted Textual interaction. Prefer fake chat models, temporary databases and repositories, `AsyncMock`, controlled events, and `run_test()` over network calls, a user's home directory, wall-clock races, or assertions on private call order. This guide complements the [middleware stack](../architecture/middleware-stack.md), [code agent architecture](../architecture/code-agent.md), [state persistence](../concepts/state-persistence.md), [deep-agent workflow](../workflows/build-a-deep-agent.md), and [dcode session workflow](../workflows/run-dcode-session.md).
 
-## Run the smallest owning target
+## Run the owning target
 
-From `libs/code`, install the test group with `uv sync --group test`. `make test` uses parallel pytest, disables non-Unix sockets while permitting Unix sockets, disables benchmarks, and collects coverage. `make integration_test` is intentionally separate, runs with a 30-second timeout, and does not add the unit suite's socket restriction. `make lint` runs Ruff checks and formatting diff, `ty`, the generated-command catalog check, and the process-CWD check.
+From `libs/code`, use `uv sync --group test` once, then run the smallest file first. `make test` runs parallel pytest with non-Unix sockets disabled, Unix sockets allowed, benchmarks disabled, and coverage; `make integration_test` is a separate parallel target with a 30-second timeout. `make lint` runs Ruff, `ty`, the generated command-catalog check, and the process-CWD check.
 
 ```bash
 cd libs/code
-make test TEST_FILE=tests/unit_tests/test_model_retry.py
-make test TEST_FILE=tests/unit_tests/test_cache_expiry.py
-make test TEST_FILE=tests/unit_tests/test_thread_ownership_transitions.py
-make integration_test TEST_FILE=tests/integration_tests/test_pending_work_recovery.py
+make test TEST_FILE=tests/unit_tests/test_sessions.py
+make test TEST_FILE=tests/unit_tests/skills/test_thread_inspector.py
+make test TEST_FILE=tests/unit_tests/tui/widgets/test_thread_selector.py
 make lint
 ```
 
-The dcode Makefile provides network-restricted parallel unit tests and an explicit `update-snapshots` target that runs smoke snapshots with the `--update-snapshots` option. Use `make update-snapshots` only after reviewing the complete prompt diff: a snapshot is a model-visible compatibility contract, not generated output to accept blindly.
+The dcode Makefile provides network-restricted parallel unit tests and an explicit `update-snapshots` target that runs smoke snapshots with the `--update-snapshots` option. Use `make update-snapshots` only when a reviewed prompt-contract change is intended.
 
-## Server graph and startup recovery
+`COMMANDS.md` is generated from `deepagents_code/command_registry.py`; do not hand-edit it. After changing slash-command names, aliases, descriptions, visibility, or hidden-command metadata, run `make commands-catalog`, then let `make commands-catalog-check` or `make lint` catch drift. The catalog is also the user-facing boundary: public commands are documented while hidden commands are deliberately omitted from autocomplete and help.
 
-The server graph is a process-lifetime resource: repeated and concurrent `make_graph()` resolution must share one constructed runtime. A graph-construction failure must emit the startup marker to stderr and exit nonzero, so the parent can surface a meaningful startup failure rather than an opaque process exit. Exercise this with a fresh import, mocked graph factory, and captured stderr—never a real server.
+## Middleware-stack regressions
 
-For workspace requests, test the decision boundary rather than an implementation helper. A configured process-wide sandbox reserves the first workspace, including after a failed build; a second workspace is rejected. Without a sandbox, separate workspaces can build separate runtimes. Configuration policy drift must fail closed, while a model-only change can rebuild a runtime when the durable access policy remains compatible.
+Test middleware assembly through `create_deep_agent()` while patching model resolution and `create_agent`, then inspect the middleware passed to compilation. This protects an ordering contract that isolated middleware tests cannot establish:
+
+- A user middleware whose `name` matches a default replaces that entry **in its existing slot**; a new name is appended in the supplied order. Test multiple replacements and a mixed replacement/new list.
+- A request- or prompt-mutating custom middleware must precede `AnthropicPromptCachingMiddleware`; otherwise it can invalidate the cached prompt prefix.
+- `SkillsMiddleware` occupies the inner skills slot directly before Anthropic prompt caching. User and profile middleware run before that slot, and same-named skills middleware replaces it rather than producing a duplicate.
+- General-purpose subagents inherit overrides for their default middleware slots, but not arbitrary main-agent middleware. Declarative subagents build their own stacks and only receive their own matching overrides. `TodoListMiddleware` is opt-in: a main-agent opt-in does not leak to subagents, whereas a subagent specification or a profile's `extra_middleware` can add it deliberately.
 
 ```mermaid
 flowchart TD
-    Request["graph request"] --> Runtime["resolve runtime"]
-    Runtime --> Cached{"matching runtime"}
-    Cached -->|yes| Reuse["reuse runtime"]
-    Cached -->|no| Policy{"workspace policy compatible"}
-    Policy -->|no| Refuse["report workspace conflict"]
-    Policy -->|yes| Build["build runtime"]
-    Build --> Ready["serve graph"]
+    Base["default stack"] --> Merge["merge supplied middleware by name"]
+    Merge --> Replace{"name matches a default"}
+    Replace -->|yes| Slot["replace in default slot"]
+    Replace -->|no| Append["append supplied middleware"]
+    Slot --> Skills["skills slot"]
+    Append --> Skills
+    Skills --> Cache["prompt caching"]
 ```
 
-*Runtime selection reuses compatible work, rebuilds for an allowed model change, and refuses incompatible workspace policy.*
+*The compiled stack preserves default slots for matching overrides and keeps skills immediately inside user and profile middleware.*
 
-At the client boundary, `ServerReady` settles connection state, installs the agent and MCP snapshot, removes transient startup-failure UI, refreshes MCP state, and synchronizes the existing status bar model. A status bar or model identity missing at this point is a warning-worthy defect; empty fields are still sent to clear stale model text. Keep initial-prompt tests separate: a deferred launch retains `-m` input until readiness, the first session sequence hydrates resumed history only once, and later readiness events drain queued work without duplicating history.
+## Sessions, names, and ownership
 
-## Model catalog and retry contracts
+Treat a thread name as durable metadata distinct from checkpoint state. Test with an isolated `sessions.db`: an automatic `only_if_unnamed` name can win only once under concurrency, a manual rename is trimmed and survives later graph checkpoints, and deletion removes the name. Listing must remain usable while another connection owns a write transaction, must prefer the durable saved name over checkpoint metadata, and must fall back to legacy checkpoint metadata when no saved name exists. Reject blank, overlong, newline, escape, and control-character names.
 
-Treat a remote model catalog as authoritative when the picker is operating against a remote inference host. Mounted picker tests should prove highlighting, search, selection, profiles, provider labels, and allowlist decisions using a supplied catalog while making local provider/config probes fail if called. A custom provider typed by the user may lead to install or authentication setup only after catalog policy allows it; ambiguous provider-less identifiers are deferred to the host rather than guessed locally. Long-running default validation and persistence belong off the message pump, so Escape and selection navigation remain responsive and late results cannot save after dismissal.
-
-Retry tests should encode error taxonomy and stream-visible semantics. Authentication, permission, invalid-request, context-overflow, and graph-interrupt control flow are not retry candidates. Transport and qualifying provider failures are retried within their budget; an unusable past `Retry-After` falls back to normal backoff, while a delay beyond a caller deadline gives up immediately. Test both synchronous and asynchronous middleware paths with sleep patched out.
-
-A retried streaming call keeps one call ID across attempts and emits ordered lifecycle events: attempt start, retry, next attempt start, and attempt complete. The retry event records the failed attempt and whether output may already have reached the user; malformed lifecycle fields are rejected. Assert those user-facing correlation facts rather than a backoff implementation detail.
-
-## Cache-expiry handoff and thread ownership
-
-Cache expiry is an interactive safeguard, not a background interruption. It defers while work, another modal, disabled prompting, or user typing is active; typing stays editable and an Enter submission triggers a fresh explicit choice. Non-interactive queued work—commands, shell input, and external input—must pass through without this prompt. A resumed thread whose cache window had already lapsed does not get a retrospective warning, but a window that expires during the session does.
-
-When the user chooses a handoff, submission is paused but the draft remains editable. The source thread remains current until a successful handoff; cancellation or failure restores normal submission and preserves the original conversation. Guard the asynchronous completion against a changed current thread so it cannot send into, or restore a draft into, an unrelated thread.
+Thread ownership belongs at the app boundary, not merely in a selector. With a real `DeepAgentsApp` and temporary database, reserve the current thread first; a bare most-recent resume must skip an occupied candidate and reserve the next eligible thread. An explicit ownership conflict must neither load history nor replace the current thread. In the mounted `/threads` picker, a failed reserve must leave the screen open with its filter and selection intact, surface the error, preserve the current session, and restore input focus when dismissed.
 
 ```mermaid
-stateDiagram-v2
-    [*] --> Active
-    Active --> Choice: cache expires and interactive send
-    Choice --> Active: stay or cancel
-    Choice --> Handoff: summarize selected
-    Handoff --> Child: success
-    Handoff --> Active: failure or cancellation
-    Child --> Active: later input
+sequenceDiagram
+    participant User
+    participant Picker
+    participant App
+    participant Lease as Thread lease
+    User->>Picker: select thread
+    Picker->>App: resume target
+    App->>Lease: reserve target
+    alt reservation succeeds
+        App->>App: load owned history
+    else target is owned elsewhere
+        App->>Picker: show error and retain selection
+        Picker->>User: remain open
+    end
 ```
 
-*The warning requires an explicit user decision; only a completed handoff changes the active thread.*
+*Resume must acquire ownership before it changes the active session or transcript.*
 
-Thread leases fence persistence as well as UI transitions. Test a prestarted client's lease through clear, switch, and failed switch; a failed transition retains the original lease. During a CWD server replacement, stale client mutations must fail after the ownership token changes, while the active client can persist. Deletion must reject a reserved thread and retain its reservation through cancellation-sensitive cleanup. Overlapping resume calls must not release a destination lease acquired by the other operation.
+## Safe session inspection
 
-The integration test is intentionally narrower than a full provider test: seed an in-memory graph so its next node is a tool call, attach a local `RemoteAgent`, abandon pending work, then assert no tool side effect occurred, no pending task remains, and an error `ToolMessage` cancels the original call ID.
+The built-in `deepagents-thread-inspector` is an inspection boundary, so test the standalone script against fixture SQLite files rather than an installed profile. It must open an existing database with SQLite read-only mode and reject schemas without both `checkpoints` and `writes`. Resolve an exact root-thread ID first; prefix matching must escape `%`, `_`, and backslashes, reject ambiguity, and never select subagent namespaces.
 
-## Skills and system-prompt snapshots
+For output correctness, seed root and subagent checkpoints and assert that summaries, counts, and listings use only `checkpoint_ns = ''`. Reconstruct conversation state from checkpoint writes, use a latest inline checkpoint when present, include pending writes, apply a valid message-channel `Overwrite`, and retain the previous messages while reporting malformed metadata, inline state, or overwrite data as warnings. Name coverage should prove the inspector prefers `dcode_thread_names` and falls back to the latest root checkpoint's `thread_name` for legacy stores.
 
-`create_cli_agent` supplies skill sources from low to high precedence because the middleware uses last-source-wins collision handling: built-in, user Deepagents, user Agents, project Deepagents, project Agents, user Claude, then project Claude. Test the exact labeled source list and the reduced list when home-scoped aliases are unavailable. This protects both precedence and the prompt's ability to identify each location.
+## Textual and terminal-patch regressions
 
-The system-prompt smoke test composes a real CLI agent and middleware with a fake chat model, freezes model identity, filesystem locations, and local-context output, captures the first system message, and snapshots interactive and headless variants. It additionally verifies that memory and secret-handling instructions remain available, while interactive-only questions and recovery guidance do not leak into headless mode. Seed memory and a skill in a temporary tree, redact temporary/profile/built-in paths, and compare the complete message.
+Mount the real screen or app with `run_test()`, drive input through the pilot, wait for the relevant worker or `pilot.pause()`, and assert visible text, focus, screen-stack state, persistence callback, or copied value. A direct call is appropriate only for a pure formatting or retention helper; it cannot prove binding precedence, mounting, focus, or asynchronous refresh behavior.
 
-## Mounted Textual regressions
+For the debug console, cover the operational boundaries: long snapshot values wrap under their value column except when the column is too narrow; a failing polling provider warns once until it recovers; retained logs cap each standard level and the shared custom-level bucket without reordering survivors; and the first populated log frame starts at the newest records. Exercise Escape twice when a level selector is open, clear through both shortcuts and reopen, and mount the console over another modal. Verify a real app's `shift+tab` moves console focus despite the application's competing binding.
 
-Textual behavior is observable behavior. Mount the real widget under `run_test()`, feed realistic events, await `pilot.pause()`, and assert rendered content, focus, screen stack, or persisted widget state. Do not assert a private handler sequence.
+Textual compatibility patches need behavioral tests against real parser and selection events. Keep the ASCII-border subprocess test isolated by environment. For selection, test double/triple click and drag across diff rows, blocks, scroll positions, and widgets; test shift-click extension from both forward and backward anchors; and verify a detached Markdown anchor clears selection rather than crashing. The detached-hit guard must ignore a compositor hit whose widget was pruned while continuing to report attached hits. Keyboard regressions should preserve native extended kitty keys, decode double Escape immediately as `alt+escape`, normalize kitty subfields, and ensure lock-key reports never insert associated text while genuine modified/text keys still work.
 
-SubagentPanel tests mount the real Textual widget with `run_test()` and assert observable selection, persistent collapse preference, reset/cancellation/replay behavior, hostile-label sanitization, responsive header rendering, and wall-clock phase duration. In particular, selection follows active work until user navigation locks it; finalization cancels only in-flight rows; duplicate replay does not overwrite a terminal result; and a phase spanning staggered agents reports elapsed wall-clock time rather than the longest child duration.
+## Autocomplete and thread-selector UI
 
-For modal model and cache flows, drive keyboard paths through the pilot. Prove that cancellation preserves editable drafts, deferred workers cannot mutate a dismissed screen, and an explicit later Enter is required after a handoff completes. These are the failures direct method calls tend to miss.
+`@@` is the durable thread-reference completion syntax, separate from `@` file completion. Test acceptance only at a token boundary, rejection of email-like and already-tokenized forms, search across saved name, initial prompt, branch, and metadata, and replacement of the typed range with `@@(thread:<full-id>)`. Labels should prefer saved name, fall back to the initial prompt or short ID, sanitize controls, and bound length.
 
-## CI workflow script contracts
+File completion should use a temporary Git repository. Assert tracked files rank ahead of untracked non-ignored files, Git's successful empty result is authoritative, repeated conflict paths are deduplicated, and a failed untracked scan does not discard a successful tracked scan. A non-repository fallback is quiet; genuine Git failures log sanitized diagnostics under a stable `LC_ALL=C` environment. With a nested or symlinked CWD, show only paths below that resolved subtree, exclude same-prefix siblings, and fail closed when CWD lies outside the project root.
 
-Workflow tests may execute embedded shell or JavaScript in a controlled subprocess, but they must not contact GitHub. Stub `gh`, `git`, and `python3`; provide `GITHUB_OUTPUT`; parse the workflow YAML to obtain the actual step script. The inherited-CI diagnostics tests verify that a changelog-only curated apply preserves a conclusive parent success or failure at the final gate, while malformed or unavailable parent lookup falls back to normal package jobs.
+For `ThreadSelectorScreen`, preserve the distinction between a loading checkpoint cell and a loaded empty value. Mounted tests should verify Escape wins over conflicting app bindings, navigation is harmless for an empty list, names and prompts remain visible at narrow widths, and names are searchable and rendered as literal text. Scope and sort preferences must persist; when a scope select is open, Tab, arrows, Page keys, and the first Escape operate on that select rather than the thread list or modal. Persist an explicit CWD preference even when CWD cannot be resolved.
 
-The diagnostic report is best-effort and read-only: it may link the trusted repository commit and parent/job details, but it must escape check names and avoid untrusted URLs or API response bodies. It cannot replace the failure gate or require write permissions. Assert both the rendered summary and the gate exit status.
+Treat background loading as a lifecycle, not a spinner assertion: the LangSmith header link may resolve before the disk list, but a timeout leaves the title unchanged; list failures mark the load complete so the modal remains dismissible; visible checkpoint details load before an uncached initial render; and cached initial prompts remain visible through a refresh. Turning on the prompt column should request only the newly needed prompt data.
 
 ## Focused-regression checklist
 
-1. Start from a boundary: graph factory, `ServerReady`, picker screen, retry middleware event stream, cache handoff, lease-protected mutation, real skill assembly, or mounted widget.
-2. Replace nondeterminism with an in-memory saver, temporary filesystem, event gate, fixed clock, fake model/catalog, or patched sleeper.
-3. Assert the durable or visible result: marker and exit code, model selection, lifecycle event payload, current thread and lease, tool side effect, prompt text, rendered widget state, or workflow output.
-4. Include a failure edge: startup exception, policy drift, dismissed screen, permanent error, expired cache, cancellation, competing transition, replay, malformed workflow response, or hostile label.
-5. Run the narrow owning target first, then `make lint`; run the integration target only when its graph/client boundary is the contract under change.
+1. Select the owner: compiled stack, session store, app reservation, inspector output, controller, or mounted screen.
+2. Make data and scheduling deterministic with fake models, temporary SQLite/Git state, mocked I/O, event gates, and pilot-driven input.
+3. Assert the durable or observable outcome—stack order, name/listing, lease and active-thread identity, JSON result/warning, rendered content, focus, persisted preference, or inserted token.
+4. Include the relevant failure edge: duplicate name race, occupied target, malformed store data, detached widget, competing binding, Git fallback, load error, or stale background result.
+5. Run the owning file first, then `make lint`; regenerate `COMMANDS.md` only through its Make target.

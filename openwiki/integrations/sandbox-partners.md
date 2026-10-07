@@ -1,11 +1,11 @@
 ---
 type: integration guide
 title: Sandbox Provider Integrations
-description: Install and operate dcode sandbox providers, with their ownership and lifetime rules. Distinguishes provider-backed remote execution from Talon routing and the in-process QuickJS middleware.
+description: Install and operate optional dcode sandbox providers, including ownership and lifetime rules. Distinguishes provider-backed remote execution from Talon routing and the local QuickJS middleware.
 tags: [sandbox, providers, dcode, talon, quickjs]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-06T08:06:27.683Z
+    at: 2026-10-07T08:06:51.789Z
 sources:
   - id: openwiki-source-9f207ab48c42b84dcfd05f43
     resource: repo://libs/code/deepagents_code/integrations/sandbox_config.py
@@ -41,7 +41,7 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-57a0613315e23277d358df76
     resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-06T08:06:27.683Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
 ---
 
 # Sandbox Provider Integrations
@@ -133,7 +133,7 @@ Talon constructs a `CompositeBackend` whose default target, including every `exe
 
 ## QuickJS is not a provider
 
-`langchain-quickjs` version `0.3.8` is a JavaScript REPL middleware package, requiring Python `>=3.11,<4.0` and using `quickjs-rs>=0.2.5,<0.3.0`. It is installed by dcode's base dependency range, but it neither provisions an environment nor appears in the sandbox registry or `DEEPAGENTS_TALON_SANDBOX` choices. Use a provider for remote filesystem and shell execution; use QuickJS when the intended capability is in-process JavaScript evaluation and explicitly configured middleware/tool bridges.
+`langchain-quickjs` version `0.3.8` is a JavaScript REPL middleware package, requiring Python `>=3.11,<4.0`. Its direct dependencies are `deepagents>=0.7.0,<0.8.0`, `quickjs-rs>=0.2.5,<0.3.0`, `langchain>=1.4.3,<2.0.0`, `langchain-core>=1.6.6,<2.0.0`, `langgraph>=1.2.13,<2.0.0`, and `bsdiff4>=1.2.6,<2.0.0`; it does not depend on a sandbox-provider SDK. It is installed by dcode's base dependency range, but it neither provisions an environment nor appears in the sandbox registry or `DEEPAGENTS_TALON_SANDBOX` choices. Use a provider for remote filesystem and shell execution; use QuickJS when the intended capability is local JavaScript evaluation and explicitly configured middleware/tool bridges.
 
 ## Extension and verification guidance
 

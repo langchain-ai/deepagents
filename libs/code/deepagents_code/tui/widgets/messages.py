@@ -57,6 +57,7 @@ from deepagents_code.tool_display import (
     EXECUTE_HEADER_MAX_LENGTH,
     JS_EVAL_HEADER_MAX_LENGTH,
     format_tool_display,
+    is_skill_read,
 )
 from deepagents_code.tui.widgets._js_eval_display import (
     JsEvalBlock,
@@ -1845,6 +1846,10 @@ class ToolCallMessage(Vertical):
         text-style: bold;
     }
 
+    ToolCallMessage.-skill-read .tool-header {
+        color: $skill;
+    }
+
     ToolCallMessage .tool-task-desc {
         color: $text-muted;
         margin-left: 3;
@@ -1986,6 +1991,7 @@ class ToolCallMessage(Vertical):
         super().__init__(**kwargs)
         self._tool_name = tool_name
         self._args = args or {}
+        self.set_class(is_skill_read(tool_name, self._args), "-skill-read")
         self._status: _ToolStatus = "pending"  # Waiting for approval or auto-approve
         self._output: str = ""
         self._expanded: bool = False

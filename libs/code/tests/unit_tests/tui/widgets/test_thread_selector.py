@@ -2224,6 +2224,32 @@ class TestConvertMessagesToData:
         formatted = widget._format_ask_user_output(str(widget._output), is_preview=True)
         assert formatted.content.plain == ASK_USER_FAILED_SUMMARY
 
+    def test_skill_read_splits_history_tool_groups(self) -> None:
+        from deepagents_code.tui.widgets.message_store import MessageType
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
+
+        paths = ["before.py", "/skills/review/SKILL.md", "after.py"]
+        messages = [
+            self._make_ai(
+                tool_calls=[
+                    {"id": path, "name": "read_file", "args": {"file_path": path}}
+                    for path in paths
+                ]
+            ),
+            *(self._make_tool("contents", tool_call_id=path) for path in paths),
+        ]
+        result = DeepAgentsApp._convert_messages_to_data(messages)
+
+        assert [row.type for row in result] == [
+            MessageType.TOOL_GROUP,
+            MessageType.TOOL,
+            MessageType.TOOL_GROUP,
+        ]
+        widget = result[1].to_widget()
+        assert isinstance(widget, ToolCallMessage)
+        assert widget.has_class("-skill-read")
+        assert widget.args == {"file_path": paths[1]}
+
     def test_checkpoint_edit_restores_diff(self) -> None:
         """Checkpointed edit arguments rebuild the diff omitted from graph state."""
         from deepagents_code.tui.widgets.message_store import MessageType

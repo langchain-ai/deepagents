@@ -143,6 +143,24 @@ def _format_scope_path(
     return f" in {display}"
 
 
+def is_skill_read(tool_name: str | None, tool_args: dict | None) -> bool:
+    """Identify skill-file reads.
+
+    Args:
+        tool_name: Name of the tool being called.
+        tool_args: Arguments containing the file path.
+
+    Returns:
+        Whether the call reads a skill definition.
+    """
+    if tool_name != "read_file" or not tool_args:
+        return False
+    path = tool_args.get("file_path")
+    if path is None:
+        path = tool_args.get("path")
+    return isinstance(path, str) and Path(path).name.lower() == "skill.md"
+
+
 def format_tool_display(tool_name: str, tool_args: dict) -> str:
     """Format tool calls for display with tool-specific smart formatting.
 
@@ -206,6 +224,10 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             path = abbreviate_path(path_raw)
             if path_raw != str(path_value):
                 path += _HIDDEN_CHAR_MARKER
+            if is_skill_read(tool_name, tool_args):
+                skill_path = Path(path_raw)
+                name = truncate_value(skill_path.parent.name or skill_path.name)
+                return f"{prefix} Read skill: {name} ({path})"
             return f"{prefix} {tool_name}({path})"
 
     elif tool_name == "web_search":

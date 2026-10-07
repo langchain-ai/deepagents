@@ -23,6 +23,7 @@ from deepagents_code.tool_display import (
     _sanitize_display_value,
     format_tool_display,
     format_tool_message_content,
+    is_skill_read,
 )
 
 _PREFIX = ASCII_GLYPHS.tool_prefix
@@ -82,8 +83,50 @@ class TestSanitizeDisplayValue:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "args", "expected"),
+    [
+        ("read_file", {"file_path": "/skills/review/SKILL.md"}, True),
+        ("read_file", {"path": "review/skill.md"}, True),
+        ("read_file", {"file_path": None, "path": "SkIlL.Md"}, True),
+        ("read_file", {"file_path": "notes.md", "path": "SKILL.md"}, False),
+        ("read_file", {"file_path": "SKILL.md.bak"}, False),
+        ("read_file", {"file_path": "SKILL.md/notes.md"}, False),
+        ("read_file", {"file_path": 42}, False),
+        ("read_file", {}, False),
+        ("read_file", None, False),
+        ("write_file", {"file_path": "SKILL.md"}, False),
+        (None, {"file_path": "SKILL.md"}, False),
+    ],
+)
+def test_is_skill_read(
+    tool_name: str | None, args: dict | None, expected: bool
+) -> None:
+    assert is_skill_read(tool_name, args) is expected
+
+
 class TestFormatToolDisplay:
     """Tests for format_tool_display()."""
+
+    @pytest.mark.parametrize("filename", ["SKILL.md", "skill.md"])
+    def test_skill_read_names_parent(self, filename: str) -> None:
+        path = f"/skills/[review]/{filename}"
+        assert format_tool_display("read_file", {"file_path": path}) == (
+            f"{_PREFIX} Read skill: [review] ({path})"
+        )
+
+    def test_skill_read_without_parent(self) -> None:
+        assert format_tool_display("read_file", {"path": "SKILL.md"}) == (
+            f"{_PREFIX} Read skill: SKILL.md (SKILL.md)"
+        )
+
+    def test_skill_read_sanitizes_name_and_path(self) -> None:
+        result = format_tool_display(
+            "read_file", {"file_path": "/skills/re\u200bview/SKILL.md"}
+        )
+        assert "Read skill: review" in result
+        assert "\u200b" not in result
+        assert _HIDDEN_CHAR_MARKER in result
 
     # --- file tools ---
 

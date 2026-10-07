@@ -842,7 +842,9 @@ class TestSkillReadMessage:
             assert app.msg.has_class("-skill-read")
             header = app.msg.query_one("#tool-header", Static).render()
             assert isinstance(header, Content)
-            assert "Read skill: [review]" in header.plain
+            assert (
+                "read_file(/skills/[review]/SKILL.md) [skill: [review]]" in header.plain
+            )
             if error:
                 app.msg.set_error(output)
             else:

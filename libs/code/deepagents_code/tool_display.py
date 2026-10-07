@@ -227,7 +227,7 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
             if is_skill_read(tool_name, tool_args):
                 skill_path = Path(path_raw)
                 name = truncate_value(skill_path.parent.name or skill_path.name)
-                return f"{prefix} Read skill: {name} ({path})"
+                return f"{prefix} read_file({path}) [skill: {name}]"
             return f"{prefix} {tool_name}({path})"
 
     elif tool_name == "web_search":

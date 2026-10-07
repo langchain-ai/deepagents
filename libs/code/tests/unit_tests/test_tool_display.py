@@ -112,19 +112,19 @@ class TestFormatToolDisplay:
     def test_skill_read_names_parent(self, filename: str) -> None:
         path = f"/skills/[review]/{filename}"
         assert format_tool_display("read_file", {"file_path": path}) == (
-            f"{_PREFIX} Read skill: [review] ({path})"
+            f"{_PREFIX} read_file({path}) [skill: [review]]"
         )
 
     def test_skill_read_without_parent(self) -> None:
         assert format_tool_display("read_file", {"path": "SKILL.md"}) == (
-            f"{_PREFIX} Read skill: SKILL.md (SKILL.md)"
+            f"{_PREFIX} read_file(SKILL.md) [skill: SKILL.md]"
         )
 
     def test_skill_read_sanitizes_name_and_path(self) -> None:
         result = format_tool_display(
             "read_file", {"file_path": "/skills/re\u200bview/SKILL.md"}
         )
-        assert "Read skill: review" in result
+        assert "[skill: review]" in result
         assert "\u200b" not in result
         assert _HIDDEN_CHAR_MARKER in result
 

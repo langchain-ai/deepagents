@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware import TodoListMiddleware, ToolErrorMiddleware, ToolRetryMiddleware
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, PrivateStateAttr
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
@@ -1167,6 +1167,100 @@ class TestSubAgents:
         assert interrupt.value["type"] == "tool_approval"
         assert (interrupt.value["name"], interrupt.value["tool_call_id"]) == ("requires_approval", "call_gated")
         assert interrupt.response_schema is not None
+        assert ran == []
+
+        agent.invoke(Command(resume={interrupt.id: {"type": "approve"}}), config)
+        assert ran == ["requires_approval"]
+
+    @pytest.mark.parametrize("in_subagent", [False, True], ids=["main_agent", "subagent"])
+    def test_per_call_retry_middleware_retries_the_tool_not_the_approval(self, in_subagent: bool) -> None:  # noqa: FBT001
+        attempts: list[str] = []
+
+        @tool
+        def flaky() -> str:
+            """Fails on the first attempt."""
+            attempts.append("flaky")
+            if len(attempts) == 1:
+                msg = "transient"
+                raise RuntimeError(msg)
+            return "ok"
+
+        def call(name: str, args: dict[str, Any], call_id: str) -> dict[str, Any]:
+            return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+
+        def model(first: dict[str, Any]) -> GenericFakeChatModel:
+            return GenericFakeChatModel(messages=iter([AIMessage(content="", tool_calls=[first]), AIMessage(content="done")]))
+
+        retry = ToolRetryMiddleware(max_retries=1, initial_delay=0, jitter=False)
+        if in_subagent:
+            specialist: SubAgent = {
+                "name": "specialist",
+                "description": "Uses a flaky tool.",
+                "system_prompt": "Use the flaky tool.",
+                "model": model(call("flaky", {}, "call_flaky")),
+                "tools": [flaky],
+                "middleware": [retry],
+            }
+            agent = create_deep_agent(
+                model=model(call("task", {"description": "Use the flaky tool.", "subagent_type": "specialist"}, "call_task")),
+                checkpointer=InMemorySaver(),
+                interrupt_on={"flaky": True},
+                interrupt_mode="per_call",
+                subagents=[specialist],
+            )
+        else:
+            agent = create_deep_agent(
+                model=model(call("flaky", {}, "call_flaky")),
+                tools=[flaky],
+                middleware=[retry],
+                checkpointer=InMemorySaver(),
+                interrupt_on={"flaky": True},
+                interrupt_mode="per_call",
+            )
+        config: RunnableConfig = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+        [interrupt] = agent.invoke({"messages": [HumanMessage(content="Go.")]}, config)["__interrupt__"]
+        result = agent.invoke(Command(resume={interrupt.id: {"type": "approve"}}), config)
+
+        # The retry runs inside the approval, so the reviewer isn't asked again.
+        assert "__interrupt__" not in result
+        assert attempts == ["flaky", "flaky"]
+        assert result["messages"][-1].content == "done"
+
+    def test_per_call_invalid_answer_is_not_turned_into_a_tool_error(self) -> None:
+        ran: list[str] = []
+
+        @tool
+        def requires_approval() -> str:
+            """A tool that should trigger HITL."""
+            ran.append("requires_approval")
+            return "approved"
+
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="",
+                            tool_calls=[{"name": "requires_approval", "args": {}, "id": "call_gated", "type": "tool_call"}],
+                        ),
+                        AIMessage(content="done"),
+                    ]
+                )
+            ),
+            tools=[requires_approval],
+            middleware=[ToolErrorMiddleware(on_error=lambda exc, _request: f"Error: {exc}")],
+            checkpointer=InMemorySaver(),
+            interrupt_on={"requires_approval": True},
+            interrupt_mode="per_call",
+        )
+        config: RunnableConfig = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+        [interrupt] = agent.invoke({"messages": [HumanMessage(content="Go.")]}, config)["__interrupt__"]
+        # The approval wraps the error middleware, so a bad answer fails the run
+        # instead of reaching the model as a tool error.
+        with pytest.raises(ValidationError):
+            agent.invoke(Command(resume={interrupt.id: {"type": "bogus"}}), config)
         assert ran == []
 
         agent.invoke(Command(resume={interrupt.id: {"type": "approve"}}), config)

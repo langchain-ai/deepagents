@@ -528,6 +528,26 @@ def _subagent_tracing_context() -> Generator[None, None, None]:
         yield
 
 
+def _add_human_in_the_loop(
+    middleware: list[AgentMiddleware],
+    interrupt_on: dict[str, bool | InterruptOnConfig],
+    interrupt_mode: Literal["batched", "per_call"],
+) -> None:
+    """Add `HumanInTheLoopMiddleware` to an agent's middleware stack.
+
+    A batched review happens after the model call, before any tool-call middleware
+    runs. A per-call review happens as the tool call starts, so it goes first and
+    wraps every other tool-call middleware the same way: a retry repeats the tool,
+    not the review, and an invalid answer fails the run instead of becoming a
+    tool error.
+    """
+    hitl = HumanInTheLoopMiddleware(interrupt_on=interrupt_on, interrupt_mode=interrupt_mode)
+    if interrupt_mode == "per_call":
+        middleware.insert(0, hitl)
+    else:
+        middleware.append(hitl)
+
+
 def create_sub_agent(
     spec: SubAgent,
     *,
@@ -567,7 +587,7 @@ def create_sub_agent(
 
     interrupt_on = spec.get("interrupt_on")
     if interrupt_on:
-        middleware.append(HumanInTheLoopMiddleware(interrupt_on=interrupt_on, interrupt_mode=spec.get("interrupt_mode", "batched")))
+        _add_human_in_the_loop(middleware, interrupt_on, spec.get("interrupt_mode", "batched"))
 
     if not any(m.name == UnsupportedContentMiddleware.__name__ for m in middleware):
         middleware.append(UnsupportedContentMiddleware())

@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from typing import Annotated, Any, Literal, Required, cast
 
 from langchain.agents import AgentState, create_agent
-from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
+from langchain.agents.middleware import InterruptOnConfig
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     InputAgentState,
@@ -57,6 +57,7 @@ from deepagents.middleware.subagents import (
     CompiledSubAgent,
     SubAgent,
     SubAgentMiddleware,
+    _add_human_in_the_loop,
     _is_compiled_subagent,
     _is_forked_subagent,
 )
@@ -398,7 +399,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - [`FireworksPromptCachingMiddleware`](https://reference.langchain.com/python/integrations/langchain_fireworks/middleware/prompt_caching/FireworksPromptCachingMiddleware)
                 when `langchain-fireworks` is installed (no-ops for non-Fireworks models)
             - [`MemoryMiddleware`][deepagents.middleware.memory.MemoryMiddleware] (if `memory` is provided)
-            - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided)
+            - [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware] (if `interrupt_on` is provided;
+                first in the stack instead when `interrupt_mode="per_call"`)
             - [`UnsupportedContentMiddleware`][deepagents.middleware.unsupported_content.UnsupportedContentMiddleware]
             - `_ToolExclusionMiddleware` (if profile has `excluded_tools`)
 
@@ -542,11 +544,13 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             Applies to the main agent and to declarative `SubAgent` specs, unless
             a spec sets its own `interrupt_mode`.
 
-            In `"per_call"` mode the approval happens while the tool call runs,
-            inside middleware passed in `middleware` (or a subagent spec's
-            `middleware`). A tool retry middleware there asks the reviewer again on
-            each retry, and an invalid answer is retried or turned into a tool
-            error instead of raising.
+            In `"per_call"` mode the review happens as the tool call starts, so
+            `HumanInTheLoopMiddleware` goes first in the stack, and its review
+            wraps every other middleware's tool-call handling, including
+            `middleware` (and a subagent spec's `middleware`). As in batched
+            mode, a tool retry middleware retries the tool without asking the
+            reviewer again, and an invalid answer fails the run instead of
+            becoming a tool error.
 
             See [`HumanInTheLoopMiddleware`][langchain.agents.middleware.HumanInTheLoopMiddleware].
         response_format: A structured output response format to use for the agent.
@@ -969,7 +973,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         interrupt_on,
     )
     if main_interrupt_on is not None:
-        deepagent_middleware.append(HumanInTheLoopMiddleware(interrupt_on=main_interrupt_on, interrupt_mode=interrupt_mode))
+        _add_human_in_the_loop(deepagent_middleware, main_interrupt_on, interrupt_mode)
     deepagent_middleware.append(UnsupportedContentMiddleware())
     deepagent_middleware = _apply_excluded_middleware(
         deepagent_middleware,

@@ -2,6 +2,22 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.82](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.81...deepagents-code==0.1.82) (2026-10-07)
+
+### Features
+
+- Create persistent thread names automatically or on demand, and rename threads manually. ([#6715](https://github.com/langchain-ai/deepagents/pull/6715), [#6767](https://github.com/langchain-ai/deepagents/pull/6767))
+- Customize terminal tab titles. ([#6768](https://github.com/langchain-ai/deepagents/pull/6768))
+- Distinguish skill reads in the transcript. ([#6825](https://github.com/langchain-ai/deepagents/pull/6825))
+
+### Bug Fixes
+
+- Keep the thread picker open when ownership conflicts occur. ([#6824](https://github.com/langchain-ai/deepagents/pull/6824))
+- Preserve completion markers on remote messages. ([#6831](https://github.com/langchain-ai/deepagents/pull/6831))
+- Extend triple-click selection across blocks. ([#6819](https://github.com/langchain-ai/deepagents/pull/6819))
+- Recommend GPT-6 Luna for auto review. ([#6821](https://github.com/langchain-ai/deepagents/pull/6821))
+- Show editable install status in debug version information. ([#6797](https://github.com/langchain-ai/deepagents/pull/6797))
+
 ## [0.1.81](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.80...deepagents-code==0.1.81) (2026-10-06)
 
 ### Features

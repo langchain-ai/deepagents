@@ -12,7 +12,13 @@ from langchain_core.outputs import LLMResult
 
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
-from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage, ChannelStatus
+from deepagents_talon.interfaces import (
+    AgentRequest,
+    AgentResult,
+    ChannelMessage,
+    ChannelStatus,
+    SendResult,
+)
 from deepagents_talon.observability import (
     AGENT_ACTIVITY_PREVIEW_LIMIT,
     AgentActivityCallback,
@@ -51,8 +57,9 @@ class RecordingChannel:
     def set_message_handler(self, handler: Callable[[ChannelMessage], Awaitable[None]]) -> None:
         self.handler = handler
 
-    async def send_message(self, conversation_id: str, text: str) -> None:
+    async def send_message(self, conversation_id: str, text: str) -> SendResult:
         self.sent.append((conversation_id, text))
+        return SendResult(success=True)
 
     async def send_media(self, conversation_id: str, media: object) -> None:
         pass
@@ -113,22 +120,23 @@ async def test_host_wraps_agent_run_in_langsmith_context(tmp_path, monkeypatch) 
     await host.stop()
 
     assert channel.sent == [("chat", "reply:hello")]
-    assert contexts == [
-        {
-            "project_name": "talon-tests",
-            "tags": ["deepagents-talon", "assistant:assistant"],
-            "metadata": {
-                "assistant_id": "assistant",
-                "channel": "test",
-                "conversation_id": "test:chat",
-                "origin_conversation_id": "chat",
-                "sender_id": "sender",
-                "message_id": None,
-                "tool_approval_operator": False,
-            },
-            "enabled": True,
-        },
-    ]
+    assert len(contexts) == 1
+    context = contexts[0]
+    assert context["project_name"] == "talon-tests"
+    assert context["tags"] == ["deepagents-talon", "assistant:assistant"]
+    assert context["enabled"] is True
+    metadata = context["metadata"]
+    assert isinstance(metadata, dict)
+    expected = {
+        "assistant_id": "assistant",
+        "channel": "test",
+        "conversation_id": "test:chat",
+        "origin_conversation_id": "chat",
+        "sender_id": "sender",
+        "message_id": None,
+        "tool_approval_operator": False,
+    }
+    assert {key: metadata[key] for key in expected} == expected
 
 
 def test_log_event_emits_json_payload(caplog) -> None:

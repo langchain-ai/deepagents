@@ -946,6 +946,36 @@ class DeepAgentRuntime:
         tools.extend(self.tools if runtime_tools is None else runtime_tools)
         return tools
 
+    async def _uncommitted_inputs(self, request: AgentRequest) -> list[dict[str, object]] | None:
+        """Replay only admitted inputs absent from the latest checkpoint."""
+        inputs = request.metadata.get("talon_inputs")
+        if not isinstance(inputs, list):
+            return None
+        messages = [dict(item) for item in inputs if isinstance(item, dict)]
+        if self.checkpointer is False:
+            return messages
+        graph = self._invocation_graph.get() or self._graph
+        get_state = getattr(graph, "aget_state", None)
+        if callable(get_state):
+            snapshot = await get_state({"configurable": {"thread_id": request.conversation_id}})
+            values = getattr(snapshot, "values", {})
+            committed = {message.id for message in values.get("messages", [])}
+            messages = [message for message in messages if message.get("id") not in committed]
+        update_state = getattr(graph, "aupdate_state", None)
+        if request.inputs_committed is not None and callable(update_state):
+            if messages:
+                config: dict[str, object] = {"configurable": {"thread_id": request.conversation_id}}
+                if (scope := _HISTORY_SCOPE.get()) is not None:
+                    config["metadata"] = {
+                        **scope,
+                        "talon_history_read_only": _ARCHIVE_SCOPE.get() is None,
+                    }
+                # Commit before summarization can erase input identities.
+                await update_state(config, {"messages": messages})
+            request.inputs_committed()
+            return []
+        return messages
+
     async def _invoke_until_text(
         self,
         request: AgentRequest,
@@ -955,6 +985,7 @@ class DeepAgentRuntime:
             _request_model_content(request),
             request,
             activity,
+            inputs=await self._uncommitted_inputs(request),
             source="internal"
             if request.metadata.get("trigger") == "cron"
             or request.metadata.get("background_delivery")
@@ -986,6 +1017,7 @@ class DeepAgentRuntime:
         activity: AgentActivityCallback | None,
         *,
         source: str = "internal",
+        inputs: list[dict[str, object]] | None = None,
     ) -> object:
         return await self._invoke_payload_with_retries(
             {
@@ -999,11 +1031,17 @@ class DeepAgentRuntime:
                         }
                         for task_id, result in (self._pending_results.get() or {}).items()
                     ],
-                    {
-                        "role": "user",
-                        "content": content,
-                        "additional_kwargs": {"talon_history_source": source},
-                    },
+                    *(
+                        inputs
+                        if inputs is not None
+                        else [
+                            {
+                                "role": "user",
+                                "content": content,
+                                "additional_kwargs": {"talon_history_source": source},
+                            }
+                        ]
+                    ),
                 ]
             },
             conversation_id,
@@ -1076,9 +1114,10 @@ class DeepAgentRuntime:
         activity: AgentActivityCallback | None,
         *,
         source: str = "internal",
+        inputs: list[dict[str, object]] | None = None,
     ) -> object:
         state = await self._invoke_with_retries(
-            content, request.conversation_id, activity, source=source
+            content, request.conversation_id, activity, source=source, inputs=inputs
         )
         for _ in range(DEFAULT_MAX_APPROVAL_ROUNDS):
             interrupts = _interrupts_from_state(state)

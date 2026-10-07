@@ -46,6 +46,7 @@ class TerminalTitle:
         self._template = template
         self._stream: TextIO | None = None
         self._last_title: str | None = None
+        self._write_failed = False
 
     def _write(self, sequence: str) -> bool:
         """Return whether the sequence was written without a terminal error."""
@@ -55,7 +56,11 @@ class TerminalTitle:
             self._stream.write(sequence)
             self._stream.flush()
         except (OSError, ValueError):
-            logger.debug("Could not update terminal title", exc_info=True)
+            # Warn once so a stale title is diagnosable without flooding the log
+            # when every later update hits the same broken stream.
+            level = logging.DEBUG if self._write_failed else logging.WARNING
+            logger.log(level, "Could not update terminal title", exc_info=True)
+            self._write_failed = True
             return False
         return True
 

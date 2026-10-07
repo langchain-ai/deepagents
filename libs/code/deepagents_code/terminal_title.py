@@ -80,15 +80,25 @@ class TerminalTitle:
             cwd: Active working directory.
             branch: Active Git branch.
         """
+        try:
+            title = self._render(thread_name=thread_name, cwd=cwd, branch=branch)
+        except Exception:
+            # The title is cosmetic; a render bug must not fail a rename or a
+            # branch refresh that happens to call this.
+            logger.warning("Could not render terminal title", exc_info=True)
+            return
+        if title != self._last_title and self._write(f"\x1b]0;{title}\x07"):
+            self._last_title = title
+
+    def _render(self, *, thread_name: str, cwd: str, branch: str) -> str:
+        """Return the sanitized, bounded title for the current state."""
         template = self._template
         if template == DEFAULT_TERMINAL_TAB_TITLE and not thread_name:
             template = "{app_name}"
         title = template.format(
             app_name=invoked_name(), thread_name=thread_name, cwd=cwd, branch=branch
         )
-        title = "".join(char for char in title if char.isprintable())[:512]
-        if title != self._last_title and self._write(f"\x1b]0;{title}\x07"):
-            self._last_title = title
+        return "".join(char for char in title if char.isprintable())[:512]
 
     def restore(self) -> None:
         """Restore the saved title at most once, including on repeated cleanup."""

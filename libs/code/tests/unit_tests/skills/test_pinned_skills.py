@@ -8,9 +8,11 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.skills import SkillsState
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.runtime import Runtime
+from langgraph.types import Command
 
 from deepagents_code.local_context import LocalContextMiddleware
 from deepagents_code.plugins.adapters import skills_middleware
@@ -20,10 +22,12 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
 
 
-def _write_skill(path: Path, body: str = "Follow these instructions.") -> Path:
+def _write_skill(
+    path: Path, body: str = "Follow these instructions.", *, name: str = "review"
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        f"---\nname: review\ndescription: Review code\n---\n{body}\n", encoding="utf-8"
+        f"---\nname: {name}\ndescription: Review code\n---\n{body}\n", encoding="utf-8"
     )
     return path
 
@@ -213,6 +217,106 @@ async def test_graph_pins_once_and_preserves_snapshot(
         "Second answer",
     ]
     assert agent.get_state(config).values["pinned_skills"] == []
+
+
+@pytest.mark.parametrize("failure", ["missing", "unreadable", "untrusted"])
+@pytest.mark.parametrize("followup", ["ordinary", "fixed", "different"])
+async def test_graph_recovers_from_failed_pin(
+    tmp_path: Path,
+    mode: str,
+    failure: str,
+    followup: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "skills"
+    root.mkdir()
+    path = root / "review" / "SKILL.md"
+    if failure == "unreadable":
+        _write_skill(path, "")
+    elif failure == "untrusted":
+        outside = _write_skill(tmp_path / "outside" / "SKILL.md")
+        (root / "review").symlink_to(outside.parent, target_is_directory=True)
+    monkeypatch.setattr(skills_middleware, "load_trusted_skill_dirs", list)
+    middleware = PluginSkillsMiddleware(
+        backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
+    )
+    agent = create_agent(
+        GenericFakeChatModel(messages=iter([AIMessage(content="Recovered")])),
+        middleware=[middleware],
+        checkpointer=InMemorySaver(),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "failed-pin"}}
+    if mode == "async":
+        with pytest.raises((ValueError, PermissionError)):
+            await agent.ainvoke(_state(path), config)
+    else:
+        with pytest.raises((ValueError, PermissionError)):
+            agent.invoke(_state(path), config)
+    assert agent.get_state(config).values["pinned_skills"] == ["review"]
+    request: SkillsState = {"messages": [HumanMessage("Continue without a skill")]}
+    if followup == "fixed":
+        if failure == "untrusted":
+            (root / "review").unlink()
+        _write_skill(path, "Restored instructions")
+    elif followup == "different":
+        other = _write_skill(root / "other" / "SKILL.md", name="other")
+        request = _state(other, "other")
+    if mode == "async":
+        result = await agent.ainvoke(request, config)
+    else:
+        result = agent.invoke(request, config)
+    assert result["messages"][-1].content == "Recovered"
+    pinned = [
+        message.additional_kwargs["skill"]["name"]
+        for message in result["messages"]
+        if message.additional_kwargs.get("lc_source") == "pinned_skill"
+    ]
+    assert pinned == (["other"] if followup == "different" else [])
+    assert agent.get_state(config).values["pinned_skills"] == []
+
+
+async def test_graph_tool_can_pin_during_ordinary_turn(
+    tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_skill(tmp_path / "review" / "SKILL.md")
+
+    @tool
+    def pin_review() -> Command:
+        """Pin the review instructions."""
+        return Command(
+            update={
+                "pinned_skills": ["review"],
+                "messages": [ToolMessage("Pinned review", tool_call_id="pin-1")],
+            }
+        )
+
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "pin_review", "args": {}, "id": "pin-1"}],
+                ),
+                AIMessage(content="Done"),
+            ]
+        )
+    )
+    monkeypatch.setattr(
+        GenericFakeChatModel, "bind_tools", lambda *_args, **_kwargs: model
+    )
+    middleware = PluginSkillsMiddleware(
+        backend=FilesystemBackend(virtual_mode=False), sources=[(str(tmp_path), "User")]
+    )
+    agent = create_agent(model, tools=[pin_review], middleware=[middleware])
+    request = {"messages": [HumanMessage("Review this")]}
+    result = await agent.ainvoke(request) if mode == "async" else agent.invoke(request)
+    pinned = [
+        message
+        for message in result["messages"]
+        if message.additional_kwargs.get("lc_source") == "pinned_skill"
+    ]
+    assert len(pinned) == 1
+    assert pinned[0].additional_kwargs["skill"]["name"] == "review"
 
 
 async def test_pinning_plugin_name(tmp_path: Path, mode: str) -> None:

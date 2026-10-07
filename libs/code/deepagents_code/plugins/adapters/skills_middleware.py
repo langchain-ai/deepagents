@@ -12,6 +12,7 @@ from deepagents.backends.utils import to_posix_path
 from deepagents.middleware import skills as sdk_skills
 from deepagents.middleware.skills import SkillsMiddleware
 from langchain_core.messages import HumanMessage
+from langgraph.types import Overwrite
 
 from deepagents_code.config import _use_extra_skills_path_base
 from deepagents_code.config_manifest import get_option
@@ -37,6 +38,27 @@ logger = logging.getLogger(__name__)
 
 _PLUGIN_SKILL_SOURCE_LENGTH = 3
 _SKILL_FILE = "SKILL.md"
+
+
+class _SkillsStateUpdate(sdk_skills.SkillsStateUpdate, total=False):
+    pinned_skills: Overwrite
+
+
+def _skill_invocation(state: sdk_skills.SkillsState) -> dict[str, object]:
+    """Return the latest user turn's explicit skill selection."""
+    for message in reversed(state.get("messages", [])):
+        if isinstance(message, HumanMessage) and not is_internal_message(message):
+            marker = message.additional_kwargs.get("__skill")
+            return marker if isinstance(marker, dict) else {}
+    return {}
+
+
+def _pending_pin_update(state: sdk_skills.SkillsState) -> Overwrite | None:
+    """Return an update retaining only the current turn's explicit selection."""
+    names = state.get("pinned_skills") or []
+    name = _skill_invocation(state).get("name")
+    selected = [name] if isinstance(name, str) and name in names else []
+    return Overwrite(selected) if selected != names else None
 
 
 def _entries(ls_result: object) -> list[FileInfo]:
@@ -327,15 +349,8 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         if not names:
             return None
         by_name = {skill["name"]: skill for skill in state.get("skills_metadata") or []}
-        expected: dict[str, str] = {}
-        for message in reversed(state.get("messages", [])):
-            if is_internal_message(message):
-                continue
-            if isinstance(message, HumanMessage):
-                marker = message.additional_kwargs.get("__skill")
-                if isinstance(marker, dict) and isinstance(marker.get("path"), str):
-                    expected[marker.get("name", "")] = marker["path"]
-                break
+        marker = _skill_invocation(state)
+        expected_name, expected_path = marker.get("name"), marker.get("path")
         roots = self._pin_roots()
         skills: list[sdk_skills.SkillMetadata] = []
         responses: list[FileDownloadResponse] = []
@@ -344,7 +359,12 @@ class PluginSkillsMiddleware(SkillsMiddleware):
                 msg = f"Skill '{name}' is no longer available; invoke it again."
                 raise ValueError(msg)
             skill = by_name[name]
-            responses.append(self._pin_response(skill, expected.get(name), roots))
+            path = (
+                expected_path
+                if name == expected_name and isinstance(expected_path, str)
+                else None
+            )
+            responses.append(self._pin_response(skill, path, roots))
             skills.append(skill)
         return sdk_skills._pin_update(skills, responses)
 
@@ -358,13 +378,16 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     def _state_update(
         all_skills: dict[str, sdk_skills.SkillMetadata],
         errors: list[str],
-    ) -> sdk_skills.SkillsStateUpdate:
+        state: sdk_skills.SkillsState,
+    ) -> _SkillsStateUpdate:
         """Build the middleware state update, logging any load errors.
 
         Returns:
             The state update carrying merged skill metadata and any errors.
         """
-        update = sdk_skills.SkillsStateUpdate(skills_metadata=list(all_skills.values()))
+        update = _SkillsStateUpdate(skills_metadata=list(all_skills.values()))
+        if (pins := _pending_pin_update(state)) is not None:
+            update["pinned_skills"] = pins
         if errors:
             logger.warning("Skills load errors: %s", errors)
             update["skills_load_errors"] = errors
@@ -414,7 +437,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
                     source_label=source_label,
                 )
 
-        return self._state_update(all_skills, errors)
+        return self._state_update(all_skills, errors, state)
 
     async def abefore_agent(
         self,
@@ -460,4 +483,4 @@ class PluginSkillsMiddleware(SkillsMiddleware):
                     source_label=source_label,
                 )
 
-        return self._state_update(all_skills, errors)
+        return self._state_update(all_skills, errors, state)

@@ -3559,11 +3559,17 @@ class DeepAgentsApp(App):
         Named `_lc_thread_id` to avoid collision with Textual's `App._thread_id`.
         """
         self._thread_name = ""
+        self._thread_name_owner: str | None = None
+        """Thread that `_thread_name` belongs to, so reloads of it keep the name."""
         self._thread_name_revision = 0
         self._thread_name_tasks: dict[str, asyncio.Task[None]] = {}
         self._pending_thread_name_proposal: tuple[str, str] | None = None
         self._auto_named_threads: set[str] = set()
         self._thread_response_completed: dict[str, bool] = {}
+        from deepagents_code.model_config import load_terminal_tab_title
+        from deepagents_code.terminal_title import TerminalTitle
+
+        self._terminal_title = TerminalTitle(load_terminal_tab_title())
 
         self._btw_history: dict[str, list[tuple[str, str]]] = {}
         """Completed side exchanges per thread, retained only for this app instance."""
@@ -4923,7 +4929,10 @@ class DeepAgentsApp(App):
         import gc
 
         gc.freeze()
+        self._terminal_title.start()
+        self._update_terminal_title()
         self.screen_change_signal.subscribe(self, self._on_thread_name_screen_change)
+        self.app_resume_signal.subscribe(self, self._on_terminal_resume)
 
         chat = self.query_one("#chat", VerticalScroll)
         self._message_measure_width = chat.size.width
@@ -5222,6 +5231,7 @@ class DeepAgentsApp(App):
                 branch = await asyncio.to_thread(read_git_branch_via_subprocess, cwd)
             if self._status_bar:
                 self._status_bar.branch = branch
+            self._update_terminal_title()
         except Exception:
             logger.warning("Git branch resolution failed", exc_info=True)
 
@@ -5234,6 +5244,7 @@ class DeepAgentsApp(App):
             return
         if self._status_bar:
             self._status_bar.branch = branch
+        self._update_terminal_title()
 
     def _cancel_git_branch_refresh_task(self) -> None:
         """Cancel and clear any in-flight background branch refresh task."""
@@ -5264,6 +5275,7 @@ class DeepAgentsApp(App):
         if branch is not None:
             if self._status_bar:
                 self._status_bar.branch = branch
+            self._update_terminal_title()
             self._cancel_git_branch_refresh_task()
             return
 
@@ -19206,6 +19218,19 @@ class DeepAgentsApp(App):
         self._server_startup_deferred_notice_shown = True
         await self._mount_message(AppMessage(_DEFERRED_START_NOTICE))
 
+    def _update_terminal_title(self) -> None:
+        """Refresh the terminal tab from the active thread and workspace."""
+        self._terminal_title.update(
+            thread_name=self._thread_name,
+            cwd=self._cwd,
+            branch=self._status_bar.branch if self._status_bar else "",
+        )
+
+    def _on_terminal_resume(self, _app: App) -> None:
+        """Reclaim the tab title from programs that ran while suspended."""
+        self._terminal_title.invalidate()
+        self._update_terminal_title()
+
     async def _load_thread_name(self) -> None:
         """Restore a name without letting an old read replace the active name."""
         from deepagents_code.sessions import get_thread_name
@@ -19213,7 +19238,12 @@ class DeepAgentsApp(App):
         thread_id = self._lc_thread_id
         self._thread_name_revision += 1
         revision = self._thread_name_revision
-        self._thread_name = ""
+        if thread_id != self._thread_name_owner:
+            # Clear only on a switch; a reload of the same thread keeps its name
+            # so the tab does not flash the bare app name.
+            self._thread_name = ""
+            self._thread_name_owner = thread_id
+            self._update_terminal_title()
         try:
             name = await get_thread_name(thread_id) if thread_id else None
         except Exception:
@@ -19221,6 +19251,7 @@ class DeepAgentsApp(App):
             return
         if thread_id == self._lc_thread_id and revision == self._thread_name_revision:
             self._thread_name = name or ""
+            self._update_terminal_title()
 
     def _refresh_thread_name_selectors(self) -> None:
         """Refresh any open thread list after an out-of-band name change."""
@@ -19251,6 +19282,8 @@ class DeepAgentsApp(App):
             if thread_id == self._lc_thread_id:
                 self._thread_name_revision += 1
                 self._thread_name = name
+                self._thread_name_owner = thread_id
+                self._update_terminal_title()
                 self.notify(f"Thread renamed: {name}", markup=False)
         except Exception as exc:
             logger.warning("Could not save thread name", exc_info=True)
@@ -19508,10 +19541,11 @@ class DeepAgentsApp(App):
         self.push_screen(ThreadNameScreen(name), apply_name)
 
     async def on_unmount(self) -> None:
-        """Cancel pending thread naming work."""
+        """Cancel pending thread-naming tasks and restore the terminal title."""
         tasks = list(self._thread_name_tasks.values())
         for task in tasks:
             task.cancel()
+        self._terminal_title.restore()
         await asyncio.gather(*tasks, return_exceptions=True)
 
     def _effective_model_spec(self) -> str | None:
@@ -23197,6 +23231,7 @@ class DeepAgentsApp(App):
             self._git_branch_refresh_task.cancel()
         for task in self._thread_name_tasks.values():
             task.cancel()
+        self._terminal_title.restore()
         if self._external_event_source_task is not None:
             self._external_event_source_task.cancel()
         # Cancellation alone is not enough: the task's `finally` block runs
@@ -30490,6 +30525,7 @@ class DeepAgentsApp(App):
         """Update cwd-dependent UI state after changing process cwd."""
         cwd_text = str(cwd)
         self._cwd = cwd_text
+        self._update_terminal_title()
         if self._chat_input is not None:
             self._chat_input.set_cwd(cwd)
         if self._status_bar is not None:

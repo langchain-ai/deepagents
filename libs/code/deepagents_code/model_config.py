@@ -6208,6 +6208,46 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
     return result
 
 
+def load_terminal_tab_title(config_path: Path | None = None) -> str:
+    """Load the terminal tab title template.
+
+    Args:
+        config_path: Optional explicit config file. Passing a path also excludes
+            managed policy from this read, so production callers must pass
+            `None`.
+
+    Returns:
+        Configured `[terminal].tab_title`, or `DEFAULT_TERMINAL_TAB_TITLE` when
+        it is unset, not a string, or unreadable. `TerminalTitle` validates the
+        template.
+    """
+    from deepagents_code.terminal_title import DEFAULT_TERMINAL_TAB_TITLE
+
+    try:
+        data, config_path = _load_effective_config_data(config_path)
+        terminal = data.get("terminal", {})
+        if not isinstance(terminal, dict):
+            logger.warning(
+                "Ignoring malformed [terminal] in %s: expected a table, got %s",
+                _effective_source_label(config_path),
+                type(terminal).__name__,
+            )
+            return DEFAULT_TERMINAL_TAB_TITLE
+        value = terminal.get("tab_title", DEFAULT_TERMINAL_TAB_TITLE)
+        if isinstance(value, str):
+            return value
+        logger.warning(
+            "Ignoring [terminal].tab_title in %s: expected a string, got %s",
+            _effective_source_label(config_path),
+            type(value).__name__,
+        )
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read terminal title config; using default", exc_info=True
+        )
+    return DEFAULT_TERMINAL_TAB_TITLE
+
+
 def invalidate_thread_config_cache() -> None:
     """Clear the cached `ThreadConfig` so the next load re-reads disk."""
     global _thread_config_cache  # noqa: PLW0603  # Module-level cache requires global statement

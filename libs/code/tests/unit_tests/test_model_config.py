@@ -1332,6 +1332,22 @@ def test_thread_naming_config(
     assert config.columns["thread_name"] is True
 
 
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("", "{app_name} - {thread_name}"),
+        ('[terminal]\ntab_title = "{app_name}"\n', "{app_name}"),
+        ("[terminal]\ntab_title = false\n", "{app_name} - {thread_name}"),
+    ],
+)
+def test_terminal_tab_title_config(tmp_path: Path, content: str, expected: str) -> None:
+    from deepagents_code.model_config import load_terminal_tab_title
+
+    path = tmp_path / "config.toml"
+    path.write_text(content)
+    assert load_terminal_tab_title(path) == expected
+
+
 class TestResolveEnvVar:
     """Tests for resolve_env_var prefix override."""
 

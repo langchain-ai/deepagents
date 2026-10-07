@@ -10,14 +10,13 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import var_child_runnable_config
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -48,6 +47,9 @@ from deepagents.middleware.skills import (
     _validate_skill_name,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 
 
 def _assistant_id_namespace(rt: Runtime) -> tuple[str, ...]:
@@ -2043,8 +2045,8 @@ class _ReloadingSkillsMiddleware(SkillsMiddleware):
     implementation, which no-ops when `skills_metadata` already holds a list.
     """
 
-    def before_model(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
-        return super().before_agent(state, runtime, config)
+    def before_model(self, state: SkillsState, runtime: Runtime) -> SkillsStateUpdate | None:
+        return super().before_agent(state, runtime, {})
 
 
 def test_subclass_reloading_in_before_model_serves_mid_run_reset(tmp_path: Path) -> None:

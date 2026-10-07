@@ -48,13 +48,16 @@ if TYPE_CHECKING:
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
 
-_FORK_EXCLUDED_STATE_KEYS = frozenset({"structured_response", SUMMARIZATION_EVENT_KEY, SUMMARIZATION_SESSION_ID_KEY, _SKILL_TOOLS_DISCLOSED_KEY})
+_FORK_EXCLUDED_STATE_KEYS = frozenset(
+    {"structured_response", "pinned_skills", SUMMARIZATION_EVENT_KEY, SUMMARIZATION_SESSION_ID_KEY, _SKILL_TOOLS_DISCLOSED_KEY}
+)
 """State a fork must not resume.
 
 The summarization event is folded into the fork's messages instead. Dropping the
 session ID lets the subagent generate its own, and dropping a prior structured response
 ensures it cannot be mistaken for the fork's result. The disclosed skill tools
-describe the parent's last model call; the fork records its own.
+describe the parent's last model call; the fork records its own. Skills the parent
+has yet to pin are the parent's own.
 """
 
 _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
@@ -400,6 +403,7 @@ _EXCLUDED_STATE_KEYS = {
     "todos",
     "structured_response",
     "skills_metadata",
+    "pinned_skills",
     _SKILL_TOOLS_DISCLOSED_KEY,
     _FORKED_CONTEXT_KEY,
 }
@@ -416,7 +420,8 @@ When returning updates:
 3. `skills_metadata` is excluded so a subagent loads skills from its own
     sources rather than reusing the parent's list, and cannot replace the
     parent's list with its own. `_skill_tools_disclosed` is excluded because it
-    describes one agent's latest model call.
+    describes one agent's latest model call, and `pinned_skills` because a
+    pending pin belongs to the agent it was requested for.
 4. Agent-private fields on middleware state schemas are excluded from both
     subagent output and subagent inputs.
 """

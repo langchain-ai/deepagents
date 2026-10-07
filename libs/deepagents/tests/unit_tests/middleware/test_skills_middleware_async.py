@@ -7,14 +7,13 @@ import logging
 import shutil
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.runtime import Runtime
@@ -24,6 +23,9 @@ from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResul
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware, SkillsState, SkillsStateUpdate, _alist_skills
 from tests.unit_tests.chat_model import GenericFakeChatModel
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 
 
 def make_skill_content(name: str, description: str) -> str:
@@ -557,8 +559,8 @@ class _AReloadingSkillsMiddleware(SkillsMiddleware):
     implementation, which no-ops when `skills_metadata` already holds a list.
     """
 
-    async def abefore_model(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:
-        return await super().abefore_agent(state, runtime, config)
+    async def abefore_model(self, state: SkillsState, runtime: Runtime) -> SkillsStateUpdate | None:
+        return await super().abefore_agent(state, runtime, {})
 
 
 async def test_subclass_reloading_in_abefore_model_serves_mid_run_reset(tmp_path: Path) -> None:

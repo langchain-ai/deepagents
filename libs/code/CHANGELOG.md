@@ -4,22 +4,19 @@
 
 ## [0.1.82](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.81...deepagents-code==0.1.82) (2026-10-07)
 
-
 ### Features
 
-* **code:** add persistent thread names and manual renaming ([#6715](https://github.com/langchain-ai/deepagents/issues/6715)) ([16e84d9](https://github.com/langchain-ai/deepagents/commit/16e84d927e7e13c41a10c071380c875af6a562f5))
-* **code:** customize terminal tab titles ([#6768](https://github.com/langchain-ai/deepagents/issues/6768)) ([a4a51d0](https://github.com/langchain-ai/deepagents/commit/a4a51d07cd756d2ff285e0e59655887e30e56bf8))
-* **code:** distinguish skill reads in the transcript ([#6825](https://github.com/langchain-ai/deepagents/issues/6825)) ([65a21a4](https://github.com/langchain-ai/deepagents/commit/65a21a47f7ffe31afa0a525a0d1ec2fff1262da5))
-* **code:** generate thread names automatically and on demand ([#6767](https://github.com/langchain-ai/deepagents/issues/6767)) ([218b3d6](https://github.com/langchain-ai/deepagents/commit/218b3d68c9ab8e2857dd0aafceeadeb34d0f0d01))
-
+- Create persistent thread names automatically or on demand, and rename threads manually. ([#6715](https://github.com/langchain-ai/deepagents/pull/6715), [#6767](https://github.com/langchain-ai/deepagents/pull/6767))
+- Customize terminal tab titles. ([#6768](https://github.com/langchain-ai/deepagents/pull/6768))
+- Distinguish skill reads in the transcript. ([#6825](https://github.com/langchain-ai/deepagents/pull/6825))
 
 ### Bug Fixes
 
-* **code:** extend triple-click selection across blocks ([#6819](https://github.com/langchain-ai/deepagents/issues/6819)) ([4f6a798](https://github.com/langchain-ai/deepagents/commit/4f6a798928d2445f8efec3a7a85324cdf0638b3d))
-* **code:** keep thread picker open on ownership conflicts ([#6824](https://github.com/langchain-ai/deepagents/issues/6824)) ([bbae958](https://github.com/langchain-ai/deepagents/commit/bbae958439826bc3823a4cf5ea7a6b9fb6e70025))
-* **code:** preserve remote message completion markers ([#6831](https://github.com/langchain-ai/deepagents/issues/6831)) ([62b2692](https://github.com/langchain-ai/deepagents/commit/62b2692cb1b66430670053f02b7a7a821ad9afe7))
-* **code:** recommend GPT-6 Luna for auto review ([#6821](https://github.com/langchain-ai/deepagents/issues/6821)) ([26918db](https://github.com/langchain-ai/deepagents/commit/26918db7791f79ac91921e04eddf8774b3c4dfea))
-* **code:** show editable install status in debug version ([#6797](https://github.com/langchain-ai/deepagents/issues/6797)) ([cc1be0d](https://github.com/langchain-ai/deepagents/commit/cc1be0d17d1a0eee6bd95e39b6261e7cd0510148))
+- Keep the thread picker open when ownership conflicts occur. ([#6824](https://github.com/langchain-ai/deepagents/pull/6824))
+- Preserve completion markers on remote messages. ([#6831](https://github.com/langchain-ai/deepagents/pull/6831))
+- Extend triple-click selection across blocks. ([#6819](https://github.com/langchain-ai/deepagents/pull/6819))
+- Recommend GPT-6 Luna for auto review. ([#6821](https://github.com/langchain-ai/deepagents/pull/6821))
+- Show editable install status in debug version information. ([#6797](https://github.com/langchain-ai/deepagents/pull/6797))
 
 ## [0.1.81](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.80...deepagents-code==0.1.81) (2026-10-06)
 

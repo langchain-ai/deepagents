@@ -6212,10 +6212,14 @@ def load_terminal_tab_title(config_path: Path | None = None) -> str:
     """Load the terminal tab title template.
 
     Args:
-        config_path: Optional explicit config file, excluding managed policy.
+        config_path: Optional explicit config file. Passing a path also excludes
+            managed policy from this read, so production callers must pass
+            `None`.
 
     Returns:
-        Configured template, or `"{app_name} - {thread_name}"` by default.
+        Configured `[terminal].tab_title`, or `DEFAULT_TERMINAL_TAB_TITLE` when
+        it is unset, not a string, or unreadable. `TerminalTitle` validates the
+        template.
     """
     from deepagents_code.terminal_title import DEFAULT_TERMINAL_TAB_TITLE
 

@@ -19541,7 +19541,7 @@ class DeepAgentsApp(App):
         self.push_screen(ThreadNameScreen(name), apply_name)
 
     async def on_unmount(self) -> None:
-        """Cancel pending title work and restore the original terminal title."""
+        """Cancel pending thread-naming tasks and restore the terminal title."""
         tasks = list(self._thread_name_tasks.values())
         for task in tasks:
             task.cancel()

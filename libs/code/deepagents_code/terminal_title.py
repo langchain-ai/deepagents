@@ -1,4 +1,8 @@
-"""Safe, reversible terminal tab titles independent of Textual's app header."""
+"""Terminal tab titles that strip control characters and restore on exit.
+
+Restoring depends on the terminal's title stack (XTWINOPS 22/23). Terminals
+without one keep the last title after exit.
+"""
 
 from __future__ import annotations
 
@@ -27,17 +31,20 @@ def _valid_template(template: str) -> bool:
 
 
 class TerminalTitle:
-    """Manage one balanced terminal title save/restore lifecycle."""
+    """Push the terminal title on start, update it, and pop it on restore."""
 
     # This does not use `terminal_escape.write_terminal_escape`: that helper
     # opens `/dev/tty` for each write, so a push could fail while the later pop
     # succeeds. Holding one stream lets `restore` pop only after a real push.
 
     def __init__(self, template: str) -> None:
-        """Set the template, falling back when its replacement fields are invalid.
+        """Set the template, falling back to the default when it is invalid.
 
         Args:
-            template: Title with app_name, thread_name, cwd, and branch fields.
+            template: Format string that may use `{app_name}`, `{thread_name}`,
+                `{cwd}`, and `{branch}`. Unknown fields, format specs,
+                conversions, or unbalanced braces log a warning and use
+                `DEFAULT_TERMINAL_TAB_TITLE`.
         """
         if not _valid_template(template):
             logger.warning(
@@ -53,7 +60,7 @@ class TerminalTitle:
         self._write_failed = False
 
     def _write(self, sequence: str) -> bool:
-        """Return whether the sequence was written without a terminal error."""
+        """Return whether `sequence` was written to a started stream."""
         if self._stream is None:
             return False
         try:
@@ -69,7 +76,11 @@ class TerminalTitle:
         return True
 
     def start(self) -> None:
-        """Save the original title once, honoring the terminal-escape opt-out."""
+        """Push the current title onto the terminal's title stack.
+
+        Does nothing while already started, when terminal escapes are disabled,
+        or when neither stderr nor stdout is a TTY.
+        """
         if self._stream is not None or is_env_truthy(NO_TERMINAL_ESCAPE):
             return
         for stream in (sys.__stderr__, sys.__stdout__):
@@ -82,7 +93,10 @@ class TerminalTitle:
             self._stream = None
 
     def update(self, *, thread_name: str = "", cwd: str = "", branch: str = "") -> None:
-        """Render a sanitized title, avoiding duplicate terminal writes.
+        """Write the rendered title when it differs from the last one.
+
+        The default template drops ` - {thread_name}` while the thread has no
+        name. Any template that renders blank shows the app name instead.
 
         Args:
             thread_name: Active thread's assigned name, or empty when unnamed.
@@ -121,7 +135,7 @@ class TerminalTitle:
         self._last_title = None
 
     def restore(self) -> None:
-        """Restore the saved title at most once, including on repeated cleanup."""
+        """Pop the title pushed by `start`; later calls do nothing."""
         self._write("\x1b[23;0t")
         self._stream = None
         self._last_title = None

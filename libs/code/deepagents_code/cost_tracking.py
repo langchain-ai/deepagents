@@ -10,10 +10,10 @@ checkpoint.
 The client is a reader: it renders the streamed total and never maintains its own
 lifetime figure.
 
-Side questions use an isolated recorder and persist their subtotal in the sessions
-database (see `btw_cost`). They can finish after the graph stops, so their spend
-cannot depend on a later checkpoint. The client combines the independently
-reported subtotals only for presentation.
+Side questions and thread naming use isolated recorders and persist their subtotal
+in the sessions database (see `btw_cost`). They can finish after the graph stops,
+so their spend cannot depend on a later checkpoint. The client combines the
+independently reported subtotals only for presentation.
 
 Coverage is not limited to the agent's own model node. Offload/summarization and
 the Auto mode classifier invoke a model directly, outside `after_model`, and

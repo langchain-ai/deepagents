@@ -1,17 +1,28 @@
-"""Manual thread naming and active-name synchronization."""
+"""Thread-name command, background generation, and confirmation behavior."""
 
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import json
+import threading
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
-from textual.widgets import Static
+from langchain_core.messages import AIMessage, HumanMessage
+from textual.widgets import Input, OptionList, Static
 
 from deepagents_code.app import DeepAgentsApp
+from deepagents_code.model_config import ThreadConfig
+from deepagents_code.tui.modals.thread_name import ThreadNameScreen
+from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from deepagents_code.sessions import ThreadInfo
 
 
@@ -19,7 +30,17 @@ if TYPE_CHECKING:
 def naming_app(monkeypatch: pytest.MonkeyPatch) -> DeepAgentsApp:
     app = DeepAgentsApp(thread_id="original")
     monkeypatch.setattr(app, "notify", MagicMock())
+    monkeypatch.setattr(app, "_effective_model_spec", lambda: "provider:chat")
     monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    monkeypatch.setattr(
+        app,
+        "_get_thread_state_values",
+        AsyncMock(
+            return_value={
+                "messages": [HumanMessage("Fix caching"), AIMessage("Here is the fix")]
+            }
+        ),
+    )
     monkeypatch.setattr(
         "deepagents_code.sessions.get_thread_name", AsyncMock(return_value=None)
     )
@@ -40,6 +61,784 @@ async def test_rename_submission_runs_while_busy(
             assert naming_app._thread_name == "Release audit"
             assert not naming_app._pending_messages
             rename.assert_awaited_once_with("original", "Release audit")
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (TimeoutError(), "Request timed out. Try /rename again."),
+        (ValueError(), "ValueError"),
+        (ValueError("Provider unavailable"), "Provider unavailable"),
+    ],
+)
+async def test_manual_naming_failure_has_readable_reason(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    reason: str,
+) -> None:
+    notify = MagicMock()
+    monkeypatch.setattr(naming_app, "notify", notify)
+    monkeypatch.setattr(
+        "deepagents_code.thread_titles.generate_thread_name",
+        AsyncMock(side_effect=error),
+    )
+
+    await naming_app._generate_thread_name("original", "provider:chat", automatic=False)
+
+    notify.assert_called_once_with(
+        f"Could not generate a thread name: {reason}", severity="error", markup=False
+    )
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+@pytest.mark.parametrize("rename_model", ["", "openai:test-titles", "openai:test-chat"])
+async def test_naming_uses_the_selected_models_endpoint(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    rename_model: str,
+    *,
+    automatic: bool,
+) -> None:
+    """Inherit the chat endpoint only when no dedicated naming model is set."""
+    requests: list[tuple[str, str]] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append((str(request.url), json.loads(request.content)["model"]))
+        return httpx.Response(
+            200,
+            json={
+                "id": "title-completion",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "test-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "Cache repair"},
+                    }
+                ],
+            },
+        )
+
+    monkeypatch.setattr(naming_app, "_effective_model_spec", lambda: "openai:test-chat")
+    naming_app._model_params_override = {"base_url": "https://chat.example/v1"}
+    monkeypatch.setattr(
+        "deepagents_code.model_config.load_thread_config",
+        lambda: ThreadConfig(
+            {}, True, "updated_at", "cwd", auto_rename=True, rename_model=rename_model
+        ),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.apply_stored_credentials", lambda _: None
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.resolve_provider_credential", lambda _: None
+    )
+    monkeypatch.setattr(
+        "deepagents_code.model_config.has_provider_credentials", lambda _: True
+    )
+    rename = AsyncMock(return_value=True)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        monkeypatch.setattr(
+            "deepagents_code.config._get_provider_kwargs",
+            lambda *_args, **_kwargs: {
+                "api_key": "test-only-placeholder",
+                "base_url": "https://configured.example/v1",
+                "http_async_client": client,
+                "use_responses_api": False,
+            },
+        )
+        async with naming_app.run_test() as pilot:
+            if automatic:
+                naming_app._maybe_auto_name_thread(
+                    "original",
+                    "openai:test-chat",
+                    model_params=naming_app._model_params_override,
+                )
+            else:
+                await naming_app._handle_command("/rename")
+            # A later model switch must not redirect the queued naming request.
+            naming_app._model_params_override["base_url"] = "https://later.example/v1"
+            await asyncio.gather(*naming_app._thread_name_tasks.values())
+            await pilot.pause()
+            if not automatic:
+                assert isinstance(naming_app.screen, ThreadNameScreen)
+                await pilot.press("enter")
+                await pilot.pause()
+            assert rename.await_args is not None
+            assert rename.await_args.args == ("original", "Cache repair")
+
+    endpoint = "configured" if rename_model else "chat"
+    model = rename_model.removeprefix("openai:") if rename_model else "test-chat"
+    assert requests == [(f"https://{endpoint}.example/v1/chat/completions", model)]
+
+
+async def test_generated_name_waits_for_thread_selector_input(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A completed proposal must not steal keys from the thread-selector filter."""
+    from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def generate(*_args: object, **_kwargs: object) -> str:
+        started.set()
+        await release.wait()
+        return "Cache repair"
+
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    monkeypatch.setattr(
+        "deepagents_code.sessions.list_threads", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr("deepagents_code.sessions.get_cached_threads", lambda **_: [])
+    monkeypatch.setattr(
+        ThreadSelectorScreen, "_load_available_agent_names", AsyncMock()
+    )
+    rename = AsyncMock(return_value=True)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    async with naming_app.run_test() as pilot:
+        await pilot.press(*"/rename", "enter")
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task = naming_app._thread_name_tasks["original"]
+        await pilot.press(*"/threads", "enter")
+        await pilot.pause()
+        selector = naming_app.screen
+        assert isinstance(selector, ThreadSelectorScreen)
+        field = selector.query_one("#thread-filter", Input)
+        await pilot.press("c")
+        release.set()
+        await task
+        await pilot.pause()
+        await pilot.press("a", "c", "h", "e")
+        assert field.value == "cache"
+        assert naming_app.screen is selector
+        assert selector.focused is field
+        rename.assert_not_awaited()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(naming_app.screen, ThreadNameScreen)
+        name_field = naming_app.screen.query_one(Input)
+        await pilot.press("shift+tab")
+        assert naming_app.screen.focused is name_field
+        await pilot.press("end", "!", "enter")
+        await pilot.pause()
+        rename.assert_awaited_once_with("original", "Cache repair!")
+        assert naming_app._thread_name == "Cache repair!"
+
+
+async def test_generated_name_waits_for_nested_auth_modals(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Closing the auth key field must not offer a name over the auth manager."""
+    from deepagents_code.tui.widgets.auth import AuthManagerScreen, AuthPromptScreen
+
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def generate(*_args: object, **_kwargs: object) -> str:
+        started.set()
+        await release.wait()
+        return "Cache repair"
+
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    async with naming_app.run_test() as pilot:
+        await pilot.press(*"/rename", "enter")
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task = naming_app._thread_name_tasks["original"]
+        await pilot.press(*"/auth", "enter")
+        manager = naming_app.screen
+        assert isinstance(manager, AuthManagerScreen)
+        options = manager.query_one(OptionList)
+        options.highlighted = options.get_option_index("openai")
+        await pilot.press("enter")
+        prompt = naming_app.screen
+        assert isinstance(prompt, AuthPromptScreen)
+        release.set()
+        await task
+        await pilot.pause()
+        await pilot.press(*"draft")
+        assert naming_app.screen is prompt
+        assert prompt.query_one("#auth-prompt-input", Input).value == "draft"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert naming_app.screen is manager
+        await pilot.press("escape")
+        await pilot.pause()
+        assert isinstance(naming_app.screen, ThreadNameScreen)
+        assert naming_app.screen.query_one(Input).value == "Cache repair"
+        await pilot.press("escape")
+
+
+@pytest.mark.parametrize("manual_name", [False, True])
+async def test_deferred_name_is_discarded_when_stale(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch, *, manual_name: bool
+) -> None:
+    """A queued proposal cannot outlive a thread switch or an explicit rename."""
+    from deepagents_code.tui.widgets.auth import AuthConfirmScreen
+
+    rename = AsyncMock(return_value=True)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    async with naming_app.run_test() as pilot:
+        chat_screen = naming_app.screen
+        naming_app.push_screen(AuthConfirmScreen(title="Auth", body="Continue?"))
+        await pilot.pause()
+        naming_app._offer_thread_name(
+            "original", "Stale proposal", naming_app._thread_name_revision
+        )
+        if manual_name:
+            await naming_app._save_thread_name("original", "My choice")
+        else:
+            naming_app._lc_thread_id = "new"
+        await pilot.press("escape")
+        await pilot.pause()
+        assert naming_app.screen is chat_screen
+        if manual_name:
+            rename.assert_awaited_once_with("original", "My choice")
+        else:
+            rename.assert_not_awaited()
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+async def test_workspace_switch_cancels_pending_naming(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    automatic: bool,
+) -> None:
+    """A delayed state read must not send the old chat to the new workspace."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def read_state(_thread_id: str) -> dict[str, object]:
+        started.set()
+        await release.wait()
+        return {"messages": [HumanMessage("Private chat"), AIMessage("Reply")]}
+
+    monkeypatch.setattr(naming_app, "_get_thread_state_values", read_state)
+    generate = AsyncMock(return_value="Private chat")
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    monkeypatch.setattr(naming_app, "call_after_refresh", MagicMock())
+    monkeypatch.setattr(
+        naming_app, "_reload_settings_from_environment", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr("deepagents_code.model_config.clear_caches", lambda: None)
+    naming_app._start_thread_name_generation(
+        "original", "provider:chat", automatic=automatic
+    )
+    task = naming_app._thread_name_tasks["original"]
+    await asyncio.wait_for(started.wait(), timeout=5)
+    await naming_app._refresh_project_context_for_cwd_switch(tmp_path)
+    release.set()
+    await asyncio.gather(task, return_exceptions=True)
+    generate.assert_not_awaited()
+    assert task.cancelled()
+    assert not naming_app._thread_name_tasks
+
+
+@pytest.mark.parametrize(
+    ("factory_fails", "already_cancelled"), [(False, False), (True, True)]
+)
+async def test_workspace_reload_waits_for_naming_model_initialization(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    factory_fails: bool,
+    already_cancelled: bool,
+) -> None:
+    """An old factory cannot mutate provider settings after a workspace reload."""
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    settings = {"workspace": "original"}
+    model = AsyncMock()
+
+    def create_model(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(timeout=5)
+        settings["workspace"] = "original"
+        if factory_fails:
+            msg = "Model initialization failed"
+            raise ValueError(msg)
+        return SimpleNamespace(model=model)
+
+    def reload_settings(*, start_path: Path) -> list[str]:
+        settings["workspace"] = str(start_path)
+        return []
+
+    reload = AsyncMock(side_effect=reload_settings)
+    monkeypatch.setattr("deepagents_code.config.create_model", create_model)
+    monkeypatch.setattr(naming_app, "_reload_settings_from_environment", reload)
+    monkeypatch.setattr("deepagents_code.model_config.clear_caches", lambda: None)
+    naming_app._start_thread_name_generation(
+        "original", "provider:chat", automatic=False
+    )
+    task = naming_app._thread_name_tasks["original"]
+    refresh: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        if already_cancelled:
+            task.cancel()
+            await asyncio.sleep(0)
+        refresh = asyncio.create_task(
+            naming_app._refresh_project_context_for_cwd_switch(tmp_path)
+        )
+        done, _ = await asyncio.wait({refresh}, timeout=0.05)
+        assert not done
+        assert not task.done()
+        reload.assert_not_awaited()
+    finally:
+        release.set()
+        await asyncio.gather(
+            task, *([refresh] if refresh is not None else []), return_exceptions=True
+        )
+    await refresh
+    assert task.cancelled()
+    assert settings["workspace"] == str(tmp_path)
+    assert not naming_app._thread_name_tasks
+    model.ainvoke.assert_not_awaited()
+
+
+async def test_naming_cannot_start_during_workspace_reload(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second request during reload cannot read partially changed settings."""
+    generate = AsyncMock(return_value="Private chat")
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    monkeypatch.setattr(naming_app, "call_after_refresh", MagicMock())
+    async with naming_app._environment_mutation_lock:
+        naming_app._start_thread_name_generation(
+            "original", "provider:chat", automatic=False
+        )
+        await asyncio.gather(*naming_app._thread_name_tasks.values())
+    generate.assert_not_awaited()
+
+
+@pytest.mark.parametrize("cancellations", [0, 2])
+async def test_reload_waits_for_naming_initialization_cleanup(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    cancellations: int,
+) -> None:
+    """Reload cannot race the factory, even after repeated cancellation."""
+    started, release = asyncio.Event(), threading.Event()
+    response_ready, reloaded = asyncio.Event(), asyncio.Event()
+    loop = asyncio.get_running_loop()
+    settings = {"version": "original"}
+
+    async def respond(*_args: object, **_kwargs: object) -> AIMessage:
+        await response_ready.wait()
+        return AIMessage("Cache repair")
+
+    model = AsyncMock()
+    model.ainvoke.side_effect = respond
+
+    def create_model(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(timeout=5)
+        settings["version"] = "original"
+        return SimpleNamespace(model=model)
+
+    def reload_settings() -> None:
+        settings["version"] = "reloaded"
+        reloaded.set()
+
+    monkeypatch.setattr("deepagents_code.config.create_model", create_model)
+    monkeypatch.setattr(
+        naming_app, "_run_reload_unlocked", AsyncMock(side_effect=reload_settings)
+    )
+    monkeypatch.setattr(naming_app, "call_after_refresh", MagicMock())
+    naming_app._start_thread_name_generation(
+        "original", "provider:chat", automatic=False
+    )
+    task = naming_app._thread_name_tasks["original"]
+    reload: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        reload = asyncio.create_task(naming_app._run_reload())
+        for _ in range(cancellations):
+            task.cancel()
+            await asyncio.sleep(0)
+        done, _ = await asyncio.wait({reload}, timeout=0.05)
+        assert not done
+        assert not reloaded.is_set()
+        release.set()
+        await asyncio.wait_for(reloaded.wait(), timeout=5)
+        # The lock protects initialization, not the network response.
+        if not cancellations:
+            assert not task.done()
+    finally:
+        release.set()
+        response_ready.set()
+        await asyncio.gather(
+            task, *([reload] if reload is not None else []), return_exceptions=True
+        )
+    assert settings["version"] == "reloaded"
+    assert task.cancelled() == bool(cancellations)
+    if cancellations:
+        model.ainvoke.assert_not_awaited()
+
+
+async def test_auto_name_is_conditional_and_context_isolated(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    context = contextvars.ContextVar("stream", default="isolated")
+    context.set("chat-stream")
+    contexts: list[str] = []
+    monkeypatch.setattr(
+        naming_app,
+        "_get_thread_state_values",
+        AsyncMock(
+            return_value={
+                "messages": [
+                    HumanMessage("Fix caching"),
+                    HumanMessage(
+                        "Goal changed", additional_kwargs={"lc_source": "goal_state"}
+                    ),
+                    HumanMessage(
+                        "Hidden context",
+                        additional_kwargs={"lc_source": "local_context"},
+                    ),
+                    AIMessage("Here is the fix"),
+                ]
+            }
+        ),
+    )
+
+    async def generate(*_args: object, **_kwargs: object) -> str:
+        await asyncio.sleep(0)
+        contexts.append(context.get())
+        return "Cache repair"
+
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    rename = AsyncMock(return_value=False)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    naming_app._maybe_auto_name_thread("original", "provider:chat")
+    task = naming_app._thread_name_tasks["original"]
+    await task
+    naming_app._maybe_auto_name_thread("original", "provider:chat")
+    assert contexts == ["isolated"]
+    rename.assert_awaited_once_with("original", "Cache repair", only_if_unnamed=True)
+
+
+@pytest.mark.parametrize("turns", [0, 1, 2])
+async def test_auto_naming_counts_prompts_after_flushing_shell_context(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch, turns: int
+) -> None:
+    """Persisted shell commands do not count as conversation turns."""
+    agent = MagicMock()
+    agent.aupdate_state = AsyncMock()
+    monkeypatch.setattr(naming_app, "_agent", agent)
+    monkeypatch.setattr(naming_app, "_remote_agent", lambda: None)
+    naming_app._buffer_shell_for_model_context("pwd", "/tmp/project", 0)
+    naming_app._buffer_shell_for_model_context("git status", "Clean", 0)
+    await naming_app._flush_pending_shell_messages()
+    messages = agent.aupdate_state.call_args.args[1]["messages"]
+    for _ in range(turns):
+        messages.extend([HumanMessage("Fix caching"), AIMessage("Here is the fix")])
+    monkeypatch.setattr(
+        naming_app,
+        "_get_thread_state_values",
+        AsyncMock(return_value={"messages": [m.model_dump() for m in messages]}),
+    )
+    generate = AsyncMock(return_value="Cache repair")
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    rename = AsyncMock(return_value=False)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+
+    naming_app._maybe_auto_name_thread("original", "provider:chat")
+    await asyncio.gather(*naming_app._thread_name_tasks.values())
+
+    if turns:
+        rename.assert_awaited_once_with(
+            "original", "Cache repair", only_if_unnamed=True
+        )
+        # The shell output is still useful context for choosing the name.
+        assert "<user_shell_command>" in generate.call_args.args[1][0].content
+    else:
+        generate.assert_not_awaited()
+        rename.assert_not_awaited()
+
+
+@pytest.mark.parametrize("interrupted_prompts", [0, 1, 2])
+async def test_auto_naming_survives_second_prompt_during_state_read(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    interrupted_prompts: int,
+) -> None:
+    """A subsequent turn cannot consume the first completed turn's naming attempt."""
+    started, release = asyncio.Event(), asyncio.Event()
+    messages: list[HumanMessage | AIMessage] = [
+        HumanMessage("Interrupted prompt") for _ in range(interrupted_prompts)
+    ]
+    messages.extend([HumanMessage("Fix caching"), AIMessage("Here is the fix")])
+
+    async def read_state(_thread_id: str) -> dict[str, object]:
+        started.set()
+        await release.wait()
+        return {"messages": messages}
+
+    monkeypatch.setattr(naming_app, "_get_thread_state_values", read_state)
+    generate = AsyncMock(return_value="Cache repair")
+    rename = AsyncMock(return_value=False)
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    naming_app._maybe_auto_name_thread("original", "provider:chat")
+    task = naming_app._thread_name_tasks["original"]
+    try:
+        await asyncio.wait_for(started.wait(), timeout=5)
+        messages.extend([HumanMessage("Now fix logging"), AIMessage("Logging fixed")])
+    finally:
+        release.set()
+        await task
+
+    rename.assert_awaited_once_with("original", "Cache repair", only_if_unnamed=True)
+    assert [message.content for message in generate.call_args.args[1]] == [
+        *(["Interrupted prompt"] * interrupted_prompts),
+        "Fix caching",
+        "Here is the fix",
+    ]
+
+
+def test_auto_name_can_be_disabled(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "deepagents_code.model_config.load_thread_config",
+        lambda: ThreadConfig({}, True, "updated_at", "cwd", auto_rename=False),
+    )
+    naming_app._maybe_auto_name_thread("original", "provider:chat")
+    assert not naming_app._thread_name_tasks
+
+
+@pytest.mark.parametrize("completed", [False, True])
+@pytest.mark.parametrize("prior_response", [False, True])
+async def test_auto_naming_waits_for_completed_response(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    completed: bool,
+    prior_response: bool,
+) -> None:
+    started, release = asyncio.Event(), asyncio.Event()
+    adapter = MagicMock(stream_completed=False)
+    model_params = {"base_url": "https://chat.example/v1"}
+    naming_app._model_params_override = model_params
+
+    async def execute(*_args: object, **_kwargs: object) -> None:
+        started.set()
+        await release.wait()
+        adapter.stream_completed = completed
+        model_params["base_url"] = "https://later.example/v1"
+
+    monkeypatch.setattr(naming_app, "_ui_adapter", adapter)
+    monkeypatch.setattr(naming_app, "_agent", MagicMock())
+    monkeypatch.setattr(naming_app, "_cleanup_agent_task", AsyncMock())
+    monkeypatch.setattr(naming_app, "_sync_session_cost_from_checkpoint", AsyncMock())
+    monkeypatch.setattr(naming_app, "_refresh_cache_timing", AsyncMock())
+    monkeypatch.setattr(
+        "deepagents_code.tui.textual_adapter.execute_task_textual", execute
+    )
+    schedule = MagicMock()
+    monkeypatch.setattr(naming_app, "_maybe_auto_name_thread", schedule)
+    async with naming_app.run_test():
+        if prior_response:
+            naming_app._message_store.append(
+                MessageData(type=MessageType.ASSISTANT, content="Restored reply")
+            )
+        task = asyncio.create_task(naming_app._run_agent_task("Fix caching"))
+        await asyncio.wait_for(started.wait(), timeout=5)
+        schedule.assert_not_called()
+        release.set()
+        await task
+        if completed and not prior_response:
+            schedule.assert_called_once_with(
+                "original",
+                "provider:chat",
+                model_params={"base_url": "https://chat.example/v1"},
+            )
+        else:
+            schedule.assert_not_called()
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_auto_naming_recovers_after_partial_interruption(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch, *, cancelled: bool
+) -> None:
+    """Finalizing partial text must leave naming eligible for a successful turn."""
+    from deepagents_code.tui.textual_adapter import _stop_assistant_streams
+
+    adapter = MagicMock(
+        stream_completed=False, _sync_message_content=naming_app._sync_message_content
+    )
+    interrupted = True
+
+    async def execute(*_args: object, **_kwargs: object) -> None:
+        row = MessageData(type=MessageType.ASSISTANT, content="", is_streaming=True)
+        naming_app._message_store.append(row)
+        widget = SimpleNamespace(
+            id=row.id,
+            _content="Partial reply" if interrupted else "Done",
+            stop_stream=AsyncMock(),
+        )
+        await _stop_assistant_streams(adapter, {(): widget})
+        adapter.stream_completed = not interrupted
+        if interrupted and cancelled:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(naming_app, "_ui_adapter", adapter)
+    monkeypatch.setattr(naming_app, "_agent", MagicMock())
+    monkeypatch.setattr(naming_app, "_cleanup_agent_task", AsyncMock())
+    monkeypatch.setattr(naming_app, "_sync_session_cost_from_checkpoint", AsyncMock())
+    monkeypatch.setattr(naming_app, "_refresh_cache_timing", AsyncMock())
+    monkeypatch.setattr(
+        "deepagents_code.tui.textual_adapter.execute_task_textual", execute
+    )
+    schedule = MagicMock()
+    monkeypatch.setattr(naming_app, "_maybe_auto_name_thread", schedule)
+    async with naming_app.run_test():
+        if cancelled:
+            with pytest.raises(asyncio.CancelledError):
+                await naming_app._run_agent_task("Fix caching")
+        else:
+            await naming_app._run_agent_task("Fix caching")
+        schedule.assert_not_called()
+        interrupted = False
+        await naming_app._run_agent_task("Continue")
+        schedule.assert_called_once_with("original", "provider:chat", model_params={})
+        await naming_app._run_agent_task("Another prompt")
+        schedule.assert_called_once()
+        naming_app._lc_thread_id = "new-thread"
+        naming_app._message_store.clear()
+        await naming_app._run_agent_task("New topic")
+        assert schedule.call_count == 2
+        schedule.assert_called_with("new-thread", "provider:chat", model_params={})
+
+
+async def test_auto_naming_remains_eligible_after_goal_continuations(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Hidden goal work leaves automatic naming available for a normal prompt."""
+    adapter = MagicMock(stream_completed=True)
+    messages: list[HumanMessage | AIMessage] = []
+
+    def execute(
+        *, user_input: str, message_kwargs: dict[str, object] | None, **_kwargs: object
+    ) -> None:
+        metadata = (message_kwargs or {}).get("additional_kwargs", {})
+        assert isinstance(metadata, dict)
+        messages.extend(
+            [HumanMessage(user_input, additional_kwargs=metadata), AIMessage("Done")]
+        )
+        naming_app._message_store.append(
+            MessageData(type=MessageType.ASSISTANT, content="Done")
+        )
+
+    monkeypatch.setattr(naming_app, "_ui_adapter", adapter)
+    monkeypatch.setattr(naming_app, "_agent", MagicMock())
+    monkeypatch.setattr(naming_app, "_cleanup_agent_task", AsyncMock())
+    monkeypatch.setattr(naming_app, "_sync_session_cost_from_checkpoint", AsyncMock())
+    monkeypatch.setattr(naming_app, "_refresh_cache_timing", AsyncMock())
+    monkeypatch.setattr(naming_app, "_send_to_agent", naming_app._run_agent_task)
+    monkeypatch.setattr(
+        naming_app,
+        "_get_thread_state_values",
+        AsyncMock(return_value={"messages": messages}),
+    )
+    monkeypatch.setattr(
+        "deepagents_code.tui.textual_adapter.execute_task_textual",
+        AsyncMock(side_effect=execute),
+    )
+    generate = AsyncMock(return_value="Cache repair")
+    rename = AsyncMock(return_value=False)
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    async with naming_app.run_test():
+        await naming_app._continue_goal_work("created")
+        await naming_app._continue_goal_work("resumed")
+        await asyncio.gather(*naming_app._thread_name_tasks.values())
+        generate.assert_not_awaited()
+        rename.assert_not_awaited()
+        await naming_app._run_agent_task("Fix caching")
+        await asyncio.gather(*naming_app._thread_name_tasks.values())
+        rename.assert_awaited_once_with(
+            "original", "Cache repair", only_if_unnamed=True
+        )
+        await naming_app._run_agent_task("Another prompt")
+        await asyncio.gather(*naming_app._thread_name_tasks.values())
+        rename.assert_awaited_once()
+
+
+async def test_manual_name_cancels_pending_proposal(
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = asyncio.Event()
+
+    async def generate(*_args: object, **_kwargs: object) -> str:
+        started.set()
+        await asyncio.Event().wait()
+        return "Stale proposal"
+
+    monkeypatch.setattr("deepagents_code.thread_titles.generate_thread_name", generate)
+    rename = AsyncMock(return_value=True)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    naming_app._start_thread_name_generation(
+        "original", "provider:chat", automatic=False
+    )
+    task = naming_app._thread_name_tasks["original"]
+    await asyncio.wait_for(started.wait(), timeout=5)
+    await naming_app._handle_command("/rename My choice")
+    await asyncio.gather(task, return_exceptions=True)
+    rename.assert_awaited_once_with("original", "My choice")
+    assert task.cancelled()
+    assert naming_app._thread_name == "My choice"
+
+
+@pytest.mark.parametrize("save_pending", [False, True])
+async def test_manual_name_invalidates_proposal_awaiting_refresh(
+    naming_app: DeepAgentsApp,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    save_pending: bool,
+) -> None:
+    """A completed generation cannot reopen its dialog after a manual rename."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def save_name(_thread_id: str, _name: str) -> bool:
+        started.set()
+        await release.wait()
+        return True
+
+    rename = AsyncMock(side_effect=save_name)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    monkeypatch.setattr(
+        "deepagents_code.thread_titles.generate_thread_name",
+        AsyncMock(return_value="Stale proposal"),
+    )
+    async with naming_app.run_test() as pilot:
+        chat_screen = naming_app.screen
+        queued = MagicMock()
+        with monkeypatch.context() as generation:
+            generation.setattr(naming_app, "call_after_refresh", queued)
+            await naming_app._handle_command("/rename")
+            await asyncio.gather(*naming_app._thread_name_tasks.values())
+        callback, *args = queued.call_args.args
+        save = asyncio.create_task(naming_app._handle_command("/rename My choice"))
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            if not save_pending:
+                release.set()
+                await save
+            callback(*args)
+            await pilot.pause()
+            assert naming_app.screen is chat_screen
+            assert naming_app._pending_thread_name_proposal is None
+        finally:
+            release.set()
+            await save
+        assert naming_app._thread_name == "My choice"
+        rename.assert_awaited_once_with("original", "My choice")
 
 
 @pytest.mark.parametrize("manual_name", [False, True])
@@ -69,8 +868,9 @@ async def test_stale_load_cannot_overwrite_current_name(
     assert naming_app._thread_name == "Current name"
 
 
+@pytest.mark.parametrize("automatic", [False, True])
 async def test_rename_refreshes_open_thread_selector(
-    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch
+    naming_app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch, *, automatic: bool
 ) -> None:
     from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
 
@@ -79,7 +879,7 @@ async def test_rename_refreshes_open_thread_selector(
         "agent_name": "agent",
         "updated_at": None,
         "latest_checkpoint_id": "cp_1",
-        "thread_name": "Old name",
+        "thread_name": None if automatic else "Old name",
     }
     monkeypatch.setattr(
         "deepagents_code.sessions.list_threads",
@@ -87,6 +887,10 @@ async def test_rename_refreshes_open_thread_selector(
     )
     monkeypatch.setattr(
         ThreadSelectorScreen, "_load_available_agent_names", AsyncMock()
+    )
+    monkeypatch.setattr(
+        "deepagents_code.thread_titles.generate_thread_name",
+        AsyncMock(return_value="Cache repair"),
     )
 
     async def rename(*_args: object, **_kwargs: object) -> bool:
@@ -105,7 +909,12 @@ async def test_rename_refreshes_open_thread_selector(
         assert str(selector.query_one(name_cell, Static).render()) == (
             thread["thread_name"] or ""
         )
-        await naming_app._handle_command("/rename Cache repair")
+        if automatic:
+            await naming_app._generate_thread_name(
+                "original", "provider:chat", automatic=True
+            )
+        else:
+            await naming_app._handle_command("/rename Cache repair")
         await pilot.pause()
         assert str(selector.query_one(name_cell, Static).render()) == "Cache repair"
 

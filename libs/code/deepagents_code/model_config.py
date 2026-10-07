@@ -6119,6 +6119,12 @@ class ThreadConfig(NamedTuple):
     scope: str
     """`'cwd'` (current working directory) or `'all'` (all directories)."""
 
+    auto_rename: bool = True
+    """Generate a name after a new thread's first assistant response."""
+
+    rename_model: str = ""
+    """Model for thread naming; empty uses the selected conversation model."""
+
 
 _thread_config_cache: ThreadConfig | None = None
 
@@ -6146,6 +6152,8 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
     relative_time = True
     sort_order = "updated_at"
     scope = "cwd"
+    auto_rename = True
+    rename_model = ""
 
     try:
         data, _ = _load_effective_config_data(config_path)
@@ -6174,13 +6182,21 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
         scope_value = threads_section.get("scope")
         if scope_value in {"cwd", "all"}:
             scope = scope_value
+        auto_value = threads_section.get("auto_rename")
+        if isinstance(auto_value, bool):
+            auto_rename = auto_value
+        model_value = threads_section.get("rename_model")
+        if isinstance(model_value, str):
+            rename_model = model_value.strip()
     except (OSError, tomllib.TOMLDecodeError):
         logger.warning("Could not read thread config; using defaults", exc_info=True)
         # Do not cache on error — allow retry on next call in case the
         # file is fixed or permissions are restored.
         return ThreadConfig(columns, relative_time, sort_order, scope)
 
-    result = ThreadConfig(columns, relative_time, sort_order, scope)
+    result = ThreadConfig(
+        columns, relative_time, sort_order, scope, auto_rename, rename_model
+    )
     # The `except` above no longer fires for a bad user file on the default
     # path: `_load_effective_config_data` logs it and returns managed-only data
     # instead of raising, so that guard stopped protecting the cache. Without

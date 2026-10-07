@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (45)
+## Public (46)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -43,6 +43,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/quit` | `/q` | Exit app |
 | `/reload` |  | Reload environment and config |
 | `/remember` |  | Save useful context to memory or skills |
+| `/rename` |  | Name this thread |
 | `/restart` |  | Restart the agent server |
 | `/rubric` | `/criteria` | Set explicit acceptance criteria for rubric grading |
 | `/scrollbar` |  | Show or hide the chat scrollbar |

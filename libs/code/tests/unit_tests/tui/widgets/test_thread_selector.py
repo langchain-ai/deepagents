@@ -322,6 +322,66 @@ class TestThreadSelectorNavigateAndSelect:
     """Tests for navigating then selecting a specific thread."""
 
 
+class TestThreadNames:
+    """Named threads remain distinct from initial prompts and searchable."""
+
+    @pytest.mark.parametrize("name", [None, "Cache repair"])
+    async def test_name_and_prompt_remain_visible_at_80_columns(
+        self, name: str | None
+    ) -> None:
+        threads: list[ThreadInfo] = [
+            {**MOCK_THREADS[0], "thread_name": name},
+            {**MOCK_THREADS[1]},
+        ]
+        with _patch_list_threads(threads), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(80, 30)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                for width in (80, 160, 80):
+                    await pilot.resize_terminal(width, 30)
+                    await pilot.pause()
+                    header = app.screen.query_one(
+                        ".thread-list-header .thread-cell-thread_name", Static
+                    )
+                    assert header.display
+                    assert header.content_region.width >= len("Name")
+                    rows = app.screen.query(".thread-option")
+                    assert len(rows) == len(threads)
+                    for row in rows:
+                        cell = row.query_one(".thread-cell-thread_name", Static)
+                        assert cell.display
+                        assert cell.content_region.width >= len("Name")
+                        prompt = row.query_one(".thread-cell-initial_prompt", Static)
+                        visible = prompt.content_region.intersection(row.content_region)
+                        assert visible.width >= len("Fix")
+
+    async def test_filter_finds_name_and_renders_literal_markup(self) -> None:
+        threads: list[ThreadInfo] = [
+            {**MOCK_THREADS[0], "thread_name": "[bold]Login[/bold]"},
+            {**MOCK_THREADS[1]},
+        ]
+        with _patch_list_threads(threads), _patch_columns():
+            app = ThreadSelectorTestApp()
+            async with app.run_test(size=(160, 45)) as pilot:
+                app.show_selector()
+                await pilot.pause()
+                screen = app.screen
+                assert isinstance(screen, ThreadSelectorScreen)
+                names = screen.query(".thread-cell-thread_name").results(Static)
+                assert [str(cell.render()) for cell in names] == [
+                    "Name",
+                    "[bold]Login[/bold]",
+                    "",
+                ]
+                screen.query_one("#thread-filter", Input).value = "Login"
+                await pilot.pause()
+                await app.workers.wait_for_complete()
+                assert [t["thread_id"] for t in screen._filtered_threads] == [
+                    "abc12345"
+                ]
+
+
 class TestThreadSelectorTabSort:
     """Tests for sort toggling and focus traversal in the selector."""
 

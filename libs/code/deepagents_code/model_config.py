@@ -6092,6 +6092,7 @@ def add_disabled_project_mcp_servers(
 
 THREAD_COLUMN_DEFAULTS: dict[str, bool] = {
     "thread_id": False,
+    "thread_name": True,
     "messages": True,
     "created_at": True,
     "updated_at": True,

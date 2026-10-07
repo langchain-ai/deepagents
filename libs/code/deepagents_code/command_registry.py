@@ -242,6 +242,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         argument_hint="[task]",
     ),
     SlashCommand(
+        name="/rename",
+        description="Name this thread",
+        bypass_tier=BypassTier.SIDE_EFFECT_FREE,
+        hidden_keywords="title name",
+        argument_hint="<name>",
+    ),
+    SlashCommand(
         name="/threads",
         description="Browse and resume past threads",
         bypass_tier=BypassTier.IMMEDIATE_UI,

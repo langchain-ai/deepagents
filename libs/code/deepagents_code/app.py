@@ -3553,6 +3553,8 @@ class DeepAgentsApp(App):
 
         Named `_lc_thread_id` to avoid collision with Textual's `App._thread_id`.
         """
+        self._thread_name = ""
+        self._thread_name_revision = 0
 
         self._btw_history: dict[str, list[tuple[str, str]]] = {}
         """Completed side exchanges per thread, retained only for this app instance."""
@@ -6154,6 +6156,7 @@ class DeepAgentsApp(App):
                 )
                 if not candidate:
                     self._lc_thread_id = generate_thread_id()
+                    await self._load_thread_name()
                     self._initial_resume_requested = False
                     self._resuming = False
                     self._sync_status_connection()
@@ -6168,6 +6171,7 @@ class DeepAgentsApp(App):
             else:
                 # Thread not found — notify + fall back to new thread
                 self._lc_thread_id = generate_thread_id()
+                await self._load_thread_name()
                 self._initial_resume_requested = False
                 self._resuming = False
                 self._sync_status_connection()
@@ -6191,6 +6195,7 @@ class DeepAgentsApp(App):
                     self.exit()
                     return
                 self._lc_thread_id = generate_thread_id()
+                await self._load_thread_name()
                 self._initial_resume_requested = False
                 self._resuming = False
                 self._sync_status_connection()
@@ -6201,6 +6206,7 @@ class DeepAgentsApp(App):
             # isolation guard below) rather than falling through to the
             # resume-resolution handler.
             self._lc_thread_id = candidate
+            await self._load_thread_name()
 
             # The cwd-switch prompt doubles as the resume confirmation: at
             # launch it carries an extra "abort" option that starts a fresh
@@ -6231,6 +6237,7 @@ class DeepAgentsApp(App):
                 # User declined the resume: start a fresh session and skip the
                 # agent/model adoption below so it inherits the launch default.
                 self._lc_thread_id = generate_thread_id()
+                await self._load_thread_name()
                 self._initial_resume_requested = False
                 self._resuming = False
                 self._sync_status_connection()
@@ -6265,6 +6272,7 @@ class DeepAgentsApp(App):
         except Exception:
             logger.exception("Failed to resolve resume thread %r", resume)
             self._lc_thread_id = generate_thread_id()
+            await self._load_thread_name()
             self._initial_resume_requested = False
             self._resuming = False
             self._sync_status_connection()
@@ -13833,6 +13841,7 @@ class DeepAgentsApp(App):
             return
         if not self._lc_thread_id and self._session_state:
             self._lc_thread_id = self._session_state.thread_id
+            await self._load_thread_name()
         if not self._agent or not self._lc_thread_id:
             return
 
@@ -17578,6 +17587,7 @@ class DeepAgentsApp(App):
                 self._session_state.approval_mode_key = None
                 self._lc_thread_id = new_thread_id
                 self._release_thread(previous_thread_id)
+                await self._load_thread_name()
                 # `_rubric_model` deliberately survives `/clear`, but the
                 # grader reads its selection from thread state -- which the
                 # fresh thread does not have yet. Carry it over, and on a
@@ -17685,6 +17695,8 @@ class DeepAgentsApp(App):
             except Exception:
                 self._set_agent_running(False)
                 raise
+        elif cmd == "/rename" or cmd.startswith("/rename "):
+            await self._rename_current_thread(command.partition(" ")[2])
         elif cmd == "/threads" or cmd.startswith("/threads "):
             await self._handle_threads_command(command)
         elif cmd == "/trace":
@@ -19179,6 +19191,71 @@ class DeepAgentsApp(App):
             return
         self._server_startup_deferred_notice_shown = True
         await self._mount_message(AppMessage(_DEFERRED_START_NOTICE))
+
+    async def _load_thread_name(self) -> None:
+        """Restore a name without letting an old read replace the active name."""
+        from deepagents_code.sessions import get_thread_name
+
+        thread_id = self._lc_thread_id
+        self._thread_name_revision += 1
+        revision = self._thread_name_revision
+        self._thread_name = ""
+        try:
+            name = await get_thread_name(thread_id) if thread_id else None
+        except Exception:
+            logger.warning("Could not load thread name", exc_info=True)
+            return
+        if thread_id == self._lc_thread_id and revision == self._thread_name_revision:
+            self._thread_name = name or ""
+
+    def _refresh_thread_name_selectors(self) -> None:
+        """Refresh any open thread list after an out-of-band name change."""
+        from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+        for screen in self.screen_stack:
+            if isinstance(screen, ThreadSelectorScreen):
+                screen.refresh_threads()
+
+    async def _save_thread_name(self, thread_id: str, name: str) -> None:
+        """Save a manual name only while its originating thread is active."""
+        from deepagents_code.sessions import rename_thread
+
+        if thread_id != self._lc_thread_id or self._exiting:
+            return
+        try:
+            if not await rename_thread(thread_id, name):
+                self.notify("Send a message before naming this thread.")
+                return
+            self._refresh_thread_name_selectors()
+            if self._chat_input:
+                self._chat_input._warm_thread_cache()
+            if thread_id == self._lc_thread_id:
+                self._thread_name_revision += 1
+                self._thread_name = name
+                self.notify(f"Thread renamed: {name}", markup=False)
+        except Exception as exc:
+            logger.warning("Could not save thread name", exc_info=True)
+            self.notify(
+                f"Could not rename thread: {exc}", severity="error", markup=False
+            )
+
+    async def _rename_current_thread(self, name: str) -> None:
+        """Apply an explicit name to the active thread."""
+        from deepagents_code.sessions import validate_thread_name
+
+        thread_id = self._lc_thread_id
+        if not thread_id:
+            self.notify("Send a message before naming this thread.")
+            return
+        if not name.strip():
+            self.notify("Usage: /rename <name>")
+            return
+        try:
+            name = validate_thread_name(name)
+        except ValueError as exc:
+            self.notify(str(exc), severity="error", markup=False)
+            return
+        await self._save_thread_name(thread_id, name)
 
     def _effective_model_spec(self) -> str | None:
         """Return the `provider:model` spec in effect for the next invocation.
@@ -20757,6 +20834,7 @@ class DeepAgentsApp(App):
                 to the user, then re-raised so cancellation still propagates.
         """
         history_thread_id = thread_id or self._lc_thread_id
+        await self._load_thread_name()
         if not history_thread_id:
             logger.debug("Skipping history load: no thread ID available")
             return
@@ -25757,6 +25835,7 @@ class DeepAgentsApp(App):
                     self._session_state.thread_id = next_thread_id
                     self._session_state.approval_mode_key = None
                     self._lc_thread_id = next_thread_id
+                    await self._load_thread_name()
                     self._update_welcome_banner(
                         next_thread_id,
                         missing_message=(
@@ -25837,6 +25916,7 @@ class DeepAgentsApp(App):
                         # with the agent so recovery cannot strand either lease.
                         if abandoned_thread_id != previous_session_thread_id:
                             self._release_thread(abandoned_thread_id)
+                        await self._load_thread_name()
                         self._update_welcome_banner(
                             previous_session_thread_id,
                             missing_message=(
@@ -31135,6 +31215,7 @@ class DeepAgentsApp(App):
                 # Switch to the selected thread
                 self._session_state.thread_id = thread_id
                 self._lc_thread_id = thread_id
+                await self._load_thread_name()
 
                 self._update_welcome_banner(
                     thread_id,
@@ -31223,6 +31304,7 @@ class DeepAgentsApp(App):
 
                 if isinstance(self._agent, RemoteAgent):
                     self._agent.bind_thread_ownership(prev_session_thread)
+                await self._load_thread_name()
                 # Also restore the back-pointer. A raise after it was set (the
                 # session-start hook) would otherwise leave `previous == current`,
                 # making a later bare `/threads -r` a no-op with nowhere to step

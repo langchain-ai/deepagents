@@ -1233,6 +1233,61 @@ class TestSubAgents:
         [interrupt] = result["__interrupt__"]
         assert interrupt.value.get("type") == expected_type
 
+    def test_subagent_per_call_interrupts_resume_by_id_through_the_parent(self) -> None:
+        sent: list[str] = []
+
+        @tool
+        def send_email(to: str) -> str:
+            """Send an email."""
+            sent.append(to)
+            return f"sent to {to}"
+
+        def call(name: str, args: dict[str, Any], call_id: str) -> dict[str, Any]:
+            return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+
+        specialist: SubAgent = {
+            "name": "specialist",
+            "description": "Sends email.",
+            "system_prompt": "Send the emails.",
+            "model": GenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="", tool_calls=[call("send_email", {"to": "alice"}, "call_alice"), call("send_email", {"to": "bob"}, "call_bob")]
+                        ),
+                        AIMessage(content="Sent both."),
+                    ]
+                )
+            ),
+            "tools": [send_email],
+        }
+        parent_agent = create_deep_agent(
+            model=GenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="", tool_calls=[call("task", {"description": "Send the emails.", "subagent_type": "specialist"}, "call_task")]
+                        ),
+                        AIMessage(content="Done."),
+                    ]
+                )
+            ),
+            checkpointer=InMemorySaver(),
+            interrupt_on={"send_email": True},
+            interrupt_mode="per_call",
+            subagents=[specialist],
+        )
+        config: RunnableConfig = {"configurable": {"thread_id": str(uuid.uuid4())}}
+
+        # Each gated call in the subagent reaches the parent as its own interrupt.
+        interrupts = parent_agent.invoke({"messages": [HumanMessage(content="Email alice and bob.")]}, config)["__interrupt__"]
+        assert sorted(i.value["args"]["to"] for i in interrupts) == ["alice", "bob"]
+        assert sent == []
+
+        result = parent_agent.invoke(Command(resume={i.id: {"type": "approve"} for i in interrupts}), config)
+        assert sorted(sent) == ["alice", "bob"]
+        assert result["messages"][-1].content == "Done."
+
     def test_subagent_interrupt_on_override_disables_parent_interrupt(self) -> None:
         called = False
 

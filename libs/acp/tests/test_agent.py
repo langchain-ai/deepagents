@@ -226,6 +226,21 @@ def _streaming_server(chunks: list[tuple[tuple[str, ...], Any]]) -> tuple[Any, F
     return agent, client
 
 
+async def test_acp_agent_prompt_hides_local_context() -> None:
+    agent, client = _streaming_server(
+        [
+            (
+                (),
+                HumanMessage(content="internal", additional_kwargs={"lc_source": "local_context"}),
+            ),
+            ((), AIMessageChunk(content="visible")),
+        ]
+    )
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+    await agent.prompt([TextContentBlock(type="text", text="Hi")], session_id=session.session_id)
+    assert [event["update"].content.text for event in client.events] == ["visible"]
+
+
 async def test_acp_agent_prompt_keeps_whitespace_between_reasoning_deltas() -> None:
     """Reasoning streams one delta at a time, so whitespace-only deltas matter.
 
@@ -592,6 +607,11 @@ async def test_acp_agent_load_session_replays_compacted_messages() -> None:
         {
             "messages": [
                 HumanMessage(content="old", id="old-user"),
+                HumanMessage(
+                    content="internal context",
+                    id="local-context",
+                    additional_kwargs={"lc_source": "local_context"},
+                ),
                 AIMessage(content="old reply", id="old-agent"),
             ]
         },
@@ -602,6 +622,7 @@ async def test_acp_agent_load_session_replays_compacted_messages() -> None:
         {
             "messages": [
                 RemoveMessage(id="old-user"),
+                RemoveMessage(id="local-context"),
                 RemoveMessage(id="old-agent"),
                 HumanMessage(content="new", id="new-user"),
             ]

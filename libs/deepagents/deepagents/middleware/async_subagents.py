@@ -11,6 +11,7 @@ Compatible with LangGraph Platform (managed) and self-hosted servers.
 
 import asyncio
 import contextlib
+import html
 import json
 import logging
 import urllib.parse
@@ -602,10 +603,15 @@ def _notification_text(event: TaskEvent) -> str:
         "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
         "An async subagent task you started has an update. This is not a message from the user: "
         "don't treat it as their answer to any question.\n"
-        f"<task-notification>\n<task-id>{event['task_id']}</task-id>\n<subagent>{event['subagent']}</subagent>\n"
-        f"<status>{event['status']}</status>\n<details>{_clip(json.dumps(details, default=str))}</details>\n</task-notification>\n"
+        f"<task-notification>\n<task-id>{_escape(event['task_id'])}</task-id>\n<subagent>{_escape(event['subagent'])}</subagent>\n"
+        f"<status>{event['status']}</status>\n<details>{_escape(_clip(json.dumps(details, default=str)))}</details>\n</task-notification>\n"
         f"{next_step}"
     )
+
+
+def _escape(text: str) -> str:
+    """Escape subagent-controlled text so it can't close the notification's tags and pose as the system."""
+    return html.escape(text, quote=False)
 
 
 def _clip(text: str) -> str:
@@ -727,27 +733,35 @@ async def _aschedule_check(check: _TaskCheck | None) -> None:
         logger.warning("Failed to schedule a check on task %s", check["task_id"], exc_info=True)
 
 
-async def _awake_parent(parent_thread_id: str, assistant_id: str, event: TaskEvent) -> bool:
-    """Start a notification run on the parent's thread only while it's idle, and return whether it did.
+_Delivery = Literal["delivered", "later", "unreachable"]
+"""Whether a notification reached the parent, should be retried, or can't reach it from this deployment."""
+
+
+async def _awake_parent(parent_thread_id: str, assistant_id: str, event: TaskEvent) -> _Delivery:
+    """Start a notification run on the parent's thread only while it's idle.
 
     A new run on a thread waiting for a human would cancel that approval; `reject` covers a thread that just became busy.
+    A parent thread this deployment doesn't have is `unreachable`: it's on another deployment, or gone.
     """
     client = get_client()
     try:
         if (await client.threads.get(thread_id=parent_thread_id)).get("status") != "idle":
-            return False
+            return "later"
         await client.runs.create(
             thread_id=parent_thread_id,
             assistant_id=assistant_id,
             input={"messages": [{"role": "user", "content": _notification_text(event), _NOTIFICATION_KEY: dict(event)}]},
             multitask_strategy="reject",
         )
-    except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors; the caller retries
+    except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
         status = getattr(getattr(e, "response", None), "status_code", None)
-        log = logger.debug if status in {404, 409} else logger.warning  # other deployment / became busy
+        if status == 404:  # noqa: PLR2004  # HTTP not found
+            logger.debug("Parent thread of task %s isn't on this deployment", event["task_id"])
+            return "unreachable"
+        log = logger.debug if status == 409 else logger.warning  # noqa: PLR2004  # 409: became busy
         log("Didn't deliver the notification for task %s yet", event["task_id"], exc_info=True)
-        return False
-    return True
+        return "later"
+    return "delivered"
 
 
 async def _notify_parent(config: RunnableConfig, event: TaskEvent) -> None:
@@ -760,7 +774,8 @@ async def _notify_parent(config: RunnableConfig, event: TaskEvent) -> None:
     parent = parent_reference(config) or {}
     if "thread_id" not in parent or "assistant_id" not in parent:
         return
-    if await _awake_parent(parent["thread_id"], parent["assistant_id"], event) or "run_id" not in event:
+    # Retry only on the parent's own deployment; a parent elsewhere finds out through its own checks.
+    if await _awake_parent(parent["thread_id"], parent["assistant_id"], event) != "later" or "run_id" not in event:
         return
     check: _TaskCheck = {
         "task_id": event["task_id"],
@@ -1853,7 +1868,9 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         elif pushes and not (check.get("confirm") or "retries" in check):
             # Give the subagent's own notification a moment to arrive first.
             await _aschedule_check({**check, "pushes": pushes, "confirm": True})
-        elif (event := _check_event(task, run, thread, status)) and not await _awake_parent(check["parent_thread_id"], check["assistant_id"], event):
+        elif (event := _check_event(task, run, thread, status)) and await _awake_parent(
+            check["parent_thread_id"], check["assistant_id"], event
+        ) == "later":
             await _aschedule_check({**check, "retries": check["retries"] + 1 if "retries" in check else 0})
         return {"jump_to": "end"}
 

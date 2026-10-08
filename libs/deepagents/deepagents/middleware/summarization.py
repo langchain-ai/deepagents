@@ -71,6 +71,7 @@ import urllib.parse
 import uuid
 import warnings
 from collections.abc import Mapping
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Never, NotRequired, cast
 
@@ -1392,6 +1393,31 @@ A condensed summary follows:
         msg = "Model input still does not fit after recovery; reduce input, tools, or configured output tokens."
         raise ContextOverflowError(msg) from error
 
+    async def _asummarize_and_offload(self, backend: BackendProtocol, messages: list[AnyMessage], session_id: str) -> tuple[str | None, str]:
+        """Finish admitted history offload before propagating a summary failure."""
+        joined = asyncio.gather(
+            self._aoffload_to_backend(backend, messages, session_id),
+            self._acreate_summary(messages),
+            return_exceptions=True,
+        )
+        try:
+            file_path, summary = await asyncio.shield(joined)
+        except asyncio.CancelledError:
+            await self._finish_cancelled_summarization(joined)
+            raise
+        if isinstance(summary, BaseException):
+            raise summary
+        if isinstance(file_path, BaseException):
+            raise file_path
+        return file_path, summary
+
+    @staticmethod
+    async def _finish_cancelled_summarization(joined: asyncio.Future[tuple[str | None | BaseException, str | BaseException]]) -> None:
+        """Defer repeated cancellation until the already admitted siblings settle."""
+        while not joined.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.shield(joined)
+
     def _input_budget(self, request: ModelRequest) -> int | None:
         """Reserve configured output and 5% headroom from the advertised input limit."""
         profile = request.model.profile
@@ -1706,10 +1732,8 @@ A condensed summary follows:
 
         # Offload to backend and generate summary concurrently -- they are independent.
         # If offload fails, summarization still proceeds (with file_path=None).
-        file_path, summary = await asyncio.gather(
-            self._aoffload_to_backend(backend, offloaded_media_messages, session_id),
-            self._acreate_summary(offloaded_media_messages),
-        )
+        file_path, summary = await self._asummarize_and_offload(backend, offloaded_media_messages, session_id)
+
         if file_path is None:
             msg = "Offloading conversation history to backend failed during summarization. Older messages will not be recoverable."
             logger.error(msg)

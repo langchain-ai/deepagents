@@ -540,12 +540,13 @@ def _command(name: str, *, sender: str = OPERATOR, channel_id: str = "D1"):
     )
 
 
-async def test_command_dispatches_its_typed_equivalent(tmp_path: Path) -> None:
+@pytest.mark.parametrize("name", ["new", "tools-reload"])
+async def test_command_dispatches_its_typed_equivalent(tmp_path: Path, name: str) -> None:
     channel, gateway, messages, _ = _channel(tmp_path)
     await channel.start()
-    command, responder = _command("new")
+    command, responder = _command(name)
     await gateway.handle_command(command)
-    assert [message.text for message in messages] == ["/new"]
+    assert [message.text for message in messages] == [f"/{name}"]
     # The recording handler posts nothing, so the user still gets an answer.
     assert responder.sends == ["Done."]
 

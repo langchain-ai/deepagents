@@ -59,6 +59,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalHandler,
     ToolApprovalRequest,
 )
+from deepagents_talon.local_tools import LocalToolError, load_local_tools
 from deepagents_talon.mcp import _cancel_mcp_elicitation
 from deepagents_talon.messaging import MESSAGE_HANDLER, ProgressMessages, send_message
 from deepagents_talon.model_selection import (
@@ -76,6 +77,7 @@ from deepagents_talon.observability import (
     stable_log_ref,
 )
 from deepagents_talon.subagents import (
+    _DELEGATION_TOOLS,
     Attachment,
     LocalSubAgent,
     TaskTools,
@@ -286,6 +288,7 @@ class DeepAgentRuntime:
         model: Chat model identifier for `create_deep_agent`.
         tools: Runtime tools exposed to the agent in addition to the clock,
             web, and cron tools.
+        tools_dirs: Explicit trusted host directories imported once at startup.
         refresh_tools: Optional callback that supplies replacement runtime tools
             after an external authorization changes their availability.
         reload_tools: Optional callback that reloads runtime tools on demand.
@@ -324,6 +327,7 @@ class DeepAgentRuntime:
         *,
         model: str,
         tools: Sequence[BaseTool | Callable[..., object]] = (),
+        tools_dirs: Sequence[Path] = (),
         refresh_tools: Callable[[], Awaitable[Sequence[BaseTool | Callable[..., object]] | None]]
         | None = None,
         reload_tools: Callable[[], Awaitable[Sequence[BaseTool | Callable[..., object]]]]
@@ -362,6 +366,9 @@ class DeepAgentRuntime:
 
         self.model = model
         self.tools = tuple(tools)
+        self.tools_dirs = tuple(tools_dirs)
+        self._local_tools: tuple[BaseTool, ...] | None = None
+        self._local_tool_modules = contextlib.ExitStack()
         self.refresh_tools = refresh_tools
         self.reload_tools = reload_tools
         self.system_prompt = system_prompt
@@ -389,6 +396,7 @@ class DeepAgentRuntime:
         self._context_diagnostics: ContextDoctor | None = None
         self._attachments: list[Attachment] = []
         self._mcp_reload_failed = False
+        self._local_tools_reload_failed = False
         self._invocation_graph: contextvars.ContextVar[object | None] = contextvars.ContextVar(
             "talon_invocation_graph",
             default=None,
@@ -410,10 +418,19 @@ class DeepAgentRuntime:
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
-        self._resolved_subagents = self._resolve_subagents()
-        snapshot = self.approval_store.ensure()
-        self._graph = self._create_graph(approvals=snapshot)
-        self._active_approvals = snapshot
+        try:
+            if self._local_tools is None:
+                self._local_tools = self._local_tool_modules.enter_context(
+                    load_local_tools(self.tools_dirs)
+                )
+            self._resolved_subagents = self._resolve_subagents()
+            snapshot = self.approval_store.ensure()
+            self._graph = self._create_graph(approvals=snapshot)
+            self._active_approvals = snapshot
+        except Exception:
+            self._local_tool_modules.close()
+            self._local_tools = None
+            raise
 
     def _create_graph(
         self,
@@ -421,12 +438,13 @@ class DeepAgentRuntime:
         *,
         subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
         approvals: ApprovalSnapshot | None = None,
+        local_tools: tuple[BaseTool, ...] | None = None,
     ) -> object:
         resolved = [
             spec.copy() for spec in (self._resolved_subagents if subagents is None else subagents)
         ]
         snapshot = self._approval_snapshot(approvals)
-        tools = self._build_tools(runtime_tools)
+        tools = self._build_tools(runtime_tools, local_tools=local_tools)
         tools.extend(self.approval_store.tools(snapshot))
         interrupt_on = self._interrupt_on(snapshot)
         context_size = _context_size_from_env(self.env)
@@ -445,6 +463,7 @@ class DeepAgentRuntime:
             spec for spec in resolved if "runnable" not in spec and "graph_id" not in spec
         ]
         attachments_tools = [*FilesystemMiddleware(backend=self.backend).tools, *tools]
+        self._validate_local_tools(attachments_tools, local_tools=local_tools)
         catalog = {
             name: tool
             for name, tool in _tool_map(attachments_tools).items()
@@ -626,6 +645,8 @@ class DeepAgentRuntime:
             msg = "Background subagents did not stop; runtime resources remain open"
             raise RuntimeError(msg)
         self._graph = None
+        self._local_tool_modules.close()
+        self._local_tools = None
         cleanup = getattr(self.checkpointer, "close", None)
         if callable(cleanup):
             result = cleanup()
@@ -792,6 +813,20 @@ class DeepAgentRuntime:
                 self._mcp_reload_failed = True
                 raise
 
+    async def reload_local_tools(self) -> None:
+        """Activate freshly imported tools for later turns, retaining active generations."""
+        async with self._tools_lock:
+            try:
+                with contextlib.ExitStack() as candidate:
+                    tools = candidate.enter_context(load_local_tools(self.tools_dirs))
+                    graph = self._create_graph(local_tools=tools)
+                    self._local_tool_modules.enter_context(candidate.pop_all())
+                    self._local_tools, self._graph = tools, graph
+                    self._local_tools_reload_failed = False
+            except Exception:
+                self._local_tools_reload_failed = True
+                raise
+
     def _replace_runtime_tools(
         self,
         tools: Sequence[BaseTool | Callable[..., object]],
@@ -831,7 +866,9 @@ class DeepAgentRuntime:
             return {
                 "agents": attachments,
                 "latest_agents": self._attachments,
-                "saved_changes_inactive": changed or self._mcp_reload_failed,
+                "saved_changes_inactive": (
+                    changed or self._mcp_reload_failed or self._local_tools_reload_failed
+                ),
                 "current_turn_uses_previous_graph": attachments is not self._attachments,
                 "running_tasks": "Running turns and tasks retain their original capabilities.",
             }
@@ -931,6 +968,8 @@ class DeepAgentRuntime:
     def _build_tools(
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
+        *,
+        local_tools: tuple[BaseTool, ...] | None = None,
     ) -> list[BaseTool | Callable[..., object]]:
         tools: list[BaseTool | Callable[..., object]] = [current_time, send_message]
         if self._smart_model is not None:
@@ -944,7 +983,30 @@ class DeepAgentRuntime:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())
         tools.extend(self.tools if runtime_tools is None else runtime_tools)
+        tools.extend((self._local_tools or ()) if local_tools is None else local_tools)
         return tools
+
+    def _validate_local_tools(
+        self,
+        tools: Sequence[BaseTool | Callable[..., object]],
+        *,
+        local_tools: tuple[BaseTool, ...] | None = None,
+    ) -> None:
+        local = (self._local_tools or ()) if local_tools is None else local_tools
+        if not local:
+            return
+        reserved = _DELEGATION_TOOLS | {
+            "get_agent_tools",
+            "write_todos",
+            "compact",
+            "fetch_url",
+            "web_search",
+        }
+        other = _tool_map([item for item in tools if all(item is not value for value in local)])
+        for value in local:
+            if value.name in reserved or value.name in other:
+                msg = f"Local tool name {value.name!r} conflicts with an existing Talon tool"
+                raise LocalToolError(msg)
 
     async def _invoke_until_text(
         self,

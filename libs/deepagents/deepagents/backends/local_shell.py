@@ -257,9 +257,16 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         Returns:
             `ExecuteResponse` containing:
-                - `output`: Combined stdout and stderr (stderr lines prefixed with `[stderr]`)
+                - `output`: Combined stdout and stderr (stderr lines prefixed
+                    with `[stderr] `, or `<no output>` when both are empty)
                 - `exit_code`: Process exit code (0 for success, non-zero for failure)
                 - `truncated`: `True` if output was truncated due to size limits
+
+            The `[stderr] `, `<no output>`, truncation-notice, and `Exit code:`
+            strings in `output` are presentation only. They are in-band: a
+            command can print the same text, so they are indistinguishable from
+            markers this method added. Read `exit_code` and `truncated` rather
+            than parsing `output`.
 
         Raises:
             ValueError: If per-command timeout is not positive.
@@ -320,9 +327,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             output_parts = []
             if result.stdout:
                 output_parts.append(result.stdout)
-            if result.stderr:
-                stderr_lines = result.stderr.strip().split("\n")
-                output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
+            # A whitespace-only stderr would otherwise render as a bare
+            # `[stderr] ` line, reading as a real but empty diagnostic.
+            if stripped_stderr := result.stderr.strip():
+                output_parts.extend(f"[stderr] {line}" for line in stripped_stderr.split("\n"))
 
             output = "\n".join(output_parts) if output_parts else "<no output>"
 

@@ -312,6 +312,16 @@ def test_local_shell_backend_stderr_formatting() -> None:
         assert "error message" in result.output
 
 
+def test_local_shell_backend_whitespace_only_stderr_adds_no_marker() -> None:
+    """Whitespace-only stderr must not render as a bare `[stderr] ` diagnostic."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        result = backend.execute("printf ' ' >&2")
+
+        assert result.output == "<no output>"
+
+
 async def test_local_shell_backend_async_execute() -> None:
     """Test async execute method."""
     with tempfile.TemporaryDirectory() as tmpdir:

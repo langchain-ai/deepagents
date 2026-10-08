@@ -22,6 +22,7 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AnyMessage, SystemMessage
+from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 from langgraph.cache.base import BaseCache
 from langgraph.channels.delta import DeltaChannel
@@ -59,6 +60,7 @@ from deepagents.middleware.subagents import (
     SubAgentMiddleware,
     _is_compiled_subagent,
     _is_forked_subagent,
+    create_sub_agent,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
@@ -272,6 +274,11 @@ _REQUIRED_MIDDLEWARE_NAMES: frozenset[str] = frozenset(name for cls, aliases in 
 
 Derived from `_REQUIRED_MIDDLEWARE` and used for quick membership testing.
 """
+
+
+def _background_spec(spec: SubAgent | CompiledSubAgent, runnable: Runnable) -> AsyncSubAgent:
+    """The async subagent spec for a `background` subagent, run on the main agent's own graph."""
+    return cast("AsyncSubAgent", {"name": spec["name"], "description": spec["description"], "runnable": runnable})
 
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
@@ -684,14 +691,22 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # `extra_middleware`) isn't built and then discarded.
     inline_subagents: list[SubAgent | CompiledSubAgent] = []
     async_subagents: list[AsyncSubAgent] = []
-    for spec in subagents or []:
-        if "graph_id" in spec:
-            # Then spec is an AsyncSubAgent
-            async_subagents.append(cast("AsyncSubAgent", spec))
+    for raw_spec in subagents or []:
+        if "graph_id" in raw_spec:
+            # Then spec is an AsyncSubAgent on a separately deployed graph
+            async_subagents.append(cast("AsyncSubAgent", raw_spec))
             continue
+        spec = cast("SubAgent | CompiledSubAgent", raw_spec)
+        background = bool(spec.get("background"))
+        if background and _is_forked_subagent(spec):
+            msg = f"Subagent '{spec['name']}' can't use mode='fork' in the background: it runs on its own thread, without this conversation."
+            raise ValueError(msg)
         if _is_compiled_subagent(spec):
             # CompiledSubAgent - use as-is
-            inline_subagents.append(spec)
+            if background:
+                async_subagents.append(_background_spec(spec, spec["runnable"]))
+            else:
+                inline_subagents.append(spec)
         else:
             # Declarative subagent - fill in defaults and prepend base middleware
             is_forked = _is_forked_subagent(spec)
@@ -809,8 +824,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 processed["system_prompt"] = _apply_profile_prompt(_subagent_profile, spec.get("system_prompt", ""))
             if subagent_interrupt_on is not None:
                 processed["interrupt_on"] = subagent_interrupt_on
-            if is_forked:
-                inline_subagents.append(cast("SubAgent", processed))
+            if background:
+                # Compiled here, run on this agent's own graph per task
+                async_subagents.append(_background_spec(spec, create_sub_agent(cast("SubAgent", processed), state_schema=state_schema)))
             else:
                 inline_subagents.append(cast("SubAgent", processed))
 
@@ -820,7 +836,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # invoking factory-based `extra_middleware` whose output would be thrown
     # away.
     gp_profile = _profile.general_purpose_subagent or GeneralPurposeSubagentProfile()
-    if gp_profile.enabled is not False and not any(spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in inline_subagents):
+    if gp_profile.enabled is not False and not any(
+        spec["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for spec in [*inline_subagents, *async_subagents]
+    ):
         gp_middleware: list[AgentMiddleware[Any, Any, Any]] = [
             FilesystemMiddleware(
                 backend=backend,
@@ -883,7 +901,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         if gp_interrupt_on is not None:
             general_purpose_spec["interrupt_on"] = gp_interrupt_on
 
-        inline_subagents.insert(0, general_purpose_spec)
+        if gp_profile.background:
+            async_subagents.insert(0, _background_spec(general_purpose_spec, create_sub_agent(general_purpose_spec, state_schema=state_schema)))
+        else:
+            inline_subagents.insert(0, general_purpose_spec)
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
@@ -914,10 +935,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         ]
     )
 
+    async_subagent_middleware: AsyncSubAgentMiddleware | None = None
     if async_subagents:
         # Async here means that we run these subagents in a non-blocking manner.
         # Currently this supports agents deployed via LangSmith deployments.
-        deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents, backend=backend))
+        async_subagent_middleware = AsyncSubAgentMiddleware(async_subagents=async_subagents, backend=backend)
+        deepagent_middleware.append(async_subagent_middleware)
 
     # Names of the core stack, captured before the tail is appended so new user
     # middleware can splice in ahead of the profile/prompt-caching/memory tail.
@@ -974,6 +997,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     for middleware_instance in deepagent_middleware:
         if isinstance(middleware_instance, SubAgentMiddleware):
             middleware_instance.private_state_keys = middleware_instance.private_state_keys | private_state_keys
+    if async_subagent_middleware is not None:
+        # Inline helpers run on this graph, so they may update any of its state.
+        async_subagent_middleware.state_keys = frozenset(
+            key for schema in state_schemas for key in (*getattr(schema, "__required_keys__", ()), *getattr(schema, "__optional_keys__", ()))
+        )
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that
     # matched nothing across both is almost certainly a typo or a stale

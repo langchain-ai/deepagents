@@ -3,17 +3,21 @@
 import json
 import urllib.parse
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from langchain.tools import ToolRuntime
+from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.constants import CONFIG_KEY_CHECKPOINTER
 from langgraph.types import Command
 from langsmith import tracing_context
 from langsmith.run_helpers import get_tracing_context
 from langsmith.run_trees import RunTree
 
+from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
@@ -28,6 +32,7 @@ from deepagents.middleware.async_subagents import (
     parent_trace_context,
     with_parent_trace,
 )
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 def _make_spec(name: str = "test-agent", **overrides: Any) -> AsyncSubAgent:
@@ -1373,3 +1378,167 @@ class TestResumeTool:
 
         assert create.call_args.kwargs["command"] == {"resume": {"int_q": "yes"}}
         assert result.update["async_tasks"]["thread_abc"]["run_id"] == "run_resumed"
+
+
+def _inline_spec(**overrides: Any) -> dict[str, Any]:
+    """A background subagent, running on the main agent's own graph."""
+    return {
+        "name": "helper",
+        "description": "Long-running helper",
+        "background": True,
+        "system_prompt": "You help.",
+        "tools": [],
+        "model": GenericFakeChatModel(messages=iter([AIMessage(content="helper done")])),
+        **overrides,
+    }
+
+
+def _worker_spec() -> AsyncSubAgent:
+    worker = MagicMock()
+    worker.invoke.return_value = {"messages": [AIMessage(content="helper done", id="ai_1")]}
+    return cast("AsyncSubAgent", {"name": "helper", "description": "Long-running helper", "runnable": worker})
+
+
+class TestBackgroundSubagents:
+    def test_background_subagent_is_offered_async_only(self) -> None:
+        agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([])), subagents=[_inline_spec()])
+
+        tools = agent.nodes["tools"].bound._tools_by_name
+
+        assert "helper" in tools["start_async_task"].description
+        assert "helper" not in tools["task"].description
+
+    def test_background_general_purpose_spec_replaces_the_default(self) -> None:
+        agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([])), subagents=[_inline_spec(name="general-purpose")])
+
+        tools = agent.nodes["tools"].bound._tools_by_name
+
+        assert "general-purpose" in tools["start_async_task"].description
+        assert "task" not in tools
+
+    def test_fork_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="mode='fork'"):
+            create_deep_agent(model=GenericFakeChatModel(messages=iter([])), subagents=[_inline_spec(mode="fork")])
+
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_task_runs_on_this_agents_assistant(self, mock_get_client: MagicMock) -> None:
+        client = MagicMock()
+        client.threads.create = _async_return({"thread_id": "thread_abc"})
+        create = MagicMock(return_value={"run_id": "run_xyz"})
+        client.runs.create = lambda **kwargs: _async_return(create(**kwargs))()
+        mock_get_client.return_value = client
+        launch = _get_tool(_build_async_subagent_tools([_worker_spec()]), "start_async_task")
+
+        await launch.coroutine(description="dig in", subagent_type="helper", runtime=_parent_runtime())
+
+        kwargs = create.call_args.kwargs
+        assert kwargs["assistant_id"] == "assistant_parent"
+        configurable = kwargs["config"]["configurable"]
+        assert configurable["deepagents_worker"] == "helper"
+        assert configurable["deepagents_parent"]["thread_id"] == "thread_parent"
+
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_task_off_agent_server_is_an_error(self, mock_get_client: MagicMock) -> None:
+        client = MagicMock()
+        client.threads.create = _async_return({"thread_id": "thread_abc"})
+        mock_get_client.return_value = client
+        launch = _get_tool(_build_async_subagent_tools([_worker_spec()]), "start_async_task")
+
+        result = await launch.coroutine(description="dig in", subagent_type="helper", runtime=_make_runtime())
+
+        assert "needs an Agent Server" in result
+
+    def test_run_asking_for_a_helper_runs_it_instead(self) -> None:
+        spec = _worker_spec()
+        middleware = AsyncSubAgentMiddleware(async_subagents=[spec])
+        state = {"messages": [HumanMessage(content="dig in")]}
+
+        with patch("deepagents.middleware.async_subagents.get_config", return_value={"configurable": {"deepagents_worker": "helper"}}):
+            update = middleware.before_agent(state, MagicMock())
+
+        spec["runnable"].invoke.assert_called_once_with(state)
+        assert update == {"messages": spec["runnable"].invoke.return_value["messages"], "jump_to": "end"}
+
+    def test_helper_does_not_get_task_tracking_state(self) -> None:
+        spec = _worker_spec()
+        middleware = AsyncSubAgentMiddleware(async_subagents=[spec])
+
+        with patch("deepagents.middleware.async_subagents.get_config", return_value={"configurable": {"deepagents_worker": "helper"}}):
+            middleware.before_agent({"messages": [], "async_tasks": {"t": {}}, "files": {}}, MagicMock())
+
+        assert spec["runnable"].invoke.call_args.args[0] == {"messages": [], "files": {}}
+
+    async def test_async_run_asking_for_a_helper_runs_it_instead(self) -> None:
+        spec = _worker_spec()
+        spec["runnable"].ainvoke = MagicMock(side_effect=_async_return(spec["runnable"].invoke.return_value))
+        middleware = AsyncSubAgentMiddleware(async_subagents=[spec])
+
+        with patch("deepagents.middleware.async_subagents.get_config", return_value={"configurable": {"deepagents_worker": "helper"}}):
+            update = await middleware.abefore_agent({"messages": [HumanMessage(content="dig in")]}, MagicMock())
+
+        assert update == {"messages": spec["runnable"].invoke.return_value["messages"], "jump_to": "end"}
+
+    def test_ordinary_run_is_untouched(self) -> None:
+        middleware = AsyncSubAgentMiddleware(async_subagents=[_worker_spec()])
+
+        with patch("deepagents.middleware.async_subagents.get_config", return_value={"configurable": {}}):
+            assert middleware.before_agent({"messages": []}, MagicMock()) is None
+
+    def test_unknown_helper_is_an_error(self) -> None:
+        middleware = AsyncSubAgentMiddleware(async_subagents=[_worker_spec()])
+
+        with (
+            patch("deepagents.middleware.async_subagents.get_config", return_value={"configurable": {"deepagents_worker": "other"}}),
+            pytest.raises(ValueError, match="no background subagent"),
+        ):
+            middleware.before_agent({"messages": []}, MagicMock())
+
+    def test_main_graph_becomes_the_helper(self) -> None:
+        # The main model has no replies scripted, so calling it would fail.
+        agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([])), subagents=[_inline_spec()], checkpointer=InMemorySaver())
+
+        config = {"configurable": {"thread_id": "helper_thread", "deepagents_worker": "helper"}}
+        result = agent.invoke({"messages": [HumanMessage(content="dig in")]}, config)
+
+        assert [message.content for message in result["messages"]] == ["dig in", "helper done"]
+
+    def test_helper_keeps_its_files_between_runs(self) -> None:
+        write = {"name": "write_file", "args": {"file_path": "/report.md", "content": "draft one"}, "id": "w1"}
+        read = {"name": "read_file", "args": {"file_path": "/report.md"}, "id": "r1"}
+        model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="", tool_calls=[write]),
+                    AIMessage(content="wrote it"),
+                    AIMessage(content="", tool_calls=[read]),
+                    AIMessage(content="read it"),
+                ]
+            )
+        )
+        agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([])), subagents=[_inline_spec(model=model)], checkpointer=InMemorySaver())
+        config = {"configurable": {"thread_id": "helper_thread", "deepagents_worker": "helper"}}
+
+        agent.invoke({"messages": [HumanMessage(content="write the report")]}, config)
+        second = agent.invoke({"messages": [HumanMessage(content="read it back")]}, config)
+
+        assert "/report.md" in second["files"]
+        assert "draft one" in second["messages"][-2].content
+
+    def test_helper_can_pause_and_resume(self) -> None:
+        @tool
+        def deploy(env: str) -> str:
+            """Deploy."""
+            return f"deployed {env}"
+
+        call = {"name": "deploy", "args": {"env": "prod"}, "id": "c1"}
+        model = GenericFakeChatModel(messages=iter([AIMessage(content="", tool_calls=[call]), AIMessage(content="helper done")]))
+        spec = _inline_spec(tools=[deploy], model=model, interrupt_on={"deploy": True})
+        agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([])), subagents=[spec], checkpointer=InMemorySaver())
+        config = {"configurable": {"thread_id": "helper_thread", "deepagents_worker": "helper"}}
+
+        paused = agent.invoke({"messages": [HumanMessage(content="dig in")]}, config)
+        pending = agent.get_state(config).interrupts
+        done = agent.invoke(Command(resume={pending[0].id: {"decisions": [{"type": "approve"}]}}), config)
+
+        assert "__interrupt__" in paused
+        assert [message.content for message in done["messages"]][-2:] == ["deployed prod", "helper done"]

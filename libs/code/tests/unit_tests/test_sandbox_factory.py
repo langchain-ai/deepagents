@@ -28,6 +28,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
     from pathlib import Path
 
+    from deepagents_code.integrations.sandbox_factory import _DaytonaProvider
+
 _FACTORY = "deepagents_code.integrations.sandbox_factory"
 
 
@@ -215,7 +217,7 @@ def test_get_provider_raises_helpful_error_for_missing_optional_dependency(
 
 
 def test_create_sandbox_rejects_snapshot_name_for_other_providers() -> None:
-    """Snapshot names only apply to LangSmith and Runloop."""
+    """Snapshot names only apply to snapshot-capable providers (not Modal)."""
     provider = MagicMock()
 
     with (
@@ -234,7 +236,7 @@ def test_create_sandbox_rejects_snapshot_name_for_other_providers() -> None:
     provider.get_or_create.assert_not_called()
 
 
-@pytest.mark.parametrize("provider_name", ["langsmith", "runloop"])
+@pytest.mark.parametrize("provider_name", ["langsmith", "runloop", "daytona"])
 def test_create_sandbox_rejects_snapshot_name_with_sandbox_id(
     provider_name: str,
 ) -> None:
@@ -744,6 +746,208 @@ class TestLangSmithSnapshotResolution:
             )
 
             return _LangSmithProvider()
+
+
+class TestDaytonaSnapshotResolution:
+    """Env-var-driven snapshot resolution in `_DaytonaProvider.get_or_create`."""
+
+    @staticmethod
+    def _snapshot(name: str, state: str = "active") -> MagicMock:
+        """Mock Daytona snapshot with a name and lifecycle state."""
+        snap = MagicMock()
+        snap.name = name
+        snap.state = state
+        return snap
+
+    @staticmethod
+    def _ready_sandbox() -> MagicMock:
+        """Mock Daytona sandbox whose readiness poll succeeds immediately."""
+        sandbox = MagicMock()
+        sandbox.process.exec.return_value = MagicMock(exit_code=0)
+        return sandbox
+
+    @contextlib.contextmanager
+    def _provider(
+        self,
+        client: MagicMock,
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> Iterator[tuple[_DaytonaProvider, MagicMock, MagicMock]]:
+        """Build a `_DaytonaProvider` with the Daytona SDK fully mocked.
+
+        Yields the provider alongside the fake `daytona` module and backend so
+        tests can assert on the snapshot and sandbox-creation calls. Env vars
+        resolve through `resolve_env_var`, which the fixture backs with `env`.
+        """
+        resolved = {"DAYTONA_API_KEY": "fake", **(env or {})}
+        not_found = type("DaytonaNotFoundError", (Exception,), {})
+        fake_daytona = MagicMock()
+        fake_daytona.Daytona.return_value = client
+        fake_daytona.DaytonaNotFoundError = not_found
+        fake_daytona.CreateSandboxFromSnapshotParams.side_effect = lambda **kw: kw
+        fake_daytona.CreateSnapshotParams.side_effect = lambda **kw: kw
+        fake_backend = MagicMock()
+
+        def fake_import(module_name: str, **_: object) -> MagicMock:
+            if module_name == "daytona":
+                return fake_daytona
+            if module_name == "langchain_daytona":
+                return fake_backend
+            raise AssertionError(module_name)
+
+        from deepagents_code.integrations.sandbox_factory import _DaytonaProvider
+
+        with (
+            patch(f"{_FACTORY}._import_provider_module", side_effect=fake_import),
+            patch(
+                "deepagents_code.model_config.resolve_env_var",
+                side_effect=resolved.get,
+            ),
+        ):
+            yield _DaytonaProvider(), fake_daytona, fake_backend
+
+    def test_snapshot_id_env_wins_over_kwarg_and_skips_build(self) -> None:
+        """`DAYTONA_SANDBOX_SNAPSHOT_ID` boots as-is, skipping lookup/build."""
+        client = MagicMock()
+        client.create.return_value = self._ready_sandbox()
+
+        with self._provider(
+            client, env={"DAYTONA_SANDBOX_SNAPSHOT_ID": "snap-pinned"}
+        ) as (provider, fake_daytona, _backend):
+            provider.get_or_create(snapshot="ignored")
+
+        client.snapshot.get.assert_not_called()
+        client.snapshot.create.assert_not_called()
+        fake_daytona.CreateSandboxFromSnapshotParams.assert_called_once_with(
+            snapshot="snap-pinned"
+        )
+
+    def test_kwarg_overrides_env_name(self) -> None:
+        """An explicit `snapshot=` kwarg wins over the name env var."""
+        client = MagicMock()
+        client.snapshot.get.side_effect = lambda name: self._snapshot(name)
+        client.create.return_value = self._ready_sandbox()
+
+        with self._provider(
+            client, env={"DAYTONA_SANDBOX_SNAPSHOT_NAME": "env-name"}
+        ) as (provider, fake_daytona, _backend):
+            provider.get_or_create(snapshot="kwarg-name")
+
+        client.snapshot.get.assert_called_once_with("kwarg-name")
+        client.snapshot.create.assert_not_called()
+        fake_daytona.CreateSandboxFromSnapshotParams.assert_called_once_with(
+            snapshot="kwarg-name"
+        )
+
+    def test_env_name_used_when_no_kwarg(self) -> None:
+        """The name env var is honored when no kwarg is supplied."""
+        client = MagicMock()
+        client.snapshot.get.side_effect = lambda name: self._snapshot(name)
+        client.create.return_value = self._ready_sandbox()
+
+        with self._provider(
+            client, env={"DAYTONA_SANDBOX_SNAPSHOT_NAME": "env-name"}
+        ) as (provider, _fake_daytona, _backend):
+            provider.get_or_create()
+
+        client.snapshot.get.assert_called_once_with("env-name")
+
+    def test_missing_snapshot_triggers_build_with_defaults(self) -> None:
+        """A missing default snapshot is built from the default image."""
+        client = MagicMock()
+        client.create.return_value = self._ready_sandbox()
+
+        with self._provider(client) as (provider, fake_daytona, _backend):
+            client.snapshot.get.side_effect = fake_daytona.DaytonaNotFoundError
+            client.snapshot.create.return_value = self._snapshot("deepagents-code")
+            provider.get_or_create()
+
+        client.snapshot.get.assert_called_once_with("deepagents-code")
+        fake_daytona.CreateSnapshotParams.assert_called_once_with(
+            name="deepagents-code", image="python:3"
+        )
+        fake_daytona.CreateSandboxFromSnapshotParams.assert_called_once_with(
+            snapshot="deepagents-code"
+        )
+
+    def test_custom_image_used_when_building(self) -> None:
+        """`snapshot_image` overrides the default image on the build path."""
+        client = MagicMock()
+        client.create.return_value = self._ready_sandbox()
+
+        with self._provider(client) as (provider, fake_daytona, _backend):
+            client.snapshot.get.side_effect = fake_daytona.DaytonaNotFoundError
+            client.snapshot.create.return_value = self._snapshot("snap")
+            provider.get_or_create(snapshot="snap", snapshot_image="python:3.12-slim")
+
+        fake_daytona.CreateSnapshotParams.assert_called_once_with(
+            name="snap", image="python:3.12-slim"
+        )
+
+    def test_non_ready_snapshot_raises_without_rebuilding(self) -> None:
+        """A matching-name snapshot that is still building must not rebuild."""
+        client = MagicMock()
+
+        with self._provider(client) as (provider, _fake_daytona, _backend):
+            client.snapshot.get.side_effect = lambda name: self._snapshot(
+                name, state="building"
+            )
+            with pytest.raises(RuntimeError, match="in state 'building'"):
+                provider.get_or_create(snapshot="snap")
+
+        client.snapshot.create.assert_not_called()
+        client.create.assert_not_called()
+
+    def test_build_returning_non_active_state_raises(self) -> None:
+        """A build that settles in a failed state raises rather than booting."""
+        client = MagicMock()
+
+        with self._provider(client) as (provider, fake_daytona, _backend):
+            client.snapshot.get.side_effect = fake_daytona.DaytonaNotFoundError
+            client.snapshot.create.return_value = self._snapshot(
+                "snap", state="build_failed"
+            )
+            with pytest.raises(RuntimeError, match="finished building in state"):
+                provider.get_or_create(snapshot="snap")
+
+        client.create.assert_not_called()
+
+    def test_build_failure_is_wrapped(self) -> None:
+        """An SDK error while building surfaces as a `RuntimeError`."""
+        client = MagicMock()
+
+        with self._provider(client) as (provider, fake_daytona, _backend):
+            client.snapshot.get.side_effect = fake_daytona.DaytonaNotFoundError
+            client.snapshot.create.side_effect = RuntimeError("boom")
+            with pytest.raises(RuntimeError, match="Failed to build snapshot 'snap'"):
+                provider.get_or_create(snapshot="snap")
+
+        client.create.assert_not_called()
+
+    def test_lookup_failure_is_wrapped(self) -> None:
+        """A non-not-found lookup error surfaces as a `RuntimeError`."""
+        client = MagicMock()
+
+        with self._provider(client) as (provider, _fake_daytona, _backend):
+            client.snapshot.get.side_effect = RuntimeError("network")
+            with pytest.raises(RuntimeError, match="Failed to look up snapshot 'snap'"):
+                provider.get_or_create(snapshot="snap")
+
+        client.snapshot.create.assert_not_called()
+        client.create.assert_not_called()
+
+    def test_unknown_kwargs_are_rejected(self) -> None:
+        """Unsupported keyword arguments raise `TypeError`."""
+        client = MagicMock()
+
+        with (
+            self._provider(client) as (provider, _fake_daytona, _backend),
+            pytest.raises(TypeError, match="unsupported arguments"),
+        ):
+            provider.get_or_create(unexpected="value")
+
+        client.snapshot.get.assert_not_called()
+        client.create.assert_not_called()
 
 
 def test_setup_script_expands_workspace_environment() -> None:

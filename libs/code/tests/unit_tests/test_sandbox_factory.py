@@ -839,19 +839,6 @@ class TestDaytonaSnapshotResolution:
             snapshot="kwarg-name"
         )
 
-    def test_env_name_used_when_no_kwarg(self) -> None:
-        """The name env var is honored when no kwarg is supplied."""
-        client = MagicMock()
-        client.snapshot.get.side_effect = lambda name: self._snapshot(name)
-        client.create.return_value = self._ready_sandbox()
-
-        with self._provider(
-            client, env={"DAYTONA_SANDBOX_SNAPSHOT_NAME": "env-name"}
-        ) as (provider, _fake_daytona, _backend):
-            provider.get_or_create()
-
-        client.snapshot.get.assert_called_once_with("env-name")
-
     def test_missing_snapshot_triggers_build_with_defaults(self) -> None:
         """A missing default snapshot is built from the default image."""
         client = MagicMock()

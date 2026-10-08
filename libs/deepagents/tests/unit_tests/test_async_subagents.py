@@ -1691,6 +1691,13 @@ class TestTaskNotifications:
         (retry,) = server.checks()
         assert (retry["after_seconds"], retry["retries"], retry["run_id"]) == (60, 0, "helper_run")
 
+    async def test_lead_whose_last_run_failed_is_woken(self) -> None:
+        server = _FakeServer({"lead_thread": {"status": "error", "values": {}, "interrupts": {}}})
+
+        await _run_helper({"messages": [AIMessage(content="helper done")]}, server)
+
+        assert _woken_event(server)["status"] == "success"
+
     async def test_lead_on_another_deployment_is_left_to_its_own_checks(self) -> None:
         server = _FakeServer({"lead_thread": _MISSING})
 

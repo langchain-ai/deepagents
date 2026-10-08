@@ -737,15 +737,19 @@ _Delivery = Literal["delivered", "later", "unreachable"]
 """Whether a notification reached the parent, should be retried, or can't reach it from this deployment."""
 
 
+_DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
+"""Parent thread statuses a notification run can start on: neither running nor waiting for a human."""
+
+
 async def _awake_parent(parent_thread_id: str, assistant_id: str, event: TaskEvent) -> _Delivery:
-    """Start a notification run on the parent's thread only while it's idle.
+    """Start a notification run on the parent's thread only while it's idle (or its last run failed).
 
     A new run on a thread waiting for a human would cancel that approval; `reject` covers a thread that just became busy.
     A parent thread this deployment doesn't have is `unreachable`: it's on another deployment, or gone.
     """
     client = get_client()
     try:
-        if (await client.threads.get(thread_id=parent_thread_id)).get("status") != "idle":
+        if (await client.threads.get(thread_id=parent_thread_id)).get("status") not in _DELIVERABLE_THREAD_STATUSES:
             return "later"
         await client.runs.create(
             thread_id=parent_thread_id,

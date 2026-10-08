@@ -1614,7 +1614,7 @@ class _FakeServer:
 
 def _woken_event(server: _FakeServer) -> dict[str, Any]:
     (wake,) = server.wakes()
-    assert (wake["assistant_id"], wake["multitask_strategy"]) == ("lead_assistant", "enqueue")
+    assert (wake["assistant_id"], wake["multitask_strategy"]) == ("lead_assistant", "reject")
     message = wake["input"]["messages"][0]
     assert "NOT USER INPUT" in message["content"]
     return message["deepagents_notification"]
@@ -1681,8 +1681,9 @@ class TestTaskNotifications:
         assert isinstance(raised, RuntimeError)
         assert _woken_event(server)["error"] == "The subagent failed (RuntimeError)."
 
-    async def test_lead_waiting_on_a_human_is_left_alone_and_retried(self) -> None:
-        server = _FakeServer({"lead_thread": {"status": "interrupted", "values": {}, "interrupts": {}}})
+    @pytest.mark.parametrize("lead_status", ["busy", "interrupted"])
+    async def test_lead_not_idle_is_left_alone_and_retried(self, lead_status: str) -> None:
+        server = _FakeServer({"lead_thread": {"status": lead_status, "values": {}, "interrupts": {}}})
 
         await _run_helper({"messages": [AIMessage(content="helper done")]}, server)
 
@@ -1690,9 +1691,8 @@ class TestTaskNotifications:
         (retry,) = server.checks()
         assert (retry["after_seconds"], retry["retries"], retry["run_id"]) == (60, 0, "helper_run")
 
-    @pytest.mark.parametrize("lead_status", ["busy", "error"])
-    async def test_busy_or_failed_lead_gets_the_notification_queued(self, lead_status: str) -> None:
-        server = _FakeServer({"lead_thread": {"status": lead_status, "values": {}, "interrupts": {}}})
+    async def test_lead_whose_last_run_failed_is_woken(self) -> None:
+        server = _FakeServer({"lead_thread": {"status": "error", "values": {}, "interrupts": {}}})
 
         await _run_helper({"messages": [AIMessage(content="helper done")]}, server)
 
@@ -1858,7 +1858,7 @@ class TestTaskChecks:
         assert _checks(server) == [{"after_seconds": 30, "run_id": "run_xyz", "attempt": 0, "pushes": True, "confirm": True}]
 
     async def test_delivery_retries_back_off(self) -> None:
-        record = {**_lead_record(), "status": "interrupted"}
+        record = {**_lead_record(), "status": "busy"}
         server = _FakeServer({"lead_thread": record, "thread_abc": _child()}, {"run_id": "run_xyz", "status": "success"})
 
         await _run_check(server, _check(pushes=False, retries=3))

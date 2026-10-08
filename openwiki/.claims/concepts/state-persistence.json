@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:d5187b83f54e8e7b50960447e064339244d5bc67eef40907015a9e94c2dac4f9",
+  "pageVersion": "sha256:ed48817e5ac96431c5a2d0612bf78077ac7b2d4d26864dcd73816dfb3c2c7b49",
   "claims": [
     {
       "id": "claim_dbb0e32587994052affffb3cdb670f21",
@@ -381,10 +381,60 @@
           "version": "repo-lines-v1:sha256:3f05f596e262dbc9341324693ed2900c10a4a82a572af95640830f45dcaef9ff:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjMmFiOTA5YzFhM2ExZTRmMWVkODVmOWQ5YzkyMjI4YTVhZGFlZjRiMjE5ZWEyZWY4MjU4ZGZmYTRkNWY3MTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZGQ0ZjQzOGVhMTU2MTg5YWE2Y2VlYjQ3YzY2ODZjNzY0ZGNhZmI0NDBmMDhjZTk0MGFjMDYwZjk1YWJiNWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE2ZmI2MWZmM2UzNWUwNTI2M2M4NDhjYjkwMDYwOWFiODQ1MmYyMmE3Mzg4MjVmNzk3NDc3MjMzZDI3NzhhMTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY1ZmYxNjllNmM4NzQyMGYyZjZhNDI3MGU3YTU1ODhhMzhkNjc4M2NiM2ZmYjE1Y2JhMWE0Y2YzMjhiMWQ3YmQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_fec34445331c4ecbb061d07142f5199e",
+      "statement": "dcode title generation treats conversation content as untrusted: it sends only bounded visible human and AI text to a tool-free model with callbacks disabled, excludes internal, control, tool, and shell messages, and normalizes the response to the same safe one-line title constraints used for manual names.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/thread_titles.py#L16-L62",
+          "version": "repo-lines-v1:sha256:e856980a7c9ea6d53f2a0ccea45fdf19516a7724fba6809e0e65f9e10c987ce7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ5Y2M0NzQ5ZTVhMTIzNDUwMjc3N2UyYzZhNWI3ZjBkMzcwMjY5Mjc0NTRmYWYxYjMxNmFmM2I2MDViMTAxM2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkNjRmMTViMWM2YjliNTVmZDBmODA5NTUwMjY4Y2RlYmI4ZjdlNjYxZDdjOTgyMjUxMGE0OWMzYTQ2ODBkODciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0M2RhNDMzZmFmYzhmMjQ2ZTAyNWVjODQyNzBmNzVjZThlNWRhMDlkM2I1ZmU0YTdhYzE5NzQ4MzQ3OTE0YzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2ODE1ZmRjZjkxZDUyNWQyNjljYzkwMTdkYjhjODUyZWI4YWI2ODA0NzYzMjgzOGJjNmNiM2UzZWEyM2MyNjcifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/thread_titles.py#L98-L155",
+          "version": "repo-lines-v1:sha256:e53472a3093835c33c716972636ef40e41b10bf9dd1898b5b082f97008282d24:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwYjVkZjdjMjQwMWMxZDQ2NzJkMjA4ZDgyOThmZTc2Y2U3YzUzMDdjNmFiNTZhOWE2NTI1Y2EzNzA1NGMxOTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjYWU4MWFjOTYwN2I3MDM1ZDg5Y2IzY2M4YWQ1YmI5N2MwYTNlNzA3MTM3YTJkYWZlMzQ3ZjYwN2Y0YzhmMmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM5ZWZkOWUxNzJlNTE2NDhjYzY1N2RiZWEwNDYxM2ZiNzc5M2Q2ZjZjYmViOTIyZjE2YWVkYTZmZDRhMTlmNTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_thread_titles.py#L32-L139",
+          "version": "repo-lines-v1:sha256:deaa0c175d8f44fe86bafd5d9c6c3403c43e18397bb7265c49825c1f47076983:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlNzExMjdkZTQ4NWUxNjA5NzgwYWJjZTFiMTU4N2FkOGU3NDAyNGY3MGY3ZTEyODcyMzIzMmFjZmM2ZTUxN2FkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4OGJkMjg2NTdiZjkwNWI0NTc1MzAxNDNhNzdiYzJlN2RjNmMzMzYxNGMxZDZiMWJlZDFiMGJjMDZmMTE5NzE3IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiNmExOGEzYjBmMTRkYjRkNTZiNGRhZjBhYTI4MmE1ZDEzOTkxNjQ5NjlhZWRmODk3YWJjNmMyMjNmM2I1OWQyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5YjJjZWQ5YzQ3NDc1NDA3NjRiNjE1MWRkODAzMTc0MWNkNmE3MGZmYjhkNzQ3YTk2OTU5YzM2MWI2YjY5YzEzIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_cab75e2f815243269bf40b21d25e6231",
+      "statement": "The app runs thread-title generation asynchronously and persists an automatic result with only_if_unnamed, so a concurrently set title is retained; it also waits for model initialization to finish during cancellation before allowing the timeout or cancellation to escape.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L19361-L19486",
+          "version": "repo-lines-v1:sha256:18fb00378000b4f206bda1730092ddb75e0a6c4cc71da7181016d9e3f42a4e6a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3ZDk1NjA2ODAzN2I3YzFhM2VmYjhlMDNjNTIwOTk4NWQyMGU1ZjNkMzg0MTk1MGM1ZGZmNTQwNjAyZjhlMWFjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzYjA0MjQ1ZmE3ZDk5ZjY1NmMxNjI5ZDE2NTQ4ZWJjNDYyODk0YTZiMTVjYTUxYTE4MDhhZmI1MzkyOTQ4MzlkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0ZGEwYmVhMDU5MjMyNjliNjkzZmE3NGNhMzk1MDVlMjdkYzRmNjY1ODYwYTA5ZWRjOGEzNDBiMmUyNjJhNGQ0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmZmQ5NDkxNWIzZmQ0NjBiNGY2Y2FmZjNlOTIzMzRjYzRhYmU1OWYzMGI2OGFiMGE5MjkzZGM1OTcyNTJhNGEwIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/thread_titles.py#L65-L95",
+          "version": "repo-lines-v1:sha256:ced143a2ca84db0e4558691b10efa56dd7b6227217a00a7df4638b30de06765e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlYjc2NTdhYjg0Y2Y0MGM4MDIwNWRhOGE4YWUyODliNmJkOTI1NzY4NWU4NDI5MzcyYmYxN2QzODcxNzk2ZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzYjIyMzQzZTljNzU1OTIzM2RjNDZkY2VhNTg5OTY1OGY2Yzg2YTczMTRmYTQ2MjA5OGYyOTI4YWY2YWQzZjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcxOGM1OWYzYTdkNjBjZWQyMDY1ODE3NzFiMGQyMjJiNDEwZDYxMzdiMWFmNWQ1ZmQyNjM3ZTJiMTc0NjQ2YTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc0NTdjMGU3OGVjM2IyZDgyZmI4ZGI4ZDViZDJkYTQ1YmRmZDljMmU3ZjM3ZDAyODcyMzc0MDRiNDY0YTEyOTkifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_thread_titles.py#L164-L202",
+          "version": "repo-lines-v1:sha256:28c1ad57fcd80dda760ef0eff0dfbc98f0da025596553ce16e2d400119c1cdfb:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE4YTE2NzQ4ODNlZjVmMWE5YTI3ZGFhZTBmZjIwNjQzYThhZTUwZWYxYWEwODBkNWY5Nzk1YWVlYjYzYmJhMDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwYjUwYzZhMGQ5YzMyMTIyMTc0YzdiZGI5ZmQ3OTg3NzFiMjYyYjE1ZTdmMGVlMzM4ODVhNjliOTY3MjlhMWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMxZjVjNGU3YzlkNjA4OTRmMDMxNzg2Yzk0YmZiZDI0OTU4NjZkNTBmMjUxMTcyNjFhMmM2NjgzMGMxZmVjMjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_961fea7196da4af8a79230c0e6b0fa4a",
+      "statement": "save_thread_seed creates a local discovery checkpoint only when the thread has no existing local checkpoint, stamps agent and cwd metadata, and releases a lease it acquired if saving fails or finishes; subsequent conversation history remains owned by the connected agent.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/sessions.py#L1899-L1956",
+          "version": "repo-lines-v1:sha256:6ad287cac76ec7456e71031db5c9b9a9a6baaf74334b778e22eded174f7e65da:eyJzZWxlY3RlZExpbmVDb3VudCI6NTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwMjU2NWM1ZjY2NDcwYjU3NGFiMTFjYzY1ZmM1YjYyN2Q2YzBiNDg3NWViMTFmMzM4ZWY4NjliZDE4Y2MyYzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUxNmU4MTY4NGUzNGNiN2M3NTVjMWM0YjYyYjZiNGYyNDI2YzI3ZWE3NWU1NGMwOTYxMjhiNjg0YjY0ZWYxN2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyNmViZGMwMGRlODM3ODdhOTkwZTVlMmIzMTZjNTc4YjVjZjVlN2ZhY2JhYTk5YmZjMTY5YjhjNTBhNDc5OWEifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_sessions.py#L27-L96",
+          "version": "repo-lines-v1:sha256:7d809dab38d553ce8de85ce6221a6dc8f62a32356abb0258a9eca14fec181be9:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUwNDA2OWM4ZDNlNDg4NTBlZjc2MDE4ODE1YTIzYzU1NGU5ZDViODk5MjEyMTVkODQ3NWMwOTRiOWVmMzcxMzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhY2U0MTI0YjJiMWEwY2M3NGFkODE1YzQxNGZmYjJiMDNmYjc4OTMwMWY2M2M3OWJkZmZmZWUyMzZjZjBjODEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMyNGMyMTI3MDQ0ZGY2ZGQxNTg0MjVjZDEzMTM3NzRmNTRlMWM0NDUwODFmMGQxNjc0YTEwYzA2YWVkYWU2NmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5NTU4NDA2Yzg4ODhhMGU5N2ZkZTFlZjAyMGRmNTU1MWRiMmU5NjJhZWMyMTZmZGM1ZTlhMGYyNzE4ZDJmNDMifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-07T08:06:51.789Z"
+    "at": "2026-10-08T08:07:53.482Z"
   }
 }

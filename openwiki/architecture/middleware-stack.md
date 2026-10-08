@@ -1,7 +1,7 @@
 ---
 type: architecture pattern
-title: Middleware Stack and Ordering
-description: Exact middleware assembly, replacement, and exclusion order for Deep Agents main agents and each synchronous subagent stack. Covers the boundary between tool visibility, filesystem permissions, and human approval.
+title: Middleware Stack Assembly
+description: Exact middleware assembly, replacement, and exclusion order for Deep Agents main agents and subagent forms. Covers prompt-producing middleware, tool visibility, filesystem permissions, and human approval.
 tags: [middleware, deepagents, agent-construction, harness-profile, subagents, tool-surface]
 sources:
   - id: openwiki-source-b93533cac55718d75277d1cf
@@ -26,11 +26,11 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-07T08:06:51.789Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
+    at: 2026-10-08T08:07:53.482Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
 ---
 
-# Middleware Stack and Ordering
+# Middleware Stack Assembly
 
 `create_deep_agent()` is an assembler rather than a separate runtime. It resolves the model and its `HarnessProfile`, constructs the main and applicable synchronous-subagent stacks, then passes the main stack to LangChain `create_agent()`, which owns the model/tool loop. See [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md) and [middleware catalog](/openwiki/concepts/middleware-catalog.md).
 
@@ -76,6 +76,10 @@ The main **tail** follows in this order:
 Anthropic caching is always appended with unsupported models ignored. The optional Bedrock and Fireworks middleware likewise ignores unsupported models; a missing provider package merely omits that provider middleware, while an unrelated import error propagates. Caching precedes memory because memory changes the system prompt and should not invalidate the Anthropic cache prefix.
 
 Skills deliberately sits after profile extras and caller-added middleware, yet before caching. Thus its disclosure sees compacted history and the effective routed model; ordinary caller middleware does not see the newly generated skills prompt section. A caller entry named `SkillsMiddleware` is still a replacement for that slot.
+
+### Summarization in the core
+
+The built-in summarization member operates on the effective conversation for each model call. It may truncate large historical tool arguments; when its threshold or a recognized context-overflow error requires compaction, it offloads older history to the backend before generating a summary and records the summary event and session ID in state. An offload failure does not stop summarization, but emits a warning that the older history cannot be recovered. This is why prompt-producing middleware later in the stack sees the compacted conversation rather than the raw thread.
 
 ### Assembly passes and caller replacement
 

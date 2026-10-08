@@ -1,14 +1,12 @@
 ---
-type: runtime integration
-title: Talon Runtime Integration
-description: Operator-facing map of the experimental Talon CLI host, channels, durable checkpoints and history, MCP, sandbox execution, schedules, and per-assistant state.
+type: runtime host
+title: Talon Runtime Host
+description: Experimental local host for long-running Deep Agents channels and schedules, including durable conversation state, MCP tools, model selection, sandboxing, and channel adapters.
 tags: [talon, runtime, channels, persistence, scheduling, mcp, sandbox, security]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-03T08:05:07.881Z
+    at: 2026-10-08T08:07:53.482Z
 sources:
-  - id: openwiki-source-e2a176528c4d510dcc417820
-    resource: repo://libs/talon/CHANGELOG.md
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
   - id: openwiki-source-0ad7ce4799b63dc215741642
@@ -25,6 +23,8 @@ sources:
     resource: repo://libs/talon/deepagents_talon/config.py
   - id: openwiki-source-470e982344d3fb19aa4cd0a7
     resource: repo://libs/talon/deepagents_talon/history_backends.py
+  - id: openwiki-source-2318fb8a25701a5cdae717fe
+    resource: repo://libs/talon/deepagents_talon/history_vector_backends.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-82cac27adeecff8a900a40fa
@@ -43,10 +43,10 @@ sources:
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-fdd0c2c3830b8e9a88502a57
     resource: repo://libs/talon/README.md
-generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
 ---
 
-# Talon Runtime Integration
+# Talon Runtime Host
 
 > **Experimental, alpha software — not for production or enterprise workloads.** Talon has no production-grade complete HITL policy, channel-administrator controls, or multi-tenant boundary. An admitted sender can invoke the agent with the operator's model credentials, MCP tools, and—without a sandbox—local-host resources. A sandbox is opt-in and **does not cover MCP tools**; do not treat it as containment for channels, credentials, media, or web tools.
 
@@ -133,7 +133,7 @@ Supported inbound images become bounded multimodal data-URL blocks. An outbound 
 
 ## Models, MCP, and observability
 
-`/model` selection is per chat. An operator may select a credentialed tool-calling provider-catalog model or the default; the saved choice takes effect on the next turn and survives `/new` and restarts without changing other chats. Scheduled jobs and subagents retain their configured or startup models. `/smart-model` is separate: it controls the assistant-wide model used for approved `ask_for_help` consultations.
+`/model` selection is assistant-wide in the current host: an operator may select a credentialed tool-calling provider-catalog model or the default, and the saved choice applies on the next turn across all chats and survives `/new` and restarts. Scheduled jobs and subagents retain their configured or startup models. `/smart-model` is separate: it controls the assistant-wide model used for approved `ask_for_help` consultations.
 
 At runtime startup, `MCPToolProvider` loads MCP tools from the configured provider path (default `~/.deepagents/.mcp.json`, overridable with `DEEPAGENTS_TALON_MCP_CONFIG`) and supplies MCP-management capabilities. Use `deepagents-talon mcp config` to inspect configuration discovery and `deepagents-talon mcp login <server>` for terminal OAuth. After manual edits, `/mcp-reload` replaces tools and the graph under the runtime lock. A failed refresh leaves the prior graph usable and marks reload inactive; already-active tasks retain their original capabilities. See [MCP](./mcp.md).
 

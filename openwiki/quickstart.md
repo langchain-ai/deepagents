@@ -1,11 +1,8 @@
 ---
-type: task routing guide
-title: Repository Quickstart and Change Routing
-description: Find the owning package, lifecycle boundary, focused regression neighborhood, and companion guide for SDK, dcode, protocol hosts, partners, evals, and repository automation changes.
-tags: [deepagents, dcode, development, testing, evaluation, automation]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-07T08:06:51.789Z
+type: maintainer quickstart
+title: Deep Agents Maintainer Quickstart
+description: Route Deep Agents maintainers from repository orientation to the owning SDK, dcode, Talon, integration, workflow, operations, and testing guidance. Use this page to choose a package, lifecycle boundary, and focused validation path before changing code.
+tags: [deepagents, dcode, maintenance, development, testing, evaluation, integrations]
 sources:
   - id: openwiki-source-164e2da859b5277df81c7d94
     resource: repo://.github/workflows/ci.yml
@@ -37,60 +34,65 @@ sources:
     resource: repo://libs/DEVELOPMENT.md
   - id: openwiki-source-be7f6aa28551fac7310db803
     resource: repo://libs/evals/Makefile
-  - id: openwiki-source-f2bb883b9cbec377de535c00
-    resource: repo://libs/evals/pyproject.toml
   - id: openwiki-source-8565b7f246ed6e34051d8dfe
     resource: repo://libs/evals/README.md
   - id: openwiki-source-667fd72e0b93552f91d3888d
     resource: repo://libs/partners/AGENTS.md
   - id: openwiki-source-7da6afe7fe64c6589cf1fed0
     resource: repo://libs/README.md
-generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-08T08:07:53.482Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
 ---
 
-# Repository Quickstart and Change Routing
+# Deep Agents Maintainer Quickstart
 
-Start with the package that owns the observable behavior, then follow the lifecycle or state boundary rather than repairing a downstream symptom. This is a monorepo of independently versioned packages under `libs/`: `deepagents` is the reusable agent harness and `deepagents-code` (`dcode`) is the terminal product. ACP, Talon, evals, and provider integrations are separate packages with their own delivery and test surfaces.
+Start with the package that owns the observable behavior, then follow its runtime or persistence boundary rather than repairing a downstream symptom. This is a monorepo of independently versioned packages under `libs/`: the `deepagents` SDK is the reusable harness; `deepagents-code` (`dcode`) is the terminal product; ACP, evals, the experimental Talon host, and provider integrations have their own packages and delivery surfaces.
 
-## Choose the owning domain
+## Route the change
 
-| Change affects… | Start here | Focused validation | Read next |
-| --- | --- | --- | --- |
-| Agent construction, built-in tools, profiles, permissions, subagents, or middleware ordering | `libs/deepagents/deepagents/graph.py` | `libs/deepagents/tests/unit_tests/test_graph.py`; use the closest middleware, permissions, or subagent test too | [SDK Construction and Execution](./architecture/sdk-construction-execution.md) · [Middleware Stack and Ordering](./architecture/middleware-stack.md) |
-| dcode launch arguments, startup policy, headless mode, or ACP launch selection | `libs/code/deepagents_code/main.py` | `libs/code/tests/unit_tests/test_main.py` or `test_main_acp_mode.py` | [Run and Change a dcode Session](./workflows/run-dcode-session.md) |
-| Terminal rendering, input, screens, queue presentation, or Textual behavior | `libs/code/deepagents_code/app.py` and `tui/` | matching mounted app/widget test; use `test_textual_patches.py` for compatibility-patch behavior | [dcode Client and Agent Server](./architecture/code-agent.md) · [Testing Guide](./testing/testing-guide.md) |
-| Graph execution, tools, checkpoints, workspace runtime, or server-side hooks | `libs/code/deepagents_code/agent.py` and `server_graph.py` | `libs/code/tests/unit_tests/test_server_graph.py`, then the feature test | [dcode Client and Agent Server](./architecture/code-agent.md) |
-| Model catalog, provider configuration, credentials, retry policy, or model selection | `libs/code/deepagents_code/model_*.py` and configuration modules | `test_model_config.py`, `test_model_metadata.py`, `test_model_retry.py`, and the owning configuration test | [Models and Harness Profiles](./concepts/profiles-models.md) |
-| Thread resume or selection, SQLite records, durable names, checkpoints, ownership, or local inspection | `libs/code/deepagents_code/sessions.py`, `thread_ownership.py`, and thread UI/skill modules | `test_sessions.py`; add ownership, resume, name, selector, or inspector coverage only when that boundary changes | [State, Checkpoints, and Persistent Records](./concepts/state-persistence.md) · [Run and Change a dcode Session](./workflows/run-dcode-session.md) |
-| Slash-command names, aliases, descriptions, visibility, autocomplete metadata, or queue tier | `libs/code/deepagents_code/command_registry.py` | `test_command_registry.py`, relevant `test_app.py`, then `make commands-catalog` and `make lint` | [Run and Change a dcode Session](./workflows/run-dcode-session.md) |
-| ACP editor protocol translation or editor-facing agent sessions | `libs/acp/` | the affected test in `libs/acp/tests/` | [System Source Map](./architecture/source-map.md) |
-| Talon channels, scheduling, host lifecycle, or long-running execution | `libs/talon/` | the affected test in `libs/talon/tests/` | [Architecture Overview](./architecture/overview.md) |
-| A provider or sandbox integration | `libs/partners/<provider>/` | that package’s tests and affected factory/configuration tests | [Sandbox Provider Integrations](./integrations/sandbox-partners.md) |
-| Real-model trajectories, benchmark scores, or Harbor jobs | `libs/evals/` | deterministic eval-harness test first, then a targeted eval or Harbor run | [Testing Guide](./testing/testing-guide.md) |
-| CI path routing, release packaging, or automation | `.github/workflows/`, `.github/actions/`, or `.github/scripts/` | nearest workflow/helper contract test | [System Source Map](./architecture/source-map.md) |
+| If the change concerns… | Begin in | Then use |
+| --- | --- | --- |
+| SDK graph construction, built-in tools, backends, middleware, permissions, skills, or subagents | `libs/deepagents/` | [Build and Customize a Deep Agent](./workflows/build-a-deep-agent.md) for a safe change path; [SDK construction and execution](./architecture/sdk-construction-execution.md) and [middleware stack assembly](./architecture/middleware-stack.md) for lifecycle and ordering. |
+| dcode startup, terminal UI, model/configuration, sessions, workspace, graph execution, or commands | `libs/code/` | [Run a Deep Agents Code Session](./workflows/run-dcode-session.md); [Deep Agents Code Architecture](./architecture/code-agent.md); then the configuration, persistence, tools, or context concept pages as appropriate. |
+| Editor-facing Agent Client Protocol or dcode ACP mode | `libs/acp/` or the ACP branch in `libs/code/` | [Agent Client Protocol](./integrations/acp.md). |
+| Persistent channels, pairing/admission, schedules, or background execution | `libs/talon/` | [Talon Runtime Host](./integrations/talon.md), [Talon Channels and Admission](./concepts/talon-channel-admission.md), and [Talon Scheduling and Background Work](./concepts/talon-scheduling.md). |
+| MCP, a GitHub Action, or a provider/sandbox boundary | the owning integration package or `.github/` action files | [MCP Integration](./integrations/mcp.md), [GitHub Action Integration](./integrations/github-action.md), or [Sandbox and Partner Integrations](./integrations/sandbox-partners.md). |
+| Real-model behavior, trajectories, Harbor jobs, or benchmark scoring | `libs/evals/` | [Run and Extend Evaluations](./workflows/run-evals.md). |
+| CI selection, release wiring, package dependencies, or lockfiles | `.github/`, package `pyproject.toml`, and package `Makefile` | [Development, Dependencies, and Releases](./operations/development.md). |
+| The package is known but the owner, runtime domain, or narrowest regression test is not | the owning package's public entrypoint | [Source Map and Ownership Boundaries](./architecture/source-map.md), then [Testing Guide](./testing/testing-guide.md). |
 
-Use the [System Source Map](./architecture/source-map.md) when the package is clear but the state owner or narrowest regression neighborhood is not.
+For the package roles and dependency direction, read [Repository Architecture Overview](./architecture/overview.md). The source map is the practical next stop when a symptom crosses package, process, state, or protocol boundaries.
 
-## dcode: identify the lifecycle owner first
+## High-value ownership boundaries
 
-Both `dcode` and `deepagents-code` invoke `deepagents_code:cli_main`. The terminal client and loopback agent server are separate processes: client code owns terminal input and presentation, while the server owns graph execution, models, tools, memory, checkpoints, and backend/runtime work. Keep a fix on the side that owns the state.
+### SDK: preserve graph assembly invariants
 
-- **Threads and sessions:** treat a thread as durable state, not a transcript widget. Resume, rename, deletion, and inspection can cross SQLite metadata, LangGraph checkpoints, workspace binding, and writer ownership. Begin in `sessions.py`, then follow the state-persistence and session-workflow guides before changing a selector or modal.
-- **Model policy:** keep provider resolution, credentials, catalog metadata, retry behavior, and policy in the model/configuration lifecycle owner—not a client screen. `DEEPAGENTS_CODE_<NAME>` overrides the unprefixed environment variable even when its value is empty, which deliberately suppresses the canonical value. Start with the model/config tests named above.
-- **Commands:** `COMMANDS` is the declaration point for static slash commands. Queue-bypass sets include aliases and autocomplete entries derive from that registry; do not maintain competing app or widget metadata. Regenerate `COMMANDS.md` rather than editing the generated catalog.
-- **Textual:** `app.py` imports `_textual_patches` as an import-time side effect before an `App` is created. Put framework compatibility behavior there and protect it with behavioral Textual tests; use mounted screen/app tests for presentation, focus, bindings, and asynchronous UI lifecycle.
+`create_deep_agent` in `libs/deepagents/deepagents/graph.py` is the public construction seam. It assembles the model/profile, backend, middleware, tools, subagents, skills, memory, approval interrupts, and compiled LangGraph graph; products should configure that seam rather than duplicate its assembly.
 
-For the detailed boundary and request lifecycle, see [dcode Client and Agent Server](./architecture/code-agent.md). For session recovery, safe local thread inspection, and command behavior, see [Run and Change a dcode Session](./workflows/run-dcode-session.md).
+Middleware is an ordering contract. A caller-supplied middleware with a name already in the base stack replaces that entry in place. A new entry is placed after the core stack and before profile/prompt/memory tail behavior. Filesystem and synchronous-subagent middleware are protected: excluding either fails because they provide built-in filesystem/permission enforcement and the `task` delegation path. For stack changes, start with [Middleware Stack Assembly](./architecture/middleware-stack.md), prove the compiled-stack behavior in `libs/deepagents/tests/unit_tests/test_graph.py`, then add the subsystem regression test.
 
-## SDK middleware changes
+Use the focused concepts page for the affected extension seam:
 
-`create_deep_agent` in `graph.py` is the public graph-construction seam. It owns the default stack, profile resolution, skills and subagent assembly, permissions/approval wiring, and final graph compilation. Do not reproduce that assembly in dcode or a product host.
+- [Backends and Storage Routing](./concepts/backends.md) for filesystem, shell, state, sandbox, and store routing.
+- [Tools, Filesystem, and Permissions](./concepts/tools-filesystem.md) and [Permissions and Human Approval](./concepts/permissions-hitl.md) for executable versus model-visible capability and approval policy.
+- [Subagents and Skills](./concepts/subagents-skills.md) for delegation and pinned skill discovery.
+- [Models, Profiles, and Provider Configuration](./concepts/profiles-models.md), [Context Management](./concepts/context-management.md), and [State, Checkpoints, and Sessions](./concepts/state-persistence.md) for their respective state and lifecycle boundaries.
 
-Middleware is an ordering contract: a supplied middleware with the same name replaces the existing entry in place; a new one is placed after the core stack and before the profile and tail layers. Protected filesystem and synchronous-subagent scaffolding cannot be excluded, because they underpin file tools/permissions and the `task` delegation path. Route ordering, replacement, profile exclusion, skill, subagent, or approval changes through [Middleware Stack and Ordering](./architecture/middleware-stack.md), and prove the compiled-stack behavior in `test_graph.py` before expanding to the specific subsystem test.
+### dcode: find the client or server owner
 
-## Validate at the narrow boundary
+Both `dcode` and `deepagents-code` console scripts invoke `deepagents_code:cli_main`. dcode runs a terminal client and loopback agent server as separate processes: the client owns terminal input and presentation, while the server owns graph execution, model/tool work, checkpoints, workspace runtime selection, and server-side hooks. Keep a change on the side that owns the state; use [Deep Agents Code Architecture](./architecture/code-agent.md) before moving behavior across that boundary.
 
-Repository unit tests belong in `tests/unit_tests/` and are network-free and deterministic; networked contracts belong in `tests/integration_tests/`. Unaccepted pytest warnings fail the suite. Run commands from the package that owns the change:
+- **Startup and modes:** begin at `deepagents_code/main.py`; the session workflow distinguishes Textual, headless, and ACP execution.
+- **Presentation:** begin at `deepagents_code/app.py` and the relevant `tui/` component. `_textual_patches` is applied at import time before any Textual `App` is created, so framework compatibility belongs at that boundary and needs behavioral patch coverage.
+- **Configuration and models:** begin with `model_*.py` and configuration resolution, not a screen. `DEEPAGENTS_CODE_<NAME>` wins over an unprefixed environment variable; a present empty prefixed value deliberately suppresses the canonical variable. See [Deep Agents Code Configuration Layering](./concepts/config-layering.md) and [Models, Profiles, and Provider Configuration](./concepts/profiles-models.md).
+- **Sessions and durable state:** trace from `sessions.py`, thread ownership, and graph checkpoints. A UI selector is not the source of truth for a durable thread; consult [State, Checkpoints, and Sessions](./concepts/state-persistence.md) and [Cost Tracking and Session Operations](./operations/cost-and-sessions.md).
+- **Slash commands:** declare static commands in `command_registry.py`. `COMMANDS` is the single registry: bypass sets include aliases and autocomplete entries derive from it. Regenerate the catalog with `make commands-catalog`; `make lint` rejects generated-catalog drift.
+
+## Validate from the owning package
+
+Use `uv` for interpreters, environments, and dependencies, and use each package's `Makefile` as the source of truth for supported commands. `uv` provisions the appropriate Python interpreter automatically, so there is no global Python version to pin. Synchronize the package you changed, run `make help`, and use the narrowest test that observes the behavior.
 
 ```bash
 cd libs/code
@@ -99,17 +101,13 @@ make test TEST_FILE=tests/unit_tests/test_sessions.py
 make lint
 ```
 
-The Code package’s unit-test target disables network sockets. Its `lint` target also checks generated slash-command catalog drift, and `make check` is its broader local CI target. For Textual work, assert visible behavior with the real mounted component—rendering, focus, screen stack, or persisted UI state—rather than private handler order. The [Testing Guide](./testing/testing-guide.md) maps the current session, inspector, middleware, command, and UI regression seams.
+Repository tests must be deterministic and network-free under `tests/unit_tests/`; reserve `tests/integration_tests/` for networked integration contracts. Unaccepted pytest warnings fail the suite. The Code unit target disables network sockets, while its integration target is the intentional network boundary. For UI work, test mounted behavior—rendering, focus, bindings, screen stack, or persisted state—rather than private handler order. The [Testing Guide](./testing/testing-guide.md) selects the relevant SDK, UI, async/remote, snapshot, integration, and eval layers.
 
-## Work package-locally and validate consumers
+Sibling dependencies are local editable development sources where configured, so an SDK interface change needs validation in its consumers as well as its own package. CI detects changed packages on pull requests; its Code and Talon filters include `libs/deepagents/**` because those products consume the SDK from editable paths.
 
-Use `uv` for interpreters, environments, and dependencies; every package’s Makefile is the authority for supported commands. `uv` provisions the appropriate interpreter, so no global Python version is pinned. Install dependencies explicitly in the changed package and use `make help` there to discover its targets.
+## Evals, partners, and automation
 
-Sibling dependencies are editable. A shared SDK interface change therefore needs validation in affected consumers; Code maps the SDK, ACP, and relevant partners to local source paths, and CI includes dependent coverage when the SDK changes. CI detects changed packages on pull requests; its Code and Talon filters explicitly include `libs/deepagents/**` for this reason.
-
-## Evals, partners, and automation are separate change types
-
-`libs/evals` is a real-LLM end-to-end behavioral suite: it captures agent trajectories and scores correctness and efficiency, with Harbor support for sandboxed benchmarks. During development it resolves `deepagents`, `deepagents-code`, and QuickJS from local source paths; Harbor staging copies the checked-out packages into its sandbox project. Establish deterministic behavior first, then answer model-behavior questions with a targeted eval.
+`deepagents-evals` is an end-to-end real-LLM behavioral suite: it captures trajectories and scores correctness and efficiency, and Harbor runs sandboxed benchmarks. Its development environment resolves `deepagents`, `deepagents-code`, and QuickJS from local source paths; Harbor staging copies the checked-out packages into the sandbox project. First establish a deterministic unit-level contract, then use an evaluation to answer model-behavior questions.
 
 ```bash
 cd libs/evals
@@ -118,18 +116,15 @@ make test
 make evals MODEL=<id>
 ```
 
-`make evals` requires `MODEL` and runs `tests/evals`. Select a Harbor target for the intended sandbox environment rather than treating a local unit test as a benchmark result.
+`make evals` requires `MODEL` and runs `tests/evals`. Follow [Run and Extend Evaluations](./workflows/run-evals.md) to select a model group, extend trajectory/scoring behavior, or run Harbor rather than treating a local unit test as benchmark evidence.
 
-Partner packages are independently versioned and own their own environment, manifest, Makefile, and tests. Adding one also requires repository wiring for labels, change detection, CI, releases, and applicable Harbor/integration setup; begin with `libs/partners/AGENTS.md`. For workflow and release work, follow the existing `.github/` domain and its nearest validation rather than attaching automation behavior to a product package.
+Each partner owns its versioning, environment, manifest, Makefile, and tests. Adding a partner also requires repository wiring for CI, labels, release, and applicable Harbor or integration surfaces; begin with `libs/partners/AGENTS.md` and continue with [Sandbox and Partner Integrations](./integrations/sandbox-partners.md). For release, dependency, or CI work, use [Development, Dependencies, and Releases](./operations/development.md) rather than attaching repository automation to a product package.
 
 ## Continue by question
 
-- **What is the package and dependency direction?** [Architecture Overview](./architecture/overview.md)
-- **Where is the state owner and closest focused test?** [System Source Map](./architecture/source-map.md)
-- **How does the SDK assemble an agent?** [SDK Construction and Execution](./architecture/sdk-construction-execution.md)
-- **What middleware ordering must hold?** [Middleware Stack and Ordering](./architecture/middleware-stack.md)
-- **How do dcode client and server divide work?** [dcode Client and Agent Server](./architecture/code-agent.md)
-- **How are models and profiles selected safely?** [Models and Harness Profiles](./concepts/profiles-models.md)
-- **How are threads, names, checkpoints, and leases made durable?** [State, Checkpoints, and Persistent Records](./concepts/state-persistence.md)
-- **How do I run or change a dcode session?** [Run and Change a dcode Session](./workflows/run-dcode-session.md)
-- **Which focused regression protects this change?** [Testing Guide](./testing/testing-guide.md)
+- **How do the packages and layers fit together?** [Repository Architecture Overview](./architecture/overview.md)
+- **Where is the implementation owner and nearest test?** [Source Map and Ownership Boundaries](./architecture/source-map.md)
+- **How do I change the SDK safely?** [Build and Customize a Deep Agent](./workflows/build-a-deep-agent.md)
+- **How do I operate or change a dcode session?** [Run a Deep Agents Code Session](./workflows/run-dcode-session.md)
+- **Which test type and command should protect this?** [Testing Guide](./testing/testing-guide.md)
+- **How do package dependencies, locks, CI, and releases work?** [Development, Dependencies, and Releases](./operations/development.md)

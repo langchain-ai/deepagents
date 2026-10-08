@@ -49,9 +49,6 @@ sources:
   - id: openwiki-source-d4964daa078854bf4438d764
     resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
 generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-07T08:06:51.789Z
 ---
 
 # Permissions and Human-in-the-Loop

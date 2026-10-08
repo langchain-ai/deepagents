@@ -1,6 +1,6 @@
 ---
 type: model resolution and runtime profiles
-title: Models and Harness Profiles
+title: Models, Profiles, and Provider Configuration
 description: Describes server-owned model discovery and safe client presentation data, model construction and request-time switching, retry ownership, and prompt-cache identity state. Explains the boundaries between capability profiles, credentials, constructor settings, and persisted session metadata.
 tags: [models, model-catalog, runtime-selection, retries, prompt-cache, capability-profiles, dcode]
 sources:
@@ -30,17 +30,60 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_model_config.py
   - id: openwiki-source-c04c6318f6e59e0d1c9d6182
     resource: repo://libs/code/tests/unit_tests/test_model_retry.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
+  - id: openwiki-source-50173942904153d619b9ae0d
+    resource: repo://libs/deepagents/deepagents/_models.py
+  - id: openwiki-source-0fc0e47059e4d07e23e50be2
+    resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-b27554b5c0e5b26fae2efb38
+    resource: repo://libs/deepagents/deepagents/profiles/__init__.py
+  - id: openwiki-source-f94d6bc3bb6ebd1565c1732f
+    resource: repo://libs/deepagents/deepagents/profiles/_builtin_profiles.py
+  - id: openwiki-source-59612eea63cbfafbd628feda
+    resource: repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py
+  - id: openwiki-source-1098130d42873f13aba9f5c2
+    resource: repo://libs/deepagents/deepagents/profiles/provider/provider_profiles.py
+  - id: openwiki-source-82f3138080e1d0012e6ffb72
+    resource: repo://libs/deepagents/tests/unit_tests/test_harness_profiles.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-07T08:06:51.789Z
+    at: 2026-10-08T08:07:53.482Z
 ---
 
-# Models and Harness Profiles
+# Models, Profiles, and Provider Configuration
+
+This page covers two separate profile systems in the Deep Agents SDK, then the dcode model-selection layer that builds on provider construction. Do not use the word *profile* as if it meant one configuration object: provider profiles, harness profiles, and dcode capability profiles operate at different times and have different security boundaries.
+
+## SDK provider and harness profiles
+
+`deepagents.profiles` is a beta API with two orthogonal registries, both keyed by either `provider` or `provider:model` (only the first colon is structural, so a provider-native model identifier may itself contain colons).
+
+- A `ProviderProfile` affects **construction**. `resolve_model()` leaves an existing `BaseChatModel` untouched, but resolves a string with `init_chat_model(model, **apply_provider_profile(model))`. A profile can supply static init kwargs, a runtime kwargs factory, and a `pre_init` hook; use it for integration defaults, environment-derived options, or preflight checks.
+- A `HarnessProfile` affects the **assembled agent after its model exists**. It can replace or append prompt material, rewrite tool descriptions, hide model-visible tools, add or exclude middleware, and alter the auto-added `general-purpose` subagent. These are behavioral calibrations, not an authorization mechanism.
+
+```mermaid
+flowchart TD
+    Spec["Model string or model instance"] --> Resolve["resolve_model"]
+    Resolve --> Provider["ProviderProfile during construction"]
+    Provider --> Chat["BaseChatModel"]
+    Chat --> Select["HarnessProfile selection"]
+    Select --> Assemble["create_deep_agent assembles prompts tools and middleware"]
+    Assemble --> Agent["Compiled agent"]
+```
+
+Caption: Provider profiles shape creation; harness profiles shape the agent graph that uses the resulting model.
+
+Lookup loads built-ins and plugins lazily on first registry access. Built-ins are explicitly imported so packaging metadata cannot silently disable SDK defaults. Third parties register zero-argument entry-point hooks in `deepagents.provider_profiles` or `deepagents.harness_profiles`; their failures are warned and skipped, whereas a broken built-in aborts bootstrap. Bootstrap is coordinated across threads and runs once, preventing duplicate chained hooks or partially observed registries.
+
+Registration is additive. For a given lookup, an exact `provider:model` entry layers over the provider entry. Provider-profile kwargs merge per key; `pre_init` hooks and factories chain base first, with a later factory output winning. `apply_provider_profile()` runs the resolved hook before its factory and gives explicit caller kwargs final precedence. Harness-profile scalar prompt fields prefer an explicitly set model value; description mappings merge per key; tool and middleware exclusions union; extra middleware replaces same-type base instances in place and appends new types; and general-purpose-subagent fields merge independently.
+
+`create_deep_agent()` resolves the supplied string before choosing a harness profile. For a pre-built model it derives the identifier and provider through LangSmith parameters, tries exact candidates before provider fallback, and uses an empty profile if no key matches. The chosen profile is applied to the main agent and each declarative subagent according to that subagent's model. The prompt overlay replaces the authored base only when `base_system_prompt` is non-`None`, then appends the suffix; a caller `system_prompt` is followed by that result. Factory-form extra middleware is materialized per stack rather than shared.
+
+The declarative `HarnessProfileConfig` is the YAML/JSON-safe subset: strings, booleans, collections, and the general-purpose-subagent subprofile. Runtime `extra_middleware` cannot be serialized. Middleware exclusions may use public middleware names in config or names/classes at runtime, but required filesystem and subagent scaffolding cannot be excluded, private/empty/class-path config names are rejected, and an exclusion that matches no assembled middleware is an error. To remove the `task` tool, disable the default general-purpose subagent and provide no synchronous subagents instead of stripping `SubAgentMiddleware`.
 
 Model selection is an inference-host responsibility. The client may ask to discover or validate a model, but it does not load its own provider configuration, inspect credentials, import a provider package, or construct a model. This matters when the interactive client and the process that performs inference have different environments or workspace bindings.
 
-A **capability profile** is not a constructor configuration. It describes facts used for display and behavior—such as context capacity, supported inputs, tool calling, structured output, and reasoning output. Constructor parameters, credential values, endpoint settings, and executable custom-provider configuration remain server-side.
+A **capability profile** is not a constructor configuration or an SDK harness profile. It describes facts used for display and behavior—such as context capacity, supported inputs, tool calling, structured output, and reasoning output. Constructor parameters, credential values, endpoint settings, and executable custom-provider configuration remain server-side.
 
 ## Ownership and safe presentation projection
 

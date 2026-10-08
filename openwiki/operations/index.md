@@ -1,5 +1,5 @@
 # Files
 
-- [dcode Cost, Sessions, and Context Operations](cost-and-sessions.md) - Operate dcode's estimated model-cost reporting, discover and resume local sessions, use durable thread names and metadata safely, and inspect local state without treating it as a backup. Covers checkpoint ownership, thread-list performance, and context offload behavior.
-- [Development, Packaging, and Releases](development.md) - Package-local uv and Makefile workflows, editable sibling dependencies, lockfile policy, package compatibility ranges, and the independent release pipeline.
-- [Security Boundaries and Operational Risks](security.md) - Practical threat model and deployment safeguards for Talon channels, host execution, MCP configuration and OAuth, approvals, state, and optional sandbox routing.
+- [Cost Tracking and Session Operations](cost-and-sessions.md) - Operate dcode's checkpointed estimated-cost accounting, side-task subtotals, pricing catalog behavior, and SQLite session lifecycle. Covers cost diagnostics, safe local inspection, thread ownership, and server-side offload settlement.
+- [Development, Dependencies, and Releases](development.md) - Package-scoped uv and Make workflows, lockfile discipline, dependency-floor automation, and the release-please-to-PyPI release lifecycle for the Deep Agents monorepo.
+- [Security and Operational Boundaries](security.md) - Trust model and enforceable operational boundaries for Deep Agents and Deep Agents Code, including filesystem tools, approvals, configuration, MCP, credentials, workspaces, and untrusted inputs.

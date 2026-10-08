@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:28f13653eedcedad69304cb4e1c9b6c8897fd069e54e99dfee971e69b50ae91e",
+  "pageVersion": "sha256:2c5a0b8d0cf9314342e347739cea5f36259fee491166efacf60ed899a8d222a2",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -69,20 +69,6 @@
       ]
     },
     {
-      "id": "claim_1be436b2150a4141a688c6a2a311dfdf",
-      "statement": "During eval development, `deepagents-evals` resolves `deepagents`, `deepagents-code`, and QuickJS from local editable source paths; Harbor staging copies those checked-out packages into the sandbox project.",
-      "evidence": [
-        {
-          "resource": "repo://libs/evals/Makefile#L55-L60",
-          "version": "repo-lines-v1:sha256:3b6803986932fb3d761781389e95b508697cb0734e9eaec898e587b4e1538236:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWU4Y2JjOWQ2OTA0OThjNTFmZWEzYjc1MDFhNmU3ZGIxNjcwNzA4YmQzZDgyMzQ5YWVlMzdmMzgxNTdiM2FlZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDA2NWU4NmNkYzg2YzhlNTE1OWUxOWQ5ODY4OWE3NGU2ZGQwYWY4MzM0ZDA2Mjc2NTk0YmM1NjE2OTNiZjRjMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjcwNmM2YjIwMzA2OTJlMmRhMzIxNDlmYmUyYTFkMGVlYzAzZWFmOGM1NTI0YzZlZDgzODU0NDgyMGYxNjFjZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTU2MWFjN2MwYmFmMjBmOWMxMDNiZGY4ZmVlYjI2ZTRkMGZjMTA3MzAxNzYzNWE5ZDhmMDRhODE4MDIyMzdhOCJ9"
-        },
-        {
-          "resource": "repo://libs/evals/pyproject.toml#L138-L144",
-          "version": "repo-lines-v1:sha256:8759133432709f5a0905767e84ecc9c3ded1ac0a56389a5cf94865bdd9e9320f:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDY1NzQ2ZWY3MDVmYTYyYzg4ZGM5Y2RhNTEyM2M1YzRkOTRjNDliMjcyYWY1M2NmMjE1N2Q0MzRmMmYyMzIzMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjZmNzVhYTBlZjE5OTQwNjI1N2EzMzliZDVmYTVhODVkMTQ0ZWEwZTZmN2NjZWE2ZjE0Y2MxMDdlYzA2MmVjZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGE2N2ZjNjQxZDQ1NTI1ODk3YzE0MWUyODlhYTJhNDk0ZWYxZWExZjNmZDZkMjg5MmY3ODg3N2Q0MWJlNmM5YiJ9"
-        }
-      ]
-    },
-    {
       "id": "claim_7acd9a68557b492aa4f5a17dbbd1a814",
       "statement": "Both `dcode` and `deepagents-code` console scripts invoke `deepagents_code:cli_main`, making `main.py` the command-line entrypoint for startup and policy routing.",
       "evidence": [
@@ -106,7 +92,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/app.py",
-          "version": "repo-file-v1:sha256:7318b58d729cf339d819de53c28e549c73bbbf16f9a332d04db1f66a4c366ce0"
+          "version": "repo-file-v1:sha256:813839dc816cc14eb0ef4e1374f0039bd0eb15857224eeacdb184399a288dab7"
         },
         {
           "resource": "repo://libs/code/deepagents_code/server_graph.py",
@@ -215,6 +201,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-07T08:06:51.789Z"
+    "at": "2026-10-08T08:07:53.482Z"
   }
 }

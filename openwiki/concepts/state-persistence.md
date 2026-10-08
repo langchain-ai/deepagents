@@ -1,12 +1,14 @@
 ---
 type: persistence architecture
-title: State, Checkpoints, and Persistent Records
-description: Explains dcode's SQLite session index, durable thread names, UUID7 identifiers, local ownership fencing, and read-only inspection workflow. Distinguishes these records from workspace binding, graph state, offload and cost records, and Talon's independent persistence model.
+title: State, Checkpoints, and Sessions
+description: Explains how LangGraph checkpoints, dcode's local SQLite sessions, thread ownership fencing, durable titles, and separate graph stores relate. Covers restoration, isolation, deletion, inspection, and the distinct Talon persistence model.
 tags: [deepagents, dcode, persistence, checkpoints, sqlite, thread-ownership, recovery, thread-inspection]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-07T08:06:51.789Z
+    at: 2026-10-08T08:07:53.482Z
 sources:
+  - id: openwiki-source-fdf5afeb1dd1d11652374e88
+    resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-1f9226665e99f6f846936c59
     resource: repo://libs/code/deepagents_code/built_in_skills/deepagents-thread-inspector/scripts/inspect_sessions.py
   - id: openwiki-source-73a12d41c3ec5c3f079ed79e
@@ -19,6 +21,8 @@ sources:
     resource: repo://libs/code/deepagents_code/sessions.py
   - id: openwiki-source-91c9283d1547adfffd627c43
     resource: repo://libs/code/deepagents_code/thread_ownership.py
+  - id: openwiki-source-52062c280ae38e9e9acab191
+    resource: repo://libs/code/deepagents_code/thread_titles.py
   - id: openwiki-source-c8dacdfd6192dd22d24a9362
     resource: repo://libs/code/tests/integration_tests/test_pending_work_recovery.py
   - id: openwiki-source-140e3a9397d67359bab19562
@@ -29,6 +33,8 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_thread_ownership_transitions.py
   - id: openwiki-source-a5e918d96b1dae3f7adec3f5
     resource: repo://libs/code/tests/unit_tests/test_thread_ownership.py
+  - id: openwiki-source-53083c05d51a08d395327737
+    resource: repo://libs/code/tests/unit_tests/test_thread_titles.py
   - id: openwiki-source-822ae989625ba99d4c7cc08b
     resource: repo://libs/deepagents/deepagents/_messages_reducer.py
   - id: openwiki-source-07f9eac13e71bcbdb4e6994b
@@ -53,10 +59,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_archive_saver.py
   - id: openwiki-source-628fd919fd2bdb09579bfb16
     resource: repo://libs/talon/tests/unit_tests/test_checkpoint_backends.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
 ---
 
-# State, Checkpoints, and Persistent Records
+# State, Checkpoints, and Sessions
 
 Persistence is deliberately divided by scope and owner. A dcode session is a LangGraph thread checkpointed in local `sessions.db`; it is neither a workspace binding nor a durable record of every auxiliary subsystem. DeepAgents graph state and its file backends have their own semantics, while Talon has a separate assistant-scoped checkpoint, archive, vector, and scheduler model. Do not treat any one of these stores as a transactional backup of the others.
 
@@ -82,6 +88,10 @@ New threads receive a full UUID7 string. UUID7 is time-ordered, so newly created
 The database is LangGraph's SQLite checkpoint schema, not a hand-maintained conversation table. `list_threads()` derives one row per thread from checkpoint metadata and makes the common listing path index-only with `idx_dcode_threads_list_v2`, avoiding a scan of large serialized checkpoint blobs. The one-time index build may be slow on an existing large database, but a failure is non-fatal: listing remains correct and falls back to a slower scan. Listings can filter by agent, branch, or exact `cwd` string; a `cwd` filter excludes legacy rows with no stored path. They can sort by latest activity or by creation time, and their in-memory list, message-count, and initial-prompt caches are presentation accelerators rather than sources of truth.
 
 Names are intentionally loaded after the limited metadata query so the covering index stays compact. `dcode_thread_names` is the authoritative, durable name record. For databases predating that table, readers fall back to `thread_name` in the latest root checkpoint metadata. Renaming validates a printable, single-line trimmed name of 1–50 characters, starts an immediate SQLite transaction, requires that the thread exists, and atomically upserts the durable row; `only_if_unnamed=True` lets concurrent automatic naming select only one winner and preserves an existing generated or manual title. The latest checkpoint metadata is also updated for legacy interoperability, but later checkpoints cannot erase the durable title. Thread deletion removes the name record.
+
+### Generated titles are proposals, not state
+
+`generate_thread_name()` provides the text for an optional title; persistence still happens through `rename_thread()`. It builds a bounded input from visible human and AI messages only, excluding system, internal/control, tool, and user-shell messages, then invokes a tool-free chat model with callbacks disabled. The returned text is normalized to the same one-line, printable, 50-character limit as manual names. The app runs generation outside the message pump, charges it to the thread, and uses `only_if_unnamed=True` for automatic titles, so an automatic result cannot overwrite a title that was set while the model request was in flight. Model initialization and its cancellation cleanup are awaited before cancellation escapes, avoiding a background provider-settings mutation after a timeout.
 
 The messages channel may be a `DeltaChannel`, so the newest checkpoint need not contain an inline message list. For display, dcode reconstructs counts by replaying root-namespace `writes` in checkpoint/task/index order and excludes subgraph writes. It intentionally includes pending writes because the normal head-state read applies them; dcode does not create time-travel branches, so that full linear fold represents the visible head. Initial prompts instead come from the first messages write when possible, because partial checkpoints may omit `messages`.
 

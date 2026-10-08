@@ -59,6 +59,7 @@ jobs:
       daytona: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.daytona == 'true' }}
       modal: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.modal == 'true' }}
       runloop: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.runloop == 'true' }}
+      mainbrella: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.mainbrella == 'true' }}
       vercel: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.vercel == 'true' }}
       quickjs: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.quickjs == 'true' }}
       curated-apply-only: ${{ steps.curated-apply.outputs.only || 'false' }}
@@ -224,6 +225,13 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
+            mainbrella:
+              - 'libs/partners/mainbrella/**'
+              - 'libs/deepagents/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
             vercel:
               - 'libs/partners/vercel/**'
               - 'libs/deepagents/**'
@@ -309,6 +317,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/runloop"
+      python-version: "3.11"
+
+  lint-mainbrella:
+    name: "🧹 Lint mainbrella"
+    needs: changes
+    if: needs.changes.outputs.mainbrella == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/mainbrella"
       python-version: "3.11"
 
   lint-vercel:
@@ -401,6 +418,15 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/runloop"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+
+  test-mainbrella:
+    name: "🧪 Test mainbrella"
+    needs: changes
+    if: needs.changes.outputs.mainbrella == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/mainbrella"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
 
   test-vercel:
@@ -698,6 +724,7 @@ jobs:
       - lint-daytona
       - lint-modal
       - lint-runloop
+      - lint-mainbrella
       - lint-vercel
       - lint-quickjs
       - test-deepagents
@@ -708,6 +735,7 @@ jobs:
       - test-daytona
       - test-modal
       - test-runloop
+      - test-mainbrella
       - test-vercel
       - test-quickjs
       - test-quickjs-sdk-smoke

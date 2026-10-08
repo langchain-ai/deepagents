@@ -55,6 +55,12 @@ BUILTIN_METADATA: dict[str, SandboxProviderMetadata] = {
         # Bundled with `deepagents-code` via `langsmith[sandbox]`; no extra.
         supports_snapshot_name=True,
     ),
+    "mainbrella": SandboxProviderMetadata(
+        name="mainbrella",
+        working_dir="/workspace",
+        install=SandboxInstallHint(kind="extra", name="mainbrella"),
+        backend_module="langchain_mainbrella",
+    ),
     "modal": SandboxProviderMetadata(
         name="modal",
         working_dir="/workspace",
@@ -343,6 +349,7 @@ def _create_builtin_provider(name: str) -> SandboxProvider:
         "agentcore": sandbox_factory._AgentCoreProvider,
         "daytona": sandbox_factory._DaytonaProvider,
         "langsmith": sandbox_factory._LangSmithProvider,
+        "mainbrella": sandbox_factory._MainbrellaProvider,
         "modal": sandbox_factory._ModalProvider,
         "runloop": sandbox_factory._RunloopProvider,
         "vercel": sandbox_factory._VercelProvider,

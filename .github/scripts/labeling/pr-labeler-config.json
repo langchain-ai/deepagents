@@ -89,6 +89,7 @@
     "package:evals": "Changes related to the evaluation suite, benchmarks, and Harbor integration.",
     "package:examples": "Changes to example code or tutorials.",
     "integration:daytona": "Integration with the Daytona sandbox service.",
+    "integration:mainbrella": "Integration with the Mainbrella sandbox service.",
     "integration:modal": "Integration with the Modal sandbox service.",
     "integration:quickjs": "Integration with the QuickJS sandbox package.",
     "integration:runloop": "Integration with the Runloop sandbox service.",
@@ -112,11 +113,13 @@
     "examples": "package:examples",
     "harbor": "package:evals",
     "langchain-daytona": "integration:daytona",
+    "langchain-mainbrella": "integration:mainbrella",
     "langchain-modal": "integration:modal",
     "langchain-quickjs": "integration:quickjs",
     "langchain-runloop": "integration:runloop",
     "langchain-vercel-sandbox": "integration:vercel",
     "langsmith-sandbox": "integration:langsmith",
+    "mainbrella": "integration:mainbrella",
     "modal": "integration:modal",
     "quickjs": "integration:quickjs",
     "runloop": "integration:runloop",
@@ -175,6 +178,11 @@
     {
       "label": "integration:daytona",
       "prefix": "libs/partners/daytona/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "integration:mainbrella",
+      "prefix": "libs/partners/mainbrella/",
       "skipExcludedFiles": true
     },
     {

@@ -71,6 +71,7 @@ on:
           - "deepagents-acp"
           - "deepagents-talon"
           - "langchain-daytona"
+          - "langchain-mainbrella"
           - "langchain-modal"
           - "langchain-quickjs"
           - "langchain-runloop"

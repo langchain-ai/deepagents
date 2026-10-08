@@ -11,6 +11,7 @@ This document describes the release process for packages in the Deep Agents mono
 | `deepagents-code` | `libs/code` | `deepagents-code` | [`deepagents-code`](https://pypi.org/project/deepagents-code/) |
 | `deepagents-talon` | `libs/talon` | `deepagents-talon` | [`deepagents-talon`](https://pypi.org/project/deepagents-talon/) |
 | `langchain-daytona` | `libs/partners/daytona` | `langchain-daytona` | [`langchain-daytona`](https://pypi.org/project/langchain-daytona/) |
+| `langchain-mainbrella` | `libs/partners/mainbrella` | `langchain-mainbrella` | [`langchain-mainbrella`](https://pypi.org/project/langchain-mainbrella/) |
 | `langchain-modal` | `libs/partners/modal` | `langchain-modal` | [`langchain-modal`](https://pypi.org/project/langchain-modal/) |
 | `langchain-runloop` | `libs/partners/runloop` | `langchain-runloop` | [`langchain-runloop`](https://pypi.org/project/langchain-runloop/) |
 | `langchain-vercel-sandbox` | `libs/partners/vercel` | `langchain-vercel-sandbox` | [`langchain-vercel-sandbox`](https://pypi.org/project/langchain-vercel-sandbox/) |

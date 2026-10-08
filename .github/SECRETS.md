@@ -107,6 +107,8 @@ The sandbox permissions are temporary on this key. See [Harbor sandbox credentia
 
 This environment is intentionally uncredentialed. `.github/workflows/integration_tests.yml` retains package-scoped `secrets.*` references, but absent environment credentials resolve to empty strings.
 
+The Mainbrella package and coding-agent jobs consume `MAINBRELLA_API_KEY` when live tests are enabled. Use a dedicated paid test account, since the API key can operate all containers owned by that account. `MAINBRELLA_API_URL` is an optional Actions variable, not a credential.
+
 Will expand as needed.
 
 ### `release-bot`
@@ -137,6 +139,7 @@ The disabled step preserves package-scoped wiring so a future re-enablement has 
 | `deepagents` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `LANGSMITH_API_KEY` |
 | `langchain-quickjs` | `ANTHROPIC_API_KEY` |
 | `langchain-daytona` | `DAYTONA_API_KEY` |
+| `langchain-mainbrella` | `MAINBRELLA_API_KEY` (account-scoped container create, execute, files, and stop); optional `MAINBRELLA_API_URL` Actions variable selects the deployment |
 | `langchain-modal` | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` |
 | `langchain-runloop` | `RUNLOOP_API_KEY` |
 | `langchain-vercel-sandbox` | `VERCEL_TOKEN` plus `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID` Actions variables |

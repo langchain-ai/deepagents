@@ -141,6 +141,7 @@ jobs:
               "talon": "package:talon",
               "evals": "package:evals",
               "daytona": "integration:daytona",
+              "mainbrella": "integration:mainbrella",
               "modal": "integration:modal",
               "quickjs": "integration:quickjs",
               "runloop": "integration:runloop",

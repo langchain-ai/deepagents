@@ -50,6 +50,7 @@ body:
         - label: acp
         - label: evals
         - label: daytona
+        - label: mainbrella
         - label: modal
         - label: quickjs
         - label: runloop

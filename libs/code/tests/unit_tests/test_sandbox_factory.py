@@ -16,6 +16,7 @@ from deepagents_code.integrations.sandbox_factory import (
     _VERCEL_SANDBOX_TIMEOUT,
     _AgentCoreProvider,
     _get_provider,
+    _MainbrellaProvider,
     _ModalProvider,
     _VercelProvider,
     create_sandbox,
@@ -29,6 +30,60 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _FACTORY = "deepagents_code.integrations.sandbox_factory"
+
+
+def test_mainbrella_uses_workspace_credentials_and_creation_options() -> None:
+    """Workspace credentials and endpoint overrides reach the official client."""
+    module = MagicMock()
+    environment = {
+        "MAINBRELLA_API_KEY": "server-key",
+        "DEEPAGENTS_CODE_MAINBRELLA_API_KEY": "workspace-key",
+        "DEEPAGENTS_CODE_MAINBRELLA_API_URL": "https://api.mainbrella.dev",
+    }
+    with (
+        patch(f"{_FACTORY}._import_provider_module", return_value=module),
+        _bind_environment(environment),
+    ):
+        provider = _MainbrellaProvider()
+        backend = provider.get_or_create(size="medium", image_id="python-image")
+
+    module.MainbrellaProvider.assert_called_once_with(
+        api_key="workspace-key", base_url="https://api.mainbrella.dev"
+    )
+    module.MainbrellaProvider.return_value.get_or_create.assert_called_once_with(
+        sandbox_id=None, timeout=180, size="medium", image_id="python-image"
+    )
+    assert backend is module.MainbrellaProvider.return_value.get_or_create.return_value
+
+
+def test_mainbrella_requires_credentials() -> None:
+    """Missing credentials fail before making a client or creating a container."""
+    module = MagicMock()
+    with (
+        patch(f"{_FACTORY}._import_provider_module", return_value=module),
+        _bind_environment({}),
+        pytest.raises(ValueError, match="MAINBRELLA_API_KEY"),
+    ):
+        _MainbrellaProvider()
+    module.MainbrellaProvider.assert_not_called()
+
+
+def test_mainbrella_stale_generation_surfaces_as_sandbox_not_found() -> None:
+    """A stale Mainbrella generation follows the CLI's missing-sandbox path."""
+    from deepagents_code.integrations.sandbox_provider import SandboxNotFoundError
+
+    module = MagicMock()
+    identity = "small@2026-10-05T12:00:00.000Z"
+    module.MainbrellaProvider.return_value.get_or_create.side_effect = KeyError(
+        identity
+    )
+    with (
+        patch(f"{_FACTORY}._import_provider_module", return_value=module),
+        _bind_environment({"MAINBRELLA_API_KEY": "test-key"}),
+    ):
+        provider = _MainbrellaProvider()
+        with pytest.raises(SandboxNotFoundError, match="small@"):
+            provider.get_or_create(sandbox_id=identity)
 
 
 @contextlib.contextmanager

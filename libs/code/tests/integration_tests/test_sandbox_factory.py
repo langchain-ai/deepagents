@@ -312,6 +312,19 @@ class TestDaytonaIntegration(BaseSandboxIntegrationTest):
             yield sandbox
 
 
+@pytest.mark.skipif(
+    not os.environ.get("MAINBRELLA_API_KEY"), reason="MAINBRELLA_API_KEY is required"
+)
+class TestMainbrellaIntegration(BaseSandboxIntegrationTest):
+    """Test Mainbrella lifecycle and filesystem operations through the CLI."""
+
+    @pytest.fixture(scope="class")
+    def sandbox(self) -> Iterator[SandboxBackendProtocol]:
+        """Create and clean up a Mainbrella Python sandbox."""
+        with create_sandbox("mainbrella") as sandbox:
+            yield sandbox
+
+
 class TestModalIntegration(BaseSandboxIntegrationTest):
     """Test Modal backend integration."""
 

@@ -191,6 +191,21 @@
       "exclude-paths": [
         "libs/partners/quickjs/tests"
       ]
+    },
+    "libs/partners/mainbrella": {
+      "release-type": "python",
+      "package-name": "langchain-mainbrella",
+      "component": "langchain-mainbrella",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_mainbrella/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/mainbrella/tests"
+      ]
     }
   },
   "tag-separator": "==",

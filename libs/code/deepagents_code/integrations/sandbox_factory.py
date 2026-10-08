@@ -99,9 +99,9 @@ def create_sandbox(
 
     Args:
         provider: Sandbox provider name. Built-ins (`'agentcore'`, `'daytona'`,
-            `'langsmith'`, `'modal'`, `'runloop'`, `'vercel'`), entry-point
-            providers, and config-declared providers are all resolved through
-            the registry.
+            `'langsmith'`, `'mainbrella'`, `'modal'`, `'runloop'`, `'vercel'`),
+            entry-point providers, and config-declared providers are all
+            resolved through the registry.
         sandbox_id: Optional existing sandbox ID to reuse
         snapshot_name: Optional sandbox snapshot name to use or create.
             Honored by providers whose metadata sets `supports_snapshot_name`
@@ -666,6 +666,66 @@ class _ModalProvider(SandboxProvider):
             del_kwargs["client"] = self._client
         sandbox = self._modal.Sandbox.from_id(**del_kwargs)
         sandbox.terminate()
+
+
+class _MainbrellaProvider(SandboxProvider):
+    """Delegate container lifecycle to `langchain_mainbrella`."""
+
+    def __init__(self) -> None:
+        module = _import_provider_module(
+            "langchain_mainbrella",
+            provider="mainbrella",
+            package="langchain-mainbrella",
+        )
+        from deepagents_code.model_config import resolve_env_var
+
+        api_key = resolve_env_var("MAINBRELLA_API_KEY")
+        if not api_key:
+            msg = (
+                "No Mainbrella API key found. Set MAINBRELLA_API_KEY "
+                "or DEEPAGENTS_CODE_MAINBRELLA_API_KEY."
+            )
+            raise ValueError(msg)
+        self._provider = module.MainbrellaProvider(
+            api_key=api_key,
+            base_url=resolve_env_var("MAINBRELLA_API_URL")
+            or "https://api.mainbrella.com",
+        )
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,
+    ) -> SandboxBackendProtocol:
+        """Create or attach to an exact Mainbrella container generation.
+
+        Args:
+            sandbox_id: Existing `slot@createdAt` identity, or None to create.
+            timeout: Seconds to wait for startup.
+            **kwargs: Mainbrella creation options (`image_id`, `size`,
+                `idempotency_key`).
+
+        Returns:
+            A connected Mainbrella sandbox backend.
+
+        Raises:
+            SandboxNotFoundError: If the selected generation is not running.
+            KeyError: If creation raises an unrelated lookup error.
+        """
+        try:
+            return self._provider.get_or_create(
+                sandbox_id=sandbox_id, timeout=timeout, **kwargs
+            )
+        except KeyError as error:
+            if sandbox_id is None:
+                raise
+            raise SandboxNotFoundError(sandbox_id) from error
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # kwargs required by SandboxProvider
+        """Stop only the requested Mainbrella generation."""
+        self._provider.delete(sandbox_id=sandbox_id)
 
 
 class _RunloopProvider(SandboxProvider):

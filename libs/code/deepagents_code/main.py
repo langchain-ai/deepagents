@@ -2724,7 +2724,8 @@ def parse_args() -> argparse.Namespace:
         metavar="TYPE",
         help=(
             "Remote sandbox for code execution (default: none - local only). "
-            "Built-ins: agentcore, daytona, langsmith, modal, runloop, vercel. "
+            "Built-ins: agentcore, daytona, langsmith, mainbrella, modal, "
+            "runloop, vercel. "
             "Third-party and config-declared providers are also accepted. "
             "Pass --sandbox with no value to use [sandboxes].default from "
             "config (keep the bare form last on the command line so a "

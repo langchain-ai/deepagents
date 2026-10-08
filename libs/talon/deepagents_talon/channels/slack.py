@@ -962,11 +962,10 @@ class SlackChannel:
                 replies = await self._gateway.thread_context(
                     inbound.channel_id, inbound.thread_ts, inbound.ts
                 )
-                senders = self._exposure.operator_ids | self.config.allowed_user_ids
                 context = "\n".join(
                     f"{sender}: {text}"
                     for sender, text in replies
-                    if sender in senders and not _contains_oauth_callback(text)
+                    if not _contains_oauth_callback(text)
                 )
             except (SlackApiError, OSError, TimeoutError, ValueError):
                 logger.warning("Could not read Slack thread context", exc_info=True)

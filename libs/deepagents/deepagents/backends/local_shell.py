@@ -161,6 +161,11 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             max_output_bytes: Maximum number of bytes to capture from command output.
                 Output exceeding this limit will be truncated.
 
+                Despite the parameter name and the rendered truncation notice,
+                the current text-mode implementation measures Python characters
+                with `len()`, not encoded bytes. Multibyte output can therefore
+                exceed this many bytes.
+
                 Defaults to 100,000 bytes.
 
             env: Environment variables for shell commands.
@@ -257,9 +262,18 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         Returns:
             `ExecuteResponse` containing:
-                - `output`: Combined stdout and stderr (stderr lines prefixed with `[stderr]`)
+                - `output`: Combined stdout and stderr (stderr lines prefixed
+                    with `[stderr] `, or `<no output>` when both captured strings
+                    are empty). Whitespace-only stderr is non-empty, but its
+                    stripped payload renders as a bare `[stderr] ` line.
                 - `exit_code`: Process exit code (0 for success, non-zero for failure)
                 - `truncated`: `True` if output was truncated due to size limits
+
+            The `[stderr] `, `<no output>`, truncation-notice, and `Exit code:`
+            strings in `output` are presentation only. They are in-band: a
+            command can print the same text, so they are indistinguishable from
+            markers this method added. Read `exit_code` and `truncated` rather
+            than parsing `output`.
 
         Raises:
             ValueError: If per-command timeout is not positive.

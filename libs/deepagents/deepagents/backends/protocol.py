@@ -814,7 +814,17 @@ class ExecuteResponse:
     """
 
     output: str
-    """Combined stdout and stderr output of the executed command."""
+    """Combined stdout and stderr output of the executed command.
+
+    Backends may add presentation markers here — `LocalShellBackend` prefixes
+    stderr lines with `[stderr] ` and renders a `<no output>` placeholder for an
+    empty result. Those markers are in-band: a command whose own output contains
+    the same text is indistinguishable from one the backend marked, so do not
+    infer stream provenance or emptiness by parsing this string. Use `exit_code`
+    and `truncated` for status. This follows the same out-of-band-marker rule as
+    `ExecuteOffloadResult.preview_has_truncation_marker`: rendered text is not
+    authoritative metadata.
+    """
 
     exit_code: int | None = None
     """The process exit code.
@@ -824,7 +834,11 @@ class ExecuteResponse:
     """
 
     truncated: bool = False
-    """Whether the output was truncated due to backend limitations."""
+    """Whether the output was truncated due to backend limitations.
+
+    Authoritative, unlike any truncation notice a backend also writes into
+    `output`.
+    """
 
 
 class ExecuteArtifact(TypedDict):

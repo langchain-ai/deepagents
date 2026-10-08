@@ -116,12 +116,6 @@ class GeneralPurposeSubagentProfile:
     `None` means keep the default description.
     """
 
-    background: bool | None = None
-    """Run the default general-purpose subagent in the background (`start_async_task`) instead of with `task`.
-
-    `None` means keep the default (synchronous). See `SubAgent.background`.
-    """
-
     system_prompt: str | None = None
     """Override for the default general-purpose subagent system prompt.
 
@@ -139,6 +133,12 @@ class GeneralPurposeSubagentProfile:
         subagent so a user setting both never sees their GP override
         silently dropped. The profile's `system_prompt_suffix` still
         layers on top.
+    """
+
+    background: bool | None = None
+    """Run the default general-purpose subagent in the background (`start_async_task`) instead of with `task`.
+
+    `None` means keep the default (synchronous). See `SubAgent.background`.
     """
 
     def to_dict(self) -> dict[str, Any]:

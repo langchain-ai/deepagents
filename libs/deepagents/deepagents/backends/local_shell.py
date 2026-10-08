@@ -257,9 +257,16 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         Returns:
             `ExecuteResponse` containing:
-                - `output`: Combined stdout and stderr (stderr lines prefixed with `[stderr]`)
+                - `output`: Combined stdout and stderr (stderr lines prefixed
+                    with `[stderr] `, or `<no output>` when both are empty).
+                    These markers are presentation only and a command can emit
+                    the same text, so do not parse them.
                 - `exit_code`: Process exit code (0 for success, non-zero for failure)
-                - `truncated`: `True` if output was truncated due to size limits
+                - `truncated`: `True` if `output` was truncated due to size limits
+                - `stdout`: Retained stdout, unmarked
+                - `stderr`: Retained stderr, unmarked
+                - `stdout_truncated`: Whether `stdout` omits any stdout
+                - `stderr_truncated`: Whether `stderr` omits any stderr
 
         Raises:
             ValueError: If per-command timeout is not positive.
@@ -314,19 +321,33 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 start_new_session=(sys.platform != "win32"),
             )
 
-            # Combine stdout and stderr
+            # Capture each stream separately so stream provenance is available
+            # out of band, independent of how `output` is rendered below. stdout
+            # claims the budget first; stderr gets what is left. The original
+            # interleaving is not recoverable from `capture_output`, so no
+            # attempt is made to reconstruct it.
+            stdout = result.stdout[: self._max_output_bytes]
+            stdout_truncated = len(stdout) < len(result.stdout)
+            stderr = result.stderr[: self._max_output_bytes - len(stdout)]
+            stderr_truncated = len(stderr) < len(result.stderr)
+
+            # Combine stdout and stderr.
             # Prefix each stderr line with [stderr] for clear attribution.
             # Example: "hello\n[stderr] error: file not found"  # noqa: ERA001
+            # These markers are presentation only; see the `output` field on
+            # `ExecuteResponse` for why they must not be parsed.
             output_parts = []
             if result.stdout:
                 output_parts.append(result.stdout)
-            if result.stderr:
-                stderr_lines = result.stderr.strip().split("\n")
-                output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
+            # A whitespace-only stderr would otherwise render as a bare
+            # `[stderr] ` line, reading as a real but empty diagnostic.
+            if stripped_stderr := result.stderr.strip():
+                output_parts.extend(f"[stderr] {line}" for line in stripped_stderr.split("\n"))
 
             output = "\n".join(output_parts) if output_parts else "<no output>"
 
-            # Check for truncation
+            # `output` carries the `[stderr] ` prefixes, so it is capped on the
+            # rendered string rather than derived from the capped streams above.
             truncated = False
             if len(output) > self._max_output_bytes:
                 output = output[: self._max_output_bytes]
@@ -341,6 +362,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 output=output,
                 exit_code=result.returncode,
                 truncated=truncated,
+                stdout=stdout,
+                stderr=stderr,
+                stdout_truncated=stdout_truncated,
+                stderr_truncated=stderr_truncated,
             )
 
         except subprocess.TimeoutExpired:

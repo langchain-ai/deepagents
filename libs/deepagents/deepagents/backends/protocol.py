@@ -9,7 +9,7 @@ import abc
 import asyncio
 import inspect
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache, partial
 from typing import Final, Literal, NotRequired
 
@@ -810,11 +810,22 @@ class BackendProtocol(abc.ABC):  # noqa: B024
 class ExecuteResponse:
     """Result of code execution.
 
-    Simplified schema optimized for LLM consumption.
+    Simplified schema optimized for LLM consumption. Backends that can
+    distinguish stdout and stderr should populate both stream fields. A value
+    of `None` means the backend cannot provide that stream separately, while an
+    empty string means the stream produced no output.
     """
 
     output: str
-    """Combined stdout and stderr output of the executed command."""
+    """Combined, model-facing output of the executed command.
+
+    Backends may add presentation markers here — `LocalShellBackend` prefixes
+    stderr lines with `[stderr] ` and renders a `<no output>` placeholder for an
+    empty result. Those markers are in-band: a command whose own output contains
+    the same text is indistinguishable from one the backend marked. Never infer
+    stream provenance, emptiness, or truncation by parsing this string; read
+    `stdout`, `stderr`, and the `*_truncated` flags instead.
+    """
 
     exit_code: int | None = None
     """The process exit code.
@@ -824,7 +835,32 @@ class ExecuteResponse:
     """
 
     truncated: bool = False
-    """Whether the output was truncated due to backend limitations."""
+    """Whether `output` was truncated due to backend limitations.
+
+    Scoped to the rendered `output` string. A backend whose `output` carries
+    per-line markers caps it independently of the raw streams, so this can
+    differ from `stdout_truncated` / `stderr_truncated`.
+    """
+
+    stdout: str | None = field(default=None, kw_only=True)
+    """Retained stdout, without presentation markers.
+
+    `None` when the backend cannot separate the streams; an empty string means
+    the stream produced no output.
+    """
+
+    stderr: str | None = field(default=None, kw_only=True)
+    """Retained stderr, without presentation markers.
+
+    `None` when the backend cannot separate the streams; an empty string means
+    the stream produced no output.
+    """
+
+    stdout_truncated: bool = field(default=False, kw_only=True)
+    """Whether `stdout` omits any of the command's stdout."""
+
+    stderr_truncated: bool = field(default=False, kw_only=True)
+    """Whether `stderr` omits any of the command's stderr."""
 
 
 class ExecuteArtifact(TypedDict):

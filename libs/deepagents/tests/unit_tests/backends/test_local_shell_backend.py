@@ -65,6 +65,10 @@ def test_local_shell_backend_execute_simple_command() -> None:
         assert result.exit_code == 0
         assert "Hello World" in result.output
         assert result.truncated is False
+        assert result.stdout == "Hello World\n"
+        assert result.stderr == ""
+        assert result.stdout_truncated is False
+        assert result.stderr_truncated is False
 
 
 def test_local_shell_backend_cannot_open_parent_controlling_terminal(tmp_path: Path) -> None:
@@ -84,6 +88,9 @@ def test_local_shell_backend_execute_with_error() -> None:
         assert result.exit_code != 0
         assert "[stderr]" in result.output
         assert "Exit code:" in result.output
+        assert result.stdout == ""
+        assert result.stderr is not None
+        assert "nonexistent_file.txt" in result.stderr
 
 
 def test_local_shell_backend_execute_in_working_directory() -> None:
@@ -111,6 +118,8 @@ def test_local_shell_backend_execute_empty_command() -> None:
 
         assert result.exit_code == 1
         assert "must be a non-empty string" in result.output
+        assert result.stdout is None
+        assert result.stderr is None
 
 
 def test_local_shell_backend_execute_timeout() -> None:
@@ -136,6 +145,93 @@ def test_local_shell_backend_execute_output_truncation() -> None:
         assert result.truncated is True
         assert "Output truncated" in result.output
         assert len(result.output) <= 150  # Some buffer for truncation message
+        assert result.stdout_truncated is True
+        assert result.stderr_truncated is False
+
+
+def test_local_shell_backend_distinguishes_stdout_from_stderr() -> None:
+    """Structured streams disambiguate stdout that resembles the legacy stderr marker."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        stdout_result = backend.execute("printf '[stderr] same'")
+        stderr_result = backend.execute("printf 'same' >&2")
+
+        assert stdout_result.output == stderr_result.output == "[stderr] same"
+        assert stdout_result.stdout == "[stderr] same"
+        assert stdout_result.stderr == ""
+        assert stderr_result.stdout == ""
+        assert stderr_result.stderr == "same"
+
+
+def test_local_shell_backend_distinguishes_empty_from_literal_no_output() -> None:
+    """Structured streams distinguish empty output from the legacy display sentinel."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        empty_result = backend.execute(":")
+        literal_result = backend.execute("printf '<no output>'")
+
+        assert empty_result.output == literal_result.output == "<no output>"
+        assert empty_result.stdout == ""
+        assert empty_result.stderr == ""
+        assert literal_result.stdout == "<no output>"
+        assert literal_result.stderr == ""
+
+
+def test_local_shell_backend_whitespace_only_stderr_adds_no_marker() -> None:
+    """Whitespace-only stderr must not render as a bare `[stderr] ` diagnostic."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, inherit_env=True)
+
+        result = backend.execute("printf ' ' >&2")
+
+        assert result.output == "<no output>"
+        assert result.stderr == " "
+
+
+def test_local_shell_backend_caps_rendered_output_with_stderr_markers() -> None:
+    """The `[stderr] ` prefixes are counted against the `output` cap."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, max_output_bytes=20, inherit_env=True)
+
+        # Eight short stderr lines: tiny raw stream, but each rendered line
+        # carries a 9-character marker, so the cap applies to the rendering.
+        result = backend.execute("printf 'a\\nb\\nc\\nd\\ne\\nf\\ng\\nh\\n' >&2")
+
+        assert result.truncated is True
+        assert len(result.output) <= 20 + len("\n\n... Output truncated at 20 bytes.")
+        # The raw stream fit the budget, so it is retained whole.
+        assert result.stderr == "a\nb\nc\nd\ne\nf\ng\nh\n"
+        assert result.stderr_truncated is False
+
+
+def test_local_shell_backend_reports_truncated_streams() -> None:
+    """The shared stdout-first budget reports which streams lost content."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, max_output_bytes=5, inherit_env=True)
+
+        result = backend.execute("printf '123456'; printf 'error' >&2")
+
+        assert result.stdout == "12345"
+        assert result.stderr == ""
+        assert result.stdout_truncated is True
+        assert result.stderr_truncated is True
+        assert result.truncated is True
+
+
+def test_local_shell_backend_reports_stderr_only_truncation() -> None:
+    """Stderr uses the output budget left after complete stdout."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, max_output_bytes=5, inherit_env=True)
+
+        result = backend.execute("printf '123'; printf 'error' >&2")
+
+        assert result.stdout == "123"
+        assert result.stderr == "er"
+        assert result.stdout_truncated is False
+        assert result.stderr_truncated is True
+        assert result.truncated is True
 
 
 def test_local_shell_backend_filesystem_operations() -> None:

@@ -263,7 +263,9 @@ def show_help() -> None:
     console.print(
         "  --no-stream                Buffer full response instead of streaming"
     )
-    console.print("  --show-reasoning           Show provider-visible reasoning")
+    console.print(
+        "  --show-reasoning           Show provider-visible reasoning (on by default)"
+    )
     console.print(
         "  --max-turns N              Max agentic turns before stopping (needs -n)"
     )

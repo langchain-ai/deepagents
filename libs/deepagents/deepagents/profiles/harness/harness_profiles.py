@@ -116,6 +116,12 @@ class GeneralPurposeSubagentProfile:
     `None` means keep the default description.
     """
 
+    background: bool | None = None
+    """Run the default general-purpose subagent in the background (`start_async_task`) instead of with `task`.
+
+    `None` means keep the default (synchronous). See `SubAgent.background`.
+    """
+
     system_prompt: str | None = None
     """Override for the default general-purpose subagent system prompt.
 
@@ -142,12 +148,14 @@ class GeneralPurposeSubagentProfile:
         round-trips cleanly without forcing `None` defaults into the config.
 
         Returns:
-            A plain dict with at most `enabled`, `description`, and
-                `system_prompt` keys.
+            A plain dict with at most `enabled`, `description`, `background`,
+                and `system_prompt` keys.
         """
         out: dict[str, Any] = {}
         if self.enabled is not None:
             out["enabled"] = self.enabled
+        if self.background is not None:
+            out["background"] = self.background
         if self.description is not None:
             out["description"] = self.description
         if self.system_prompt is not None:
@@ -159,8 +167,8 @@ class GeneralPurposeSubagentProfile:
         """Construct a sub-profile from a plain dict.
 
         Args:
-            data: Mapping with any subset of `enabled`, `description`, and
-                `system_prompt` keys.
+            data: Mapping with any subset of `enabled`, `description`,
+                `background`, and `system_prompt` keys.
 
         Returns:
             A new `GeneralPurposeSubagentProfile`.
@@ -175,17 +183,19 @@ class GeneralPurposeSubagentProfile:
             raise TypeError(msg)
         enabled = data.get("enabled")
         description = data.get("description")
+        background = data.get("background")
         system_prompt = data.get("system_prompt")
-        if enabled is not None and not isinstance(enabled, bool):
-            msg = f"`enabled` must be bool or None, got {type(enabled).__name__}"
-            raise TypeError(msg)
+        for key, value in (("enabled", enabled), ("background", background)):
+            if value is not None and not isinstance(value, bool):
+                msg = f"`{key}` must be bool or None, got {type(value).__name__}"
+                raise TypeError(msg)
         if description is not None and not isinstance(description, str):
             msg = f"`description` must be str or None, got {type(description).__name__}"
             raise TypeError(msg)
         if system_prompt is not None and not isinstance(system_prompt, str):
             msg = f"`system_prompt` must be str or None, got {type(system_prompt).__name__}"
             raise TypeError(msg)
-        return cls(enabled=enabled, description=description, system_prompt=system_prompt)
+        return cls(enabled=enabled, description=description, background=background, system_prompt=system_prompt)
 
 
 @dataclass(frozen=True)
@@ -1235,6 +1245,7 @@ def _merge_general_purpose_subagent_profiles(
     return GeneralPurposeSubagentProfile(
         enabled=override.enabled if override.enabled is not None else base.enabled,
         description=override.description if override.description is not None else base.description,
+        background=override.background if override.background is not None else base.background,
         system_prompt=override.system_prompt if override.system_prompt is not None else base.system_prompt,
     )
 

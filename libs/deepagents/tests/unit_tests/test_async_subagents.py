@@ -26,7 +26,6 @@ from deepagents.middleware.async_subagents import (
     AsyncTask,
     _build_async_subagent_tools,
     _resolve_headers,
-    _runs_on_parent,
     _tasks_reducer,
     parent_reference,
     parent_sandbox_id,
@@ -1382,11 +1381,11 @@ class TestResumeTool:
 
 
 def _inline_spec(**overrides: Any) -> dict[str, Any]:
-    """An async subagent defined inline, running on the main agent's own graph."""
+    """A background subagent, running on the main agent's own graph."""
     return {
         "name": "helper",
         "description": "Long-running helper",
-        "graph_id": "self",
+        "background": True,
         "system_prompt": "You help.",
         "tools": [],
         "model": GenericFakeChatModel(messages=iter([AIMessage(content="helper done")])),
@@ -1397,11 +1396,11 @@ def _inline_spec(**overrides: Any) -> dict[str, Any]:
 def _worker_spec() -> AsyncSubAgent:
     worker = MagicMock()
     worker.invoke.return_value = {"messages": [AIMessage(content="helper done", id="ai_1")]}
-    return cast("AsyncSubAgent", {"name": "helper", "description": "Long-running helper", "graph_id": "self", "runnable": worker})
+    return cast("AsyncSubAgent", {"name": "helper", "description": "Long-running helper", "runnable": worker})
 
 
-class TestInlineAsyncSubagents:
-    def test_self_subagent_is_offered_async_only(self) -> None:
+class TestBackgroundSubagents:
+    def test_background_subagent_is_offered_async_only(self) -> None:
         agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([])), subagents=[_inline_spec()])
 
         tools = agent.nodes["tools"].bound._tools_by_name
@@ -1409,13 +1408,13 @@ class TestInlineAsyncSubagents:
         assert "helper" in tools["start_async_task"].description
         assert "helper" not in tools["task"].description
 
-    def test_remote_graph_named_self_stays_remote(self) -> None:
-        spec = _make_spec("remote", graph_id="self")
-        with patch("deepagents.middleware.async_subagents.get_sync_client") as get_client:
-            client = _launch_with(get_client, spec)
+    def test_background_general_purpose_spec_replaces_the_default(self) -> None:
+        agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([])), subagents=[_inline_spec(name="general-purpose")])
 
-        assert not _runs_on_parent(spec)
-        assert client.runs.create.call_args.kwargs["assistant_id"] == "self"
+        tools = agent.nodes["tools"].bound._tools_by_name
+
+        assert "general-purpose" in tools["start_async_task"].description
+        assert "task" not in tools
 
     def test_fork_is_rejected(self) -> None:
         with pytest.raises(ValueError, match="mode='fork'"):
@@ -1479,13 +1478,6 @@ class TestInlineAsyncSubagents:
 
         assert update == {"messages": spec["runnable"].invoke.return_value["messages"], "jump_to": "end"}
 
-    def test_inline_spec_without_system_prompt_is_rejected(self) -> None:
-        spec = _inline_spec()
-        del spec["system_prompt"]
-
-        with pytest.raises(ValueError, match="no system_prompt"):
-            create_deep_agent(model=GenericFakeChatModel(messages=iter([])), subagents=[spec])
-
     def test_ordinary_run_is_untouched(self) -> None:
         middleware = AsyncSubAgentMiddleware(async_subagents=[_worker_spec()])
 
@@ -1497,7 +1489,7 @@ class TestInlineAsyncSubagents:
 
         with (
             patch("deepagents.middleware.async_subagents.get_config", return_value={"configurable": {"deepagents_worker": "other"}}),
-            pytest.raises(ValueError, match="no inline async subagent"),
+            pytest.raises(ValueError, match="no background subagent"),
         ):
             middleware.before_agent({"messages": []}, MagicMock())
 
@@ -1550,13 +1542,3 @@ class TestInlineAsyncSubagents:
 
         assert "__interrupt__" in paused
         assert [message.content for message in done["messages"]][-2:] == ["deployed prod", "helper done"]
-
-
-def _launch_with(mock_get_client: MagicMock, spec: AsyncSubAgent) -> MagicMock:
-    client = MagicMock()
-    client.threads.create.return_value = {"thread_id": "thread_abc"}
-    client.runs.create.return_value = {"run_id": "run_xyz"}
-    mock_get_client.return_value = client
-    launch = _get_tool(_build_async_subagent_tools([spec]), "start_async_task")
-    launch.func(description="dig in", subagent_type=spec["name"], runtime=_parent_runtime())
-    return client

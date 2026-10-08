@@ -27,12 +27,14 @@ class TestGeneralPurposeSubagentProfileSerde:
         profile = GeneralPurposeSubagentProfile(
             enabled=False,
             description="Custom description.",
+            background=True,
             system_prompt="Do the thing.",
         )
         data = profile.to_dict()
         assert data == {
             "enabled": False,
             "description": "Custom description.",
+            "background": True,
             "system_prompt": "Do the thing.",
         }
         assert GeneralPurposeSubagentProfile.from_dict(data) == profile
@@ -45,6 +47,7 @@ class TestGeneralPurposeSubagentProfileSerde:
         ("key", "value"),
         [
             ("enabled", "yes"),
+            ("background", "yes"),
             ("description", 1),
             ("system_prompt", ["list"]),
         ],

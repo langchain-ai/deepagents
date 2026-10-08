@@ -212,6 +212,18 @@ class SubAgent(TypedDict):
     replacing it.
     """
 
+    background: NotRequired[bool]
+    """Run this subagent in the background with `start_async_task` instead of `task`.
+
+    Each task runs on the main agent's own deployment, on its own thread, and
+    the main agent can keep working meanwhile. Needs the main agent to run on
+    an Agent Server. Background subagents can't use `mode="fork"`.
+
+    Anyone who can start runs on the main agent can also run its background
+    subagents directly, so don't give one looser `interrupt_on` or
+    `permissions` than the main agent.
+    """
+
     mode: NotRequired[Literal["isolated", "fork"]]
     """Context mode. Defaults to `isolated`, where the subagent only sees the delegated task.
 
@@ -301,6 +313,9 @@ class CompiledSubAgent(TypedDict):
     a 'messages' key. This is required for the subagent to communicate
     results back to the main agent.
     """
+
+    background: NotRequired[bool]
+    """Run this subagent in the background with `start_async_task` instead of `task` (see `SubAgent.background`)."""
 
     mode: NotRequired[Literal["isolated", "fork"]]
     """Use `fork` to inherit the parent's conversation without changing the runnable prompt.

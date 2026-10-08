@@ -13,12 +13,11 @@ import asyncio
 import json
 import logging
 import urllib.parse
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, NotRequired, TypedDict, TypeVar, cast
 
-from langchain.agents.middleware import InterruptOnConfig
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -30,8 +29,7 @@ from langchain.agents.middleware.types import (
     hook_config,
     omit_payload,
 )
-from langchain.tools import BaseTool, ToolRuntime
-from langchain_core.language_models import BaseChatModel
+from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
@@ -51,7 +49,6 @@ from pydantic import BaseModel, Field
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.protocol import BackendProtocol, SandboxBackendProtocol
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.filesystem import FilesystemPermission
 
 logger = logging.getLogger(__name__)
 
@@ -83,31 +80,8 @@ class AsyncSubAgent(TypedDict):
     `parent_trace_context`). To work in the parent's sandbox, its graph factory
     reconnects to the ID from `parent_sandbox_id`.
 
-    To run a subagent defined right here instead of a separately deployed
-    graph, set `graph_id` to `"self"` and give it a `system_prompt` (plus any
-    `tools`, `model`, `middleware`, ... as for a regular subagent). Each task
-    then runs on the main agent's own deployment, on its own thread, using the
-    main agent's backend. This needs the main agent to run on an Agent Server.
-
-    Anyone who can start runs on the main agent can also run its inline
-    helpers directly, as with separately deployed helper graphs. Helpers
-    inherit the main agent's `interrupt_on` and `permissions` unless they set
-    their own, so don't give a helper looser ones than the main agent.
-
-    Example:
-        ```python
-        create_deep_agent(
-            subagents=[
-                {
-                    "name": "researcher",
-                    "description": "Deep research that takes a while",
-                    "graph_id": "self",
-                    "system_prompt": "You research topics thoroughly.",
-                    "tools": [web_search],
-                }
-            ],
-        )
-        ```
+    To run a subagent defined right here in the background instead, give a
+    regular subagent spec `background: True` (see `SubAgent.background`).
     """
 
     name: str
@@ -120,11 +94,7 @@ class AsyncSubAgent(TypedDict):
     """
 
     graph_id: str
-    """The graph name or assistant ID on the remote server.
-
-    `"self"` with a `system_prompt` runs the subagent defined in this spec on
-    the main agent's own graph instead.
-    """
+    """The graph name or assistant ID on the remote server."""
 
     url: NotRequired[str]
     """URL of the [Agent Protocol](https://github.com/langchain-ai/agent-protocol) server.
@@ -136,29 +106,8 @@ class AsyncSubAgent(TypedDict):
     headers: NotRequired[dict[str, str]]
     """Additional headers to include in requests to the remote server."""
 
-    system_prompt: NotRequired[str]
-    """Instructions for a subagent defined here (`graph_id="self"`)."""
-
-    tools: NotRequired[Sequence[BaseTool | Callable | dict[str, Any]]]
-    """Tools for a subagent defined here. Defaults to the main agent's tools."""
-
-    model: NotRequired[str | BaseChatModel]
-    """Model for a subagent defined here. Defaults to the main agent's model."""
-
-    middleware: NotRequired[list[AgentMiddleware]]
-    """Extra middleware for a subagent defined here."""
-
-    interrupt_on: NotRequired[dict[str, bool | InterruptOnConfig]]
-    """Human-in-the-loop configuration for a subagent defined here."""
-
-    skills: NotRequired[list[str]]
-    """Skill sources for a subagent defined here."""
-
-    permissions: NotRequired[list[FilesystemPermission]]
-    """Filesystem permissions for a subagent defined here."""
-
     runnable: NotRequired[Runnable]
-    """The compiled subagent that runs on the main agent's graph; `create_deep_agent` builds it."""
+    """A background subagent compiled by `create_deep_agent`, which runs on the main agent's own graph."""
 
 
 class AsyncTask(TypedDict):
@@ -544,27 +493,15 @@ def parent_sandbox_id(config: RunnableConfig, provider: type[SandboxBackendProto
     return sandbox_id
 
 
-_SELF_GRAPH = "self"
-"""`graph_id` for an async subagent defined inline that runs on the main agent's own graph."""
-
 _WORKER_KEY = "deepagents_worker"
-"""`configurable` key naming the inline async subagent a run of the main agent's graph should be."""
-
-
-def _runs_on_parent(spec: Mapping[str, Any]) -> bool:
-    """Whether an async subagent spec is defined inline and runs on the main agent's own graph.
-
-    A remote graph that happens to be named `"self"` has no `system_prompt` or
-    `runnable`, so it keeps meaning that graph.
-    """
-    return spec.get("graph_id") == _SELF_GRAPH and ("system_prompt" in spec or "runnable" in spec)
+"""`configurable` key naming the background subagent a run of the main agent's graph should be."""
 
 
 def _launch_target(spec: AsyncSubAgent, runtime: ToolRuntime, backend: BackendProtocol | None) -> dict[str, Any]:
     """`runs.create` arguments choosing the graph a task runs on and linking it to this agent.
 
     Raises:
-        ValueError: If an inline subagent's task can't find this agent's assistant (not on an Agent Server).
+        ValueError: If a background subagent's task can't find this agent's assistant (not on an Agent Server).
     """
     if not _is_worker(spec):
         return {"assistant_id": spec["graph_id"], **_run_options(runtime, backend)}
@@ -577,11 +514,11 @@ def _launch_target(spec: AsyncSubAgent, runtime: ToolRuntime, backend: BackendPr
 
 
 _NOT_SHARED_WITH_WORKERS = frozenset({"async_tasks", "jump_to", "structured_response"})
-"""Main-graph state an inline helper neither receives nor returns: task tracking and per-run control keys."""
+"""Main-graph state a background subagent neither receives nor returns: task tracking and per-run control keys."""
 
 
 def _is_worker(spec: Mapping[str, Any]) -> bool:
-    """Whether a spec handed to the middleware is a compiled inline subagent."""
+    """Whether a spec handed to the middleware is a compiled background subagent."""
     return "runnable" in spec
 
 
@@ -1481,7 +1418,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             Each must include `name`, `description`, and `graph_id`. `url` is
             optional — omit it to use ASGI transport for local servers. A
             spec with a compiled `runnable` (as `create_deep_agent` builds for
-            `graph_id="self"`) runs on this agent's own graph.
+            `background` subagents) runs on this agent's own graph.
         system_prompt: Instructions appended to the main agent's system prompt
             about how to use the async subagent tools.
         backend: The main agent's backend. When it is (or routes by default to)
@@ -1534,7 +1471,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self.tools = _build_async_subagent_tools(async_subagents, backend)
         self._workers: dict[str, Runnable] = {a["name"]: a["runnable"] for a in async_subagents if _is_worker(a)}
         self.state_keys: frozenset[str] = frozenset({"messages"})
-        """State keys of the main graph an inline helper's result may update; `create_deep_agent` sets them."""
+        """State keys of the main graph a background subagent's result may update; `create_deep_agent` sets them."""
 
         if system_prompt:
             agents_desc = "\n".join(f"- {a['name']}: {a['description']}" for a in async_subagents)
@@ -1544,7 +1481,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     @hook_config(can_jump_to=["end"])
     def before_agent(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
-        """Run an inline async subagent instead of this agent when a task asked for one."""
+        """Run a background subagent instead of this agent when a task asked for one."""
         worker = self._requested_worker()
         if worker is None:
             return None
@@ -1553,7 +1490,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     @hook_config(can_jump_to=["end"])
     async def abefore_agent(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
-        """(async) Run an inline async subagent instead of this agent when a task asked for one."""
+        """(async) Run a background subagent instead of this agent when a task asked for one."""
         worker = self._requested_worker()
         if worker is None:
             return None
@@ -1571,16 +1508,16 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         return {**update, "jump_to": "end"}
 
     def _requested_worker(self) -> Runnable | None:
-        """Return the inline subagent this run should execute as, or `None` for a normal run.
+        """Return the background subagent this run should execute as, or `None` for a normal run.
 
         Raises:
-            ValueError: If the run names a subagent this agent doesn't define inline.
+            ValueError: If the run names a subagent this agent doesn't run in the background.
         """
         name = (get_config().get("configurable") or {}).get(_WORKER_KEY)
         if name is None:
             return None
         if name not in self._workers:
-            msg = f"This agent has no inline async subagent named {name!r}"
+            msg = f"This agent has no background subagent named {name!r}"
             raise ValueError(msg)
         return self._workers[name]
 

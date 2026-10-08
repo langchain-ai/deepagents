@@ -737,33 +737,33 @@ _Delivery = Literal["delivered", "later", "unreachable"]
 """Whether a notification reached the parent, should be retried, or can't reach it from this deployment."""
 
 
-_DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
-"""Parent thread statuses a notification run can start on: neither running nor waiting for a human."""
+_WAITING_FOR_HUMAN = "interrupted"
+"""Parent thread status while a human answers an approval; a new run would cancel it."""
 
 
 async def _awake_parent(parent_thread_id: str, assistant_id: str, event: TaskEvent) -> _Delivery:
-    """Start a notification run on the parent's thread only while it's idle (or its last run failed).
+    """Queue a notification run on the parent's thread unless it's waiting for a human.
 
-    A new run on a thread waiting for a human would cancel that approval; `reject` covers a thread that just became busy.
+    A new run on a thread waiting for a human would cancel that approval, so those are retried later. A busy
+    thread gets the run queued after its current one; like any queued run, it supersedes an approval that run ends on.
     A parent thread this deployment doesn't have is `unreachable`: it's on another deployment, or gone.
     """
     client = get_client()
     try:
-        if (await client.threads.get(thread_id=parent_thread_id)).get("status") not in _DELIVERABLE_THREAD_STATUSES:
+        if (await client.threads.get(thread_id=parent_thread_id)).get("status") == _WAITING_FOR_HUMAN:
             return "later"
         await client.runs.create(
             thread_id=parent_thread_id,
             assistant_id=assistant_id,
             input={"messages": [{"role": "user", "content": _notification_text(event), _NOTIFICATION_KEY: dict(event)}]},
-            multitask_strategy="reject",
+            multitask_strategy="enqueue",
         )
     except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
         status = getattr(getattr(e, "response", None), "status_code", None)
         if status == 404:  # noqa: PLR2004  # HTTP not found
             logger.debug("Parent thread of task %s isn't on this deployment", event["task_id"])
             return "unreachable"
-        log = logger.debug if status == 409 else logger.warning  # noqa: PLR2004  # 409: became busy
-        log("Didn't deliver the notification for task %s yet", event["task_id"], exc_info=True)
+        logger.warning("Didn't deliver the notification for task %s yet", event["task_id"], exc_info=True)
         return "later"
     return "delivered"
 

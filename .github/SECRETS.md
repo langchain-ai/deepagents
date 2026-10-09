@@ -137,6 +137,7 @@ The disabled step preserves package-scoped wiring so a future re-enablement has 
 | `deepagents` | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `LANGSMITH_API_KEY` |
 | `langchain-quickjs` | `ANTHROPIC_API_KEY` |
 | `langchain-daytona` | `DAYTONA_API_KEY` |
+| `langchain-smol` | `SMOL_CLOUD_TOKEN` for Cloud live tests; unit tests require no token |
 | `langchain-modal` | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` |
 | `langchain-runloop` | `RUNLOOP_API_KEY` |
 | `langchain-vercel-sandbox` | `VERCEL_TOKEN` plus `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID` Actions variables |

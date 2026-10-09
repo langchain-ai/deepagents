@@ -19,6 +19,7 @@ APP_TOKEN_WORKFLOWS = (
 INTEGRATION_ENV = {
     "ANTHROPIC_API_KEY": "${{ (matrix.working-directory == 'libs/deepagents' || matrix.working-directory == 'libs/partners/quickjs') && secrets.ANTHROPIC_API_KEY || '' }}",
     "DAYTONA_API_KEY": "${{ (matrix.working-directory == 'libs/partners/daytona' || matrix.working-directory == 'libs/code') && secrets.DAYTONA_API_KEY || '' }}",
+    "SMOL_CLOUD_TOKEN": "${{ matrix.working-directory == 'libs/partners/smol' && secrets.SMOL_CLOUD_TOKEN || '' }}",
     "LANGSMITH_API_KEY": "${{ (matrix.working-directory == 'libs/deepagents' || matrix.working-directory == 'libs/code') && secrets.LANGSMITH_API_KEY || '' }}",
     "MODAL_TOKEN_ID": "${{ (matrix.working-directory == 'libs/partners/modal' || matrix.working-directory == 'libs/code') && secrets.MODAL_TOKEN_ID || '' }}",
     "MODAL_TOKEN_SECRET": "${{ (matrix.working-directory == 'libs/partners/modal' || matrix.working-directory == 'libs/code') && secrets.MODAL_TOKEN_SECRET || '' }}",
@@ -28,6 +29,7 @@ INTEGRATION_ENV = {
 RELEASE_INTEGRATION_ENV = {
     "ANTHROPIC_API_KEY": "${{ (needs.setup.outputs.package == 'deepagents' || needs.setup.outputs.package == 'langchain-quickjs') && secrets.ANTHROPIC_API_KEY || '' }}",
     "DAYTONA_API_KEY": "${{ needs.setup.outputs.package == 'langchain-daytona' && secrets.DAYTONA_API_KEY || '' }}",
+    "SMOL_CLOUD_TOKEN": "${{ needs.setup.outputs.package == 'langchain-smol' && secrets.SMOL_CLOUD_TOKEN || '' }}",
     "LANGSMITH_API_KEY": "${{ needs.setup.outputs.package == 'deepagents' && secrets.LANGSMITH_API_KEY || '' }}",
     "MODAL_TOKEN_ID": "${{ needs.setup.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_ID || '' }}",
     "MODAL_TOKEN_SECRET": "${{ needs.setup.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_SECRET || '' }}",

@@ -89,6 +89,7 @@
     "package:evals": "Changes related to the evaluation suite, benchmarks, and Harbor integration.",
     "package:examples": "Changes to example code or tutorials.",
     "integration:daytona": "Integration with the Daytona sandbox service.",
+    "integration:smol": "Integration with Smol Machines sandboxes.",
     "integration:modal": "Integration with the Modal sandbox service.",
     "integration:quickjs": "Integration with the QuickJS sandbox package.",
     "integration:runloop": "Integration with the Runloop sandbox service.",
@@ -112,6 +113,7 @@
     "examples": "package:examples",
     "harbor": "package:evals",
     "langchain-daytona": "integration:daytona",
+    "langchain-smol": "integration:smol",
     "langchain-modal": "integration:modal",
     "langchain-quickjs": "integration:quickjs",
     "langchain-runloop": "integration:runloop",
@@ -175,6 +177,11 @@
     {
       "label": "integration:daytona",
       "prefix": "libs/partners/daytona/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "integration:smol",
+      "prefix": "libs/partners/smol/",
       "skipExcludedFiles": true
     },
     {

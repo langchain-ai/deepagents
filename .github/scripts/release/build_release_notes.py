@@ -51,6 +51,7 @@ PACKAGE_MAP = {
     "deepagents-talon": "libs/talon",
     "deepagents-evals": "libs/evals",
     "langchain-daytona": "libs/partners/daytona",
+    "langchain-smol": "libs/partners/smol",
     "langchain-modal": "libs/partners/modal",
     "langchain-quickjs": "libs/partners/quickjs",
     "langchain-runloop": "libs/partners/runloop",

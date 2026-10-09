@@ -1058,8 +1058,10 @@ async def test_acp_agent_hitl_approve_always_execute_auto_approves_next_time() -
     assert len(permission_requests) == 1
     assert permission_requests[0]["tool_call"].title.startswith("Execute:")
 
-    assert session.session_id in agent._allowed_command_types
-    assert ("execute", "python -m pytest") in agent._allowed_command_types[session.session_id]
+    assert session.session_id in agent._allowed_execute_commands
+    assert permission_requests[0]["options"][-1].name == (
+        "Always allow this exact command in this session"
+    )
 
     client.events = []
     state = type("S", (), {"next": ("x",), "interrupts": []})()

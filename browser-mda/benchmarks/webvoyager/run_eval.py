@@ -23,38 +23,63 @@ Answer the question directly and concisely. If after a genuine effort the site
 blocks you or the information is not available, say exactly why. Do not guess."""
 
 async def one(client, aid, task, sem, cap, timeout_s):
+    """Create the run, then POLL for completion.
+
+    Deliberately not client.runs.wait(): that holds one HTTP join connection open
+    for the whole run, and on long browsing tasks it dies with "Too little data
+    for declared Content-Length" -- recorded as an agent error when it is really
+    a transport failure. Polling also makes the wall-clock bound real, which
+    wait_for around wait() did not (runs there overshot the timeout 3x).
+    """
     async with sem:
         t0 = time.time()
         rec = {"id": task["id"], "site": task["web_name"], "ques": task["ques"]}
         try:
             th = await client.threads.create()
             rec["thread_id"] = th["thread_id"]
-            res = await asyncio.wait_for(
-                client.runs.wait(
-                    th["thread_id"], aid,
-                    input={"messages": [{"role": "user",
-                                         "content": PROMPT.format(**task)}]},
-                    config={"recursion_limit": cap},
-                ),
-                timeout=timeout_s,
+            run = await client.runs.create(
+                th["thread_id"], aid,
+                input={"messages": [{"role": "user",
+                                     "content": PROMPT.format(**task)}]},
+                config={"recursion_limit": cap},
             )
-            msgs = (res or {}).get("messages", [])
-            rec["steps"] = len(msgs)
-            rec["tool_calls"] = sum(len(m.get("tool_calls") or []) for m in msgs
-                                    if m.get("type") == "ai")
-            last = msgs[-1] if msgs else {}
-            c = last.get("content")
-            if isinstance(c, list):
-                c = " ".join(b.get("text", "") for b in c if isinstance(b, dict))
-            rec["answer"] = (c or "").strip()
-            rec["status"] = "ok" if rec["answer"] else "empty"
-        except asyncio.TimeoutError:
-            rec["status"] = "timeout"; rec["answer"] = ""
+            rec["run_id"] = run["run_id"]
+            status = "pending"
+            while time.time() - t0 < timeout_s:
+                await asyncio.sleep(10)
+                try:
+                    status = (await client.runs.get(
+                        th["thread_id"], run["run_id"]))["status"]
+                except Exception:
+                    continue          # transient poll failure is not a run failure
+                if status not in ("pending", "running"):
+                    break
+            if status in ("pending", "running"):
+                rec["status"] = "timeout"
+                try:
+                    await client.runs.cancel(th["thread_id"], run["run_id"])
+                except Exception:
+                    pass
+                rec["answer"] = ""
+            else:
+                st = await client.threads.get_state(th["thread_id"])
+                msgs = st["values"].get("messages", [])
+                rec["steps"] = len(msgs)
+                rec["tool_calls"] = sum(len(m.get("tool_calls") or []) for m in msgs
+                                        if m.get("type") == "ai")
+                last = msgs[-1] if msgs else {}
+                c = last.get("content")
+                if isinstance(c, list):
+                    c = " ".join(b.get("text", "") for b in c if isinstance(b, dict))
+                rec["answer"] = (c or "").strip()
+                rec["run_status"] = status
+                rec["status"] = "ok" if (status == "success" and rec["answer"]) else status
         except Exception as e:
-            rec["status"] = "error"; rec["answer"] = ""; rec["error"] = str(e)[:400]
+            rec["status"] = "harness_error"; rec["answer"] = ""
+            rec["error"] = f"{type(e).__name__}: {e}"[:400]
         rec["seconds"] = round(time.time() - t0, 1)
-        print(f"[{rec['status']:8}] {rec['id']:28} {rec['seconds']:6.1f}s "
-              f"steps={rec.get('steps','-')} :: {rec['answer'][:90]}", flush=True)
+        print(f"[{rec['status']:13}] {rec['id']:28} {rec['seconds']:6.1f}s "
+              f"steps={rec.get('steps','-')} :: {rec['answer'][:80]}", flush=True)
         return rec
 
 async def main():

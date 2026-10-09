@@ -16,7 +16,7 @@ import inspect
 import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
 from langchain_anthropic import ChatAnthropic, convert_to_anthropic_tool
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
@@ -24,12 +24,14 @@ from langchain_core.runnables import RunnableBinding
 from langchain_core.tools import BaseTool, tool as create_tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 
+from deepagents._models import canonical_model_name
 from deepagents.backends.utils import validate_path
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
     from langchain_openai import ChatOpenAI
+    from langchain_openai.chat_models.base import BaseChatOpenAI
     from langgraph.runtime import Runtime
 
     from deepagents.middleware.skills import SkillMetadata, SkillToolResolver
@@ -52,16 +54,19 @@ _SKILL_TOOLS_DISCLOSED_KEY = "_skill_tools_disclosed"
 _DEFER_LOADING = "defer_loading"
 """Tool `extras` key (and provider field) that withholds a tool's schema until searched for."""
 
-_ANTHROPIC_INLINE_TOOL_MODELS = ("claude-opus-5", "claude-fable-5", "claude-mythos-5", "claude-opus-4-8")
-"""Model ID prefixes that accept an inline `tool_definition` mid-conversation.
+_ANTHROPIC_INLINE_TOOL_MODELS = ("claude-fable-5", "claude-haiku-5", "claude-mythos-5", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-5-5")
+"""Canonical model name prefixes that accept an inline `tool_definition` mid-conversation.
 
 Every prefix must also pass `langchain_anthropic`'s mid-conversation system
 message check; otherwise the converter hoists the disclosure into `system` and
 strips its blocks with only a warning.
 """
 
-_OPENAI_INLINE_TOOL_MODELS = ("gpt-6-", "gpt-5.6-")
-"""Model ID prefixes whose Responses API accepts an `additional_tools` input item."""
+_CHAT_OPENAI_MANTLE = "ChatOpenAIMantle"
+"""langchain-aws's `BaseChatOpenAI` for Bedrock Mantle, matched by name so deepagents never imports it."""
+
+_OPENAI_INLINE_TOOL_MODELS = ("gpt-4.1", "gpt-5", "gpt-6", "o3")
+"""Canonical model name prefixes whose Responses API accepts an `additional_tools` input item."""
 
 _ANTHROPIC_ROOT_COMBINATORS = ("oneOf", "anyOf", "allOf")
 """Root `input_schema` keys the Anthropic API rejects, failing the whole request."""
@@ -397,18 +402,26 @@ def _inline_block_builder(model: object) -> Callable[[BaseTool], _ToolDisclosure
     the allowlists later.
     """
     chat_model = _unwrap_bound(model)
-    if isinstance(chat_model, ChatAnthropic) and chat_model.model.startswith(_ANTHROPIC_INLINE_TOOL_MODELS):
+    if isinstance(chat_model, ChatAnthropic) and canonical_model_name(chat_model.model, "anthropic").startswith(_ANTHROPIC_INLINE_TOOL_MODELS):
         return _anthropic_tool_addition
-    # Exact type, not subclasses: a subclass may lift system messages elsewhere
-    # (e.g. into `instructions`) and reject a non-text block there.
     if (
-        _CHAT_OPENAI_TYPE is not None
-        and type(chat_model) is _CHAT_OPENAI_TYPE
+        _is_inline_tool_openai_class(chat_model)
         and chat_model.use_responses_api is True
-        and chat_model.model_name.startswith(_OPENAI_INLINE_TOOL_MODELS)
+        and canonical_model_name(chat_model.model_name, "openai").startswith(_OPENAI_INLINE_TOOL_MODELS)
     ):
         return _openai_additional_tools
     return None
+
+
+def _is_inline_tool_openai_class(model: object) -> TypeGuard[BaseChatOpenAI]:
+    """Return whether `model` is exactly a `ChatOpenAI` or a langchain-aws `ChatOpenAIMantle`.
+
+    Not a subclass of either: a subclass may lift system messages elsewhere (e.g.
+    into `instructions`) and reject a non-text block there. `ChatOpenAIMantle`
+    inherits `BaseChatOpenAI`'s message conversion unchanged.
+    """
+    model_type = type(model)
+    return (_CHAT_OPENAI_TYPE is not None and model_type is _CHAT_OPENAI_TYPE) or model_type.__name__ == _CHAT_OPENAI_MANTLE
 
 
 def _unwrap_bound(model: object) -> object:

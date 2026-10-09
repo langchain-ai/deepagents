@@ -28,7 +28,7 @@ _BEDROCK_PROVIDERS = frozenset({"amazon_bedrock", "anthropic_bedrock", "aws", "b
 _BEDROCK_MODEL_CLASSES = frozenset({"ChatAnthropicBedrock", "ChatBedrock", "ChatBedrockConverse", "ChatBedrockNovaSonic"})
 """`langchain-aws` chat model class names that identify AWS Bedrock models."""
 
-_BEDROCK_REGIONAL_PREFIXES = ("apac.", "amer.", "au.", "eu.", "global.", "jp.", "sa.", "us.", "us-gov.")
+_BEDROCK_REGIONAL_PREFIXES = ("apac.", "amer.", "au.", "eu.", "global.", "in.", "jp.", "sa.", "us.", "us-gov.")
 """Regional inference profile prefixes stripped from Bedrock model identifiers."""
 
 
@@ -133,14 +133,36 @@ def is_bedrock_model(model: str | BaseChatModel) -> bool:
     return type(model).__name__ in _BEDROCK_MODEL_CLASSES
 
 
+def canonical_model_name(model: str, provider: str) -> str:
+    """Return the model name inside a Bedrock model ID from `provider`.
+
+    Strips one regional inference profile prefix, then the `provider` segment:
+    `global.anthropic.claude-opus-5-5` and `anthropic.claude-opus-5-5` are both
+    `claude-opus-5-5` for `anthropic`. Any other ID, such as a bare name or an
+    ARN, is returned unchanged.
+
+    Args:
+        model: Model identifier, bare or Bedrock-shaped.
+        provider: Bedrock provider segment, without its dot (e.g. `openai`).
+
+    Returns:
+        The canonical model name, or `model` if it isn't a Bedrock ID from `provider`.
+    """
+    name, separator, rest = _strip_bedrock_regional_prefix(model).partition(".")
+    return rest if separator and name == provider else model
+
+
 def _is_bedrock_nova_model_id(model: str) -> bool:
     """Check for cache-capable Bedrock Nova model identifiers."""
-    identifier = model
+    return _strip_bedrock_regional_prefix(model).startswith("amazon.nova-")
+
+
+def _strip_bedrock_regional_prefix(model: str) -> str:
+    """Return `model` without its first regional inference profile prefix, if any."""
     for prefix in _BEDROCK_REGIONAL_PREFIXES:
-        if identifier.startswith(prefix):
-            identifier = identifier.removeprefix(prefix)
-            break
-    return identifier.startswith("amazon.nova-")
+        if model.startswith(prefix):
+            return model.removeprefix(prefix)
+    return model
 
 
 def model_matches_spec(model: BaseChatModel, spec: str) -> bool:

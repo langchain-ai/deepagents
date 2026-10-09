@@ -22,7 +22,7 @@ classifiers = [
 dependencies = [
     "langchain>=1.4.4,<2.0.0",
     "langchain-core>=1.6.7,<2.0.0",
-    "langchain-anthropic>=1.7.5,<2.0.0",
+    "langchain-anthropic>=1.7.6,<2.0.0",
     "langchain-google-genai>=4.4.0,<5.0.0",
     "langsmith>=0.14.4",
     "packaging>=23.2",
@@ -59,6 +59,8 @@ test = [
   "pytest-asyncio>=1.4.0",
   "langchain-tests>=1.1.9",
   "langchain-openai>=1.6.7,<2.0.0",
+  # The `aws` extra, so payload tests can drive a real `ChatOpenAIMantle`.
+  "langchain-aws>=1.8.1,<2.0.0",
   "twine",
   "build",
   # Lazy-imported at runtime so the core package does

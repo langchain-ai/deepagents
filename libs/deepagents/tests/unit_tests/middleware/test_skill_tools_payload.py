@@ -1,8 +1,8 @@
 """Skill tool disclosure observed in the request payload that reaches each provider.
 
-Real `ChatAnthropic` and `ChatOpenAI` models run with only their HTTP transport
-stubbed, so these tests check placement, caching and gating where they matter:
-in the bytes sent to the provider.
+Real `ChatAnthropic`, `ChatOpenAI` and `ChatOpenAIMantle` models run with only
+their HTTP transport stubbed, so these tests check placement, caching and gating
+where they matter: in the bytes sent to the provider.
 """
 
 from __future__ import annotations
@@ -21,8 +21,10 @@ from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, Mod
 from langchain_anthropic.chat_models import _supports_mid_conversation_system_messages
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, tool
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 
+from deepagents._models import _BEDROCK_REGIONAL_PREFIXES
 from deepagents.middleware import FilesystemMiddleware
 from deepagents.middleware._skill_tools import _ANTHROPIC_INLINE_TOOL_MODELS
 from deepagents.middleware.skills import SkillsMiddleware, disclosed_skill_tool_names
@@ -49,6 +51,7 @@ from tests.unit_tests.middleware.skill_tools_support import (
     skills_backend,
     stub_anthropic,
     stub_openai,
+    stub_openai_mantle,
     tool_messages,
     write_skill,
 )
@@ -112,7 +115,22 @@ def _assert_prefix_stable(bodies: list[dict[str, Any]], key: str) -> None:
         assert current.get("system") == previous.get("system")
 
 
-def test_anthropic_discloses_inline_right_after_the_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+@pytest.mark.parametrize(
+    "model_id",
+    [
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        # Haiku 5.x matches forward; Sonnet 5.x doesn't, since Sonnet 5 rejects tool additions.
+        "claude-haiku-5-6",
+        # Bedrock: inference profiles on InvokeModel, the plain form on Mantle.
+        "global.anthropic.claude-opus-5-5",
+        "us.anthropic.claude-sonnet-5-5",
+        "in.anthropic.claude-opus-5",
+        "anthropic.claude-opus-5",
+    ],
+)
+def test_anthropic_discloses_inline_right_after_the_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, model_id: str) -> None:
     write_skill(tmp_path, "crm", "create_customer_request")
     model, stub = stub_anthropic(
         monkeypatch,
@@ -122,6 +140,7 @@ def test_anthropic_discloses_inline_right_after_the_read(tmp_path: Path, monkeyp
             [call("ls", "l1", path="/")],
             "done",
         ],
+        model=model_id,
     )
 
     with warnings.catch_warnings(record=True) as caught:
@@ -157,15 +176,32 @@ _CREATE_CUSTOMER_REQUEST_FUNCTION = {
 }
 
 
-def test_openai_discloses_additional_tools_right_after_the_read(tmp_path: Path, mode: str) -> None:
+@pytest.mark.parametrize(
+    ("provider", "model_kwargs"),
+    [
+        *(
+            pytest.param("openai", {"model": model_id}, id=model_id)
+            for model_id in ("gpt-6-astra", "gpt-6.1-sol", "gpt-5.6", "gpt-5.5", "gpt-4.1", "o3")
+        ),
+        pytest.param("openai-mantle", {"model": "openai.gpt-5.6-luna"}, id="mantle-openai.gpt-5.6-luna"),
+        # Mantle opts only `openai.gpt-` IDs into the Responses API itself.
+        pytest.param("openai-mantle", {"model": "us.openai.gpt-6-sol", "use_responses_api": True}, id="mantle-us.openai.gpt-6-sol"),
+    ],
+)
+def test_openai_discloses_additional_tools_right_after_the_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: str, model_kwargs: dict[str, Any]
+) -> None:
     write_skill(tmp_path, "crm", "create_customer_request")
-    model, stub = stub_openai(
+    model, stub = _stub(
+        provider,
+        monkeypatch,
         [
             [read("r1")],
             [call("create_customer_request", "c1", title="refund")],
             [call("ls", "l1", path="/")],
             "done",
-        ]
+        ],
+        **model_kwargs,
     )
 
     result = invoke(skills_agent(tmp_path, model), {"messages": [HumanMessage("file a refund request")]}, mode)
@@ -282,15 +318,35 @@ def test_skill_naming_a_bound_tool_sends_nothing(tmp_path: Path, monkeypatch: py
     assert _tool_names(stub.bodies[1]) == _tool_names(stub.bodies[0])
 
 
+class _ChatOpenAISubclass(ChatOpenAI):
+    """Stands for a subclass such as the Codex model, which lifts system messages into `instructions`."""
+
+
 @pytest.mark.parametrize(
-    "provider",
+    ("provider", "model_kwargs"),
     [
-        pytest.param("claude-sonnet-5", id="anthropic-without-inline-tools"),
-        pytest.param("chat-completions", id="openai-without-responses-api"),
-        pytest.param("gpt-5.5", id="openai-responses-model-not-allowlisted"),
+        pytest.param("anthropic", {"model": "claude-sonnet-5"}, id="anthropic-sonnet-5"),
+        pytest.param("anthropic", {"model": "global.anthropic.claude-sonnet-5"}, id="anthropic-sonnet-5-on-bedrock"),
+        pytest.param("anthropic", {"model": "claude-sonnet-5-6"}, id="anthropic-sonnet-5-unverified-release"),
+        pytest.param("anthropic", {"model": "global.anthropic.claude-opus-4-7"}, id="anthropic-opus-4-7-on-bedrock"),
+        pytest.param(
+            "anthropic",
+            {"model": "arn:aws:bedrock:us-east-1:123456789012:inference-profile/global.anthropic.claude-opus-5-5"},
+            id="anthropic-inference-profile-arn",
+        ),
+        pytest.param(
+            "anthropic",
+            {"model": "arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/a1b2c3d4e5f6"},
+            id="anthropic-application-inference-profile-arn",
+        ),
+        pytest.param("openai", {"model": "qwen3-coder", "base_url": "http://localhost:8000/v1"}, id="openai-compatible-server"),
+        pytest.param("openai", {"use_responses_api": False}, id="openai-without-responses-api"),
+        pytest.param("openai", {"model_class": _ChatOpenAISubclass}, id="openai-subclass"),
     ],
 )
-def test_unsupported_models_bind_disclosed_tools_until_compaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: str) -> None:
+def test_unsupported_models_bind_disclosed_tools_until_compaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: str, model_kwargs: dict[str, Any]
+) -> None:
     write_skill(tmp_path, "crm", "create_customer_request")
     turns: list[Any] = [
         [call("create_customer_request", "c1", title="early")],
@@ -299,12 +355,7 @@ def test_unsupported_models_bind_disclosed_tools_until_compaction(tmp_path: Path
         [call("create_customer_request", "c2", title="late")],
         "done",
     ]
-    if provider == "claude-sonnet-5":
-        model, stub = stub_anthropic(monkeypatch, turns, model=provider)
-    elif provider == "chat-completions":
-        model, stub = stub_openai(turns, use_responses_api=False)
-    else:
-        model, stub = stub_openai(turns, model=provider)
+    model, stub = _stub(provider, monkeypatch, turns, **model_kwargs)
     summarization = SummarizationMiddleware(
         model=GenericFakeChatModel(messages=iter(["summary"])),
         backend=skills_backend(tmp_path),
@@ -339,16 +390,19 @@ def test_model_fallback_builds_blocks_for_the_model_actually_called(tmp_path: Pa
     assert openai_addition["tools"] == [_CREATE_CUSTOMER_REQUEST_FUNCTION]
 
 
-def test_inline_anthropic_models_are_sent_in_place_by_langchain_anthropic() -> None:
+@pytest.mark.parametrize("id_prefix", ["", "anthropic.", *(f"{region}anthropic." for region in _BEDROCK_REGIONAL_PREFIXES)])
+def test_inline_anthropic_models_are_sent_in_place_by_langchain_anthropic(id_prefix: str) -> None:
     """If these lists drift, `langchain-anthropic` strips the blocks with only a warning."""
-    for prefix in _ANTHROPIC_INLINE_TOOL_MODELS:
-        assert _supports_mid_conversation_system_messages(prefix), prefix
+    for family in _ANTHROPIC_INLINE_TOOL_MODELS:
+        assert _supports_mid_conversation_system_messages(f"{id_prefix}{family}"), f"{id_prefix}{family}"
 
 
 def _stub(provider: str, monkeypatch: pytest.MonkeyPatch, turns: list[Any], **model_kwargs: Any) -> tuple[BaseChatModel, ProviderStub]:
-    """Return an inline-capable model for `provider` and its HTTP stub."""
+    """Return a model for `provider`, inline-capable unless `model_kwargs` say otherwise, and its HTTP stub."""
     if provider == "anthropic":
         return stub_anthropic(monkeypatch, turns, **model_kwargs)
+    if provider == "openai-mantle":
+        return stub_openai_mantle(turns, **model_kwargs)
     return stub_openai(turns, **model_kwargs)
 
 

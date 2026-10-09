@@ -16,6 +16,7 @@ import httpx
 import langchain_anthropic.chat_models as anthropic_chat_models
 from langchain.tools import ToolRuntime  # noqa: TC002  # `@tool` resolves the injected `runtime` annotation at runtime
 from langchain_anthropic import ChatAnthropic
+from langchain_aws import ChatOpenAIMantle
 from langchain_core.messages import AIMessage, ToolCall
 from langchain_core.tools import BaseTool, StructuredTool, tool
 from langchain_openai import ChatOpenAI
@@ -289,16 +290,37 @@ def stub_anthropic(
 
 
 def stub_openai(
-    turns: list[Turn], model: str = "gpt-6-astra", *, use_responses_api: bool = True, **model_kwargs: Any
+    turns: list[Turn],
+    model: str = "gpt-6-astra",
+    *,
+    use_responses_api: bool = True,
+    model_class: type[ChatOpenAI] = ChatOpenAI,
+    **model_kwargs: Any,
 ) -> tuple[ChatOpenAI, ProviderStub]:
-    """Return a real `ChatOpenAI` whose HTTP transport answers from `turns`."""
+    """Return a real `ChatOpenAI`, or `model_class`, whose HTTP transport answers from `turns`."""
     stub = ProviderStub(openai_response if use_responses_api else openai_chat_completion, list(turns))
     transport = httpx.MockTransport(stub)
-    chat_model = ChatOpenAI(
+    chat_model = model_class(
         model=model,
         api_key="test-key",
         max_retries=0,
         use_responses_api=use_responses_api,
+        http_client=httpx.Client(transport=transport),
+        http_async_client=httpx.AsyncClient(transport=transport),
+        **model_kwargs,
+    )
+    return chat_model, stub
+
+
+def stub_openai_mantle(turns: list[Turn], model: str = "openai.gpt-5.6-luna", **model_kwargs: Any) -> tuple[ChatOpenAIMantle, ProviderStub]:
+    """Return a real langchain-aws `ChatOpenAIMantle` whose HTTP transport answers from `turns`."""
+    stub = ProviderStub(openai_response, list(turns))
+    transport = httpx.MockTransport(stub)
+    chat_model = ChatOpenAIMantle(
+        model=model,
+        region_name="us-east-1",
+        bedrock_api_key="test-key",
+        max_retries=0,
         http_client=httpx.Client(transport=transport),
         http_async_client=httpx.AsyncClient(transport=transport),
         **model_kwargs,

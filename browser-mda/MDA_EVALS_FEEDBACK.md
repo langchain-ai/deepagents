@@ -173,6 +173,17 @@ cannot invoke either.
 limitation explicit at `mda evals init` so authors do not build a task the agent
 cannot perform.
 
+**Why this is not merely a missing feature.** Stripping the backend changes the
+agent's execution model, so the score does not describe the deployed agent. A
+browsing agent that scores 0 here is not a worse agent -- it is the same agent
+with its only means of acting removed. Evals whose environment differs from
+production in a load-bearing way report something other than what they appear to.
+
+For this project it decided the approach: the suite runs against the deployed
+agent instead, accepting that LangSmith's native Cost/Tokens columns stay empty
+(related issue 5), because an eval that keeps the sandbox is worth more than one
+that reports cost but measures a different agent.
+
 ### 10. `usage` is null in the agent summary
 
 `agent/summary.json` reports `"usage": null`, so per-trial token accounting is
@@ -346,3 +357,102 @@ list Docker as a prerequisite; with `environment.type = "langsmith"` in
 `harbor-job.json`, **no local Docker daemon is needed at all** — Docker Desktop
 was never started on this machine. Worth promoting from a footnote: it removes
 the heaviest local prerequisite.
+
+---
+
+## Sandbox backends in evals — mechanism, and how small the fix is
+
+Append-only. **Numbering note for whoever reconciles this file:** there are now
+two issue 9s and two issue 10s, written concurrently by two agents. The two 9s
+are the *same finding* reached independently (no shell in eval trials) — that
+convergence is itself signal about how easy it is to hit. The two 10s are
+different: the main list's 10 is `usage: null`; the addendum's 10 is SIGTERM
+cancellation. Suggest renumbering the addendum's to 11 and 12.
+
+This section adds what neither 9 covers: **why** it happens, the second trap
+waiting behind it, and the fact that the fix is a few lines.
+
+### It is disabled in two places, and the first one is correct
+
+**1. The sandbox is deliberately not provisioned for trials.** `runtime.py`:
+
+```python
+run_sandbox = (
+    None if trial_root_dir is not None else _select_run_sandbox(definition.config, sandbox)
+)
+```
+
+`trial_root_dir` is set only for eval trials. This is the right call: a Harbor
+trial is already an isolated container, and provisioning a LangSmith sandbox
+inside it would nest one sandbox in another. The design intent is clearly *the
+trial container is the environment* — which is exactly why the adapter runs
+`sandbox/setup.sh` inside it (issue 4).
+
+**2. The backend is then replaced with a filesystem-only view of that
+container.** `_prepare_eval_definition`:
+
+```python
+merged["backend"] = create_eval_trial_filesystem_backend(FilesystemBackend, ...)
+```
+
+Step 1 decides the container is the environment. Step 2 hands the agent a
+backend that can read and write that container but not run anything in it. The
+asymmetry both 9s describe — Chrome installed, Chrome unreachable — falls
+directly out of this pairing. Step 2 is the defect; step 1 is sound.
+
+### The fix is nearly free — `create_eval_trial_filesystem_backend` is already parameterized
+
+It takes the backend class as its first argument, and `LocalShellBackend` is a
+`FilesystemBackend` subclass. Measured against the installed runtime
+(`managed-deepagents` 0.9.0):
+
+| backend class | `hide_skills` | resulting type | `supports_execution` |
+| --- | --- | --- | --- |
+| `FilesystemBackend` | False | `FilesystemBackend` | ❌ |
+| `FilesystemBackend` | True | `_FilteredEvalFilesystemBackend` | ❌ |
+| **`LocalShellBackend`** | **False** | `LocalShellBackend` | **✅** |
+| `LocalShellBackend` | True | `_FilteredEvalFilesystemBackend` | ❌ |
+
+Passing `LocalShellBackend` at that one call site restores `execute`. Running
+an unrestricted local shell is appropriate here for the same reason
+`sandbox/setup.sh` runs Chrome with `--no-sandbox`: the trial container is the
+isolation boundary, and it is single-use.
+
+### The second trap: any project with `skills/` stays broken after that fix
+
+Note row 4 of the table. The wrapper is selected by:
+
+```python
+hide_skills="skills" in merged
+```
+
+`_FilteredEvalFilesystemBackend` exposes only `ls`, `read`, `glob`, `grep`,
+`write`, `edit`, `delete`, `upload_files`, `download_files`. **It does not
+delegate `execute` or `aexecute`**, so wrapping an execution-capable backend
+silently strips execution again.
+
+This is not an edge case. `browser-mda` has `skills/web-browsing/`, and skills
+are a headline MDA feature — so the agents most likely to be worth evaluating
+are exactly the ones that hit it. A fix that only swaps the class will look
+correct in a skill-less test project and still fail for real ones.
+
+**Ask, concretely — both are needed:**
+
+1. Use an execution-capable backend for trials (`LocalShellBackend` rooted at
+   the trial dir), or honor one the project supplies.
+2. Have `_FilteredEvalFilesystemBackend` delegate `execute`/`aexecute` when the
+   wrapped backend supports them.
+
+And until then, the strongest ask from both 9s stands: **fail loudly**. A
+project that calls `define_sandbox()` should error at eval-compile time rather
+than lose a capability at run time. Silent capability loss scores as ordinary
+agent failure — we came close to publishing ~0% for two browsing agents on a
+suite none of them could physically perform.
+
+### Attribution correction to the addendum above
+
+The addendum says "there has now been 1 completed trial" and quotes its answer.
+That trial was run by the other session (job `2026-10-09__12-41-36`, the
+`webvoyager-apple-processor` task), not by the addendum's author, whose own
+Harbor runs produced zero completed trials. The backend finding does not rest on
+it — it was verified directly against the installed runtime, as above.

@@ -1,0 +1,26 @@
+browser-mda/sydney_eval_notes.md
+  s_199de864fdc442::t_fdcbb370f6eaa4 1-127
+browser-mda/benchmarks/webvoyager/HARNESS_FINDINGS.md
+  s_199de864fdc442::t_630c297c7d1adb 1-192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5124af8800280421020f4ad3aeb1e73b1ca83b5d",
+  "prompts": {},
+  "humans": {
+    "h_152f5d9f78d224": {
+      "author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

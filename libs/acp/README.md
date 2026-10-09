@@ -127,7 +127,7 @@ the conversation to the client through `session/update` before returning.
 ### Tool approvals
 
 The agent's `interrupt_on` configuration determines which tool calls require
-approval. For those calls, the adapter offers these choices:
+approval. For those calls, `deepagents-acp` offers these choices:
 
 | Choice | Effect | Example |
 | --- | --- | --- |
@@ -137,19 +137,13 @@ approval. For those calls, the adapter offers these choices:
 | **Always allow &lt;tool&gt; commands** (other tools) | Allow subsequent calls to that tool in this session, including different arguments. | Approving `write_file` this way also allows writes to other paths. |
 
 Cancelling the dialog or returning an unknown or unoffered choice rejects the
-call. Invalid shell requests cannot receive reusable approval. This adapter does
-not offer an **Always reject** option. Permission choices are separate from ACP
-session modes: a mode may change the agent's behavior, but does not itself grant
-permission. Available modes depend on the agent configuration.
+call. Permission choices are separate from ACP session modes: a mode may change
+the agent's behavior, but does not itself grant permission. Available modes depend
+on the agent configuration.
 
 Remembered approvals are kept in memory, not persisted across server restarts,
 even when conversation history uses a durable checkpointer. Shell approvals do
 not extend to other commands that use the same program.
-
-Approval is not sandboxing: the same command can behave differently if files,
-executables, the backend, or its environment change. Session context does not
-verify the backend's actual execution environment. Use an isolated execution
-backend for untrusted workloads.
 
 ### Launch with Toad
 

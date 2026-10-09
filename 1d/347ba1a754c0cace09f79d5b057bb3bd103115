@@ -1,0 +1,40 @@
+browser-mda/evals/webvoyager-apple-processor/Task.md
+  s_199de864fdc442::t_11b1d59a9ec123 1-33
+browser-mda/evals/webvoyager-apple-processor/environment/Dockerfile
+  s_199de864fdc442::t_9ac1388bf13683 1-6,10-12
+  s_199de864fdc442::t_01280a35098405 15-21
+  s_199de864fdc442::t_435c038a58f023 7
+  s_199de864fdc442::t_1a854a6d07a4ac 8-9,13-14,22
+browser-mda/evals/webvoyager-apple-processor/instruction.md
+  s_199de864fdc442::t_99301c8626c8a8 1-6
+browser-mda/evals/harbor-job.json
+  s_199de864fdc442::t_b197a88e03475a 1-49,52,54,56
+  s_199de864fdc442::t_a53600090deeb1 50-51,53,55
+browser-mda/MDA_EVALS_FEEDBACK.md
+  s_199de864fdc442::t_1bc392b01fa33c 1-160
+browser-mda/evals/webvoyager-apple-processor/task.toml
+  s_199de864fdc442::t_99301c8626c8a8 1-14
+browser-mda/evals/webvoyager-apple-processor/tests/test.sh
+  s_199de864fdc442::t_99301c8626c8a8 1-27
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1d347ba1a754c0cace09f79d5b057bb3bd103115",
+  "prompts": {},
+  "humans": {
+    "h_152f5d9f78d224": {
+      "author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

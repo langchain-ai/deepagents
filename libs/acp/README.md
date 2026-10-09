@@ -124,6 +124,20 @@ checkpointer is suitable for tests but does not provide restart persistence. On 
 adapter restores the LangGraph thread, verifies the original working directory, and replays
 the conversation to the client through `session/update` before returning.
 
+### Shell command approvals
+
+When shell execution requires approval, **Always allow this exact command in this
+session** remembers the full command and tool arguments, scoped to the session's
+working directory, mode, and model. Changing the command, any argument, or that
+context requires approval again. It does not grant permission to other commands
+that use the same program. Approvals are kept in memory, not persisted across
+server restarts.
+
+Approval is not sandboxing: the same command can behave differently if files,
+executables, the backend, or its environment change. Session context does not
+verify the backend's actual execution environment. Use an isolated execution
+backend for untrusted workloads.
+
 ### Launch with Toad
 
 ```sh

@@ -62,15 +62,12 @@ from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import Command, StateSnapshot
 
 from deepagents_acp.utils import (
-    contains_dangerous_patterns,
     convert_audio_block_to_content_blocks,
     convert_embedded_resource_block_to_content_blocks,
     convert_image_block_to_content_blocks,
     convert_resource_block_to_content_blocks,
     convert_text_block_to_content_blocks,
-    extract_command_types,
     format_execute_result,
-    truncate_execute_command_for_display,
 )
 
 if TYPE_CHECKING:
@@ -274,6 +271,7 @@ class AgentServerACP(ACPAgent):
         self._allowed_command_types: dict[
             str, set[tuple[str, str | None]]
         ] = {}  # Track allowed command types per session
+        self._allowed_execute_commands: dict[str, set[tuple[AgentSessionContext, str]]] = {}
 
     def on_connect(self, conn: Client) -> None:
         """Store the client connection for sending session updates."""
@@ -921,6 +919,7 @@ class AgentServerACP(ACPAgent):
     def _forget_session(self, session_id: str) -> None:
         """Discard state created while validating a session."""
         self._session_cwds.pop(session_id, None)
+        self._allowed_execute_commands.pop(session_id, None)
         if self._agent_session_id == session_id:
             self._agent = None
             self._agent_session_id = None
@@ -1137,6 +1136,28 @@ class AgentServerACP(ACPAgent):
 
         return PromptResponse(stop_reason="end_turn")
 
+    def _execute_permission_key(
+        self, session_id: str, tool_args: object
+    ) -> tuple[AgentSessionContext, str] | None:
+        """Identify an exact execute request in its current ACP session context."""
+        if not isinstance(tool_args, dict) or session_id not in self._session_cwds:
+            return None
+        command = tool_args.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return None
+        context = AgentSessionContext(
+            cwd=self._session_cwds[session_id],
+            mode=self._session_modes.get(session_id, "auto"),
+            model=self._session_models.get(session_id),
+        )
+        try:
+            arguments = json.dumps(tool_args, sort_keys=True, allow_nan=False)
+            if json.loads(arguments) != tool_args:
+                return None
+        except (TypeError, ValueError):
+            return None
+        return context, arguments
+
     async def _handle_interrupts(  # noqa: C901, PLR0912, PLR0915  # Complex HITL permission handling with many branches
         self,
         *,
@@ -1181,32 +1202,21 @@ class AgentServerACP(ACPAgent):
                                 user_decisions.append({"type": "approve"})
                                 continue
 
-                    if session_id in self._allowed_command_types:
-                        if tool_name == "execute" and isinstance(tool_args, dict):
-                            command = tool_args.get("command", "")
-
-                            # Never auto-approve commands that contain
-                            # dangerous shell metacharacters (e.g. $(),
-                            # backticks, ;, redirects).  These can smuggle
-                            # arbitrary execution inside an otherwise-safe
-                            # command that the user previously approved.
-                            if not contains_dangerous_patterns(command):
-                                command_types = extract_command_types(command)
-
-                                if command_types:
-                                    # Check if ALL command types are already allowed
-                                    all_allowed = all(
-                                        ("execute", cmd_type)
-                                        in self._allowed_command_types[session_id]
-                                        for cmd_type in command_types
-                                    )
-                                    if all_allowed:
-                                        # Auto-approve this command
-                                        user_decisions.append({"type": "approve"})
-                                        continue
-                        elif (tool_name, None) in self._allowed_command_types[session_id]:
+                    execute_key = (
+                        self._execute_permission_key(session_id, tool_args)
+                        if tool_name == "execute"
+                        else None
+                    )
+                    if tool_name == "execute":
+                        if (
+                            execute_key is not None
+                            and execute_key in self._allowed_execute_commands.get(session_id, set())
+                        ):
                             user_decisions.append({"type": "approve"})
                             continue
+                    elif (tool_name, None) in self._allowed_command_types.get(session_id, set()):
+                        user_decisions.append({"type": "approve"})
+                        continue
 
                     # Create a title for the permission request
                     if tool_name == "write_todos":
@@ -1226,26 +1236,9 @@ class AgentServerACP(ACPAgent):
                         title = f"Write `{file_path}`"
                     elif tool_name == "execute" and isinstance(tool_args, dict):
                         command = tool_args.get("command", "")
-                        # Truncate long commands for display
-                        display_command = truncate_execute_command_for_display(command=command)
-                        title = f"Execute: `{display_command}`" if command else "Execute command"
+                        title = f"Execute: `{command}`" if command else "Execute command"
                     else:
                         title = tool_name
-
-                    desc = tool_name
-                    if tool_name == "execute" and isinstance(tool_args, dict):
-                        command = tool_args.get("command", "")
-                        command_types = extract_command_types(command)
-                        if command_types:
-                            # Create a descriptive name based on the command types
-                            if len(command_types) == 1:
-                                desc = f"`{command_types[0]}`"
-                            else:
-                                # Show all unique command types
-                                unique_types = list(
-                                    dict.fromkeys(command_types)
-                                )  # Preserve order, remove duplicates
-                                desc = ", ".join(f"`{ct}`" for ct in unique_types)
 
                     # Create permission options
                     options = [
@@ -1259,12 +1252,19 @@ class AgentServerACP(ACPAgent):
                             name="Reject",
                             kind="reject_once",
                         ),
-                        PermissionOption(
-                            option_id="approve_always",
-                            name=f"Always allow {desc} commands",
-                            kind="allow_always",
-                        ),
                     ]
+                    if tool_name != "execute" or execute_key is not None:
+                        options.append(
+                            PermissionOption(
+                                option_id="approve_always",
+                                name=(
+                                    "Always allow this exact command in this session"
+                                    if tool_name == "execute"
+                                    else f"Always allow {tool_name} commands"
+                                ),
+                                kind="allow_always",
+                            )
+                        )
 
                     # Request permission from the client
                     tool_call_update = ToolCallUpdate(
@@ -1279,21 +1279,17 @@ class AgentServerACP(ACPAgent):
                     if response.outcome.outcome == "selected":
                         decision_type = response.outcome.option_id
 
-                        # If rejecting a plan, clear it and provide feedback
+                        if decision_type not in {option.option_id for option in options}:
+                            decision_type = "reject"
                         if decision_type == "approve_always":
-                            if session_id not in self._allowed_command_types:
-                                self._allowed_command_types[session_id] = set()
-                            if tool_name == "execute":
-                                command = tool_args.get("command", "")
-                                command_types = extract_command_types(command)
-                                if command_types:
-                                    for cmd_type in command_types:
-                                        self._allowed_command_types[session_id].add(
-                                            ("execute", cmd_type)
-                                        )
-                            else:
-                                self._allowed_command_types[session_id].add((tool_name, None))
-                            # Approve this command
+                            if tool_name == "execute" and execute_key is not None:
+                                self._allowed_execute_commands.setdefault(session_id, set()).add(
+                                    execute_key
+                                )
+                            elif tool_name != "execute":
+                                self._allowed_command_types.setdefault(session_id, set()).add(
+                                    (tool_name, None)
+                                )
                             user_decisions.append({"type": "approve"})
                         elif tool_name == "write_todos" and decision_type == "reject":
                             await self._clear_plan(session_id)

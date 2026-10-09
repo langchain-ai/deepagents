@@ -1,8 +1,9 @@
 """Skill tool disclosure observed in the request payload that reaches each provider.
 
-Real `ChatAnthropic` and `ChatOpenAI` models run with only their HTTP transport
-stubbed, so these tests check placement, caching and gating where they matter:
-in the bytes sent to the provider.
+Real `ChatAnthropic` and `ChatOpenAI` models, and their Azure, Codex and
+langchain-aws counterparts, run with only their HTTP transport stubbed, so these
+tests check placement, caching and gating where they matter: in the bytes sent
+to the provider.
 """
 
 from __future__ import annotations
@@ -18,13 +19,13 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelFallbackMiddleware
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
-from langchain_anthropic.chat_models import _supports_mid_conversation_system_messages
+from langchain_aws import ChatAnthropicBedrock, ChatAnthropicMantle
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, tool
+from langchain_openai import AzureChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 
 from deepagents.middleware import FilesystemMiddleware
-from deepagents.middleware._skill_tools import _ANTHROPIC_INLINE_TOOL_MODELS
 from deepagents.middleware.skills import SkillsMiddleware, disclosed_skill_tool_names
 from deepagents.middleware.summarization import SummarizationMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -48,7 +49,10 @@ from tests.unit_tests.middleware.skill_tools_support import (
     skills_agent,
     skills_backend,
     stub_anthropic,
+    stub_anthropic_on_bedrock,
     stub_openai,
+    stub_openai_codex,
+    stub_openai_mantle,
     tool_messages,
     write_skill,
 )
@@ -282,15 +286,35 @@ def test_skill_naming_a_bound_tool_sends_nothing(tmp_path: Path, monkeypatch: py
     assert _tool_names(stub.bodies[1]) == _tool_names(stub.bodies[0])
 
 
+_INLINE_TOOLS_PROFILE = {"mid_conversation_system_messages": True, "mid_conversation_tool_definitions": True}
+"""A profile claiming inline tool definitions, and the in-place system messages they ride on."""
+
+_NO_INLINE_TOOLS_PROFILE = {**_INLINE_TOOLS_PROFILE, "mid_conversation_tool_definitions": False}
+"""A profile for a model that keeps system messages in place but can't take a tool there."""
+
+
 @pytest.mark.parametrize(
-    "provider",
+    ("provider", "model_kwargs"),
     [
-        pytest.param("claude-sonnet-5", id="anthropic-without-inline-tools"),
-        pytest.param("chat-completions", id="openai-without-responses-api"),
-        pytest.param("gpt-5.5", id="openai-responses-model-not-allowlisted"),
+        pytest.param("anthropic", {"model": "claude-sonnet-5"}, id="anthropic-sonnet-5"),
+        pytest.param("anthropic", {"profile": _NO_INLINE_TOOLS_PROFILE}, id="anthropic-profile-says-no"),
+        pytest.param("openai", {"profile": _NO_INLINE_TOOLS_PROFILE}, id="openai-profile-says-no"),
+        pytest.param("openai", {"use_responses_api": False}, id="openai-chat-completions"),
+        pytest.param("openai", {"model": "gpt-4o"}, id="openai-model-without-inline-tools"),
+        # Both send OpenAI's model IDs but make no claim (Azure) or lift system
+        # messages into `instructions` (Codex).
+        pytest.param("azure-openai", {}, id="azure-openai"),
+        pytest.param(
+            "openai-codex",
+            {},
+            id="openai-codex",
+            marks=pytest.mark.filterwarnings("ignore:`_ChatOpenAICodex` is experimental and unofficial:UserWarning"),
+        ),
     ],
 )
-def test_unsupported_models_bind_disclosed_tools_until_compaction(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: str) -> None:
+def test_unsupported_models_bind_disclosed_tools_until_compaction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: str, model_kwargs: dict[str, Any]
+) -> None:
     write_skill(tmp_path, "crm", "create_customer_request")
     turns: list[Any] = [
         [call("create_customer_request", "c1", title="early")],
@@ -299,12 +323,7 @@ def test_unsupported_models_bind_disclosed_tools_until_compaction(tmp_path: Path
         [call("create_customer_request", "c2", title="late")],
         "done",
     ]
-    if provider == "claude-sonnet-5":
-        model, stub = stub_anthropic(monkeypatch, turns, model=provider)
-    elif provider == "chat-completions":
-        model, stub = stub_openai(turns, use_responses_api=False)
-    else:
-        model, stub = stub_openai(turns, model=provider)
+    model, stub = _stub(provider, monkeypatch, turns, **model_kwargs)
     summarization = SummarizationMiddleware(
         model=GenericFakeChatModel(messages=iter(["summary"])),
         backend=skills_backend(tmp_path),
@@ -339,24 +358,63 @@ def test_model_fallback_builds_blocks_for_the_model_actually_called(tmp_path: Pa
     assert openai_addition["tools"] == [_CREATE_CUSTOMER_REQUEST_FUNCTION]
 
 
-def test_inline_anthropic_models_are_sent_in_place_by_langchain_anthropic() -> None:
-    """If these lists drift, `langchain-anthropic` strips the blocks with only a warning."""
-    for prefix in _ANTHROPIC_INLINE_TOOL_MODELS:
-        assert _supports_mid_conversation_system_messages(prefix), prefix
-
-
 def _stub(provider: str, monkeypatch: pytest.MonkeyPatch, turns: list[Any], **model_kwargs: Any) -> tuple[BaseChatModel, ProviderStub]:
-    """Return an inline-capable model for `provider` and its HTTP stub."""
-    if provider == "anthropic":
-        return stub_anthropic(monkeypatch, turns, **model_kwargs)
-    return stub_openai(turns, **model_kwargs)
+    """Return a model for `provider`, inline-capable unless `model_kwargs` say otherwise, and its HTTP stub."""
+    stubs: dict[str, Callable[[], tuple[BaseChatModel, ProviderStub]]] = {
+        "anthropic": lambda: stub_anthropic(monkeypatch, turns, **model_kwargs),
+        "anthropic-bedrock": lambda: stub_anthropic_on_bedrock(
+            monkeypatch, turns, ChatAnthropicBedrock, "global.anthropic.claude-opus-5-5", **model_kwargs
+        ),
+        "anthropic-mantle": lambda: stub_anthropic_on_bedrock(monkeypatch, turns, ChatAnthropicMantle, "anthropic.claude-opus-5-5", **model_kwargs),
+        "openai": lambda: stub_openai(turns, **model_kwargs),
+        "openai-mantle": lambda: stub_openai_mantle(turns, **model_kwargs),
+        "azure-openai": lambda: stub_openai(
+            turns, model_class=AzureChatOpenAI, azure_endpoint="https://test.openai.azure.com", api_version="2025-04-01-preview", **model_kwargs
+        ),
+        "openai-codex": lambda: stub_openai_codex(turns, **model_kwargs),
+    }
+    return stubs[provider]()
 
 
 def _disclosed_names(provider: str, body: dict[str, Any]) -> list[str]:
     """Return the tool names disclosed mid-conversation in one request."""
-    if provider == "anthropic":
+    if provider.startswith("anthropic"):
         return [block["tool"]["definition"]["name"] for _, content in _anthropic_system_turns(body) for block in content]
     return [tool["name"] for _, item in _openai_additions(body) for tool in item["tools"]]
+
+
+@pytest.mark.parametrize("provider", ["anthropic-bedrock", "anthropic-mantle", "openai-mantle"])
+def test_bedrock_models_disclose_inline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: str) -> None:
+    write_skill(tmp_path, "crm", "create_customer_request")
+    model, stub = _stub(provider, monkeypatch, [[read("r1")], [call("create_customer_request", "c1", title="refund")], "done"])
+
+    result = invoke(skills_agent(tmp_path, model), {"messages": [HumanMessage("file a refund request")]}, mode)
+
+    before, disclosed, after = stub.bodies
+    assert "create_customer_request" not in json.dumps(before)
+    assert _disclosed_names(provider, disclosed) == _disclosed_names(provider, after) == ["create_customer_request"]
+    assert _tool_names(disclosed) == _tool_names(before)
+    assert tool_messages(result, "create_customer_request")[0].content == "created refund (c1)"
+
+
+@pytest.mark.parametrize(
+    ("provider", "model_kwargs"),
+    [
+        pytest.param("anthropic", {"model": "claude-opus-9"}, id="anthropic"),
+        pytest.param("openai", {"model": "gpt-9"}, id="openai"),
+    ],
+)
+def test_a_profile_claiming_inline_tools_discloses_inline_whatever_the_model_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: str, model_kwargs: dict[str, Any]
+) -> None:
+    write_skill(tmp_path, "crm", "create_customer_request")
+    model, stub = _stub(provider, monkeypatch, [[read("r1")], "done"], profile=_INLINE_TOOLS_PROFILE, **model_kwargs)
+
+    invoke(skills_agent(tmp_path, model), {"messages": [HumanMessage("go")]}, mode)
+
+    before, disclosed = stub.bodies
+    assert _disclosed_names(provider, disclosed) == ["create_customer_request"]
+    assert _tool_names(disclosed) == _tool_names(before)
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
@@ -388,7 +446,7 @@ def test_inline_disclosure_sees_through_a_bound_model(tmp_path: Path, monkeypatc
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
 def test_unsupported_content_filtering_keeps_disclosure_blocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: str) -> None:
     write_skill(tmp_path, "crm", "create_customer_request")
-    model, stub = _stub(provider, monkeypatch, ["done"], profile={"image_inputs": False})
+    model, stub = _stub(provider, monkeypatch, ["done"], profile={**_INLINE_TOOLS_PROFILE, "image_inputs": False})
     screenshot = HumanMessage(content=[{"type": "text", "text": "see this"}, {"type": "image", "base64": "iVBORw0KGgo=", "mime_type": "image/png"}])
 
     invoke(skills_agent(tmp_path, model), {"messages": [screenshot, ai(read("r1")), ToolMessage("# crm", tool_call_id="r1")]}, mode)

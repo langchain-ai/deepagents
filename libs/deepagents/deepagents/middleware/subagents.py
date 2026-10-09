@@ -397,6 +397,10 @@ When returning updates:
 """
 
 
+_EXCLUDED_OUTPUT_STATE_KEYS = _EXCLUDED_STATE_KEYS | {"rubric"}
+"""A child may inherit the caller's rubric, but cannot replace the parent's goal."""
+
+
 _TASK_TOOL_INJECTED_ARGS = frozenset({"runtime"})
 """Arguments the tool node injects into the `task` call alongside the model's."""
 
@@ -703,7 +707,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             )
             raise ValueError(error_msg)
 
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys}
+        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_OUTPUT_STATE_KEYS and k not in private_state_keys}
 
         structured = result.get("structured_response")
         if structured is not None:

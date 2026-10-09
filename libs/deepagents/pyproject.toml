@@ -21,10 +21,10 @@ classifiers = [
 ]
 dependencies = [
     "langchain>=1.4.4,<2.0.0",
-    "langchain-core>=1.6.7,<2.0.0",
+    "langchain-core>=1.6.9,<2.0.0",
     "langchain-anthropic>=1.7.5,<2.0.0",
     "langchain-google-genai>=4.4.0,<5.0.0",
-    "langsmith>=0.14.4",
+    "langsmith>=0.14.5",
     "packaging>=23.2",
     "wcmatch>=11.0",
 ]
@@ -58,7 +58,7 @@ test = [
   "ty>=0.0.62,<1.0.0",
   "pytest-asyncio>=1.4.0",
   "langchain-tests>=1.1.9",
-  "langchain-openai>=1.6.7,<2.0.0",
+  "langchain-openai>=1.7.0,<2.0.0",
   "twine",
   "build",
   # Lazy-imported at runtime so the core package does

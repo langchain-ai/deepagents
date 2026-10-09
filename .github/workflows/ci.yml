@@ -57,6 +57,7 @@ jobs:
       evals: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.evals == 'true' }}
       acp: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.acp == 'true' }}
       daytona: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.daytona == 'true' }}
+      smol: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.smol == 'true' }}
       modal: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.modal == 'true' }}
       runloop: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.runloop == 'true' }}
       vercel: ${{ steps.curated-apply.outputs.only != 'true' && steps.filter.outputs.vercel == 'true' }}
@@ -210,6 +211,13 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
+            smol:
+              - 'libs/partners/smol/**'
+              - 'libs/deepagents/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
             modal:
               - 'libs/partners/modal/**'
               - 'libs/deepagents/**'
@@ -291,6 +299,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/daytona"
+      python-version: "3.11"
+
+  lint-smol:
+    name: "🧹 Lint smol"
+    needs: changes
+    if: needs.changes.outputs.smol == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/smol"
       python-version: "3.11"
 
   lint-modal:
@@ -383,6 +400,15 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/daytona"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+
+  test-smol:
+    name: "🧪 Test smol"
+    needs: changes
+    if: needs.changes.outputs.smol == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/smol"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
 
   test-modal:
@@ -696,6 +722,7 @@ jobs:
       - lint-evals
       - lint-acp
       - lint-daytona
+      - lint-smol
       - lint-modal
       - lint-runloop
       - lint-vercel
@@ -706,6 +733,7 @@ jobs:
       - test-evals
       - test-acp
       - test-daytona
+      - test-smol
       - test-modal
       - test-runloop
       - test-vercel

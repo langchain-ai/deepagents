@@ -53,6 +53,7 @@ PROJECT_READMES = frozenset(
         "libs/deepagents/README.md",
         "libs/evals/README.md",
         "libs/partners/daytona/README.md",
+        "libs/partners/smol/README.md",
         "libs/partners/modal/README.md",
         "libs/partners/quickjs/README.md",
         "libs/partners/runloop/README.md",

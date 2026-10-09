@@ -19,6 +19,7 @@ on:
           - all
           - libs/deepagents
           - libs/partners/daytona
+          - libs/partners/smol
           - libs/partners/modal
           - libs/partners/runloop
       working-directory-override:
@@ -38,6 +39,7 @@ env:
   DEFAULT_LIBS: >-
     ["libs/deepagents",
     "libs/partners/daytona",
+    "libs/partners/smol",
     "libs/partners/modal",
     "libs/partners/runloop"]
 
@@ -116,6 +118,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ (matrix.working-directory == 'libs/deepagents' || matrix.working-directory == 'libs/partners/quickjs') && secrets.ANTHROPIC_API_KEY || '' }}
           DAYTONA_API_KEY: ${{ (matrix.working-directory == 'libs/partners/daytona' || matrix.working-directory == 'libs/code') && secrets.DAYTONA_API_KEY || '' }}
+          SMOL_CLOUD_TOKEN: ${{ matrix.working-directory == 'libs/partners/smol' && secrets.SMOL_CLOUD_TOKEN || '' }}
           LANGSMITH_API_KEY: ${{ (matrix.working-directory == 'libs/deepagents' || matrix.working-directory == 'libs/code') && secrets.LANGSMITH_API_KEY || '' }}
           MODAL_TOKEN_ID: ${{ (matrix.working-directory == 'libs/partners/modal' || matrix.working-directory == 'libs/code') && secrets.MODAL_TOKEN_ID || '' }}
           MODAL_TOKEN_SECRET: ${{ (matrix.working-directory == 'libs/partners/modal' || matrix.working-directory == 'libs/code') && secrets.MODAL_TOKEN_SECRET || '' }}

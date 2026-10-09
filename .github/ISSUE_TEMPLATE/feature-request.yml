@@ -47,6 +47,7 @@ body:
         - label: acp
         - label: evals
         - label: daytona
+        - label: smol
         - label: modal
         - label: quickjs
         - label: runloop

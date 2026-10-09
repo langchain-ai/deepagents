@@ -846,6 +846,12 @@ class ExecuteArtifact(TypedDict):
     Omitted when the exit code could not be determined.
     """
 
+    truncated: NotRequired[bool]
+    """Whether backend limits discarded output, rather than merely offloading it."""
+
+    output_file: NotRequired[str]
+    """Backend path to captured output, which may be incomplete when truncated."""
+
 
 @dataclass(frozen=True, slots=True)
 class ExecuteOffloadResult:

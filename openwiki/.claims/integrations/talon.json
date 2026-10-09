@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:ec9d0b19011d15b4593a16854416dcabeff1514ce69d04092bc3fe792fae9981",
+  "pageVersion": "sha256:d8f88ea2956f7580d7d129f2afffcf7154bde551c943f0efa6780fe17ba65a4c",
   "claims": [
     {
       "id": "claim_5a4ee44bdfc94fe0b737b4c36af91fa8",
@@ -34,7 +34,7 @@
     },
     {
       "id": "claim_68f5bcd7f6ab4db98928bb0ba20353d2",
-      "statement": "Discord registers visible shared commands as native slash commands when enabled, whereas Slack exposes one `/talon` slash command and requires bot mention plus typed command text in channel threads.",
+      "statement": "Discord registers visible shared commands as native slash commands when enabled, whereas Slack exposes one app-owned slash command and requires bot mention plus typed command text in channel threads.",
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/channels/discord.py",
@@ -42,7 +42,7 @@
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/channels/slack.py",
-          "version": "repo-file-v1:sha256:b6eddc1e34932407294622fcf7625c791896d6cfb7d2675ae1ef60ef4fcfd9c2"
+          "version": "repo-file-v1:sha256:de1eab32614881518942b5880be7557375e3ee9e0b05ba5365419f38fcaaffb5"
         }
       ]
     },
@@ -98,7 +98,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:31a70bf1da8f4fabdfa6fa17363594f8d0d7b1a56768ad8fb52d0f836fe883a2"
+          "version": "repo-file-v1:sha256:bce54cf55524dcc4ae03727f3ae9cc6858919c1ea6d519fbf70cd8480b791f91"
         }
       ]
     },
@@ -170,7 +170,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/channels/slack.py",
-          "version": "repo-file-v1:sha256:b6eddc1e34932407294622fcf7625c791896d6cfb7d2675ae1ef60ef4fcfd9c2"
+          "version": "repo-file-v1:sha256:de1eab32614881518942b5880be7557375e3ee9e0b05ba5365419f38fcaaffb5"
         }
       ]
     },
@@ -214,7 +214,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:31a70bf1da8f4fabdfa6fa17363594f8d0d7b1a56768ad8fb52d0f836fe883a2"
+          "version": "repo-file-v1:sha256:bce54cf55524dcc4ae03727f3ae9cc6858919c1ea6d519fbf70cd8480b791f91"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
@@ -232,7 +232,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:31a70bf1da8f4fabdfa6fa17363594f8d0d7b1a56768ad8fb52d0f836fe883a2"
+          "version": "repo-file-v1:sha256:bce54cf55524dcc4ae03727f3ae9cc6858919c1ea6d519fbf70cd8480b791f91"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/__main__.py",
@@ -368,15 +368,15 @@
     },
     {
       "id": "claim_58fc7dab33ef4529bf32a94346aa462b",
-      "statement": "Slack channel threads have separate active conversations and reply destinations but share archive history at channel scope; only bounded preceding replies from operators and allowlisted users may be added as thread context.",
+      "statement": "Slack channel threads have separate active conversations and reply destinations but share archive history at channel scope; bounded preceding replies from operators and allowlisted users are added as thread context by default, while an explicit setting can include other participants.",
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md#L485-L493",
-          "version": "repo-lines-v1:sha256:737af7d8b9148152ef7ae37ead98f66627f6239064a6e5b6972e0d12cdcb0815:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzY2ZTM2YjA5MzgzNWU3MDBiNWUxNDQyNGFiYjY0MGM2YWFiZGQ1NTg4N2NjMjZlOWU5ZDcwNjY1YzY4MDQ3ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDc3MzYwZjlmMTYwYmI2NjMwZWNhZmQ1MDQ4NGM4ZjMyMzYzZmFjODNhN2M1ZTk2ODgzODJjZGEyNDA1OTI4OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDY4NDBhZTVjYWE0MmM5MjllMmQ0ODhjZTk4YzRlOGYwNmY4YWYxYmIwMGM5NTAzOTBhYTY4NzYwNDQxZDZkNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDc4YjM5YjU2NGZmODc0NjM5NzZjZTEwMzhkZDE3NDZmOTdjZjkyOWEzMTM1MTNmNzA4MThhZDI0YmVlYzYzYiJ9"
+          "version": "repo-lines-v1:sha256:5c09d5b231b87a0ef81bd34b8b9031d5f13bea690622640a1a4952cdf8659cae:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzY2ZTM2YjA5MzgzNWU3MDBiNWUxNDQyNGFiYjY0MGM2YWFiZGQ1NTg4N2NjMjZlOWU5ZDcwNjY1YzY4MDQ3ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDc3MzYwZjlmMTYwYmI2NjMwZWNhZmQ1MDQ4NGM4ZjMyMzYzZmFjODNhN2M1ZTk2ODgzODJjZGEyNDA1OTI4OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDY4NDBhZTVjYWE0MmM5MjllMmQ0ODhjZTk4YzRlOGYwNmY4YWYxYmIwMGM5NTAzOTBhYTY4NzYwNDQxZDZkNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDc4YjM5YjU2NGZmODc0NjM5NzZjZTEwMzhkZDE3NDZmOTdjZjkyOWEzMTM1MTNmNzA4MThhZDI0YmVlYzYzYiJ9"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/channels/slack.py",
-          "version": "repo-file-v1:sha256:b6eddc1e34932407294622fcf7625c791896d6cfb7d2675ae1ef60ef4fcfd9c2"
+          "version": "repo-file-v1:sha256:de1eab32614881518942b5880be7557375e3ee9e0b05ba5365419f38fcaaffb5"
         }
       ]
     },
@@ -389,10 +389,60 @@
           "version": "repo-lines-v1:sha256:59222ceeb586ed3eeed96cae33af8bc39137e91d34c39efe618f7ea8ec9a3bfc:eyJzZWxlY3RlZExpbmVDb3VudCI6NzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY3NWYzZTRjNGQyZmExYTU4MDQyNTk5Y2IyNTU0YmY4Zjk1M2Q3MDljYTM2ZWFhZmQ2NzU2ZDVkM2Q4ODc3ZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQyYWI2NzdiYTZiNGMwNDJiMTA4NGRiNjViNWIzNGE3YmQ0Y2U5YzU0MGE1MmEzYjJkYjM2OWNkNzNlZDI5ZGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwM2FhMTY1YjhiZmZhZmYwY2EwMDc1ZGJjMGNmMDRiNWY3Y2U3NDdmZTUzN2EyYThjY2ZlMWYxMWMzNzZiYWQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_d7f0fd0ad2f84e629e3ccc20341cba7e",
+      "statement": "Slack translates an app-owned slash command of any manifest name into a shared typed Talon command, accepts it only in a DM except for operator pairing approval, and uses the validated Slack response URL for private command results and rejections.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L1437-L1475",
+          "version": "repo-lines-v1:sha256:d80e674f2e4bff45e15dc64047abc793320796db0c291c3cba43cd83f37b9442:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3NmZmMmFhMjM1NDg4MmQ2M2Q2MGJmZTYxYjIxMmM3NDdiMTYxOWM4MTRjZjNhOTlhYjFiMjhiMjc5MTFkZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxOTlkZjRlMzk3ZWRhM2JjNWFjOGVhMzMxZjcxOTJiNDcwYmU1OGVlNzliODFjNzUxZDkyMTJhZTAxMDE0Y2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhOGI5Y2MwZmJmZGU2Y2ZlMGRiNjFlMTBjOGFmYTkzNzg4NDkxZTY5ZWViZGRhMjJkNWZjOWUzODkxODNlMzYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L876-L945",
+          "version": "repo-lines-v1:sha256:2d4a046e0aaa73ee1f8b8fd7964df644f60348300a9d8a1f177feba64a30b577:eyJzZWxlY3RlZExpbmVDb3VudCI6NzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxYzExOWFkZTRkZDE2YWQzZTIxYzNiMjJhN2JkZmMyYTYxNTRkZjA5M2E0NjczMDU5OWI2NzAwMTczM2Q2NGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmOWExNjliYzMyYmUxNTUxOTVlNTUwYjA4YjI5YzNhYTk3ODE3MGJhYzUwYTFhYWJiMDNhNmVkNzFkYmVhZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRjNzA0M2ZkMmI3NDU2YTk0Y2Y1MmEzYTY1MTMxZjA3NDhiZDY3NDYyZGQxNWIxYjczOTMyY2ViMWVjZjFmNDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVjY2I2NjY1MGIyMDZhNWIyMzAxODVjZGI1NzJmOTU3MGVjMjYzMDhjNWJlMWZlMGZmNTM5MTBkOTUxZWU5NTEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/channels/test_slack.py#L543-L606",
+          "version": "repo-lines-v1:sha256:cc4016614f62b06936019dc3ed2c028109956c63e36bab150a7a6c3b5ce6ce7b:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmOGQyOGFjZDhiMmQyZWIxZGM4NTI3NDE3OGViZGI1NTVmMTdkODZmZDc2MDI4NmEyODU1MDc4MGMzMDZkMDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlhNGI3ZDI0ZmFkZTA2Nzk5MTA5NzZiNzRmZWUwZmQwNTBhZjU0OGI3NmRhNTdiYmU5N2JlODRhYTI4MDIwMTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNiMTg0NGZhZDI3Nzc4N2MzZjhkZjViMzQxZWNmNzIyM2Y1NTQ5Yzg0ZjI3MmUxOTdjYjE0MTI2ZjAyYzc3NjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImViNDUwNWRhOWMxOTY4ODA5OWQwMmE5MmJhYTk3MjY3MmQ1YWM4ZWI5ZjgxNDNiNjE4MjA0ODczMzJjY2RjYjIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7a51199926cc4379b433ec018bef8dcb",
+      "statement": "Slack excludes loopback OAuth callback URLs from retrieved thread context before truncation, preventing callback secrets from being injected into a later model request.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L1349-L1358",
+          "version": "repo-lines-v1:sha256:404258518c3400724b03ce7790bc66aaacb04fb3a05ed486926a7246519304a2:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwNjcyM2Y2M2M5N2MzNGE3MzVlMDQ3ZTYyYWY4M2RkZWU3NzczYjhmODg2YzhlZDlmYTRiOWM3OThhYjg5ZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU0NjIzN2VjYmFkODdhN2RkMDVhZWE4OGIxN2Y0ZWJkNDRhMzdjNDU3YmQ1MTgzNWQ1N2RlYzIxNmYyMTEyMTcifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L527-L571",
+          "version": "repo-lines-v1:sha256:1c9ac460444d01606d0b340efc1cfacf52bc69d299440a923607e076d38daa52:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2MGJiNDA1NzM1MTY0NWZkYTc0YWY0OWZjMGEwOTZkZDY2NTMzNmVkODMzMWFkNmM1MGZkNzAyZjgwOTBkYTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg4ZDA0ZGI2NDdmNGUzNTk0NzJjNjhjNjA1MDZkNTkwNzIwNGY5ZmE2YjBlODhlYzA1MTQ4OTRmNmNiN2UyYzAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUzOWNhM2VhY2Y5OGE3OWViYmE4ZTkxNDhmNDc0ZDY5NDA3NmVjZDVlMzE2YmIxNjQ4YmE5N2JjODdlMmZlZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlkY2I0MGQ0ZWM2MWI0NTI4ZWYzMzFhZjIxOGI2OGNmYTIzODQzZDU4MDJmZWNhZDgzNDY4NzQxOTQ5Nzk1NDkifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_slack_oauth_context.py#L34-L73",
+          "version": "repo-lines-v1:sha256:73962cfe794581c4eaaba57ffdb84a1e5e2509169c38a35427afb6237f2c70b2:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0NDU5MjY2YjlmN2FkNmJlYTVlZmZhZjUzZDU2MjYwMzIyNzNkN2MxZTU4ZjJkZGUwMWQ0MzA3NTkxNDg3YzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3MGRhMDMyZmJmZGJkMWI0MjRlODE0YzIxMmFlNTg0ODRlNzZmNTdkYzU2ZGJmZDEzYmY4MDM3MzZkMzI0YjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0MjE3Y2Q5MDI3NTFhNmUyZGE1YTJlYWUyY2M2MzlmMTZiNzkzMWUzYTRjMjRmMjE5YzA2NjIzNzEyNGEzZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY3MjY1NWQ4MDRjODIxN2EyZDNiMmU4Njc1M2NlYjlmMjE5MTNkM2YxMDk0NmU4Mjk3YmQ3YTM4NDNiMDExYWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_deeec614a6224c109f595112924f31ec",
+      "statement": "Slack file handling sends the bot token only to HTTPS files.slack.com downloads and rejects redirects; capped downloads use no-follow, owner-only local-file creation and remove partial files after failure.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/channels/slack.py#L1165-L1272",
+          "version": "repo-lines-v1:sha256:599ecc4ad01d8d64963e4eecb2f13ce6179aabf3f21535ecc1bfffece94d5477:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjZWVlMTBiMmY3YmEyMTY4OTViMDVmMzkwOTRhNTU5MmQyMDgzMDNhNjNkODAyOTU5MzA0ZDkxZjI3MmI1YjQ2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhNmJmOTBjYzA4NTRhOTA1NTI1YWFkNDZiOTMwZmFiMzIwMThiODgxMDRlZDczZDczODNhM2RlNjEzMDQ4NmI4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhZDFmMzA4YzhjN2RhNmUyZmIyYWNlZWIxOGVjNzUwMWQxMTUzN2ZiNDQyZDA5OTA1NWRlMzcwNGJjNjAyN2MxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3NTllZDdmYTYwY2FmNmY2MzBhYmU2MzljMjk3NDc5ZmUyYTc0ZTRiMWYzNDBhNmQzNTBiOGYyODNlNzQzZGNhIn0"
+        },
+        {
+          "resource": "repo://libs/talon/tests/channels/test_slack.py#L635-L802",
+          "version": "repo-lines-v1:sha256:647d9570e022791edece666ca3d669bb004519ee71befd793c60e36b3013e6e6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTY4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyMmE4MjE5ZDFjYzc3ZmFkOTRhMGZjOWE0YmExNmU2Y2M4YzQ0MTc3ZGUyZmQ4NDhjOGY3NmUxODc1OGJiMDkzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwNzUzYzJmY2E2ODQ1NTJjYzAxMDQ5YTQzNzcwNWM5NGYzZThhNDE3ZGE2ZDk4OWI2NjI0YzQxM2Y2ZWIzY2IwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0MDFiOGRlZTIxMDA1MzJiY2JmOWUxMDBiYzM0Y2FkYzFkYThhMmUzNDUyMWExYWY0YTM3MjBiMzYwZWI4MzQ4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmMmE3NTZhYmQxYWFlODk0ZDRkZjE0MmU3ZDc1YWFmYzg4ZjA2ODYyNTliOGFmZDg4Yjg5NmEzNmM3MDExZjBhIn0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-08T08:07:53.482Z"
+    "at": "2026-10-09T08:07:51.383Z"
   }
 }

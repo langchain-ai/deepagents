@@ -1,162 +1,157 @@
 ---
 type: architecture
 title: Deep Agents Code Architecture
-description: How the dcode CLI starts local or remote LangGraph-backed coding sessions, projects them through Textual, and protects workspace-scoped SQLite session state. Covers configuration, runtime isolation, remote-client semantics, and operational failure boundaries.
+description: Architecture of the dcode terminal client and LangGraph server, including workspace authority, remote operations, UI compatibility boundaries, configuration, titles, and accounting.
 tags: [dcode, deepagents-code, cli, textual, langgraph, sessions, sqlite]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
+    at: 2026-10-09T08:07:51.383Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
-  - id: openwiki-source-3396dda6599f7426e19ed526
-    resource: repo://libs/code/deepagents_code/__init__.py
-  - id: openwiki-source-1728494bdd59604ce9b5f65b
-    resource: repo://libs/code/deepagents_code/_server_config.py
-  - id: openwiki-source-67b5bc29380b00bcb677b209
-    resource: repo://libs/code/deepagents_code/_startup_error.py
-  - id: openwiki-source-7ed140a618f28e799c504d1b
-    resource: repo://libs/code/deepagents_code/_textual_patches.py
+  - id: openwiki-source-dc51f2af5a4fd6db3e2e9451
+    resource: repo://libs/code/deepagents_code/_tool_free.py
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
-  - id: openwiki-source-b9ef532d79a0667acf40e58b
-    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
-  - id: openwiki-source-074ce96a8baea27a6c43328b
-    resource: repo://libs/code/deepagents_code/client/launch/server.py
   - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
     resource: repo://libs/code/deepagents_code/client/remote_client.py
-  - id: openwiki-source-fcc71dc507b62bee0432e12e
-    resource: repo://libs/code/deepagents_code/command_registry.py
-  - id: openwiki-source-52d96f61bc4737f02a18cf79
-    resource: repo://libs/code/deepagents_code/configuration/resolver.py
-  - id: openwiki-source-2e03fee957625ca21a1c21af
-    resource: repo://libs/code/deepagents_code/main.py
-  - id: openwiki-source-7e241f30f5c7753642ea34d5
-    resource: repo://libs/code/deepagents_code/model_api.py
-  - id: openwiki-source-ea1089f0d7536fbc96c64866
-    resource: repo://libs/code/deepagents_code/offload_api.py
+  - id: openwiki-source-4a7b6def251b42596a410ebc
+    resource: repo://libs/code/deepagents_code/model_config.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
-  - id: openwiki-source-0f8622164498a685abc913d5
-    resource: repo://libs/code/deepagents_code/sessions.py
-  - id: openwiki-source-29a60a7d68da0bf4ec625403
-    resource: repo://libs/code/deepagents_code/tui/textual_adapter.py
-  - id: openwiki-source-d45b105016df62ad3c6e485f
-    resource: repo://libs/code/deepagents_code/tui/widgets/autocomplete.py
-  - id: openwiki-source-7ba50bd13eb62341a2061ef9
-    resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-11d6c59d85493653aee76558
-    resource: repo://libs/code/tests/unit_tests/test_app.py
+  - id: openwiki-source-ef5fabbfb6da7143dd0180cb
+    resource: repo://libs/code/deepagents_code/terminal_title.py
+  - id: openwiki-source-52062c280ae38e9e9acab191
+    resource: repo://libs/code/deepagents_code/thread_titles.py
+  - id: openwiki-source-439d3e6c6f1b62e6d282df3f
+    resource: repo://libs/code/tests/unit_tests/test_remote_client.py
   - id: openwiki-source-784e764f7f5eb5169220c3d2
     resource: repo://libs/code/tests/unit_tests/test_server_graph.py
-  - id: openwiki-source-37f4238508940c4be67643d1
-    resource: repo://libs/code/tests/unit_tests/test_thread_naming_app.py
-  - id: openwiki-source-97e242977ea97fdae74a7989
-    resource: repo://libs/code/tests/unit_tests/test_threads_resume.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-09T08:07:51.383Z" }
 ---
 
 # Deep Agents Code Architecture
 
-`deepagents-code` (`dcode`) is a prebuilt terminal coding agent and reference implementation for the `deepagents` SDK. It combines a terminal experience, persistence, tools, skills, approval controls, and optional sandbox execution. Its core architectural boundary is deliberate: the client owns interaction and presentation, while the LangGraph server owns the agent runtime and durable graph work.
+`deepagents-code` (`dcode`) is a prebuilt terminal coding agent and reference implementation of the `deepagents` SDK harness. It packages a terminal experience with persistence, tools, skills, approvals, and optional sandbox execution. Its central boundary is intentional: the client presents and collects interaction; the server owns agent execution and durable graph state.
 
-## Entrypoints and modes
+## Entrypoints and configuration
 
-The package exports `cli_main` lazily, so importing a submodule does not load the CLI's argument parsing and signal machinery. Both `dcode` and `deepagents-code` console scripts target that entrypoint. `cli_main` installs POSIX termination handlers so normal unwind paths can clean up an owned server; it fast-paths `--version`, skips Textual dependency checks for `--acp`, parses arguments, gates policy-dependent work on healthy managed configuration, then dispatches the requested mode.
+Both `dcode` and `deepagents-code` console scripts call the lazily exported `deepagents_code:cli_main`, avoiding main-startup imports when consumers import package submodules. `cli_main` fast-paths version output, omits Textual dependency checks in ACP mode, installs POSIX termination handlers for cleanup, and applies managed-configuration gating before dispatching invocation modes.
 
-The CLI is more than the interactive launcher:
+Configuration is resolved, with provenance and provider health retained, in this order: managed policy, CLI, retained reload values, environment, user configuration, then typed defaults. The parent and child do not independently reinterpret server options: they share `ServerConfig`, which the launcher serializes into `DEEPAGENTS_CODE_SERVER_*` environment variables for the graph process. See [Configuration layering](/openwiki/concepts/config-layering.md).
 
-- Administrative subcommands manage agents, skills, plugins, MCP, configuration, credentials, threads, optional extras, diagnostics, and managed tools. Lightweight `config`, `doctor`, and `auth path` diagnostics run before the managed-policy health gate so an administrator can diagnose a broken policy source.
-- Root invocation selects an agent and model, can resume a thread, submit an initial message or skill, attach MCP configuration, constrain filesystem or shell tools, and select a sandbox. `-n/--non-interactive` runs one task and exits; `--max-turns` and `--timeout` provide separate runaway-work bounds. Headless mode has no human tool approvals, so it should be treated as an automation interface rather than a safe read-only mode.
-- `--acp` runs an ACP server over stdio instead of Textual. Interactive and ACP paths can use approval modes; the main terminal path starts a client/server session.
+A security-relevant configuration seam is model environment resolution: a present `DEEPAGENTS_CODE_<NAME>` environment variable overrides the canonical `<NAME>` variable even when its value is empty, which intentionally suppresses the canonical value. Project dotenv loading is deliberately constrained: startup strips `PYTHONPATH` from the server interpreter environment and passes an inherited value only through a private carrier for approval-gated shell subprocesses, preventing an untrusted import path from influencing server startup.
 
-Configuration resolves each manifest option through ranked providers: managed policy, CLI, retained runtime reload, environment, user `config.toml`, and typed defaults, in that precedence order. The resolver retains provenance and provider health rather than returning only a value. See [Configuration layering](/openwiki/concepts/config-layering.md) and [Profiles and models](/openwiki/concepts/profiles-models.md) for user-facing resolution rules.
+## Client/server authority and startup
 
-## Process boundary and normal startup
+A normal session has two processes:
 
-A normal dcode session has two runtime halves in separate processes. The **Textual client** owns terminal input, output, approvals, selectors, and provisional display state. The **agent server** owns the compiled graph, model and tool construction, memory, skills, MCP sessions, backend/sandbox integration, and graph checkpoints. `RemoteAgent` is the client-side adapter between them: it wraps LangGraph's `RemoteGraph`, delegates HTTP/SSE stream and state transport, and converts streamed message dictionaries into LangChain message objects for the Textual adapter.
+- The **Textual client** owns terminal input/output, interactive or headless presentation, approvals, local selectors, and provisional display state.
+- The **LangGraph server** owns graph construction and execution, model/provider creation, tools, memory, skills, MCP sessions, backend/sandbox integration, and checkpoint writes.
+- `RemoteAgent` is a transport adapter, not a graph-state authority. It wraps `RemoteGraph` for HTTP/SSE streaming and state operations, converts server message dictionaries into LangChain objects for the Textual adapter, and retains workspace descriptors only as client transport state.
 
 ```mermaid
 sequenceDiagram
     participant CLI as dcode CLI
     participant UI as Textual client
-    participant Launcher as Server launcher
+    participant Launch as launcher
     participant Server as LangGraph server
-    participant DB as SQLite sessions DB
-    CLI->>UI: launch selected mode
-    UI->>Launcher: start session server
-    Launcher->>Server: langgraph dev on loopback
-    Launcher->>DB: provide persistent checkpointer path
-    Server-->>Launcher: agent graph ready
-    Launcher-->>UI: RemoteAgent and server handle
+    participant Store as SQLite session store
+    CLI->>UI: start selected mode
+    UI->>Launch: start local session server
+    Launch->>Server: langgraph dev on loopback
+    Launch->>Store: configure persistent checkpointer
+    Server-->>Launch: agent graph ready
+    Launch-->>UI: RemoteAgent and process handle
     UI->>Server: run with thread and workspace context
-    Server->>DB: validate binding and checkpoint state
-    Server-->>UI: HTTP and SSE stream
+    Server->>Store: validate binding and use checkpoints
+    Server-->>UI: HTTP and SSE events
     UI->>UI: render messages and approvals
 ```
 
-*Normal local launch: the client starts a loopback server, while SQLite remains the durable checkpoint and session store.*
+*The normal local path gives the client presentation authority while the server validates workspace execution and SQLite preserves graph state.*
 
-The standard launcher creates a temporary LangGraph project containing `langgraph.json`, a minimal runtime `pyproject.toml`, and a generated checkpointer module. The generated checkpointer reads its database path from a server environment variable and uses the ownership-aware SQLite saver. The launcher starts `langgraph dev` on `127.0.0.1` with an ephemeral port by default, waits for graph `agent`, configures the returned `RemoteAgent` with the workspace claim, and stops the child if startup fails or is cancelled before handoff. Server configuration crosses the process boundary through the shared `ServerConfig` schema, serialized as `DEEPAGENTS_CODE_SERVER_*` environment variables rather than reconstructed independently by the child.
+The local launcher creates a temporary LangGraph project, including a persistent SQLite checkpointer, starts `langgraph dev` on loopback with an ephemeral port by default, waits for graph `agent`, and returns a workspace-configured `RemoteAgent`. It stops the child when startup fails or cancellation occurs before handoff. Structured startup markers can reconstruct only allowlisted missing-credential or missing-provider-package errors; other early exits become a `RuntimeError` with a bounded log tail.
 
-Server construction is cached: the graph factory and built-in operation routes use the same server runtime so agent, backend, MCP resources, and compaction policy agree. Startup failures are emitted in a structured marker form; the parent reconstructs only allowlisted missing-credential/provider-package failures, while other early exits become an error with a bounded server-log tail.
+On background startup success, `on_deep_agents_app_server_ready` refreshes the mounted status bar from runtime model state. A missing status bar or model identity is warned about; absent identity clears provider, model, and effort rather than leaving a failed attempt's stale text.
 
-## Workspace binding is the isolation boundary
+## Workspace and persistence boundaries
 
-A thread is durably associated with a workspace identity and policy. Before a graph execution, `make_graph` requires a nonempty thread ID and execution workspace context, then validates that context against the persisted thread binding before choosing a runtime. A missing binding, mismatched context, or incompatible claimed configuration is a conflict rather than permission to execute against a different checkout.
+Every graph execution requires a thread ID and workspace context. The server validates that context against the durable thread binding before it selects a workspace runtime; client workspace caches and transport headers are not proof of authority. Local client ownership additionally fences mutations with the active reservation token.
 
-The binding separates **policy identity** from **runtime identity**. Trust, tool, sandbox, and approval policy drift (including project-level MCP, setup, or extension trust) is refused. A change only to model, model parameters, prompt, or other runtime fields is not a privilege change: it rebuilds the selected runtime while preserving the thread's checkpoint history and durable binding. Runtime instances are cached as an LRU of at most 32 entries keyed by workspace and runtime fingerprint.
+The binding distinguishes policy identity from runtime identity. A change in trust, tools, sandbox, approvals, project-sensitive MCP/setup/extension policy is refused; a change confined to full runtime identity such as model, parameters, or prompt rebuilds the runtime without discarding checkpoint history. Server runtimes form an LRU cache of at most 32 entries keyed by workspace and runtime fingerprint. A process-wide sandbox is claimed by its first workspace, and incompatible LangSmith tracing/redaction settings likewise prevent sharing that server process.
 
-This distinction has important process-wide constraints. Sandbox backends are process-wide: the first sandboxed workspace reserves the server process, and another workspace cannot silently share it. LangSmith tracing/redaction settings are likewise pinned for the process lifetime, so a workspace with incompatible settings must use another server. These rules prevent a shared local server from accidentally carrying trust, sandbox, or tracing context across workspaces.
+The default durable store is `sessions.db` in the state directory. Checkpoints and writes remain server-owned graph state, while thread names, workspace bindings, side-question accounting, and offloaded history are related but separate domains. The metadata-listing index is a best-effort performance optimization: failure may make listing slower but must not change listing correctness. See [State persistence](/openwiki/concepts/state-persistence.md).
 
-## Textual client and remote-client behavior
+A name is a printable single-line string of at most 50 characters. It is durably upserted in a dedicated SQLite table and mirrored into newest checkpoint metadata for compatibility, without changing conversation messages. The app guards against stale asynchronous name reads replacing the active name and refreshes open thread selectors and thread-reference completion after a successful rename.
 
-`DeepAgentsApp` is the interactive presentation controller. It starts the server asynchronously and receives a `ServerReady` event carrying the remote agent and child process. On success it refreshes the mounted status bar from runtime model state; warnings surface a missing bar or model identity, and missing identity clears stale provider, model, and effort text. The app also imports `_textual_patches` before creating an `App`: each patch is an independent best-effort adaptation of a Textual private API, logging a warning and retaining stock behavior if a particular import or assignment is unavailable. Textual upgrades therefore need focused compatibility testing, but a patch failure does not alter graph or checkpoint authority.
+`/threads -r [ID]` uses an explicit target when supplied, otherwise the previous thread. Local cross-agent resume takes a separate restart path; a remote session cannot switch its remote server and instructs the user to relaunch instead. Thread-reference completion is not resume: it searches cached local metadata and inserts only `@@(thread:<id>)`.
 
-`RemoteAgent` is intentionally not a second graph-state owner:
+## Remote operations, cancellation, and accounting
 
-- It passes a thread ID, workspace descriptor, and—where local ownership applies—reservation token with mutations. It binds a workspace on demand through the server and keeps per-thread workspace descriptors client-side as transport state. The server, not that cache, validates the durable binding.
-- Its stream adapter requests LangGraph stream modes, forwards workspace context, converts message payloads, normalizes interrupts, and leaves durability to the server. Missing or empty remote state is represented as `None`; unexpected transport/state errors are surfaced.
-- Before state mutation, it can ensure the HTTP-side thread record exists. This compensates for the development server's separate live-thread registration and persistent checkpoint storage after a restart.
-- On a state-update conflict it cancels active runs, waits with bounded concurrent cancellation, and retries once. Pending-work abandonment closes outstanding trailing tool calls before ending checkpointed work, and verifies that pending graph work is gone.
+`RemoteAgent` delegates stream negotiation, SSE routing, namespace parsing, and remote state to `RemoteGraph`; it converts streamed messages and interrupt payloads only at the client boundary. It first ensures an HTTP-side thread record for mutations because a development server can retain checkpoint data across restart while its live thread registry has no record.
 
-The client displays but does not author accounting. `RemoteAgent` reconciles graph checkpoint cost with separately persisted side-question cost; if graph state is unsettled it marks the combined result cached. The Textual footer treats server totals as authoritative for the active thread, may show request-keyed provisional stream cost until settlement, discards totals for inactive threads, and warns once when an authoritative threshold is crossed. For accounting behavior, see [Cost and sessions](/openwiki/operations/cost-and-sessions.md).
+For a conflicting state update, the client lists pending/running remote runs, concurrently requests interruption, waits up to ten seconds per run, and retries once. If the SDK private client seam is unavailable or all run listings fail, it logs the degraded recovery and lets the original conflict remain meaningful rather than asserting recovery succeeded. Pending-work abandonment closes only trailing unanswered tool calls and verifies that pending graph work has cleared.
 
-The static slash-command registry is the single source for command metadata. Queue-bypass sets and completion entries are derived from it; experimental commands are hidden from autocomplete unless enabled. Completion displays friendly labels but inserts canonical commands, including the complete `/skill:<name>` for namespaced plugin skills. Thread-reference completion is deliberately different from resume: it searches local metadata and inserts `@@(thread:<id>)` without selecting a thread or mutating graph state.
+`/offload` and `/handoff` are server-owned auxiliary operations. The remote client creates one operation ID, ensures the thread before the first POST, includes workspace and local ownership context, and reuses the ID as it fulfills server-requested hook invocations. It validates terminal result shape, caps hook fulfillment at 32 rounds, and uses a distinct handoff route so an older server cannot silently compact a source thread when asked to hand off.
 
-## SQLite session domains and lifecycle
+```mermaid
+sequenceDiagram
+    participant UI as Textual client
+    participant Remote as RemoteAgent
+    participant Server as dcode operation API
+    UI->>Remote: aoffload with thread and context
+    Remote->>Server: ensure HTTP thread record
+    Remote->>Server: post operation with operation ID
+    alt hook required
+        Server-->>Remote: interrupt with invocation ID
+        Remote->>UI: fulfill hook
+        UI-->>Remote: hook response
+        Remote->>Server: post same operation ID and responses
+    else complete
+        Server-->>Remote: typed terminal result
+    end
+    opt caller cancels
+        Remote->>Server: cancel operation ID
+        Server-->>Remote: cancelled or finished acknowledgement
+        Remote-->>UI: propagate cancellation
+    end
+```
 
-The default session database is `sessions.db` under the dcode state directory. It serves several related but distinct domains:
+*Offload remains an operation owned by the server; the client transports hooks and does not release cancellation until the server reports a terminal outcome.*
 
-| Domain | Authority and purpose |
-| --- | --- |
-| LangGraph `checkpoints` and `writes` | Durable conversation/graph state used by the server checkpointer. |
-| Thread ownership | Fencing-aware saver and leases prevent conflicting local writers. |
-| `dcode_thread_workspaces` and snapshots | Durable workspace identity, policy/runtime fingerprints, and safe drift diagnostics. |
-| `dcode_thread_names` | User-facing thread title independent of checkpoint revisions. |
-| Side-question costs and offloaded history | Supplemental session accounting/history cleaned with thread deletion where applicable. |
+Cancellation of an in-flight offload waits, even through repeated caller cancellation, for the server acknowledgement (`cancelled` or `finished`) with a ten-second bound. A missing built-in route produces an actionable error for custom or older graph servers. On the server, stable operation IDs span hook rounds, conflicts are rejected before commit, writes are restricted to permitted offload state channels, and cancellation waits for a terminal operation result.
 
-Thread discovery is a read/presentation path over checkpoint metadata. A covering index allows thread listings to avoid scanning large checkpoint blobs; inability to create it degrades performance rather than listing correctness. A thread name must be printable, single-line, and at most 50 characters. Renaming uses an immediate SQLite transaction, upserts the independent names table, mirrors the name into the newest checkpoint metadata for compatibility, and updates local caches without rewriting conversation messages. The app uses a thread-and-revision guard so stale asynchronous reads cannot replace the active name, then refreshes open selectors and reference completion after a successful rename.
+Cost ownership follows the same division. `RemoteAgent` reconciles checkpoint cost with best-effort separately persisted side-question cost and labels the result cached when graph state is unsettled. The Textual footer accepts server checkpoint/stream totals as authoritative only for the active thread, may display request-keyed provisional stream cost until settlement, drops inactive-thread totals, and warns once on an authoritative threshold crossing. See [Cost and sessions](/openwiki/operations/cost-and-sessions.md).
 
-Thread selection also has a lifecycle boundary: a picker validates local ownership before activating a selected thread, preserves the current UI state on an acquisition conflict, and defers an actual switch until agent, shell, and connection work are idle. `/threads -r [ID]` chooses an explicit target or the previous thread when unqualified; resuming an agent owned by another local launch uses a restart path, while a client connected to a remote server is told to relaunch because it cannot switch that remote server.
+## Tool-free auxiliary model calls and thread naming
 
-## Server-owned auxiliary APIs and extension boundaries
+Auxiliary calls must not inherit executable capabilities from the main agent request. `_tool_free` deep-copies provider options while removing `tools`, `tool_choice`, legacy functions/function-call fields, parallel tool calls, and MCP-server configuration, including inside `model_kwargs` and `extra_body`. It copies the model with those request defaults isolated while retaining shared provider HTTP clients; bound runnable settings are flattened so request overrides still win.
 
-The server exposes workspace-fenced model catalog/resolution APIs. They resolve in the workspace environment without committing a model switch or running inference; conflicts, validation failures, and temporarily unavailable resources map to 409, 422, and 503. This keeps provider imports and credentials out of the Textual process while allowing the UI to preview a possible selection.
+The server's side-question path uses the latest resolved model/instructions when available, otherwise checkpointed or workspace defaults, restores read-only memory/skill instructions, and invokes a tool-free chat model with `tools=[]`, no callbacks, and no checkpoint writes. This preserves answer relevance without granting a supposedly auxiliary call agent tools or conversation mutation authority.
 
-The built-in server also owns `/offload`. It carries a stable operation ID across hook-response rounds, rejects conflicts before commit, restricts writes to permitted offload channels, and lets cancellation wait for a terminal server acknowledgement. `RemoteAgent` fulfills requested client hooks but validates the server protocol and bounds both hook rounds and cancellation waits. Custom/external LangGraph servers that do not register dcode's routes cannot provide these operations.
+Thread-title generation is a similarly isolated client-side auxiliary call. It sends only bounded human/AI conversation text (excluding hidden, control, and shell messages), asks for a short safe title, uses a ten-second generation timeout, tool-free settings, and callbacks disabled. Cancellation waits for model initialization to finish because model creation can mutate process-wide provider settings. The app schedules automatic naming only after the first completed response when enabled and a title is absent; it binds the task to the thread, snapshots inherited model parameters, serializes environment mutation, attributes the call through `answer_with_cost`, and refreshes side cost afterwards. Manual generation offers a proposal rather than silently replacing the name.
 
-MCP tool discovery and live sessions are server responsibilities. Explicit `--mcp-config` is validated before process spawn; automatically discovered project/user configurations are handled more leniently and surfaced through MCP status. Project MCP, hooks, and extensions are trust-sensitive configuration inputs, not ordinary UI preferences. See [MCP integration](/openwiki/integrations/mcp.md).
+## Textual, terminal, and selector compatibility
 
-## Change guide and focused tests
+`app.py` imports `_textual_patches` for side effect before an `App` exists. The patches are independent best-effort adaptations of private Textual internals: an ASCII border policy, legacy Alt and kitty lock-key/extended-key normalization, word/block selection and Shift-click extension, detached-widget hit filtering, and diff-gutter selection masking. Each patch guards its own private import or assignment, logs a warning when it cannot apply, and leaves stock behavior for that individual feature. This confines Textual-version risk to presentation rather than graph/checkpoint authority; `test_textual_patches.py` exercises parser behavior, ASCII borders, selections, and the detached-Markdown race.
 
-When changing this architecture, preserve these ownership rules:
+UI selectors are presentation seams, not storage or runtime authority. Persistent chrome may use stable IDs such as `#status-bar`, `#welcome-banner`, `#chat`, `#messages`, and `#input-area`; code that can run while a modal is topmost or a widget is detaching handles `NoMatches` and screen-stack races rather than assuming a selector remains mounted. Selector screens own their own filter/focus state: a late thread-name proposal must not steal input from a thread selector or nested authentication modal.
 
-1. Do not move graph state, policy validation, provider construction, or checkpoint authority into Textual merely to simplify UI code.
-2. Treat the workspace binding and server policy recheck as a security boundary. A runtime cache miss may rebuild; a policy mismatch must refuse.
-3. Preserve cleanup on cancellation and early startup failure; a started but unhanded server must be stopped.
-4. Keep local session discovery/title caches separate from server graph authority and guard mutations with thread ownership.
+Terminal tab titles are cosmetic and independently failure-tolerant. `TerminalTitle` validates `[terminal].tab_title` (only plain `{app_name}`, `{thread_name}`, `{cwd}`, and `{branch}` fields), falls back to `{app_name} - {thread_name}`, removes control/non-printable characters, and bounds output to 512 characters. It pushes the terminal title stack only on an available TTY and when terminal escapes are enabled, updates only when rendered state changes, and pops only after a successful push; terminals without XTWINOPS title-stack support can retain the last title after exit. The app constructs it from effective configuration and refreshes it on thread/name/cwd changes.
 
-Focused tests include `test_app.py` for server-ready status refresh and deferred initial behavior, `test_thread_naming_app.py` for busy rename and asynchronous presentation races, and `test_server_graph.py` for workspace runtime caching, policy drift, sandbox, and tracing isolation. The launch and remote-client tests are the appropriate seams for process cleanup, protocol compatibility, retry/cancellation, and workspace transport.
+## Commands, model APIs, and change guide
 
-For end-user operation, see [Run a dcode session](/openwiki/workflows/run-dcode-session.md), [State persistence](/openwiki/concepts/state-persistence.md), and [Cost and sessions](/openwiki/operations/cost-and-sessions.md).
+The static slash-command registry is the source of truth for command metadata; queue-bypass sets and completion entries derive from it, and experimental commands remain out of completion unless experimental mode is enabled. Completion ranks static/dynamic entries, shows friendly labels while inserting canonical names, and preserves a full namespaced `/skill:` command even if the popup label is shortened.
+
+The server exposes launch metadata plus workspace-fenced model catalog/resolution APIs. They resolve models in the workspace environment without committing a selection or running inference, and map conflict, validation, and unavailable-resource failures to 409, 422, and 503. This keeps provider imports and credentials on the server side while allowing the UI to preview choices.
+
+When changing this area:
+
+1. Preserve client presentation versus server execution/checkpoint authority.
+2. Treat a workspace policy mismatch as a refusal, not as a cache-miss rebuild.
+3. Preserve child-process cleanup and remote cancellation acknowledgement on every early-exit path.
+4. Keep auxiliary model calls tool-free, callback-free where required, and correctly charged to their owning thread.
+5. Treat Textual private APIs and widget selectors as compatibility boundaries; test absent/detached UI as well as happy paths.
+
+Focused coverage includes `test_app.py` for server-ready status behavior, `test_remote_client.py` for workspace transport, offload protocol and cancellation, `test_textual_patches.py` for compatibility patches, and `test_thread_naming_app.py` for naming, focus, deferred UI, and stale-task races. See [Testing guide](/openwiki/testing/testing-guide.md) and [Run a dcode session](/openwiki/workflows/run-dcode-session.md) for operational guidance.

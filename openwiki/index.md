@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Maintainer Quickstart](quickstart.md) - Route Deep Agents maintainers from repository orientation to the owning SDK, dcode, Talon, integration, workflow, operations, and testing guidance. Use this page to choose a package, lifecycle boundary, and focused validation path before changing code.
+- [Deep Agents Maintainer Quickstart](quickstart.md) - A routing map for maintainers of the independently versioned Deep Agents packages. Start with the behavior owner and runtime boundary, then run the narrowest package-local validation.
 
 # Directories
 

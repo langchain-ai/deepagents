@@ -5,16 +5,10 @@ description: Explains how LangGraph checkpoints, dcode's local SQLite sessions, 
 tags: [deepagents, dcode, persistence, checkpoints, sqlite, thread-ownership, recovery, thread-inspection]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
+    at: 2026-10-09T08:07:51.383Z
 sources:
   - id: openwiki-source-fdf5afeb1dd1d11652374e88
     resource: repo://libs/code/deepagents_code/app.py
-  - id: openwiki-source-1f9226665e99f6f846936c59
-    resource: repo://libs/code/deepagents_code/built_in_skills/deepagents-thread-inspector/scripts/inspect_sessions.py
-  - id: openwiki-source-73a12d41c3ec5c3f079ed79e
-    resource: repo://libs/code/deepagents_code/built_in_skills/deepagents-thread-inspector/SKILL.md
-  - id: openwiki-source-b9ef532d79a0667acf40e58b
-    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
   - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
     resource: repo://libs/code/deepagents_code/client/remote_client.py
   - id: openwiki-source-0f8622164498a685abc913d5
@@ -23,10 +17,6 @@ sources:
     resource: repo://libs/code/deepagents_code/thread_ownership.py
   - id: openwiki-source-52062c280ae38e9e9acab191
     resource: repo://libs/code/deepagents_code/thread_titles.py
-  - id: openwiki-source-c8dacdfd6192dd22d24a9362
-    resource: repo://libs/code/tests/integration_tests/test_pending_work_recovery.py
-  - id: openwiki-source-140e3a9397d67359bab19562
-    resource: repo://libs/code/tests/unit_tests/skills/test_thread_inspector.py
   - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
     resource: repo://libs/code/tests/unit_tests/test_sessions.py
   - id: openwiki-source-a5951057e151512583e7fd3f
@@ -37,29 +27,13 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_thread_titles.py
   - id: openwiki-source-822ae989625ba99d4c7cc08b
     resource: repo://libs/deepagents/deepagents/_messages_reducer.py
-  - id: openwiki-source-07f9eac13e71bcbdb4e6994b
-    resource: repo://libs/deepagents/deepagents/backends/state.py
-  - id: openwiki-source-21e2b0401425a427d8cea9c1
-    resource: repo://libs/deepagents/deepagents/backends/store.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-995d5d95882808a64071f617
     resource: repo://libs/talon/deepagents_talon/archive_saver.py
-  - id: openwiki-source-c2be68f237284dc06b9c12f7
-    resource: repo://libs/talon/deepagents_talon/checkpoint_backends.py
-  - id: openwiki-source-81698d033a5726401d48b135
-    resource: repo://libs/talon/deepagents_talon/config.py
-  - id: openwiki-source-2318fb8a25701a5cdae717fe
-    resource: repo://libs/talon/deepagents_talon/history_vector_backends.py
-  - id: openwiki-source-811fef57cecdbee2ba06a7b5
-    resource: repo://libs/talon/deepagents_talon/store_archive.py
-  - id: openwiki-source-fdd0c2c3830b8e9a88502a57
-    resource: repo://libs/talon/README.md
   - id: openwiki-source-c996df77875d3c6b30ca07cf
     resource: repo://libs/talon/tests/unit_tests/test_archive_saver.py
-  - id: openwiki-source-628fd919fd2bdb09579bfb16
-    resource: repo://libs/talon/tests/unit_tests/test_checkpoint_backends.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-09T08:07:51.383Z" }
 ---
 
 # State, Checkpoints, and Sessions
@@ -81,7 +55,7 @@ Persistence is deliberately divided by scope and owner. A dcode session is a Lan
 
 ## dcode session database and thread identity
 
-`deepagents_code.sessions` resolves `DEFAULT_STATE_DIR / "sessions.db"` after hardening the state directory. It opens `aiosqlite` through a cancellation-conscious wrapper: application connections use an extended lock timeout, worker threads are joined after close, and an opening-time guard preserves a SQLite handle that cancellation might otherwise leak.
+`deepagents_code.sessions` resolves `DEFAULT_STATE_DIR / "sessions.db"` after hardening the state directory. It opens `aiosqlite` through a cancellation-conscious wrapper: ordinary session connections use an extended lock timeout, while `get_checkpointer()` uses the saver default. Before opening, the wrapper records the worker-created SQLite handle and queues an explicit close so cancellation in `aiosqlite`'s open handoff cannot strand it; after close it joins the worker thread. This protects application shutdown and test teardown from leaked handles and closed-event-loop worker callbacks without changing the checkpoint ownership model.
 
 New threads receive a full UUID7 string. UUID7 is time-ordered, so newly created IDs naturally sort by creation time; old short hexadecimal IDs remain valid and are listed alongside UUID7 threads. IDs identify sessions, not titles: a meaningful title is separately stored and can be changed without rewriting conversation history.
 

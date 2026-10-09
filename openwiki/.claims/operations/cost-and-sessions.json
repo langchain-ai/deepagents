@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2b952db09f9065f3d83e4b3182bfe0a6c30e516a6eef468a5f9608a645767043",
+  "pageVersion": "sha256:23e0ee09743c020c95108aa746c84063d65457d392314d8af9cdecb999dd2d3e",
   "claims": [
     {
       "id": "claim_c627c2402b31442da711a9d57f722fba",
@@ -367,10 +367,60 @@
           "version": "repo-lines-v1:sha256:9c08e58eb2e6fb79a012ec636fd826654513ff6f22b454efcdac53a60995b34e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjYzJhYjkwOWMxYTNhMWU0ZjFlZDg1ZjlkOWM5MjIyOGE1YWRhZWY0YjIxOWVhMmVmODI1OGRmZmE0ZDVmNzE2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhZGQyNDQ1ODJiNmZiMDNkMjNiODQxNWFiZWNkMzQ2YjBjOWY0NjZiNmY3NTJiMDY4MTg5Y2U3ZTlhMmRjMzUwIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhNmZiNjFmZjNlMzVlMDUyNjNjODQ4Y2I5MDA2MDlhYjg0NTJmMjJhNzM4ODI1Zjc5NzQ3NzIzM2QyNzc4YTE2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzMTBiOGE0ZDM1YjliNTc1ZTgxN2ZhN2U0NzU1NTg4YWU4NmNiODlkMjc1OWI4YWM4NzljNzVhYWUwYWJlOTMzIn0"
         }
       ]
+    },
+    {
+      "id": "claim_b44980dd11684e7aae5cf0977b0c34ac",
+      "statement": "`SessionCostTracker` retains graph and side-operation accounting independently, accepts only nondecreasing valid graph totals, and merges the sources only when creating a presentation snapshot.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L599-L655",
+          "version": "repo-lines-v1:sha256:c6b353bcee11c688dae8f785f5c2e437022cff1f8af91c007a9af5ec5083afe6:eyJzZWxlY3RlZExpbmVDb3VudCI6NTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkNDAxMGUzMWI2NGQ0ODBjMTI4YzhhY2U4MDE3ODg2MzM5YjkzYjJhNGE0YTFkZTdkYWE0MmUwYjViZmI1YzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmZDU0NzYxNjZhNjAwZThiNmZjMzQ1NzUwNGE2MzAxNDkyZTJmMTRhYWIyNGE0NDIzNzc4ZjFmY2MxNTQ0NWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhhMzNhOTliOGFmYTQwOGEyMzg2MDE1Y2FiMDgwMTAwMTg4ZTBkNmRlYTZiZWQ0OWZhMWZmMzEwOWM2MzAwOTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyODIzNTc3NWQ5NjljOGQyMTQzNzFiZDU3ZWUwZDdiMjZjNjVhOGI4YTc5Y2NlZDkzNzk1ZDk3MGM3YTA1NGMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/session_cost.py#L27-L102",
+          "version": "repo-lines-v1:sha256:9371874ef6eb79b00d678873b1aacf47a3c1428dec81ad415c4f737388b45338:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI2ZmJhZTBiOTFkNDRmYzBkNDlmNWRlNjkxZGE2ZmM0MzFmMjYwMTM0YmY3MzFlMGUyMWY3NjQ4MDk0MzM0Y2IiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2YjA0NDkxNDY5NzIyZTgzNjNhOTRlNDA0NDUzOGUwMTNhMmEyMTdlMzZiMWU1NjhiYTYwYWNiN2I0YzhmMmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA0OGM0MDUzNTUyM2E0MzgxMjBkZGIyYjliMjE2NzJmMDVhNjQ3YTIwYTY4Y2FhMzhmYjQ1NTBmNmNhMDYzYmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_79db15fcabc04b6395bec35e64779c87",
+      "statement": "Thread-title generation sends a bounded visible human/assistant transcript to a tool-free model without callbacks, normalizes the returned title to the manual thread-name rules, and waits for model initialization to finish when cancellation occurs.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/thread_titles.py#L25-L62",
+          "version": "repo-lines-v1:sha256:0bb2aebf35d536cedcd613bf842ec5c0a6b05f462c5e05cdec250ce36a512a1e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjNDcxYTIyZDZlNmQxMDViMTI5ZTQzOGQ5MzU5M2IyZTQ2MGE0ODBmZDRjM2E5Y2ZlZmMwYzE2YzNkNWM5OWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNkNjRmMTViMWM2YjliNTVmZDBmODA5NTUwMjY4Y2RlYmI4ZjdlNjYxZDdjOTgyMjUxMGE0OWMzYTQ2ODBkODciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVmOWJiOTliZGZkMTEwM2Q2YmM1OGZkMThkNjdiNWE2ODRiYmFmNmJhNzdhYTM5ZjMzN2E1MWVjNGVlMmZhMDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ2ODE1ZmRjZjkxZDUyNWQyNjljYzkwMTdkYjhjODUyZWI4YWI2ODA0NzYzMjgzOGJjNmNiM2UzZWEyM2MyNjcifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/thread_titles.py#L65-L155",
+          "version": "repo-lines-v1:sha256:2628ef56d046f2f36df99a80d73cb3f7fe8367fa3d41c1f7d0830ed5f3610236:eyJzZWxlY3RlZExpbmVDb3VudCI6OTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlYjc2NTdhYjg0Y2Y0MGM4MDIwNWRhOGE4YWUyODliNmJkOTI1NzY4NWU4NDI5MzcyYmYxN2QzODcxNzk2ZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBjYWU4MWFjOTYwN2I3MDM1ZDg5Y2IzY2M4YWQ1YmI5N2MwYTNlNzA3MTM3YTJkYWZlMzQ3ZjYwN2Y0YzhmMmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjcxOGM1OWYzYTdkNjBjZWQyMDY1ODE3NzFiMGQyMjJiNDEwZDYxMzdiMWFmNWQ1ZmQyNjM3ZTJiMTc0NjQ2YTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_thread_titles.py#L32-L161",
+          "version": "repo-lines-v1:sha256:7992dc3a013da4ff29916e6ae74132663f6b93f7b921657e4f4fe4ceb073069e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlNzExMjdkZTQ4NWUxNjA5NzgwYWJjZTFiMTU4N2FkOGU3NDAyNGY3MGY3ZTEyODcyMzIzMmFjZmM2ZTUxN2FkIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIyYjUyMTYxOGE5NTQ1MzE2ZTJhMGI4ZDdmZWE4OWU4NjRjMWI5ZjhmY2Y0NTIwYTc4NThlYjBlNTk0NmM1ZGNmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiNmExOGEzYjBmMTRkYjRkNTZiNGRhZjBhYTI4MmE1ZDEzOTkxNjQ5NjlhZWRmODk3YWJjNmMyMjNmM2I1OWQyIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1MDZkY2M2NTFiNzBiNGM1MmIxMDg5N2U2OGRjZGFmNjAwOTJiMmJlZDdlNmFjZmE4MmVlYjIwYTU0Yzc1YTFmIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_0cb0b0bfcca94af4a2d9c85efee8acda",
+      "statement": "The `/btw` server route reads checkpoint state as cost-pricing fallback without mutating it, runs the isolated `BtwOperation` through `answer_with_cost`, and exposes the persisted cumulative side subtotal through its per-thread cost endpoint.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/btw.py#L300-L315",
+          "version": "repo-lines-v1:sha256:b9410f14bb7eb70c463bc34734390cd9af276377b15c112a7dbfbcbfbff9a699:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwYTY4MTRhNzEwM2M4ODQxM2IzNTJhNDcwZjVjNTA4ZjFhMjc4Zjc3OWM3NDk5ZDdlMjgxY2ZmNmZjZjNkN2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1YzI5MmFmMzc2MDVkNGI2MGUyYmYxYjViN2JkMjgwMzQ2YTRjZWU5MzE2YWY5N2VhNzM5MTM0ODIzMTU4NTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNjNTQwNDkxNDg0ZjlkYjVkZmUzNGMzYjJlNzNlNjViMTViNjliMGMxNTJmYjYzMzM5ZDA2MTliMTcyMGMxMjIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/btw_api.py#L183-L247",
+          "version": "repo-lines-v1:sha256:3889750ea541b82d1099fff906a703ad7dccb3710661d62daec9ede5054fd990:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkYTVjNjZlMTdiMTQ1Mzk3ODM0YjhjODU0ZGM0MTkzZTIxMjUxODBhODk5NmExNGMzMTg4MzMyNmIyZWZiY2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2YmYxODJlOTRhY2IyZjViM2EzZmQzMDU3ZWNmNGQxM2QzNDRhMzYxNWY1YmJmOThmMWUyZDlmNTAxZWMxN2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImNmYTUwMDU0Y2FiZjRjMTU2MjM4YjFjMWU1ZDgyY2MwZTc3OTYxNWYyZTBkN2RjZjQ2MTdlNGJjMzEyMDk0ZjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUyODMwN2M2NjM2OGM1ZmU3MDk0NDc1OGQ5YmZmZmEyNTlhMzljYjM5YmFiYTRiMjI3YzEyMDdkMzdhYWM0ZDEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/btw_cost.py#L192-L241",
+          "version": "repo-lines-v1:sha256:403947072e21bc9745f1c79db0e777cd2d71851da41f5f98334e95bcd9125067:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4NjM0YTljMjhhZWU1YzY2NjZlNjY2YzhhNzc5NzhkMjUwNjJjZDY0NmJmMDJjOWQwOTQ4MTQyM2RmYzUwOGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4NmVjNWI2YzZhMjhjNzA3NjgxMDZlM2I5ZmM4MzJhODkwYzMwNTBhMzdlYzkyYTc4ODEwZjJjNzRjNzc5NWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU4ODg1YmQ5OTg5OTdmOWJlYzE2MzQyMzU2Mjc3NDEwZDkwZWRiZmJhNGI0MDA3ZTBlYzYwYTBjOWRhZTU3OWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-08T08:07:53.482Z"
+    "at": "2026-10-09T08:07:51.383Z"
   }
 }

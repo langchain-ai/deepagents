@@ -35,8 +35,14 @@ cd browser-mda
 echo 'ANTHROPIC_API_KEY=sk-ant-...' >> .env
 
 uv sync
-uv run mda dev      # local Agent Server + Studio; bakes the snapshot on first run
+uv run mda dev --no-reload   # local Agent Server + Studio; bakes the snapshot on first run
 ```
+
+**Use `--no-reload`.** The dev server writes its checkpoints to
+`.mda/build/.langgraph_api/*.pckl` -- inside the directory it watches. With hot
+reload on, every checkpoint the agent saves is seen as a file change and triggers
+a reload that kills the in-flight run, so long browsing tasks die mid-step. Editing
+project files still requires a restart to take effect.
 
 Try: *"Open news.ycombinator.com and give me the top 3 story titles with links."*
 

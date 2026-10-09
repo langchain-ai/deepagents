@@ -7,17 +7,25 @@ import logging
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, cast
 
-from deepagents.backends.protocol import FileInfo, LsResult
+from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResult
 from deepagents.backends.utils import to_posix_path
 from deepagents.middleware import skills as sdk_skills
 from deepagents.middleware.skills import SkillsMiddleware
+from langchain_core.messages import HumanMessage
+from langgraph.types import Overwrite
 
+from deepagents_code.config import _use_extra_skills_path_base
+from deepagents_code.config_manifest import get_option
+from deepagents_code.configuration.resolver import get_config_resolver
+from deepagents_code.goal_state_notice import is_internal_message
 from deepagents_code.plugins.adapters.skills import (
     CodeSkillSource,
     SkillNamespace,
     namespaced_skill_name,
 )
+from deepagents_code.skills.load import load_skill_content
 from deepagents_code.skills.merge import merge_skill
+from deepagents_code.skills.trust import load_trusted_skill_dirs
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -30,6 +38,27 @@ logger = logging.getLogger(__name__)
 
 _PLUGIN_SKILL_SOURCE_LENGTH = 3
 _SKILL_FILE = "SKILL.md"
+
+
+class _SkillsStateUpdate(sdk_skills.SkillsStateUpdate, total=False):
+    pinned_skills: Overwrite
+
+
+def _skill_invocation(state: sdk_skills.SkillsState) -> dict[str, object]:
+    """Return the latest user turn's explicit skill selection."""
+    for message in reversed(state.get("messages", [])):
+        if isinstance(message, HumanMessage) and not is_internal_message(message):
+            marker = message.additional_kwargs.get("__skill")
+            return marker if isinstance(marker, dict) else {}
+    return {}
+
+
+def _pending_pin_update(state: sdk_skills.SkillsState) -> Overwrite | None:
+    """Return an update retaining only the current turn's explicit selection."""
+    names = state.get("pinned_skills") or []
+    name = _skill_invocation(state).get("name")
+    selected = [name] if isinstance(name, str) and name in names else []
+    return Overwrite(selected) if selected != names else None
 
 
 def _entries(ls_result: object) -> list[FileInfo]:
@@ -243,6 +272,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         backend: BackendProtocol,
         sources: Sequence[CodeSkillSource],
         system_prompt: str | None = sdk_skills.SKILLS_SYSTEM_PROMPT,
+        path_base: Path | None = None,
     ) -> None:
         """Initialize the middleware with Code-local plugin source tuples.
 
@@ -251,7 +281,10 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             sources: Ordered Code skill sources, optionally including a plugin
                 namespace as the third tuple item.
             system_prompt: Skills prompt template passed to the SDK middleware.
+            path_base: User working directory for relative extra skill roots.
         """
+        self._allowed_roots = tuple(Path(source[0]).resolve() for source in sources)
+        self._path_base = path_base
         sdk_sources = [(source[0], source[1]) for source in sources]
         super().__init__(
             backend=backend,
@@ -263,17 +296,98 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             for source in sources
         )
 
+    def _pin_roots(self) -> list[Path]:
+        """Return configured and currently approved skill directories."""
+        roots = [*self._allowed_roots, *load_trusted_skill_dirs()]
+        option = get_option("skills.extra_allowed_dirs")
+        if option is not None:
+            with _use_extra_skills_path_base(self._path_base):
+                extra_roots = cast(
+                    "list[Path] | None", get_config_resolver().get(option).value
+                )
+            roots.extend(Path(root).resolve() for root in extra_roots or ())
+        return roots
+
+    @staticmethod
+    def _pin_response(
+        skill: sdk_skills.SkillMetadata,
+        expected_path: str | None,
+        roots: Sequence[Path],
+    ) -> FileDownloadResponse:
+        """Return the selected skill read within trusted directories.
+
+        Raises:
+            PermissionError: No trusted roots exist or the skill escapes them.
+            ValueError: The selected skill moved or cannot be read.
+        """
+        path = Path(skill["path"]).resolve()
+        if expected_path is not None and str(path) != expected_path:
+            msg = f"Skill '{skill['name']}' changed location; invoke it again."
+            raise ValueError(msg)
+        if not roots:
+            msg = "No trusted skill directories are configured."
+            raise PermissionError(msg)
+        content = load_skill_content(str(path), allowed_roots=roots)
+        response = FileDownloadResponse(
+            path=skill["path"], content=content.encode("utf-8") if content else None
+        )
+        if not sdk_skills._pinned_skill_body(skill, response):
+            msg = f"Could not read instructions for skill '{skill['name']}'."
+            raise ValueError(msg)
+        return response
+
+    def before_model(
+        self, state: sdk_skills.SkillsState, runtime: Runtime
+    ) -> dict[str, object] | None:
+        """Return SDK pin updates after validating skill selection and trust.
+
+        Raises:
+            ValueError: A requested skill is no longer available.
+        """
+        del runtime
+        names = state.get("pinned_skills")
+        if not names:
+            return None
+        by_name = {skill["name"]: skill for skill in state.get("skills_metadata") or []}
+        marker = _skill_invocation(state)
+        expected_name, expected_path = marker.get("name"), marker.get("path")
+        roots = self._pin_roots()
+        skills: list[sdk_skills.SkillMetadata] = []
+        responses: list[FileDownloadResponse] = []
+        for name in dict.fromkeys(names):
+            if name not in by_name:
+                msg = f"Skill '{name}' is no longer available; invoke it again."
+                raise ValueError(msg)
+            skill = by_name[name]
+            path = (
+                expected_path
+                if name == expected_name and isinstance(expected_path, str)
+                else None
+            )
+            responses.append(self._pin_response(skill, path, roots))
+            skills.append(skill)
+        return sdk_skills._pin_update(skills, responses)
+
+    async def abefore_model(
+        self, state: sdk_skills.SkillsState, runtime: Runtime
+    ) -> dict[str, object] | None:
+        """Return trust-checked pin updates without blocking the event loop."""
+        return await asyncio.to_thread(self.before_model, state, runtime)
+
     @staticmethod
     def _state_update(
         all_skills: dict[str, sdk_skills.SkillMetadata],
         errors: list[str],
-    ) -> sdk_skills.SkillsStateUpdate:
+        state: sdk_skills.SkillsState,
+    ) -> _SkillsStateUpdate:
         """Build the middleware state update, logging any load errors.
 
         Returns:
             The state update carrying merged skill metadata and any errors.
         """
-        update = sdk_skills.SkillsStateUpdate(skills_metadata=list(all_skills.values()))
+        update = _SkillsStateUpdate(skills_metadata=list(all_skills.values()))
+        if (pins := _pending_pin_update(state)) is not None:
+            update["pinned_skills"] = pins
         if errors:
             logger.warning("Skills load errors: %s", errors)
             update["skills_load_errors"] = errors
@@ -291,7 +405,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             A state update containing collision-safe skill metadata, or `None`
             when skills are already loaded.
         """
-        if "skills_metadata" in state:
+        if "skills_metadata" in state and not state.get("pinned_skills"):
             return None
 
         backend = self._backend
@@ -323,7 +437,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
                     source_label=source_label,
                 )
 
-        return self._state_update(all_skills, errors)
+        return self._state_update(all_skills, errors, state)
 
     async def abefore_agent(
         self,
@@ -337,7 +451,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             A state update containing collision-safe skill metadata, or `None`
             when skills are already loaded.
         """
-        if "skills_metadata" in state:
+        if "skills_metadata" in state and not state.get("pinned_skills"):
             return None
 
         backend = self._backend
@@ -369,4 +483,4 @@ class PluginSkillsMiddleware(SkillsMiddleware):
                     source_label=source_label,
                 )
 
-        return self._state_update(all_skills, errors)
+        return self._state_update(all_skills, errors, state)

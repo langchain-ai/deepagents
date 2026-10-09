@@ -1130,8 +1130,8 @@ class TestNonInteractivePrompt:
         _, kwargs = mock_start_server.call_args
         assert kwargs["interactive"] is False
 
-    async def test_initial_skill_wraps_prompt_and_metadata(self) -> None:
-        """Headless skill execution should send wrapped prompt + `__skill`."""
+    async def test_initial_skill_pins_instructions_and_keeps_metadata(self) -> None:
+        """Headless execution pins a skill without embedding its instructions."""
         mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
@@ -1184,6 +1184,8 @@ class TestNonInteractivePrompt:
 
         stream_input = mock_agent.astream.call_args.args[0]
         user_msg = stream_input["messages"][0]
+        assert stream_input["pinned_skills"] == ["code-review"]
+        assert "# Instructions" not in user_msg["content"]
         assert "I'm invoking the skill `code-review`." in user_msg["content"]
         assert "**User request:** review this patch" in user_msg["content"]
         assert user_msg["additional_kwargs"]["__skill"]["name"] == "code-review"

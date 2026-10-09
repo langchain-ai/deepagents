@@ -2173,6 +2173,97 @@ class TestConvertMessagesToData:
         assert len(result) == 1
         assert result[0].content == "connector user message"
 
+    @pytest.mark.parametrize("pinned", [False, True])
+    def test_skill_invocation_history(self, pinned: bool) -> None:
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_code.tui.widgets.message_store import MessageType
+        from deepagents_code.tui.widgets.messages import SkillMessage
+
+        messages = [
+            HumanMessage(
+                content="Invoke review" if pinned else "Legacy skill instructions",
+                additional_kwargs={
+                    "__skill": {
+                        "name": "review",
+                        "description": "Review code",
+                        "source": "project",
+                        "args": "auth.py",
+                    }
+                },
+            )
+        ]
+        body = (
+            '<skill name="review" path="/skills/review/SKILL.md">'
+            "\nCheck auth.\n</skill>"
+        )
+        if pinned:
+            messages.append(
+                HumanMessage(
+                    content=body,
+                    additional_kwargs={
+                        "lc_source": "pinned_skill",
+                        "skill": {
+                            "name": "review",
+                            "path": "/skills/review/SKILL.md",
+                            "description": "Review code",
+                        },
+                    },
+                )
+            )
+
+        result = DeepAgentsApp._convert_messages_to_data(messages)
+
+        assert len(result) == 1
+        row = result[0]
+        assert row.type == MessageType.SKILL
+        assert row.skill_name == "review"
+        assert row.skill_description == "Review code"
+        assert row.skill_source == "project"
+        assert row.skill_args == "auth.py"
+        assert row.skill_body == (
+            "Check auth." if pinned else "Legacy skill instructions"
+        )
+        assert isinstance(row.to_widget(), SkillMessage)
+
+    def test_pinned_skills_without_invocation_stay_separate(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        pinned = HumanMessage(
+            content="Current instructions",
+            additional_kwargs={
+                "lc_source": "pinned_skill",
+                "skill": {"name": "review", "description": "Review code"},
+            },
+        )
+        messages = [
+            HumanMessage(
+                content="Old instructions",
+                additional_kwargs={"__skill": {"name": "review", "args": "old"}},
+            ),
+            AIMessage(content="Done"),
+            HumanMessage(content="Review again"),
+            pinned,
+            pinned.model_copy(update={"content": "Newer instructions"}),
+        ]
+
+        result = DeepAgentsApp._convert_messages_to_data(messages)
+
+        assert [row.type for row in result] == [
+            MessageType.SKILL,
+            MessageType.ASSISTANT,
+            MessageType.USER,
+            MessageType.SKILL,
+            MessageType.SKILL,
+        ]
+        assert result[0].skill_body == "Old instructions"
+        assert result[3].skill_body == "Current instructions"
+        assert result[4].skill_body == "Newer instructions"
+        assert result[3].skill_args == ""
+        assert result[4].skill_args == ""
+
     def test_ai_message_content_block_list(self) -> None:
         """AIMessage with list-of-blocks content should extract text."""
         from deepagents_code.tui.widgets.message_store import MessageType

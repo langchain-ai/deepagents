@@ -1,0 +1,24 @@
+browser-mda/.gitignore
+  s_199de864fdc442::t_03a0bc82afd57f 20
+browser-mda/README.md
+  s_199de864fdc442::t_03a0bc82afd57f 38,41-45
+  s_199de864fdc442::t_e924d2442a5ce3 46
+browser-mda/.env.example
+  s_199de864fdc442::t_da11c7ab5348c5 1-16
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a0dca08a1e3da4195d6c8f33fe22e8e6dddef352",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

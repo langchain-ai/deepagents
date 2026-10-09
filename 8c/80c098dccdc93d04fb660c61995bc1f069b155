@@ -1,0 +1,34 @@
+browser-mda/MDA_EVALS_FEEDBACK.md
+  s_199de864fdc442::t_c9a1f310448a63 6-14,141-181
+  s_0862f179205570::t_9a4244baeebfe5 210-348
+  s_199de864fdc442::t_e3dc30fbe44735 182
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8c80c098dccdc93d04fb660c61995bc1f069b155",
+  "prompts": {},
+  "humans": {
+    "h_152f5d9f78d224": {
+      "author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_0862f179205570": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "c5ef8823-25f9-40aa-a943-ecf4867408fe",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    },
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

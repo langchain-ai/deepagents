@@ -29,17 +29,17 @@ from deepagents.backends.utils import validate_path
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from langchain_openai import ChatOpenAI
+    from langchain_openai.chat_models.base import BaseChatOpenAI
     from langgraph.runtime import Runtime
 
     from deepagents.middleware.skills import SkillMetadata, SkillToolResolver
 
 try:
-    from langchain_openai import ChatOpenAI as _ChatOpenAI
+    from langchain_openai.chat_models.base import BaseChatOpenAI as _BaseChatOpenAI
 except ImportError:
-    _CHAT_OPENAI_TYPE: type[ChatOpenAI] | None = None
+    _BASE_CHAT_OPENAI_TYPE: type[BaseChatOpenAI] | None = None
 else:
-    _CHAT_OPENAI_TYPE = _ChatOpenAI
+    _BASE_CHAT_OPENAI_TYPE = _BaseChatOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -51,17 +51,6 @@ _SKILL_TOOLS_DISCLOSED_KEY = "_skill_tools_disclosed"
 
 _DEFER_LOADING = "defer_loading"
 """Tool `extras` key (and provider field) that withholds a tool's schema until searched for."""
-
-_ANTHROPIC_INLINE_TOOL_MODELS = ("claude-opus-5", "claude-fable-5", "claude-mythos-5", "claude-opus-4-8")
-"""Model ID prefixes that accept an inline `tool_definition` mid-conversation.
-
-Every prefix must also pass `langchain_anthropic`'s mid-conversation system
-message check; otherwise the converter hoists the disclosure into `system` and
-strips its blocks with only a warning.
-"""
-
-_OPENAI_INLINE_TOOL_MODELS = ("gpt-6-", "gpt-5.6-")
-"""Model ID prefixes whose Responses API accepts an `additional_tools` input item."""
 
 _ANTHROPIC_ROOT_COMBINATORS = ("oneOf", "anyOf", "allOf")
 """Root `input_schema` keys the Anthropic API rejects, failing the whole request."""
@@ -392,23 +381,15 @@ def _discard_rejected_schemas(disclosure: _Disclosure, model: object) -> None:
 
 def _inline_block_builder(model: object) -> Callable[[BaseTool], _ToolDisclosure] | None:
     """Return how `model` is given a tool mid-conversation, or `None` if it can't be.
-
-    The one place that decides support, so a model-profile capability can replace
-    the allowlists later.
     """
     chat_model = _unwrap_bound(model)
-    if isinstance(chat_model, ChatAnthropic) and chat_model.model.startswith(_ANTHROPIC_INLINE_TOOL_MODELS):
-        return _anthropic_tool_addition
-    # Exact type, not subclasses: a subclass may lift system messages elsewhere
-    # (e.g. into `instructions`) and reject a non-text block there.
-    if (
-        _CHAT_OPENAI_TYPE is not None
-        and type(chat_model) is _CHAT_OPENAI_TYPE
-        and chat_model.use_responses_api is True
-        and chat_model.model_name.startswith(_OPENAI_INLINE_TOOL_MODELS)
-    ):
-        return _openai_additional_tools
-    return None
+    if isinstance(chat_model, ChatAnthropic):
+        build = _anthropic_tool_addition
+    elif _BASE_CHAT_OPENAI_TYPE is not None and isinstance(chat_model, _BASE_CHAT_OPENAI_TYPE):
+        build = _openai_additional_tools
+    else:
+        return None
+    return build if (chat_model.profile or {}).get("mid_conversation_tool_definitions") else None
 
 
 def _unwrap_bound(model: object) -> object:

@@ -380,8 +380,7 @@ def _discard_rejected_schemas(disclosure: _Disclosure, model: object) -> None:
 
 
 def _inline_block_builder(model: object) -> Callable[[BaseTool], _ToolDisclosure] | None:
-    """Return how `model` is given a tool mid-conversation, or `None` if it can't be.
-    """
+    """Return how `model` is given a tool mid-conversation, or `None` if it can't be."""
     chat_model = _unwrap_bound(model)
     if isinstance(chat_model, ChatAnthropic):
         build = _anthropic_tool_addition
@@ -389,7 +388,7 @@ def _inline_block_builder(model: object) -> Callable[[BaseTool], _ToolDisclosure
         build = _openai_additional_tools
     else:
         return None
-    return build if (chat_model.profile or {}).get("mid_conversation_tool_definitions") else None
+    return build if (chat_model.profile or {}).get("mid_conversation_tools") else None
 
 
 def _unwrap_bound(model: object) -> object:

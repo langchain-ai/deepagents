@@ -286,10 +286,10 @@ def test_skill_naming_a_bound_tool_sends_nothing(tmp_path: Path, monkeypatch: py
     assert _tool_names(stub.bodies[1]) == _tool_names(stub.bodies[0])
 
 
-_INLINE_TOOLS_PROFILE = {"mid_conversation_system_messages": True, "mid_conversation_tool_definitions": True}
-"""A profile claiming inline tool definitions, and the in-place system messages they ride on."""
+_INLINE_TOOLS_PROFILE = {"mid_conversation_system_messages": True, "mid_conversation_tools": True}
+"""A profile claiming inline tools, and the in-place system messages they ride on."""
 
-_NO_INLINE_TOOLS_PROFILE = {**_INLINE_TOOLS_PROFILE, "mid_conversation_tool_definitions": False}
+_NO_INLINE_TOOLS_PROFILE = {**_INLINE_TOOLS_PROFILE, "mid_conversation_tools": False}
 """A profile for a model that keeps system messages in place but can't take a tool there."""
 
 

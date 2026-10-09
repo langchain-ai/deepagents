@@ -1,0 +1,41 @@
+browser-mda-tools/sandbox/__init__.py
+  s_199de864fdc442::t_ece986f3ee6275 1-45
+browser-mda-tools/.env.example
+  s_199de864fdc442::t_ece986f3ee6275 1-12,14-22
+  s_199de864fdc442::t_e7e39e0fd28ea2 13
+browser-mda-tools/agent.py
+  s_199de864fdc442::t_ece986f3ee6275 1-18,20-21
+  s_199de864fdc442::t_e7e39e0fd28ea2 19
+browser-mda-tools/tools/browser.py
+  s_199de864fdc442::t_1718675749867e 1-242
+browser-mda/agent.py
+  s_199de864fdc442::t_e7e39e0fd28ea2 18
+browser-mda-tools/sandbox/setup.sh
+  s_199de864fdc442::t_ece986f3ee6275 1-63
+browser-mda-tools/.gitignore
+  s_199de864fdc442::t_ece986f3ee6275 1-20
+browser-mda-tools/pyproject.toml
+  s_199de864fdc442::t_ece986f3ee6275 1-11
+browser-mda-tools/instructions.md
+  s_199de864fdc442::t_e0532b7a13c9cb 1-54
+browser-mda/.env.example
+  s_199de864fdc442::t_e7e39e0fd28ea2 13
+browser-mda-tools/uv.lock
+  s_199de864fdc442::t_cde08f7dd308e4 1-1754
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1186ea8dde6717f42b8afbf6a995623bbec1ebe4",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

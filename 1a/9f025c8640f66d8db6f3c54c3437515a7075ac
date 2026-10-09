@@ -1,0 +1,44 @@
+browser-mda/sandbox/__init__.py
+  s_199de864fdc442::t_4fe9b65c8fff5d 1-2,7-8,10-11,13-14,16,19,21,28-32,45
+  s_199de864fdc442::t_3bf5ac6aa1b596 3-6,9,12,15,17-18,20,22-27,33-44
+browser-mda/.gitignore
+  s_199de864fdc442::t_1a3e30434cf200 1-19
+browser-mda/sandbox/setup.sh
+  s_199de864fdc442::t_4fe9b65c8fff5d 1
+  s_199de864fdc442::t_4e022d11fd0f02 36
+  s_199de864fdc442::t_2fd544bbaea6d8 2-35,37-63
+browser-mda/README.md
+  s_199de864fdc442::t_83d0c3ea94128a 1-2,4-14,16-27,29-44,46-47,53-70,77-84,86
+  s_199de864fdc442::t_7a0f97be964d25 3,15,28,45,48-52,85
+  s_199de864fdc442::t_35d5c104dcdb7d 71-76
+browser-mda/instructions.md
+  s_199de864fdc442::t_0a8b98e156882d 1-45
+browser-mda/skills/web-browsing/SKILL.md
+  s_199de864fdc442::t_1cffdc4f177d6a 1-7,9-89,91-96,122-159
+  s_199de864fdc442::t_7a0f97be964d25 8,90,97-121
+browser-mda/agent.py
+  s_199de864fdc442::t_0a8b98e156882d 1-5,7-19
+  s_199de864fdc442::t_7a0f97be964d25 6
+browser-mda/pyproject.toml
+  s_199de864fdc442::t_3bf5ac6aa1b596 9-11
+  s_199de864fdc442::t_0a8b98e156882d 1-6,8
+  s_199de864fdc442::t_f704af60a001f0 7
+browser-mda/uv.lock
+  s_199de864fdc442::t_db7b0497d48596 1-1754
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1a9f025c8640f66d8db6f3c54c3437515a7075ac",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

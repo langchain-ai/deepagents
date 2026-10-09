@@ -957,7 +957,11 @@ class SandboxBackendProtocol(BackendProtocol):
                 backends that support no-timeout execution.
 
         Returns:
-            `ExecuteResponse` with combined output, exit code, and truncation flag.
+            `ExecuteResponse` with combined output, exit code, and truncation
+            flag. Backends that can separate process streams should also
+            populate `stdout`, `stderr`, `stdout_truncated`, and
+            `stderr_truncated`; legacy or combined-stream-only backends may
+            leave `stdout` and `stderr` as `None`.
         """
         raise NotImplementedError
 

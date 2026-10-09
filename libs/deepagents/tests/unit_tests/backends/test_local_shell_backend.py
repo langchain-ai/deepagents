@@ -207,7 +207,7 @@ def test_local_shell_backend_caps_rendered_output_with_stderr_markers() -> None:
 
 
 def test_local_shell_backend_reports_truncated_streams() -> None:
-    """The shared stdout-first budget reports which streams lost content."""
+    """Stdout consumes the shared stream budget before stderr is retained."""
     with tempfile.TemporaryDirectory() as tmpdir:
         backend = LocalShellBackend(root_dir=tmpdir, max_output_bytes=5, inherit_env=True)
 
@@ -218,6 +218,19 @@ def test_local_shell_backend_reports_truncated_streams() -> None:
         assert result.stdout_truncated is True
         assert result.stderr_truncated is True
         assert result.truncated is True
+
+
+def test_local_shell_backend_reports_stderr_omitted_at_stdout_boundary() -> None:
+    """Non-empty stderr is truncated when stdout exactly fills the shared budget."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir, max_output_bytes=5, inherit_env=True)
+
+        result = backend.execute("printf '12345'; printf 'E' >&2")
+
+        assert result.stdout == "12345"
+        assert result.stderr == ""
+        assert result.stdout_truncated is False
+        assert result.stderr_truncated is True
 
 
 def test_local_shell_backend_reports_stderr_only_truncation() -> None:

@@ -158,10 +158,18 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 Can be overridden per-command via the `timeout` parameter
                 on `execute()`.
 
-            max_output_bytes: Maximum number of bytes to capture from command output.
-                Output exceeding this limit will be truncated.
+            max_output_bytes: Maximum command-output size retained in each
+                response representation. The model-facing `output` string is
+                capped independently from the structured `stdout` and `stderr`
+                fields, whose combined retained size is also capped at this
+                value. A response can therefore retain roughly twice this
+                amount across both representations. Truncation is applied after
+                `subprocess.run` captures the command output, so this does not
+                bound temporary subprocess capture memory. The existing
+                text-mode implementation measures Python characters rather
+                than encoded bytes.
 
-                Defaults to 100,000 bytes.
+                Defaults to 100,000 characters per representation.
 
             env: Environment variables for shell commands.
 
@@ -328,7 +336,11 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             # attempt is made to reconstruct it.
             stdout = result.stdout[: self._max_output_bytes]
             stdout_truncated = len(stdout) < len(result.stdout)
-            stderr = result.stderr[: self._max_output_bytes - len(stdout)]
+            # `stdout` is capped above, so this is normally non-negative. Keep
+            # the clamp explicit so later changes cannot turn a negative value
+            # into Python's "drop characters from the end" slice semantics.
+            stderr_budget = max(0, self._max_output_bytes - len(stdout))
+            stderr = result.stderr[:stderr_budget]
             stderr_truncated = len(stderr) < len(result.stderr)
 
             # Combine stdout and stderr.

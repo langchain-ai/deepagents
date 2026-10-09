@@ -209,12 +209,21 @@ design.
 4. **A workspace secret appears to shadow the deployment env.** A deployment with
    a correct `ANTHROPIC_API_KEY` in `.env` still presented a different key; using
    a uniquely-named variable was the only reliable fix.
-5. **No way to get native Cost/Tokens when evaluating a deployment over HTTP.**
-   `aevaluate` against a deployment leaves the experiment run with no LLM spans,
-   so the native columns stay empty. Neither `RunTree.to_headers()` nor
-   `runs.create(langsmith_tracing={"project_name", "example_id"})` linked the
-   deployment run — `reference_example_id` stayed `None`. Harbor is the answer
-   here, which is a good reason for issue 3 to be fixed.
+5. **`runs.create(langsmith_tracing=...)` is accepted and ignored.** Evaluating a
+   deployment over HTTP leaves the experiment run with no LLM spans, so native
+   Cost/Tokens stay empty. The SDK exposes the intended fix --
+   `langsmith_tracing={"project_name": ..., "example_id": ...}`, documented as
+   routing traces to a project or associating them with a dataset example.
+
+   The inputs were verified valid: inside an `aevaluate` target,
+   `get_current_run_tree()` returns a real `reference_example_id` and the
+   experiment's `session_name`, and both were passed on every `runs.create`.
+   Result: deployment runs still report `reference_example_id: None` and no
+   project named after the experiment appears. The parameter has no observable
+   effect. `RunTree.to_headers()` is likewise ignored.
+
+   This is the difference between "cost is hard to get here" and "the documented
+   mechanism does not work".
 6. **LangSmith feedback scores cap at ±99,999.9999.** Token counts exceed this, and
    an over-range score 422s the *entire* multipart batch, silently dropping other
    metrics in it. See `benchmarks/webvoyager/COST_METRICS.md`.

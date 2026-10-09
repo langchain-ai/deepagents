@@ -124,14 +124,27 @@ checkpointer is suitable for tests but does not provide restart persistence. On 
 adapter restores the LangGraph thread, verifies the original working directory, and replays
 the conversation to the client through `session/update` before returning.
 
-### Shell command approvals
+### Tool approvals
 
-When shell execution requires approval, **Always allow this exact command in this
-session** remembers the full command and tool arguments, scoped to the session's
-working directory, mode, and model. Changing the command, any argument, or that
-context requires approval again. It does not grant permission to other commands
-that use the same program. Approvals are kept in memory, not persisted across
-server restarts.
+The agent's `interrupt_on` configuration determines which tool calls require
+approval. For those calls, the adapter offers these choices:
+
+| Choice | Effect | Example |
+| --- | --- | --- |
+| **Approve** | Allow this call once; ask again next time. | Approve `ls -la` without remembering it. |
+| **Reject** | Reject this call without remembering the rejection. | Reject an unwanted file edit. |
+| **Always allow this exact command in this session** (`execute`) | Remember the full command and all tool arguments in the same session, working directory, mode, and model. | Approving `ls -la` allows another identical call, but `ls -l`, added commands, or a changed argument prompt again. |
+| **Always allow &lt;tool&gt; commands** (other tools) | Allow subsequent calls to that tool in this session, including different arguments. | Approving `write_file` this way also allows writes to other paths. |
+
+Cancelling the dialog or returning an unknown or unoffered choice rejects the
+call. Invalid shell requests cannot receive reusable approval. This adapter does
+not offer an **Always reject** option. Permission choices are separate from ACP
+session modes: a mode may change the agent's behavior, but does not itself grant
+permission. Available modes depend on the agent configuration.
+
+Remembered approvals are kept in memory, not persisted across server restarts,
+even when conversation history uses a durable checkpointer. Shell approvals do
+not extend to other commands that use the same program.
 
 Approval is not sandboxing: the same command can behave differently if files,
 executables, the backend, or its environment change. Session context does not

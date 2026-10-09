@@ -1207,14 +1207,12 @@ class AgentServerACP(ACPAgent):
                         if tool_name == "execute"
                         else None
                     )
-                    if tool_name == "execute":
-                        if (
-                            execute_key is not None
-                            and execute_key in self._allowed_execute_commands.get(session_id, set())
-                        ):
-                            user_decisions.append({"type": "approve"})
-                            continue
-                    elif (tool_name, None) in self._allowed_command_types.get(session_id, set()):
+                    allowed = (
+                        execute_key in self._allowed_execute_commands.get(session_id, set())
+                        if tool_name == "execute"
+                        else (tool_name, None) in self._allowed_command_types.get(session_id, set())
+                    )
+                    if allowed:
                         user_decisions.append({"type": "approve"})
                         continue
 

@@ -23,9 +23,9 @@ def _file_error(error: smol.SmolError) -> str:
     message = str(error).lower()
     if error.code == "NOT_FOUND" or "no such file or directory (os error 2)" in message:
         return "file_not_found"
-    if "permission denied (os error 13)" in message:
+    if "permission denied" in message:
         return "permission_denied"
-    if "is a directory (os error 21)" in message:
+    if "is a directory" in message:
         return "is_directory"
     return error.code.lower()
 
@@ -85,9 +85,19 @@ class SmolSandbox(BaseSandbox):
         if not path.startswith("/"):
             return FileDownloadResponse(path=path, content=None, error="invalid_path")
         try:
-            return FileDownloadResponse(
-                path=path, content=self._machine.read_file(path), error=None
-            )
+            content = self._machine.read_file(path)
+            # The Cloud files route serves directory listings as JSON bytes.
+            # Confirm the path before classifying: a regular file may contain
+            # the same JSON, and file reads should preserve its exact bytes.
+            if content.startswith(b'{"entries":'):
+                probe = self._machine.exec(
+                    ["test", "-d", path], smol.ExecOptions(timeout=10)
+                )
+                if probe.exit_code == 0:
+                    return FileDownloadResponse(
+                        path=path, content=None, error="is_directory"
+                    )
+            return FileDownloadResponse(path=path, content=content, error=None)
         except smol.SmolError as exc:
             return FileDownloadResponse(path=path, content=None, error=_file_error(exc))
 

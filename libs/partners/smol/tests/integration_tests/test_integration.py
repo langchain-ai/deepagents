@@ -17,7 +17,8 @@ def test_sandbox_live_vm(target: Literal["local", "cloud"]) -> None:
     enabled = (
         os.environ.get("SMOL_LOCAL_LIVE") == "1"
         if target == "local"
-        else bool(os.environ.get("SMOL_CLOUD_TOKEN"))
+        else os.environ.get("SMOL_CLOUD_LIVE") == "1"
+        or bool(os.environ.get("SMOL_CLOUD_TOKEN"))
     )
     if not enabled:
         pytest.skip(f"{target} live VM was not enabled")
@@ -40,6 +41,11 @@ def test_sandbox_live_vm(target: Literal["local", "cloud"]) -> None:
         assert (
             sandbox.download_files(["/workspace/absent.txt"])[0].error
             == "file_not_found"
+        )
+        assert sandbox.execute("mkdir -p /workspace/test-directory").exit_code == 0
+        assert (
+            sandbox.download_files(["/workspace/test-directory"])[0].error
+            == "is_directory"
         )
     finally:
         machine.delete()

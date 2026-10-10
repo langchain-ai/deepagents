@@ -94,3 +94,31 @@ def test_sdk_rejects_nonpositive_timeout_before_running(machine: Mock) -> None:
     with pytest.raises(ValueError, match="greater than zero"):
         SmolSandbox(machine=machine).execute("sleep 1", timeout=0)
     machine.exec.assert_not_called()
+
+
+def test_directory_error_is_classified(machine: Mock) -> None:
+    """The local guest reports directory reads without an OS error number."""
+    machine.read_file.side_effect = smol.SmolError(
+        "SMOLVM_ERROR",
+        "Agent error (read file): is a directory: /workspace/folder",
+    )
+    result = SmolSandbox(machine=machine).download_files(["/workspace/folder"])
+    assert result[0].error == "is_directory"
+
+
+def test_cloud_directory_listing_is_distinguished_from_json_file(machine: Mock) -> None:
+    """Cloud directory listings and matching file contents are not confused."""
+    listing = b'{"entries":[]}'
+    machine.read_file.side_effect = None
+    machine.read_file.return_value = listing
+    machine.exec.side_effect = [
+        SimpleNamespace(exit_code=0),
+        SimpleNamespace(exit_code=1),
+    ]
+    sandbox = SmolSandbox(machine=machine)
+    directory = sandbox.download_files(["/workspace/folder"])[0]
+    assert directory.error == "is_directory"
+    assert directory.content is None
+    regular_file = sandbox.download_files(["/workspace/list.json"])[0]
+    assert regular_file.error is None
+    assert regular_file.content == listing

@@ -178,12 +178,22 @@ async def main():
     if a.limit:
         examples = examples[: a.limit]
     project = f"webvoyager-{a.variant}-native-{int(time.time())}"
-    # num_examples/num_repetitions are not accepted by this SDK version, so the
-    # UI shows a bare run count rather than "n/30". Recorded in metadata instead
-    # so the shape of the run is at least discoverable.
-    ls.create_project(project_name=project, reference_dataset_id=ds.id,
-                      metadata={"examples": len(examples), "repetitions": a.repetitions},
-                      description="Deployment runs ARE the experiment rows.")
+    # num_examples/num_repetitions give the UI its denominator, so progress shows
+    # as "n/30" rather than a bare run count. Requires langsmith >= 0.14.x --
+    # older releases reject both kwargs, so fall back rather than failing a run.
+    project_kwargs = dict(
+        project_name=project,
+        reference_dataset_id=ds.id,
+        metadata={"examples": len(examples), "repetitions": a.repetitions},
+        description="Deployment runs ARE the experiment rows.",
+    )
+    try:
+        ls.create_project(num_examples=len(examples), num_repetitions=a.repetitions,
+                          **project_kwargs)
+    except TypeError:
+        print("  note: langsmith too old for num_examples; progress bar will lack a total",
+              flush=True)
+        ls.create_project(**project_kwargs)
     print(f"experiment project: {project}  "
           f"({len(examples)} examples x {a.repetitions} reps = "
           f"{len(examples) * a.repetitions} runs)", flush=True)

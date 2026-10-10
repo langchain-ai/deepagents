@@ -4,6 +4,10 @@ name: "🌐 Browser MDA eval (WebVoyager)"
 # records it as a LangSmith experiment. The agent and its browser run on
 # LangSmith; this job only submits tasks, polls, grades, and posts feedback --
 # so it is cheap to run here and does not need browser credentials.
+#
+# workflow_dispatch only works once this file is on the default branch. Until
+# then, push to the `evals/browser-mda-run` branch to start a run with the
+# defaults below.
 on:
   workflow_dispatch:
     inputs:
@@ -24,10 +28,16 @@ on:
         description: "Only the first N tasks (0 = all 30)"
         type: string
         default: "0"
+  push:
+    branches: [evals/browser-mda-run]
 
 jobs:
   eval:
     runs-on: ubuntu-latest
+    # Holds LANGSMITH_API_KEY; the workspace it belongs to must own the
+    # `webvoyager-30` dataset and have a TYPESAFE_API_KEY workspace secret, or
+    # the gateway returns 424 when the Jev judge is called.
+    environment: evals
     # 30 tasks x 3 reps at concurrency 6, with per-task timeouts of 900s.
     timeout-minutes: 240
     steps:
@@ -40,32 +50,39 @@ jobs:
       - name: Run the suite
         working-directory: browser-mda/benchmarks/webvoyager
         env:
-          # The judge (Jev) and the deployment are both reached with the
-          # LangSmith gateway key. It must belong to a workspace that has a
-          # TYPESAFE_API_KEY workspace secret configured, otherwise the gateway
-          # returns 424 "Required workspace secret TYPESAFE_API_KEY is missing".
-          ANTHROPIC_API_KEY: ${{ secrets.LANGSMITH_GATEWAY_API_KEY }}
+          # Both the deployment and the Jev judge authenticate with the
+          # LangSmith key; the judge reaches Jev through the LangSmith gateway.
+          ANTHROPIC_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          # Inputs are null on a push event, so each one carries a default.
+          # Kept out of the run script itself so they are never interpolated
+          # into a shell command.
+          VARIANT: ${{ inputs.variant || 'repl' }}
+          REPETITIONS: ${{ inputs.repetitions || '3' }}
+          CONCURRENCY: ${{ inputs.concurrency || '6' }}
+          LIMIT: ${{ inputs.limit || '0' }}
         run: |
           set -euo pipefail
-          LIMIT_ARG=""
-          if [ "${{ inputs.limit }}" != "0" ]; then
-            LIMIT_ARG="--limit ${{ inputs.limit }}"
+          LIMIT_ARG=()
+          if [ "$LIMIT" != "0" ]; then
+            LIMIT_ARG=(--limit "$LIMIT")
           fi
-          uv run --with langsmith --with langgraph-sdk --with httpx \
+          uv run --with "langsmith>=0.14.7" --with langgraph-sdk --with httpx \
             python -u experiment_native.py \
-              --variant "${{ inputs.variant }}" \
-              --repetitions "${{ inputs.repetitions }}" \
-              --concurrency "${{ inputs.concurrency }}" \
-              $LIMIT_ARG \
+              --variant "$VARIANT" \
+              --repetitions "$REPETITIONS" \
+              --concurrency "$CONCURRENCY" \
+              "${LIMIT_ARG[@]}" \
             | tee eval.log
 
       - name: Summarise
         if: always()
         working-directory: browser-mda/benchmarks/webvoyager
+        env:
+          VARIANT: ${{ inputs.variant || 'repl' }}
         run: |
           {
-            echo "## ${{ inputs.variant }} — WebVoyager"
+            echo "## $VARIANT — WebVoyager"
             echo
             grep -E "^experiment project" eval.log || true
             echo
@@ -80,5 +97,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: eval-${{ inputs.variant }}-log
+          name: eval-${{ inputs.variant || 'repl' }}-log
           path: browser-mda/benchmarks/webvoyager/eval.log

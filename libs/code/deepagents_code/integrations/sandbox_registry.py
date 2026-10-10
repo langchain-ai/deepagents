@@ -47,6 +47,7 @@ BUILTIN_METADATA: dict[str, SandboxProviderMetadata] = {
         name="daytona",
         working_dir="/home/daytona",
         install=SandboxInstallHint(kind="extra", name="daytona"),
+        supports_snapshot_name=True,
         backend_module="langchain_daytona",
     ),
     "langsmith": SandboxProviderMetadata(

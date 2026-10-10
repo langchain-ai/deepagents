@@ -105,8 +105,8 @@ def create_sandbox(
         sandbox_id: Optional existing sandbox ID to reuse
         snapshot_name: Optional sandbox snapshot name to use or create.
             Honored by providers whose metadata sets `supports_snapshot_name`
-            (built-ins: `'langsmith'` snapshot, `'runloop'` blueprint); must be
-            `None` for other providers.
+            (built-ins: `'langsmith'` and `'daytona'` snapshot, `'runloop'`
+            blueprint); must be `None` for other providers.
         setup_script_path: Optional path to setup script to run after sandbox starts
         params: Extra keyword arguments forwarded to `provider.get_or_create()`
             (e.g. config-declared `[sandboxes.providers.<name>.params]`).
@@ -260,6 +260,15 @@ _LANGSMITH_DEFAULT_IMAGE = "python:3"
 
 _LANGSMITH_DEFAULT_FS_CAPACITY_BYTES = 16 * 1024**3
 """Default filesystem capacity (16 GiB) for LangSmith sandbox snapshots."""
+
+_DAYTONA_DEFAULT_SNAPSHOT = "deepagents-code"
+"""Default Daytona sandbox snapshot name used when none is specified."""
+
+_DAYTONA_DEFAULT_IMAGE = "python:3"
+"""Default Docker image for Daytona sandbox snapshots when none is provided."""
+
+_DAYTONA_SNAPSHOT_READY_STATE = "active"
+"""Daytona snapshot state that is bootable; others are in-flight or failed."""
 
 
 class _LangSmithProvider(SandboxProvider):
@@ -473,6 +482,7 @@ class _DaytonaProvider(SandboxProvider):
                 "or DEEPAGENTS_CODE_DAYTONA_API_KEY."
             )
             raise ValueError(msg)
+        self._daytona = daytona_module
         self._client = daytona_module.Daytona(
             daytona_module.DaytonaConfig(
                 api_key=api_key,
@@ -485,14 +495,25 @@ class _DaytonaProvider(SandboxProvider):
         *,
         sandbox_id: str | None = None,
         timeout: int = 180,
-        **kwargs: Any,  # noqa: ARG002
+        snapshot: str | None = None,
+        snapshot_image: str | None = None,
+        **kwargs: Any,
     ) -> SandboxBackendProtocol:
         """Get or create a Daytona sandbox.
 
         Args:
             sandbox_id: Not supported yet — must be None.
             timeout: Seconds to wait for startup.
-            **kwargs: Unused.
+            snapshot: Snapshot name to boot from.
+
+                Resolved to a Daytona snapshot, creating it from
+                `snapshot_image` if missing. Overrides
+                `DAYTONA_SANDBOX_SNAPSHOT_NAME`; overridden by
+                `DAYTONA_SANDBOX_SNAPSHOT_ID` (a pre-baked snapshot reference
+                used as-is, which wins over everything).
+            snapshot_image: Docker image used when building the snapshot.
+            **kwargs: Rejected; passing any other keyword argument raises
+                `TypeError`.
 
         Returns:
             `DaytonaSandbox` instance.
@@ -500,13 +521,19 @@ class _DaytonaProvider(SandboxProvider):
         Raises:
             NotImplementedError: If `sandbox_id` is provided.
             RuntimeError: If the sandbox fails to start.
+            TypeError: If unsupported keyword arguments are provided.
         """
+        from deepagents_code.model_config import resolve_env_var
+
         daytona_backend = _import_provider_module(
             "langchain_daytona",
             provider="daytona",
             package="langchain-daytona",
         )
 
+        if kwargs:
+            msg = f"Received unsupported arguments: {list(kwargs.keys())}"
+            raise TypeError(msg)
         if sandbox_id:
             msg = (
                 "Connecting to existing Daytona sandbox by ID not yet supported. "
@@ -514,7 +541,24 @@ class _DaytonaProvider(SandboxProvider):
             )
             raise NotImplementedError(msg)
 
-        sandbox = self._client.create()
+        # Explicit snapshot ID wins — skip name lookup and auto-build.
+        env_snapshot_id = resolve_env_var("DAYTONA_SANDBOX_SNAPSHOT_ID")
+        if env_snapshot_id:
+            snapshot_ref = env_snapshot_id
+        else:
+            env_snapshot_name = resolve_env_var("DAYTONA_SANDBOX_SNAPSHOT_NAME")
+            snapshot_name = snapshot or env_snapshot_name or _DAYTONA_DEFAULT_SNAPSHOT
+            image = snapshot_image or _DAYTONA_DEFAULT_IMAGE
+            snapshot_ref = self._ensure_snapshot(snapshot_name, image)
+
+        try:
+            sandbox = self._client.create(
+                self._daytona.CreateSandboxFromSnapshotParams(snapshot=snapshot_ref)
+            )
+        except Exception as e:
+            msg = f"Failed to create sandbox from snapshot '{snapshot_ref}': {e}"
+            raise RuntimeError(msg) from e
+
         last_exc: Exception | None = None
         for _ in range(timeout // 2):
             try:
@@ -537,6 +581,63 @@ class _DaytonaProvider(SandboxProvider):
         """Delete a Daytona sandbox by id."""
         sandbox = self._client.get(sandbox_id)
         self._client.delete(sandbox)
+
+    def _ensure_snapshot(self, snapshot_name: str, image: str) -> str:
+        """Resolve a snapshot by name, building it from `image` if missing.
+
+        Daytona references snapshots by name, so `snapshot.get` resolves the
+        name directly. Only a snapshot in the `active` state is bootable; a
+        matching-name snapshot that is still building or has failed raises
+        rather than triggering a duplicate build, which would mask the
+        in-flight/failed snapshot.
+
+        When no matching snapshot exists, `snapshot.create` builds one and
+        blocks until it reaches a terminal state.
+
+        Args:
+            snapshot_name: Name of the snapshot to resolve or build.
+            image: Docker image used when building a missing snapshot.
+
+        Returns:
+            The snapshot name ready to pass to `create`.
+
+        Raises:
+            RuntimeError: If looking up or building the snapshot fails, or if a
+                matching-name snapshot exists but is not ready.
+        """
+        try:
+            existing = self._client.snapshot.get(snapshot_name)
+        except self._daytona.DaytonaNotFoundError:
+            existing = None
+        except Exception as e:
+            msg = f"Failed to look up snapshot '{snapshot_name}': {e}"
+            raise RuntimeError(msg) from e
+
+        if existing is not None:
+            if existing.state == _DAYTONA_SNAPSHOT_READY_STATE:
+                return existing.name
+            msg = (
+                f"Snapshot '{snapshot_name}' exists but is in state "
+                f"'{existing.state}'. Wait for it to finish building, or "
+                f"delete it to rebuild."
+            )
+            raise RuntimeError(msg)
+
+        try:
+            built = self._client.snapshot.create(
+                self._daytona.CreateSnapshotParams(name=snapshot_name, image=image)
+            )
+        except Exception as e:
+            msg = f"Failed to build snapshot '{snapshot_name}': {e}"
+            raise RuntimeError(msg) from e
+
+        if built.state != _DAYTONA_SNAPSHOT_READY_STATE:
+            msg = (
+                f"Snapshot '{snapshot_name}' finished building in state "
+                f"'{built.state}' rather than '{_DAYTONA_SNAPSHOT_READY_STATE}'."
+            )
+            raise RuntimeError(msg)
+        return built.name
 
 
 class _ModalProvider(SandboxProvider):

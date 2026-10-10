@@ -681,6 +681,14 @@ class TestSandboxArgument:
             assert parsed.sandbox == "runloop"
             assert parsed.sandbox_snapshot_name == "bp"
 
+    def test_snapshot_name_accepted_for_daytona(self, mock_argv: MockArgvType) -> None:
+        with mock_argv(
+            "-n", "task", "--sandbox", "daytona", "--sandbox-snapshot-name", "snap"
+        ):
+            parsed = parse_args()
+            assert parsed.sandbox == "daytona"
+            assert parsed.sandbox_snapshot_name == "snap"
+
     def test_sandbox_id_rejected_for_unsupported_provider(
         self, mock_argv: MockArgvType, capsys: pytest.CaptureFixture[str]
     ) -> None:

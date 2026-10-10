@@ -291,7 +291,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             A state update containing collision-safe skill metadata, or `None`
             when skills are already loaded.
         """
-        if "skills_metadata" in state:
+        if state.get("skills_metadata") is not None:
             return None
 
         backend = self._backend
@@ -337,7 +337,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             A state update containing collision-safe skill metadata, or `None`
             when skills are already loaded.
         """
-        if "skills_metadata" in state:
+        if state.get("skills_metadata") is not None:
             return None
 
         backend = self._backend

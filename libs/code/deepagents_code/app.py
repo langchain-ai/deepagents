@@ -4723,6 +4723,9 @@ class DeepAgentsApp(App):
         every invocation.
         """
 
+        self._pending_skill_refreshes: dict[str, object] = {}
+        """Per-thread reload tokens awaiting a completed ordinary turn."""
+
         self._reload_task: asyncio.Task[None] | None = None
         """The in-flight detached `/reload` task, if any (see `_schedule_reload`).
 
@@ -18383,6 +18386,7 @@ class DeepAgentsApp(App):
         """Run `/reload` while the environment mutation lock is held."""
         from deepagents_code.config import get_glyphs
 
+        reload_thread_id = self._lc_thread_id
         try:
             # Snapshot pre-reload state so the report can show diffs.
             old_skill_names = {s["name"] for s in self._discovered_skills}
@@ -18453,6 +18457,8 @@ class DeepAgentsApp(App):
             )
             await skill_worker.wait()
             discovery_ok = skill_worker.result is True
+            if reload_thread_id:
+                self._pending_skill_refreshes[reload_thread_id] = object()
             new_skill_names = {s["name"] for s in self._discovered_skills}
             added_skills = sorted(new_skill_names - old_skill_names)
             removed_skills = sorted(old_skill_names - new_skill_names)
@@ -20130,6 +20136,11 @@ class DeepAgentsApp(App):
                     )
                 )
                 return
+            skill_refresh = (
+                self._pending_skill_refreshes.get(title_thread_id)
+                if graph_input is None and title_thread_id
+                else None
+            )
             streaming_started = True
             await execute_task_textual(
                 user_input=message,
@@ -20144,6 +20155,7 @@ class DeepAgentsApp(App):
                 message_kwargs=message_kwargs,
                 skill_name=skill_name,
                 graph_input=graph_input,
+                refresh_skills=skill_refresh is not None,
                 rubric=rubric,
                 goal_active=goal_backed_grading,
                 on_rubric_evaluation_end=(
@@ -20160,6 +20172,13 @@ class DeepAgentsApp(App):
                 turn_stats=turn_stats,
             )
             turn_completed = True
+            if (
+                title_thread_id
+                and skill_refresh is not None
+                and self._ui_adapter.stream_completed
+                and self._pending_skill_refreshes.get(title_thread_id) is skill_refresh
+            ):
+                del self._pending_skill_refreshes[title_thread_id]
             if (
                 self._ui_adapter.stream_completed
                 and first_response

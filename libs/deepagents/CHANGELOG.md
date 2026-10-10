@@ -2,6 +2,13 @@
 
 # Deep Agents Changelog
 
+## [0.7.24](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.23...deepagents==0.7.24) (2026-10-10)
+
+
+### Bug Fixes
+
+* **sdk:** recover from context overflow in the summary call ([#6864](https://github.com/langchain-ai/deepagents/issues/6864)) ([efd88ff](https://github.com/langchain-ai/deepagents/commit/efd88ff8fd1279361de77a83c9f75d98ed2f36d5))
+
 ## [0.7.23](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.22...deepagents==0.7.23) (2026-10-07)
 
 ### Features

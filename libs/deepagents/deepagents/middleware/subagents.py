@@ -350,6 +350,8 @@ def _fork_messages(
     messages: Sequence[AnyMessage],
     event: SummarizationEvent | None,
     description: str,
+    *,
+    preamble: str = _FORK_TASK_PREAMBLE,
 ) -> list[AnyMessage]:
     """Build a fork's history: the parent's effective conversation, then the task.
 
@@ -360,7 +362,7 @@ def _fork_messages(
     if history and isinstance(history[-1], AIMessage) and history[-1].tool_calls:
         history.pop()
     effective = _DeepAgentsSummarizationMiddleware._apply_event_to_messages(history, event)
-    return [*effective, HumanMessage(content=_FORK_TASK_PREAMBLE + description)]
+    return [*effective, HumanMessage(content=preamble + description)]
 
 
 DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.

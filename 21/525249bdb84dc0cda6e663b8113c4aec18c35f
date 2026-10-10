@@ -1,0 +1,27 @@
+.github/workflows/browser_mda_eval.yml
+  s_199de864fdc442::t_4c366c5802faf6 7-10,31-32,37-40,53-55,57-63,66-68,72-75,81-82,85,100
+  s_199de864fdc442::t_a686fc3c4d1a99 70
+browser-mda/benchmarks/webvoyager/experiment_native.py
+  s_199de864fdc442::t_a686fc3c4d1a99 181-196
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "21525249bdb84dc0cda6e663b8113c4aec18c35f",
+  "prompts": {},
+  "humans": {
+    "h_152f5d9f78d224": {
+      "author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

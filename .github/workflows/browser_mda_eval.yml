@@ -57,10 +57,10 @@ jobs:
           # Inputs are null on a push event, so each one carries a default.
           # Kept out of the run script itself so they are never interpolated
           # into a shell command.
-          VARIANT: ${{ inputs.variant || 'repl' }}
-          REPETITIONS: ${{ inputs.repetitions || '3' }}
-          CONCURRENCY: ${{ inputs.concurrency || '6' }}
-          LIMIT: ${{ inputs.limit || '0' }}
+          VARIANT: ${{ github.event.inputs.variant || 'repl' }}
+          REPETITIONS: ${{ github.event.inputs.repetitions || '3' }}
+          CONCURRENCY: ${{ github.event.inputs.concurrency || '6' }}
+          LIMIT: ${{ github.event.inputs.limit || '0' }}
         run: |
           set -euo pipefail
           LIMIT_ARG=()
@@ -79,7 +79,7 @@ jobs:
         if: always()
         working-directory: browser-mda/benchmarks/webvoyager
         env:
-          VARIANT: ${{ inputs.variant || 'repl' }}
+          VARIANT: ${{ github.event.inputs.variant || 'repl' }}
         run: |
           {
             echo "## $VARIANT — WebVoyager"
@@ -97,5 +97,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: eval-${{ inputs.variant || 'repl' }}-log
+          name: eval-${{ github.event.inputs.variant || 'repl' }}-log
           path: browser-mda/benchmarks/webvoyager/eval.log

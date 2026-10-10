@@ -2964,15 +2964,14 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         return "".join(parts)
 
     @staticmethod
-    def _execute_artifact(response: ExecuteResponse) -> ExecuteArtifact:
-        """Build the `ExecuteArtifact` for an execute result.
-
-        See `ExecuteArtifact` for why an unknown exit code is omitted rather
-        than published as `None`.
-        """
-        if response.exit_code is None:
-            return {}
-        return {"exit_code": response.exit_code}
+    def _execute_artifact(response: ExecuteResponse, *, output_file: str | None = None) -> ExecuteArtifact:
+        """Build bounded execution metadata without duplicating command output."""
+        artifact: ExecuteArtifact = {"truncated": response.truncated}
+        if response.exit_code is not None:
+            artifact["exit_code"] = response.exit_code
+        if output_file is not None:
+            artifact["output_file"] = output_file
+        return artifact
 
     def _interpret_capture_output(self, offload: ExecuteOffloadResult, capture_path: str, tool_call_id: str) -> str:
         """Build `ToolMessage` content from an `execute_with_offload` result."""
@@ -3090,7 +3089,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
-                artifact=self._execute_artifact(response),
+                artifact=self._execute_artifact(response, output_file=capture[1] if capture is not None and offload.offloaded else None),
                 status="success",
             )
 
@@ -3178,7 +3177,7 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 content=content,
                 name="execute",
                 tool_call_id=runtime.tool_call_id,
-                artifact=self._execute_artifact(response),
+                artifact=self._execute_artifact(response, output_file=capture[1] if capture is not None and offload.offloaded else None),
                 status="success",
             )
 

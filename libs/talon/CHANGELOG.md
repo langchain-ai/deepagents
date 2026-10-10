@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.0.10](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.9...deepagents-talon==0.0.10) (2026-10-10)
+
+
+### Features
+
+* **talon:** make checkpoint backends configurable ([#6727](https://github.com/langchain-ai/deepagents/issues/6727)) ([7bc9474](https://github.com/langchain-ai/deepagents/commit/7bc94742bb503772e207a46d29bbd7cea13e7129))
+
+
+### Bug Fixes
+
+* **talon:** allow operator pairing approvals in shared chats ([#6710](https://github.com/langchain-ai/deepagents/issues/6710)) ([b00affd](https://github.com/langchain-ai/deepagents/commit/b00affd643cac9789a2fc4b47bf74056eefdc423))
+* **talon:** include authorized bot replies in Slack thread history ([#6742](https://github.com/langchain-ai/deepagents/issues/6742)) ([3a8a983](https://github.com/langchain-ai/deepagents/commit/3a8a983e379a4bcccace15dcbc0914bd3cea753c))
+* **talon:** label bot history as participant messages ([#6743](https://github.com/langchain-ai/deepagents/issues/6743)) ([e156592](https://github.com/langchain-ai/deepagents/commit/e156592ac2dcb667193c885d1529cef83311d6f7))
+* **talon:** preserve other participants in Slack thread context ([#6862](https://github.com/langchain-ai/deepagents/issues/6862)) ([bfd9f22](https://github.com/langchain-ai/deepagents/commit/bfd9f22fc558d5e90c809cf3beccb64aa69f3556))
+* **talon:** resume history search past the scan budget ([#6740](https://github.com/langchain-ai/deepagents/issues/6740)) ([11600fb](https://github.com/langchain-ai/deepagents/commit/11600fb7ab9a3f081c1f0c8640f1a864c1c7d71b))
+* **talon:** share cron jobs across channel threads ([#6707](https://github.com/langchain-ai/deepagents/issues/6707)) ([6bae886](https://github.com/langchain-ai/deepagents/commit/6bae88610c035b923f538beb99c1dc70850225e1))
+
 ## [0.0.9](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.8...deepagents-talon==0.0.9) (2026-10-01)
 
 ### Features

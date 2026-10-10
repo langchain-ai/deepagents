@@ -1,0 +1,84 @@
+name: "🌐 Browser MDA eval (WebVoyager)"
+
+# Drives a WebVoyager suite against an already-deployed Managed Deep Agent and
+# records it as a LangSmith experiment. The agent and its browser run on
+# LangSmith; this job only submits tasks, polls, grades, and posts feedback --
+# so it is cheap to run here and does not need browser credentials.
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Which harness to evaluate"
+        type: choice
+        options: [repl, cli, mcp]
+        default: repl
+      repetitions:
+        description: "Runs per task (3 gives a variance estimate)"
+        type: string
+        default: "3"
+      concurrency:
+        description: "Parallel tasks"
+        type: string
+        default: "6"
+      limit:
+        description: "Only the first N tasks (0 = all 30)"
+        type: string
+        default: "0"
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    # 30 tasks x 3 reps at concurrency 6, with per-task timeouts of 900s.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Run the suite
+        working-directory: browser-mda/benchmarks/webvoyager
+        env:
+          # The judge (Jev) and the deployment are both reached with the
+          # LangSmith gateway key. It must belong to a workspace that has a
+          # TYPESAFE_API_KEY workspace secret configured, otherwise the gateway
+          # returns 424 "Required workspace secret TYPESAFE_API_KEY is missing".
+          ANTHROPIC_API_KEY: ${{ secrets.LANGSMITH_GATEWAY_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        run: |
+          set -euo pipefail
+          LIMIT_ARG=""
+          if [ "${{ inputs.limit }}" != "0" ]; then
+            LIMIT_ARG="--limit ${{ inputs.limit }}"
+          fi
+          uv run --with langsmith --with langgraph-sdk --with httpx \
+            python -u experiment_native.py \
+              --variant "${{ inputs.variant }}" \
+              --repetitions "${{ inputs.repetitions }}" \
+              --concurrency "${{ inputs.concurrency }}" \
+              $LIMIT_ARG \
+            | tee eval.log
+
+      - name: Summarise
+        if: always()
+        working-directory: browser-mda/benchmarks/webvoyager
+        run: |
+          {
+            echo "## ${{ inputs.variant }} — WebVoyager"
+            echo
+            grep -E "^experiment project" eval.log || true
+            echo
+            echo '| outcome | n |'
+            echo '| --- | --- |'
+            grep -oE "^\[[A-Z]+ *\]" eval.log | sort | uniq -c \
+              | awk '{gsub(/[\[\]]/,"",$2); print "| " $2 " | " $1 " |"}'
+            echo
+            grep -E "^SUCCESS|^feedback posted" eval.log || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-${{ inputs.variant }}-log
+          path: browser-mda/benchmarks/webvoyager/eval.log

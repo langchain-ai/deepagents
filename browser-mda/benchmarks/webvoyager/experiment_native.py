@@ -205,6 +205,10 @@ async def main():
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--url", default=None)
     ap.add_argument("--dataset", default=DATASET, help="LangSmith dataset name")
+    # Preferred over the name when the dataset was just created: name lookup is
+    # not read-after-write consistent and a 17-second-old dataset still reads as
+    # not found, which killed all three arms of run 38152050542.
+    ap.add_argument("--dataset-id", default=os.environ.get("DATASET_ID") or None)
     ap.add_argument("--limit", type=int, default=0, help="smoke-test on the first N examples")
     ap.add_argument("--repetitions", type=int, default=1,
                     help="runs per example; >1 gives a variance estimate")
@@ -213,7 +217,8 @@ async def main():
     url = a.url or url
 
     ls = Client()
-    ds = ls.read_dataset(dataset_name=a.dataset)
+    ds = (ls.read_dataset(dataset_id=a.dataset_id) if a.dataset_id
+          else ls.read_dataset(dataset_name=a.dataset))
     examples = list(ls.list_examples(dataset_id=ds.id))
     if a.limit:
         examples = examples[: a.limit]

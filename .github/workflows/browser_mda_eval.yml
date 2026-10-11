@@ -41,12 +41,18 @@ jobs:
   prep:
     runs-on: ubuntu-latest
     environment: evals
+    outputs:
+      # Passed to the arms so they read by id. Looking the dataset up by name
+      # is not read-after-write consistent -- run 38152050542 created it at
+      # 15:37:47 and all three arms died on "not found" at 15:38:04.
+      dataset_id: ${{ steps.seed.outputs.dataset_id }}
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
       - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           enable-cache: true
       - name: Ensure the dataset exists
+        id: seed
         working-directory: browser-mda/benchmarks/webvoyager
         env:
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
@@ -91,6 +97,7 @@ jobs:
           # into a shell command.
           VARIANT: ${{ matrix.variant }}
           DATASET: ${{ github.event.inputs.dataset || 'webvoyager-100' }}
+          DATASET_ID: ${{ needs.prep.outputs.dataset_id }}
           REPETITIONS: ${{ github.event.inputs.repetitions || '1' }}
           CONCURRENCY: ${{ github.event.inputs.concurrency || '6' }}
           LIMIT: ${{ github.event.inputs.limit || '0' }}

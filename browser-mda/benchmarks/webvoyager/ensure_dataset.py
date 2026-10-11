@@ -17,10 +17,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from langsmith import Client
 from langsmith.utils import LangSmithNotFoundError
+
+
+def emit(dataset_id: str) -> None:
+    """Publish the id as a step output so callers can read by id, not by name.
+
+    Name lookup is not read-after-write consistent: a dataset created at
+    15:37:47 was still `LangSmithNotFoundError: not found` to a job starting
+    15:38:04. The id works immediately.
+    """
+    out = os.environ.get("GITHUB_OUTPUT")
+    if out:
+        with open(out, "a", encoding="utf-8") as fh:
+            fh.write(f"dataset_id={dataset_id}\n")
 
 
 def main() -> None:
@@ -36,6 +50,7 @@ def main() -> None:
         have = sum(1 for _ in ls.list_examples(dataset_id=dataset.id))
         if have == len(rows):
             print(f"{a.dataset}: present with {have} examples, nothing to do")
+            emit(str(dataset.id))
             return
         # Never silently reconcile: a count mismatch means the local file and the
         # remote set have diverged, and quietly topping it up would make two runs
@@ -56,6 +71,7 @@ def main() -> None:
         inputs=[r["inputs"] for r in rows],
         outputs=[r.get("outputs", {}) for r in rows],
     )
+    emit(str(dataset.id))
     print(f"{a.dataset}: created with {len(rows)} examples (id {dataset.id})")
 
 

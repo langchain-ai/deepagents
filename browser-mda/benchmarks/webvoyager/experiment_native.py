@@ -14,12 +14,14 @@ and Tokens, no wrapper run.
 """
 from __future__ import annotations
 
-import argparse, asyncio, json, os, random, time
+import argparse, asyncio, json, os, random, re, time
 import httpx
 from langsmith import Client
 from langgraph_sdk import get_client
 
-DATASET = "webvoyager-30"
+# `webvoyager-100` is the vetted set (see WEBVOYAGER_100.md); `webvoyager-30` is
+# the original sample, kept for comparison against the earlier runs.
+DATASET = os.environ.get("WEBVOYAGER_DATASET", "webvoyager-100")
 GW = "https://gateway.smith.langchain.com/anthropic/v1/messages"
 # A stronger judge than the agent it grades. Sonnet flipped the same answer
 # between SUCCESS and FAILURE across identical runs; grading is a short
@@ -56,15 +58,25 @@ JEV_QUESTIONS = {
     # disqualifiers into `false` against one sentence of `true`, and Jev dragged
     # clear successes down with it -- an answer matching the reference exactly
     # scored 0.56.
+    #
+    # `false` says "hedged so that no definite value lands", not "hedged". A
+    # bare "or hedged" read a trailing scope note as a missing answer and sank
+    # three rows at 0.45-0.49 (DATASET_AUDIT.md): ArXiv--42 matched the
+    # reference string exactly, Huggingface--3 matched it plus four live-correct
+    # like counts, and Cambridge Dictionary--35 returned a superset of the
+    # reference list. Each closed by naming what it had not verified. Punishing
+    # that trains the agent to drop the caveat, not to be more right.
     "correct": {"type": "noul",
                 "instructions": "Does the answer give what the task asked for, taken from the site?",
                 "criteria": {
                     "true": "The answer supplies what was asked. Current values that differ from "
                             "the reference are fine: the reference records one acceptable answer "
                             "against data that changes. Reporting, from the site, that the thing "
-                            "does not exist also counts.",
-                    "false": "Something asked for is missing or hedged, or a value was guessed, "
-                             "recalled, or worked out without visiting the site."}},
+                            "does not exist also counts. A caveat noting what was not checked, "
+                            "added after a definite answer, does not take the answer away.",
+                    "false": "Something asked for is never given, or the answer is hedged so that "
+                             "no definite value lands, or a value was guessed, recalled, or worked "
+                             "out without visiting the site."}},
     "blocked": {"type": "noul",
                 "instructions": "Did the site stop the agent reaching the content?",
                 "criteria": {"true": "A bot wall, captcha, login, 403 or stripped parameters "
@@ -73,15 +85,30 @@ JEV_QUESTIONS = {
 }
 
 
+# An unfilled `<...>` slot in a reference answer. The templated part is never
+# the whole string -- `NFL <score>, latest, eg, January 29, 2024, Chiefs -
+# Ravens, 17 - 10` keeps a concrete (and stale) example beside the slot -- so
+# this matches a slot anywhere, not a reference made only of slots.
+_PLACEHOLDER = re.compile(r"<[^<>]{1,40}>")
+
+
 def grade(ques, web, answer, outputs=None):
     """Return {"correct": p, "blocked": p} from Jev, or None when ungradeable."""
     if not answer:
         return None
     outputs = outputs or {}
-    state = (f"TASK\n{ques}\n\n"
-             f"REFERENCE ANSWER (type: {outputs.get('answer_type')})\n"
-             f"{outputs.get('reference_answer')}\n\n"
-             f"AGENT ANSWER\n{answer[:6000]}")
+    # Five of the 30 references ship an unexpanded template: `<summary>`,
+    # `<model 1>; <model 2>; <model 3>`, `NFL <score>`, `<Ingredients>`.
+    # Presented as ground truth, the judge grades the row against a literal
+    # angle-bracket string -- which is to say on its prior alone. Name the slots
+    # as slots so it falls back to the task and the site for that part.
+    ref = (outputs.get("reference_answer") or "").strip()
+    ref_block = f"REFERENCE ANSWER (type: {outputs.get('answer_type')})\n{ref}"
+    if _PLACEHOLDER.search(ref):
+        ref_block += ("\n\nNOTE: text in <angle brackets> above is an unfilled slot in the "
+                      "reference, not content the answer has to reproduce. Judge that part "
+                      "against the task and the site.")
+    state = (f"TASK\n{ques}\n\n{ref_block}\n\nAGENT ANSWER\n{answer[:6000]}")
     r = httpx.post(JEV_URL, timeout=90,
                    headers={"x-api-key": os.environ["ANTHROPIC_API_KEY"],
                             "Authorization": f"Bearer {os.environ['ANTHROPIC_API_KEY']}",
@@ -93,21 +120,33 @@ def grade(ques, web, answer, outputs=None):
 
 
 MAX_TRANSPORT_RETRIES = 2
+SUBMIT_TIMEOUT = 120  # seconds for a thread/run create to come back
 
 
 async def run_one(client, aid, ls, project, ex, sem, out, rep=0, attempt=0):
     async with sem:
         inp = ex.inputs
         t0 = time.time()
-        th = await client.threads.create()
-        run = await client.runs.create(
-            th["thread_id"], aid,
-            input={"messages": [{"role": "user", "content": PROMPT.format(**inp)}]},
-            config={"recursion_limit": 1000},
-            # Routes this run into the experiment project AND binds it to the
-            # example, which is what makes it the row.
-            langsmith_tracing={"project_name": project, "example_id": str(ex.id)},
-        )
+        # Bounded: neither SDK call carries a timeout of its own, and a single
+        # hung connection held a semaphore slot for 11.5 hours with the suite
+        # stalled behind it at 0% CPU.
+        try:
+            th = await asyncio.wait_for(client.threads.create(), SUBMIT_TIMEOUT)
+            run = await asyncio.wait_for(client.runs.create(
+                th["thread_id"], aid,
+                input={"messages": [{"role": "user", "content": PROMPT.format(**inp)}]},
+                config={"recursion_limit": 1000},
+                # Routes this run into the experiment project AND binds it to the
+                # example, which is what makes it the row.
+                langsmith_tracing={"project_name": project, "example_id": str(ex.id)},
+            ), SUBMIT_TIMEOUT)
+        except (asyncio.TimeoutError, Exception) as err:
+            if attempt >= MAX_TRANSPORT_RETRIES:
+                print(f"    submit failed for {inp.get('task_id')}: {str(err)[:90]}", flush=True)
+                out.append({"task": inp.get("task_id"), "grade": "ERROR", "steps": 0, "seconds": 0})
+                return None, ex.id, "ERROR", 0, 0.0, None
+            print(f"    submit retry {attempt + 1} for {inp.get('task_id')}", flush=True)
+            return await run_one(client, aid, ls, project, ex, sem, out, rep, attempt + 1)
         status = "pending"
         while time.time() - t0 < 900:
             await asyncio.sleep(10)
@@ -120,7 +159,7 @@ async def run_one(client, aid, ls, project, ex, sem, out, rep=0, attempt=0):
         secs = round(time.time() - t0, 1)
         answer, steps = "", 0
         try:
-            st = await client.threads.get_state(th["thread_id"])
+            st = await asyncio.wait_for(client.threads.get_state(th["thread_id"]), SUBMIT_TIMEOUT)
             msgs = st["values"].get("messages", [])
             steps = len(msgs)
             c = (msgs[-1] if msgs else {}).get("content")
@@ -165,6 +204,7 @@ async def main():
     ap.add_argument("--variant", default="cli", choices=list(VARIANTS))
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--url", default=None)
+    ap.add_argument("--dataset", default=DATASET, help="LangSmith dataset name")
     ap.add_argument("--limit", type=int, default=0, help="smoke-test on the first N examples")
     ap.add_argument("--repetitions", type=int, default=1,
                     help="runs per example; >1 gives a variance estimate")
@@ -173,11 +213,11 @@ async def main():
     url = a.url or url
 
     ls = Client()
-    ds = ls.read_dataset(dataset_name=DATASET)
+    ds = ls.read_dataset(dataset_name=a.dataset)
     examples = list(ls.list_examples(dataset_id=ds.id))
     if a.limit:
         examples = examples[: a.limit]
-    project = f"webvoyager-{a.variant}-native-{int(time.time())}"
+    project = f"{a.dataset}-{a.variant}-{int(time.time())}"
     # num_examples/num_repetitions give the UI its denominator, so progress shows
     # as "n/30" rather than a bare run count. Requires langsmith >= 0.14.x --
     # older releases reject both kwargs, so fall back rather than failing a run.
@@ -221,13 +261,21 @@ async def main():
             by_thread[str(tid)] = r.id
     posted = 0
     for thread_id, _ex_id, g, steps, secs, scores in results:
+        if thread_id is None:
+            continue
         target = by_thread.get(str(thread_id))
         if not target:
             print(f"  no run found for thread {thread_id}", flush=True)
             continue
         if scores:
-            ls.create_feedback(target, key="correct", score=round(scores["correct"], 3), comment=g)
-            ls.create_feedback(target, key="blocked", score=round(scores["blocked"], 3))
+            # `correct` and `blocked` are the verdicts, so they are 0 or 1 and the
+            # project average reads directly as a pass rate. Jev's underlying
+            # confidence is kept alongside them for calibration work, where a
+            # mean over raw probabilities would otherwise be mistaken for one.
+            ls.create_feedback(target, key="correct", score=float(scores["correct"] >= 0.5), comment=g)
+            ls.create_feedback(target, key="blocked", score=float(scores["blocked"] >= 0.5))
+            ls.create_feedback(target, key="correct_confidence", score=round(scores["correct"], 3))
+            ls.create_feedback(target, key="blocked_confidence", score=round(scores["blocked"], 3))
         ls.create_feedback(target, key="steps", score=steps)
         ls.create_feedback(target, key="seconds", score=secs)
         posted += 1

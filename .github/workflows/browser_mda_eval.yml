@@ -11,15 +11,18 @@ name: "🌐 Browser MDA eval (WebVoyager)"
 on:
   workflow_dispatch:
     inputs:
-      variant:
-        description: "Which harness to evaluate"
-        type: choice
-        options: [repl, cli, mcp]
-        default: repl
+      variants:
+        description: 'JSON list of harnesses, e.g. ["repl","cli","mcp"]'
+        type: string
+        default: '["repl","cli","mcp"]'
+      dataset:
+        description: "LangSmith dataset name"
+        type: string
+        default: webvoyager-100
       repetitions:
         description: "Runs per task (3 gives a variance estimate)"
         type: string
-        default: "3"
+        default: "1"
       concurrency:
         description: "Parallel tasks"
         type: string
@@ -33,12 +36,19 @@ on:
 
 jobs:
   eval:
+    # One job per harness, so a failure in one arm does not take the others
+    # down with it and all three appear as separate rows in the run list.
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(github.event.inputs.variants || '["repl","cli","mcp"]') }}
+    name: "eval (${{ matrix.variant }})"
     runs-on: ubuntu-latest
     # Holds LANGSMITH_API_KEY; the workspace it belongs to must own the
-    # `webvoyager-30` dataset and have a TYPESAFE_API_KEY workspace secret, or
-    # the gateway returns 424 when the Jev judge is called.
+    # dataset being run and have a TYPESAFE_API_KEY workspace secret, or the
+    # gateway returns 424 when the Jev judge is called.
     environment: evals
-    # 30 tasks x 3 reps at concurrency 6, with per-task timeouts of 900s.
+    # 100 tasks x 1 rep at concurrency 6, with per-task timeouts of 900s.
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -57,8 +67,9 @@ jobs:
           # Inputs are null on a push event, so each one carries a default.
           # Kept out of the run script itself so they are never interpolated
           # into a shell command.
-          VARIANT: ${{ github.event.inputs.variant || 'repl' }}
-          REPETITIONS: ${{ github.event.inputs.repetitions || '3' }}
+          VARIANT: ${{ matrix.variant }}
+          DATASET: ${{ github.event.inputs.dataset || 'webvoyager-100' }}
+          REPETITIONS: ${{ github.event.inputs.repetitions || '1' }}
           CONCURRENCY: ${{ github.event.inputs.concurrency || '6' }}
           LIMIT: ${{ github.event.inputs.limit || '0' }}
         run: |
@@ -70,6 +81,7 @@ jobs:
           uv run --with "langsmith>=0.14.7" --with langgraph-sdk --with httpx \
             python -u experiment_native.py \
               --variant "$VARIANT" \
+              --dataset "$DATASET" \
               --repetitions "$REPETITIONS" \
               --concurrency "$CONCURRENCY" \
               "${LIMIT_ARG[@]}" \

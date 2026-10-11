@@ -35,7 +35,29 @@ on:
     branches: [evals/browser-mda-run]
 
 jobs:
+  # Seeds the dataset into this key's workspace before any arm runs. Split from
+  # `eval` rather than inlined so three matrix jobs cannot race to create the
+  # same dataset.
+  prep:
+    runs-on: ubuntu-latest
+    environment: evals
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - name: Ensure the dataset exists
+        working-directory: browser-mda/benchmarks/webvoyager
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          DATASET: ${{ github.event.inputs.dataset || 'webvoyager-100' }}
+        run: |
+          set -euo pipefail
+          uv run --with "langsmith>=0.14.7" python ensure_dataset.py \
+            --dataset "$DATASET" --file webvoyager_100.jsonl
+
   eval:
+    needs: prep
     # One job per harness, so a failure in one arm does not take the others
     # down with it and all three appear as separate rows in the run list.
     strategy:

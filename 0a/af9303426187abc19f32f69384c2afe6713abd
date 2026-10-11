@@ -1,0 +1,35 @@
+browser-mda-repl/middleware/tool_errors.py
+  s_199de864fdc442::t_90c6c5a2d4165e 1-52
+browser-mda-repl/middleware/__init__.py
+  s_b035d867bce941::t_1bb6ac32c37168 1,3,5
+  s_199de864fdc442::t_41ebac76a3d06e 2,4
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0aaf9303426187abc19f32f69384c2afe6713abd",
+  "prompts": {},
+  "humans": {
+    "h_152f5d9f78d224": {
+      "author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    },
+    "s_b035d867bce941": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3ca74aeb-4ace-4c83-82ba-a68d0e97cceb",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

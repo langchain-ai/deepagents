@@ -1308,6 +1308,30 @@ def _create_test_temp_artifact(
     return state, artifact
 
 
+def test_temp_artifact_turn_survives_pinned_skill_message(tmp_path: Path) -> None:
+    """The SDK's pinned-skill message must not hide the user turn identity."""
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="create_temp_artifact",
+        args={"content": "body", "suffix": ".md"},
+        tools=list(middleware.tools),
+        raw_user_text="/skill:pr-writer",
+    )
+    pinned = HumanMessage(
+        content='<skill name="pr-writer">\nWrite a PR body.\n</skill>',
+        additional_kwargs={"lc_source": "pinned_skill", "skill": {"name": "x"}},
+    )
+    request = request.override(state={"messages": [*request.messages, pinned]})
+
+    _state, artifact = _create_test_temp_artifact(middleware, request)
+
+    assert Path(cast("str", artifact["file_path"])).read_text(encoding="utf-8") == (
+        "pull request body"
+    )
+
+
 def test_workspace_credentials_are_known_secrets(tmp_path: Path) -> None:
     """Auto redaction includes secrets from the workspace snapshot."""
     config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}

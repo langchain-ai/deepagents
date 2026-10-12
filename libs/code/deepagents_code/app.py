@@ -132,6 +132,7 @@ from deepagents_code.goal_state_notice import (
     is_conversation_control_message,
     is_human_message,
     is_internal_message,
+    is_pinned_skill_message,
     latest_goal_state_message_index,
     latest_goal_state_notice,
     log_malformed_summarization_event as _log_malformed_summarization_event,
@@ -20604,7 +20605,7 @@ class DeepAgentsApp(App):
                 )
 
                 metadata = msg.additional_kwargs or {}
-                pinned = metadata.get("lc_source") == "pinned_skill"
+                pinned = is_pinned_skill_message(msg)
                 if (
                     pinned
                     and content.startswith("<skill ")

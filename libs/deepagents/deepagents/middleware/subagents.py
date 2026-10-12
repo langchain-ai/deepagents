@@ -398,7 +398,12 @@ When returning updates:
 
 
 _EXCLUDED_OUTPUT_STATE_KEYS = _EXCLUDED_STATE_KEYS | {"rubric"}
-"""A child may inherit the caller's rubric, but cannot replace the parent's goal."""
+"""State keys dropped from a subagent's update to its caller.
+
+Children still inherit `rubric` as input, but it belongs to the caller. `rubric`
+has no reducer, so parallel `task` calls that each return it would conflict,
+and one child could also replace the parent's rubric.
+"""
 
 
 _TASK_TOOL_INJECTED_ARGS = frozenset({"runtime"})

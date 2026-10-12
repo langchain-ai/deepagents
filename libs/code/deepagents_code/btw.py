@@ -10,7 +10,8 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from deepagents.backends import StateBackend
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, TRUNCATION_GUIDANCE
+from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware
 from deepagents.middleware.memory import MemoryState
 from deepagents.middleware.skills import SkillsMiddleware, SkillsState
 from deepagents.middleware.summarization import create_summarization_middleware
@@ -334,6 +335,22 @@ def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
         for call_id, name in pending.items()
     )
     return transcript
+
+
+def _bound_result(message: ToolMessage) -> ToolMessage:
+    """Shorten a side tool result the main agent would evict.
+
+    Side tools run outside `FilesystemMiddleware`, so large results would
+    otherwise enter the next request in full and overflow its budget.
+
+    Returns:
+        `message`, or a copy with its text cut to the main eviction limit.
+    """
+    limit = NUM_CHARS_PER_TOKEN * TOOL_RESULT_TOKEN_LIMIT
+    if not isinstance(message.content, str) or len(message.content) <= limit:
+        return message
+    content = message.content[: limit - len(TRUNCATION_GUIDANCE)] + TRUNCATION_GUIDANCE
+    return message.model_copy(update={"content": content})
 
 
 def _client_tools(tools: Sequence[object]) -> list[dict[str, Any]]:
@@ -739,7 +756,11 @@ class BtwOperation(AgentMiddleware):
                     ModelRequest(
                         model=model,
                         system_message=system,
-                        messages=[*prepared[1:], response, *result["messages"]],
+                        messages=[
+                            *prepared[1:],
+                            response,
+                            *map(_bound_result, result["messages"]),
+                        ],
                         tools=[*tools],
                         model_settings=settings,
                         runtime=Runtime(),

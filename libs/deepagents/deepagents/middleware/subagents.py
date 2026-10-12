@@ -411,6 +411,19 @@ When returning updates:
 """
 
 
+def _is_unchanged(key: str, value: object, inputs: dict) -> bool:
+    """Return whether a subagent returned `key` exactly as it received it.
+
+    Such keys are dropped from the subagent's update. A key without a reducer
+    would otherwise make parallel `task` calls conflict, and a key with an
+    additive reducer would get the inherited value added again.
+    """
+    if key not in inputs:
+        return False
+    # `is True` treats an ambiguous comparison, such as an array result, as a change.
+    return value is inputs[key] or (value == inputs[key]) is True
+
+
 _TASK_TOOL_INJECTED_ARGS = frozenset({"runtime"})
 """Arguments the tool node injects into the `task` call alongside the model's."""
 
@@ -707,7 +720,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     # mirror tool (above) can reference these directly -- everything they
     # call is only looked up when actually invoked, long after this
     # function returns, so those don't need to exist yet.
-    def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+    def _return_command_with_state_update(result: dict, tool_call_id: str, inputs: dict) -> Command:
         # Validate that the result contains a 'messages' key
         if "messages" not in result:
             error_msg = (
@@ -717,7 +730,9 @@ def _build_task_tool(  # noqa: C901, PLR0915
             )
             raise ValueError(error_msg)
 
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys}
+        state_update = {
+            k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys and not _is_unchanged(k, v, inputs)
+        }
 
         structured = result.get("structured_response")
         if structured is not None:
@@ -824,7 +839,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
         with _subagent_tracing_context():
             result = subagent.invoke(subagent_state, subagent_config)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
 
     async def atask(
         description: str,
@@ -854,7 +869,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
         with _subagent_tracing_context():
             result = await subagent.ainvoke(subagent_state, subagent_config)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
 
     compiled_subagents = [_compile_spec(spec) for spec in subagents]
     subagents_by_name = {spec["name"]: spec for spec in subagents}

@@ -18275,8 +18275,10 @@ class DeepAgentsApp(App):
                 # Diff is meaningless when discovery failed: prior cache
                 # was preserved, so old vs. new is identical and
                 # `Skills reloaded. No changes detected.` would be a lie.
+                # The agent rescans its own skills, so its list can differ.
                 report += (
-                    "\nSkill re-discovery failed; existing /skill: list left as-is."
+                    "\nSkill re-discovery failed; /skill: autocomplete left as-is. "
+                    "The agent's skill list may differ."
                 )
             elif added_skills or removed_skills:
                 skill_lines = []

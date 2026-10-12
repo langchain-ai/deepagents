@@ -132,8 +132,8 @@ def extra_skill_roots(path_base: Path | None) -> list[Path]:
 def pinned_skill_body(skill: SkillMetadata, content: str | None) -> str:
     """Return the instructions the SDK pins for `skill`.
 
-    The client checks this before sending a skill turn, and the agent server
-    checks it again before pinning, so both refuse the same files.
+    The SDK skips a skill it cannot pin. The agent server raises instead, so a
+    skill the user invoked never runs silently without its instructions.
 
     Args:
         skill: Metadata of the skill to pin.
@@ -167,36 +167,58 @@ def pinned_skill_body(skill: SkillMetadata, content: str | None) -> str:
 
 
 def build_skill_invocation_envelope(
-    skill: ExtendedSkillMetadata,
+    name: str,
     args: str = "",
 ) -> SkillInvocationEnvelope:
     """Build the user request and persisted metadata for SDK skill pinning.
 
+    The agent server resolves, trust-checks, and reads the skill, so only the
+    name the user typed is sent.
+
     Args:
-        skill: Loaded skill metadata.
+        name: Normalized skill name the user invoked.
         args: Optional user request accompanying the skill invocation.
 
     Returns:
         A `SkillInvocationEnvelope` with the composed prompt and
             `message_kwargs` containing persisted skill metadata.
     """
-    prompt = f"I'm invoking the skill `{skill['name']}`."
+    prompt = f"I'm invoking the skill `{name}`."
     if args:
         prompt += f"\n\n**User request:** {args}"
 
     message_kwargs = {
         "additional_kwargs": {
-            "__skill": {
-                "name": skill["name"],
-                "path": str(Path(skill["path"]).resolve()),
-                "description": str(skill.get("description", "")),
-                "source": str(skill.get("source", "")),
-                "args": args,
-            },
+            # `pinned` marks an invocation whose instructions arrive in a
+            # separate SDK message, unlike older ones that embedded them.
+            "__skill": {"name": name, "args": args, "pinned": True},
         },
     }
     return SkillInvocationEnvelope(
         prompt=prompt,
         message_kwargs=message_kwargs,
-        skill_name=skill["name"],
+        skill_name=name,
     )
+
+
+def pinned_skill_parts(message: object) -> tuple[str, str, str] | None:
+    """Return the skill a pinned-skill message carries.
+
+    Args:
+        message: Any message from the stream or a checkpoint.
+
+    Returns:
+        `(name, description, body)` with the SDK's `<skill>` wrapper removed,
+            or `None` when `message` does not pin a skill.
+    """
+    from deepagents_code.goal_state_notice import is_pinned_skill_message
+
+    if not is_pinned_skill_message(message):
+        return None
+    marker = getattr(message, "additional_kwargs", {}).get("skill")
+    if not isinstance(marker, dict) or not marker.get("name"):
+        return None
+    body = str(getattr(message, "content", ""))
+    if body.startswith("<skill ") and body.endswith("\n</skill>"):
+        body = body.partition("\n")[2].removesuffix("\n</skill>")
+    return str(marker["name"]), str(marker.get("description", "")), body

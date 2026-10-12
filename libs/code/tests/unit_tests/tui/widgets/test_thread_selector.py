@@ -2053,16 +2053,11 @@ class TestConvertMessagesToData:
         """A failed pin leaves an invocation row that says nothing was loaded."""
         from langchain_core.messages import HumanMessage
 
+        from deepagents_code.skills.invocation import build_skill_invocation_envelope
         from deepagents_code.tui.widgets.message_store import MessageType
 
-        messages = [
-            HumanMessage(
-                content="I'm invoking the skill `review`.",
-                additional_kwargs={
-                    "__skill": {"name": "review", "path": "/skills/review/SKILL.md"}
-                },
-            )
-        ]
+        envelope = build_skill_invocation_envelope("review")
+        messages = [HumanMessage(envelope.prompt, **envelope.message_kwargs)]
 
         result = DeepAgentsApp._convert_messages_to_data(messages)
 

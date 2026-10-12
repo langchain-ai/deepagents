@@ -132,7 +132,6 @@ from deepagents_code.goal_state_notice import (
     is_conversation_control_message,
     is_human_message,
     is_internal_message,
-    is_pinned_skill_message,
     latest_goal_state_message_index,
     latest_goal_state_notice,
     log_malformed_summarization_event as _log_malformed_summarization_event,
@@ -763,11 +762,6 @@ def _goal_state_change_notice(
     if goal_state_fingerprint(previous) == goal_state_fingerprint(current):
         return None
     return build_goal_state_notice(current, prior_blocker=prior_blocker)
-
-
-def _resolve_parent_dir(path: str | Path) -> str:
-    """Return the resolved parent directory for a path."""
-    return str(Path(path).resolve().parent)
 
 
 def _extra_is_ready(extra: str) -> bool | None:
@@ -4758,19 +4752,15 @@ class DeepAgentsApp(App):
         read against its own open-time snapshot, not this attribute.
         """
 
-        self._skill_allowed_roots: list[Path] = []
-        """Pre-resolved skill root directories for containment checks in
-        `load_skill_content`.
-
-        Built alongside `_discovered_skills`.
-        """
-
         self._skill_trust_denied: set[str] = set()
         """Resolved skill directories the user declined to trust this session.
 
         Prevents re-prompting for the same untrusted location after a deny
         within a single run.
         """
+
+        self._pending_skill_row: SkillMessage | None = None
+        """Latest invoked skill row, waiting for the server's pinned message."""
 
         # Media
         # Lazily imported here to avoid pulling image dependencies into
@@ -5350,6 +5340,8 @@ class DeepAgentsApp(App):
             on_auto_mode_event=self._on_auto_mode_event,
             on_approval_mode_fallback=self._on_approval_mode_fallback,
             show_diff_line_numbers=self._show_diff_line_numbers,
+            request_skill_trust=self._request_skill_trust,
+            on_skill_pinned=self._on_skill_pinned,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -5892,7 +5884,7 @@ class DeepAgentsApp(App):
             # graph in separate workers. Let prewarm finish first so CPython's
             # per-module import locks cannot form a cycle.
             await self._await_prewarm_imports()
-            skills, roots = await asyncio.to_thread(
+            skills, _roots = await asyncio.to_thread(
                 self._discover_skills_and_roots_with_import_lock,
             )
         except OSError:
@@ -5921,7 +5913,6 @@ class DeepAgentsApp(App):
             return False
 
         self._discovered_skills = skills
-        self._skill_allowed_roots = roots
         if skills:
             skill_commands = build_skill_commands(skills)
             if self._chat_input:
@@ -17968,31 +17959,20 @@ class DeepAgentsApp(App):
         *,
         command: str | None = None,
     ) -> None:
-        """Load a skill, render its widget, and send its prompt to the agent.
+        """Render a skill row and ask the agent server to pin the skill.
 
-        Looks up the skill from cached metadata (populated at startup), falling
-        back to a fresh filesystem walk on cache miss. Reads the `SKILL.md`
-        body, wraps it in a prompt envelope with any user-provided arguments,
-        and sends the composed message to the agent.
+        The server resolves, trust-checks, and reads the skill, and reports any
+        failure as a turn error. The row's instructions fill in when the pinned
+        message streams back.
 
         Args:
             skill_name: Skill name to invoke.
-            args: Optional user request to append after the skill body.
+            args: Optional user request sent with the skill.
             command: Original slash command text for UI echo, if any.
         """
-        from deepagents_code.skills.invocation import (
-            build_skill_invocation_envelope,
-            pinned_skill_body,
-        )
-        from deepagents_code.skills.load import load_skill_content
+        from deepagents_code.skills.invocation import build_skill_invocation_envelope
 
         normalized_name = skill_name.strip().lower()
-
-        async def _mount_error(message: str) -> None:
-            if command is not None:
-                await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(message))
-
         if not normalized_name:
             if command is not None:
                 await self._mount_message(UserMessage(command))
@@ -18001,263 +17981,65 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage("Skill name is required."))
             return
 
-        # Fast path: look up from the cached discovery results
-        cached = next(
-            (s for s in self._discovered_skills if s["name"] == normalized_name),
-            None,
-        )
-        allowed_roots = self._skill_allowed_roots
-
-        # Cache miss — fall back to fresh discovery (offloaded to thread)
-        if cached is None:
-            try:
-                skills, allowed_roots = await asyncio.to_thread(
-                    self._discover_skills_and_roots_with_import_lock,
-                )
-                # Backfill cache so subsequent invocations are fast
-                self._discovered_skills = skills
-                self._skill_allowed_roots = allowed_roots
-                cached = next((s for s in skills if s["name"] == normalized_name), None)
-            except OSError as exc:
-                logger.warning(
-                    "Filesystem error loading skill %r",
-                    normalized_name,
-                    exc_info=True,
-                )
-                await _mount_error(
-                    f"Could not load skill: {normalized_name}. Filesystem error: {exc}",
-                )
-                return
-            except Exception as exc:
-                logger.warning(
-                    "Error searching for skill %r",
-                    normalized_name,
-                    exc_info=True,
-                )
-                await _mount_error(
-                    f"Error loading skill: {normalized_name}. "
-                    f"Unexpected error: {type(exc).__name__}: {exc}",
-                )
-                return
-
-        if cached is None:
-            logger.warning("Skill not found: %r", normalized_name)
-            await _mount_error(f"Skill not found: {normalized_name}")
-            return
-
-        # Load SKILL.md content (filesystem I/O offloaded to thread)
-        skill_path = cached["path"]
-
-        def _load() -> str | None:
-            return load_skill_content(str(skill_path), allowed_roots=allowed_roots)
-
-        try:
-            content = await asyncio.to_thread(_load)
-        except PermissionError as exc:
-            logger.warning(
-                "Containment check failed for skill %r",
-                normalized_name,
-                exc_info=True,
-            )
-            content = await self._prompt_skill_trust_and_retry(
-                normalized_name,
-                skill_path,
-                allowed_roots,
-                fallback_error=str(exc),
-                mount_error=_mount_error,
-            )
-            if content is None:
-                return
-        except OSError as exc:
-            logger.warning(
-                "Filesystem error loading skill %r",
-                normalized_name,
-                exc_info=True,
-            )
-            await _mount_error(
-                f"Could not load skill: {normalized_name}. Filesystem error: {exc}",
-            )
-            return
-        except Exception as exc:
-            logger.warning("Error reading skill %r", normalized_name, exc_info=True)
-            await _mount_error(
-                f"Error loading skill: {normalized_name}. "
-                f"Unexpected error: {type(exc).__name__}: {exc}",
-            )
-            return
-
-        if content is None:
-            await _mount_error(
-                f"Could not read content for skill: {normalized_name}. "
-                "Check that the SKILL.md file exists, is readable, "
-                "and is saved as UTF-8.",
-            )
-            return
-
-        if not content.strip():
-            await _mount_error(
-                f"Skill '{normalized_name}' has an empty SKILL.md file. "
-                "Add instructions to the file before invoking.",
-            )
-            return
-
-        # Refuse here what the server would refuse when it pins the skill.
-        try:
-            pinned_skill_body(cached, content)
-        except ValueError as exc:
-            await _mount_error(str(exc))
-            return
-
-        envelope = build_skill_invocation_envelope(cached, args)
-
-        await self._mount_message(
-            SkillMessage(
-                skill_name=cached["name"],
-                description=str(cached.get("description", "")),
-                source=str(cached.get("source", "")),
-                body=content,
-                args=args,
-            ),
-        )
+        envelope = build_skill_invocation_envelope(normalized_name, args)
+        row = SkillMessage(skill_name=normalized_name, args=args)
+        self._pending_skill_row = row
+        await self._mount_message(row)
         await self._send_to_agent(
             envelope.prompt,
             message_kwargs=envelope.message_kwargs,
             skill_name=envelope.skill_name,
         )
 
-    async def _prompt_skill_trust_and_retry(
-        self,
-        skill_name: str,
-        skill_path: str | Path,
-        allowed_roots: list[Path],
-        *,
-        fallback_error: str,
-        mount_error: Callable[[str], Awaitable[None]],
-    ) -> str | None:
-        """Prompt to trust an out-of-bounds skill directory, then reload it.
-
-        Mirrors the MCP project-trust flow: when containment fails, the user is
-        asked once to allow the resolved target directory. Allowing persists the
-        decision, extends the in-session containment allowlist, and retries the
-        read. Denying (or a prior deny this session) shows the original error.
-        A decision that cannot be persisted fails, because the agent server
-        reads trust only from the persisted store.
+    def _on_skill_pinned(self, name: str, description: str, body: str) -> None:
+        """Fill the pending skill row with the instructions the server pinned.
 
         Args:
-            skill_name: Normalized skill name, for messaging.
-            skill_path: Path to the skill's `SKILL.md`.
-            allowed_roots: Containment roots to extend on approval.
-            fallback_error: Original `PermissionError` message to show on deny.
-            mount_error: Callback to surface an error in the chat log.
+            name: Pinned skill name.
+            description: Skill description from its frontmatter.
+            body: Pinned `SKILL.md` body.
+        """
+        row, self._pending_skill_row = self._pending_skill_row, None
+        if row is None or row._skill_name != name:
+            return
+        row.set_instructions(description, body)
+        if row.id:
+            self._message_store.update_message(
+                row.id, skill_description=description, skill_body=body
+            )
+
+    async def _request_skill_trust(self, skill_name: str, directory: str) -> bool:
+        """Ask whether to trust a skill directory for the agent server.
+
+        The server saves an approval. A denial is remembered for the session so
+        the same directory is not asked about again.
+
+        Args:
+            skill_name: Skill the user invoked, for the prompt.
+            directory: Resolved directory the server asks to trust.
 
         Returns:
-            The skill content on approval and successful reload, or `None` when
-                the user declined or the retry failed (an error was mounted).
+            Whether the user approved the directory.
         """
-        from deepagents_code.skills.load import load_skill_content
-        from deepagents_code.skills.trust import trust_skill_dir
         from deepagents_code.tui.widgets.skill_trust import SkillTrustScreen
 
-        try:
-            target_dir = await asyncio.to_thread(_resolve_parent_dir, skill_path)
-        except (OSError, RuntimeError):
-            # Resolving the skill path can fail (e.g. a symlink loop introduced
-            # in the window after the first containment check raised). Fail
-            # closed with the original error rather than letting the worker
-            # exception escape unhandled — this mirrors the retry block below,
-            # which already guards its own resolve.
-            logger.warning(
-                "Could not resolve skill path %r for the trust prompt; refusing",
-                skill_path,
-                exc_info=True,
-            )
-            await mount_error(fallback_error)
-            return None
-
-        if target_dir in self._skill_trust_denied:
-            await mount_error(fallback_error)
-            return None
-
+        if directory in self._skill_trust_denied:
+            return False
         try:
             allowed = await self._push_screen_wait(
-                SkillTrustScreen(skill_name, target_dir)
+                SkillTrustScreen(skill_name, directory)
             )
         except Exception:
-            # This runs inside `_invoke_skill`'s `except PermissionError` block,
-            # so an error escaping the modal push would not be caught by that
-            # method's sibling handlers and would surface as an unhandled worker
-            # crash. Fail closed: treat a modal failure as a deny.
+            # Fail closed: a prompt that cannot display is a deny.
             logger.warning(
                 "Skill trust prompt failed to display for %s; refusing",
-                target_dir,
+                directory,
                 exc_info=True,
             )
-            self._skill_trust_denied.add(target_dir)
-            await mount_error(fallback_error)
-            return None
+            allowed = False
         if not allowed:
-            self._skill_trust_denied.add(target_dir)
-            await mount_error(fallback_error)
-            return None
-
-        if not await asyncio.to_thread(trust_skill_dir, target_dir):
-            # The agent server rechecks trust from the persisted store before
-            # pinning the skill, so an approval that exists only in this
-            # process cannot load it. Fail closed instead of sending a turn
-            # the server will reject.
-            logger.warning("Could not persist skill trust for %s", target_dir)
-            await mount_error(
-                f"Could not save trust for {target_dir}, so skill "
-                f"'{skill_name}' cannot run. Check that the state directory is "
-                "writable, or add the directory to [skills].extra_allowed_dirs.",
-            )
-            return None
-
-        target_path = Path(target_dir)
-        for roots in (allowed_roots, self._skill_allowed_roots):
-            if target_path not in roots:
-                roots.append(target_path)
-
-        def _retry() -> str | None:
-            return load_skill_content(str(skill_path), allowed_roots=allowed_roots)
-
-        try:
-            content = await asyncio.to_thread(_retry)
-        except PermissionError:
-            # Containment failed *after* the target dir was allowlisted, so the
-            # skill path must now resolve somewhere else — a symlink swap during
-            # the prompt window. Refuse and flag it distinctly from a plain read
-            # error. (PermissionError is an OSError subclass, so this must come
-            # first.)
-            logger.warning(
-                "Skill %r resolved outside the approved directory on retry "
-                "(target may have changed since approval); refusing",
-                skill_name,
-                exc_info=True,
-            )
-            await mount_error(
-                f"Could not load skill: {skill_name}. Its location changed "
-                "after you approved it, so it was not read.",
-            )
-            return None
-        except OSError:
-            logger.warning(
-                "Retry load failed for skill %r after trust",
-                skill_name,
-                exc_info=True,
-            )
-            await mount_error(
-                f"Could not load skill: {skill_name} after granting trust.",
-            )
-            return None
-
-        if content is None:
-            await mount_error(
-                f"Could not read content for skill: {skill_name}. "
-                "Check that the SKILL.md file exists, is readable, "
-                "and is saved as UTF-8.",
-            )
-        return content
+            self._skill_trust_denied.add(directory)
+        return bool(allowed)
 
     def _schedule_reload(self) -> asyncio.Task[None]:
         """Run `/reload` off the Textual message pump.
@@ -20602,12 +20384,13 @@ class DeepAgentsApp(App):
         from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
         from deepagents_code.file_ops import compute_unified_diff, format_display_path
+        from deepagents_code.skills.invocation import pinned_skill_parts
 
         result: list[MessageData] = []
         # Maps tool_call_id -> index into result list
         pending_tool_indices: dict[str, int] = {}
-        # Latest row from an explicit invocation; an SDK pin directly after it
-        # fills in its body instead of adding a row
+        # Latest row from an explicit invocation. An SDK pin directly after it
+        # fills in its body instead of adding a row.
         invocation: MessageData | None = None
 
         for msg in messages:
@@ -20618,45 +20401,45 @@ class DeepAgentsApp(App):
                     msg.content if isinstance(msg.content, str) else str(msg.content)
                 )
 
-                metadata = msg.additional_kwargs or {}
-                pinned = is_pinned_skill_message(msg)
-                if (
-                    pinned
-                    and content.startswith("<skill ")
-                    and content.endswith("\n</skill>")
-                ):
-                    content = content.partition("\n")[2].removesuffix("\n</skill>")
-                skill_meta = metadata.get("skill" if pinned else "__skill")
-                if isinstance(skill_meta, dict) and skill_meta.get("name"):
+                pinned = pinned_skill_parts(msg)
+                skill_meta = (msg.additional_kwargs or {}).get("__skill")
+                if pinned is not None:
+                    name, description, body = pinned
                     if (
-                        pinned
-                        and invocation is not None
+                        invocation is not None
                         and result[-1] is invocation
-                        and invocation.skill_name == skill_meta["name"]
+                        and invocation.skill_name == name
                     ):
-                        invocation.skill_body = content
-                        invocation.skill_description = str(
-                            skill_meta.get("description", "")
-                        )
+                        invocation.skill_body = body
+                        invocation.skill_description = description
                     else:
-                        # Older invocations embedded the instructions. Newer ones
-                        # record a `path` and rely on the pin above to fill the
-                        # body, so a missing pin means the instructions never
-                        # reached the model.
-                        if not pinned and "path" in skill_meta:
-                            content = _SKILL_NOT_LOADED_BODY
-                        row = MessageData(
-                            type=MessageType.SKILL,
-                            content="",
-                            skill_name=skill_meta["name"],
-                            skill_description=str(skill_meta.get("description", "")),
-                            skill_source=str(skill_meta.get("source", "")),
-                            skill_args=str(skill_meta.get("args", "")),
-                            skill_body=content,
+                        result.append(
+                            MessageData(
+                                type=MessageType.SKILL,
+                                content="",
+                                skill_name=name,
+                                skill_description=description,
+                                skill_body=body,
+                            )
                         )
-                        result.append(row)
-                        if not pinned:
-                            invocation = row
+                elif isinstance(skill_meta, dict) and skill_meta.get("name"):
+                    # Older invocations embedded the instructions. Pinned ones
+                    # rely on the SDK message after them to fill the body, so
+                    # this placeholder stays only if the pin never happened.
+                    invocation = MessageData(
+                        type=MessageType.SKILL,
+                        content="",
+                        skill_name=skill_meta["name"],
+                        skill_description=str(skill_meta.get("description", "")),
+                        skill_source=str(skill_meta.get("source", "")),
+                        skill_args=str(skill_meta.get("args", "")),
+                        skill_body=(
+                            _SKILL_NOT_LOADED_BODY
+                            if skill_meta.get("pinned")
+                            else content
+                        ),
+                    )
+                    result.append(invocation)
                 else:
                     result.append(MessageData(type=MessageType.USER, content=content))
 

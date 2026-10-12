@@ -105,7 +105,6 @@ from deepagents_code.unicode_security import (
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
     from collections.abc import Hashable, Mapping
-    from pathlib import Path
     from uuid import UUID
 
     from deepagents import FsToolName
@@ -499,6 +498,13 @@ class StreamState:
     hook_response: dict[str, Any] = field(default_factory=dict)
     """Resume values for fulfilled Hooks v2 interrupts, keyed by interrupt id."""
 
+    skill_trust_response: dict[str, dict[str, bool]] = field(default_factory=dict)
+    """Denials for server skill trust requests, keyed by interrupt id.
+
+    Recorded while streaming, so it is not cleared with the other responses
+    before a resume.
+    """
+
     hooks: HooksManager = field(default_factory=_inert_hooks)
     """Client-side Hooks v2 coordinator for this headless session."""
 
@@ -624,6 +630,38 @@ def _start_langsmith_thread_url_lookup(thread_id: str) -> ThreadUrlLookupState:
     return state
 
 
+def _deny_skill_trust(
+    interrupt_obj: Interrupt, state: StreamState, console: Console
+) -> bool:
+    """Deny a server request to trust a skill directory.
+
+    Headless runs cannot ask, so the server reports the containment error and
+    the turn fails.
+
+    Returns:
+        Whether `interrupt_obj` was a skill trust request.
+    """
+    from deepagents_code.skills.trust import (
+        SKILL_TRUST_INTERRUPT_TYPE,
+        parse_skill_trust_request,
+    )
+
+    value = interrupt_obj.value
+    if not isinstance(value, dict) or value.get("type") != SKILL_TRUST_INTERRUPT_TYPE:
+        return False
+    request = parse_skill_trust_request(value)
+    if request is not None:
+        console.print(
+            f"[yellow]Skill '{escape_markup(request['skill'])}' is in "
+            f"{escape_markup(request['directory'])}, which is not trusted. "
+            "Non-interactive mode cannot ask; add the directory to "
+            "[skills].extra_allowed_dirs to allow it.[/yellow]"
+        )
+    state.skill_trust_response[interrupt_obj.id] = {"approved": False}
+    state.interrupt_occurred = True
+    return True
+
+
 def _process_interrupts(
     data: dict[str, list[Interrupt]],
     state: StreamState,
@@ -645,6 +683,8 @@ def _process_interrupts(
             if is_hook_interrupt_payload(interrupt_obj.value):
                 state.pending_hook_interrupts[interrupt_obj.id] = interrupt_obj.value
                 state.interrupt_occurred = True
+                continue
+            if _deny_skill_trust(interrupt_obj, state, console):
                 continue
             try:
                 validated_request = _HITL_REQUEST_ADAPTER.validate_python(
@@ -2319,7 +2359,12 @@ async def _run_agent_loop(
             state.hook_response.clear()
             await _fulfill_pending_hook_interrupts(state)
             await _process_hitl_interrupts(state, console)
-            resume_payload = {**state.hook_response, **state.hitl_response}
+            resume_payload = {
+                **state.hook_response,
+                **state.hitl_response,
+                **state.skill_trust_response,
+            }
+            state.skill_trust_response.clear()
             stream_input = Command(resume=resume_payload)
             await _stream_agent(
                 agent, stream_input, config, state, console, file_op_tracker, context
@@ -2715,105 +2760,12 @@ async def run_non_interactive(
     message_kwargs: dict[str, Any] | None = None
     skill_name: str | None = None
     if initial_skill and initial_skill.strip():
-        from deepagents_code.skills.invocation import (
-            build_skill_invocation_envelope,
-            discover_skills_and_roots,
-            pinned_skill_body,
+        from deepagents_code.skills.invocation import build_skill_invocation_envelope
+
+        # The agent server resolves, trust-checks, and reads the skill.
+        envelope = build_skill_invocation_envelope(
+            initial_skill.strip().lower(), message
         )
-        from deepagents_code.skills.load import (
-            ExtendedSkillMetadata,
-            load_skill_content,
-        )
-
-        normalized_skill = initial_skill.strip().lower()
-        try:
-            # Offloaded to a thread: discovery does blocking filesystem I/O
-            # (a JSON trust-store read plus `Path.resolve()` calls) that must
-            # not block the event loop.
-            from deepagents_code.plugins.adapters.skills import (
-                discover_plugin_skill_sources_and_roots,
-            )
-
-            def discover_all_skills() -> tuple[list[ExtendedSkillMetadata], list[Path]]:
-                plugin_sources, plugin_roots = discover_plugin_skill_sources_and_roots()
-                return discover_skills_and_roots(
-                    assistant_id,
-                    plugin_skill_sources=plugin_sources,
-                    plugin_skill_roots=plugin_roots,
-                )
-
-            skills, allowed_roots = await asyncio.to_thread(discover_all_skills)
-            skill = next((s for s in skills if s["name"] == normalized_skill), None)
-        except OSError as e:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Could not load skill: {escape_markup(normalized_skill)}. "
-                f"Filesystem error: {escape_markup(str(e))}"
-            )
-            return 1
-        except Exception as e:  # noqa: BLE001
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Error loading skill: {escape_markup(normalized_skill)}. "
-                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
-            )
-            return 1
-
-        if skill is None:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Skill not found: {escape_markup(normalized_skill)}"
-            )
-            return 1
-
-        try:
-            content = load_skill_content(
-                str(skill["path"]),
-                allowed_roots=allowed_roots,
-            )
-        except PermissionError as e:
-            console.print(f"[bold red]Error:[/bold red] {escape_markup(str(e))}")
-            return 1
-        except OSError as e:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Could not load skill: {escape_markup(normalized_skill)}. "
-                f"Filesystem error: {escape_markup(str(e))}"
-            )
-            return 1
-        except Exception as e:  # noqa: BLE001
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Error loading skill: {escape_markup(normalized_skill)}. "
-                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
-            )
-            return 1
-        if content is None:
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Could not read content for skill: {escape_markup(normalized_skill)}. "
-                "Check that the SKILL.md file exists, is readable, "
-                "and is saved as UTF-8."
-            )
-            return 1
-
-        if not content.strip():
-            console.print(
-                "[bold red]Error:[/bold red] "
-                f"Skill '{escape_markup(normalized_skill)}' has an empty "
-                "SKILL.md file. "
-                "Add instructions to the file before invoking."
-            )
-            return 1
-
-        # Refuse here what the server would refuse when it pins the skill.
-        try:
-            pinned_skill_body(skill, content)
-        except ValueError as exc:
-            console.print(f"[bold red]Error:[/bold red] {escape_markup(str(exc))}")
-            return 1
-
-        envelope = build_skill_invocation_envelope(skill, message)
         message = envelope.prompt
         message_kwargs = envelope.message_kwargs
         skill_name = envelope.skill_name

@@ -12,7 +12,7 @@ from deepagents.backends.utils import to_posix_path
 from deepagents.middleware import skills as sdk_skills
 from deepagents.middleware.skills import SkillsMiddleware
 from langchain_core.messages import HumanMessage
-from langgraph.types import Overwrite
+from langgraph.types import Overwrite, interrupt
 
 from deepagents_code.goal_state_notice import (
     GOAL_CONTROL_MESSAGE_SOURCE,
@@ -27,6 +27,11 @@ from deepagents_code.plugins.adapters.skills import (
 from deepagents_code.skills.invocation import extra_skill_roots, pinned_skill_body
 from deepagents_code.skills.load import load_skill_content
 from deepagents_code.skills.merge import merge_skill
+from deepagents_code.skills.trust import (
+    SKILL_TRUST_INTERRUPT_TYPE,
+    SkillTrustRequest,
+    trust_skill_dir,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -80,20 +85,17 @@ def _pending_pin_update(state: sdk_skills.SkillsState) -> Overwrite | None:
 def _needs_load(state: sdk_skills.SkillsState) -> bool:
     """Return whether `before_agent` must scan the skill sources.
 
-    Loaded metadata serves a pending pin when it lists the selected skill at
-    the `SKILL.md` path recorded at invocation. Otherwise the skill was added
-    or moved since the load. `before_model` rereads the file either way.
+    Loaded metadata serves a pending pin when it lists the selected skill.
+    Otherwise the skill may have been added since the load.
     """
     loaded = state.get("skills_metadata")
     if loaded is None:
         return True
-    marker = _skill_invocation(state)
-    name, path = marker.get("name"), marker.get("path")
+    name = _skill_invocation(state).get("name")
     if name not in (state.get("pinned_skills") or []):
         # No pin survives this turn, so the loaded metadata is enough.
         return False
-    skill = next((skill for skill in loaded if skill["name"] == name), None)
-    return skill is None or str(Path(skill["path"]).resolve()) != path
+    return all(skill["name"] != name for skill in loaded)
 
 
 def _loaded_update(state: sdk_skills.SkillsState) -> _SkillsStateUpdate | None:
@@ -108,6 +110,45 @@ def _loaded_update(state: sdk_skills.SkillsState) -> _SkillsStateUpdate | None:
     return _SkillsStateUpdate(
         skills_metadata=state.get("skills_metadata") or [], pinned_skills=pins
     )
+
+
+def _trusted_directory(skill: sdk_skills.SkillMetadata, denied: str) -> str:
+    """Ask the user to trust the skill's resolved directory, then save it.
+
+    `interrupt` returns the client's answer when the run resumes, so the
+    calling node runs again from the start with the same skill.
+
+    Args:
+        skill: Skill whose `SKILL.md` resolves outside the trusted roots.
+        denied: Containment error to report if the user does not approve.
+
+    Returns:
+        The approved directory, which is now in the trust store.
+
+    Raises:
+        ValueError: The path cannot be resolved, the user denied trust, or
+            the approval could not be saved.
+    """
+    name = skill["name"]
+    try:
+        directory = str(Path(skill["path"]).resolve().parent)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(denied) from exc
+    answer = interrupt(
+        SkillTrustRequest(
+            type=SKILL_TRUST_INTERRUPT_TYPE, skill=name, directory=directory
+        )
+    )
+    if not isinstance(answer, dict) or answer.get("approved") is not True:
+        raise ValueError(denied)
+    if not trust_skill_dir(directory):
+        msg = (
+            f"Could not save trust for {directory}, so skill '{name}' cannot "
+            "run. Check that the state directory is writable, or add the "
+            "directory to [skills].extra_allowed_dirs."
+        )
+        raise ValueError(msg)
+    return directory
 
 
 def _entries(ls_result: object) -> list[FileInfo]:
@@ -348,45 +389,48 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         )
 
     @staticmethod
-    def _pin_body(
-        skill: sdk_skills.SkillMetadata,
-        expected_path: str | None,
-        roots: Sequence[Path],
-    ) -> str:
-        """Return the selected skill's instructions read within trusted roots.
+    def _read_skill(skill: sdk_skills.SkillMetadata, roots: Sequence[Path]) -> str:
+        """Return the selected skill's `SKILL.md` read within trusted roots.
+
+        A skill outside every root interrupts the run to ask the user to trust
+        its directory. An approval is saved, because later turns read trust
+        only from the saved store.
 
         Errors are raised as `ValueError` because the agent server replaces the
         message of most other exception types, including `PermissionError`,
         before it reaches the client.
 
-        Args:
-            skill: Skill metadata loaded on the server for this turn.
-            expected_path: Resolved `SKILL.md` path recorded when the user
-                invoked the skill, or `None` to skip the location check.
-            roots: Trusted directories the skill must resolve within.
-
         Raises:
-            ValueError: The skill moved, escapes the trusted roots, or has no
-                readable instructions.
+            ValueError: No trusted roots exist, the user denied trust, the
+                approval could not be saved, or the file is unreadable.
         """
         name = skill["name"]
-        path = Path(skill["path"]).resolve()
-        if expected_path is not None and str(path) != expected_path:
-            msg = (
-                f"Skill '{name}' changed location since it was selected. "
-                "Run /reload, then invoke it again."
-            )
-            raise ValueError(msg)
         # `load_skill_content` skips containment when given no roots, so an
         # empty list must fail here rather than read an unchecked path.
         if not roots:
             msg = f"Skill '{name}' cannot run: no trusted skill directories exist."
             raise ValueError(msg)
         try:
-            content = load_skill_content(str(path), allowed_roots=roots)
+            content = load_skill_content(skill["path"], allowed_roots=roots)
         except PermissionError as exc:
-            raise ValueError(str(exc)) from exc
-        return pinned_skill_body(skill, content)
+            directory = _trusted_directory(skill, str(exc))
+            try:
+                content = load_skill_content(
+                    skill["path"], allowed_roots=[*roots, Path(directory)]
+                )
+            except PermissionError as retry_exc:
+                msg = (
+                    f"Skill '{name}' changed location after you approved it, "
+                    "so it was not read."
+                )
+                raise ValueError(msg) from retry_exc
+        if content is None:
+            msg = (
+                f"Could not read instructions for skill '{name}'. Check that "
+                "its SKILL.md exists, is UTF-8, and is not too large."
+            )
+            raise ValueError(msg)
+        return content
 
     def before_model(
         self, state: sdk_skills.SkillsState, runtime: Runtime
@@ -399,31 +443,24 @@ class PluginSkillsMiddleware(SkillsMiddleware):
 
         Raises:
             ValueError: A requested skill is missing on the server, or fails
-                the location, trust, or content checks.
+                the trust or content checks.
         """
         del runtime
         names = state.get("pinned_skills")
         if not names:
             return None
         by_name = {skill["name"]: skill for skill in state.get("skills_metadata") or []}
-        marker = _skill_invocation(state)
-        expected_name, expected_path = marker.get("name"), marker.get("path")
         roots = [*self._allowed_roots, *extra_skill_roots(self._path_base)]
         messages: list[HumanMessage] = []
         for name in dict.fromkeys(names):
             if name not in by_name:
                 msg = (
-                    f"Skill '{name}' is not available to the agent. "
-                    "Run /reload, then invoke it again."
+                    f"Skill '{name}' was not found. Check the name, or run "
+                    "/reload if you just added it."
                 )
                 raise ValueError(msg)
             skill = by_name[name]
-            path = (
-                expected_path
-                if name == expected_name and isinstance(expected_path, str)
-                else None
-            )
-            body = self._pin_body(skill, path, roots)
+            body = pinned_skill_body(skill, self._read_skill(skill, roots))
             messages.append(sdk_skills._pinned_skill_message(skill, body))
         return {"pinned_skills": Overwrite([]), "messages": messages}
 

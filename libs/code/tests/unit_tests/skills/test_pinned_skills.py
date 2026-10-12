@@ -1,4 +1,4 @@
-"""Server-side skill pinning preserves selected paths and directory trust."""
+"""Server-side skill pinning resolves, trust-checks, and reads the skill."""
 
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -11,11 +11,14 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.runtime import Runtime
+from langgraph.types import Command
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.goal_state_notice import build_goal_continuation
+from deepagents_code.plugins.adapters import skills_middleware
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.skills import trust
+from deepagents_code.skills.invocation import build_skill_invocation_envelope
 from deepagents_code.tui.widgets.message_store import MessageType
 
 if TYPE_CHECKING:
@@ -32,18 +35,24 @@ def _write_skill(
     return path
 
 
-def _state(path: Path, name: str = "review") -> SkillsState:
+def _state(name: str = "review") -> SkillsState:
+    envelope = build_skill_invocation_envelope(name)
     return {
-        "messages": [
-            HumanMessage(
-                "Review",
-                additional_kwargs={
-                    "__skill": {"name": name, "path": str(path.resolve())}
-                },
-            )
-        ],
+        "messages": [HumanMessage(envelope.prompt, **envelope.message_kwargs)],
         "pinned_skills": [name],
     }
+
+
+def _deny_trust(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Answer every trust interrupt with a deny, recording the requests."""
+    requests: list[object] = []
+
+    def deny(value: object) -> dict[str, bool]:
+        requests.append(value)
+        return {"approved": False}
+
+    monkeypatch.setattr(skills_middleware, "interrupt", deny)
+    return requests
 
 
 async def _pin(
@@ -66,20 +75,50 @@ def mode(request: pytest.FixtureRequest) -> str:
     return request.param
 
 
-async def test_pinning_rejects_changed_selection(tmp_path: Path, mode: str) -> None:
+async def test_pinning_asks_to_trust_an_outside_directory(
+    tmp_path: Path, mode: str
+) -> None:
+    """An untrusted skill interrupts, and an approval is saved and pinned."""
     root = tmp_path / "skills"
-    path = _write_skill(root / "review" / "SKILL.md")
-    middleware = PluginSkillsMiddleware(
-        backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
+    root.mkdir()
+    outside = _write_skill(tmp_path / "outside" / "review" / "SKILL.md")
+    (root / "review").symlink_to(outside.parent, target_is_directory=True)
+    agent = create_agent(
+        GenericFakeChatModel(messages=iter([AIMessage(content="Done")])),
+        middleware=[
+            PluginSkillsMiddleware(
+                backend=FilesystemBackend(virtual_mode=False),
+                sources=[(str(root), "User")],
+            )
+        ],
+        checkpointer=InMemorySaver(),
     )
-    with pytest.raises(ValueError, match="changed location"):
-        await _pin(middleware, _state(tmp_path / "different" / "SKILL.md"), mode)
-    assert path.exists()
+    config: RunnableConfig = {"configurable": {"thread_id": "trust"}}
+    if mode == "async":
+        paused = await agent.ainvoke(_state(), config)
+    else:
+        paused = agent.invoke(_state(), config)
+    [request] = paused["__interrupt__"]
+    directory = str(outside.parent.resolve())
+    assert request.value == {
+        "type": "skill_trust",
+        "skill": "review",
+        "directory": directory,
+    }
+    resume = Command(resume={request.id: {"approved": True}})
+    if mode == "async":
+        result = await agent.ainvoke(resume, config)
+    else:
+        result = agent.invoke(resume, config)
+    assert result["messages"][1].additional_kwargs["lc_source"] == "pinned_skill"
+    assert result["messages"][-1].content == "Done"
+    assert trust.is_skill_dir_trusted(directory)
 
 
-async def test_pinning_rechecks_directory_trust(
+async def test_pinning_refuses_a_denied_directory(
     tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A deny fails the pin, and a saved approval later skips the prompt."""
     root = tmp_path / "skills"
     root.mkdir()
     outside = _write_skill(tmp_path / "outside" / "review" / "SKILL.md")
@@ -87,38 +126,32 @@ async def test_pinning_rechecks_directory_trust(
     middleware = PluginSkillsMiddleware(
         backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
     )
-    monkeypatch.setattr(trust, "load_trusted_skill_dirs", list)
+    requests = _deny_trust(monkeypatch)
     with pytest.raises(ValueError, match="outside all allowed"):
-        await _pin(middleware, _state(outside), mode)
-    monkeypatch.setattr(trust, "load_trusted_skill_dirs", lambda: [outside.parent])
-    result = await _pin(middleware, _state(outside), mode)
+        await _pin(middleware, _state(), mode)
+    assert len(requests) == 1
+    assert trust.trust_skill_dir(str(outside.parent.resolve()))
+    result = await _pin(middleware, _state(), mode)
     assert result is not None
     assert result["messages"]
-    monkeypatch.setattr(trust, "load_trusted_skill_dirs", list)
-    with pytest.raises(ValueError, match="outside all allowed"):
-        await _pin(middleware, _state(outside), mode)
+    assert len(requests) == 1
 
 
-async def test_pinning_revalidates_actual_read(tmp_path: Path, mode: str) -> None:
-    """A `SKILL.md` swapped for a symlink after discovery is refused."""
+async def test_pinning_refuses_an_approval_it_cannot_save(
+    tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Later turns read trust from the store, so an unsaved approval fails."""
     root = tmp_path / "skills"
-    path = _write_skill(root / "review" / "SKILL.md")
+    root.mkdir()
+    outside = _write_skill(tmp_path / "outside" / "review" / "SKILL.md")
+    (root / "review").symlink_to(outside.parent, target_is_directory=True)
     middleware = PluginSkillsMiddleware(
         backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
     )
-    state = _state(path)
-    metadata = middleware.before_agent(state, Runtime(), {})
-    assert metadata is not None
-    state.update(metadata)
-    other = _write_skill(root / "other" / "SKILL.md")
-    path.unlink()
-    path.symlink_to(other)
-    if mode == "async":
-        with pytest.raises(ValueError, match="changed location"):
-            await middleware.abefore_model(state, Runtime())
-    else:
-        with pytest.raises(ValueError, match="changed location"):
-            middleware.before_model(state, Runtime())
+    monkeypatch.setattr(skills_middleware, "interrupt", lambda _: {"approved": True})
+    monkeypatch.setattr(skills_middleware, "trust_skill_dir", lambda _: False)
+    with pytest.raises(ValueError, match="Could not save trust"):
+        await _pin(middleware, _state(), mode)
 
 
 async def test_graph_pins_once_and_preserves_snapshot(
@@ -137,9 +170,9 @@ async def test_graph_pins_once_and_preserves_snapshot(
     agent = create_agent(model, middleware=[middleware], checkpointer=InMemorySaver())
     config: RunnableConfig = {"configurable": {"thread_id": "pin-snapshot"}}
     if mode == "async":
-        first = await agent.ainvoke(_state(path), config)
+        first = await agent.ainvoke(_state(), config)
     else:
-        first = agent.invoke(_state(path), config)
+        first = agent.invoke(_state(), config)
     assert "pinned_skills" not in first
     assert len(first["messages"]) == 3
     pinned = first["messages"][1]
@@ -158,7 +191,7 @@ async def test_graph_pins_once_and_preserves_snapshot(
     else:
         second = agent.invoke(next_turn, config)
     assert [message.content for message in second["messages"]] == [
-        "Review",
+        "I'm invoking the skill `review`.",
         pinned.content,
         "First answer",
         "Continue",
@@ -183,7 +216,6 @@ async def test_graph_recovers_from_failed_pin(
     """A pin that fails on a missing skill does not leak into later turns."""
     root = tmp_path / "skills"
     root.mkdir()
-    path = root / "review" / "SKILL.md"
     middleware = PluginSkillsMiddleware(
         backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
     )
@@ -194,11 +226,11 @@ async def test_graph_recovers_from_failed_pin(
     )
     config: RunnableConfig = {"configurable": {"thread_id": "failed-pin"}}
     if mode == "async":
-        with pytest.raises(ValueError, match="Run /reload"):
-            await agent.ainvoke(_state(path), config)
+        with pytest.raises(ValueError, match="was not found"):
+            await agent.ainvoke(_state(), config)
     else:
-        with pytest.raises(ValueError, match="Run /reload"):
-            agent.invoke(_state(path), config)
+        with pytest.raises(ValueError, match="was not found"):
+            agent.invoke(_state(), config)
     assert agent.get_state(config).values["pinned_skills"] == ["review"]
     request: SkillsState = {"messages": [HumanMessage("Continue without a skill")]}
     if followup == "goal":
@@ -232,19 +264,19 @@ async def test_pinning_resolves_extra_dirs_against_path_base(
     (tmp_path / "config.toml").write_text(
         '[skills]\nextra_allowed_dirs = ["shared"]\n', encoding="utf-8"
     )
-    monkeypatch.setattr(trust, "load_trusted_skill_dirs", list)
+    _deny_trust(monkeypatch)
     middleware = PluginSkillsMiddleware(
         backend=FilesystemBackend(virtual_mode=False),
         sources=[(str(root), "User")],
         path_base=user_cwd if configured_base else project,
     )
     if configured_base:
-        result = await _pin(middleware, _state(target), mode)
+        result = await _pin(middleware, _state(), mode)
         assert result is not None
         assert result["messages"]
     else:
         with pytest.raises(ValueError, match="outside all allowed"):
-            await _pin(middleware, _state(target), mode)
+            await _pin(middleware, _state(), mode)
 
 
 async def test_pinning_checks_every_requested_name(
@@ -256,15 +288,15 @@ async def test_pinning_checks_every_requested_name(
     `before_agent` has run, so the model hook is called directly.
     """
     root = tmp_path / "skills"
-    path = _write_skill(root / "review" / "SKILL.md")
+    _write_skill(root / "review" / "SKILL.md")
     _write_skill(root / "lint" / "SKILL.md", "Lint instructions", name="lint")
     outside = _write_skill(tmp_path / "outside" / "evil" / "SKILL.md", name="evil")
     (root / "evil").symlink_to(outside.parent, target_is_directory=True)
-    monkeypatch.setattr(trust, "load_trusted_skill_dirs", list)
+    _deny_trust(monkeypatch)
     middleware = PluginSkillsMiddleware(
         backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
     )
-    state = _state(path)
+    state = _state()
     metadata = middleware.before_agent(state, Runtime(), {})
     assert metadata is not None
     state["skills_metadata"] = metadata["skills_metadata"]

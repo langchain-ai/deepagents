@@ -1131,20 +1131,10 @@ class TestNonInteractivePrompt:
         assert kwargs["interactive"] is False
 
     async def test_initial_skill_pins_instructions_and_keeps_metadata(self) -> None:
-        """Headless execution pins a skill without embedding its instructions."""
+        """Headless execution leaves reading the skill to the server."""
         mock_agent = _headless_agent()
         mock_agent.astream = MagicMock(return_value=_async_iter([]))
         mock_server_proc = MagicMock()
-        skill = {
-            "name": "code-review",
-            "description": "Review code changes",
-            "path": "/skills/code-review/SKILL.md",
-            "license": None,
-            "compatibility": None,
-            "metadata": {},
-            "allowed_tools": [],
-            "source": "user",
-        }
 
         with (
             patch(
@@ -1158,14 +1148,7 @@ class TestNonInteractivePrompt:
                 "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=None,
             ),
-            patch(
-                "deepagents_code.skills.invocation.discover_skills_and_roots",
-                return_value=([skill], []),
-            ),
-            patch(
-                "deepagents_code.skills.load.load_skill_content",
-                return_value="# Instructions\nDo stuff",
-            ),
+            patch("deepagents_code.skills.load.load_skill_content") as mock_load,
             patch(
                 "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
                 new_callable=AsyncMock,
@@ -1182,138 +1165,63 @@ class TestNonInteractivePrompt:
                 quiet=True,
             )
 
+        mock_load.assert_not_called()
         stream_input = mock_agent.astream.call_args.args[0]
         user_msg = stream_input["messages"][0]
         assert stream_input["pinned_skills"] == ["code-review"]
-        assert "# Instructions" not in user_msg["content"]
         assert "I'm invoking the skill `code-review`." in user_msg["content"]
         assert "**User request:** review this patch" in user_msg["content"]
         assert user_msg["additional_kwargs"]["__skill"]["name"] == "code-review"
         assert user_msg["additional_kwargs"]["__skill"]["args"] == "review this patch"
 
-    async def test_initial_skill_missing_returns_error_without_starting_server(
-        self,
-    ) -> None:
-        """Missing headless skill should fail before the server starts."""
+    async def test_skill_trust_request_is_denied_on_resume(self) -> None:
+        """Headless mode cannot ask, so it resumes a trust request with a deny."""
+        from langgraph.types import Command, Interrupt
+
+        from deepagents_code.client.non_interactive import _process_interrupts
+
+        inputs: list[object] = []
+
+        async def staged_stream(  # noqa: RUF029  # replaces the async _stream_agent seam
+            _agent: object,
+            stream_input: object,
+            _config: object,
+            state: StreamState,
+            console: Console,
+            _file_op_tracker: object,
+            _context: object,
+        ) -> None:
+            inputs.append(stream_input)
+            if len(inputs) == 1:
+                request = {"type": "skill_trust", "skill": "review", "directory": "/x"}
+                _process_interrupts(
+                    {"__interrupt__": [Interrupt(value=request, id="trust-1")]},
+                    state,
+                    console,
+                )
+
         with (
             patch(
-                "deepagents_code.client.non_interactive._resolve_shell_allow_list",
-            ) as mock_settings,
-            patch(
-                "deepagents_code.skills.invocation.discover_skills_and_roots",
-                return_value=([], []),
+                "deepagents_code.client.non_interactive._stream_agent",
+                new=staged_stream,
             ),
             patch(
-                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                "deepagents_code.client.non_interactive.dispatch_hook",
                 new_callable=AsyncMock,
-            ) as mock_start_server,
+            ),
         ):
-            mock_settings.return_value = None
-            mock_settings.has_tavily = False
-            runtime_state.model_name = None
-
-            result = await run_non_interactive(
-                message="review this patch",
-                initial_skill="missing-skill",
+            await _run_agent_loop(
+                MagicMock(),
+                "run a skill",
+                {"configurable": {"thread_id": "t"}},
+                Console(quiet=True),
+                MagicMock(),
                 quiet=True,
             )
 
-        assert result == 1
-        mock_start_server.assert_not_awaited()
-
-    async def test_initial_skill_containment_failure_hard_fails(self) -> None:
-        """A skill resolving outside trusted roots hard-fails headlessly.
-
-        The non-interactive path has no TUI to prompt on, so it must never try
-        to grant trust: it fails closed with the containment error and never
-        starts the server.
-        """
-        skill = {
-            "name": "evil-skill",
-            "description": "Resolves outside trusted roots",
-            "path": "/skills/evil-skill/SKILL.md",
-            "license": None,
-            "compatibility": None,
-            "metadata": {},
-            "allowed_tools": [],
-            "source": "user",
-        }
-        with (
-            patch(
-                "deepagents_code.client.non_interactive._resolve_shell_allow_list",
-            ) as mock_settings,
-            patch(
-                "deepagents_code.skills.invocation.discover_skills_and_roots",
-                return_value=([skill], []),
-            ),
-            patch(
-                "deepagents_code.skills.load.load_skill_content",
-                side_effect=PermissionError(
-                    "Skill path /tmp/evil resolves outside all allowed skill "
-                    "directories."
-                ),
-            ),
-            patch(
-                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
-                new_callable=AsyncMock,
-            ) as mock_start_server,
-        ):
-            mock_settings.return_value = None
-            mock_settings.has_tavily = False
-            runtime_state.model_name = None
-
-            result = await run_non_interactive(
-                message="review this patch",
-                initial_skill="evil-skill",
-                quiet=True,
-            )
-
-        assert result == 1
-        mock_start_server.assert_not_awaited()
-
-    async def test_initial_skill_without_instructions_fails_before_server(
-        self,
-    ) -> None:
-        """A SKILL.md the server cannot pin fails before the server starts."""
-        skill = {
-            "name": "code-review",
-            "description": "Review code changes",
-            "path": "/skills/code-review/SKILL.md",
-            "license": None,
-            "compatibility": None,
-            "metadata": {},
-            "allowed_tools": [],
-            "source": "user",
-        }
-        with (
-            patch(
-                "deepagents_code.client.non_interactive._resolve_shell_allow_list",
-            ) as mock_settings,
-            patch(
-                "deepagents_code.skills.invocation.discover_skills_and_roots",
-                return_value=([skill], []),
-            ),
-            patch(
-                "deepagents_code.skills.load.load_skill_content",
-                return_value="---\nname: code-review\ndescription: Review\n---\n",
-            ),
-            patch(
-                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
-                new_callable=AsyncMock,
-            ) as mock_start_server,
-        ):
-            mock_settings.return_value = None
-            mock_settings.has_tavily = False
-            runtime_state.model_name = None
-
-            result = await run_non_interactive(
-                message="review this patch",
-                initial_skill="code-review",
-                quiet=True,
-            )
-
-        assert result == 1
-        mock_start_server.assert_not_awaited()
+        resume = inputs[1]
+        assert isinstance(resume, Command)
+        assert resume.resume == {"trust-1": {"approved": False}}
 
 
 def _make_interrupt_chunk(interrupt_id: str = "i1") -> tuple:

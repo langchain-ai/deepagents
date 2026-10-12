@@ -16,7 +16,6 @@ import pytest
 from langchain_core.messages import ToolMessage
 
 from deepagents.backends import filesystem as fs_module
-from deepagents.backends._real_path import get_real_path
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import DeleteResult, EditResult, GrepMatch, ReadResult, WriteResult
 from deepagents.backends.utils import format_grep_matches
@@ -2724,8 +2723,8 @@ class TestFilesystemDelete:
         assert f.exists()
 
 
-class TestRealPathHook:
-    """`FilesystemBackend`'s internal real-path hook used by permissions."""
+class TestRealPath:
+    """`FilesystemBackend._real_path`, used by filesystem permissions."""
 
     def _backend(self, tmp_path: Path) -> FilesystemBackend:
         (tmp_path / "secrets").mkdir()
@@ -2733,8 +2732,7 @@ class TestRealPathHook:
         return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
 
     def test_plain_and_missing_paths_unchanged(self, tmp_path: Path) -> None:
-        real_path = get_real_path(self._backend(tmp_path))
-        assert real_path is not None
+        real_path = self._backend(tmp_path)._real_path
         assert real_path("/secrets/key.txt") == "/secrets/key.txt"
         assert real_path("/secrets/new/file.txt") == "/secrets/new/file.txt"
         assert real_path("/") == "/"
@@ -2747,8 +2745,7 @@ class TestRealPathHook:
             (tmp_path / "dangling").symlink_to(tmp_path / "secrets" / "future")
         except (NotImplementedError, OSError):
             pytest.skip("platform does not support symlinks")
-        real_path = get_real_path(backend)
-        assert real_path is not None
+        real_path = backend._real_path
         assert real_path("/link/key.txt") == "/secrets/key.txt"
         assert real_path("/link/missing.txt") == "/secrets/missing.txt"
         assert real_path("/alias.txt") == "/secrets/key.txt"
@@ -2763,8 +2760,7 @@ class TestRealPathHook:
             (root / "escape").symlink_to(outside, target_is_directory=True)
         except (NotImplementedError, OSError):
             pytest.skip("platform does not support symlinks")
-        real_path = get_real_path(FilesystemBackend(root_dir=str(root), virtual_mode=True))
-        assert real_path is not None
+        real_path = FilesystemBackend(root_dir=str(root), virtual_mode=True)._real_path
         with pytest.raises(ValueError, match="outside root"):
             real_path("/escape/x")
 
@@ -2774,7 +2770,6 @@ class TestRealPathHook:
             (tmp_path / "link").symlink_to(tmp_path / "secrets", target_is_directory=True)
         except (NotImplementedError, OSError):
             pytest.skip("platform does not support symlinks")
-        real_path = get_real_path(FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False))
-        assert real_path is not None
+        real_path = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)._real_path
         expected = Path(os.path.realpath(tmp_path / "secrets" / "key.txt"))
         assert real_path(str(tmp_path / "link" / "key.txt")) == "/" + expected.relative_to(expected.anchor).as_posix()

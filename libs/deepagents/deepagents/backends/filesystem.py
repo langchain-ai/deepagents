@@ -222,11 +222,11 @@ class FilesystemBackend(BackendProtocol):
         _raise_if_symlink_loop(resolved)
         return resolved
 
-    def _deepagents_real_path(self, key: str) -> str:
+    def _real_path(self, key: str) -> str:
         """Resolve `key` through symlinks to the path an operation would touch.
 
-        Internal permissions hook (see `deepagents.backends._real_path`). Returns a
-        virtual path in virtual mode, otherwise the real path without its drive.
+        Used by filesystem permissions. Returns a virtual path in virtual mode,
+        otherwise the real path without its drive.
 
         Raises:
             ValueError: If the path escapes the root in virtual mode.

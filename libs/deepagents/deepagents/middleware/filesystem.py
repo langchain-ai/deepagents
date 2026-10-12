@@ -43,7 +43,6 @@ from pydantic import BaseModel, Field
 
 from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
-from deepagents.backends._real_path import get_real_path
 from deepagents.backends.composite import _route_for_path
 from deepagents.backends.protocol import (
     BackendProtocol,
@@ -420,9 +419,17 @@ def _check_fs_permission(
 
 
 def _resolve_real_path(backend: BackendProtocol, path: str) -> str:
-    """Resolve `path` through the backend's real-path hook, if any, and re-validate it."""
-    real_path = get_real_path(backend)
-    return path if real_path is None else validate_path(real_path(path))
+    """Resolve `path` through symlinks for backends on a real filesystem, and re-validate it.
+
+    Other backends have no path aliasing, so `path` is returned unchanged.
+    """
+    if isinstance(backend, CompositeBackend):
+        routed, routed_path, route_prefix = _route_for_path(default=backend.default, sorted_routes=backend.sorted_routes, path=path)
+        resolved = _resolve_real_path(routed, routed_path)
+        return resolved if route_prefix is None else validate_path(route_prefix.rstrip("/") + resolved)
+    if isinstance(backend, FilesystemBackend):
+        return validate_path(backend._real_path(path))
+    return path
 
 
 def _permission_error(

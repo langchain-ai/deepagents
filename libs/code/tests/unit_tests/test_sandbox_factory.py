@@ -839,15 +839,56 @@ class TestDaytonaSnapshotResolution:
             snapshot="kwarg-name"
         )
 
+    def test_default_sandbox_skips_snapshot_management(self) -> None:
+        """Unconfigured launches retain Daytona's managed default sandbox."""
+        client = MagicMock()
+        client.create.return_value = self._ready_sandbox()
+
+        with self._provider(client) as (provider, fake_daytona, backend):
+            result = provider.get_or_create()
+
+        client.create.assert_called_once_with()
+        client.snapshot.get.assert_not_called()
+        client.snapshot.create.assert_not_called()
+        fake_daytona.CreateSandboxFromSnapshotParams.assert_not_called()
+        assert result is backend.DaytonaSandbox.return_value
+
+    def test_env_name_selects_snapshot(self) -> None:
+        """A configured snapshot name opts into snapshot resolution."""
+        client = MagicMock()
+        client.snapshot.get.return_value = self._snapshot("env-name")
+        client.create.return_value = self._ready_sandbox()
+
+        with self._provider(
+            client, env={"DAYTONA_SANDBOX_SNAPSHOT_NAME": "env-name"}
+        ) as (provider, _fake_daytona, _backend):
+            provider.get_or_create()
+
+        client.create.assert_called_once_with({"snapshot": "env-name"})
+
+    def test_inactive_snapshot_has_activation_guidance(self) -> None:
+        """Inactive snapshots require activation, not rebuilding or waiting."""
+        client = MagicMock()
+        client.snapshot.get.return_value = self._snapshot("snap", state="inactive")
+
+        with (
+            self._provider(client) as (provider, _fake_daytona, _backend),
+            pytest.raises(RuntimeError, match=r"inactive.*snapshot\.activate"),
+        ):
+            provider.get_or_create(snapshot="snap")
+
+        client.snapshot.create.assert_not_called()
+        client.create.assert_not_called()
+
     def test_missing_snapshot_triggers_build_with_defaults(self) -> None:
-        """A missing default snapshot is built from the default image."""
+        """A missing explicit snapshot is built from the default image."""
         client = MagicMock()
         client.create.return_value = self._ready_sandbox()
 
         with self._provider(client) as (provider, fake_daytona, _backend):
             client.snapshot.get.side_effect = fake_daytona.DaytonaNotFoundError
             client.snapshot.create.return_value = self._snapshot("deepagents-code")
-            provider.get_or_create()
+            provider.get_or_create(snapshot="deepagents-code")
 
         client.snapshot.get.assert_called_once_with("deepagents-code")
         fake_daytona.CreateSnapshotParams.assert_called_once_with(

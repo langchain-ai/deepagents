@@ -261,9 +261,6 @@ _LANGSMITH_DEFAULT_IMAGE = "python:3"
 _LANGSMITH_DEFAULT_FS_CAPACITY_BYTES = 16 * 1024**3
 """Default filesystem capacity (16 GiB) for LangSmith sandbox snapshots."""
 
-_DAYTONA_DEFAULT_SNAPSHOT = "deepagents-code"
-"""Default Daytona sandbox snapshot name used when none is specified."""
-
 _DAYTONA_DEFAULT_IMAGE = "python:3"
 """Default Docker image for Daytona sandbox snapshots when none is provided."""
 
@@ -510,7 +507,8 @@ class _DaytonaProvider(SandboxProvider):
                 `snapshot_image` if missing. Overrides
                 `DAYTONA_SANDBOX_SNAPSHOT_NAME`; overridden by
                 `DAYTONA_SANDBOX_SNAPSHOT_ID` (a pre-baked snapshot reference
-                used as-is, which wins over everything).
+                used as-is, which wins over everything). When none is set,
+                uses Daytona's managed default sandbox.
             snapshot_image: Docker image used when building the snapshot.
             **kwargs: Rejected; passing any other keyword argument raises
                 `TypeError`.
@@ -547,13 +545,19 @@ class _DaytonaProvider(SandboxProvider):
             snapshot_ref = env_snapshot_id
         else:
             env_snapshot_name = resolve_env_var("DAYTONA_SANDBOX_SNAPSHOT_NAME")
-            snapshot_name = snapshot or env_snapshot_name or _DAYTONA_DEFAULT_SNAPSHOT
+            snapshot_name = snapshot or env_snapshot_name
             image = snapshot_image or _DAYTONA_DEFAULT_IMAGE
-            snapshot_ref = self._ensure_snapshot(snapshot_name, image)
+            snapshot_ref = (
+                self._ensure_snapshot(snapshot_name, image) if snapshot_name else None
+            )
 
         try:
-            sandbox = self._client.create(
-                self._daytona.CreateSandboxFromSnapshotParams(snapshot=snapshot_ref)
+            sandbox = (
+                self._client.create(
+                    self._daytona.CreateSandboxFromSnapshotParams(snapshot=snapshot_ref)
+                )
+                if snapshot_ref
+                else self._client.create()
             )
         except Exception as e:
             msg = f"Failed to create sandbox from snapshot '{snapshot_ref}': {e}"
@@ -616,6 +620,12 @@ class _DaytonaProvider(SandboxProvider):
         if existing is not None:
             if existing.state == _DAYTONA_SNAPSHOT_READY_STATE:
                 return existing.name
+            if existing.state == "inactive":
+                msg = (
+                    f"Snapshot '{snapshot_name}' is inactive. Activate it with "
+                    "Daytona's snapshot.activate API before retrying."
+                )
+                raise RuntimeError(msg)
             msg = (
                 f"Snapshot '{snapshot_name}' exists but is in state "
                 f"'{existing.state}'. Wait for it to finish building, or "

@@ -335,6 +335,8 @@ class TestSubAgents:
     @pytest.mark.parametrize("change_child_rubric", [False, True])
     @pytest.mark.parametrize("mode", ["fork", "isolated"])
     async def test_parallel_subagents_preserve_parent_rubric(self, *, use_async: bool, change_child_rubric: bool, mode: str) -> None:
+        """Parallel `task` calls must not conflict on, or overwrite, the caller's `rubric`."""
+
         class SharedState(RubricState):
             completed: Annotated[list[str], operator.add]
 

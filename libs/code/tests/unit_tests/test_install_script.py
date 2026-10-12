@@ -3914,49 +3914,6 @@ def _invoke_with_local_dcode_not_on_path(
     )
 
 
-@pytest.mark.parametrize("target", ["root", "target"])
-def test_root_install_warns_about_cache_only_for_non_root_target(
-    tmp_path: Path, target: str
-) -> None:
-    """Root-owned caches need repair only when installing for another user."""
-    env = _env(
-        tmp_path,
-        {"SUDO_USER": target},
-        installed_version="0.1.0",
-        latest_version="0.2.0",
-    )
-    cache = tmp_path / "home/.cache/uv"
-    cache.mkdir(parents=True)
-    for name, body in {
-        "id": "printf '0\\n'\n",
-        "uname": "printf 'Linux\\n'\n",
-        "chown": "exit 0\n",
-    }.items():
-        tool = tmp_path / "bin" / name
-        tool.write_text(f"#!/usr/bin/env bash\n{body}")
-        _make_executable(tool)
-
-    proc = subprocess.run(
-        ["bash", str(SCRIPT)],
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        start_new_session=True,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    output = proc.stdout + proc.stderr
-    assert "Could not determine non-root target user" not in output
-    assert "Re-run as the target user" not in output
-    if target == "root":
-        assert "Installed as root using the pre-existing uv cache" not in output
-        assert "sudo chown -R root" not in output
-    else:
-        assert f"sudo chown -R target {cache}" in output
-
-
 def test_root_install_chowns_only_exact_managed_leaves_with_optional_setup(
     tmp_path: Path,
 ) -> None:

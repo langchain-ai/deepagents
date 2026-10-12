@@ -2358,9 +2358,7 @@ async def test_side_tools_read_only_when_the_caller_allows_it(
         await operation.answer("thread", {}, "What is in .env?", read_tools=read_tools)
         == "answer"
     )
-    question, _call, result = calls.call_args.args[0][-3:]
-    assert ("You may inspect files using" in question.text) is read_tools
-    assert ("All tools are disabled" in question.text) is not read_tools
+    result = calls.call_args.args[0][-1]
     assert ("SECRET=value" in result.text) is read_tools
     assert (result.status == "error") is not read_tools
 

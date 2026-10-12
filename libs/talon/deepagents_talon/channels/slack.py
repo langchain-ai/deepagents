@@ -18,6 +18,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from html import escape
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, NoReturn, Protocol
 
@@ -138,6 +139,8 @@ class SlackChannelConfig:
         request_timeout_seconds: Timeout for connecting and for file downloads.
         pairing: Optional sender pairing policy that admits approved DM senders
             and issues codes to unknown ones.
+        include_other_thread_participants: Include history from non-allowlisted
+            senders, accepting their potential influence on privileged tools.
     """
 
     bot_token: str = field(repr=False)
@@ -150,6 +153,7 @@ class SlackChannelConfig:
     max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     pairing: SenderPairing | None = None
+    include_other_thread_participants: bool = field(default=False, kw_only=True)
 
     @classmethod
     def from_talon_config(cls, config: TalonConfig) -> SlackChannelConfig:
@@ -165,6 +169,12 @@ class SlackChannelConfig:
             ValueError: If a token is missing or exposure configuration is invalid.
         """
         env = config.env
+        include_participants = env.get(
+            "DEEPAGENTS_TALON_SLACK_INCLUDE_OTHER_THREAD_PARTICIPANTS", "0"
+        )
+        if include_participants not in {"0", "1"}:
+            msg = "DEEPAGENTS_TALON_SLACK_INCLUDE_OTHER_THREAD_PARTICIPANTS must be 0 or 1"
+            raise ValueError(msg)
         bot_token = env.get("DEEPAGENTS_TALON_SLACK_BOT_TOKEN")
         if not bot_token:
             msg = "Slack bot token is required (DEEPAGENTS_TALON_SLACK_BOT_TOKEN)"
@@ -193,6 +203,7 @@ class SlackChannelConfig:
             ),
             outbound_media_dir=outbound_media_root_from_env(env),
             exposure=exposure,
+            include_other_thread_participants=include_participants == "1",
             allowed_user_ids=frozenset(
                 split_csv(env.get("DEEPAGENTS_TALON_SLACK_ALLOWLIST_USERS", "")),
             ),
@@ -535,8 +546,14 @@ class _SlackSdkGateway:
                 if _contains_oauth_callback(raw_text):
                     continue
                 text = _decode_mrkdwn(raw_text)
-                if sender and text and not item.get("bot_id"):
-                    messages.append((sender, text[:1000]))
+                if sender and text and sender != self._bot_id:
+                    text = escape(text[:1000], quote=False)
+                    if item.get("bot_id") or item.get("subtype") == "bot_message":
+                        text = (
+                            f'<input-message sender="slack:{escape(sender)}" surface="slack" '
+                            f'kind="message" sender_type="bot">\n{text}\n</input-message>'
+                        )
+                    messages.append((sender, text))
             messages = messages[-_THREAD_CONTEXT_MESSAGES:]
             cursor = optional_str(response.get("response_metadata", {}).get("next_cursor"))
             more = bool(response.get("has_more") or cursor)
@@ -893,9 +910,14 @@ class SlackChannel:
             return _UNAUTHORIZED_MESSAGE
         if not known:
             return _COMMAND_UNAVAILABLE_MESSAGE
-        if not inbound.is_dm:
-            # A slash command carries no thread, so in a channel it would act on a
-            # conversation that never holds an agent thread.
+        parts = (inbound.argument or "").split()
+        approving = (
+            inbound.command == "pair"
+            and bool(parts)
+            and parts[0].lower() == "approve"
+            and inbound.sender_id in self._exposure.operator_ids
+        )
+        if not inbound.is_dm and not approving:
             return _COMMAND_DM_ONLY_MESSAGE
         return None
 
@@ -954,7 +976,8 @@ class SlackChannel:
                 context = "\n".join(
                     f"{sender}: {text}"
                     for sender, text in replies
-                    if sender in senders and not _contains_oauth_callback(text)
+                    if (self.config.include_other_thread_participants or sender in senders)
+                    and not _contains_oauth_callback(text)
                 )
             except (SlackApiError, OSError, TimeoutError, ValueError):
                 logger.warning("Could not read Slack thread context", exc_info=True)

@@ -819,6 +819,50 @@ def test_run_config_text_reports_stored_source(capsys):
     assert "from-store" not in out
 
 
+@pytest.mark.parametrize("command", [None, "get"])
+def test_config_surfaces_tracing_status_and_opt_out(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    command: str | None,
+) -> None:
+    from deepagents_code import config
+
+    monkeypatch.setattr(config, "_bootstrap_state", config._BootstrapState())
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv("LANGSMITH_API_KEY", "private-key")
+    args = argparse.Namespace(
+        config_command=command, key="tracing", output_format="text"
+    )
+    assert run_config_command(args) == 0
+    output = capsys.readouterr().out
+    assert "LangSmith agent tracing: ON" in output
+    assert "--no-tracing" in output
+    assert "DEEPAGENTS_CODE_LANGSMITH_TRACING=false" in output
+    assert "private-key" not in output
+
+
+@pytest.mark.parametrize("sdk_override", [False, None])
+def test_tracing_status_respects_sdk_disable(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    sdk_override: bool | None,
+) -> None:
+    from langsmith._internal import _context
+
+    from deepagents_code import config
+
+    monkeypatch.setattr(config, "_bootstrap_state", config._BootstrapState())
+    monkeypatch.setattr(_context, "_GLOBAL_TRACING_ENABLED", sdk_override)
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    monkeypatch.setenv(
+        "LANGSMITH_TRACING_V2", "false" if sdk_override is None else "true"
+    )
+    monkeypatch.setenv("LANGSMITH_API_KEY", "private-key")
+    args = argparse.Namespace(config_command="get", key="tracing", output_format="text")
+    assert run_config_command(args) == 0
+    assert "LangSmith agent tracing: OFF" in capsys.readouterr().out
+
+
 def test_resolve_empty_stored_key_falls_back_to_env(stored_auth_dir, monkeypatch):
     """A stored entry with a blank key does not mask a working env var."""
     import json

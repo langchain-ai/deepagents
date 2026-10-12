@@ -50,7 +50,8 @@ class SessionCostWarningScreen(ModalScreen[None]):
             yield Static(
                 f"Estimated session cost is {format_cost(self._cost_usd)}, "
                 f"above the configured {format_cost(self._threshold)} threshold. "
-                "Consider /offload to reduce context usage or /clear to start fresh.",
+                "Consider /offload to reduce context usage "
+                "or /clear to start a new thread.",
                 classes="session-cost-warning-body",
                 markup=False,
             )

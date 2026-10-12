@@ -443,6 +443,7 @@ class StoreBackend(BackendProtocol):
             file_data = update_file_data(existing_file_data, content)
         else:
             file_data = create_file_data(content)
+        file_data["encoding"] = "utf-8"
         store_value = self._convert_file_data_to_store_value(file_data)
         store.put(namespace, file_path, store_value)
         return WriteResult(path=file_path)
@@ -465,6 +466,7 @@ class StoreBackend(BackendProtocol):
             file_data = update_file_data(existing_file_data, content)
         else:
             file_data = create_file_data(content)
+        file_data["encoding"] = "utf-8"
         store_value = self._convert_file_data_to_store_value(file_data)
         await store.aput(namespace, file_path, store_value)
         return WriteResult(path=file_path)

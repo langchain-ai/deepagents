@@ -442,22 +442,29 @@ async def _wait_for_request(agent: BlockingAgent) -> None:
     raise AssertionError(msg)
 
 
-async def test_operator_approves_code_from_their_dm(tmp_path: Path) -> None:
+@pytest.mark.parametrize("is_dm", [True, False])
+async def test_operator_approves_code_from_any_chat(tmp_path: Path, *, is_dm: bool) -> None:
     host, gateway, agent, _ = await _host(tmp_path, Clock())
     await gateway.deliver_message(_dm(STRANGER, "let me in"))
     code = _issued_code(gateway)
 
-    await gateway.deliver_message(_dm(OPERATOR, f"/pair approve {format_code(code)}"))
+    conversation_id = OPERATOR_DM if is_dm else "guild"
+    await gateway.deliver_message(
+        _dm(OPERATOR, f"/pair approve {format_code(code)}", channel_id=conversation_id, is_dm=is_dm)
+    )
     await gateway.deliver_message(_dm(STRANGER, "hello agent"))
     await _wait_for_request(agent)
     await host.stop()
 
     assert (STRANGER_DM, APPROVED_NOTICE) in gateway.sent_text
-    assert (OPERATOR_DM, f"Paired sender {STRANGER}.") in gateway.sent_text
+    assert (conversation_id, f"Paired sender {STRANGER}.") in gateway.sent_text
     assert [request.text for request in agent.requests] == ["hello agent"]
 
 
-async def test_non_operator_cannot_approve_and_never_reaches_the_agent(tmp_path: Path) -> None:
+@pytest.mark.parametrize("is_dm", [True, False])
+async def test_non_operator_cannot_approve_and_never_reaches_the_agent(
+    tmp_path: Path, *, is_dm: bool
+) -> None:
     host, gateway, agent, _ = await _host(tmp_path, Clock())
     await gateway.deliver_message(_dm(STRANGER, "let me in"))
     code = _issued_code(gateway)
@@ -469,20 +476,24 @@ async def test_non_operator_cannot_approve_and_never_reaches_the_agent(tmp_path:
         "discord", cast("str", store.request("discord", helper, "dm-helper", now=0)), now=0
     )
 
-    await gateway.deliver_message(_dm(helper, f"/pair approve {code}", channel_id="dm-helper"))
+    conversation_id = "dm-helper" if is_dm else "guild"
+    await gateway.deliver_message(
+        _dm(helper, f"/pair approve {code}", channel_id=conversation_id, is_dm=is_dm)
+    )
     await gateway.deliver_message(_dm(OPERATOR, f"/pair approve {code}"))
     await host.stop()
 
-    assert ("dm-helper", "Only an operator can manage sender pairing.") in gateway.sent_text
+    assert (conversation_id, "Only an operator can manage sender pairing.") in gateway.sent_text
     assert (OPERATOR_DM, "No live pairing request matches that code.") in gateway.sent_text
     assert (OPERATOR_DM, f"Paired sender {STRANGER}.") in gateway.sent_text
     assert agent.requests == []
 
 
-async def test_pair_is_refused_outside_a_dm(tmp_path: Path) -> None:
+@pytest.mark.parametrize("command", ["/pair", "/pair list", f"/pair revoke {STRANGER}"])
+async def test_pair_administration_is_refused_outside_a_dm(tmp_path: Path, command: str) -> None:
     host, gateway, agent, _ = await _host(tmp_path, Clock())
 
-    await gateway.deliver_message(_dm(OPERATOR, "/pair list", channel_id="guild", is_dm=False))
+    await gateway.deliver_message(_dm(OPERATOR, command, channel_id="guild", is_dm=False))
     await host.stop()
 
     assert gateway.sent_text == [("guild", "Run /pair in a direct message with this assistant.")]

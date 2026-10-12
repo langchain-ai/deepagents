@@ -343,6 +343,19 @@ async def test_list_conversations_is_scoped_paginated_and_readable(tmp_path):
         ]
 
 
+async def test_listing_past_the_scan_budget_returns_a_tool_error(tmp_path):
+    async with make_saver(str(tmp_path / "history.sqlite")) as saver:
+        for index in range(501):
+            await saver.archive.append(WHATSAPP, str(index), "time", [])
+        tools = {tool.name: tool for tool in conversation_tools(saver.archive, lambda: WHATSAPP)}
+        result = await tools["list_conversations"].ainvoke(
+            {"name": "list_conversations", "args": {}, "id": "call", "type": "tool_call"}
+        )
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert "search_conversations" in result.text
+
+
 @pytest.mark.parametrize(("after", "limit"), [(-1, 5), (0, 0), (0, 21)])
 async def test_list_conversations_rejects_invalid_pagination(tmp_path, after, limit):
     async with make_saver(str(tmp_path / "history.sqlite")) as saver:

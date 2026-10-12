@@ -21,13 +21,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 from urllib.parse import quote
 
-from deepagents_code._env_vars import SERVER_ENV_PREFIX
+from deepagents_code._env_vars import INVOKED_AS, SERVER_ENV_PREFIX
+from deepagents_code._invocation import invoked_name
 from deepagents_code._paths import (
     DEEPAGENTS_HOME_ENV,
     DEFAULT_PROFILE_MARKER_ENV,
     PATHS,
     export_profile_env,
 )
+from deepagents_code._startup_error import startup_error_from_output
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     _USER_LANGSMITH_ENV_CARRIER,
@@ -246,6 +248,9 @@ def generate_langgraph_json(
         config["env"] = env_file
     if checkpointer_path:
         config["checkpointer"] = {"path": checkpointer_path}
+        from deepagents_code.thread_ownership import OWNER_KEY
+
+        config.setdefault("http", {})["configurable_headers"] = {"include": [OWNER_KEY]}
 
     output_path = Path(output_dir) / "langgraph.json"
     output_path.write_text(json.dumps(config, indent=2))
@@ -316,8 +321,9 @@ async def wait_for_server_healthy(
         local: Use a shorter poll interval for local servers.
 
     Raises:
+        ModelConfigError: If startup reports missing credentials or a provider package.
         RuntimeError: If the server doesn't become healthy in time.
-    """
+    """  # noqa: DOC502  # recovery error types are reconstructed from subprocess output
     import httpx
 
     poll_interval = (
@@ -338,7 +344,8 @@ async def wait_for_server_healthy(
                     if summary:
                         msg += f": {summary}"
                     msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
-                raise RuntimeError(msg)
+                error = startup_error_from_output(output, msg)
+                raise error
 
             try:
                 resp = await client.get(health_url, timeout=2)
@@ -411,6 +418,7 @@ def _build_server_env() -> dict[str, str]:
     export_profile_env(env)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["LANGGRAPH_AUTH_TYPE"] = "noop"
+    env[INVOKED_AS] = invoked_name()
 
     # Capture a launch-time PYTHONPATH before stripping it. Never trust inherited
     # carrier vars: overwrite them only from bootstrap state in this process.
@@ -1021,9 +1029,11 @@ class ServerProcess:
             timeout: Max seconds to wait for the graph readiness request.
 
         Raises:
+            ModelConfigError: If startup reports missing credentials or a
+                provider package.
             RuntimeError: If the server process exits or the graph endpoint
                 does not return a successful response.
-        """
+        """  # noqa: DOC502  # recovery errors are reconstructed from subprocess output
         import httpx
 
         if self._process is None:
@@ -1043,7 +1053,8 @@ class ServerProcess:
                         if summary:
                             msg += f": {summary}"
                         msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
-                    raise RuntimeError(msg)
+                    error = startup_error_from_output(output, msg)
+                    raise error
 
                 remaining = max(0.1, deadline - time.monotonic())
                 try:
@@ -1065,7 +1076,8 @@ class ServerProcess:
                         msg += f": {summary}"
                     if output:
                         msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
-                    raise RuntimeError(msg) from exc
+                    error = startup_error_from_output(output, msg)
+                    raise error from exc
 
                 if resp.status_code == 200:  # noqa: PLR2004
                     logger.info("Server graph %s is ready at %s", graph_name, self.url)
@@ -1081,7 +1093,8 @@ class ServerProcess:
                     msg += f": {summary}"
                 if output:
                     msg += f"\n{output[-_LOG_TAIL_CHARS:]}"
-                raise RuntimeError(msg)
+                error = startup_error_from_output(output, msg)
+                raise error
 
         msg = f"Server graph '{graph_name}' did not initialize within {timeout}s"
         raise RuntimeError(msg)

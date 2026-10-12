@@ -188,6 +188,11 @@ class TalonConfig:
         return uri
 
     @property
+    def checkpoint_uri(self) -> str | None:
+        """Checkpoint backend URI, independent of the conversation history backend."""
+        return _env_value(self.env, "DEEPAGENTS_TALON_CHECKPOINT_URI")
+
+    @property
     def checkpoint_path(self) -> Path:
         """SQLite database used for persistent LangGraph checkpoints."""
         return self._state_path("checkpoints.sqlite", "checkpoint database")

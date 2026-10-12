@@ -25,6 +25,11 @@ from deepagents_code.client.launch.server import (
     emit_preserved_log_notices,
     wait_for_server_healthy,
 )
+from deepagents_code.model_config import (
+    MissingCredentialsError,
+    MissingProviderPackageError,
+    ModelConfigError,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -196,6 +201,94 @@ class TestServerPortSelection:
         in_use.assert_called_once_with("127.0.0.1", 2024)
         find_free.assert_called_once_with("127.0.0.1")
         assert server.port == 43210
+
+
+@pytest.mark.parametrize(
+    ("phase", "error"),
+    [
+        (
+            "health",
+            MissingCredentialsError(
+                'Missing credentials for "anthropic".\nUse /auth to recover.',
+                provider="anthropic",
+                env_var="ANTHROPIC_API_KEY",
+            ),
+        ),
+        ("exit", MissingCredentialsError("Credentials missing", provider="custom")),
+        (
+            "transport",
+            MissingProviderPackageError(
+                "Provider package missing",
+                provider="fireworks",
+                package="langchain-fireworks",
+            ),
+        ),
+        (
+            "status",
+            MissingCredentialsError(
+                "Credentials missing", provider="custom", env_var="CUSTOM_API_KEY"
+            ),
+        ),
+    ],
+)
+async def test_startup_preserves_recovery_errors(
+    phase: str,
+    error: ModelConfigError,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Errors emitted by the child retain recovery fields at every startup boundary."""
+    from deepagents_code._startup_error import emit_startup_failure
+
+    emit_startup_failure(error)
+    output = capsys.readouterr().err
+    process = MagicMock()
+    process.poll.return_value = 1 if phase in {"health", "exit"} else None
+    process.returncode = 1
+    server = ServerProcess()
+    server._process = process
+    monkeypatch.setattr(server, "_read_log_file", lambda: output)
+    client = _FakeAsyncClient(
+        OSError("connection closed")
+        if phase == "transport"
+        else SimpleNamespace(status_code=500)
+    )
+
+    ready = (
+        wait_for_server_healthy(server.url, process=process, read_log=lambda: output)
+        if phase == "health"
+        else server.wait_for_graph_ready()
+    )
+    with (
+        patch("httpx.AsyncClient", return_value=client),
+        pytest.raises(type(error)) as caught,
+    ):
+        await ready
+
+    assert str(caught.value) == str(error)
+    assert vars(caught.value) == vars(error)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "not json",
+        "null",
+        "{}",
+        '{"type":"UnknownError","message":"failure","provider":"custom"}',
+        '{"type":"MissingCredentialsError","message":"failure","provider":1}',
+        '{"type":"MissingCredentialsError","message":"failure","provider":"custom","env_var":[]}',
+        '{"type":"MissingProviderPackageError","message":"failure","provider":"custom","package":false}',
+    ],
+)
+def test_invalid_recovery_details_preserve_fallback(payload: str) -> None:
+    from deepagents_code._startup_error import startup_error_from_output
+
+    error = startup_error_from_output(
+        f"DEEPAGENTS_STARTUP_ERROR_DETAILS:{payload}\n", "original startup failure"
+    )
+    assert isinstance(error, RuntimeError)
+    assert str(error) == "original startup failure"
 
 
 class TestWaitForServerHealthy:

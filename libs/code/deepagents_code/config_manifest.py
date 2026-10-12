@@ -55,6 +55,7 @@ from typing import (
 from typing_extensions import TypeIs
 
 from deepagents_code import _env_vars
+from deepagents_code.terminal_title import DEFAULT_TERMINAL_TAB_TITLE
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
@@ -2259,6 +2260,17 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         env_var=_env_vars.TERMINAL_PROGRESS,
         toml_keys=("ui", "terminal_progress"),
         empty_env_is_false=True,
+    ),
+    ConfigOption(
+        key="terminal.tab_title",
+        group="Display",
+        summary=(
+            "Terminal tab title template using {app_name}, {thread_name}, {cwd}, "
+            "and {branch}."
+        ),
+        kind=OptionKind.STR,
+        default=DEFAULT_TERMINAL_TAB_TITLE,
+        toml_keys=("terminal", "tab_title"),
     ),
     ConfigOption(
         key="display.show_message_timestamps",

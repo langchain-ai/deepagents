@@ -1,185 +1,153 @@
 ---
 type: workflow
-title: Build and Modify a Deep Agent
-description: Build a Deep Agents graph with an explicit model, concrete filesystem backend, composed middleware, optional binary-content offload, and human approval policy. Validate assembly and the affected filesystem boundary with focused unit tests.
-tags: [deepagents, langgraph, middleware, filesystem, backends, testing]
+title: Build and Customize a Deep Agent
+description: Assemble a Deep Agents graph safely by selecting a model, backend, middleware, subagents, skills, persistence, and approval policy while preserving the builder's ordering and state invariants.
+tags: [deepagents, langgraph, middleware, skills, subagents, backends, testing]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-01T08:06:30.386Z
+    at: 2026-10-08T08:07:53.482Z
 sources:
-  - id: openwiki-source-50173942904153d619b9ae0d
-    resource: repo://libs/deepagents/deepagents/_models.py
-  - id: openwiki-source-f84c83d6fab6028c94be90bc
-    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-07f9eac13e71bcbdb4e6994b
     resource: repo://libs/deepagents/deepagents/backends/state.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-303a7196a0e1a36cc078621b
-    resource: repo://libs/deepagents/deepagents/middleware/_blob_offload.py
   - id: openwiki-source-0fb4155c19dd248acd3ffe4f
     resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
+  - id: openwiki-source-5c9c6a877b43f30407158658
+    resource: repo://libs/deepagents/deepagents/middleware/_skill_tools.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
+  - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
+    resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-0f308f1610986e2f3ed6d53c
-    resource: repo://libs/deepagents/Makefile
-  - id: openwiki-source-bf922bb2704cfd50154e92e5
-    resource: repo://libs/deepagents/README.md
-  - id: openwiki-source-58bc0b41ad72708cee0fee6e
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_blob_offload.py
-  - id: openwiki-source-f913f8fa643e6c2796621ca5
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_filesystem_middleware_init.py
+  - id: openwiki-source-c71ac20477155a66b7a8c60a
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
-  - id: openwiki-source-851e3a9c96663d8db5ca3dec
-    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-  - id: openwiki-source-23775c3de52f3ab95a13cb8b
-    resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-10-01T08:06:30.386Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
 ---
 
-# Build and Modify a Deep Agent
+# Build and Customize a Deep Agent
 
-Use `create_deep_agent` to build the opinionated Deep Agents harness on LangChain's `create_agent` and LangGraph. It returns a compiled graph with filesystem, context-management, planning/summarization, and optional delegation middleware; applications construct it and then call `invoke` or `ainvoke`. See [SDK construction & execution](/openwiki/architecture/sdk-construction-execution.md) for the surrounding ownership model.
+`create_deep_agent` is the public assembly boundary for the Deep Agents harness. It resolves a model and harness profile, constructs middleware around LangChain `create_agent`, and returns a compiled LangGraph graph. It is deliberately a batteries-included layer: filesystem access, delegation, context summarization, skills, and human approval are composed as middleware, so a change to one option can change the model-visible and executable tool surface.
 
-## 1. Make the model and storage boundary explicit
+See [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md), [backends](/openwiki/concepts/backends.md), [subagents and skills](/openwiki/concepts/subagents-skills.md), and [permissions and HITL](/openwiki/concepts/permissions-hitl.md) for component contracts.
 
-Pass a tool-calling model explicitly. `model` accepts a `provider:model` string, resolved through `init_chat_model`, or an initialized `BaseChatModel`. Do not rely on `model=None`: its `ChatAnthropic(model_name="claude-sonnet-4-6")` fallback is deprecated and scheduled for removal in `deepagents==1.0.0`.
+## 1. Start with explicit model and backend choices
 
-Choose one initialized backend instance before exposing file tools. `backend=` is shared by filesystem middleware, skills, memory, summarization, and declarative subagents. It defaults to `StateBackend()`, whose files live in graph state and are checkpointed within a conversation thread; it cannot be used outside graph execution. Seed files in invocation input rather than calling it directly.
+Pass either a `provider:model` string or an initialized `BaseChatModel`. A string is resolved with `init_chat_model`; a prebuilt instance is useful when provider-specific settings must be retained. In particular, use an initialized OpenAI model to choose Chat Completions rather than Responses API, or to set Responses API retention options. Do not rely on `model=None`: it currently constructs `ChatAnthropic(model_name="claude-sonnet-4-6")`, but that fallback is deprecated and is scheduled for removal in `deepagents==1.0.0`.
+
+Pass an initialized backend instance. Omitting it selects `StateBackend()`, whose files live in graph state: they persist in a checkpointed conversation thread but not across threads and the backend can only be used from LangGraph execution. Seed files through the graph input rather than by calling the backend outside a run.
 
 ```python
 from deepagents import create_deep_agent
-from deepagents.backends import FilesystemBackend
+from deepagents.backends import StateBackend
 
-backend = FilesystemBackend(root_dir="/srv/agent-workspace", virtual_mode=True)
 agent = create_deep_agent(
     model="openai:gpt-6-astra",
-    backend=backend,
-    tools=[my_custom_tool],
-    system_prompt="You are a research assistant.",
+    backend=StateBackend(),
+    tools=[my_application_tool],
+    system_prompt="You are a careful research assistant.",
 )
-result = agent.invoke({"messages": "Research LangGraph and write a summary"})
+result = agent.invoke(
+    {"messages": [{"role": "user", "content": "Investigate this task."}], "files": {}}
+)
 ```
 
-`FilesystemBackend` grants direct filesystem access, so select its root and deployment environment deliberately. For cross-thread persistence, use `StoreBackend` with an application-specific namespace and pass the associated `store` to the graph; use `CompositeBackend` when paths need different storage owners. Backend factories are no longer accepted: pass `StateBackend()`, `FilesystemBackend(...)`, `CompositeBackend(...)`, or another initialized `BackendProtocol` instance.
+`tools=` is additive; it does not remove built-in filesystem tools or `task`. A profile can hide a tool name with `excluded_tools`, while replacing `FilesystemMiddleware` with one configured with `tools=[...]` changes the filesystem suite itself. The selected harness profile also contributes prompt parts, description overrides, extra/excluded middleware, tool exclusions, and default general-purpose-subagent configuration. The assembled authored prompt is `USER -> BASE -> SUFFIX`; when the caller supplies a `SystemMessage`, its content blocks (including cache-control blocks) remain intact and profile text is appended as another block.
 
-`LocalShellBackend` additionally implements `SandboxBackendProtocol`, making `execute` available, but it executes commands directly on the host. Its virtual filesystem root and path policy do not restrict shell commands. Do not use it for untrusted, shared, web/API, or multi-tenant workloads; use a genuinely isolated sandbox implementation for execution. On a backend without `SandboxBackendProtocol`, `execute` returns an error instead of executing.
+## 2. Understand the assembly order before extending it
 
 ```mermaid
-sequenceDiagram
-    participant App
-    participant Builder as create_deep_agent
-    participant Stack as Middleware stack
-    participant Graph as LangChain create_agent
-    participant Backend
-    participant Model
-    App->>Builder: model backend tools policy
-    Builder->>Stack: construct ordered middleware
-    Builder->>Graph: model prompt tools middleware config
-    Graph-->>App: compiled graph
-    App->>Graph: invoke messages and state
-    Graph->>Stack: prepare model request
-    Stack->>Model: prompt history and enabled tools
-    alt model requests filesystem tool
-        Model-->>Graph: tool call
-        Graph->>Stack: run tool wrapper
-        Stack->>Backend: filesystem operation
-        Backend-->>Stack: result
-        Stack-->>Graph: tool result or interruption
-    else model finishes
-        Model-->>Graph: final response
-    end
-    Graph-->>App: updated state
+flowchart TD
+    Input["Builder inputs"] --> Resolve["Resolve model and harness profile"]
+    Resolve --> Backend["Use supplied backend or StateBackend"]
+    Backend --> Agents["Classify subagents"]
+    Agents --> Core["Filesystem, optional task, summarization, patch calls, optional async"]
+    Core --> Tail["Profile, skills, prompt caching, memory, approval, unsupported content"]
+    Tail --> Custom["Replace matching middleware or insert new middleware"]
+    Custom --> Filter["Apply profile exclusions and final tool exclusion"]
+    Filter --> Compile["create_agent with recursion limit 9999"]
 ```
 
-Caption: Construction selects concrete dependencies; during a run the compiled graph routes filesystem calls through middleware to the selected backend.
+Caption: `create_deep_agent` builds the core tool providers first, layers policy and prompt-producing middleware, then performs final filtering before compilation.
 
-## 2. Compose the filesystem surface, not just `tools=`
+The main core is `FilesystemMiddleware`, followed by `SubAgentMiddleware` only if synchronous subagents exist, summarization, `PatchToolCallsMiddleware`, and `AsyncSubAgentMiddleware` if remote/background specs exist. The tail is profile extra middleware, optional `SkillsMiddleware`, provider prompt-caching middleware, optional memory, auto-derived HITL, and `UnsupportedContentMiddleware`. Profile tool exclusion is appended last, so a custom tool-injecting middleware cannot restore an excluded name.
 
-`tools=` adds application tools; it does not remove built-ins. `FilesystemMiddleware` supplies `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and, when supported, `execute`. The synchronous `task` tool is supplied only when synchronous subagents exist (normally the auto-added general-purpose subagent). To reduce the filesystem surface, replace the middleware in `middleware=` with the exact tool allowlist; `read_file` must remain present. Unsupported `execute` and `delete` capabilities are filtered by backend capability.
+Custom middleware with the same `.name` as an assembled entry replaces it in place. New middleware is spliced after the core and before the profile/skills/caching/memory/HITL tail. `FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding: a profile cannot exclude either, and an unmatched, private-name, or ambiguous exclusion is an error rather than a silently degraded graph. The builder then calls `create_agent` and configures `recursion_limit` to 9,999 for long-horizon tool loops.
+
+An important consequence of the placement is that ordinary user middleware executes before skills. It cannot see freshly loaded `skills_metadata` in `before_agent` or `before_model`, and cannot modify the skills prompt section in `wrap_model_call`. A custom middleware named `SkillsMiddleware` still takes that slot.
+
+## 3. Configure delegation and preserve state boundaries
+
+`subagents=` accepts three different execution models:
+
+- A declarative `SubAgent` is rebuilt by the harness and invoked through `task`.
+- A `CompiledSubAgent` is an already-built runnable, also exposed through `task`.
+- An `AsyncSubAgent`, identified by `graph_id`, is put in `AsyncSubAgentMiddleware`; it runs as a background task and supplies launch, status, update, cancel, and list operations rather than `task`.
+
+Unless the caller supplies a synchronous `general-purpose` subagent, the profile adds a default one. Disable it with `GeneralPurposeSubagentProfile(enabled=False)` and supply no synchronous subagents to omit `task`; async subagents do not change that rule. Declarative subagents inherit parent tools when their `tools` key is absent, and inherit permissions and `interrupt_on` unless they explicitly provide replacement values. Compiled and remote agents are independently configured runnables/graphs, so they do not inherit parent HITL or custom state schema.
+
+A declarative subagent normally receives only its delegated description. `mode="fork"` is experimental: it continues the parent’s effective conversation, rebuilds the inherited prompt-producing middleware, and appends its own `system_prompt` as an addendum. A fork may not declare separate `skills`; it inherits the parent configuration and rejects recursive `task` delegation at runtime. Use an isolated worker for a deliberately smaller context; use a fork only when the worker must reason over the parent conversation.
+
+Prefer a middleware `state_schema` for new state. If graph-wide state is necessary, use a `TypedDict` subclass of `DeepAgentState`, preserving its `messages` `DeltaChannel` reducer. The builder merges state schemas, identifies private middleware fields, and gives the task boundary those private keys so they are not passed to ordinary subagents or returned to the parent. `checkpointer`, `store`, `context_schema`, `response_format`, `cache`, `name`, and `debug` pass through to `create_agent`; use a checkpointer when an interrupted run must be resumed.
+
+## 4. Add skills as progressive disclosure
+
+Pass `skills=` with POSIX backend paths to install `SkillsMiddleware`, or pass a custom middleware of the same name to change its sources, prompt template, or skill tools. Sources may be paths or `(path, label)` pairs. The middleware lists each source through the selected backend, loads metadata from child `SKILL.md` files, and uses later sources to override same-named earlier skills. Metadata is cached per thread in `skills_metadata`; set it to `None` in graph input or with `update_state` to request a reload. Source failures are retained as state errors, logged, and rendered as untrusted diagnostics in the default skills prompt.
+
+The initial prompt exposes metadata and a `read_file` path, not the complete skill instructions. The agent reads the desired `SKILL.md` through filesystem tooling. To force a skill body into the next model call—such as when the user explicitly names a workflow—set `pinned_skills`; readable named skills are appended as `HumanMessage` snapshots and the pending list is cleared.
+
+A skill can name tools in `metadata.include_tools`. Supply them to a replacement `SkillsMiddleware`; they must not be added as ordinary agent tools if disclosure is intended.
 
 ```python
 from deepagents import create_deep_agent
-from deepagents.backends import FilesystemBackend
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.skills import SkillsMiddleware
 
-backend = FilesystemBackend(root_dir="/srv/agent-workspace", virtual_mode=True)
-files = FilesystemMiddleware(
+skill_middleware = SkillsMiddleware(
     backend=backend,
-    tools=["read_file", "glob", "grep"],
-    grep_max_count=200,
+    sources=[("/skills/project/", "Project")],
+    tools=[create_customer_request],
 )
 agent = create_deep_agent(
-    model="openai:gpt-6-astra",
+    model=model,
     backend=backend,
-    middleware=[files],  # replaces the base middleware with the same name
+    skills=["/skills/project/"],
+    middleware=[skill_middleware],  # replaces the default by name
 )
 ```
 
-Use the same backend instance in the replacement. A custom middleware with the same `.name` replaces its built-in entry in place; a new middleware is inserted after the core stack and before the tail. The normal core is optional skills, filesystem, optional synchronous subagents, summarization, patch-tool-calls, and optional asynchronous subagents. The tail includes profile middleware, tool exclusion, provider prompt caching, optional memory and HITL, then unsupported-content handling. Protected filesystem and synchronous-subagent scaffolding cannot be excluded by a harness profile.
+Skill tools are not registered in the normal tool node. A successful `read_file` result for the declaring `SKILL.md`, or a pinned skill snapshot, is the evidence that permits disclosure on a later model call. A pre-read call and a call in the same turn as the read remain invalid. On each model call the middleware finds visible read evidence, resolves named tools, shows/binds only the disclosed tools, and writes a private record of exactly the gated names shown. Compaction that removes the evidence withdraws the tool; missing or malformed checkpoint records grant no authority. Resolver results must remain stable within a thread for prompt caching; asynchronous resolvers require an async graph entry point such as `ainvoke`.
 
-Large textual tool and human-message results have separate eviction controls (`tool_token_limit_before_evict` and `human_message_token_limit_before_evict`); they write a result to the backend and leave a preview/reference. Keep the default grep cap or set a deliberate per-call/default limit to bound context and memory use.
+Skills are scoped to each middleware instance. An isolated declarative subagent gets skill sources only from its own `skills` or matching middleware configuration. A fork mirrors parent prompt-producing middleware, including skills, but starts with its own disclosure record.
 
-## 3. Optionally offload binary `read_file` content
+## 5. Treat capability, permission, and approval as separate controls
 
-Set `offload_binary_content=True` on the `FilesystemMiddleware` only when the backend's artifacts path is durable outside checkpointed state—typically a sandbox or filesystem-backed route. It applies only to `read_file` binary results and inline human-message media, not arbitrary custom-tool results.
+Filesystem operations run through the selected backend. `execute` is usable only when that backend implements `SandboxBackendProtocol`; otherwise its tool returns an error. A state-backed backend adds the `files` state channel, including when a `CompositeBackend` routes any branch to `StateBackend`. Backend selection is therefore both a persistence and shell-capability choice.
 
-```python
-from deepagents import create_deep_agent
-from deepagents.backends import FilesystemBackend
-from deepagents.middleware.filesystem import FilesystemMiddleware
+Filesystem permission rules are ordered, first-match `allow`, `deny`, or `interrupt` rules. `FilesystemMiddleware` enforces them for built-in filesystem tools, not direct calls to the backend. Declarative subagents inherit the parent rule list unless their own `permissions` replaces it. `interrupt` rules are translated into path-aware `HumanInTheLoopMiddleware` predicates, and direct `interrupt_on` entries override generated entries of the same name. For broad operations such as `ls`, `glob`, and `grep`, the predicate conservatively interrupts if the requested subtree could overlap protected paths; a pathless bulk operation interrupts whenever an applicable interrupt rule exists. A checkpointer is needed to durably pause and resume approval.
 
-backend = FilesystemBackend(root_dir="/srv/agent-workspace", virtual_mode=True)
-agent = create_deep_agent(
-    model="openai:gpt-6-astra",
-    backend=backend,
-    middleware=[
-        FilesystemMiddleware(backend=backend, offload_binary_content=True),
-    ],
-)
-```
+Do not treat permissions or HITL as sandboxing. The project’s security model is that the agent can do what its tools allow: enforce real containment at the tool/backend boundary, especially for any backend that can run shell commands.
 
-The middleware uploads each base64 payload under `blobs/<sha256>` beneath the backend artifacts root and replaces checkpointed message content with a `deepagents_blob` digest reference. Before a model request it rehydrates references from an untracked per-run payload cache or the backend. Downloads are accepted only if their SHA-256 matches the reference. A missing, malformed, tampered, or unavailable blob becomes a text notice; an upload exception leaves the original payload inline, preserving model visibility rather than failing the tool result.
+## 6. Verify the final graph, not just constructor arguments
 
-This is best-effort context/checkpoint reduction, not data protection. It is automatically disabled with a warning when the `blobs/` route resolves to `StateBackend`, because that would still checkpoint the binary. Human media submitted after the last model response is replaced on the next model call, so its original input write remains in checkpoint history.
+For builder, profile, order, or inheritance changes, begin with `tests/unit_tests/test_graph.py`. Its focused cases inspect the assembled middleware and compiled tool node, covering default delegation, prompt assembly, provider caching placement, exclusions, skills replacement/placement, and fork behavior. Test both sides of the branch you change—for example default general-purpose enabled/disabled, a matching-name replacement versus a new middleware insertion, or an exclusion after custom middleware.
 
-## 4. Set prompts, delegation, and state at their owners
-
-The final authored prompt is caller `USER` followed by the active harness profile `BASE` and `SUFFIX`. A `SystemMessage` preserves its existing content blocks, including cache-control blocks. Profiles also supply model-specific middleware, tool-description overrides, exclusions, and general-purpose-subagent behavior, so assert the selected profile's final tool and middleware shape when changing model/provider configuration.
-
-`subagents=` accepts declarative `SubAgent`, precompiled `CompiledSubAgent`, and remote `AsyncSubAgent` forms. Declarative and compiled forms are called through `task`; remote specs identified by `graph_id` use async-subagent middleware and return tracked background task identity. Declarative subagents inherit application tools and parent permissions/interrupt policy unless their specification replaces them. Disable the profile's general-purpose subagent and provide no synchronous subagents to remove `task`.
-
-Prefer middleware-owned state. If a graph-wide `state_schema` is necessary, subclass `DeepAgentState` so the `messages` `DeltaChannel` reducer is retained. `checkpointer`, `store`, `context_schema`, `response_format`, `cache`, `name`, and `debug` are forwarded to `create_agent`; in particular, use a checkpointer when an interrupted run must be resumed. The compiled graph uses `recursion_limit=9_999`, which permits long tool loops but is not a termination or security control.
-
-## 5. Apply filesystem policy and approval separately
-
-`FilesystemPermission` rules are first-match rules over read/write operations and paths: `allow`, `deny`, or `interrupt`; unmatched calls are allowed. They are enforced at built-in filesystem tool boundaries, not on direct backend calls. Declarative subagents inherit parent rules unless they define replacement rules.
-
-Pass `interrupt_on` for named tool approvals, or use interrupt-mode filesystem permissions. The builder derives path-aware HITL predicates from interrupt rules, merges them with explicit configuration, and lets explicit entries win for the same tool. Bulk operations interrupt conservatively when their scope could overlap a protected path. Passing either source installs `HumanInTheLoopMiddleware`; a checkpointer is required to persist and resume approval interrupts.
-
-Do not combine unscoped filesystem permissions with a backend that provides command execution: middleware rejects this configuration because execute-tool permissions are not implemented. More fundamentally, filesystem policy is not a sandbox and cannot constrain `LocalShellBackend` shell access.
-
-## 6. Validate the nearest seam, then the assembled loop
-
-Run focused tests from `libs/deepagents` after a filesystem or assembly change:
+For skill-tool changes, run `tests/unit_tests/middleware/test_skill_tools.py` and `tests/unit_tests/middleware/test_skill_tool_resolver.py`. They cover successful-read and pinned disclosure, pre-read/same-turn rejection, compaction withdrawal, stale disclosure records, subagent/fork scoping, approval interaction, and resolver validation. Pair these suites with graph assembly tests because `create_deep_agent` decides the middleware placement that makes those properties hold.
 
 ```bash
-uv run --group test pytest -vvv --disable-socket --allow-unix-socket tests/unit_tests/middleware/test_filesystem_middleware_init.py
-uv run --group test pytest -vvv --disable-socket --allow-unix-socket tests/unit_tests/middleware/test_blob_offload.py
-uv run --group test pytest -vvv --disable-socket --allow-unix-socket tests/unit_tests/test_graph.py
-uv run --group test pytest -vvv --disable-socket --allow-unix-socket tests/unit_tests/test_permissions.py
+cd libs/deepagents
+uv run --group test pytest -vvv tests/unit_tests/test_graph.py
+uv run --group test pytest -vvv tests/unit_tests/middleware/test_skill_tools.py
+uv run --group test pytest -vvv tests/unit_tests/middleware/test_skill_tool_resolver.py
 ```
-
-The initialization suite verifies state-channel contribution, nested composite detection, backend-instance validation, and tool description overrides. The blob suite verifies that only `read_file` content is offloaded, command message updates are handled, tampered or malformed references degrade safely, and upload failure keeps media inline. `test_graph.py` exercises profile and stack assembly; `test_permissions.py` covers filesystem policy and HITL behavior. Use the scripted end-to-end suite for a changed multi-step tool loop. `make test` runs the unit suite through `uv` with socket access disabled except Unix sockets. See the [testing guide](/openwiki/testing/testing-guide.md).
 
 ## Safe-change checklist
 
-1. Instantiate and share a concrete backend; document its persistence and execution boundary.
-2. Replace `FilesystemMiddleware` to narrow file tools; do not assume `tools=` removes built-ins.
-3. Enable binary offload only when `blobs/` routes outside `StateBackend`, and test missing/tampered/upload-failure behavior.
-4. Treat filesystem permissions, HITL, and sandbox isolation as distinct controls.
-5. Preserve `DeepAgentState` message reduction when extending graph state.
-6. Assert middleware/tool composition and execute the affected tool loop with a fake model.
+1. Use an explicit model and backend; document model-provider settings, backend persistence, and shell capability.
+2. Inspect the selected profile and final middleware order. `tools=` is not the final model-visible surface.
+3. Keep `FilesystemMiddleware` and `SubAgentMiddleware` intact, preserve `DeepAgentState` reduction, and use middleware-private state where possible.
+4. Choose isolated versus forked subagents deliberately; configure compiled and remote workers independently.
+5. For skills, test metadata reload, read/pin-gated disclosure, compaction withdrawal, resolver stability, and rebuilt-checkpoint behavior.
+6. Treat filesystem permissions, HITL approval, and backend sandboxing as distinct safeguards.

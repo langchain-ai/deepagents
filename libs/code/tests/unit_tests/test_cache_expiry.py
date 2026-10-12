@@ -1,6 +1,7 @@
 """Behavioral coverage for cache-expiry handoffs."""
 
 import asyncio
+from collections.abc import Iterator
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,10 +26,25 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture(autouse=True)
-def checkpoint_database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def checkpoint_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    from deepagents_code.thread_ownership import release_all
+
     monkeypatch.setattr(
         "deepagents_code.sessions.get_db_path", lambda: tmp_path / "sessions.db"
     )
+    yield
+    release_all()
+
+
+def _owned_config(config: "RunnableConfig") -> "RunnableConfig":
+    """Supply the reservation normally attached by the local HTTP client."""
+    from deepagents_code.thread_ownership import OWNER_KEY, ensure_owned
+
+    configurable = config["configurable"]
+    lease = ensure_owned(configurable["thread_id"])
+    return {**config, "configurable": {**configurable, OWNER_KEY: lease.token}}
 
 
 def _prepare(app: DeepAgentsApp, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -74,6 +90,36 @@ async def test_cache_expiring_notification_window(
     else:
         notify.assert_not_awaited()
         toast.assert_not_called()
+
+
+async def test_cache_expiring_notification_waits_for_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    app._lc_thread_id = "source"
+    app._status_bar = StatusBar()
+    app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(seconds=20)
+    notify = AsyncMock()
+    toast = MagicMock()
+    monkeypatch.setattr(type(app._hooks), "notify", notify)
+    monkeypatch.setattr(app, "notify", toast)
+    monkeypatch.setattr(app, "_set_spinner", AsyncMock())
+    monkeypatch.setattr(app, "_schedule_git_branch_refresh", MagicMock())
+    monkeypatch.setattr(app, "_process_next_from_queue", AsyncMock())
+    monkeypatch.setattr(app, "_maybe_drain_deferred", AsyncMock())
+
+    app._on_user_visible_output_started()
+    await app._on_cache_reconciliation(True, None, False)
+    await app._notify_cache_expiring()
+    notify.assert_not_awaited()
+    toast.assert_not_called()
+
+    await app._on_cache_reconciliation(False, None, False)
+    assert app._active_turn_visible_output_started
+    await app._notify_cache_expiring()
+    await app._notify_cache_expiring()
+    notify.assert_awaited_once()
+    toast.assert_called_once()
 
 
 @pytest.mark.parametrize("failure", [None, ClientHookStopError, RuntimeError])
@@ -260,6 +306,8 @@ async def test_defers_busy_and_disabled_then_rearms_new_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = DeepAgentsApp()
+    # Exercise scheduling independently of model identity and cost eligibility.
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     async with app.run_test() as pilot:
         await pilot.pause()
         _prepare(app, monkeypatch)
@@ -479,7 +527,7 @@ async def test_seeding_handoff_preserves_active_workspace(
 ) -> None:
     from deepagents_code.client.remote_client import RemoteAgent
 
-    remote = RemoteAgent("http://localhost:8123")
+    remote = RemoteAgent("http://localhost:8123", local_ownership=False)
     bindings: dict[str, str] = {}
 
     def bind(
@@ -568,7 +616,9 @@ async def test_handoff_child_is_discoverable_and_resumable(
         ) -> None:
             # The HTTP state API forwards the thread ID, but drops config metadata.
             await graph.aupdate_state(
-                {"configurable": {"thread_id": config["configurable"]["thread_id"]}},
+                _owned_config(
+                    {"configurable": {"thread_id": config["configurable"]["thread_id"]}}
+                ),
                 values,
                 as_node=as_node,
             )
@@ -594,10 +644,12 @@ async def test_handoff_child_is_discoverable_and_resumable(
         assert await sessions.get_thread_agent(child_id) == owner
         continued = await graph.ainvoke(
             {"messages": [HumanMessage("Continue from the summary.")]},
-            {
-                "configurable": {"thread_id": child_id},
-                "metadata": {"agent_name": owner, "cwd": app._cwd},
-            },
+            _owned_config(
+                {
+                    "configurable": {"thread_id": child_id},
+                    "metadata": {"agent_name": owner, "cwd": app._cwd},
+                }
+            ),
         )
         assert [message.text for message in continued["messages"]] == [
             state.values["messages"][0].text,
@@ -699,7 +751,7 @@ async def test_handoff_with_separate_server_checkpoints(
 
     app = DeepAgentsApp(assistant_id="researcher")
     app._lc_thread_id = "source"
-    remote = RemoteAgent("http://server:8123")
+    remote = RemoteAgent("http://server:8123", local_ownership=False)
     graph = create_agent(
         FakeListChatModel(responses=["Unused"]),
         middleware=[ResumeStateMiddleware()],
@@ -834,7 +886,9 @@ async def test_handoff_preserves_shell_context(
             middleware=[ResumeStateMiddleware()],
             checkpointer=checkpointer,
         )
-        await graph.ainvoke({"messages": [HumanMessage("original")]}, source_config)
+        await graph.ainvoke(
+            {"messages": [HumanMessage("original")]}, _owned_config(source_config)
+        )
 
         async def update_state(
             config: "RunnableConfig",
@@ -851,7 +905,9 @@ async def test_handoff_preserves_shell_context(
                 raise asyncio.CancelledError
             # Cross the same serialization boundary as the HTTP client: the graph
             # must not assign IDs back onto the app's buffered message objects.
-            await graph.aupdate_state(config, deepcopy(values), as_node=as_node)
+            await graph.aupdate_state(
+                _owned_config(config), deepcopy(values), as_node=as_node
+            )
             if outcome == "lost_response":
                 msg = "response lost"
                 raise RuntimeError(msg)
@@ -929,6 +985,7 @@ async def test_send_timing_restores_draft_without_spending(
     mode: str, keys: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     process = AsyncMock()
     monkeypatch.setattr(app, "_process_message", process)
     monkeypatch.setattr("deepagents_code.app._load_cache_prompt_mode", lambda: mode)
@@ -1725,3 +1782,36 @@ def test_mode_resolution_rejects_unknown_values(
         assert _load_cache_prompt_mode() == expected
     finally:
         reset_config_resolver()
+
+
+async def test_streamed_cache_activity_survives_stale_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    app._lc_thread_id = "source"
+    app._status_bar = StatusBar()
+    monkeypatch.setattr(app, "_refresh_cache_display", MagicMock())
+    now = datetime.now(UTC)
+    from deepagents_code.cold_cache import CacheActivity
+
+    current = CacheActivity(
+        requested_at=now.isoformat(),
+        model_spec="anthropic:claude-sonnet-4-6",
+        endpoint="default",
+        params=None,
+    )
+    await app._on_cache_reconciliation(True, None, False)
+    await app._on_cache_reconciliation(False, current, True)
+    app._sync_cache_state_from_state(
+        {
+            "_last_cache_use": {
+                **current,
+                "requested_at": (now - timedelta(minutes=4)).isoformat(),
+            },
+            "_last_cache_write": None,
+        }
+    )
+    await app._refresh_cache_timing()
+    assert app._last_cache_use == current
+    assert app._last_cache_write == current
+    assert app._status_bar.cache_expires_at == now + timedelta(minutes=5)

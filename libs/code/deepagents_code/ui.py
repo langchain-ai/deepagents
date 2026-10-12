@@ -216,6 +216,12 @@ def show_help() -> None:
     )
     console.print("  --no-mcp                   Disable all MCP tool loading")
     console.print(
+        "  --no-tracing               Disable LangSmith agent tracing for this session"
+    )
+    console.print(
+        "                             Keeps local history and model-provider requests"
+    )
+    console.print(
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
     )
     console.print(

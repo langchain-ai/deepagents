@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sqlite3
+from contextlib import asynccontextmanager, closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, cast
@@ -17,6 +18,8 @@ from deepagents_code._env_vars import RECENT_THREADS
 from deepagents_code.app import TextualSessionState
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
+
     import aiosqlite
     from langchain_core.runnables import RunnableConfig
 
@@ -29,6 +32,8 @@ async def test_thread_seed_is_resumable_and_preserves_later_work(
     from langchain_core.language_models.fake_chat_models import FakeListChatModel
     from langchain_core.messages import HumanMessage
 
+    from deepagents_code.thread_ownership import OWNER_KEY, ensure_owned, held_lease
+
     monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
     values = {"messages": [HumanMessage("Saved summary")]}
     await sessions.save_thread_seed(
@@ -40,23 +45,55 @@ async def test_thread_seed_is_resumable_and_preserves_later_work(
     assert threads[0]["initial_prompt"] == "Saved summary"
     assert threads[0]["message_count"] == 1
 
-    async with sessions.get_checkpointer() as checkpointer:
-        graph = create_agent(
-            FakeListChatModel(responses=["Continued reply"]), checkpointer=checkpointer
-        )
-        config: RunnableConfig = {"configurable": {"thread_id": "child"}}
-        state = await graph.aget_state(config)
-        assert not state.next
-        await graph.ainvoke({"messages": [HumanMessage("Continue")]}, config)
-        await sessions.save_thread_seed(
-            "child", values, agent_name="agent", cwd=str(tmp_path)
-        )
-        state = await graph.aget_state(config)
-        assert [message.text for message in state.values["messages"]] == [
-            "Saved summary",
-            "Continue",
-            "Continued reply",
-        ]
+    assert held_lease("child") is None
+    lease = ensure_owned("child")
+    try:
+        async with sessions.get_checkpointer() as checkpointer:
+            graph = create_agent(
+                FakeListChatModel(responses=["Continued reply"]),
+                checkpointer=checkpointer,
+            )
+            config: RunnableConfig = {
+                "configurable": {"thread_id": "child", OWNER_KEY: lease.token}
+            }
+            state = await graph.aget_state(config)
+            assert not state.next
+            await graph.ainvoke({"messages": [HumanMessage("Continue")]}, config)
+            await sessions.save_thread_seed(
+                "child", values, agent_name="agent", cwd=str(tmp_path)
+            )
+            assert held_lease("child") is lease
+            state = await graph.aget_state(config)
+            assert [message.text for message in state.values["messages"]] == [
+                "Saved summary",
+                "Continue",
+                "Continued reply",
+            ]
+    finally:
+        lease.release()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+async def test_failed_thread_seed_releases_reservation(
+    failure: type[BaseException], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interrupted local seed must not prevent a later handoff attempt."""
+    from deepagents_code.thread_ownership import try_acquire
+
+    monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+    with monkeypatch.context() as scoped:
+        scoped.setattr(sessions, "_save_thread_seed", AsyncMock(side_effect=failure))
+        with pytest.raises(failure):
+            await sessions.save_thread_seed(
+                "child", {"messages": []}, agent_name="agent", cwd=str(tmp_path)
+            )
+    lease = try_acquire("child")
+    assert lease is not None
+    lease.release()
+    await sessions.save_thread_seed(
+        "child", {"messages": []}, agent_name="agent", cwd=str(tmp_path)
+    )
+    assert await sessions.thread_exists("child")
 
 
 async def test_activity_refresh_preserves_seed_creation_order(
@@ -86,6 +123,124 @@ async def test_activity_refresh_preserves_seed_creation_order(
         assert by_creation[1]["updated_at"] == updated.isoformat()
         by_activity = await sessions.list_threads(sort_by="updated")
         assert [thread["thread_id"] for thread in by_activity] == ["older", "newer"]
+
+
+async def test_thread_name_survives_checkpoints_and_manual_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from langchain.agents import create_agent
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+    from langchain_core.messages import HumanMessage
+
+    from deepagents_code.thread_ownership import OWNER_KEY, ensure_owned
+
+    monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+    await sessions.save_thread_seed(
+        "named",
+        {"messages": [HumanMessage("Start")]},
+        agent_name="agent",
+        cwd=str(tmp_path),
+    )
+    assert await sessions.rename_thread("named", "First title", only_if_unnamed=True)
+    assert await sessions.rename_thread("named", "  Manual title  ")
+    assert not await sessions.rename_thread("named", "Late auto", only_if_unnamed=True)
+    lease = ensure_owned("named")
+    try:
+        async with sessions.get_checkpointer() as checkpointer:
+            graph = create_agent(
+                FakeListChatModel(responses=["Reply"]), checkpointer=checkpointer
+            )
+            await graph.ainvoke(
+                {"messages": [HumanMessage("Continue")]},
+                {"configurable": {"thread_id": "named", OWNER_KEY: lease.token}},
+            )
+    finally:
+        lease.release()
+    assert await sessions.get_thread_name("named") == "Manual title"
+    assert (await sessions.list_threads())[0]["thread_name"] == "Manual title"
+    assert await sessions.delete_thread("named")
+    assert await sessions.get_thread_name("named") is None
+    assert not await sessions.rename_thread("named", "Late auto", only_if_unnamed=True)
+
+
+async def test_concurrent_generated_names_have_one_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sessions, "get_db_path", lambda: tmp_path / "sessions.db")
+    assert not await sessions.rename_thread("missing", "Name")
+    await sessions.save_thread_seed("named", {}, agent_name="agent", cwd=str(tmp_path))
+    results = await asyncio.gather(
+        sessions.rename_thread("named", "First", only_if_unnamed=True),
+        sessions.rename_thread("named", "Second", only_if_unnamed=True),
+    )
+    assert sorted(results) == [False, True]
+    assert await sessions.get_thread_name("named") == (
+        "First" if results[0] else "Second"
+    )
+
+
+@pytest.mark.parametrize("index_version", [2, 3])
+async def test_named_thread_listing_does_not_need_a_write_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    index_version: int,
+) -> None:
+    """Listing names reuses existing indexes while another connection writes."""
+    db_path = tmp_path / "sessions.db"
+    monkeypatch.setattr(sessions, "get_db_path", lambda: db_path)
+    for thread_id in ("named", "legacy", "unnamed"):
+        await sessions.save_thread_seed(
+            thread_id, {}, agent_name="agent", cwd=str(tmp_path)
+        )
+    await sessions.rename_thread("named", "Saved name")
+    async with sessions._connect() as conn:
+        await conn.execute(
+            "UPDATE checkpoints SET metadata = json_set(metadata, '$.thread_name', ?) "
+            "WHERE thread_id IN ('named', 'legacy')",
+            ("Checkpoint name",),
+        )
+        columns = (
+            "thread_id, json_extract(metadata, '$.updated_at'), "
+            "COALESCE(json_extract(metadata, '$.created_at'), "
+            "json_extract(metadata, '$.updated_at')), checkpoint_id, "
+            "json_extract(metadata, '$.agent_name'), "
+            "json_extract(metadata, '$.git_branch'), json_extract(metadata, '$.cwd')"
+        )
+        if index_version == 3:
+            columns += ", json_extract(metadata, '$.thread_name')"
+        await conn.execute(
+            f"CREATE INDEX idx_dcode_threads_list_v{index_version} "
+            f"ON checkpoints({columns})"
+        )
+        await conn.commit()
+
+    connect = sessions._connect
+
+    @asynccontextmanager
+    async def fail_fast_connection() -> "AsyncIterator[aiosqlite.Connection]":
+        async with connect() as conn:
+            await conn.execute("PRAGMA busy_timeout = 0")
+            yield conn
+
+    monkeypatch.setattr(sessions, "_connect", fail_fast_connection)
+    with closing(sqlite3.connect(db_path)) as writer, writer:
+        writer.execute("BEGIN IMMEDIATE")
+        threads = await sessions.list_threads()
+    assert {thread["thread_id"]: thread.get("thread_name") for thread in threads} == {
+        "named": "Saved name",
+        "legacy": "Checkpoint name",
+        "unnamed": None,
+    }
+    assert "database is locked" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "name", ["", "  ", "x" * 51, "a\nb", "a\x1bb", "a\x07b", "a\x9cb"]
+)
+def test_invalid_thread_names(name: str) -> None:
+    with pytest.raises(ValueError, match="Thread names must"):
+        sessions.validate_thread_name(name)
 
 
 class TestGenerateThreadId:
@@ -381,21 +536,6 @@ class TestThreadFunctions:
         assert result is False
         # ...but its stranded archive is removed regardless.
         assert not archive.exists()
-
-
-class TestGetCheckpointer:
-    """Tests for get_checkpointer async context manager."""
-
-    def test_returns_async_sqlite_saver(self, tmp_path):
-        """Get checkpointer returns AsyncSqliteSaver."""
-
-        async def _test() -> None:
-            db_path = tmp_path / "test.db"
-            with patch.object(sessions, "get_db_path", return_value=db_path):
-                async with sessions.get_checkpointer() as cp:
-                    assert "AsyncSqliteSaver" in type(cp).__name__
-
-        asyncio.run(_test())
 
 
 class TestFormatTimestamp:
@@ -1500,6 +1640,42 @@ class TestListThreadsCommandConfigDefaults:
         "updated_at": "2025-06-01T12:00:00+00:00",
         "created_at": "2025-05-30T10:00:00+00:00",
     }
+
+
+class TestListThreadsCommandNames:
+    """Thread listing exposes literal names without a prompt fallback."""
+
+    async def test_names_render_as_plain_text(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        threads: list[sessions.ThreadInfo] = [
+            {
+                "thread_id": "named",
+                "agent_name": "bot",
+                "thread_name": "[bold]Login[/bold]",
+                "updated_at": None,
+            },
+            {
+                "thread_id": "unnamed",
+                "agent_name": "bot",
+                "initial_prompt": "Not a name",
+                "updated_at": None,
+            },
+        ]
+        output = StringIO()
+        console = Console(file=output, width=160, color_system=None)
+        with (
+            patch.object(sessions, "list_threads", AsyncMock(return_value=threads)),
+            patch("deepagents_code.config.console", console),
+        ):
+            await sessions.list_threads_command(sort_by="updated", relative=False)
+        rendered = output.getvalue()
+        assert "Name" in rendered
+        assert "[bold]Login[/bold]" in rendered
+        assert "unnamed" in rendered
+        assert "Not a name" not in rendered
 
 
 class TestListThreadsCommandJson:

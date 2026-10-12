@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:59215430cd519eb9a42d33c66e07fa22618101ad73d3e9920011c1a7cf5c0209",
+  "pageVersion": "sha256:f8a98e9cf89199c465132a0176c5cd42d620b707be0c071a8ae005b5686a0e97",
   "claims": [
     {
       "id": "claim_ac9d07f5c6064ef7a2a64d3bca27ae9e",
@@ -64,7 +64,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/integrations/sandbox_factory.py#L86-L182",
-          "version": "repo-lines-v1:sha256:86e01d9460ca42e10237bb81d52d5d4919e6ee8c9d2d9b9d0610b27bf56e2690:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2MWYzM2MxMzI1NjlhNzQ5NDZiMmZjZjU0NmNhM2M0NDI1ZGEwY2E1Y2Y2YjY4NmMyNjA5MGZhYTlkMTEyYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQxYjhmNWFkODc3NTRkZjkzNWJiNzg5M2YyZjZkMGNlYzcwYmI1NDEwMzJiMDhlOWEzMzUxMDllNzliMzE1OTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNkYWQwMzExYWIzMTU3NjI3Y2ZjY2NmZmEzYmVhOWI1M2UyYTkyZGIzZWM0MmQwZGMwMzU2MTc4YzczYzE5MGEifQ"
+          "version": "repo-lines-v1:sha256:2dcf16492c7d929e92ebf96bd0dcf98f4314078a44060f5b5bff5ef023351b18:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2MWYzM2MxMzI1NjlhNzQ5NDZiMmZjZjU0NmNhM2M0NDI1ZGEwY2E1Y2Y2YjY4NmMyNjA5MGZhYTlkMTEyYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQxYjhmNWFkODc3NTRkZjkzNWJiNzg5M2YyZjZkMGNlYzcwYmI1NDEwMzJiMDhlOWEzMzUxMDllNzliMzE1OTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNkYWQwMzExYWIzMTU3NjI3Y2ZjY2NmZmEzYmVhOWI1M2UyYTkyZGIzZWM0MmQwZGMwMzU2MTc4YzczYzE5MGEifQ"
         }
       ]
     },
@@ -140,7 +140,7 @@
     },
     {
       "id": "claim_4f083182c8334ceb800d7725f94d1537",
-      "statement": "The dcode command is provided by the deepagents-code distribution, version 0.1.83; it requires Python >=3.12,<4.0, pins deepagents==0.7.23, includes langsmith[sandbox]>=0.14.4 and langchain-quickjs>=0.3.4,<0.4.0 as base dependencies, and exposes separate optional extras for the AgentCore, Daytona, Modal, Runloop, and Vercel sandbox adapters.",
+      "statement": "The dcode command is provided by the deepagents-code distribution, version 0.1.83; it requires Python >=3.12,<4.0, pins deepagents==0.7.23, includes langsmith[sandbox]>=0.14.7 and langchain-quickjs>=0.3.4,<0.4.0 as base dependencies, and exposes separate optional extras for the AgentCore, Daytona, Modal, Runloop, and Vercel sandbox adapters.",
       "evidence": [
         {
           "resource": "repo://libs/code/pyproject.toml#L138-L156",
@@ -148,7 +148,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L28-L31",
-          "version": "repo-lines-v1:sha256:470efb86fafdc7cf77b726fedafc31def110b3eee13c35df984a02fd2fb040df:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTI5ZjBlN2VmMmFhMWY4MWFhMzk5NjE0ZGY0Nzg3ZjY5ODExOWMxMmEyODk4MzBkYmFkYTYzNGU1OTY4MGZlZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWFmZDBkOTg5MzkxYzAwN2E3ZDdhYzQ1YjQ5YmZjZjcyMTQ5Y2U2MDcxODM5MGJjZTQxNDMwNmQ0ZDhhNDZkNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzVmOWVhYmQ0OGMwNWZmYWUyYTZmNWJlYTZiMTc0NzM4MGZmOWFhYjM4MmVjNDg2YTA1NzY2NGZiNDFhNjMyNyJ9"
+          "version": "repo-lines-v1:sha256:52548b86b831d1500038cd7a00b8da40c2a0eed92eb90bcf617e63210a9025b6:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGU3YTM3YjE2MjRjZTc1ODBhZmIwZGIyZTQyZGI4MDk0OGQ0YzA3MjViZDJkOGVlYTgyZDc1ZjE2NmQ5NGFlNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYWFmZDBkOTg5MzkxYzAwN2E3ZDdhYzQ1YjQ5YmZjZjcyMTQ5Y2U2MDcxODM5MGJjZTQxNDMwNmQ0ZDhhNDZkNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzVmOWVhYmQ0OGMwNWZmYWUyYTZmNWJlYTZiMTc0NzM4MGZmOWFhYjM4MmVjNDg2YTA1NzY2NGZiNDFhNjMyNyJ9"
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L5-L14",
@@ -156,7 +156,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L60-L65",
-          "version": "repo-lines-v1:sha256:398b545b6d131983e5f32171af8cfe186a0b8a5aa4b4feeb84a5493d6bc3edcd:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2ZiZTRkNTVmMTgzNDcwNGQ2Mjc4NDNiYjA2ZmJjNDFmYjRhNDgzMWYxYzY0NTJiMzNlMWFiZGUyMDAwYjZiOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmJkYzA3Y2RlNmMzYzM0NmU3NjY5OTVlZmI1ZjA0YmNmZTA0MDZjZmQxN2JjOTgwMzk3MDA1YmIyYTYxOGU0NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTJmMTE1ZDJjOTM2MmU3NTY5OTg1M2Q5MWVhMTUwNWMyZGIyMzc3YjY4M2Y5YWQwMTlhNjQ0ZjkzMDE0NmRhZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzMzMjNlY2YxOTcwYzIzMWZlYjI3NjZlZGNkMTk0YjI1YTlmNjk4ZTdiNmEzNjJiMWVkN2U2MDBhOTFlMmIzYiJ9"
+          "version": "repo-lines-v1:sha256:98d49265cacaf67629116d0db2d6e7caffe2bf975dcd2afc75c49b2be412ae3c:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2ZiZTRkNTVmMTgzNDcwNGQ2Mjc4NDNiYjA2ZmJjNDFmYjRhNDgzMWYxYzY0NTJiMzNlMWFiZGUyMDAwYjZiOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmJkYzA3Y2RlNmMzYzM0NmU3NjY5OTVlZmI1ZjA0YmNmZTA0MDZjZmQxN2JjOTgwMzk3MDA1YmIyYTYxOGU0NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNTJmMTE1ZDJjOTM2MmU3NTY5OTg1M2Q5MWVhMTUwNWMyZGIyMzc3YjY4M2Y5YWQwMTlhNjQ0ZjkzMDE0NmRhZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNzMzMjNlY2YxOTcwYzIzMWZlYjI3NjZlZGNkMTk0YjI1YTlmNjk4ZTdiNmEzNjJiMWVkN2U2MDBhOTFlMmIzYiJ9"
         }
       ]
     },
@@ -278,17 +278,17 @@
       "evidence": [
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml#L5-L32",
-          "version": "repo-lines-v1:sha256:d4f190c0e4d9c4213c0371040e11ab93c784383a4d7e9aa88838a6cb44a18981:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlOTA4ZjgxMjcxYzVhNmU1MTg1MDVkODhmZGM2ZTllM2Y4ZDlkOGNjNzc4MjEzN2FlNzM4MmFiYTIxZGIyZDcifQ"
+          "version": "repo-lines-v1:sha256:caaaf5fa7750c64dce76cc32ccdc0cdbb9b8883d973afbb67af93571afcc885f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNlOTA4ZjgxMjcxYzVhNmU1MTg1MDVkODhmZGM2ZTllM2Y4ZDlkOGNjNzc4MjEzN2FlNzM4MmFiYTIxZGIyZDcifQ"
         }
       ]
     },
     {
       "id": "claim_dbb540dae3f84595af1e68371175414c",
-      "statement": "langchain-quickjs 0.3.8 additionally declares deepagents>=0.7.0,<0.8.0, langchain>=1.4.3,<2.0.0, langchain-core>=1.6.7,<2.0.0, langgraph>=1.2.14,<2.0.0, and bsdiff4>=1.2.6,<2.0.0 as direct dependencies.",
+      "statement": "langchain-quickjs 0.3.8 additionally declares deepagents>=0.7.0,<0.8.0, langchain>=1.4.4,<2.0.0, langchain-core>=1.6.9,<2.0.0, langgraph>=1.2.14,<2.0.0, and bsdiff4>=1.2.6,<2.0.0 as direct dependencies.",
       "evidence": [
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml#L25-L32",
-          "version": "repo-lines-v1:sha256:94b983c8c2f3a6273ef7c58b3db5523832f7282ac8153b7d827da0d976522324:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTEzNWZlZmJlYzdiNWU2NjIxZmNhMTQ4YjMwOTIzODU4NWI2NWRhZjU3NmM1NDI4ZjZlYzJjNDg2NzM4YThmMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2U5MDhmODEyNzFjNWE2ZTUxODUwNWQ4OGZkYzZlOWUzZjhkOWQ4Y2M3NzgyMTM3YWU3MzgyYWJhMjFkYjJkNyJ9"
+          "version": "repo-lines-v1:sha256:f15b0e3ad5b3e973d8855b91e535388dbed7e2f13c3c7fe8b7cfa5e32bfa1df4:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYWQ5NWY1ZTllZGUwMTgxNjA0M2MwNzk3YWNlOGRhMmFjNGU5OWE4YTZhNjEwZmE5ODU3MGVmMzRiOTM1NjEwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTEzNWZlZmJlYzdiNWU2NjIxZmNhMTQ4YjMwOTIzODU4NWI2NWRhZjU3NmM1NDI4ZjZlYzJjNDg2NzM4YThmMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2U5MDhmODEyNzFjNWE2ZTUxODUwNWQ4OGZkYzZlOWUzZjhkOWQ4Y2M3NzgyMTM3YWU3MzgyYWJhMjFkYjJkNyJ9"
         }
       ]
     },
@@ -343,10 +343,40 @@
           "version": "repo-lines-v1:sha256:3aca4f031bfa6dcd8ea86bc5e12336b203bef630b3f46deddc347305e871cf03:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2ODA0MGI5MGIzNzc0YTBmNDc3M2QzMzY5Y2MxNzY3NGM2ZTVhMmJiMzM5ODUxNGE4OGQ1OGIzZmExMmFlNWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzYzRiNTdkYzY5YjYzZDE3YzExNDVhZDY3MTdkODMzZjUwNTExOTE1YmUyM2YyODg0MzZkNjQ2YmNlMjRkMGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZhMzBhZDY0ZWJmNWM4YzBmNzQwYWYwYWQ3ZTBmMGQxZGE1YWY4MzUwZTA4MzNiZGQwNWU0NDRkZDY0YzA1Y2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImViM2VhMmEzMWIyODhjZDA4N2Q2NzYwY2ViOGY0NTQ1ZTQ0NTI3ZGIzY2VkMWFiNmFhMmE1NGJiYzVlMmIzMGIifQ"
         }
       ]
+    },
+    {
+      "id": "claim_ea11a6ee1f0843f0941723fa7f5800f4",
+      "statement": "Built-in sandbox metadata defines provider working directories and capability flags: Daytona, LangSmith, and Runloop support snapshot names; AgentCore does not support sandbox-ID attachment; and Vercel does not support snapshot names.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_registry.py#L38-L80",
+          "version": "repo-lines-v1:sha256:4395334c90ef98f9d0787033fc19f08f49779d1ac124d6ab5c9d25aee836d3f5:eyJzZWxlY3RlZExpbmVDb3VudCI6NDMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3OTBmMDMwZjZhZTQ3MzQ3NmZiY2ZkMjg4YWVhNmQ1NmU1M2YzNjk1YTdjYmFjODAxODE2NDY0NTE0OTkwODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhMTExNGJjZTliY2JlYzhhYTk3ZWY1OWQ4OWZmOWZmODBmNzliNjg4MjUxNWQyMDhlYWUyMmE5NTMzNzEzY2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE0YjBkNDA3ODU3MjFiZTk0YzVhMzNhNTgyYzZiNDk0NzcxZWZkZmQzNTZhMDJiZjJlMTg2NTQ1MGNmYTI5YTMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ffe693b8aad44b81b8d9895ed8b03f7b",
+      "statement": "create_sandbox starts from config-declared provider parameters, overlays explicit parameters, and forwards a validated snapshot name to the provider as snapshot.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/integrations/sandbox_factory.py#L138-L152",
+          "version": "repo-lines-v1:sha256:47b1a46f2cf8babe3caf8e6674818a187290ba308f754357fbfc6095678e9b82:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhhOTM5ZWM4ZWJiNjE2NWMxNmE0NjBhNzIyOTYwYzYwNzBlNDE2NzQzODExYTg0ODY2YzU4MGVhOTQxZjViYTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlZjVjYjExODBhZjQ0YzQ0ZmJmNGY3MDkyYjJmZDA0MzdkYWIwMjhlOTE2YzRiN2NkOWFhZTc3OTliYjAzZmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ0YWMyMDlkNjcyODM2YTRjM2RkMGVjZWQxMmRjMGU2YjZmNzhkMzgxZmY1MTY4YjdjMDdhODQ3NWRhMTlhMzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwNDQyZGVjMjhhNzA5NDBlNWIyYzQzNzY1Yjg5YzBmMTU3ZDVkMWQ5OTM0ZGU2ZTEwNDY5Mjg5YTQ5ODk1YjkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_901a494c6df74262bdee9875848d922b",
+      "statement": "The dcode factory lifecycle tests verify owned-versus-attached cleanup on setup failure and context exit, including that cleanup failure does not replace the original setup error.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_sandbox_factory.py#L88-L189",
+          "version": "repo-lines-v1:sha256:72e3780a5a5f09b7946da205408081b601a52b0a439dbafe08c1d32e7211ab1b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5ODRhMDEzYmM2YTg0YzM5ZGJlYWZmNDU0Nzg3MzdlOTIxM2RjYjIwNTViNjQ0ZGJhMTQ2ODc2NTlkYjA3NDk4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhYmMzMDNjZjI5NzI3MmZiZjMxYTM2YTYyNDRiMGJjMjY1Njg0ZmVhMTY5Mzg0YjUzZTNlMDE0N2I3NTAwOGQ0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJmMzZmZjIxODUwYTBlNjRjMDEyMjIwNTFiOWZiMjk5MWFhZjZiYWI1ZjIyM2Y1ZmFhYjg0YmYyYzUzMTU0NTVjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NjgwYjBmMjkyOGFjMGRiZjNkZDRhMzFkNWMxNmU5MTk4YTI5YTYwODZkMzljZmI1N2MyMGY2MGJlMzNhNjVkIn0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-08T08:07:53.482Z"
+    "at": "2026-10-12T08:20:17.385Z"
   }
 }

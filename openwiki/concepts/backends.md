@@ -1,11 +1,8 @@
 ---
 type: architecture concept
-title: Backends and Storage Routing
-description: DeepAgents backends define file storage, persistence scope, virtual-path routing, artifact placement, and optional command execution. This page explains the backend protocol, composite mounts, graph-context requirements, and the security consequences of local or sandboxed implementations.
+title: Backends, Routing, and Artifact Persistence
+description: DeepAgents backends define file storage, persistence scope, virtual-path routing, artifact placement, and optional command execution. This page explains the backend contract, composite mounts, binary-content offload and hydration, and the security implications of local or sandboxed implementations.
 tags: [backends, storage-routing, filesystem, state, persistence, sandbox, artifacts]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
 sources:
   - id: openwiki-source-a1549ea98d425efea270be93
     resource: repo://libs/deepagents/deepagents/backends/composite.py
@@ -47,10 +44,13 @@ sources:
     resource: repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py
   - id: openwiki-source-580d91c607e0a09e0659e565
     resource: repo://libs/talon/deepagents_talon/sandbox.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-12T08:20:17.385Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-12T08:20:17.385Z" }
 ---
 
-# Backends and Storage Routing
+# Backends, Routing, and Artifact Persistence
 
 A **backend** is the implementation boundary behind agent file operations. It determines where files live, how long they persist, how virtual paths are routed, where middleware artifacts are written, and whether a shell exists. It is not a model-visible tool or an authorization policy: [filesystem tools](/openwiki/concepts/tools-filesystem.md) register and dispatch operations, while storage selection determines persistence and execution behavior.
 
@@ -66,7 +66,7 @@ Operations report ordinary failures in typed result dataclasses such as `ReadRes
 
 ### Reads, edits, and asynchronous calls
 
-Backends return raw file content; middleware adds model-facing line-number gutters. `ReadResult` validates pagination at construction: its shown line window is co-present and forward, `total_lines` covers that window, and `next_offset` is exactly the first unshown line. A non-positive text limit produces an empty, uninspected window; binary reads are not line-paginated. Exact edit requires a unique old string unless `replace_all=True`.
+Backends return raw file content; middleware adds model-facing line-number gutters. `ReadResult` validates pagination at construction: its shown line window is co-present and forward, `total_lines` covers that window, and `next_offset` is exactly the first unshown line. A non-positive text limit is represented as an uninspected, empty window through `no_lines_requested`; it cannot be combined with an error or pagination metadata. Binary reads are not line-paginated. Exact edit requires a unique old string unless `replace_all=True`.
 
 Every synchronous protocol method has an async counterpart. Default async methods use `asyncio.to_thread`; `agrep` also bounds the caller wait, conditionally passes `max_count` to compatible concrete implementations, and trims afterward when needed. That timeout does not stop an already-running worker thread. `delete` is optional, so capability checks use `_supports_delete` instead of invoking the base method merely to discover its `NotImplementedError`.
 
@@ -140,9 +140,9 @@ A `CompositeBackend` also owns `artifacts_root`, defaulting to `/`. `FilesystemM
 
 ### Binary payload persistence
 
-Set `offload_binary_content=True` to keep binary `read_file` blocks and inline human-message media out of checkpoint history. Middleware writes decoded payloads with batch upload to `<artifacts_root>/blobs/<sha256>`, replaces a successful inline base64 value with a `deepagents_blob` digest reference in state, and hydrates references before a model call. The per-run base64 cache is private and untracked; persisted blobs allow a resumed thread to reload content.
+Set `offload_binary_content=True` to keep binary `read_file` blocks and inline `HumanMessage` media out of persisted message history. Middleware batches decoded payloads to `<artifacts_root>/blobs/<sha256>`, replaces only successfully uploaded base64 blocks with a `deepagents_blob` digest reference, and hydrates references before a model call. On a `read_file` tool call it offloads the immediate result; before a model call it also replaces eligible historical `HumanMessage` and `read_file` tool-message payloads, including imported history. The original input write can remain inline in a checkpoint. The per-run base64 cache is private and untracked; persisted blobs allow a resumed thread to reload content.
 
-This is best effort rather than a data-loss transformation: a failed upload leaves the payload inline. Hydration accepts only a 64-hex reference whose downloaded bytes hash to that digest. A missing, malformed, unreadable, or tampered blob is replaced with a text notice instead of being sent to the model. Middleware disables offload with a warning when the resolved `blobs/` route is a `StateBackend`, because that would retain bytes in checkpointed state and defeat the option.
+This is best effort rather than a data-loss transformation: an upload exception or an individual upload error leaves that payload inline. Hydration accepts only a 64-hex reference whose downloaded bytes hash to that digest. A missing, malformed, unreadable, or tampered blob is replaced with a text notice instead of being sent to the model. Middleware disables offload with a warning when the resolved `blobs/` route is a `StateBackend`, because that would retain bytes in checkpointed state and defeat the option.
 
 ## Configuration and operational guidance
 

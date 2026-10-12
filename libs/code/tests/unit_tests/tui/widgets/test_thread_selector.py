@@ -2051,22 +2051,24 @@ class TestConvertMessagesToData:
 
     @pytest.mark.parametrize("pinned", [False, True])
     def test_skill_invocation_history(self, pinned: bool) -> None:
+        """Legacy and SDK-pinned invocations both resume as one skill row."""
         from langchain_core.messages import HumanMessage
 
         from deepagents_code.tui.widgets.message_store import MessageType
         from deepagents_code.tui.widgets.messages import SkillMessage
 
+        marker = {
+            "name": "review",
+            "description": "Review code",
+            "source": "project",
+            "args": "auth.py",
+        }
+        if pinned:
+            marker["path"] = "/skills/review/SKILL.md"
         messages = [
             HumanMessage(
                 content="Invoke review" if pinned else "Legacy skill instructions",
-                additional_kwargs={
-                    "__skill": {
-                        "name": "review",
-                        "description": "Review code",
-                        "source": "project",
-                        "args": "auth.py",
-                    }
-                },
+                additional_kwargs={"__skill": marker},
             )
         ]
         body = (
@@ -2102,7 +2104,28 @@ class TestConvertMessagesToData:
         )
         assert isinstance(row.to_widget(), SkillMessage)
 
+    def test_unpinned_invocation_shows_instructions_not_loaded(self) -> None:
+        """A failed pin leaves an invocation row that says nothing was loaded."""
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        messages = [
+            HumanMessage(
+                content="I'm invoking the skill `review`.",
+                additional_kwargs={
+                    "__skill": {"name": "review", "path": "/skills/review/SKILL.md"}
+                },
+            )
+        ]
+
+        result = DeepAgentsApp._convert_messages_to_data(messages)
+
+        assert [row.type for row in result] == [MessageType.SKILL]
+        assert "not loaded" in (result[0].skill_body or "")
+
     def test_pinned_skills_without_invocation_stay_separate(self) -> None:
+        """Pins without a matching invocation directly above get their own row."""
         from langchain_core.messages import AIMessage, HumanMessage
 
         from deepagents_code.tui.widgets.message_store import MessageType

@@ -14,9 +14,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
+from deepagents_code.app import DeepAgentsApp
 from deepagents_code.local_context import LocalContextMiddleware
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.skills import trust
+from deepagents_code.tui.widgets.message_store import MessageType
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -226,6 +228,15 @@ async def test_graph_pins_once_and_preserves_snapshot(
         "Second answer",
     ]
     assert agent.get_state(config).values["pinned_skills"] == []
+
+    rows = DeepAgentsApp._convert_messages_to_data(second["messages"])
+    assert [row.type for row in rows] == [
+        MessageType.SKILL,
+        MessageType.ASSISTANT,
+        MessageType.USER,
+        MessageType.ASSISTANT,
+    ]
+    assert rows[0].skill_body == "Original instructions"
 
 
 @pytest.mark.parametrize(

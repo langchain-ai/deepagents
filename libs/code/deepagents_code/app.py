@@ -294,6 +294,9 @@ single thread imports it re-entrantly, but can trip CPython's per-module import
 deadlock detector when two threads cold-import overlapping modules.
 """
 
+_SKILL_NOT_LOADED_BODY = "*The skill's instructions were not loaded for this turn.*"
+"""Resumed skill-row body when the SDK never pinned the invoked skill."""
+
 _TOOL_GROUP_EXCLUSIONS = frozenset({"ask_user", "edit_file", "write_todos"})
 """Tools kept out of the collapsing step summaries.
 
@@ -20626,6 +20629,12 @@ class DeepAgentsApp(App):
                             skill_meta.get("description", "")
                         )
                     else:
+                        # Older invocations embedded the instructions. Newer ones
+                        # record a `path` and rely on the pin above to fill the
+                        # body, so a missing pin means the instructions never
+                        # reached the model.
+                        if not pinned and "path" in skill_meta:
+                            content = _SKILL_NOT_LOADED_BODY
                         row = MessageData(
                             type=MessageType.SKILL,
                             content="",

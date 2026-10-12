@@ -432,3 +432,19 @@ async def test_pinning_checks_every_requested_name(
     assert names == ["review", "lint"]
     with pytest.raises(ValueError, match="outside all allowed"):
         await pin(["review", "evil"])
+
+
+async def test_pin_reload_clears_stale_load_errors(tmp_path: Path, mode: str) -> None:
+    root = tmp_path / "skills"
+    path = _write_skill(root / "review" / "SKILL.md")
+    middleware = PluginSkillsMiddleware(
+        backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
+    )
+    state = _state(path)
+    state["skills_load_errors"] = ["Could not list skills in an earlier load"]
+    if mode == "async":
+        update = await middleware.abefore_agent(state, Runtime(), {})
+    else:
+        update = middleware.before_agent(state, Runtime(), {})
+    assert update is not None
+    assert update["skills_load_errors"] == []

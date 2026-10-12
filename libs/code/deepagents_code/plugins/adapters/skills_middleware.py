@@ -415,12 +415,14 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         Returns:
             The state update carrying merged skill metadata and any errors.
         """
-        update = _SkillsStateUpdate(skills_metadata=list(all_skills.values()))
+        # Always write the errors so warnings from an earlier load are cleared.
+        update = _SkillsStateUpdate(
+            skills_metadata=list(all_skills.values()), skills_load_errors=errors
+        )
         if (pins := _pending_pin_update(state)) is not None:
             update["pinned_skills"] = pins
         if errors:
             logger.warning("Skills load errors: %s", errors)
-            update["skills_load_errors"] = errors
         return update
 
     def before_agent(

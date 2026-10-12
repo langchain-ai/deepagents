@@ -3593,7 +3593,6 @@ def create_cli_agent(
         *(async_subagents or []),
     ]
     from deepagents_code.goal_tools import ForkGoalToolsMiddleware
-    from deepagents_code.reliable_rubric import ForkRubricMiddleware
 
     for spec in custom_subagents:
         if spec.get("mode") == "fork" and "runnable" not in spec:
@@ -3602,7 +3601,6 @@ def create_cli_agent(
                 [
                     *spec.get("middleware", []),
                     ForkGoalToolsMiddleware(),
-                    ForkRubricMiddleware(),
                 ],
             )
     _ensure_glm_5p2_profile_registered()

@@ -16,10 +16,7 @@ from pydantic import Field
 
 from deepagents_code.goal_state_notice import goal_state_notice_info
 from deepagents_code.goal_tools import ForkGoalToolsMiddleware, GoalToolsMiddleware
-from deepagents_code.reliable_rubric import (
-    ForkRubricMiddleware,
-    ReliableRubricMiddleware,
-)
+from deepagents_code.reliable_rubric import ReliableRubricMiddleware
 
 if TYPE_CHECKING:
     from deepagents.middleware.subagents import SubAgent
@@ -156,9 +153,7 @@ def test_declarative_child_preserves_goal_visibility_and_parent_grading(
                     "mode": mode,
                     "model": child,
                     "system_prompt": "worker instructions",
-                    "middleware": [ForkGoalToolsMiddleware(), ForkRubricMiddleware()]
-                    if mode == "fork"
-                    else [],
+                    "middleware": [ForkGoalToolsMiddleware()] if mode == "fork" else [],
                 },
             )
         ],

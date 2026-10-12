@@ -96,15 +96,6 @@ class RubricGraderState(AgentState[GraderResponse]):
     rubric_grading_operation_id: NotRequired[str]
 
 
-class ForkRubricMiddleware(AgentMiddleware):
-    """Replace parent grading in forks, including SDKs that inherit `rubric`."""
-
-    @property
-    def name(self) -> str:
-        """Match the parent's middleware name for public composition."""
-        return "ReliableRubricMiddleware"
-
-
 class ReliableRubricMiddleware(RubricMiddleware):
     """Run a context-aware nested grader with CLI verification middleware.
 

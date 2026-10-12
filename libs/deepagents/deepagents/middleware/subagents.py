@@ -394,6 +394,8 @@ When returning updates:
     pending pin belongs to the agent it was requested for.
 4. Agent-private fields on middleware state schemas are excluded from both
     subagent output and subagent inputs.
+
+See `_EXCLUDED_OUTPUT_STATE_KEYS` for keys excluded only from subagent output.
 """
 
 

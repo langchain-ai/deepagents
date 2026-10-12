@@ -2,6 +2,21 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.84](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.83...deepagents-code==0.1.84) (2026-10-12)
+
+
+### Features
+
+* **code:** resolve and trust-check invoked skills on the server ([#6837](https://github.com/langchain-ai/deepagents/issues/6837)) ([03fa53f](https://github.com/langchain-ai/deepagents/commit/03fa53ff68745610e2da15e30051c5e639047f88))
+* **code:** show provider-visible reasoning by default in the TUI ([#6850](https://github.com/langchain-ai/deepagents/issues/6850)) ([23994c0](https://github.com/langchain-ai/deepagents/commit/23994c038d02f60ef83ec8c15142e8607ddb3b79))
+* **code:** surface Daytona sandbox snapshots ([#6854](https://github.com/langchain-ai/deepagents/issues/6854)) ([40fbf9d](https://github.com/langchain-ai/deepagents/commit/40fbf9d85b0c3554120bb10ab59db424d34c78d4))
+
+
+### Bug Fixes
+
+* **code:** preserve fork goal visibility without grading ([#6893](https://github.com/langchain-ai/deepagents/issues/6893)) ([f776228](https://github.com/langchain-ai/deepagents/commit/f7762288bc5b65d8820d386daf206103b1c01888))
+* **code:** refresh the agent skill catalog on `/reload` ([#6843](https://github.com/langchain-ai/deepagents/issues/6843)) ([d9594da](https://github.com/langchain-ai/deepagents/commit/d9594dae242546fcb7c1c9d23d1a731bf2a0ca20))
+
 ## [0.1.83](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.82...deepagents-code==0.1.83) (2026-10-07)
 
 ### Features

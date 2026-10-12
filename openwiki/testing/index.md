@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused regression guidance for the Deep Agents middleware stack and dcode session, inspector, command catalog, and Textual interfaces. Use observable lifecycle boundaries and deterministic fixtures to protect ordering, ownership, persistence, and terminal behavior.
+- [Testing Guide](testing-guide.md) - Focused, package-scoped test selection for Deep Agents subagents and media persistence, and dcode startup, headless, remote-client, skills, sandbox, and dependency automation behavior.

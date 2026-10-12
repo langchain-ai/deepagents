@@ -6654,7 +6654,6 @@ class TestRunAgentTaskMediaTracker:
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._show_reasoning = True
 
             with patch(
                 "deepagents_code.tui.textual_adapter.execute_task_textual",
@@ -10765,6 +10764,25 @@ class TestRubricCommand:
 
 class TestAutoClassifierModelCommand:
     """Tests for `/auto model`, which picks the Auto classifier model."""
+
+    @pytest.mark.parametrize("role", ["auto", "summarization", "rubric", "goal"])
+    async def test_sidecar_picker_recommends_haiku(self, role: str) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        with patch.object(app, "push_screen") as push:
+            if role == "auto":
+                await app._show_auto_classifier_model_selector()
+            elif role == "summarization":
+                await app._show_summarization_model_selector()
+            else:
+                await app._show_rubric_model_selector(
+                    source="goal" if role == "goal" else "rubric"
+                )
+
+        screen = push.call_args.args[0]
+        haiku = ("anthropic:claude-haiku-5-5", "anthropic")
+        assert haiku in screen._apply_subset(
+            [haiku, ("anthropic:claude-haiku-4-5", "anthropic")]
+        )
 
     async def test_auto_model_selector_persists_to_auto_classifier_key(self) -> None:
         """Ctrl+S in the classifier picker must not retarget the agent's model."""
@@ -14998,9 +15016,9 @@ class TestFetchThreadHistoryData:
         mock_agent.aget_state.return_value = state
         app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
 
-        hidden = await app._fetch_thread_history_data("t-1")
-        app._show_reasoning = True
         visible = await app._fetch_thread_history_data("t-1")
+        app._show_reasoning = False
+        hidden = await app._fetch_thread_history_data("t-1")
 
         assert [(message.type, message.content) for message in hidden.messages] == [
             (MessageType.ASSISTANT, "Before after"),
@@ -21395,24 +21413,6 @@ class TestPrewarmAwait:
 
         assert discovered is True
         assert app._session_plugin_ids == frozenset({"quality@tools"})
-
-    async def test_invoke_skill_cache_miss_uses_import_gate(self) -> None:
-        """Cache-miss skill discovery must use the process import gate."""
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-
-        with (
-            patch.object(
-                app,
-                "_discover_skills_and_roots_with_import_lock",
-                return_value=([], []),
-            ) as guarded_discover_mock,
-            patch.object(app, "_discover_skills_and_roots") as raw_discover_mock,
-            patch.object(app, "_mount_message", AsyncMock()),
-        ):
-            await app._invoke_skill("missing")
-
-        guarded_discover_mock.assert_called_once()
-        raw_discover_mock.assert_not_called()
 
 
 class TestHeaderAndTitle:

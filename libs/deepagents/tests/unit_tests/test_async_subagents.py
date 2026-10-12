@@ -1,13 +1,24 @@
 """Tests for async subagent middleware functionality."""
 
+import base64
 import json
+from copy import deepcopy
+from pathlib import Path
 from typing import Any, TypeVar
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+from langchain.agents import create_agent
+from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
+from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 
+from deepagents.backends import CompositeBackend, FilesystemBackend
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
@@ -17,6 +28,8 @@ from deepagents.middleware.async_subagents import (
     _resolve_headers,
     _tasks_reducer,
 )
+from deepagents.middleware.filesystem import FilesystemMiddleware
+from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
 def _make_spec(name: str = "test-agent", **overrides: Any) -> AsyncSubAgent:
@@ -124,6 +137,13 @@ class TestAsyncSubAgentMiddleware:
 
     def test_state_schema_is_set(self) -> None:
         assert AsyncSubAgentMiddleware.state_schema is AsyncSubAgentState
+
+
+class TestAsyncForkConfiguration:
+    @pytest.mark.parametrize("mode", ["handoff", None])
+    def test_rejects_invalid_mode(self, mode: str | None) -> None:
+        with pytest.raises(ValueError, match="expected 'isolated' or 'fork'"):
+            AsyncSubAgentMiddleware(async_subagents=[_make_spec(mode=mode)])
 
 
 class TestResolveHeaders:
@@ -264,6 +284,325 @@ class TestLaunchTool:
             assistant_id="my_graph",
             input={"messages": [{"role": "user", "content": "analyze data"}]},
         )
+
+
+@pytest.mark.parametrize("invocation", ["sync", "async"])
+@pytest.mark.parametrize(("mode", "summarized"), [(None, True), ("fork", False), ("fork", True)])
+async def test_launch_context_snapshot(invocation: str, mode: str | None, *, summarized: bool) -> None:
+    history = [
+        HumanMessage(content="Original request"),
+        AIMessage(content="Earlier answer"),
+        HumanMessage(content=[{"type": "text", "text": "Investigate order 42"}]),
+        AIMessage(content="", tool_calls=[{"name": "lookup", "args": {"order": 42}, "id": "lookup_call"}]),
+        ToolMessage(content="Order 42 is delayed", tool_call_id="lookup_call", artifact=b"raw report bytes"),
+        AIMessage(
+            content="Delegating",
+            tool_calls=[
+                {"name": "start_async_task", "args": {"description": "Explain the delay", "subagent_type": "alpha"}, "id": "tc_launch"},
+                {"name": "other_tool", "args": {}, "id": "sibling_call"},
+            ],
+        ),
+    ]
+    summary = HumanMessage(content="Summary of earlier context")
+    runtime = _make_runtime("tc_launch")
+    runtime.state.update({"messages": history, "files": {"private.txt": "not shared"}, "async_tasks": {}})
+    if summarized:
+        runtime.state["_summarization_event"] = {"cutoff_index": 2, "summary_message": summary, "file_path": None}
+    initial_state = deepcopy(runtime.state)
+    expected = deepcopy([summary, *history[2:-1]] if summarized else history[:-1])
+    bodies: list[dict[str, Any]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/threads":
+            assert runtime.state == initial_state
+            history[2].content[0]["text"] = "Parent changed while creating child thread"
+            summary.content = "Later summary"
+            history.append(HumanMessage(content="Later parent message"))
+            return httpx.Response(200, json={"thread_id": "new_child_thread"})
+        assert request.url.path == "/threads/new_child_thread/runs"
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"run_id": "run_xyz", "status": "pending"})
+
+    spec = _make_spec("alpha")
+    if mode is not None:
+        spec["mode"] = mode
+    launch = _build_async_subagent_tools([spec])[0]
+    transport = httpx.MockTransport(handle)
+    if invocation == "sync":
+        with (
+            httpx.Client(base_url="http://remote", transport=transport) as http_client,
+            patch("deepagents.middleware.async_subagents.get_sync_client", return_value=SyncLangGraphClient(http_client)),
+        ):
+            result = launch.func(description="Explain the delay", subagent_type="alpha", runtime=runtime)
+    else:
+        async with httpx.AsyncClient(base_url="http://remote", transport=transport) as http_client:
+            with patch("deepagents.middleware.async_subagents.get_client", return_value=LangGraphClient(http_client)):
+                result = await launch.coroutine(description="Explain the delay", subagent_type="alpha", runtime=runtime)
+
+    assert isinstance(result, Command)
+    assert len(bodies) == 1
+    body = bodies[0]
+    assert set(body["input"]) == {"messages"}
+    if mode == "fork":
+        child_messages = body["input"]["messages"]
+        assert child_messages[:-1] == [message.model_dump(mode="json", exclude={"artifact"}) for message in expected]
+        assert child_messages[-1]["type"] == "human"
+        assert child_messages[-1]["content"].endswith("Explain the delay")
+    else:
+        assert body["input"]["messages"] == [{"role": "user", "content": "Explain the delay"}]
+    assert runtime.state["async_tasks"] == {}
+
+
+@pytest.mark.filterwarnings("ignore:.*forked subagents.*:langchain_core._api.LangChainBetaWarning")
+@pytest.mark.parametrize("invocation", ["sync", "async"])
+@pytest.mark.parametrize("target", ["custom", "edited_isolated"])
+async def test_nonfork_tools_do_not_reload_media_after_approval(tmp_path: Path, invocation: str, target: str) -> None:
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    media = [{"type": "image", "mime_type": "image/png", "base64": base64.b64encode(b"uploaded image").decode("ascii")}]
+
+    @tool
+    def ping() -> str:
+        """Return an acknowledgement without accessing media."""
+        downloads.assert_not_called()
+        return "pong"
+
+    def create_thread() -> dict[str, str]:
+        downloads.assert_not_called()
+        return {"thread_id": "child"}
+
+    sync_client = MagicMock()
+    sync_client.threads.create.side_effect = create_thread
+    sync_client.runs.create.return_value = {"run_id": "run"}
+    async_client = MagicMock()
+    async_client.threads.create = AsyncMock(side_effect=create_thread)
+    async_client.runs.create = AsyncMock(return_value={"run_id": "run"})
+    name = "ping" if target == "custom" else "start_async_task"
+    args = {} if target == "custom" else {"description": "Do independent work", "subagent_type": "beta"}
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": f"call_{index}"} for index in range(2)]),
+                AIMessage(content="Done"),
+            ]
+        )
+    )
+    middleware = [FilesystemMiddleware(backend=backend, offload_binary_content=True)]
+    if target != "custom":
+        middleware.append(AsyncSubAgentMiddleware(async_subagents=[_make_spec("alpha", mode="isolated"), _make_spec("beta", mode="fork")]))
+    middleware.append(HumanInTheLoopMiddleware(interrupt_on={name: True}))
+    agent = create_agent(model, tools=[ping] if target == "custom" else [], middleware=middleware, checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "parent"}}
+    payload = {"messages": [HumanMessage(content=media)]}
+    paused = agent.invoke(payload, config) if invocation == "sync" else await agent.ainvoke(payload, config)
+    assert paused["__interrupt__"]
+    assert "_blob_payloads" not in agent.get_state(config).values
+    resume = Command(resume={"decisions": [{"type": "approve"}, {"type": "approve"}]})
+    if target == "edited_isolated":
+        action = {"name": name, "args": {**args, "subagent_type": "alpha"}}
+        resume = Command(resume={"decisions": [{"type": "edit", "edited_action": action} for _ in range(2)]})
+    with (
+        patch.object(backend, "download_files", wraps=backend.download_files) as downloads,
+        patch("deepagents.middleware.async_subagents.get_sync_client", return_value=sync_client),
+        patch("deepagents.middleware.async_subagents.get_client", return_value=async_client),
+    ):
+        result = agent.invoke(resume, config) if invocation == "sync" else await agent.ainvoke(resume, config)
+        # Only the subsequent model call needs the media, regardless of tool count.
+        downloads.assert_called_once()
+    assert result["messages"][-1].content == "Done"
+    assert model.call_history[-1]["messages"][0].content == media
+    if target != "custom":
+        assert result["async_tasks"]["child"]["status"] == "running"
+
+
+@pytest.mark.filterwarnings("ignore:.*forked subagents.*:langchain_core._api.LangChainBetaWarning")
+@pytest.mark.parametrize("invocation", ["sync", "async"])
+@pytest.mark.parametrize("edit_target", [False, True])
+async def test_fork_rehydrates_offloaded_media(tmp_path: Path, invocation: str, *, edit_target: bool) -> None:
+    image = b"\x89PNG\r\n\x1a\n uploaded image"
+    media = [
+        {"type": "image", "mime_type": "image/png", "base64": base64.b64encode(image).decode("ascii")},
+        {"type": "file", "mime_type": "application/pdf", "base64": base64.b64encode(b"%PDF-1.4 report").decode("ascii")},
+    ]
+    (tmp_path / "photo.png").write_bytes(image)
+    responses = [
+        AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"file_path": "/photo.png"}, "id": "read"}]),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "start_async_task",
+                    "args": {"description": "Review the media", "subagent_type": "isolated" if edit_target else "alpha"},
+                    "id": "launch",
+                }
+            ],
+        ),
+        AIMessage(content="Launched"),
+    ]
+    model = GenericFakeChatModel(messages=iter(responses))
+    agent = create_agent(
+        model,
+        middleware=[
+            FilesystemMiddleware(
+                backend=CompositeBackend(default=FilesystemBackend(root_dir=tmp_path, virtual_mode=True), routes={}, artifacts_root="/artifacts"),
+                offload_binary_content=True,
+            ),
+            AsyncSubAgentMiddleware(async_subagents=[_make_spec("alpha", mode="fork"), _make_spec("isolated")]),
+            HumanInTheLoopMiddleware(interrupt_on={"start_async_task": True} if edit_target else {}),
+        ],
+        checkpointer=InMemorySaver(),
+    )
+    config = {"configurable": {"thread_id": "parent"}}
+    payload = {"messages": [HumanMessage(content=deepcopy(media))]}
+    if edit_target:
+        if invocation == "sync":
+            paused = agent.invoke(payload, config)
+        else:
+            paused = await agent.ainvoke(payload, config)
+        assert "_blob_payloads" not in agent.get_state(config).values
+        (tmp_path / "photo.png").write_bytes(b"source changed after offloading")
+        assert paused["__interrupt__"]
+        payload = Command(
+            resume={
+                "decisions": [
+                    {
+                        "type": "edit",
+                        "edited_action": {"name": "start_async_task", "args": {"description": "Review the media", "subagent_type": "alpha"}},
+                    }
+                ]
+            }
+        )
+
+    bodies: list[dict[str, Any]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/threads":
+            return httpx.Response(200, json={"thread_id": "child"})
+        assert request.url.path == "/threads/child/runs"
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"run_id": "run", "status": "pending"})
+
+    transport = httpx.MockTransport(handle)
+    if invocation == "sync":
+        with (
+            httpx.Client(base_url="http://remote", transport=transport) as http_client,
+            patch("deepagents.middleware.async_subagents.get_sync_client", return_value=SyncLangGraphClient(http_client)),
+        ):
+            result = agent.invoke(payload, config)
+    else:
+        async with httpx.AsyncClient(base_url="http://remote", transport=transport) as http_client:
+            with patch("deepagents.middleware.async_subagents.get_client", return_value=LangGraphClient(http_client)):
+                result = await agent.ainvoke(payload, config)
+
+    assert result["async_tasks"]["child"]["status"] == "running"
+    assert len(bodies) == 1
+    assert set(bodies[0]["input"]) == {"messages"}
+    child_messages = bodies[0]["input"]["messages"]
+    assert child_messages[0]["content"] == media
+    child_tool = next(message for message in child_messages if message["type"] == "tool")
+    assert child_tool["content"] == [media[0]]
+    assert "deepagents_blob" not in json.dumps(child_messages)
+    assert model.call_history[-2]["messages"][0].content == media
+    assert "_blob_payloads" not in agent.get_state(config).values
+    parent_messages = agent.get_state(config).values["messages"]
+    parent_tool = next(message for message in parent_messages if message.type == "tool")
+    for message in (parent_messages[0], parent_tool):
+        assert all("deepagents_blob" in block and "base64" not in block for block in message.content)
+
+    await _assert_child_offloads_media(tmp_path, invocation, child_messages, [parent_messages[0], parent_tool])
+
+
+async def _assert_child_offloads_media(
+    tmp_path: Path, invocation: str, messages: list[dict[str, Any]], parent_media: list[HumanMessage | ToolMessage]
+) -> None:
+    child_backend = FilesystemBackend(root_dir=tmp_path / "child", virtual_mode=True)
+    child_model = GenericFakeChatModel(messages=iter([AIMessage(content="Reviewed"), AIMessage(content="Reviewed again")]))
+    child = create_agent(
+        child_model,
+        middleware=[
+            FilesystemMiddleware(
+                backend=CompositeBackend(default=child_backend, routes={}, artifacts_root="/child-artifacts"),
+                offload_binary_content=True,
+            )
+        ],
+        checkpointer=InMemorySaver(),
+    )
+    child_config = {"configurable": {"thread_id": "child"}}
+    for child_input in ({"messages": messages}, {"messages": [HumanMessage(content="Review again")]}):
+        if invocation == "sync":
+            child.invoke(child_input, child_config)
+        else:
+            await child.ainvoke(child_input, child_config)
+
+    child_state = child.get_state(child_config).values
+    stored = {message.id: message for message in child_state["messages"]}
+    for parent_message in parent_media:
+        assert stored[parent_message.id] == parent_message
+    for block, original in zip(stored[parent_media[0].id].content, messages[0]["content"], strict=True):
+        assert child_backend.download_files([f"/child-artifacts/blobs/{block['deepagents_blob']}"])[0].content == base64.b64decode(original["base64"])
+    first_request = child_model.call_history[0]["messages"]
+    assert first_request[0].content == messages[0]["content"]
+    received_tool = next(message for message in first_request if isinstance(message, ToolMessage))
+    assert received_tool.model_dump(exclude={"artifact"}) == next(message for message in messages if message["type"] == "tool")
+    assert child_model.call_history[1]["messages"][: len(first_request)] == first_request
+    assert "_blob_payloads" not in child_state
+
+
+@pytest.mark.filterwarnings("ignore:.*forked subagents.*:langchain_core._api.LangChainBetaWarning")
+async def test_fork_preserves_evicted_human_content(tmp_path: Path) -> None:
+    content = "First section\n" * 500 + "Critical detail in the middle\n" + "Last section\n" * 500
+    parent_backend = FilesystemBackend(root_dir=tmp_path / "parent", virtual_mode=True)
+    parent_model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "start_async_task", "args": {"description": "Review details", "subagent_type": "alpha"}, "id": "launch"}],
+                ),
+                AIMessage(content="Launched"),
+            ]
+        )
+    )
+    parent = create_agent(
+        parent_model,
+        middleware=[
+            FilesystemMiddleware(backend=parent_backend, human_message_token_limit_before_evict=1000),
+            AsyncSubAgentMiddleware(async_subagents=[_make_spec("alpha", mode="fork")]),
+        ],
+    )
+    bodies: list[dict[str, Any]] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/threads":
+            return httpx.Response(200, json={"thread_id": "child"})
+        assert request.url.path == "/threads/child/runs"
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"run_id": "run", "status": "pending"})
+
+    payload = {"messages": [HumanMessage(content=content, additional_kwargs={"source": "user-upload"})]}
+    transport = httpx.MockTransport(handle)
+    async with httpx.AsyncClient(base_url="http://remote", transport=transport) as http_client:
+        with patch("deepagents.middleware.async_subagents.get_client", return_value=LangGraphClient(http_client)):
+            result = await parent.ainvoke(payload)
+
+    parent_message = result["messages"][0]
+    eviction_path = parent_message.additional_kwargs["lc_evicted_to"]
+    assert parent_message.content == content
+    assert parent_backend.download_files([eviction_path])[0].content == content.encode()
+    assert "Critical detail in the middle" not in parent_model.call_history[0]["messages"][0].content
+
+    child_backend = FilesystemBackend(root_dir=tmp_path / "child", virtual_mode=True)
+    child_model = GenericFakeChatModel(messages=iter([AIMessage(content="Reviewed")]))
+    child = create_agent(
+        child_model,
+        middleware=[FilesystemMiddleware(backend=child_backend, human_message_token_limit_before_evict=1000)],
+    )
+    assert child_backend.download_files([eviction_path])[0].error == "file_not_found"
+    assert len(bodies) == 1
+    await child.ainvoke(bodies[0]["input"])
+    received = child_model.call_history[0]["messages"][0]
+    assert received.content == content
+    assert received.additional_kwargs == {"source": "user-upload"}
+    assert parent_message.additional_kwargs == {"source": "user-upload", "lc_evicted_to": eviction_path}
 
 
 class TestCheckTool:

@@ -1,7 +1,7 @@
 ---
 type: architecture pattern
-title: Middleware Stack and Ordering
-description: Exact middleware assembly, replacement, and exclusion order for Deep Agents main agents and each synchronous subagent stack. Covers the boundary between tool visibility, filesystem permissions, and human approval.
+title: Middleware Assembly Stack
+description: Exact middleware assembly, replacement, and exclusion order for Deep Agents main agents and subagent forms. Covers profile invariants, request-time tool visibility, and declarative, compiled, and remote subagent boundaries.
 tags: [middleware, deepagents, agent-construction, harness-profile, subagents, tool-surface]
 sources:
   - id: openwiki-source-b93533cac55718d75277d1cf
@@ -24,13 +24,15 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/unsupported_content.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
+  - id: openwiki-source-ca8183c87e6002c442ee2d62
+    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-12T08:20:17.385Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-07T08:06:51.789Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
+    at: 2026-10-12T08:20:17.385Z
 ---
 
-# Middleware Stack and Ordering
+# Middleware Assembly Stack
 
 `create_deep_agent()` is an assembler rather than a separate runtime. It resolves the model and its `HarnessProfile`, constructs the main and applicable synchronous-subagent stacks, then passes the main stack to LangChain `create_agent()`, which owns the model/tool loop. See [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md) and [middleware catalog](/openwiki/concepts/middleware-catalog.md).
 
@@ -77,6 +79,10 @@ Anthropic caching is always appended with unsupported models ignored. The option
 
 Skills deliberately sits after profile extras and caller-added middleware, yet before caching. Thus its disclosure sees compacted history and the effective routed model; ordinary caller middleware does not see the newly generated skills prompt section. A caller entry named `SkillsMiddleware` is still a replacement for that slot.
 
+### Summarization in the core
+
+The built-in summarization member operates on the effective conversation for each model call. It may truncate large historical tool arguments; when its threshold or a recognized context-overflow error requires compaction, it offloads older history to the backend before generating a summary and records the summary event and session ID in state. An offload failure does not stop summarization, but emits a warning that the older history cannot be recovered. This is why prompt-producing middleware later in the stack sees the compacted conversation rather than the raw thread.
+
 ### Assembly passes and caller replacement
 
 After building the tail, the main assembler performs: **first profile-exclusion pass → caller merge → second profile-exclusion pass → final tool-exclusion append**. It then gathers the explicit and middleware state schemas and gives all derived private fields to every surviving `SubAgentMiddleware` instance for task dispatch.
@@ -120,9 +126,13 @@ It does **not** inherit arbitrary main-only additions. For example, a caller ove
 
 Each declarative spec resolves its own model and profile. Its pre-compilation base is `FilesystemMiddleware`, summarization, and `PatchToolCallsMiddleware`; it then adds that subagent profile's extras, its skills (or the parent skills for a fork), and prompt caching. A fork with configured parent memory also adds `MemoryMiddleware` after caching. The stack then uses the same first-filter, name-based merge, second-filter, coverage-check, and final tool-filter sequence as the main stack.
 
-An isolated declarative subagent receives only a `HumanMessage` carrying the delegated task. It inherits top-level tools, permissions, and `interrupt_on` only when its own field is absent; own permissions replace rather than extend parent permissions. `create_sub_agent()` appends HITL when the resolved mapping is non-empty and appends `UnsupportedContentMiddleware` unless that name is already present. Declarative graphs receive the parent's `state_schema`.
+An isolated declarative subagent's message history contains only a `HumanMessage` carrying the delegated task, while the invocation also receives eligible public parent state. It inherits top-level tools, permissions, and `interrupt_on` only when its own field is absent; own permissions replace rather than extend parent permissions. `create_sub_agent()` appends HITL when the resolved mapping is non-empty and appends `UnsupportedContentMiddleware` unless that name is already present. Declarative graphs receive the parent's `state_schema`.
 
 `fork` is experimental and continues the parent's compacted effective history plus a task preamble; `handoff` is a legacy alias for isolated behavior. A fork cannot define independent `skills`. At assembly, the parent's `middleware=` entries are combined with the fork spec's entries, with spec entries winning duplicate names, and merged before the fork tail. This lets the fork rebuild prompt-producing behavior against inherited state while preserving its own model/profile stack. A declarative fork keeps non-excluded parent state, including eligible private channels; a compiled fork strips private fields because its runnable schema is opaque. Forked task calls are refused to prevent recursive delegation.
+
+### Task dispatch and result boundary
+
+The `task` tool rejects duplicate subagent names and unsupported modes before compiling its target graphs. For ordinary isolated dispatch, it removes middleware-private and agent-local fields from the parent snapshot, replaces the message history with the delegated task, and suppresses unchanged child values on return; this keeps sibling invocations from receiving private state or duplicating inherited reducer values. It always returns a `ToolMessage` to the parent, while eligible non-private state updates may accompany that result.
 
 Supplied compiled runnables are used as supplied and do not inherit the parent state schema, approval middleware, or content policy. They must return `messages`; the parent emits a `ToolMessage` containing JSON for a structured response or the last non-empty AI text otherwise, and merges eligible non-private state updates. Remote async subagents instead start Agent Protocol background work, return a task ID, and persist task state in `AsyncSubAgentMiddleware`; their graph owns its own schema and policy.
 
@@ -136,6 +146,6 @@ Filesystem permissions are authorization policy: `FilesystemMiddleware` evaluate
 
 ## Focused regression surface
 
-The graph tests inspect assembled stacks, not merely constructors. They pin same-name replacement versus novel insertion, the skills slot immediately before Anthropic caching, general-purpose override-only inheritance, declarative-stack isolation, fork inheritance before skills, the two exclusion passes, protected/ambiguous/unmatched exclusion failures, and final tool filtering for main and declarative stacks. Preserve these tests when changing ordering: moving a member can alter prompt cache behavior, model-visible tools, state handoff, or which profile policy wins.
+The graph tests inspect assembled stacks, not merely constructors. They pin same-name replacement versus novel insertion, the skills slot immediately before Anthropic caching, general-purpose override-only inheritance, declarative-stack isolation, fork inheritance before skills, the two exclusion passes, protected/ambiguous/unmatched exclusion failures, and final tool filtering for main and declarative stacks. Subagent tests exercise task results, parallel child isolation, private-state filtering, structured-result serialization, and forked state handling. Preserve these tests when changing ordering or task plumbing: a move can alter prompt cache behavior, model-visible tools, state handoff, or which profile policy wins.
 
 For user-facing patterns, see [subagents and skills](/openwiki/concepts/subagents-skills.md) and [build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md).

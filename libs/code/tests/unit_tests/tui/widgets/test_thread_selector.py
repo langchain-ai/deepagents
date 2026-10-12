@@ -2,7 +2,6 @@
 
 import asyncio
 from collections.abc import Coroutine
-from contextlib import AbstractContextManager
 from typing import Any, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -19,7 +18,6 @@ from textual.widgets._select import SelectCurrent
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.sessions import ThreadInfo
-from deepagents_code.tui.widgets.message_store import MessageData
 from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelect,
     ContainedSelectOverlay,
@@ -1601,128 +1599,6 @@ class TestResumeThread:
         )
 
 
-class TestFetchThreadHistoryData:
-    """Tests for DeepAgentsApp._fetch_thread_history_data."""
-
-    @staticmethod
-    def _skip_conversion(converted: list[MessageData]) -> AbstractContextManager[Any]:
-        """Stub message preparation so metadata assertions run on their own.
-
-        Patches the prepare function rather than `asyncio.to_thread`: `app.py`
-        offloads hook transcript recording through `to_thread` too, so a
-        module-wide stub would silently disable unrelated work and hand back a
-        false pass.
-        """
-
-        def prepare(
-            _messages: list[Any], *, show_reasoning: bool = False
-        ) -> tuple[list[MessageData], tuple[()]]:
-            assert not show_reasoning
-            return converted, ()
-
-        return patch.object(
-            DeepAgentsApp,
-            "_prepare_thread_history_messages",
-            staticmethod(prepare),
-        )
-
-    async def test_extracts_nonzero_context_tokens(self) -> None:
-        """Persisted _context_tokens should propagate to the payload."""
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
-        app = DeepAgentsApp()
-        app._agent = MagicMock()
-        raw_messages = [object()]
-        state = MagicMock()
-        state.values = {"messages": raw_messages, "_context_tokens": 12000}
-        app._agent.aget_state = AsyncMock(return_value=state)
-        converted = [MessageData(type=MessageType.USER, content="hello")]
-
-        with self._skip_conversion(converted):
-            payload = await app._fetch_thread_history_data("tid-1")
-
-        assert payload.context_tokens == 12000
-
-    async def test_extracts_model_spec(self) -> None:
-        """Persisted `_model_spec` should propagate to the payload."""
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
-        app = DeepAgentsApp()
-        app._agent = MagicMock()
-        raw_messages = [object()]
-        state = MagicMock()
-        state.values = {
-            "messages": raw_messages,
-            "_model_spec": "anthropic:claude-sonnet-4-5",
-        }
-        app._agent.aget_state = AsyncMock(return_value=state)
-        converted = [MessageData(type=MessageType.USER, content="hello")]
-
-        with self._skip_conversion(converted):
-            payload = await app._fetch_thread_history_data("tid-1")
-
-        assert payload.model_spec == "anthropic:claude-sonnet-4-5"
-
-    async def test_missing_model_spec_is_empty(self) -> None:
-        """A legacy thread without `_model_spec` yields `model_spec=""`."""
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
-        app = DeepAgentsApp()
-        app._agent = MagicMock()
-        raw_messages = [object()]
-        state = MagicMock()
-        state.values = {"messages": raw_messages}
-        app._agent.aget_state = AsyncMock(return_value=state)
-        converted = [MessageData(type=MessageType.USER, content="hello")]
-
-        with self._skip_conversion(converted):
-            payload = await app._fetch_thread_history_data("tid-1")
-
-        assert payload.model_spec == ""
-
-    async def test_extracts_cache_endpoint_identity(self) -> None:
-        """Persisted cache endpoint should propagate to the restore payload."""
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
-        app = DeepAgentsApp()
-        app._agent = MagicMock()
-        raw_messages = [object()]
-        state = MagicMock()
-        state.values = {
-            "messages": raw_messages,
-            "_last_model_request_at": "2026-08-11T12:30:00+00:00",
-            "_last_cache_endpoint": "https://api.anthropic.com/v1",
-        }
-        app._agent.aget_state = AsyncMock(return_value=state)
-        converted = [MessageData(type=MessageType.USER, content="hello")]
-
-        with self._skip_conversion(converted):
-            payload = await app._fetch_thread_history_data("tid-1")
-
-        assert payload.cache_state is not None
-        assert (
-            payload.cache_state["_last_cache_endpoint"]
-            == "https://api.anthropic.com/v1"
-        )
-
-    async def test_none_context_tokens_coerced_to_zero(self) -> None:
-        """`_context_tokens: None` in checkpoint should coerce to 0."""
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
-        app = DeepAgentsApp()
-        app._agent = MagicMock()
-        raw_messages = [object()]
-        state = MagicMock()
-        state.values = {"messages": raw_messages, "_context_tokens": None}
-        app._agent.aget_state = AsyncMock(return_value=state)
-        converted = [MessageData(type=MessageType.USER, content="hello")]
-
-        with self._skip_conversion(converted):
-            payload = await app._fetch_thread_history_data("tid-1")
-
-        assert payload.context_tokens == 0
-
-
 class TestLoadThreadHistory:
     """Tests for DeepAgentsApp._load_thread_history."""
 
@@ -2173,9 +2049,24 @@ class TestConvertMessagesToData:
         assert len(result) == 1
         assert result[0].content == "connector user message"
 
+    def test_unpinned_invocation_shows_instructions_not_loaded(self) -> None:
+        """A failed pin leaves an invocation row that says nothing was loaded."""
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_code.skills.invocation import build_skill_invocation_envelope
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        envelope = build_skill_invocation_envelope("review")
+        messages = [HumanMessage(envelope.prompt, **envelope.message_kwargs)]
+
+        result = DeepAgentsApp._convert_messages_to_data(messages)
+
+        assert [row.type for row in result] == [MessageType.SKILL]
+        assert "not loaded" in (result[0].skill_body or "")
+
     def test_ai_message_content_block_list(self) -> None:
         """AIMessage with list-of-blocks content should extract text."""
-        from deepagents_code.tui.widgets.message_store import MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         blocks: list[dict[str, str]] = [
             {"type": "text", "text": "Part 1. "},
@@ -2225,7 +2116,7 @@ class TestConvertMessagesToData:
         assert formatted.content.plain == ASK_USER_FAILED_SUMMARY
 
     def test_skill_read_splits_history_tool_groups(self) -> None:
-        from deepagents_code.tui.widgets.message_store import MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
         from deepagents_code.tui.widgets.messages import ToolCallMessage
 
         paths = ["before.py", "/skills/review/SKILL.md", "after.py"]
@@ -2252,7 +2143,7 @@ class TestConvertMessagesToData:
 
     def test_checkpoint_edit_restores_diff(self) -> None:
         """Checkpointed edit arguments rebuild the diff omitted from graph state."""
-        from deepagents_code.tui.widgets.message_store import MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         tool, diff = DeepAgentsApp._convert_messages_to_data(
             [
@@ -2282,7 +2173,7 @@ class TestConvertMessagesToData:
         assert all(getattr(row, "selection_prefix", 2) == 2 for row in widget.compose())
 
     def test_ai_message_reasoning_blocks_follow_preference(self) -> None:
-        from deepagents_code.tui.widgets.message_store import MessageType
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         messages = [
             self._make_ai(
@@ -2294,8 +2185,8 @@ class TestConvertMessagesToData:
             )
         ]
 
-        hidden = DeepAgentsApp._convert_messages_to_data(messages)
-        visible = DeepAgentsApp._convert_messages_to_data(messages, show_reasoning=True)
+        visible = DeepAgentsApp._convert_messages_to_data(messages)
+        hidden = DeepAgentsApp._convert_messages_to_data(messages, show_reasoning=False)
 
         assert [(message.type, message.content) for message in hidden] == [
             (MessageType.ASSISTANT, "Before after")

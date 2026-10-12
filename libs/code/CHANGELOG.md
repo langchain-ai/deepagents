@@ -2,6 +2,25 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.84](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.83...deepagents-code==0.1.84) (2026-10-12)
+
+### Features
+
+- Resolve invoked skills on the server and check whether they are trusted ([#6837](https://github.com/langchain-ai/deepagents/pull/6837)).
+- Show provider-visible reasoning by default in the TUI ([#6850](https://github.com/langchain-ai/deepagents/pull/6850)).
+- Surface Daytona sandbox snapshots ([#6854](https://github.com/langchain-ai/deepagents/pull/6854)).
+
+### Bug Fixes
+
+- Refresh the agent skill catalog when `/reload` is run ([#6843](https://github.com/langchain-ai/deepagents/pull/6843)).
+- Keep fork goals visible without grading them ([#6893](https://github.com/langchain-ai/deepagents/pull/6893)).
+
+## [0.1.83](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.82...deepagents-code==0.1.83) (2026-10-07)
+
+### Features
+
+- Recommend Haiku 5.5 for sidecar models.
+
 ## [0.1.82](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.81...deepagents-code==0.1.82) (2026-10-07)
 
 ### Features

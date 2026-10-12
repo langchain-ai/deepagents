@@ -1,62 +1,42 @@
 ---
 type: persistence architecture
-title: State, Checkpoints, and Persistent Records
-description: Explains dcode's SQLite session index, durable thread names, UUID7 identifiers, local ownership fencing, and read-only inspection workflow. Distinguishes these records from workspace binding, graph state, offload and cost records, and Talon's independent persistence model.
+title: State, Checkpoints, and Sessions
+description: Explains how LangGraph checkpoints, dcode's local SQLite sessions, thread ownership fencing, durable titles, and separate graph stores relate. Covers restoration, isolation, deletion, inspection, and the distinct Talon persistence model.
 tags: [deepagents, dcode, persistence, checkpoints, sqlite, thread-ownership, recovery, thread-inspection]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-07T08:06:51.789Z
+    at: 2026-10-09T08:07:51.383Z
 sources:
-  - id: openwiki-source-1f9226665e99f6f846936c59
-    resource: repo://libs/code/deepagents_code/built_in_skills/deepagents-thread-inspector/scripts/inspect_sessions.py
-  - id: openwiki-source-73a12d41c3ec5c3f079ed79e
-    resource: repo://libs/code/deepagents_code/built_in_skills/deepagents-thread-inspector/SKILL.md
-  - id: openwiki-source-b9ef532d79a0667acf40e58b
-    resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
+  - id: openwiki-source-fdf5afeb1dd1d11652374e88
+    resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
     resource: repo://libs/code/deepagents_code/client/remote_client.py
   - id: openwiki-source-0f8622164498a685abc913d5
     resource: repo://libs/code/deepagents_code/sessions.py
   - id: openwiki-source-91c9283d1547adfffd627c43
     resource: repo://libs/code/deepagents_code/thread_ownership.py
-  - id: openwiki-source-c8dacdfd6192dd22d24a9362
-    resource: repo://libs/code/tests/integration_tests/test_pending_work_recovery.py
-  - id: openwiki-source-140e3a9397d67359bab19562
-    resource: repo://libs/code/tests/unit_tests/skills/test_thread_inspector.py
+  - id: openwiki-source-52062c280ae38e9e9acab191
+    resource: repo://libs/code/deepagents_code/thread_titles.py
   - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
     resource: repo://libs/code/tests/unit_tests/test_sessions.py
   - id: openwiki-source-a5951057e151512583e7fd3f
     resource: repo://libs/code/tests/unit_tests/test_thread_ownership_transitions.py
   - id: openwiki-source-a5e918d96b1dae3f7adec3f5
     resource: repo://libs/code/tests/unit_tests/test_thread_ownership.py
+  - id: openwiki-source-53083c05d51a08d395327737
+    resource: repo://libs/code/tests/unit_tests/test_thread_titles.py
   - id: openwiki-source-822ae989625ba99d4c7cc08b
     resource: repo://libs/deepagents/deepagents/_messages_reducer.py
-  - id: openwiki-source-07f9eac13e71bcbdb4e6994b
-    resource: repo://libs/deepagents/deepagents/backends/state.py
-  - id: openwiki-source-21e2b0401425a427d8cea9c1
-    resource: repo://libs/deepagents/deepagents/backends/store.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-995d5d95882808a64071f617
     resource: repo://libs/talon/deepagents_talon/archive_saver.py
-  - id: openwiki-source-c2be68f237284dc06b9c12f7
-    resource: repo://libs/talon/deepagents_talon/checkpoint_backends.py
-  - id: openwiki-source-81698d033a5726401d48b135
-    resource: repo://libs/talon/deepagents_talon/config.py
-  - id: openwiki-source-2318fb8a25701a5cdae717fe
-    resource: repo://libs/talon/deepagents_talon/history_vector_backends.py
-  - id: openwiki-source-811fef57cecdbee2ba06a7b5
-    resource: repo://libs/talon/deepagents_talon/store_archive.py
-  - id: openwiki-source-fdd0c2c3830b8e9a88502a57
-    resource: repo://libs/talon/README.md
   - id: openwiki-source-c996df77875d3c6b30ca07cf
     resource: repo://libs/talon/tests/unit_tests/test_archive_saver.py
-  - id: openwiki-source-628fd919fd2bdb09579bfb16
-    resource: repo://libs/talon/tests/unit_tests/test_checkpoint_backends.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-09T08:07:51.383Z" }
 ---
 
-# State, Checkpoints, and Persistent Records
+# State, Checkpoints, and Sessions
 
 Persistence is deliberately divided by scope and owner. A dcode session is a LangGraph thread checkpointed in local `sessions.db`; it is neither a workspace binding nor a durable record of every auxiliary subsystem. DeepAgents graph state and its file backends have their own semantics, while Talon has a separate assistant-scoped checkpoint, archive, vector, and scheduler model. Do not treat any one of these stores as a transactional backup of the others.
 
@@ -75,13 +55,17 @@ Persistence is deliberately divided by scope and owner. A dcode session is a Lan
 
 ## dcode session database and thread identity
 
-`deepagents_code.sessions` resolves `DEFAULT_STATE_DIR / "sessions.db"` after hardening the state directory. It opens `aiosqlite` through a cancellation-conscious wrapper: application connections use an extended lock timeout, worker threads are joined after close, and an opening-time guard preserves a SQLite handle that cancellation might otherwise leak.
+`deepagents_code.sessions` resolves `DEFAULT_STATE_DIR / "sessions.db"` after hardening the state directory. It opens `aiosqlite` through a cancellation-conscious wrapper: ordinary session connections use an extended lock timeout, while `get_checkpointer()` uses the saver default. Before opening, the wrapper records the worker-created SQLite handle and queues an explicit close so cancellation in `aiosqlite`'s open handoff cannot strand it; after close it joins the worker thread. This protects application shutdown and test teardown from leaked handles and closed-event-loop worker callbacks without changing the checkpoint ownership model.
 
 New threads receive a full UUID7 string. UUID7 is time-ordered, so newly created IDs naturally sort by creation time; old short hexadecimal IDs remain valid and are listed alongside UUID7 threads. IDs identify sessions, not titles: a meaningful title is separately stored and can be changed without rewriting conversation history.
 
 The database is LangGraph's SQLite checkpoint schema, not a hand-maintained conversation table. `list_threads()` derives one row per thread from checkpoint metadata and makes the common listing path index-only with `idx_dcode_threads_list_v2`, avoiding a scan of large serialized checkpoint blobs. The one-time index build may be slow on an existing large database, but a failure is non-fatal: listing remains correct and falls back to a slower scan. Listings can filter by agent, branch, or exact `cwd` string; a `cwd` filter excludes legacy rows with no stored path. They can sort by latest activity or by creation time, and their in-memory list, message-count, and initial-prompt caches are presentation accelerators rather than sources of truth.
 
 Names are intentionally loaded after the limited metadata query so the covering index stays compact. `dcode_thread_names` is the authoritative, durable name record. For databases predating that table, readers fall back to `thread_name` in the latest root checkpoint metadata. Renaming validates a printable, single-line trimmed name of 1–50 characters, starts an immediate SQLite transaction, requires that the thread exists, and atomically upserts the durable row; `only_if_unnamed=True` lets concurrent automatic naming select only one winner and preserves an existing generated or manual title. The latest checkpoint metadata is also updated for legacy interoperability, but later checkpoints cannot erase the durable title. Thread deletion removes the name record.
+
+### Generated titles are proposals, not state
+
+`generate_thread_name()` provides the text for an optional title; persistence still happens through `rename_thread()`. It builds a bounded input from visible human and AI messages only, excluding system, internal/control, tool, and user-shell messages, then invokes a tool-free chat model with callbacks disabled. The returned text is normalized to the same one-line, printable, 50-character limit as manual names. The app runs generation outside the message pump, charges it to the thread, and uses `only_if_unnamed=True` for automatic titles, so an automatic result cannot overwrite a title that was set while the model request was in flight. Model initialization and its cancellation cleanup are awaited before cancellation escapes, avoiding a background provider-settings mutation after a timeout.
 
 The messages channel may be a `DeltaChannel`, so the newest checkpoint need not contain an inline message list. For display, dcode reconstructs counts by replaying root-namespace `writes` in checkpoint/task/index order and excludes subgraph writes. It intentionally includes pending writes because the normal head-state read applies them; dcode does not create time-travel branches, so that full linear fold represents the visible head. Initial prompts instead come from the first messages write when possible, because partial checkpoints may omit `messages`.
 

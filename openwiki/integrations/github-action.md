@@ -5,7 +5,7 @@ description: Run one bounded, non-interactive dcode task from a GitHub Actions j
 tags: [github-actions, dcode, deepagents-code, ci, automation, memory, mcp, sandbox]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
+    at: 2026-10-08T08:07:53.482Z
 sources:
   - id: openwiki-source-b1423dca16677f7643488f74
     resource: repo://.github/scripts/tests/workflows/test_github_action.py
@@ -13,12 +13,16 @@ sources:
     resource: repo://action.yml
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+  - id: openwiki-source-0fc0e47059e4d07e23e50be2
+    resource: repo://libs/deepagents/deepagents/graph.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
 ---
 
 # GitHub Action Integration
 
 The repository-root composite action, `langchain-ai/deepagents`, is a GitHub Actions adapter for a single headless `dcode` task. Its public contract is **only** the inputs and outputs declared in root `action.yml`: the wrapper installs `deepagents-code`, validates selected values, passes credentials through its process environment, and translates supported inputs into `dcode` arguments. dcode—not the composite action—owns its broader configuration layering, model/runtime behavior, tool execution, and sandbox implementation. See [Run a dcode Session](/openwiki/workflows/run-dcode-session.md) for that runtime.
+
+This is separate from the programmatic Deep Agents SDK boundary: `create_deep_agent()` assembles and returns a compiled agent graph from caller-supplied model, tools, middleware, backend, permissions, state, checkpoint, and cache configuration. The action does not offer that graph-construction API through `with:`; it launches the packaged CLI in the checked-out workspace instead. Use [Build or Modify a Deep Agent](/openwiki/workflows/build-a-deep-agent.md) when an application needs that construction-level control.
 
 ## Use in a job
 

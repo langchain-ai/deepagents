@@ -34,6 +34,7 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._skill_tools import _SKILL_TOOLS_DISCLOSED_KEY
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.rubric import _RUBRIC_KEY
 from deepagents.middleware.summarization import (
     SUMMARIZATION_EVENT_KEY,
     SUMMARIZATION_SESSION_ID_KEY,
@@ -49,7 +50,14 @@ SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
 
 _FORK_EXCLUDED_STATE_KEYS = frozenset(
-    {"structured_response", "pinned_skills", SUMMARIZATION_EVENT_KEY, SUMMARIZATION_SESSION_ID_KEY, _SKILL_TOOLS_DISCLOSED_KEY}
+    {
+        "structured_response",
+        "pinned_skills",
+        _RUBRIC_KEY,
+        SUMMARIZATION_EVENT_KEY,
+        SUMMARIZATION_SESSION_ID_KEY,
+        _SKILL_TOOLS_DISCLOSED_KEY,
+    }
 )
 """State a fork must not resume.
 
@@ -57,7 +65,8 @@ The summarization event is folded into the fork's messages instead. Dropping the
 session ID lets the subagent generate its own, and dropping a prior structured response
 ensures it cannot be mistaken for the fork's result. The disclosed skill tools
 describe the parent's last model call; the fork records its own. Skills the parent
-has yet to pin are the parent's own.
+has yet to pin are the parent's own. The rubric grades the parent's whole goal,
+not the fork's task.
 """
 
 _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
@@ -350,6 +359,8 @@ def _fork_messages(
     messages: Sequence[AnyMessage],
     event: SummarizationEvent | None,
     description: str,
+    *,
+    preamble: str = _FORK_TASK_PREAMBLE,
 ) -> list[AnyMessage]:
     """Build a fork's history: the parent's effective conversation, then the task.
 
@@ -360,7 +371,7 @@ def _fork_messages(
     if history and isinstance(history[-1], AIMessage) and history[-1].tool_calls:
         history.pop()
     effective = _DeepAgentsSummarizationMiddleware._apply_event_to_messages(history, event)
-    return [*effective, HumanMessage(content=_FORK_TASK_PREAMBLE + description)]
+    return [*effective, HumanMessage(content=preamble + description)]
 
 
 DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.
@@ -376,6 +387,7 @@ _EXCLUDED_STATE_KEYS = {
     "pinned_skills",
     _SKILL_TOOLS_DISCLOSED_KEY,
     _FORKED_CONTEXT_KEY,
+    _RUBRIC_KEY,
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.
@@ -392,9 +404,26 @@ When returning updates:
     parent's list with its own. `_skill_tools_disclosed` is excluded because it
     describes one agent's latest model call, and `pinned_skills` because a
     pending pin belongs to the agent it was requested for.
-4. Agent-private fields on middleware state schemas are excluded from both
+4. `rubric` belongs to the caller. A child that inherits it is graded against
+    the caller's whole goal instead of its own task. It has no reducer, so
+    parallel `task` calls that each return it would conflict, and one child
+    could also replace the caller's rubric.
+5. Agent-private fields on middleware state schemas are excluded from both
     subagent output and subagent inputs.
 """
+
+
+def _is_unchanged(key: str, value: object, inputs: dict) -> bool:
+    """Return whether a subagent returned `key` exactly as it received it.
+
+    Such keys are dropped from the subagent's update. A key without a reducer
+    would otherwise make parallel `task` calls conflict, and a key with an
+    additive reducer would get the inherited value added again.
+    """
+    if key not in inputs:
+        return False
+    # `is True` treats an ambiguous comparison, such as an array result, as a change.
+    return value is inputs[key] or (value == inputs[key]) is True
 
 
 _TASK_TOOL_INJECTED_ARGS = frozenset({"runtime"})
@@ -693,7 +722,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     # mirror tool (above) can reference these directly -- everything they
     # call is only looked up when actually invoked, long after this
     # function returns, so those don't need to exist yet.
-    def _return_command_with_state_update(result: dict, tool_call_id: str) -> Command:
+    def _return_command_with_state_update(result: dict, tool_call_id: str, inputs: dict) -> Command:
         # Validate that the result contains a 'messages' key
         if "messages" not in result:
             error_msg = (
@@ -703,7 +732,9 @@ def _build_task_tool(  # noqa: C901, PLR0915
             )
             raise ValueError(error_msg)
 
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys}
+        state_update = {
+            k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys and not _is_unchanged(k, v, inputs)
+        }
 
         structured = result.get("structured_response")
         if structured is not None:
@@ -810,7 +841,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
         with _subagent_tracing_context():
             result = subagent.invoke(subagent_state, subagent_config)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
 
     async def atask(
         description: str,
@@ -840,7 +871,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
         with _subagent_tracing_context():
             result = await subagent.ainvoke(subagent_state, subagent_config)
-        return _return_command_with_state_update(result, runtime.tool_call_id)
+        return _return_command_with_state_update(result, runtime.tool_call_id, subagent_state)
 
     compiled_subagents = [_compile_spec(spec) for spec in subagents]
     subagents_by_name = {spec["name"]: spec for spec in subagents}

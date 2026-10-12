@@ -177,7 +177,7 @@ _ALLOWLIST: dict[CallSite, str] = {
         "project_utils.py", "find_project_root", "Path.cwd", "60fa8f5e"
     ): "The helper default supports client callers; server callers pass a start path.",
     CallSite(
-        "skills/invocation.py", "discover_skills_and_roots", "Path.cwd", "7649626b"
+        "skills/invocation.py", "discover_skills_and_roots", "Path.cwd", "b527b014"
     ): "Skill invocation discovery runs in the TUI or headless client.",
     CallSite(
         "tool_catalog.py", "_load_mcp_server_info", "Path.cwd", "53b35c21"

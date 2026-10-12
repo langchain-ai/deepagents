@@ -14,6 +14,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_skill_tools.py
   - id: openwiki-source-8b1aaf77fc0430fd00711a73
     resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-46a23efe78a78f9b3cd75d00
@@ -28,10 +30,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-12T08:20:17.385Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+    at: 2026-10-12T08:20:17.385Z
 ---
 
 # Middleware Catalog
@@ -72,7 +74,7 @@ This lifecycle shows why middleware has control before every model request while
 
 Filesystem permissions are evaluated in declaration order and the first matching rule wins; unmatched operations are allowed. `deny` returns a permission error, whereas `interrupt` contributes an approval rule to `HumanInTheLoopMiddleware` (with caller-supplied `interrupt_on` taking precedence for a tool). These rules apply to built-in filesystem tools, not direct backend use. Subagents inherit parent permissions unless their specification supplies a replacement list.
 
-With `offload_binary_content=True`, `FilesystemMiddleware` content-addresses valid base64 `read_file` payloads under `{artifacts_root}/blobs/<sha256>`, stores `deepagents_blob` references, and rehydrates verified payloads for a model request. A failed upload remains inline; missing, malformed, tampered, or unavailable blobs become a text notice.
+With `offload_binary_content=True`, `FilesystemMiddleware` content-addresses valid base64 `read_file` payloads under `{artifacts_root}/blobs/<sha256>`, stores `deepagents_blob` references, and rehydrates verified payloads for a model request. It also replaces inline human media and `read_file` results found in history at the next model call. A failed upload remains inline; missing, malformed, tampered, or unavailable blobs become a text notice. The option is disabled with a warning when the `blobs/` route is a `StateBackend`, because that route would keep the payload in checkpointed state rather than offloading it.
 
 `MemoryMiddleware` loads sources once when `memory_contents` is absent, strips HTML comments before prompt injection, and permits `system_prompt=None` when callers want state without injected instructions. In the assembled graph it requests an Anthropic-only cache-control breakpoint after the generic caching middleware. `UnsupportedContentMiddleware` must be late: it evaluates the *actual request model* and replaces unsupported multimodal blocks only in a copied request, preserving the original thread for a later capable model.
 
@@ -108,9 +110,17 @@ Existing request tools named by an include are already callable. If such a tool 
 
 ## Subagents, state boundaries, and skill sources
 
-A declarative `SubAgent` receives an independently assembled middleware stack; a `CompiledSubAgent` supplies its own runnable. Isolated workers receive only the delegated task by default. Experimental `mode="fork"` instead continues the parent's effective, compacted conversation, rebuilds inherited prompt-producing behavior, and prevents recursive delegation. A fork cannot declare its own `skills`: it inherits the top-level sources so its skill registry does not diverge.
+A declarative `SubAgent` receives an independently assembled middleware stack; a `CompiledSubAgent` supplies its own runnable. Isolated workers receive only the delegated task by default. Experimental `mode="fork"` instead continues the parent's effective, compacted conversation, rebuilds inherited prompt-producing behavior, and refuses recursive `task` delegation at call time. A fork cannot declare its own `skills`: it inherits the top-level sources so its skill registry does not diverge.
 
-Ordinary parent/subagent exchange excludes `skills_metadata`, `pinned_skills`, and the last skill-tool disclosure, as well as fields marked `PrivateStateAttr`; this prevents a worker's skill loading and per-call authorization record from leaking across agents. A custom state schema whose annotations cannot be resolved at runtime is a risk boundary: its private fields cannot be discovered and are forwarded with a warning.
+The `task` tool rejects an unknown subagent type and requires a tool-call ID. A child result becomes one parent `ToolMessage`: it serializes `structured_response` when supplied, otherwise takes the last non-empty `AIMessage` text. Ordinary parent/subagent exchange excludes `skills_metadata`, `pinned_skills`, and the last skill-tool disclosure, as well as fields marked `PrivateStateAttr`; this prevents a worker's skill loading and per-call authorization record from leaking across agents. A custom state schema whose annotations cannot be resolved at runtime is a risk boundary: its private fields cannot be discovered and are forwarded with a warning.
+
+### Remote asynchronous subagents
+
+`AsyncSubAgentMiddleware` is a distinct remote-delegation path, not a nonblocking variant of `task`. Each `AsyncSubAgent` names an Agent Protocol `graph_id` and can supply a server `url` and headers. The middleware creates `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`; it rejects an empty spec set, duplicate names, and any mode other than `isolated` or experimental `fork`.
+
+Starting a task creates a remote thread and run, returns immediately, and writes an `AsyncTask` record to the parent's `async_tasks` state keyed by its task/thread ID. The record retains the agent name, current run ID, status, and timestamps, so it survives compaction and can be checked later. `check_async_task` fetches the run and returns the final remote message on success; `list_async_tasks` refreshes non-terminal statuses but falls back to the stored status if the status request fails. `update_async_task` interrupts the current run by starting a new run on the same remote thread and replaces its run ID; cancellation marks the tracked task cancelled after the remote cancellation succeeds.
+
+An isolated remote launch sends only the description. A remote fork sends a snapshot of the parent’s effective, summarized conversation plus the task, rehydrates offloaded tool media before serializing it, and drops local artifacts and eviction tags. The remote agent still owns its system prompt, tools, and runtime. Omit `url` only for an async parent entrypoint such as `ainvoke`; synchronous launching requires a reachable URL. Platform credentials normally come from the SDK environment, while self-hosted authentication belongs in `headers` (the middleware supplies `x-auth-scheme: langsmith` unless overridden).
 
 Skill configuration is scoped deliberately:
 
@@ -143,4 +153,6 @@ Skills belongs after compaction and routing or fallback middleware, but before c
 
 ## Focused regression coverage
 
-When changing this stack, test the ordering rather than only individual methods: name replacement versus new insertion; protected and final profile filtering; placement of skills after fallback or routing and before caching; default, declarative, and forked skill sourcing; and general-purpose inheritance. Skill-tool coverage should exercise read and pin anchors, same-turn rejection, compaction withdrawal, resolver re-resolution, deferred tools, and provider-specific inline disclosure. These tests protect the invariant that the model's advertised tools, the selected model, and tool-time execution agree.
+When changing this stack, test the ordering rather than only individual methods: name replacement versus new insertion; protected and final profile filtering; placement of skills after fallback or routing and before caching; default, declarative, and forked skill sourcing; and general-purpose inheritance. Skill-tool coverage should exercise read and pin anchors, same-turn rejection, compaction withdrawal, resolver re-resolution, deferred tools, and provider-specific inline disclosure.
+
+For delegation, test the state boundary and result adapter as well as the tool schema: isolated versus forked message construction, recursion refusal, private-state stripping, structured-output serialization, and compiled-runnable requirements. Async coverage should use mocked SDK clients to verify task creation and persisted IDs, invalid types and duplicate specs, status and result handling, update replacement of the run ID, cancellation, terminal-status behavior, and both isolated and forked launch payloads. These tests protect the invariant that the model's advertised tools, the selected model, and tool-time execution agree.

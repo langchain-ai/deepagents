@@ -1342,6 +1342,33 @@ class SkillMessage(Vertical):
             self._md_widget.update(body)
         self._md_rendered = True
 
+    def set_instructions(self, description: str, body: str) -> None:
+        """Show instructions that arrive after the row mounts.
+
+        The agent server reads the skill, so a live invocation learns its
+        description and body only when the pinned message streams back.
+
+        Args:
+            description: Short description of the skill.
+            body: `SKILL.md` body.
+        """
+        self._description = description
+        self._body = body
+        self._stripped_body = _strip_frontmatter(body)
+        if not self.is_mounted:
+            # `compose` and `on_mount` render the updated fields.
+            return
+        if description:
+            self.mount(
+                _SkillToggle(
+                    Content.styled(description, "dim"),
+                    classes="skill-description",
+                ),
+                after=self.query_one(".skill-header"),
+            )
+        if stripped := self._stripped_body.strip():
+            self._prepare_body(stripped)
+
     def toggle_body(self) -> None:
         """Toggle between preview and full body display."""
         if not self._stripped_body.strip():

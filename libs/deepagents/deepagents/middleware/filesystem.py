@@ -355,6 +355,28 @@ def _video_window_header(path: str, offset_seconds: float, duration_seconds: flo
     return f"Reading [{offset_seconds:.3f}s, {end:.3f}s) of {path} at {rate} fps."
 
 
+_IMAGE_SIGNATURES: Final = (
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def _sniff_image_mime_type(content: str) -> str | None:
+    """Detect an image media type from the leading bytes of base64 content."""
+    try:
+        head = base64.b64decode(content[:16], validate=True)
+    except ValueError:
+        return None
+    for signature, mime_type in _IMAGE_SIGNATURES:
+        if head.startswith(signature):
+            return mime_type
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
 def _get_read_file_type(path: str, *, video_enabled: bool) -> FileType:
     """Classify a file for `read_file`, gating optional video extensions."""
     file_type = _get_file_type(path)
@@ -2210,7 +2232,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             # type; unknown binary extensions fall back to the generic `"file"`.
             if encoding == "base64" or file_type != "text":
                 block_type = file_type if file_type != "text" else "file"
-                mime_type = mimetypes.guess_type("file" + Path(validated_path).suffix)[0] or "application/octet-stream"
+                mime_type = (
+                    (block_type == "image" and _sniff_image_mime_type(content))
+                    or mimetypes.guess_type("file" + Path(validated_path).suffix)[0]
+                    or "application/octet-stream"
+                )
                 return ToolMessage(
                     content_blocks=cast("list[ContentBlock]", [{"type": block_type, "base64": content, "mime_type": mime_type}]),
                     name="read_file",

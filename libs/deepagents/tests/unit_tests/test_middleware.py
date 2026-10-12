@@ -1,3 +1,4 @@
+import base64
 import mimetypes
 import time
 import warnings
@@ -2385,6 +2386,40 @@ class TestFilesystemMiddleware:
         assert result.content[0]["type"] == "image"
         assert result.content[0]["mime_type"] == "image/png"
         assert result.content[0]["base64"] == "<base64_data>"
+
+    @pytest.mark.parametrize(
+        ("raw", "expected_mime"),
+        [
+            (b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01", "image/jpeg"),
+            (b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", "image/png"),
+        ],
+    )
+    def test_read_file_image_mime_type_follows_content_bytes(self, raw, expected_mime):
+        """Image blocks carry the media type of the bytes, not the `.png` extension."""
+        encoded = base64.b64encode(raw).decode("ascii")
+
+        class ImageBackend(StateBackend):
+            def read(self, path, *, offset=0, limit=100):
+                return ReadResult(file_data={"content": encoded, "encoding": "base64"})
+
+        middleware = FilesystemMiddleware(backend=ImageBackend())
+        runtime = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="img-sniff",
+            store=None,
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+        result = read_file_tool.invoke({"file_path": "/app/photo.png", "runtime": runtime})
+
+        assert isinstance(result, ToolMessage)
+        assert isinstance(result.content, list)
+        assert result.content[0]["type"] == "image"
+        assert result.content[0]["mime_type"] == expected_mime
+        assert result.additional_kwargs["read_file_media_type"] == expected_mime
 
     def test_read_file_base64_unknown_extension_returns_file_block(self):
         """Binary reads route on `encoding`, not the extension map (#3657).

@@ -3641,6 +3641,8 @@ def create_cli_agent(
             model,
             system_prompt,
             environment,
+            backend=composite_backend,
+            filesystem_tools=fs_tools,
             profile_overrides=profile_overrides,
             instruction_middleware=[
                 item

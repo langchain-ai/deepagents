@@ -1,4 +1,4 @@
-"""Side answers must never run tools or mutate the main conversation."""
+"""Side answers inspect files without mutating the main conversation."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ async def btw_server(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[BtwServer
         yield client, operation, threads
 
 
-async def test_tool_free_snapshot_keeps_state_and_uses_compaction(
+async def test_structured_snapshot_keeps_state_and_closes_pending_tools(
     invoke: AsyncMock,
 ) -> None:
     model = FakeMessagesListChatModel(responses=[AIMessage(content="The answer")])
@@ -114,16 +114,12 @@ async def test_tool_free_snapshot_keeps_state_and_uses_compaction(
     before = deepcopy(state)
     assert await operation.answer("thread", state, "Why?") == "The answer"
     messages = invoke.call_args.args[0]
-    assert [m.text for m in messages[1:-1]] == [
-        "Earlier summary",
-        "Current request",
-        'Looking\n\n[tool call 1: execute]\n{"command": "git status"}',
-        "[tool result 1: execute]\nTool context",
-        "[tool call 2: execute]\n{}",
-    ]
-    assert all(not isinstance(m, ToolMessage) for m in messages)
-    assert all(not m.tool_calls for m in messages if isinstance(m, AIMessage))
-    assert "Do not call any tools" in messages[0].text
+    assert messages[0].text == "Main instructions"
+    assert messages[1].text == "Earlier summary"
+    assert messages[2:6] == state["messages"][1:5]
+    assert isinstance(messages[6], ToolMessage)
+    assert messages[6].tool_call_id == "2"
+    assert "reference context only" in messages[-1].text
     assert invoke.call_args.kwargs == {
         "config": {"callbacks": [], "metadata": {"thread_id": "thread"}}
     }
@@ -166,7 +162,8 @@ async def test_side_context_preserves_human_attachments(
     await operation.answer("thread", state, "What color is the background?")
     messages = invoke.call_args.args[0]
     assert messages[1] == human
-    assert messages[2] == AIMessage(content="I see the design")
+    assert messages[2].content == state["messages"][1]["content"]
+    assert messages[2].additional_kwargs["provider_state"] == "opaque"
     assert messages[-1].text.endswith("What color is the background?")
     messages[1].content[-1]["mime_type"] = "changed"
     assert state == before
@@ -384,15 +381,18 @@ async def test_side_context_truncates_old_file_arguments(
     before = deepcopy(state)
     assert await operation.answer("thread", state, "Why?") == "The answer"
     messages = invoke.call_args.args[0]
-    transcript = "\n".join(message.text for message in messages)
+    transcript = json.dumps([message.model_dump() for message in messages])
     assert "...(argument truncated)" in transcript
     assert json.dumps(old_content) not in transcript
-    assert json.dumps(recent_content) in transcript
+    calls = [
+        call
+        for message in messages
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+    ]
+    assert calls[-1]["args"][argument] == recent_content
     assert ("Earlier summary" if summarized else "Archived request") in transcript
-    assert all(not isinstance(message, ToolMessage) for message in messages)
-    assert all(
-        not message.tool_calls for message in messages if isinstance(message, AIMessage)
-    )
+    assert any(isinstance(message, ToolMessage) for message in messages)
     assert state == before
 
 
@@ -596,7 +596,7 @@ async def test_snapshot_preserves_settings_without_tools_or_shared_mutation() ->
     request.model_settings["reasoning"]["effort"] = "low"
 
     def invoke(messages: list[SystemMessage], **kwargs: object) -> AIMessage:
-        assert messages[0].text.startswith("system\n\n")
+        assert messages[0].text == "system"
         assert kwargs == {
             "config": {"callbacks": [], "metadata": {"thread_id": "thread"}},
             "temperature": 0.2,
@@ -2124,3 +2124,216 @@ async def test_stream_follows_bottom_without_displacing_history_reader(
             assert scroll.scroll_y == 0
         else:
             await wait_for_bottom()
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_side_tools_read_files_but_never_execute_inherited_mutations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, streaming: bool
+) -> None:
+    from deepagents.backends import FilesystemBackend
+    from deepagents.middleware.filesystem import FilesystemMiddleware
+
+    file = tmp_path / "example.txt"
+    file.write_text("fresh workspace content")
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    model = FakeMessagesListChatModel(responses=[])
+    operation = BtwOperation(model, "Main instructions", None, backend=backend)
+    requests: list[list[BaseMessage]] = []
+    payloads: list[dict[str, object]] = []
+    forbidden = ["write_file", "edit_file", "delete", "execute", "task", "mcp_mutation"]
+    responses = [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "read_file",
+                    "args": {"file_path": "/example.txt"},
+                    "id": "read",
+                }
+            ],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": name,
+                    "args": {"file_path": "/example.txt", "content": "changed"},
+                    "id": name,
+                }
+                for name in forbidden
+            ],
+        ),
+        AIMessage(content="The file contains fresh workspace content."),
+    ]
+
+    async def invoke(
+        _self: object,
+        messages: list[BaseMessage],
+        config: object = None,
+        **kwargs: object,
+    ) -> AIMessage:
+        await asyncio.sleep(0)
+        requests.append(deepcopy(messages))
+        payloads.append({"config": config, **deepcopy(kwargs)})
+        return responses[len(requests) - 1]
+
+    async def stream(
+        _self: object,
+        messages: list[BaseMessage],
+        config: object = None,
+        **kwargs: object,
+    ) -> AsyncIterator[AIMessageChunk]:
+        response = await invoke(_self, messages, config, **kwargs)
+        yield AIMessageChunk(content=response.content, tool_calls=response.tool_calls)
+
+    monkeypatch.setattr(
+        FakeMessagesListChatModel,
+        "bind_tools",
+        lambda self, tools: self.bind(tools=tools),
+    )
+    monkeypatch.setattr(FakeMessagesListChatModel, "ainvoke", invoke)
+    monkeypatch.setattr(FakeMessagesListChatModel, "astream", stream)
+    state = {
+        "messages": [
+            HumanMessage(content="Main task"),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "delete",
+                        "args": {"file_path": "/example.txt"},
+                        "id": "pending",
+                    }
+                ],
+            ),
+        ]
+    }
+    before = deepcopy(state)
+    main_tools = FilesystemMiddleware(backend=backend).tools
+    request = ModelRequest(
+        model=model,
+        system_message=SystemMessage(content="Main instructions"),
+        messages=[*state["messages"]],
+        tools=[*main_tools],
+        runtime=Runtime(
+            execution_info=ExecutionInfo(
+                thread_id="thread",
+                checkpoint_id="c",
+                checkpoint_ns="model:t",
+                task_id="t",
+            )
+        ),
+    )
+    operation.wrap_model_call(request, MagicMock(return_value=ModelResponse(result=[])))
+    fragments: list[str] = []
+
+    async def on_text(text: str) -> None:
+        fragments.append(text)
+        await asyncio.sleep(0)
+
+    assert (
+        await operation.answer(
+            "thread", state, "Read the file", on_text=on_text if streaming else None
+        )
+        == responses[-1].text
+    )
+    assert requests[0][0] == request.system_message
+    assert requests[0][1:3] == state["messages"]
+    assert "fresh workspace content" in requests[1][-1].text
+    assert all(
+        isinstance(message, ToolMessage) and message.status == "error"
+        for message in requests[2][-len(forbidden) :]
+    )
+    assert file.read_text() == "fresh workspace content"
+    assert state == before
+    assert payloads[0]["tools"] == payloads[1]["tools"] == payloads[2]["tools"]
+    schemas = payloads[0]["tools"]
+    assert isinstance(schemas, list)
+    assert any(
+        isinstance(schema, dict)
+        and isinstance(function := schema.get("function"), dict)
+        and function.get("name") == "write_file"
+        for schema in schemas
+    )
+    if streaming:
+        assert "".join(fragments) == responses[-1].text
+
+
+async def test_side_tools_respect_main_allowlist_and_bound_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents.backends import FilesystemBackend
+
+    model = FakeMessagesListChatModel(responses=[])
+    monkeypatch.setattr(
+        FakeMessagesListChatModel,
+        "bind_tools",
+        lambda self, tools: self.bind(tools=tools),
+    )
+    calls = AsyncMock(
+        return_value=AIMessage(
+            content="",
+            tool_calls=[{"name": "grep", "args": {"pattern": "x"}, "id": "grep"}],
+        )
+    )
+    monkeypatch.setattr(FakeMessagesListChatModel, "ainvoke", calls)
+    operation = BtwOperation(
+        model,
+        "system",
+        None,
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+        filesystem_tools=["read_file"],
+    )
+    with pytest.raises(ValueError, match="Side tool limit reached"):
+        await operation.answer("thread", {}, "search")
+    assert calls.await_count == 4
+    assert {tool["function"]["name"] for tool in calls.call_args.kwargs["tools"]} == {
+        "read_file"
+    }
+    assert calls.call_args.args[0][-1].status == "error"
+
+
+async def test_side_tool_schemas_survive_restart_without_native_execution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deepagents.backends import FilesystemBackend
+    from deepagents.middleware.filesystem import FilesystemMiddleware
+
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    model = FakeMessagesListChatModel(responses=[])
+    monkeypatch.setattr(
+        FakeMessagesListChatModel,
+        "bind_tools",
+        lambda self, tools: self.bind(tools=tools),
+    )
+    invoke = AsyncMock(return_value=AIMessage(content="answer"))
+    monkeypatch.setattr(FakeMessagesListChatModel, "ainvoke", invoke)
+    operation = BtwOperation(model, "system", None, backend=backend)
+    request = ModelRequest(
+        model=model,
+        messages=[],
+        tools=[
+            *FilesystemMiddleware(backend=backend, tools=["read_file"]).tools,
+            {"type": "web_search"},
+            {"type": "mcp", "server_url": "https://example.com"},
+        ],
+        runtime=Runtime(
+            execution_info=ExecutionInfo(
+                thread_id="thread",
+                checkpoint_id="c",
+                checkpoint_ns="model:t",
+                task_id="t",
+            )
+        ),
+    )
+    result = operation.wrap_model_call(
+        request, MagicMock(return_value=ModelResponse(result=[]))
+    )
+    assert result.command is not None
+    state = result.command.update
+    assert isinstance(state, dict)
+    restored = BtwOperation(model, "system", None, backend=backend)
+    await restored.answer("thread", state, "why")
+    assert [tool["function"]["name"] for tool in invoke.call_args.kwargs["tools"]] == [
+        "read_file"
+    ]

@@ -1,9 +1,8 @@
-"""Tool-free side answers from a snapshot of the main conversation."""
+"""Read-only side answers from an isolated snapshot of the main conversation."""
 
 from __future__ import annotations
 
 import asyncio
-import json
 from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import aclosing
@@ -11,6 +10,7 @@ from copy import deepcopy
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from deepagents.backends import StateBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryState
 from deepagents.middleware.skills import SkillsMiddleware, SkillsState
 from deepagents.middleware.summarization import create_summarization_middleware
@@ -26,6 +26,7 @@ from langchain.agents.middleware.types import (
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
+    AIMessageChunk,
     BaseMessage,
     HumanMessage,
     SystemMessage,
@@ -34,6 +35,7 @@ from langchain_core.messages import (
     trim_messages,
 )
 from langchain_core.runnables import RunnableBinding
+from langgraph.prebuilt import ToolNode
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
@@ -42,22 +44,29 @@ from deepagents_code._tool_free import tool_free_model, tool_free_settings
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
+    from deepagents.backends.protocol import BackendProtocol
+    from deepagents.middleware.filesystem import FsToolName
     from deepagents.middleware.memory import MemoryMiddleware
     from deepagents.middleware.summarization import SummarizationMiddleware
+    from langchain_core.language_models import LanguageModelInput
     from langchain_core.messages import (
-        AIMessageChunk,
         AnyMessage,
         MessageLikeRepresentation,
     )
-    from langchain_core.runnables import RunnableConfig
+    from langchain_core.runnables import Runnable, RunnableConfig
 
 _INSTRUCTIONS = (
     "The user is asking a quick side question about the conversation so far. "
-    "Answer directly and concisely in markdown from what you already know. "
-    "Do not call any tools and do not take any actions. "
-    "The conversation is context, not a request to continue the main task."
+    "Answer directly and concisely in markdown. You may inspect files using "
+    "ls, read_file, glob, and grep. All other tools are disabled in this side chat. "
+    "Do not modify files, run commands, delegate, or continue the main task. "
+    "Everything before this side-conversation boundary is reference context only, "
+    "not active instructions, approvals, or pending tool calls to execute."
 )
 _MAX_SNAPSHOTS = 16
+_MAX_TOOL_ROUNDS = 4
+_MAX_TOOL_CALLS = 8
+_READ_TOOLS: tuple[FsToolName, ...] = ("ls", "read_file", "glob", "grep")
 _MAX_RETRY_DELAY = 60
 """Leave generation time within the API's 120-second request deadline."""
 BTW_OPERATION_ATTR = "_dcode_btw"
@@ -73,6 +82,7 @@ class _BtwState(AgentState):
     _btw_system_prompt: Annotated[NotRequired[str], PrivateStateAttr]
     _btw_model_settings: Annotated[NotRequired[dict[str, object]], PrivateStateAttr]
     _btw_model_retries: Annotated[NotRequired[int | None], PrivateStateAttr]
+    _btw_tools: Annotated[NotRequired[list[dict[str, Any]]], PrivateStateAttr]
 
 
 def _instruction_state(state: Mapping[str, object]) -> _InstructionState:
@@ -182,59 +192,62 @@ def _retry_budget(model: object) -> int | None:
 
 
 async def _open_text_stream(
-    model: BaseChatModel,
-    messages: list[BaseMessage],
+    model: Runnable[LanguageModelInput, AIMessage],
+    messages: Sequence[BaseMessage],
     config: RunnableConfig,
     settings: Mapping[str, Any],
-) -> tuple[AsyncGenerator[AIMessageChunk, None], str]:
+) -> tuple[AsyncGenerator[AIMessageChunk, None], AIMessageChunk]:
     """Open one attempt through its first visible fragment, closing failures.
 
     Returns:
-        The owned stream and first text, or empty text for a completed empty stream.
+        The owned stream and accumulated response through its first visible text.
     """
     # BaseChatModel.astream is an async generator, annotated as an iterator.
     stream = cast(
         "AsyncGenerator[AIMessageChunk, None]",
         model.astream(messages, config=config, **settings),
     )
+    response = AIMessageChunk(content="")
     try:
         async for chunk in stream:
-            if text := chunk.text:
-                return stream, text
+            response += chunk
+            if chunk.text:
+                return stream, response
     except BaseException:
         await stream.aclose()
         raise
-    return stream, ""
+    return stream, response
 
 
 async def _stream_answer(
-    model: BaseChatModel,
-    messages: list[BaseMessage],
+    model: Runnable[LanguageModelInput, AIMessage],
+    messages: Sequence[BaseMessage],
     config: RunnableConfig,
     settings: Mapping[str, Any],
     on_text: Callable[[str], Awaitable[None]],
-) -> str:
+    retry_model: BaseChatModel,
+) -> AIMessageChunk:
     """Retry before visible output; never replay an answer already being shown.
 
     Returns:
-        The complete streamed answer text.
+        The complete response, including streamed tool calls.
     """
     from deepagents_code.model_retry import aretry_model_call
 
     stream, first = await aretry_model_call(
-        model,
+        retry_model,
         lambda: _open_text_stream(model, messages, config, settings),
         max_total_delay=_MAX_RETRY_DELAY,
     )
-    parts = [first]
+    response = first
     async with aclosing(stream):
-        if first:
-            await on_text(first)
+        if first.text:
+            await on_text(first.text)
         async for chunk in stream:
+            response += chunk
             if fragment := chunk.text:
-                parts.append(fragment)
                 await on_text(fragment)
-    return "".join(parts)
+    return response
 
 
 def _conversation(state: Mapping[str, object]) -> list[AnyMessage]:
@@ -279,36 +292,67 @@ def _tool_result_context(message: ToolMessage) -> HumanMessage:
     )
 
 
-def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
-    """Render tool exchanges as context after their arguments have been truncated.
+def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
+    """Keep complete tool exchanges and close interrupted calls.
 
     Returns:
-        A transcript without executable tool calls or provider-only metadata.
+        Isolated messages with valid tool-call/result pairs.
     """
     transcript: list[AnyMessage] = []
-    for message in messages:
-        if isinstance(message, HumanMessage):
-            if message.content:
-                transcript.append(HumanMessage(content=deepcopy(message.content)))
-            continue
+    pending: dict[str, str] = {}
+    for original in messages:
+        message = original.model_copy(deep=True)
+        if not isinstance(message, ToolMessage):
+            transcript.extend(
+                ToolMessage(
+                    content="Main tool call was still pending at the side snapshot.",
+                    tool_call_id=call_id,
+                    name=name,
+                )
+                for call_id, name in pending.items()
+            )
+            pending.clear()
         if isinstance(message, ToolMessage):
-            transcript.append(_tool_result_context(message))
-            continue
-        text = message.text
+            if message.tool_call_id not in pending:
+                transcript.append(_tool_result_context(message))
+                continue
+            pending.pop(message.tool_call_id)
         if isinstance(message, AIMessage):
-            calls = [
-                f"[tool call {call['id']}: {call['name']}]\n"
-                + json.dumps(call["args"], ensure_ascii=False)
-                for call in message.tool_calls
-            ]
-            text = "\n\n".join(part for part in [text, *calls] if part)
-        if not text:
-            continue
-        if isinstance(message, AIMessage):
-            transcript.append(AIMessage(content=text))
-        else:
-            transcript.append(HumanMessage(content=f"[{message.type} context]\n{text}"))
+            pending.update(
+                {
+                    call["id"]: call["name"]
+                    for call in message.tool_calls
+                    if call["id"] is not None
+                }
+            )
+        transcript.append(cast("AnyMessage", message))
+    transcript.extend(
+        ToolMessage(
+            content="Main tool call was still pending at the side snapshot.",
+            tool_call_id=call_id,
+            name=name,
+        )
+        for call_id, name in pending.items()
+    )
     return transcript
+
+
+def _client_tools(tools: Sequence[object]) -> list[dict[str, Any]]:
+    """Retain only client-dispatched schemas, never provider-executed tools.
+
+    Returns:
+        Isolated client tool definitions.
+    """
+    from langchain_core.tools import BaseTool
+    from langchain_core.utils.function_calling import convert_to_openai_tool
+
+    schemas: list[dict[str, Any]] = []
+    for tool in tools:
+        if isinstance(tool, BaseTool):
+            schemas.append(convert_to_openai_tool(tool))
+        elif isinstance(tool, dict) and tool.get("type") == "function":
+            schemas.append(deepcopy(cast("dict[str, Any]", tool)))
+    return schemas
 
 
 def _fit_context(
@@ -327,12 +371,20 @@ def _fit_context(
     if budget is None or not compaction._over_budget(request):
         return messages
     # Never drop or shorten the user's question to make the request fit.
+    question_index = next(
+        (
+            index
+            for index in range(len(request.messages) - 1, -1, -1)
+            if isinstance(request.messages[index], HumanMessage)
+        ),
+        0,
+    )
     compaction._check_reduction(
-        request, request.override(messages=request.messages[-1:]), None
+        request, request.override(messages=request.messages[question_index:]), None
     )
     return trim_messages(
         messages,
-        max_tokens=budget,
+        max_tokens=max(0, budget - compaction._count_tokens([], None, request.tools)),
         token_counter=compaction.token_counter,
         strategy="last",
         start_on="human",
@@ -340,25 +392,29 @@ def _fit_context(
     )
 
 
-def _prepare_messages(request: ModelRequest) -> list[BaseMessage]:
+def _prepare_messages(request: ModelRequest) -> list[AnyMessage]:
     """Reuse SDK compaction policies without running summaries or backend writes.
 
     Returns:
-        A tool-free transcript sized for the resolved model and output settings.
+        A structured transcript sized for the resolved model and output settings.
     """
     request = UnsupportedContentMiddleware()._filter_request(request)
     compaction = create_summarization_middleware(request.model, StateBackend())
     messages, _ = compaction._truncate_args(
         request.messages,
-        compaction._count_tokens(request.messages, request.system_message, []),
+        compaction._count_tokens(
+            request.messages, request.system_message, request.tools
+        ),
     )
-    return _fit_context(
-        request.override(messages=_tool_free_transcript(messages)), compaction
+    return _structured_transcript(
+        _fit_context(
+            request.override(messages=_structured_transcript(messages)), compaction
+        )
     )
 
 
 class BtwOperation(AgentMiddleware):
-    """Capture effective main-call context and answer tool-free side questions.
+    """Capture effective main-call context and answer read-only side questions.
 
     Register after middleware that modifies the model, prompt, or settings,
     including extensions. `ConfigurableModelMiddleware` resolves the model
@@ -385,6 +441,8 @@ class BtwOperation(AgentMiddleware):
         *,
         instruction_middleware: Sequence[MemoryMiddleware | SkillsMiddleware] = (),
         profile_overrides: dict[str, object] | None = None,
+        backend: BackendProtocol | None = None,
+        filesystem_tools: Sequence[FsToolName] | None = None,
     ) -> None:
         """Keep workspace defaults and the read-only instruction loaders.
 
@@ -394,7 +452,20 @@ class BtwOperation(AgentMiddleware):
             environ: Workspace environment for lazy model resolution.
             instruction_middleware: Main agent memory and skill loaders, in order.
             profile_overrides: Session profile fields to retain during reconstruction.
+            backend: Main filesystem backend for read-only inspection.
+            filesystem_tools: Main filesystem allowlist to respect in side calls.
         """
+        allowed = [
+            name
+            for name in _READ_TOOLS
+            if filesystem_tools is None or name in filesystem_tools
+        ]
+        self._read_tools = (
+            FilesystemMiddleware(backend=backend, tools=allowed).tools
+            if backend is not None and "read_file" in allowed
+            else []
+        )
+        self._tool_snapshots: dict[str, list[dict[str, Any]]] = {}
         self._model = model
         self._system = SystemMessage(content=system_prompt)
         self._environ = environ
@@ -421,9 +492,11 @@ class BtwOperation(AgentMiddleware):
                 (request.system_message or self._system).model_copy(deep=True),
                 deepcopy(request.model_settings),
             )
+            self._tool_snapshots[info.thread_id] = _client_tools(request.tools)
             self._snapshots.move_to_end(info.thread_id)
             while len(self._snapshots) > _MAX_SNAPSHOTS:
-                self._snapshots.popitem(last=False)
+                evicted, _ = self._snapshots.popitem(last=False)
+                self._tool_snapshots.pop(evicted, None)
             return Command(
                 update={
                     "_btw_system_prompt": (request.system_message or self._system).text,
@@ -431,6 +504,7 @@ class BtwOperation(AgentMiddleware):
                         request.model, request.model_settings
                     ),
                     "_btw_model_retries": _retry_budget(request.model),
+                    "_btw_tools": deepcopy(self._tool_snapshots[info.thread_id]),
                 }
             )
         return None
@@ -540,7 +614,7 @@ class BtwOperation(AgentMiddleware):
         history: Sequence[tuple[str, str]] = (),
         on_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
-        """Generate without tools or checkpoint writes.
+        """Generate with read-only tools and no checkpoint writes.
 
         Use the thread's latest server-resolved model and instructions, falling
         back to checkpoint settings or the workspace's bootstrap model. Restore
@@ -564,14 +638,25 @@ class BtwOperation(AgentMiddleware):
 
         Raises:
             TypeError: If the configured model is not a chat model.
+            ValueError: If the side conversation exceeds its tool budget.
         """  # noqa: DOC502 — raised by _resolve_context
         from deepagents_code.config import use_environment
         from deepagents_code.model_retry import aretry_model_call
 
         with use_environment(self._environ):
             model, system, settings = await self._resolve_context(thread_id, state)
+            schemas = (
+                self._tool_snapshots.get(thread_id)
+                if thread_id in self._snapshots
+                else state.get("_btw_tools")
+            )
+            tools = (
+                _client_tools(schemas)
+                if isinstance(schemas, list)
+                else _client_tools(self._read_tools)
+            )
             messages = [
-                *_conversation(state),
+                *_structured_transcript(_conversation(state)),
                 *(
                     message
                     for prompt, answer in history
@@ -585,11 +670,9 @@ class BtwOperation(AgentMiddleware):
             prepared = _prepare_messages(
                 ModelRequest(
                     model=model,
-                    system_message=SystemMessage(
-                        content=f"{system.text}\n\n{_INSTRUCTIONS}"
-                    ),
+                    system_message=system,
                     messages=messages,
-                    tools=[],
+                    tools=[*tools],
                     model_settings=settings,
                     runtime=Runtime(),
                 )
@@ -598,15 +681,49 @@ class BtwOperation(AgentMiddleware):
                 "callbacks": [],
                 "metadata": {"thread_id": thread_id},
             }
-            if on_text is None:
-                response = await aretry_model_call(
-                    model,
-                    lambda: model.ainvoke(prepared, config=config, **settings),
-                    max_total_delay=_MAX_RETRY_DELAY,
+            bound = model.bind_tools(tools) if tools else model
+            advertised = {tool["function"]["name"] for tool in tools}
+            node = ToolNode(
+                [tool for tool in self._read_tools if tool.name in advertised]
+            )
+            parts: list[str] = []
+            for _ in range(_MAX_TOOL_ROUNDS):
+                if on_text is None:
+                    response = await aretry_model_call(
+                        model,
+                        lambda messages=prepared: bound.ainvoke(
+                            messages, config=config, **settings
+                        ),
+                        max_total_delay=_MAX_RETRY_DELAY,
+                    )
+                else:
+                    response = await _stream_answer(
+                        bound, prepared, config, settings, on_text, model
+                    )
+                if response.text:
+                    parts.append(response.text)
+                if not isinstance(response, AIMessage) or not response.tool_calls:
+                    break
+                if len(response.tool_calls) > _MAX_TOOL_CALLS:
+                    msg = "Too many side tools requested. Try a narrower question."
+                    raise ValueError(msg)
+                result = await node.ainvoke(
+                    {"messages": [response]}, config=config, runtime=Runtime()
                 )
-                text = response.text
+                prepared = _prepare_messages(
+                    ModelRequest(
+                        model=model,
+                        system_message=system,
+                        messages=[*prepared[1:], response, *result["messages"]],
+                        tools=[*tools],
+                        model_settings=settings,
+                        runtime=Runtime(),
+                    )
+                )
             else:
-                text = await _stream_answer(model, prepared, config, settings, on_text)
+                msg = "Side tool limit reached. Try a narrower question."
+                raise ValueError(msg)
+        text = "".join(parts)
         return (
             text.strip() or "No text answer was returned. Try rephrasing your question."
         )

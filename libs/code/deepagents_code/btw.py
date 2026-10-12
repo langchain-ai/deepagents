@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from deepagents.backends import StateBackend
 from deepagents.middleware.memory import MemoryState
-from deepagents.middleware.skills import SkillsState
+from deepagents.middleware.skills import SkillsMiddleware, SkillsState
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 from langchain.agents.middleware.types import (
@@ -43,7 +43,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
     from deepagents.middleware.memory import MemoryMiddleware
-    from deepagents.middleware.skills import SkillsMiddleware
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain_core.messages import (
         AIMessageChunk,
@@ -76,20 +75,34 @@ class _BtwState(AgentState):
     _btw_model_retries: Annotated[NotRequired[int | None], PrivateStateAttr]
 
 
-async def _restore_system(
-    system: SystemMessage,
-    model: BaseChatModel,
-    state: Mapping[str, object],
-    middleware: Sequence[MemoryMiddleware | SkillsMiddleware],
-) -> SystemMessage:
-    channels = ("memory_contents", "skills_metadata", "skills_load_errors")
-    local = cast(
+def _instruction_state(state: Mapping[str, object]) -> _InstructionState:
+    """Copy the checkpoint channels that the instruction loaders read.
+
+    Returns:
+        A local state the loaders can update without touching the checkpoint.
+    """
+    channels = (
+        "memory_contents",
+        "skills_metadata",
+        "skills_load_errors",
+        "skills_loaded_by",
+    )
+    return cast(
         "_InstructionState",
         {
             "messages": [],
             **{key: deepcopy(state[key]) for key in channels if key in state},
         },
     )
+
+
+async def _restore_system(
+    system: SystemMessage,
+    model: BaseChatModel,
+    state: Mapping[str, object],
+    middleware: Sequence[MemoryMiddleware | SkillsMiddleware],
+) -> SystemMessage:
+    local = _instruction_state(state)
     runtime = Runtime()
     request = ModelRequest(
         model=model,
@@ -105,6 +118,53 @@ async def _restore_system(
             local.update(update)
         request = item.modify_request(request)
     return request.system_message or system
+
+
+def _skills_section(
+    loader: SkillsMiddleware, model: BaseChatModel, state: _InstructionState
+) -> str:
+    """Render the skill section that `loader` adds to a system prompt.
+
+    Returns:
+        The section text, or an empty string when `loader` adds none.
+    """
+    request = ModelRequest(
+        model=model,
+        system_message=None,
+        state=state,
+        messages=[],
+        tools=[],
+        runtime=Runtime(),
+    )
+    message = loader.modify_request(request).system_message
+    return message.text if message else ""
+
+
+async def _refresh_skills(
+    system: SystemMessage,
+    model: BaseChatModel,
+    state: Mapping[str, object],
+    middleware: Sequence[MemoryMiddleware | SkillsMiddleware],
+) -> SystemMessage:
+    """Replace stale skill sections in saved instructions.
+
+    A saved prompt can outlive its skill list. `/reload` restarts the server,
+    so the loaders rescan before the next main turn saves a new prompt.
+
+    Returns:
+        `system` with each changed skill section replaced.
+    """
+    text = system.text
+    local = _instruction_state(state)
+    runtime = Runtime()
+    for loader in middleware:
+        if not isinstance(loader, SkillsMiddleware):
+            continue
+        before = _skills_section(loader, model, local)
+        if update := await loader.abefore_agent(local, runtime, {}):
+            local.update(update)
+            text = text.replace(before, _skills_section(loader, model, local), 1)
+    return SystemMessage(content=text)
 
 
 def _retry_budget(model: object) -> int | None:
@@ -456,7 +516,12 @@ class BtwOperation(AgentMiddleware):
         if snapshot is None:
             saved_system = state.get("_btw_system_prompt")
             if isinstance(saved_system, str):
-                system = SystemMessage(content=saved_system)
+                system = await _refresh_skills(
+                    SystemMessage(content=saved_system),
+                    model,
+                    state,
+                    self._instruction_middleware,
+                )
             else:
                 system = await _restore_system(
                     system, model, state, self._instruction_middleware

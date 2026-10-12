@@ -138,7 +138,7 @@ async def test_pinning_refuses_a_denied_directory(
 
 
 async def test_pinning_refuses_an_approval_it_cannot_save(
-    tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Later turns read trust from the store, so an unsaved approval fails."""
     root = tmp_path / "skills"
@@ -151,7 +151,7 @@ async def test_pinning_refuses_an_approval_it_cannot_save(
     monkeypatch.setattr(skills_middleware, "interrupt", lambda _: {"approved": True})
     monkeypatch.setattr(skills_middleware, "trust_skill_dir", lambda _: False)
     with pytest.raises(ValueError, match="Could not save trust"):
-        await _pin(middleware, _state(), mode)
+        await _pin(middleware, _state(), "sync")
 
 
 async def test_graph_pins_once_and_preserves_snapshot(
@@ -247,10 +247,71 @@ async def test_graph_recovers_from_failed_pin(
     assert agent.get_state(config).values["pinned_skills"] == []
 
 
+async def test_new_process_rescans_cached_skills(
+    tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new server process rescans a thread's skills and keeps its history.
+
+    Turns in one process keep the cached list, so skills added, edited, or
+    removed appear only after `/reload` restarts the server.
+    """
+    root = tmp_path / "skills"
+    root.mkdir()
+    agent = create_agent(
+        GenericFakeChatModel(
+            messages=iter(AIMessage(content="Done", id=f"reply-{i}") for i in range(5))
+        ),
+        middleware=[
+            PluginSkillsMiddleware(
+                backend=FilesystemBackend(virtual_mode=False),
+                sources=[(str(root), "User")],
+            )
+        ],
+        checkpointer=InMemorySaver(),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "rescan"}}
+
+    async def turn() -> dict[str, str]:
+        request: SkillsState = {"messages": [HumanMessage("Continue")]}
+        if mode == "async":
+            await agent.ainvoke(request, config)
+        else:
+            agent.invoke(request, config)
+        skills = agent.get_state(config).values["skills_metadata"]
+        return {skill["name"]: skill["description"] for skill in skills}
+
+    def restart(process: str) -> None:
+        monkeypatch.setattr(skills_middleware, "_PROCESS_ID", process)
+
+    assert await turn() == {}
+    _write_skill(root / "edited" / "SKILL.md", name="edited")
+    _write_skill(root / "removed" / "SKILL.md", name="removed")
+    assert await turn() == {}
+    restart("second")
+    assert await turn() == {
+        "edited": "Review code",
+        "removed": "Review code",
+    }
+    (root / "removed" / "SKILL.md").unlink()
+    (root / "edited" / "SKILL.md").write_text(
+        "---\nname: edited\ndescription: Edited\n---\nBody\n", encoding="utf-8"
+    )
+    _write_skill(root / "added" / "SKILL.md", name="added")
+    assert set(await turn()) == {"edited", "removed"}
+    restart("third")
+    assert await turn() == {
+        "edited": "Edited",
+        "added": "Review code",
+    }
+    messages = agent.get_state(config).values["messages"]
+    assert [m.id for m in messages if isinstance(m, AIMessage)] == [
+        f"reply-{i}" for i in range(5)
+    ]
+
+
 @pytest.mark.parametrize("configured_base", [True, False])
 async def test_pinning_resolves_extra_dirs_against_path_base(
     tmp_path: Path,
-    mode: str,
     configured_base: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -271,16 +332,16 @@ async def test_pinning_resolves_extra_dirs_against_path_base(
         path_base=user_cwd if configured_base else project,
     )
     if configured_base:
-        result = await _pin(middleware, _state(), mode)
+        result = await _pin(middleware, _state(), "sync")
         assert result is not None
         assert result["messages"]
     else:
         with pytest.raises(ValueError, match="outside all allowed"):
-            await _pin(middleware, _state(), mode)
+            await _pin(middleware, _state(), "sync")
 
 
-async def test_pinning_checks_every_requested_name(
-    tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch
+def test_pinning_checks_every_requested_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Duplicates pin once, and a name other than the selection is trust-checked.
 
@@ -301,13 +362,11 @@ async def test_pinning_checks_every_requested_name(
     assert metadata is not None
     state["skills_metadata"] = metadata["skills_metadata"]
 
-    async def pin(names: list[str]) -> dict[str, object] | None:
+    def pin(names: list[str]) -> dict[str, object] | None:
         state["pinned_skills"] = names
-        if mode == "async":
-            return await middleware.abefore_model(state, Runtime())
         return middleware.before_model(state, Runtime())
 
-    result = await pin(["review", "review", "lint"])
+    result = pin(["review", "review", "lint"])
     assert result is not None
     messages = result["messages"]
     assert isinstance(messages, list)
@@ -317,4 +376,4 @@ async def test_pinning_checks_every_requested_name(
     ]
     assert names == ["review", "lint"]
     with pytest.raises(ValueError, match="outside all allowed"):
-        await pin(["review", "evil"])
+        pin(["review", "evil"])

@@ -18275,8 +18275,10 @@ class DeepAgentsApp(App):
                 # Diff is meaningless when discovery failed: prior cache
                 # was preserved, so old vs. new is identical and
                 # `Skills reloaded. No changes detected.` would be a lie.
+                # The agent rescans its own skills, so its list can differ.
                 report += (
-                    "\nSkill re-discovery failed; existing /skill: list left as-is."
+                    "\nSkill re-discovery failed; /skill: autocomplete left as-is. "
+                    "The agent's skill list may differ."
                 )
             elif added_skills or removed_skills:
                 skill_lines = []
@@ -18291,6 +18293,8 @@ class DeepAgentsApp(App):
             from deepagents_code.plugins.adapters.hooks import plugin_hook_event_names
             from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
+            # The agent rescans its skills only in a new server process.
+            server_fresh = False
             try:
                 plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
                     self._discover_plugins_with_fingerprints
@@ -18398,6 +18402,7 @@ class DeepAgentsApp(App):
                             self._pending_messages.extendleft(reversed(preserved))
                             self._sync_status_queued()
                     if restart_result.restarted:
+                        server_fresh = True
                         self._session_plugin_ids = discovered_plugin_ids
                         report += "\nAgent server restarted for plugin MCP."
                         if restart_result.mcp_status == "disabled":
@@ -18438,12 +18443,14 @@ class DeepAgentsApp(App):
                 # preload kwargs so the reason matches how `_respawn_server`
                 # derives the same status.
                 elif self._server_kwargs.get("no_mcp"):
+                    server_fresh = True
                     # Mirrors the `--no-mcp` line in the restart branch.
                     report += (
                         "\nMCP is disabled for this session (--no-mcp); "
                         "no servers were loaded."
                     )
                 else:
+                    server_fresh = True
                     report += (
                         "\nMCP server changes couldn't be determined; the "
                         "local server hasn't started yet. If startup "
@@ -18451,6 +18458,10 @@ class DeepAgentsApp(App):
                         "to check."
                     )
 
+            if not server_fresh:
+                report += (
+                    "\nThe agent keeps its current skills until its server restarts."
+                )
             await self._mount_message(AppMessage(report))
             await self._maybe_start_deferred_server_from_default()
         except Exception:

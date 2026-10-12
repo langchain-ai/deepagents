@@ -2049,6 +2049,21 @@ class TestConvertMessagesToData:
         assert len(result) == 1
         assert result[0].content == "connector user message"
 
+    def test_unpinned_invocation_shows_instructions_not_loaded(self) -> None:
+        """A failed pin leaves an invocation row that says nothing was loaded."""
+        from langchain_core.messages import HumanMessage
+
+        from deepagents_code.skills.invocation import build_skill_invocation_envelope
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        envelope = build_skill_invocation_envelope("review")
+        messages = [HumanMessage(envelope.prompt, **envelope.message_kwargs)]
+
+        result = DeepAgentsApp._convert_messages_to_data(messages)
+
+        assert [row.type for row in result] == [MessageType.SKILL]
+        assert "not loaded" in (result[0].skill_body or "")
+
     def test_ai_message_content_block_list(self) -> None:
         """AIMessage with list-of-blocks content should extract text."""
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType

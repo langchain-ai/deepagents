@@ -21414,24 +21414,6 @@ class TestPrewarmAwait:
         assert discovered is True
         assert app._session_plugin_ids == frozenset({"quality@tools"})
 
-    async def test_invoke_skill_cache_miss_uses_import_gate(self) -> None:
-        """Cache-miss skill discovery must use the process import gate."""
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-
-        with (
-            patch.object(
-                app,
-                "_discover_skills_and_roots_with_import_lock",
-                return_value=([], []),
-            ) as guarded_discover_mock,
-            patch.object(app, "_discover_skills_and_roots") as raw_discover_mock,
-            patch.object(app, "_mount_message", AsyncMock()),
-        ):
-            await app._invoke_skill("missing")
-
-        guarded_discover_mock.assert_called_once()
-        raw_discover_mock.assert_not_called()
-
 
 class TestHeaderAndTitle:
     """Header widget visibility and custom title overrides."""

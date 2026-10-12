@@ -416,6 +416,37 @@ class TestAskUserTool:
         assert receipt["tool_call_id"] == "ask-1"
         assert set(ask_tool.args) == {"questions"}
 
+    def test_pinned_skill_message_keeps_turn_identity(self) -> None:
+        """A receipt is still minted when the SDK pinned a skill this turn."""
+        ask_tool = cast("Any", AskUserMiddleware().tools[0])
+        state = _turn_state("turn-1")
+        pinned = HumanMessage(
+            content='<skill name="review">\nReview.\n</skill>',
+            additional_kwargs={"lc_source": "pinned_skill", "skill": {"name": "x"}},
+        )
+        state["messages"] = [*cast("list[HumanMessage]", state["messages"]), pinned]
+        runtime = SimpleNamespace(
+            context={"thread_id": "thread-1", "turn_id": "turn-1"},
+            execution_info=SimpleNamespace(thread_id="thread-1"),
+            tool_call_id="ask-1",
+            state=state,
+        )
+
+        with patch(
+            "deepagents_code.ask_user.interrupt",
+            return_value={"answers": ["yes"]},
+        ):
+            command = ask_tool.func(
+                questions=[{"question": "Proceed?", "type": "text"}],
+                tool_call_id="ask-1",
+                runtime=runtime,
+            )
+
+        receipt = _extract_tool_message(command).additional_kwargs[
+            ASK_USER_AUTHORIZATION_METADATA_KEY
+        ]
+        assert receipt["turn_id"] == "turn-1"
+
     @pytest.mark.parametrize(
         "runtime",
         [

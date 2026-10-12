@@ -40,7 +40,7 @@ import tempfile
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -66,6 +66,38 @@ class _TrustStore(TypedDict):
 
     dirs: dict[str, _TrustEntry]
     """Trusted directories keyed by their approved absolute path."""
+
+
+SKILL_TRUST_INTERRUPT_TYPE: Literal["skill_trust"] = "skill_trust"
+"""`type` of the interrupt the agent server raises to ask for skill trust."""
+
+
+class SkillTrustRequest(TypedDict):
+    """Interrupt payload asking the user to trust a skill's directory.
+
+    The client answers with `{"approved": bool}`. Any other answer is a deny.
+    """
+
+    type: Literal["skill_trust"]
+    """Discriminator, always `SKILL_TRUST_INTERRUPT_TYPE`."""
+
+    skill: str
+    """Name of the skill the user invoked."""
+
+    directory: str
+    """Resolved directory to trust, shown to the user and saved as-is."""
+
+
+def parse_skill_trust_request(value: object) -> SkillTrustRequest | None:
+    """Return `value` as a skill trust request, or `None` if it is not one."""
+    if not isinstance(value, dict) or value.get("type") != SKILL_TRUST_INTERRUPT_TYPE:
+        return None
+    skill, directory = value.get("skill"), value.get("directory")
+    if not isinstance(skill, str) or not isinstance(directory, str):
+        return None
+    return SkillTrustRequest(
+        type=SKILL_TRUST_INTERRUPT_TYPE, skill=skill, directory=directory
+    )
 
 
 class RevokeResult(Enum):

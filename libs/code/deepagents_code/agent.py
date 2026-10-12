@@ -3101,6 +3101,7 @@ def create_cli_agent(
         skills_middleware = PluginSkillsMiddleware(
             backend=FilesystemBackend(virtual_mode=False),
             sources=sources,
+            path_base=effective_cwd,
         )
         agent_middleware.append(skills_middleware)
         instruction_middleware.append(skills_middleware)

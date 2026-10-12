@@ -135,6 +135,23 @@ class TestConvertMessageData:
         assert isinstance(msg, ToolMessage)
         assert msg.additional_kwargs[AUTO_DENIED_METADATA_KEY] is True
 
+    def test_human_message_keeps_pinned_skill_marker(self) -> None:
+        """The TUI fills a live skill row only from a recognizable pin."""
+        from deepagents_code.skills.invocation import pinned_skill_parts
+
+        msg = _convert_message_data(
+            {
+                "type": "human",
+                "content": '<skill name="review" path="/s/SKILL.md">\nDo it.\n</skill>',
+                "id": "m5",
+                "additional_kwargs": {
+                    "lc_source": "pinned_skill",
+                    "skill": {"name": "review", "description": "Review code"},
+                },
+            }
+        )
+        assert pinned_skill_parts(msg) == ("review", "Review code", "Do it.")
+
     def test_tool_message_additional_kwargs_defaults_to_empty(self) -> None:
         """A missing or non-dict `additional_kwargs` does not discard the message."""
         msg = _convert_message_data({"type": "tool", "id": "m1"})

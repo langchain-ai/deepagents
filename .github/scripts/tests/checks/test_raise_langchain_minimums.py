@@ -403,7 +403,9 @@ class TestEditsMarkdown:
         assert edits_markdown([edit], heading="Raised 1 dependency minimum:") == (
             "Raised 1 dependency minimum:\n"
             "\n"
-            "### `libs/code/pyproject.toml`\n"
+            "### `deepagents-code`\n"
+            "\n"
+            "`libs/code/pyproject.toml`\n"
             "\n"
             "| Dependency | Minimum |\n"
             "|---|---|\n"
@@ -430,7 +432,8 @@ class TestEditsMarkdown:
         assert (
             "| `langsmith` | `>=0.1` → `>=0.4` |\n"
             "| `langgraph` | `>=0.1` → `>=0.4` |\n\n"
-            "### `libs/deepagents/pyproject.toml`"
+            "### `deepagents`\n\n"
+            "`libs/deepagents/pyproject.toml`"
         ) in result
 
     def test_preserves_extras_and_markers_for_distinct_declarations(self) -> None:

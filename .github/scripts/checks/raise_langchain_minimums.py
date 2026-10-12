@@ -629,8 +629,18 @@ def edits_markdown(edits: Sequence[RequirementEdit], *, heading: str) -> str:
         grouped.setdefault(edit.manifest_path, []).append(_edit_markdown(edit))
     lines = [heading]
     for manifest, rows in grouped.items():
+        project = tomllib.loads((REPO_ROOT / manifest).read_text(encoding="utf-8"))
+        package_name = project["project"]["name"]
         lines.extend(
-            ["", f"### `{manifest}`", "", "| Dependency | Minimum |", "|---|---|"]
+            [
+                "",
+                f"### `{package_name}`",
+                "",
+                f"`{manifest}`",
+                "",
+                "| Dependency | Minimum |",
+                "|---|---|",
+            ]
         )
         lines.extend(rows)
     return "\n".join(lines)

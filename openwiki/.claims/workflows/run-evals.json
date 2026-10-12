@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:19c6bcc16a2c94fc6374bc98d6d978e88a967c89ad129f5fa8786ead2d7380fc",
+  "pageVersion": "sha256:df3ac88072d2e82d99a18247c8abea807a6adffd23689c30d424843d19054a83",
   "claims": [
     {
       "id": "claim_b860017fa5f346a49d6b77c4a8615a9c",
@@ -357,10 +357,48 @@
           "version": "repo-lines-v1:sha256:f1869d1ae9dea823ed77597e7467ebc72d82f54d750da71c0b33a3a5ea4fea13:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1ODY4N2Y1ODdiZjIzNTM5ZmFiZTU4YTAyNjFlMjA3MWEzODk2ZDM3MDExNjdhMmMzNzUzNDhmNTY0OGRiZTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM5ZjFiZmEyMjNiOGU0OGIwMTRmNzY1MjIxZWMxNDM0Zjk3NWNiMjVmNGVjMzYzMjkwNjcxNzk4NWIxMDY0MzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_a1eab94d780340db9d65dc8a61828050",
+      "statement": "The eval pytest configuration filters collected tests by repeatable category and tier markers, gives category exclusions precedence over inclusions, and exits when a requested filter value does not match a collected marker.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/tests/evals/conftest.py#L136-L200",
+          "version": "repo-lines-v1:sha256:472dcbe8bfefc15d27c03035337b5054ee7a1d625ce10da00423a3dde10bf1d7:eyJzZWxlY3RlZExpbmVDb3VudCI6NjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkMDhkY2RiNmJhMDEyYmQ4YmY2NjUwNGM4OTE0OGQ4YzJmZjRiOTQxNmVlMzIwNDZiNWE5NjIyMzJlNGNlNDgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2NmVhMjMwNDE5Yzc0NDJlZjUzOWUxMDdjODRhMjI0MDFkOWMwMmY3NGM0MWQ2ZGQ5MjU4YjM4MjJiNzU3ZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIzODkyYWNmNjI4NTI4NjIxMDEwM2EyYTEzM2RkMjgzNWQ4YWQ1YWM5ZmY1NzA0MzM3NWQ4ZWNiOTA3MWU4ZjgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a0d88780e40b44bb8abeafa878079806",
+      "statement": "The trial aggregator aggregates only numeric non-null metric values, reports sample standard deviation as null for fewer than two samples, and warns when a mixed report set identifies different model or SDK versions.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/scripts/run_trials.py#L173-L225",
+          "version": "repo-lines-v1:sha256:8fcc331aff7d6dd84387befa3d59204cb1a10eaecd7c4dbd85696f2377ae57c3:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmMDZjMzhlYTc3OTc0NjU2YmQ4ZTlmMzE3YjIzMjJlZWUyOWNiOWQ1NWVkMjE0ZWI1MjJmY2RhYjJmNTdjMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBkZDljNDllNmQ0MGZjM2MzZjJkMWY3OTczMWVmYzI1OWYyNWZjZjFjZDVlY2IxNmQ3NGNkNTEzZDFkYWEzMDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRkOTczODYxYWNiNTc3YmU5OTc2YTdiMjg1MDZlZGI5NjZlNjA2ZWZiYmEyZjIyNWVhZGRjOTc0NDE2ZTczNGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA4NTlmZmMzMzE4NTVjMGIzOWI4Yzg0Nzk0MmFhMTA2ZGY1NGM4M2U4Zjg3ZjFkNDU2MjE5YTIxYjc2ODZhYTIifQ"
+        },
+        {
+          "resource": "repo://libs/evals/scripts/run_trials.py#L94-L119",
+          "version": "repo-lines-v1:sha256:4af6c8922b22d3d527dbeae6c76e4bdef830064e348ed71c93d9444309adf06f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2Zjc4OTNiYzc4OTg4Y2VjMDA0YmEzYTlmNzY2MmFkZGQyNjhkZDQ2ZWRkNjMxZjlkNzY3MzVkOGQ4YWY4NTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBmOGNmNmU2MjBjMDg2ZDAzMTIyYzIxNThkMTY2ODZkMmIzYzBkZGE3YjY1ZDdkMjc4YjVkNWFlOGE2MDMxMmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEyZTA3YzA2NzhkNzBmMDRjM2U0Mjk2NjBkNGVlMjQ4ZmM1MTRkMWYzYThlZjZkNmYxNTFiY2UzNTczYWRjY2YifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1cb63272134c49a590fd4574c571334f",
+      "statement": "DRBench task directories are generated from a pinned upstream configuration rather than committed, and the Makefile supplies dataset creation plus deterministic-generation and pin checks.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/Makefile#L118-L138",
+          "version": "repo-lines-v1:sha256:9dbccef6a9199b9bd66a7de732354df748d661725b1279174be94f8e459fc1dc:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlN2FjZDkzMjRmNTEzN2Y1YTI2OWVkMWU4NWFkODZkYjRkZjBkNTgyMTAyYWRjYjM3ZjMzMzE3MjBkOGRmNjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlY2IzODFhYjc5MmQ4MjNmMDEzZjgyYzcwNjdmY2YwNjE0NTZjY2I2ODU2ZTJmYTNkMzZkNDA2ODZiZjhlYjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ2MDBkYmNkMjM4MjMxZjNmMTFkZjZhYmMxZTM1NjVkMjU1YmEyYjYzYjQzYTQwYzQ0YTY3MzA2MDU1MzgyODIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU3MDU0ZGJkMTA4YzFjMmZkZjZiZDVhODdjNTI0Mjg2MzI3MmI4N2Q5ZmQ4ZWU1NzM0ZGZmMWY3ZjhlZDBiOTgifQ"
+        },
+        {
+          "resource": "repo://libs/evals/datasets/drbench-evals/README.md#L144-L168",
+          "version": "repo-lines-v1:sha256:58b8afe6a97913f0d271834f787678139c6985d305dbc0bd4b24a1c7ced6e28f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4MTdhODZiZmY4ZGUyNzUwODJkOTc2MTJlZjg1NzVjZWEyMDZmNjAzMzhhNzBkNDdhZDM4ZjU3OGY5ZTFhNTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyZGQ4Yjc0ODc2YzdkMTk4ZTZkMjJmZjdmZTQ5ZTZkNzY3NWE0ODY0MWE5OGI4NDQ5ZWY5MWEzODA2NTQ0ZGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ4MzdmNjFiZjA0ZDVjMzAzZjU3MGViMzNkYTE1NjM5MTNiYjJiOTAxNTJlMmUxNWNkNDNlMjllNzBiYTRmY2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg2NGEyYjRkM2U3MzE4ZjM5ZGU1OWEzYzI2NmU1NDU3M2NkOWRmNGU5MTAzNjVjOGVjOWVlZWNiMTI2YTUyNjIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-18T16:46:37.183Z"
+    "at": "2026-10-08T08:07:53.482Z"
   }
 }

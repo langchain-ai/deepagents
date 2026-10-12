@@ -1484,9 +1484,9 @@ def _load_show_reasoning() -> bool:
     """Resolve whether local output shows provider-visible reasoning.
 
     Returns:
-        The resolved preference, defaulting to `False`.
+        The resolved preference, defaulting to `True`.
     """
-    return _load_bool_display_preference("display.show_reasoning", fallback=False)
+    return _load_bool_display_preference("display.show_reasoning", fallback=True)
 
 
 def _load_show_scrollbar() -> bool:
@@ -20569,7 +20569,7 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _convert_messages_to_data(
-        messages: list[Any], *, show_reasoning: bool = False
+        messages: list[Any], *, show_reasoning: bool = True
     ) -> list[MessageData]:
         """Convert LangChain messages into lightweight `MessageData` objects.
 
@@ -20801,7 +20801,7 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _prepare_thread_history_messages(
-        messages: list[Any], *, show_reasoning: bool = False
+        messages: list[Any], *, show_reasoning: bool = True
     ) -> tuple[list[MessageData], tuple[BaseMessage, ...]]:
         """Deserialize and project checkpoint messages for a resumed thread.
 

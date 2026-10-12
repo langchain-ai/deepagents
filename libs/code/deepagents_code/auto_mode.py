@@ -75,7 +75,10 @@ from deepagents_code.approval_mode import (
     coerce_approval_mode,
 )
 from deepagents_code.config_manifest import AUTO_CLASSIFIER_TIMEOUT_SECONDS_DEFAULT
-from deepagents_code.goal_state_notice import project_goal_state
+from deepagents_code.goal_state_notice import (
+    is_pinned_skill_message,
+    project_goal_state,
+)
 
 if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel, LanguageModelInput
@@ -1148,6 +1151,7 @@ def _latest_turn_id(messages: Sequence[object]) -> str | None:
             message
             for message in reversed(messages)
             if isinstance(message, HumanMessage)
+            and not is_pinned_skill_message(message)
         ),
         None,
     )

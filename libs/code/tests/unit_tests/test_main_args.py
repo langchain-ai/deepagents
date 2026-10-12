@@ -2050,3 +2050,49 @@ class TestModelParamsRetryOverrideWarning:
             self._run_headless(["dcode", "-n", "hi"])
 
         assert warning in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("config_value", "env_value", "cli_flag", "tui", "headless"),
+    [
+        (None, None, False, True, False),
+        (False, None, False, False, False),
+        (True, None, False, True, True),
+        (True, "0", False, False, False),
+        (False, "1", False, True, True),
+        (False, "invalid", False, False, False),
+        (None, "invalid", False, True, False),
+        (False, "0", True, True, True),
+        (None, None, True, True, True),
+    ],
+)
+def test_show_reasoning_defaults_by_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    config_value: bool | None,
+    env_value: str | None,
+    cli_flag: bool,
+    tui: bool,
+    headless: bool,
+) -> None:
+    """Reasoning is on in the TUI and off headless unless explicitly set."""
+    from deepagents_code import _env_vars
+    from deepagents_code.app import _load_show_reasoning
+    from deepagents_code.main import (
+        _install_cli_provider,
+        _resolve_headless_show_reasoning,
+    )
+
+    config = tmp_path / "config.toml"
+    if config_value is not None:
+        config.write_text(f"[ui]\nshow_reasoning = {str(config_value).lower()}\n")
+    monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
+    monkeypatch.delenv(_env_vars.SHOW_REASONING, raising=False)
+    if env_value is not None:
+        monkeypatch.setenv(_env_vars.SHOW_REASONING, env_value)
+    argv = ["dcode", *(["--show-reasoning"] if cli_flag else [])]
+    monkeypatch.setattr(sys, "argv", argv)
+    _install_cli_provider(parse_args())
+
+    assert _load_show_reasoning() is tui
+    assert _resolve_headless_show_reasoning() is headless

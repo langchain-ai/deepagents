@@ -1128,6 +1128,22 @@ def _resolve_thread_list_display_options(
     return sort_by, bool(relative_time.value)
 
 
+def _resolve_headless_show_reasoning() -> bool:
+    """Resolve whether headless output shows provider-visible reasoning.
+
+    Headless output is often piped or parsed, so reasoning stays off unless
+    `--show-reasoning`, the env var, or config turns it on.
+
+    Returns:
+        The resolved preference, defaulting to `False`.
+    """
+    from deepagents_code.config_manifest import load_bool_display_preference
+
+    return load_bool_display_preference(
+        "display.show_reasoning", fallback=True, default=False
+    )
+
+
 def _install_cli_provider(args: argparse.Namespace) -> None:
     """Install parsed arguments into the shared resolution chain.
 
@@ -2620,7 +2636,7 @@ def parse_args() -> argparse.Namespace:
         "--show-reasoning",
         action="store_true",
         default=None,
-        help="Show provider-visible reasoning (off by default).",
+        help=("Show provider-visible reasoning (on in the TUI, off in headless mode)."),
     )
 
     parser.add_argument(
@@ -6337,7 +6353,6 @@ def cli_main() -> None:
 
             # Non-interactive mode - execute single task and exit
             from deepagents_code.client.non_interactive import run_non_interactive
-            from deepagents_code.config_manifest import load_bool_display_preference
 
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
@@ -6375,9 +6390,7 @@ def cli_main() -> None:
                             startup_cmd=getattr(args, "startup_cmd", None),
                             quiet=args.quiet,
                             stream=not args.no_stream,
-                            show_reasoning=load_bool_display_preference(
-                                "display.show_reasoning", fallback=False
-                            ),
+                            show_reasoning=_resolve_headless_show_reasoning(),
                             mcp_config_path=getattr(args, "mcp_config", None),
                             no_mcp=getattr(args, "no_mcp", False),
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),

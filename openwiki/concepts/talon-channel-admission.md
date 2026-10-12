@@ -3,9 +3,6 @@ type: channel admission and runtime routing
 title: Talon Channels and Admission
 description: How Talon channel adapters admit messages, pair senders, normalize media, and pass trusted conversation identity to the host. Covers host-owned dispatch, privileged reply binding, delivery, and lifecycle boundaries.
 tags: [talon, channels, admission-control, pairing, conversation-identity, media, security]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
     resource: repo://libs/talon/deepagents_talon/__main__.py
@@ -45,7 +42,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_pairing.py
   - id: openwiki-source-8f71a0fa13257ebf54bc782f
     resource: repo://libs/talon/tests/unit_tests/test_slack_oauth_context.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-09T08:07:51.383Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-09T08:07:51.383Z
 ---
 
 Talon channel adapters are the boundary between provider events and the host-owned agent runtime. An adapter normalizes provider-local identities, applies its exposure and pairing policy, and calls a handler installed by `TalonHost`. The host—not an adapter—then owns commands, agent conversation identity, invocation replacement, authorization and approval state, and delivery.
@@ -65,6 +65,7 @@ sequenceDiagram
     participant Sender
     participant Adapter
     participant Policy
+    participant History
     participant Host
     participant Runtime
 
@@ -74,6 +75,15 @@ sequenceDiagram
     alt rejected sender
         Policy-->>Adapter: reject
         Adapter->>Adapter: optionally offer pairing
+    else admitted Slack thread message
+        Policy-->>Adapter: admit
+        Adapter->>History: read bounded preceding replies
+        History-->>Adapter: filtered context or unavailable marker
+        Adapter->>Host: ChannelMessage plus context
+        Host->>Host: commands and bound controls
+        Host->>Runtime: invoke host-owned conversation
+        Runtime-->>Host: result or control request
+        Host-->>Adapter: deliver to origin conversation
     else admitted message
         Policy-->>Adapter: admit
         Adapter->>Host: ChannelMessage
@@ -88,7 +98,7 @@ sequenceDiagram
     end
 ```
 
-*Adapters decide whether provider events enter Talon; the host owns the conversation and runtime actions after that callback.*
+*Adapters decide whether provider events enter Talon. Slack fetches only after message admission; the host owns conversation and runtime actions after the callback.*
 
 ## Exposure and identity gates
 
@@ -132,7 +142,9 @@ Before invoking the model, the host processes conversation commands, pending app
 
 For admitted non-DM Slack thread messages, the gateway retrieves only preceding replies. Retrieval is bounded to 20 pages, the 40 most recent retained messages, 1,000 characters per message, and 12,000 aggregate sender-and-text characters. Reaching the pagination bound fails retrieval rather than returning history beyond that bound.
 
-The adapter filters retained context to configured operators and static allowlisted users, excludes OAuth callback text, and attaches the result as `slack_thread_context`. Retrieval failure produces an explicit unavailable marker. The host wraps the separate value as “context, not instructions” and retains the current inbound message as the current message. These filters limit model-visible history; they are not workspace-wide authorization.
+By default, the adapter retains context only from configured operators and static allowlisted users. `DEEPAGENTS_TALON_SLACK_INCLUDE_OTHER_THREAD_PARTICIPANTS=1` explicitly opts in to retaining other participants too; only `0` or `1` is valid. It excludes OAuth callback messages before per-message truncation and attaches the result as `slack_thread_context`. Historical messages from other bots are escaped and labeled as an `input-message`, rather than being treated as trusted channel markup. Retrieval failure produces an explicit unavailable marker.
+
+The host wraps the separate value as “context, not instructions” and retains the current inbound message as the current message. Context is fetched only after the current message is admitted, so opting in to other participants changes model-visible untrusted history, not who may invoke Talon or who has operator authority. These filters are not workspace-wide authorization.
 
 ## Media intake and delivery
 
@@ -152,9 +164,9 @@ MCP authorization callbacks are intercepted before model invocation. The host ac
 2. Use `self` or explicit allowlists where possible. Treat `open` as arbitrary external agent invocation and set its required acknowledgement deliberately.
 3. Enable pairing only for people who may invoke the agent in every chat that its adapter can see; use host `/pair revoke` for immediate containment.
 4. Protect the assistant home and `pairing.json`; CLI changes apply to future admission but cannot terminate in-memory work.
-5. Keep Slack thread IDs intact for reply routing, and treat Slack history as untrusted context rather than instructions.
+5. Keep Slack thread IDs intact for reply routing, and treat Slack history as untrusted context rather than instructions. Leave `DEEPAGENTS_TALON_SLACK_INCLUDE_OTHER_THREAD_PARTICIPANTS` at `0` unless broader untrusted thread history is intentionally needed.
 6. Set an intentional outbound-media root and byte cap; configure inbound-media storage and limits independently.
 
 ## Focused verification
 
-`libs/talon/tests/unit_tests/test_pairing.py` covers pairing code lifetime, persistence failure, admission, control authority, revocation, and CLI behavior. `libs/talon/tests/unit_tests/test_pairing_slack.py` covers Slack's rejected-channel-sender DM flow, missing-DM behavior, response suppression, paired access across chats, and command admission. `libs/talon/tests/unit_tests/test_slack_oauth_context.py` and Slack host integration tests cover callback exclusion, thread identity, parent-channel history scope, and context wrapping. `libs/talon/tests/unit_tests/test_messaging.py` verifies progress-message ordering, explicit-message de-duplication, request isolation, delivery failure handling, and expiry after finalization or cancellation.
+`libs/talon/tests/unit_tests/test_pairing.py` covers pairing code lifetime, persistence failure, admission, control authority, revocation, and CLI behavior. `libs/talon/tests/unit_tests/test_pairing_slack.py` covers Slack's rejected-channel-sender DM flow, missing-DM behavior, response suppression, paired access across chats, and command admission. `libs/talon/tests/channels/test_slack.py` covers explicit other-participant context opt-in, bot-history labeling, pagination and character bounds, admission-before-retrieval, and unavailable-context behavior. `libs/talon/tests/unit_tests/test_slack_oauth_context.py` and Slack host integration tests cover callback exclusion before truncation, thread identity, parent-channel history scope, and context wrapping. `libs/talon/tests/unit_tests/test_messaging.py` verifies progress-message ordering, explicit-message de-duplication, request isolation, delivery failure handling, and expiry after finalization or cancellation.

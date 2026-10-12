@@ -1584,6 +1584,9 @@ def _convert_ai_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
 def _convert_human_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
     """Convert a server human message dict to a `HumanMessage`.
 
+    `additional_kwargs` is forwarded, so the TUI can tell an SDK pinned-skill
+    message from a user prompt.
+
     Args:
         data: Raw message dict from the server.
 
@@ -1592,10 +1595,14 @@ def _convert_human_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
     """
     from langchain_core.messages import HumanMessage
 
+    additional_kwargs = data.get("additional_kwargs")
     try:
         return HumanMessage(
             content=data.get("content", ""),
             id=data.get("id"),
+            additional_kwargs=(
+                additional_kwargs if isinstance(additional_kwargs, dict) else {}
+            ),
         )
     except (TypeError, ValueError, KeyError):
         logger.warning(

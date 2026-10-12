@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2c5a0b8d0cf9314342e347739cea5f36259fee491166efacf60ed899a8d222a2",
+  "pageVersion": "sha256:4ede0f278338641b8cc27fa3dcbce910ffc8147d2adc26d005f6ab8a643b0187",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -197,10 +197,66 @@
           "version": "repo-lines-v1:sha256:c26d435eaaf3b481bd8ff536afd1cfaf61f09702a124b4cd3bc30949f1176fdd:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxNDk1MGFhOTQ5ZjU1NzNkMTNmYjU0ZDc4ZWYxODE5YWZmYWJlYTZhY2RiMWY0ZTJlNzUwYzg3OGVkNDYwYzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjN2MwYzE0ZGZlMzdiNTQ0ZTQyNGE0Y2JlNDg5M2VkZjgxYjNiMTg3YjcyOGQxNDgzMjE2MzgzZDFiZjI5ZTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzNWM5N2IwZTI4MTZmNjQ2YzViYzE1MDQxOWU0NjZmNmRiNzM2MDE4MDk0MGVhNTgyMWJkZWNkNTZmZTIxYzciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRiZTNmNjczYzQ5NjU1YzM1Y2QxMTFjOTI1ODAyNTZjOThkMmRiNDcwZWIxMWM5NzI2ZDQ0ODMyOTMyYzlmOTMifQ"
         }
       ]
+    },
+    {
+      "id": "claim_180e775cfc3e488da71d4d3f13780a01",
+      "statement": "Talon is an experimental local host that owns the lifecycle of channel adapters, cron scheduling, and agent runtime in one event loop; it is not a production security boundary, and opt-in sandboxing does not cover MCP tools.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/README.md#L1-L15",
+          "version": "repo-lines-v1:sha256:fbf61f4af9cf49ff30603e8a3800fe2564e59941dbedafae0316fa8ec2bc73a8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3ODJlZmZkZmNkNWY5YjQ2OTIxNTFhY2NiNmI0NDUyYTA3NjdlMjFlMTFlNTNmODRhYmRlYTYyMmFkM2FiNjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3NWZjZGE4NDVmNWRjZGQ3ZmI2MTNlZWMwODhjNTA0Y2ZmMTE5NWFiMGIwMmM0OGY5MzE4NThmYWU4M2Y3ZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyMTA2ZGE4ZDU4NWJiYzY3MTZlYjFlMzE1NzVkY2Y3MDJjMWQ2MmRjYTI0ZTVkM2JlNmRiYTk3ZmU5N2Q3OTYifQ"
+        },
+        {
+          "resource": "repo://libs/talon/README.md#L64-L85",
+          "version": "repo-lines-v1:sha256:2f430ea9661bdad4a3c52adc644027abf256ec650af4ce320d52a1123cfc17d9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5OTk3OTgzZjdkMGYyYzY0N2MwNjAwYjJjMjU3ZmJlYzYyYTJkOWQyNDE0ZTE3ZjU3YzcwNjQzODA3Nzk1N2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiOWNhNjA0MmMyMTEzZGU3ZTc0NDEzNWE2OTNiYjRiZDA3NDNhY2U2MzRiMDJjYzlmN2M1M2U1NjM3ZTg1NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkZWZmYWM5Zjc2MzA1MWM3ZWNkMWY1NGRlODUyNDYxYTE3NzM3M2IxYjUxOGRjZTJmM2IyNWU0NDA2ZjZlYzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEyZGIzYjkzZTg3MWJmM2VhMzQ3N2ZjNDQwNTI4YTIxOTdiYzIwOGMyNDFhZGMxODZhZTk3ZTQ0MjlhNTM5MjYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8f9ea9ba939f42c4886a204293c1b6b7",
+      "statement": "For a Talon conversation, an incoming message cancels the active turn, records an interruption marker after the latest committed checkpoint, and starts the new message on the same thread; if cancellation exceeds 30 seconds, Talon leaves the old run isolated and does not start the new turn.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/README.md#L250-L252",
+          "version": "repo-lines-v1:sha256:4b7471139bd4789985a948ae523eb8b6a7ebf859db0a80465d104fa8a81fa4dc:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmY3OTViYzlkMzIyMmRiZTc1OGFhZThlMTliMmMwNDlhYTVkYWNiNTcyNjRiMWExNTY1ZjY5MzE4MTQzNTU2MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMTBkYjFlMmU0YWRiNzdlZWU2Y2NmNTgwYzQ2MjE0NWJkYWJmNzc1ODg3MWQyNmJhZTA3NmNkYTIwZGVmMjkyMSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDRhNjA3Y2JhYmIxNGRmZDc2MmUzZjEyY2U0ZDA4NTE1YjFkYmIyODA2Zjk0OGRhYzk3MzhlOWYyZDdkN2QwNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZWRhMTg3YzRiN2NlNTI3MjU1YzE2ZjJmODlhOTQ4MzgwMDc3NjI1MThhNmRkMjZjYWRhYjk5NWFmYjRhMGI0MSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_39f36417e6424148abb43218d41343b8",
+      "statement": "ACP supports both a custom Deep Agent hosted through `AgentServerACP` and the separately prebuilt dcode product hosted over stdio by `dcode --acp`, so changes must be validated on the applicable protocol side.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/README.md#L137-L175",
+          "version": "repo-lines-v1:sha256:3d54f033d4beb1f5543a6fe522ceaf1b86cba5a1e9fb22b99eee4246c7cfb686:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkY2YyMmEzYWEwZWRiY2ZiYjM2ZmViYjMxZjQyYzI5Y2I2YjRlYmQ5Nzk2M2MyYjAzYjFlNTk2MTI2Yzc5NTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiNDQ3NDBjMmFhZTlmNzQ5YmEwMGQ3NTg3OTA1ZjljNmM3OGRlNjgzMGQzOWZmOTljMTE3ZTVhNzdmMjI4YjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVlYThlMTRiOTIwNjg1YmVjMWE4ZjE2NmY5ZThiOGMwZDBjOGMyZjdlYzVlZjNlNzEzOThiODc2YmEyYjcxYjUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3N2RmMTQwNjQ2YTljNjA0ZDc1MjllZjNjMzc5ODZmZDQ1ODM5YWU0ZTI0NzRiY2UyNDhjYjZlN2QwY2NkMGYifQ"
+        },
+        {
+          "resource": "repo://libs/acp/README.md#L78-L125",
+          "version": "repo-lines-v1:sha256:71c20efdbd74fafba254fb2c3125dfabb4b34749843038e8eebab18776e49be2:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExOGZhOTc3MGMyMDUxMzEyMTViOWNiYThiODg1NzNiZWY4ZTE1MzY4YzNlYTYwMDVjNDcwYWY2NGY1MjFiZTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjExMzAwMjM5ZWMxNTEwODZhMDEzMjAzMDU3MDRhYTE1NGE2NmJhOGJmZDgwYjA4MGZlZjdmNWFlMGUwMjI0NjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQwZGVkMWNiYWFhYTcyOGViNzNjODU1MDhjNjQ2MTgyMzY5YjE0YTNhZjkxMTZhNjU0MWJlZmRlN2U0NTAxNmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBmZGMwYmJlMmIxM2FhM2QzNmZhMjRhZjlmOWY5NmQ5YzI5ZmRlYjY1ZjcxZTZmZDY1MjU0NjBhYjcxODI1ZjMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d16038f975fd4bff8067ecc85c31cce6",
+      "statement": "`deepagents-code` pins an exact SDK version and a change requiring new SDK behavior must update that pin in the same pull request; release-please creates package-specific release PRs, and curated notes require draft, review/edit, and `@release-bot apply` unless explicitly skipped.",
+      "evidence": [
+        {
+          "resource": "repo://.github/RELEASING.md#L21-L50",
+          "version": "repo-lines-v1:sha256:7d959dbd7e1fb980fc737e60ee5b35840500a153a0e0b46c1bfed24d1d022c00:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0MjFlZDVkMzc1NDg4MGQ1ZWU1YjQyMmRmMjIxZjRiOGNiMzZiNmU0Y2EwYWQzZmZhOTJjZWZkNWY3NjJjNDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY0NzBkZTk0NTIwMDk5N2ZmY2FlOTNkMmU4Yzc0YTBkMjExMzhmN2JhNWY5Zjk4MDJiY2YyMDJjNjViMGU5NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1ZWQxODAwZjc0NjE2OTk1Njg3Y2Q0ZWM4YWIyYjBmZDZjZGUyNzE1YmMzOGUxMDRjODdjOWY1ZDk3OThhN2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM5OTQyNjI2Y2UwZWIwZjAxOWUyYWQ0MTJmZWEzODA5OTg5N2U4NTAzMWY4MDQyMDQ2OGNlNDQwMDJjZTNlNDMifQ"
+        },
+        {
+          "resource": "repo://.github/RELEASING.md#L52-L78",
+          "version": "repo-lines-v1:sha256:4cf081e22da4d28c8085a000dde2ce0f8c16f752b663cd5fb00a5f1f3f621d31:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0NjU2YzExMmI1OTE4ZDAzM2JmNmQxYjA5YzM5NmE2YjVlOWNiYzBlZWEwM2Y2ZWRhYTU1YzI4NWVmZmE3NDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViNGFhNjk5N2E4YjU2NTc3YjZlN2IwY2M0MDFmY2Q3YTM3NTlhYTNhMGFkNTY3YmNiNDc4ZjI5M2M3N2M3ZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVlOTk4MmE4Y2RlNGE5OTYzYjJiNjBjYzU0NTFiYzQwN2FlNjU1OWQ3NzgzYjQ2MTIyZTc1NzI0NzJjYmMxNmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJmMzgyNTE0NjQ5ZTlkOTUzODUzZDQwMDkxOGQ5YmIxMmJiYjAzZjE5Y2MzYTJiMDQ4NTBjODQ3YThiMDBlMjgifQ"
+        },
+        {
+          "resource": "repo://libs/code/AGENTS.md#L109-L113",
+          "version": "repo-lines-v1:sha256:5e3a3facaf796da882cea5f44a3afc2aebc95e46e8bd944b2d04b2f221c1594b:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWFjNzcyOWIzZmVkYWJiMmNhODY5YjQ3NmE5OWU4NjI0NzAzNDlkOTU0YmZhNGY5M2VhMmRiZWM5NGQ1ZGY0OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjgzZTczODIyZTAyNWIyYzBmYzY0NzI3MjQ3ZTc4NTZkMjc1MzQ1OGUzODJmNWJlZTY0YTc3MWQ2YzRlNGZlMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDVmYzczNjhjNGQ4NGVlYzEyYzI5ZDA3NTYwNWZmYTUwY2ZmNzkwOWY1YzNhNDZkNzU3MWY0MTQ5ZGMwYWYxNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYmI0YjVjODVlYzRiMzM1MmUyZDkzZWZkMTFiOWMyNjJhYjI1YmYwMTc3NjJjMzViYjQxOWJkZjUyZmY5NjVhYSJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-08T08:07:53.482Z"
+    "at": "2026-10-09T08:07:51.383Z"
   }
 }

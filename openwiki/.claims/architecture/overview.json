@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a16de80b852fe7bb30ef64e84388f98ba7bfe80ee48ddc1ac82530d24373a55f",
+  "pageVersion": "sha256:a6f7c92a1029ff4720d3494b512973928fea8dfdee00b850f51ed51f8cc5a46f",
   "claims": [
     {
       "id": "claim_02a3292b94514936b7fbbbe869876251",
@@ -84,7 +84,7 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:31a70bf1da8f4fabdfa6fa17363594f8d0d7b1a56768ad8fb52d0f836fe883a2"
+          "version": "repo-file-v1:sha256:bce54cf55524dcc4ae03727f3ae9cc6858919c1ea6d519fbf70cd8480b791f91"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
@@ -248,7 +248,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/pyproject.toml#L1-L35",
-          "version": "repo-lines-v1:sha256:120c2155d12408e39fd1b4df13271f4c3393bd625b004cfc9b806f64044d8859:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwMWEyY2Q3ODcwMTU5NGNlZTljMjJmYWZlNjczNGJlNDJhN2FhZGU4ODUxNzhkNzQ2NGNkNzZlYmI5OTcyYTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ4ODI2YmMxODkyZTllMTM5Y2MxOTczZjc5MTkxYzkyMTg2NjIzZjA4ZjdmMTgxYzI2NTFlYmNiZmU2ZmE0YmYifQ"
+          "version": "repo-lines-v1:sha256:649b61d56948c3629bfb04e521d0b8cf2cf9c2e0c07bc91caff537e07992660d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwMWEyY2Q3ODcwMTU5NGNlZTljMjJmYWZlNjczNGJlNDJhN2FhZGU4ODUxNzhkNzQ2NGNkNzZlYmI5OTcyYTciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ4ODI2YmMxODkyZTllMTM5Y2MxOTczZjc5MTkxYzkyMTg2NjIzZjA4ZjdmMTgxYzI2NTFlYmNiZmU2ZmE0YmYifQ"
         }
       ]
     },
@@ -307,10 +307,34 @@
           "version": "repo-lines-v1:sha256:2f430ea9661bdad4a3c52adc644027abf256ec650af4ce320d52a1123cfc17d9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5OTk3OTgzZjdkMGYyYzY0N2MwNjAwYjJjMjU3ZmJlYzYyYTJkOWQyNDE0ZTE3ZjU3YzcwNjQzODA3Nzk1N2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiOWNhNjA0MmMyMTEzZGU3ZTc0NDEzNWE2OTNiYjRiZDA3NDNhY2U2MzRiMDJjYzlmN2M1M2U1NjM3ZTg1NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkZWZmYWM5Zjc2MzA1MWM3ZWNkMWY1NGRlODUyNDYxYTE3NzM3M2IxYjUxOGRjZTJmM2IyNWU0NDA2ZjZlYzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEyZGIzYjkzZTg3MWJmM2VhMzQ3N2ZjNDQwNTI4YTIxOTdiYzIwOGMyNDFhZGMxODZhZTk3ZTQ0MjlhNTM5MjYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_277c87bb34304438867ade5178246f24",
+      "statement": "Release Please manages separate release lines for the SDK, ACP, dcode, Talon, and five partner packages, while `deepagents-evals` is absent from both the release manifest and configured package list.",
+      "evidence": [
+        {
+          "resource": "repo://.release-please-manifest.json",
+          "version": "repo-file-v1:sha256:b0d53df4f4fa288d3cf25ee5609b506cc3f52f90fb443db6fe930ebb7256d5e9"
+        },
+        {
+          "resource": "repo://release-please-config.json",
+          "version": "repo-file-v1:sha256:c9c9e84b4d74a8842fe1f8e49cecea496d12f553fba792d382fdea6c3abaa99f"
+        }
+      ]
+    },
+    {
+      "id": "claim_39807bd903354e51a2890292f76843ac",
+      "statement": "The current release configuration creates separate draft release pull requests and skips GitHub releases.",
+      "evidence": [
+        {
+          "resource": "repo://release-please-config.json#L5-L7",
+          "version": "repo-lines-v1:sha256:81e3c8181fe573d965076e64cd3716cac5e31e66f2ecda4c869fa543e23abdfd:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzQ4Y2QxODgwZGI0YWIzZmMyZjhmMjM4ZDAzNjllNDFkODlhMzMwMmEzNzMyYmQ4ZmRiOTUzNWE5YmI0ZWRkOCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODA3ZmIzYTI4MGUyM2M3NjAxMzMyNDA4NjE3YjJlNjNlYWRkMzY2ODRiNWQxZGI4YzYwYmRmM2RlYzVjOGE3NCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzFlNDcwZGRlZmQ2OTliZDRkZjNkZGE0YjZiY2NiZmEyMDRiMmYzMDg0MGIyMDlkOGU1YjA3N2ViZjJhOWFkZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzc1MjgwNDhkZTMxMjJkYmJmN2RkYzlhM2RjYzA5MmNjYTE4ZWUxMmNlOTYyZTlkNTU3NzQ2YTEwMGVjODNiMCJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-08T08:07:53.482Z"
+    "at": "2026-10-09T08:07:51.383Z"
   }
 }

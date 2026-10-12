@@ -4,4 +4,4 @@
 - [GitHub Action Integration](github-action.md) - Run one bounded, non-interactive dcode task from a GitHub Actions job. Documents the public action contract, credential and workspace handoff, memory cache lifecycle, and headless tool controls.
 - [MCP Integration](mcp.md) - How dcode discovers, trust-gates, connects, and authenticates MCP servers, then adapts, bounds, and reports their tools across primary and delegated agents.
 - [Sandbox and Partner Integrations](sandbox-partners.md) - Map dcode's optional remote sandbox providers to the shared backend contract, selection and lifecycle rules, package constraints, and Talon routing. Distinguish those providers from the local QuickJS JavaScript REPL middleware.
-- [Talon Runtime Host](talon.md) - Experimental local host for long-running Deep Agents channels and schedules, including durable conversation state, MCP tools, model selection, sandboxing, and channel adapters.
+- [Talon Runtime Host](talon.md) - Experimental local runtime host for long-running Deep Agents, channel adapters, durable conversation state, scheduling, MCP tools, and optional sandbox execution.

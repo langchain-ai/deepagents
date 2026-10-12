@@ -5,7 +5,7 @@ description: Deep Agents delegates isolated, forked, compiled, and remote work a
 tags: [deepagents, subagents, delegation, skills, middleware, tool-gating, agent-protocol]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
+    at: 2026-10-09T08:07:51.383Z
 sources:
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py

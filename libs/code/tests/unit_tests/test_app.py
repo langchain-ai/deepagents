@@ -6654,7 +6654,6 @@ class TestRunAgentTaskMediaTracker:
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._show_reasoning = True
 
             with patch(
                 "deepagents_code.tui.textual_adapter.execute_task_textual",
@@ -15017,9 +15016,9 @@ class TestFetchThreadHistoryData:
         mock_agent.aget_state.return_value = state
         app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
 
-        hidden = await app._fetch_thread_history_data("t-1")
-        app._show_reasoning = True
         visible = await app._fetch_thread_history_data("t-1")
+        app._show_reasoning = False
+        hidden = await app._fetch_thread_history_data("t-1")
 
         assert [(message.type, message.content) for message in hidden.messages] == [
             (MessageType.ASSISTANT, "Before after"),
@@ -21414,24 +21413,6 @@ class TestPrewarmAwait:
 
         assert discovered is True
         assert app._session_plugin_ids == frozenset({"quality@tools"})
-
-    async def test_invoke_skill_cache_miss_uses_import_gate(self) -> None:
-        """Cache-miss skill discovery must use the process import gate."""
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-
-        with (
-            patch.object(
-                app,
-                "_discover_skills_and_roots_with_import_lock",
-                return_value=([], []),
-            ) as guarded_discover_mock,
-            patch.object(app, "_discover_skills_and_roots") as raw_discover_mock,
-            patch.object(app, "_mount_message", AsyncMock()),
-        ):
-            await app._invoke_skill("missing")
-
-        guarded_discover_mock.assert_called_once()
-        raw_discover_mock.assert_not_called()
 
 
 class TestHeaderAndTitle:

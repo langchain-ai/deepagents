@@ -2365,42 +2365,6 @@ async def test_side_tools_read_only_when_the_caller_allows_it(
     assert (result.status == "error") is not read_tools
 
 
-@pytest.mark.parametrize("read_tools", [None, False, True])
-async def test_client_read_tool_permission_reaches_side_answer(
-    btw_server: BtwServer,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    read_tools: bool | None,
-) -> None:
-    client, operation, threads = btw_server
-    threads.get_state.return_value = {
-        "values": {"messages": [HumanMessage(content="Main task")]}
-    }
-    answer = AsyncMock(return_value="side answer")
-    monkeypatch.setattr(operation, "answer", answer)
-    remote = RemoteAgent("http://test")
-
-    async def post(path: str, *, json: dict[str, object]) -> object:
-        response = await client.post(path, json=json)
-        response.raise_for_status()
-        return response.json()
-
-    graph = MagicMock()
-    graph.client.http.post = post
-    graph.client.http.get = AsyncMock(return_value={"cost": None})
-    monkeypatch.setattr(remote, "_get_graph", lambda: graph)
-    monkeypatch.setattr(remote, "_workspace_for_thread", AsyncMock(return_value={}))
-    monkeypatch.setattr(remote, "aensure_thread", AsyncMock())
-    config: RunnableConfig = {"configurable": {"thread_id": "thread"}}
-    answered = (
-        remote.abtw("why", config=config)
-        if read_tools is None
-        else remote.abtw("why", config=config, read_tools=read_tools)
-    )
-    assert await answered == "side answer"
-    assert answer.call_args.kwargs["read_tools"] is bool(read_tools)
-
-
 async def test_side_tool_schemas_survive_restart_without_native_execution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -105,6 +105,28 @@ class TestHandleSkillCommand:
         assert row._description == "A test skill"
         assert row._body == "Do stuff"
 
+    def test_pin_survives_rebuilding_row_from_store(self) -> None:
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageStore
+        from deepagents_code.tui.widgets.messages import SkillMessage
+
+        app = _make_app()
+        row = SkillMessage(skill_name="test-skill", id="skill-test")
+        store = MessageStore()
+        store.append(MessageData.from_widget(row))
+        app._message_store = store
+        app._pending_skill_row = row
+
+        app._on_skill_pinned("test-skill", "A test skill", "Do stuff")
+
+        data = store.get_message("skill-test")
+        assert data is not None
+        assert data.skill_description == "A test skill"
+        assert data.skill_body == "Do stuff"
+        rebuilt = data.to_widget()
+        assert isinstance(rebuilt, SkillMessage)
+        assert rebuilt._description == "A test skill"
+        assert rebuilt._body == "Do stuff"
+
 
 class TestRequestSkillTrust:
     """The TUI answers the server's trust interrupt and fails closed."""

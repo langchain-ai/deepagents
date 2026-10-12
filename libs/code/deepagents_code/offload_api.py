@@ -30,6 +30,11 @@ from deepagents_code.hooks.server_middleware import (
     HookTransportInterruptError,
     operation_hook_responses,
 )
+from deepagents_code.model_api import (
+    model_catalog,
+    model_metadata,
+    startup_model_metadata,
+)
 from deepagents_code.offload import _handoff_archive_prefix
 from deepagents_code.offload_middleware import (
     OffloadStateUpdate,
@@ -740,7 +745,7 @@ def _checkpoint_model_context(
     A bare spec cannot carry an endpoint, but it can still name a provider the
     server holds credentials for, which would send conversation history
     somewhere the thread's owner never chose. A mid-session
-    `/summarization-model` override therefore does not apply to `/offload`.
+    `/offload model` override therefore does not apply to `/offload`.
 
     Args:
         context: Validated request context.
@@ -1377,6 +1382,17 @@ async def cancel_offload(request: Request) -> JSONResponse:
 app = Starlette(
     lifespan=_lifespan,
     routes=[
+        Route("/dcode/model", startup_model_metadata, methods=["GET"]),
+        Route(
+            "/dcode/threads/{thread_id:str}/models",
+            model_catalog,
+            methods=["POST"],
+        ),
+        Route(
+            "/dcode/threads/{thread_id:str}/model",
+            model_metadata,
+            methods=["POST"],
+        ),
         Route("/dcode/threads/{thread_id:str}/btw", btw, methods=["POST"]),
         Route("/dcode/threads/{thread_id:str}/cost", btw_cost, methods=["GET"]),
         Route(

@@ -30,7 +30,11 @@ from langchain_core.messages import AIMessage
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
-from deepagents_code.cold_cache import CacheActivity, cache_identity_params
+from deepagents_code.cold_cache import (
+    CacheActivity,
+    cache_identity_params,
+    cache_request,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -87,10 +91,9 @@ def _cache_endpoint_identity(
     a disagreement that never self-heals, because both sides keep recomputing
     their own answer, and every send would report `identity_changed`.
 
-    Never raises. Both call sites run *after* `handler()` has returned, so the
-    model call is already made and billed; letting a config-shaped surprise
+    Never raises. Cache identity must not prevent a model request. A malformed
     (a non-string `base_url` from a `class_path` provider that ignores it, say)
-    propagate would discard a paid response over a diagnostic value. Failing to
+    endpoint must not turn a diagnostic into a failed model call. Failing to
     the provider default is the same degradation an unreadable checkpointed
     endpoint already gets.
 
@@ -957,10 +960,6 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 strict_model_resolution=self._strict_model_resolution,
                 construction_model_result=self._model_result,
             )
-            request_started_at = _utc_now_iso()
-            response = handler(resolved.request)
-            if not self._persist_model_state:
-                return response
             cache_endpoint = (
                 _cache_endpoint_identity(resolved.model_spec, resolved.model_params)
                 if resolved.model_params is not None
@@ -969,6 +968,20 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             cache_params = _effective_cache_params(
                 resolved.model_spec, resolved.model_params
             )
+            activity = CacheActivity(
+                requested_at=_utc_now_iso(),
+                model_spec=resolved.model_spec or "",
+                endpoint=cache_endpoint,
+                params=cache_params,
+            )
+            token = cache_request.set(activity if self._persist_model_state else None)
+            try:
+                response = handler(resolved.request)
+            finally:
+                cache_request.reset(token)
+            if not self._persist_model_state:
+                return response
+            request_started_at = activity["requested_at"]
         command = _checkpoint_command(
             resolved,
             request_started_at,
@@ -999,13 +1012,6 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 strict_model_resolution=self._strict_model_resolution,
                 construction_model_result=self._model_result,
             )
-            request_started_at = _utc_now_iso()
-            response = await handler(resolved.request)
-            if not self._persist_model_state:
-                return response
-            # Offloaded: `_cache_endpoint_identity` and `_effective_cache_params`
-            # read the config and credential store, which `blockbuster` rejects on
-            # the server event loop.
             cache_endpoint = (
                 await asyncio.to_thread(
                     _cache_endpoint_identity,
@@ -1022,6 +1028,20 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 resolved.model_spec,
                 resolved.model_params,
             )
+            activity = CacheActivity(
+                requested_at=_utc_now_iso(),
+                model_spec=resolved.model_spec or "",
+                endpoint=cache_endpoint,
+                params=cache_params,
+            )
+            token = cache_request.set(activity if self._persist_model_state else None)
+            try:
+                response = await handler(resolved.request)
+            finally:
+                cache_request.reset(token)
+            if not self._persist_model_state:
+                return response
+            request_started_at = activity["requested_at"]
         command = _checkpoint_command(
             resolved,
             request_started_at,

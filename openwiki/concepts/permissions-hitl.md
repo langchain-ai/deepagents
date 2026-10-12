@@ -18,6 +18,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-bf922bb2704cfd50154e92e5
     resource: repo://libs/deepagents/README.md
+  - id: openwiki-source-851e3a9c96663d8db5ca3dec
+    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
   - id: openwiki-source-f1280171b9d75cd28add0ec3
     resource: repo://libs/deepagents/THREAT_MODEL.md
   - id: openwiki-source-cd45145a8c3a51b52eab3c2b
@@ -46,10 +48,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
   - id: openwiki-source-d4964daa078854bf4438d764
     resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-09T08:07:51.383Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-03T08:05:07.881Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
+    at: 2026-10-09T08:07:51.383Z
 ---
 
 # Permissions and Human-in-the-Loop
@@ -76,6 +78,8 @@ A `FilesystemPermission` has read and/or write operations, absolute glob paths, 
 
 `FilesystemMiddleware` enforces `deny` for its built-in filesystem tools before backend execution. Listing, globbing, and grep results remove denied entries rather than exposing them. Recursive or potentially recursive `delete` is deliberately more conservative: a deny pattern that could overlap the removed subtree blocks deletion even where a preceding broad allow would otherwise win. Permissions are tool middleware, **not** a backend-wide access-control layer: direct backend calls do not acquire these rules.
 
+There is an intentional execution boundary: a nonempty permission set is rejected when the backend supports command execution, because tool-level policy for `execute` is not implemented. The narrow exception is a `CompositeBackend` whose permission patterns are all scoped to configured route prefixes; that permits policy on those routed filesystem operations without representing it as a policy for the execution-capable default. Do not combine filesystem permissions with a shell-capable backend and assume that `execute` is constrained.
+
 ### Interrupt is routing, not enforcement
 
 An `interrupt` rule does not deny access. During `create_deep_agent` assembly, filesystem interrupt rules are transformed into `HumanInTheLoopMiddleware` `interrupt_on` entries with per-call `when` predicates. A caller's explicit `interrupt_on` entry wins for the same tool name, so it can deliberately replace the generated filesystem routing; deny enforcement remains in `FilesystemMiddleware` either way.
@@ -98,11 +102,11 @@ Caption: HITL routes a call to review before execution; the filesystem middlewar
 
 ## Subagents: inheritance is explicit and type-dependent
 
-For declarative `SubAgent` specifications, omitted `permissions` inherits the parent list; a supplied list, including `[]`, replaces it completely. The graph constructs each declarative subagent with its own `FilesystemMiddleware` and builds filesystem-derived interrupt routing from that subagent's effective rules. The auto-added general-purpose subagent also uses the parent permissions.
+For declarative `SubAgent` specifications, including experimental `mode="fork"`, omitted `permissions` inherits the parent list; a supplied list, including `[]`, replaces it completely. The graph constructs each declarative subagent with its own `FilesystemMiddleware` and builds filesystem-derived interrupt routing from that subagent's effective rules. The auto-added general-purpose subagent also uses the parent permissions.
 
-Top-level `interrupt_on` is inherited by declarative subagents unless their specification supplies its own map. The effective map merges generated filesystem interrupts first and then user configuration, so the relevant user map takes precedence on name conflicts. In contrast, `CompiledSubAgent` and remote `AsyncSubAgent` graphs do not inherit the parent `interrupt_on`; configure their approval behavior in the compiled or remote graph. Do not infer a common enforcement boundary merely because the parent delegates work.
+Top-level `interrupt_on` is inherited by declarative subagents unless their specification supplies its own map. The effective map merges generated filesystem interrupts first and then user configuration, so the relevant user map takes precedence on name conflicts. `CompiledSubAgent` and remote `AsyncSubAgent` specifications instead pass through as already-built or separately deployed agents: they inherit neither the parent's filesystem permissions nor its top-level `interrupt_on`. Configure filesystem enforcement and approval behavior in the compiled or remote graph itself. Do not infer a common enforcement boundary merely because the parent delegates work.
 
-A default declarative subagent is isolated and receives the delegated task rather than the parent conversation. Experimental `mode="fork"` continues the parent conversation and state, rebuilds prompt-producing middleware, appends the fork's prompt, and cannot define separate skills. This is a context and composition decision, not a privilege reduction; choose tools, permissions, and HITL for each subagent deliberately.
+A default declarative subagent is isolated and receives the delegated task rather than the parent conversation. Experimental `mode="fork"` continues the parent conversation and state, rebuilds prompt-producing middleware, appends the fork's prompt, and cannot define separate skills. It follows the same declarative permission and interrupt defaults above; fork mode is a context and composition decision, not a privilege reduction. Choose tools, permissions, and HITL for each subagent deliberately.
 
 ## Profile exclusion is separate from permissions
 

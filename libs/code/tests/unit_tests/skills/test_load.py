@@ -52,6 +52,18 @@ class TestListSkillsAliasDirectories:
 class TestListSkillsBuiltIn:
     """Test list_skills with built-in skills directory."""
 
+    def test_plugin_discovery_is_available_without_plugin_sources(self) -> None:
+        """Plugin discovery loads from the shipped built-ins alone."""
+        from deepagents_code._paths import get_built_in_skills_dir
+
+        skills = list_skills(
+            built_in_skills_dir=get_built_in_skills_dir(),
+            user_skills_dir=None,
+            project_skills_dir=None,
+        )
+
+        assert any(skill["name"] == "deepagents-plugin-discovery" for skill in skills)
+
     def test_nonexistent_built_in_dir(self, tmp_path: Path) -> None:
         """Test that a nonexistent built-in directory is handled gracefully."""
         nonexistent = tmp_path / "nonexistent"

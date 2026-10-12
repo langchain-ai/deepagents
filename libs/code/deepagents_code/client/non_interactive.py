@@ -71,7 +71,6 @@ from deepagents_code.agent import DEFAULT_AGENT_NAME
 from deepagents_code.config import (
     SHELL_ALLOW_ALL,
     build_langsmith_thread_url,
-    create_model,
     get_glyphs,
     is_ascii_mode,
     is_shell_command_allowed,
@@ -84,7 +83,6 @@ from deepagents_code.hooks import (
     drain_pending_hooks,
 )
 from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
-from deepagents_code.model_config import ModelConfigError
 from deepagents_code.model_retry import (
     INTERRUPTED_TOOL_OUTPUT,
     RETRY_BOUNDARY_LINE,
@@ -2806,19 +2804,6 @@ async def run_non_interactive(
         message_kwargs = envelope.message_kwargs
         skill_name = envelope.skill_name
 
-    try:
-        result = create_model(
-            model_name,
-            extra_kwargs=model_params,
-            profile_overrides=profile_override,
-            cli_max_retries=cli_max_retries,
-        )
-    except ModelConfigError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        return 1
-
-    result.apply_to_runtime_state()
-
     thread_id = generate_thread_id()
     from deepagents_code._debug import bind_debug_logging_to_thread
 
@@ -2828,12 +2813,6 @@ async def run_non_interactive(
     if not quiet:
         thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
         console.print(Text("Running task non-interactively...", style="dim"))
-        header = _build_non_interactive_header(
-            assistant_id,
-            thread_id,
-            rubric_active=rubric is not None,
-        )
-        console.print(header)
 
     from deepagents_code.client.launch.server_manager import server_session
     from deepagents_code.hooks.client_lifecycle import ClientHookStopError
@@ -2951,6 +2930,16 @@ async def run_non_interactive(
             interactive=False,
             cwd=str(Path.cwd()),
         ) as (agent, _server_proc):
+            metadata = await agent.aget_model_metadata()
+            metadata.apply_to_runtime_state()
+            if not quiet:
+                header = _build_non_interactive_header(
+                    assistant_id,
+                    thread_id,
+                    rubric_active=rubric is not None,
+                )
+                console.print(header)
+
             # Collect MCP preload result (ran concurrently with server startup)
             if mcp_task is not None:
                 try:

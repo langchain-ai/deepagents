@@ -18,7 +18,7 @@ curl -LsSf https://langch.in/dcode | bash
 ```bash
 # With model provider extras
 # OpenAI, Anthropic, and Gemini are included by default
-DEEPAGENTS_CODE_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/dcode | bash
+curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_EXTRAS="nvidia,ollama" bash
 ```
 
 Run:
@@ -65,7 +65,7 @@ See our [Releases](https://docs.langchain.com/oss/python/release-policy) and [Ve
 
 As an open-source project in a rapidly developing field, we are extremely open to contributions, whether it be in the form of a new feature, improved infrastructure, or better documentation.
 
-For detailed information on how to contribute, see the [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview).
+For local setup, see the [Development Guide](https://github.com/langchain-ai/deepagents/blob/main/libs/code/DEVELOPMENT.md). For contribution policy, see the [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview).
 
 ## 🤝 Acknowledgements
 

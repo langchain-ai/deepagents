@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from typing import TYPE_CHECKING
 
 import pytest
 from textual import events
@@ -20,6 +21,9 @@ from textual.widgets import Markdown, Static
 
 from deepagents_code import _textual_patches  # triggers patch
 from deepagents_code.tui.widgets.diff import _DiffRowStatic
+
+if TYPE_CHECKING:
+    from textual.pilot import Pilot
 
 
 def _keys_for(sequence: str, *, alt: bool) -> list[tuple[str, str | None]]:
@@ -86,7 +90,80 @@ class SelectableScrollApp(App[None]):
                 yield Static(f"line{index:02d} content", id=f"row{index}")
 
 
+async def _send_mouse(
+    pilot: Pilot[None], event_type: type[events.MouseEvent], widget_id: str, x: int
+) -> None:
+    widget = pilot.app.query_one(widget_id)
+    offset = widget.content_region.offset + Offset(x, 0)
+    await pilot.app.on_event(event_type(None, *offset, 0, 0, 1, False, False, False))
+    await pilot.pause()
+
+
 class TestPatchedWordSelection:
+    @pytest.mark.parametrize(
+        ("start", "end"),
+        [("#diff-before", "#diff-row"), ("#diff-row", "#diff-before")],
+    )
+    async def test_triple_click_drag_keeps_diff_endpoint_at_source_start(
+        self, start: str, end: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(SelectableDiffApp, "CLICK_CHAIN_TIME_THRESHOLD", 60)
+        app = SelectableDiffApp()
+        async with app.run_test() as pilot:
+            for _ in range(2):
+                await _send_mouse(pilot, events.MouseDown, start, 8)
+                await _send_mouse(pilot, events.MouseUp, start, 8)
+            await _send_mouse(pilot, events.MouseDown, start, 8)
+            await _send_mouse(pilot, events.MouseMove, end, 5)
+            await _send_mouse(pilot, events.MouseUp, end, 5)
+
+            assert app.screen.get_selected_text() == "removed word\nadded word"
+            for row in app.query(_DiffRowStatic):
+                assert app.screen.selections[row].get_span(0) == (5, -1)
+
+    @pytest.mark.parametrize(("start", "end"), [(2, 4), (4, 2)])
+    async def test_triple_click_drag_selects_whole_blocks(
+        self, start: int, end: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(SelectableScrollApp, "CLICK_CHAIN_TIME_THRESHOLD", 60)
+        app = SelectableScrollApp()
+        async with app.run_test(size=(40, 8)) as pilot:
+            for _ in range(2):
+                await _send_mouse(pilot, events.MouseDown, f"#row{start}", 8)
+                await _send_mouse(pilot, events.MouseUp, f"#row{start}", 8)
+            await _send_mouse(pilot, events.MouseDown, f"#row{start}", 8)
+            assert app.screen.get_selected_text() == f"line{start:02d} content"
+
+            await _send_mouse(pilot, events.MouseMove, f"#row{end}", 8)
+            assert app.screen.get_selected_text() == (
+                "line02 content\nline03 content\nline04 content"
+            )
+            await _send_mouse(pilot, events.MouseMove, "#row3", 8)
+            expected = "\n".join(
+                f"line{row:02d} content"
+                for row in range(min(start, 3), max(start, 3) + 1)
+            )
+            await _send_mouse(pilot, events.MouseUp, "#row3", 8)
+            assert app.screen.get_selected_text() == expected
+
+            await _send_mouse(pilot, events.MouseDown, "#row1", 1)
+            await _send_mouse(pilot, events.MouseMove, "#row1", 3)
+            await _send_mouse(pilot, events.MouseUp, "#row1", 3)
+            assert app.screen.get_selected_text() == "ine"
+
+    async def test_double_click_drag_selects_whole_words(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(SelectableTextApp, "CLICK_CHAIN_TIME_THRESHOLD", 60)
+        app = SelectableTextApp()
+        async with app.run_test() as pilot:
+            await _send_mouse(pilot, events.MouseDown, "#msg", 7)
+            await _send_mouse(pilot, events.MouseUp, "#msg", 7)
+            await _send_mouse(pilot, events.MouseDown, "#msg", 7)
+            await _send_mouse(pilot, events.MouseMove, "#msg", 12)
+            await _send_mouse(pilot, events.MouseUp, "#msg", 12)
+            assert app.screen.get_selected_text() == "beta gamma"
+
     async def test_shift_click_extends_drag_selection_from_anchor(self) -> None:
         async with SelectableTextApp().run_test() as pilot:
             await pilot.mouse_down("#msg", offset=(0, 0))

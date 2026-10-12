@@ -327,9 +327,10 @@ async def test_completed_sibling_cost_survives_owned_sqlite_resume(
         """Pause after a sibling has completed."""
         return str(interrupt("approve?"))
 
+    # Persist the completed sibling before interrupting; Promise.all can cancel it.
     code = (
-        'await Promise.all([task({description:"done", subagentType:"done"}),'
-        'task({description:"pause", subagentType:"pause"})])'
+        'await task({description:"done", subagentType:"done"});'
+        'await task({description:"pause", subagentType:"pause"})'
     )
     database = tmp_path / "owned.sqlite"
     saver_class = owned_saver_class(db_path=database)

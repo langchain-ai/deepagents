@@ -1178,7 +1178,9 @@ so this caps the worst-case wait visible to the user.
 
 
 # Module-level caches — cleared by `clear_caches()`.
-_available_models_cache: dict[str, list[str]] | None = None
+type _DiscoveryCacheKey = tuple[bool, str | None]
+
+_available_models_cache: tuple[_DiscoveryCacheKey, dict[str, list[str]]] | None = None
 _builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
 _provider_profiles_cache: dict[str, dict[str, Any]] = {}
@@ -1302,8 +1304,12 @@ timeout, which defers to the HTTP probe) -- is still re-probed (its empty
 result is not cached), so a later `ollama pull` is discovered without
 `/reload`. Cleared by `clear_caches()`."""
 _ollama_model_profiles_cache: dict[tuple[str, str], dict[str, Any]] = {}
-_profiles_cache: Mapping[str, ModelProfileEntry] | None = None
-_profiles_override_cache: tuple[int, Mapping[str, ModelProfileEntry]] | None = None
+_profiles_cache: tuple[_DiscoveryCacheKey, Mapping[str, ModelProfileEntry]] | None = (
+    None
+)
+_profiles_override_cache: (
+    tuple[_DiscoveryCacheKey, dict[str, Any], Mapping[str, ModelProfileEntry]] | None
+) = None
 
 
 def clear_caches() -> None:
@@ -1399,6 +1405,28 @@ def _get_provider_profile_modules() -> list[tuple[str, str]]:
     return result
 
 
+ANTHROPIC_MODEL_PROFILE_FALLBACKS: dict[str, dict[str, Any]] = {
+    "claude-haiku-5-5": {
+        "name": "Claude Haiku 5.5",
+        "max_input_tokens": 1_000_000,
+        "max_output_tokens": 128_000,
+        "text_inputs": True,
+        "image_inputs": True,
+        "audio_inputs": False,
+        "video_inputs": False,
+        "text_outputs": True,
+        "reasoning_output": True,
+        "tool_calling": True,
+        "tool_choice": True,
+        "structured_output": True,
+        "temperature": False,
+        "reasoning_effort_levels": ["low", "medium", "high", "xhigh", "max"],
+        "reasoning_effort_default": "medium",
+    },
+}
+"""Capability fallbacks from https://platform.claude.com/docs/en/models/haiku-5-5/overview."""
+
+
 def _load_provider_profiles(module_path: str) -> dict[str, Any]:
     """Load `_PROFILES` from a provider's data module.
 
@@ -1460,6 +1488,8 @@ def _load_provider_profiles(module_path: str) -> dict[str, Any]:
         module = importlib.util.module_from_spec(file_spec)
         file_spec.loader.exec_module(module)
         profiles = getattr(module, "_PROFILES", {})
+        if module_path == "langchain_anthropic.data._profiles":
+            profiles = {**ANTHROPIC_MODEL_PROFILE_FALLBACKS, **profiles}
         _provider_profiles_cache[module_path] = profiles
         return profiles
 
@@ -1483,12 +1513,25 @@ def _profile_module_from_class_path(class_path: str) -> str | None:
     return f"{package_root}.data._profiles"
 
 
+def _discovery_cache_key() -> _DiscoveryCacheKey:
+    """Scope discovery to the active workspace's Ollama settings.
+
+    Returns:
+        Whether discovery is enabled and the resolved daemon endpoint.
+    """
+    return (
+        _ollama_discovery_enabled(),
+        _get_provider_endpoint("ollama", ModelConfig.load()),
+    )
+
+
 def get_available_models() -> dict[str, list[str]]:
     """Get available models dynamically from installed LangChain provider packages.
 
     Imports model profiles from each provider package and extracts model names.
 
-    Results are cached after the first call; use `clear_caches()` to reset.
+    Results are cached for the active discovery settings; use `clear_caches()`
+    to reset.
 
     Returns:
         Dictionary mapping provider names to lists of model identifiers.
@@ -1497,11 +1540,13 @@ def get_available_models() -> dict[str, list[str]]:
             whose packages expose a `_profiles` module.
     """
     global _available_models_cache  # noqa: PLW0603  # Module-level cache requires global statement
-    if _available_models_cache is not None:
-        return _available_models_cache
+    cache_key = _discovery_cache_key()
+    cached = _available_models_cache
+    if cached is not None and cached[0] == cache_key:
+        return cached[1]
 
     available = _discover_available_models(apply_allowlist=True)
-    _available_models_cache = available
+    _available_models_cache = (cache_key, available)
     return available
 
 
@@ -1749,12 +1794,10 @@ def get_model_profiles(
     Unlike `get_available_models()`, this includes all models from upstream
     profiles regardless of capability filters (tool calling, text I/O).
 
-    Results are cached; use `clear_caches()` to reset. When `cli_override` is
-    provided the result is stored in a single-slot cache keyed by
-    `id(cli_override)`. This relies on the caller retaining the same dict
-    object for the session (the app stores it once on the app instance);
-    passing a different dict with the same contents will bypass the cache
-    and overwrite the previous entry.
+    Results are cached for the active discovery settings; use `clear_caches()`
+    to reset. With `cli_override`, the single-slot cache also matches the dict
+    by identity and retains it to prevent identity reuse across requests.
+    Passing a different dict bypasses the cache and replaces the entry.
 
     Args:
         cli_override: Extra profile fields from `--profile-override`.
@@ -1767,11 +1810,14 @@ def get_model_profiles(
         Read-only mapping of spec strings to profile entries.
     """
     global _profiles_cache, _profiles_override_cache  # noqa: PLW0603  # Module-level caches require global statement
-    if cli_override is None and _profiles_cache is not None:
-        return _profiles_cache
-    if cli_override is not None and _profiles_override_cache is not None:
-        cached_id, cached_result = _profiles_override_cache
-        if cached_id == id(cli_override):
+    cache_key = _discovery_cache_key()
+    cached = _profiles_cache
+    if cli_override is None and cached is not None and cached[0] == cache_key:
+        return cached[1]
+    cached_override = _profiles_override_cache
+    if cli_override is not None and cached_override is not None:
+        cached_key, cached_dict, cached_result = cached_override
+        if cached_key == cache_key and cached_dict is cli_override:
             return cached_result
 
     result: dict[str, ModelProfileEntry] = {}
@@ -1919,9 +1965,9 @@ def get_model_profiles(
 
     frozen = MappingProxyType(result)
     if cli_override is None:
-        _profiles_cache = frozen
+        _profiles_cache = (cache_key, frozen)
     else:
-        _profiles_override_cache = (id(cli_override), frozen)
+        _profiles_override_cache = (cache_key, cli_override, frozen)
     return frozen
 
 
@@ -4204,6 +4250,34 @@ def save_auto_classifier_model(
     return _save_model_field("auto_classifier", model_spec, config_path)
 
 
+def save_summarization_model(model_spec: str, config_path: Path | None = None) -> bool:
+    """Persist the default model for compaction summaries.
+
+    Args:
+        model_spec: Validated model specification to store.
+        config_path: Config file; production callers use the active profile.
+
+    Returns:
+        Whether the preference was saved.
+
+    Raises:
+        ModelNotAllowedError: If policy excludes the model.
+    """  # noqa: DOC502 - propagates from `_save_model_field`
+    return _save_model_field("summarization_default", model_spec, config_path)
+
+
+def clear_summarization_model(config_path: Path | None = None) -> bool:
+    """Clear the stored summary model so future sessions inherit the main model.
+
+    Args:
+        config_path: Config file; production callers use the active profile.
+
+    Returns:
+        Whether the preference was cleared.
+    """
+    return _clear_model_field("summarization_default", config_path)
+
+
 def clear_default_model(config_path: Path | None = None) -> bool:
     """Remove the default model from the config file.
 
@@ -6042,6 +6116,7 @@ def add_disabled_project_mcp_servers(
 
 THREAD_COLUMN_DEFAULTS: dict[str, bool] = {
     "thread_id": False,
+    "thread_name": True,
     "messages": True,
     "created_at": True,
     "updated_at": True,
@@ -6067,6 +6142,12 @@ class ThreadConfig(NamedTuple):
 
     scope: str
     """`'cwd'` (current working directory) or `'all'` (all directories)."""
+
+    auto_rename: bool = True
+    """Generate a name after a new thread's first assistant response."""
+
+    rename_model: str = ""
+    """Model for thread naming; empty uses the selected conversation model."""
 
 
 _thread_config_cache: ThreadConfig | None = None
@@ -6095,6 +6176,8 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
     relative_time = True
     sort_order = "updated_at"
     scope = "cwd"
+    auto_rename = True
+    rename_model = ""
 
     try:
         data, _ = _load_effective_config_data(config_path)
@@ -6123,13 +6206,21 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
         scope_value = threads_section.get("scope")
         if scope_value in {"cwd", "all"}:
             scope = scope_value
+        auto_value = threads_section.get("auto_rename")
+        if isinstance(auto_value, bool):
+            auto_rename = auto_value
+        model_value = threads_section.get("rename_model")
+        if isinstance(model_value, str):
+            rename_model = model_value.strip()
     except (OSError, tomllib.TOMLDecodeError):
         logger.warning("Could not read thread config; using defaults", exc_info=True)
         # Do not cache on error — allow retry on next call in case the
         # file is fixed or permissions are restored.
         return ThreadConfig(columns, relative_time, sort_order, scope)
 
-    result = ThreadConfig(columns, relative_time, sort_order, scope)
+    result = ThreadConfig(
+        columns, relative_time, sort_order, scope, auto_rename, rename_model
+    )
     # The `except` above no longer fires for a bad user file on the default
     # path: `_load_effective_config_data` logs it and returns managed-only data
     # instead of raising, so that guard stopped protecting the cache. Without
@@ -6139,6 +6230,46 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
     if use_default and _user_config_layer_usable():
         _thread_config_cache = result
     return result
+
+
+def load_terminal_tab_title(config_path: Path | None = None) -> str:
+    """Load the terminal tab title template.
+
+    Args:
+        config_path: Optional explicit config file. Passing a path also excludes
+            managed policy from this read, so production callers must pass
+            `None`.
+
+    Returns:
+        Configured `[terminal].tab_title`, or `DEFAULT_TERMINAL_TAB_TITLE` when
+        it is unset, not a string, or unreadable. `TerminalTitle` validates the
+        template.
+    """
+    from deepagents_code.terminal_title import DEFAULT_TERMINAL_TAB_TITLE
+
+    try:
+        data, config_path = _load_effective_config_data(config_path)
+        terminal = data.get("terminal", {})
+        if not isinstance(terminal, dict):
+            logger.warning(
+                "Ignoring malformed [terminal] in %s: expected a table, got %s",
+                _effective_source_label(config_path),
+                type(terminal).__name__,
+            )
+            return DEFAULT_TERMINAL_TAB_TITLE
+        value = terminal.get("tab_title", DEFAULT_TERMINAL_TAB_TITLE)
+        if isinstance(value, str):
+            return value
+        logger.warning(
+            "Ignoring [terminal].tab_title in %s: expected a string, got %s",
+            _effective_source_label(config_path),
+            type(value).__name__,
+        )
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.warning(
+            "Could not read terminal title config; using default", exc_info=True
+        )
+    return DEFAULT_TERMINAL_TAB_TITLE
 
 
 def invalidate_thread_config_cache() -> None:

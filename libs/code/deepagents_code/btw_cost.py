@@ -1,4 +1,4 @@
-"""Persist side-question spend separately from the running graph's checkpoints.
+"""Persist side-question and naming spend outside the graph's checkpoints.
 
 The sessions database owns this subtotal. Readers add it to the graph's total;
 it is never fed back into the graph's cost recorder or checkpoint channels.
@@ -92,7 +92,7 @@ def load_cost(thread_id: str) -> CostBreakdown | None:
     """Retry pending settlements and read the durable subtotal.
 
     Args:
-        thread_id: Thread whose side questions were charged.
+        thread_id: Thread whose side requests were charged.
 
     Returns:
         The saved breakdown, or `None` when no side usage has been saved.
@@ -198,12 +198,12 @@ async def answer_with_cost(
     """Save completed usage before delivering an answer or finishing cancellation.
 
     Args:
-        answer: Tool-free side-question generation.
+        answer: Tool-free side-question or thread-name generation.
         thread_id: Thread that owns this request.
         state: Checkpoint metadata used as a pricing fallback.
 
     Returns:
-        Answer text and the persisted side-question subtotal, when available.
+        Answer text and the persisted side-request subtotal, when available.
     """
     fallback = _checkpointed_model_spec(state)
     historical_complete = not _has_legacy_cost_history(state)
@@ -230,7 +230,7 @@ async def answer_with_cost(
                 total = settlement.result()
             except Exception:
                 logger.warning(
-                    "Could not save side-question costs; settlement remains pending",
+                    "Could not save side-request costs; settlement remains pending",
                     exc_info=True,
                 )
                 total = None

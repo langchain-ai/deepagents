@@ -1,13 +1,17 @@
 ---
 name: deepagents-thread-inspector
-description: Inspect and explain conversations in the local Deep Agents Code SQLite session store. Use as a fallback when LangSmith trace tooling is unavailable, for offline or untraced sessions, or when asked to identify or summarize a local dcode thread, inspect checkpoint metadata, list recent local threads, or parse $DEEPAGENTS_HOME/.state/sessions.db and a thread UUID or prefix.
+description: Inspect and explain conversations in the local Deep Agents Code SQLite session store. Use to look up the current thread's title or name, as a fallback when LangSmith trace tooling is unavailable, for offline or untraced sessions, or when asked to identify or summarize a local dcode thread, inspect checkpoint metadata, list recent local threads, or parse $DEEPAGENTS_HOME/.state/sessions.db and a thread UUID or prefix.
 license: MIT
 compatibility: designed for deepagents-code
 ---
 
 # Deep Agents Thread Inspector
 
-If LangSmith tooling is available for a traced thread, prefer it. Otherwise, use `scripts/inspect_sessions.py` instead of manually decoding database blobs. It opens the database read-only and deserializes the root message channel with LangGraph's strict MsgPack loader — reading the materialized messages from the latest checkpoint, or replaying writes in checkpoint order when that fast path is unavailable — and emits JSON.
+For conversation inspection, prefer LangSmith tooling when available for a traced thread. For saved thread titles, use the local store. Use `scripts/inspect_sessions.py` instead of manually decoding database blobs. It opens the database read-only and deserializes the root message channel with LangGraph's strict MsgPack loader — reading the materialized messages from the latest checkpoint, or replaying writes in checkpoint order when that fast path is unavailable — and emits JSON.
+
+## Look up the current thread's title
+
+Call `get_current_thread_id` to identify this conversation, then run the script with that ID and `--mode summary` as shown below. Read `thread.thread_name`: it contains the saved title, including manual renames, with a fallback to the latest root checkpoint's name for older stores. If it is `null`, report that the thread has no saved title. If the current ID is unavailable, ask for it; do not infer the current thread from the most recent entry in the thread list.
 
 ## Inspect local state
 

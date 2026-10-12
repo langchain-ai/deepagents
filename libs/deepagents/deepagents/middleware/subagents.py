@@ -34,6 +34,7 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._skill_tools import _SKILL_TOOLS_DISCLOSED_KEY
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.rubric import _RUBRIC_KEY
 from deepagents.middleware.summarization import (
     SUMMARIZATION_EVENT_KEY,
     SUMMARIZATION_SESSION_ID_KEY,
@@ -399,7 +400,7 @@ See `_EXCLUDED_OUTPUT_STATE_KEYS` for keys excluded only from subagent output.
 """
 
 
-_EXCLUDED_OUTPUT_STATE_KEYS = _EXCLUDED_STATE_KEYS | {"rubric"}
+_EXCLUDED_OUTPUT_STATE_KEYS = _EXCLUDED_STATE_KEYS | {_RUBRIC_KEY}
 """State keys dropped from a subagent's update to its caller.
 
 Children still inherit `rubric` as input, but it belongs to the caller. `rubric`

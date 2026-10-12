@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Annotated, NotRequired, cast
 
 from deepagents.backends.protocol import FileInfo, LsResult
 from deepagents.backends.utils import to_posix_path
 from deepagents.middleware import skills as sdk_skills
 from deepagents.middleware.skills import SkillsMiddleware
+from langchain.agents.middleware.types import OmitFromOutput
 from langchain_core.messages import HumanMessage
 from langgraph.types import Overwrite, interrupt
 
@@ -34,7 +36,7 @@ from deepagents_code.skills.trust import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from deepagents.backends.protocol import BackendProtocol
     from langchain_core.runnables import RunnableConfig
@@ -45,11 +47,31 @@ logger = logging.getLogger(__name__)
 _PLUGIN_SKILL_SOURCE_LENGTH = 3
 _SKILL_FILE = "SKILL.md"
 
+_PROCESS_ID = uuid.uuid4().hex
+"""Random ID of this process, recorded with each skill load.
+
+A thread's skills were loaded by an earlier process when its recorded ID
+differs. `/reload` restarts the agent server, so every thread rescans its skill
+sources on its next turn.
+"""
+
+
+class _PluginSkillsState(sdk_skills.SkillsState):
+    """SDK skills state plus the process that loaded `skills_metadata`."""
+
+    skills_loaded_by: NotRequired[Annotated[str, OmitFromOutput]]
+    """`_PROCESS_ID` of the process whose scan wrote `skills_metadata`.
+
+    Not private, so a forked subagent inherits it with `skills_metadata` and
+    does not rescan.
+    """
+
 
 class _SkillsStateUpdate(sdk_skills.SkillsStateUpdate, total=False):
     """SDK skills update that can also replace the pending `pinned_skills`."""
 
     pinned_skills: Overwrite
+    skills_loaded_by: str
 
 
 def _skill_invocation(state: sdk_skills.SkillsState) -> dict[str, object]:
@@ -82,14 +104,24 @@ def _pending_pin_update(state: sdk_skills.SkillsState) -> Overwrite | None:
     return Overwrite(selected) if selected != names else None
 
 
+def _loaded_here(state: Mapping[str, object]) -> bool:
+    """Return whether this process wrote the loaded `skills_metadata`.
+
+    Reads `state` as a mapping because the SDK hooks type it as `SkillsState`,
+    which lacks the `_PluginSkillsState` key.
+    """
+    return state.get("skills_loaded_by") == _PROCESS_ID
+
+
 def _needs_load(state: sdk_skills.SkillsState) -> bool:
     """Return whether `before_agent` must scan the skill sources.
 
-    Loaded metadata serves a pending pin when it lists the selected skill.
+    Metadata loaded by an earlier process can be stale (see `_PROCESS_ID`).
+    Current metadata serves a pending pin when it lists the selected skill.
     Otherwise the skill may have been added since the load.
     """
     loaded = state.get("skills_metadata")
-    if loaded is None:
+    if loaded is None or not _loaded_here(state):
         return True
     name = _skill_invocation(state).get("name")
     if name not in (state.get("pinned_skills") or []):
@@ -356,6 +388,8 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     the plugin skill naming convention.
     """
 
+    state_schema = _PluginSkillsState
+
     def __init__(
         self,
         *,
@@ -483,7 +517,9 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         """
         # Always write the errors so warnings from an earlier load are cleared.
         update = _SkillsStateUpdate(
-            skills_metadata=list(all_skills.values()), skills_load_errors=errors
+            skills_metadata=list(all_skills.values()),
+            skills_load_errors=errors,
+            skills_loaded_by=_PROCESS_ID,
         )
         if (pins := _pending_pin_update(state)) is not None:
             update["pinned_skills"] = pins

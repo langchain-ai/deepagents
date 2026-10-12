@@ -247,6 +247,72 @@ async def test_graph_recovers_from_failed_pin(
     assert agent.get_state(config).values["pinned_skills"] == []
 
 
+@pytest.mark.parametrize("namespace", [None, "plugin"])
+async def test_new_process_rescans_cached_skills(
+    tmp_path: Path, mode: str, namespace: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A new server process rescans a thread's skills and keeps its history.
+
+    Turns in one process keep the cached list, so skills added, edited, or
+    removed appear only after `/reload` restarts the server.
+    """
+    root = tmp_path / "skills"
+    root.mkdir()
+    source = (
+        (str(root), "User") if namespace is None else (str(root), "User", namespace)
+    )
+    agent = create_agent(
+        GenericFakeChatModel(
+            messages=iter(AIMessage(content="Done", id=f"reply-{i}") for i in range(5))
+        ),
+        middleware=[
+            PluginSkillsMiddleware(
+                backend=FilesystemBackend(virtual_mode=False), sources=[source]
+            )
+        ],
+        checkpointer=InMemorySaver(),
+    )
+    config: RunnableConfig = {"configurable": {"thread_id": "rescan"}}
+
+    async def turn() -> dict[str, str]:
+        request: SkillsState = {"messages": [HumanMessage("Continue")]}
+        if mode == "async":
+            await agent.ainvoke(request, config)
+        else:
+            agent.invoke(request, config)
+        skills = agent.get_state(config).values["skills_metadata"]
+        return {skill["name"]: skill["description"] for skill in skills}
+
+    def restart(process: str) -> None:
+        monkeypatch.setattr(skills_middleware, "_PROCESS_ID", process)
+
+    prefix = "plugin:" if namespace else ""
+    assert await turn() == {}
+    _write_skill(root / "edited" / "SKILL.md", name="edited")
+    _write_skill(root / "removed" / "SKILL.md", name="removed")
+    assert await turn() == {}
+    restart("second")
+    assert await turn() == {
+        f"{prefix}edited": "Review code",
+        f"{prefix}removed": "Review code",
+    }
+    (root / "removed" / "SKILL.md").unlink()
+    (root / "edited" / "SKILL.md").write_text(
+        "---\nname: edited\ndescription: Edited\n---\nBody\n", encoding="utf-8"
+    )
+    _write_skill(root / "added" / "SKILL.md", name="added")
+    assert set(await turn()) == {f"{prefix}edited", f"{prefix}removed"}
+    restart("third")
+    assert await turn() == {
+        f"{prefix}edited": "Edited",
+        f"{prefix}added": "Review code",
+    }
+    messages = agent.get_state(config).values["messages"]
+    assert [m.id for m in messages if isinstance(m, AIMessage)] == [
+        f"reply-{i}" for i in range(5)
+    ]
+
+
 @pytest.mark.parametrize("configured_base", [True, False])
 async def test_pinning_resolves_extra_dirs_against_path_base(
     tmp_path: Path,

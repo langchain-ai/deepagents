@@ -1805,7 +1805,6 @@ async def execute_task_textual(
     message_kwargs: dict[str, Any] | None = None,
     skill_name: str | None = None,
     graph_input: dict[str, Any] | None = None,
-    refresh_skills: bool = False,
     rubric: str | None = None,
     goal_active: bool = False,
     on_rubric_evaluation_end: Callable[[RubricEvaluationEnd], None] | None = None,
@@ -1836,7 +1835,6 @@ async def execute_task_textual(
         skill_name: Invoked skill name for trace attribution, or `None`.
         graph_input: Prepared non-conversation input for a server-side graph
             operation. When provided, no user message or media is constructed.
-        refresh_skills: Rediscover the SDK skill catalog on this ordinary turn.
         rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
             input state.
         goal_active: Whether the rubric belongs to an unfinished `/goal`.
@@ -2103,8 +2101,6 @@ async def execute_task_textual(
         }
         if skill_name and not prompt_outcome.suppress_original_prompt:
             stream_input["pinned_skills"] = [skill_name]
-        if refresh_skills:
-            stream_input["skills_metadata"] = None
         if rubric:
             stream_input["rubric"] = rubric
     else:

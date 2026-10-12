@@ -583,10 +583,11 @@ across restarts.
 SHOW_REASONING = "DEEPAGENTS_CODE_SHOW_REASONING"
 """Show provider-visible reasoning in local TUI and headless output.
 
-On by default; set this to `0` or `[ui].show_reasoning = false` in config.toml
-to hide it. Parsed by `classify_env_bool` (an unrecognized value falls through
-to the config value rather than forcing the default). A recognized value
-outranks the config value but loses to `--show-reasoning`.
+On by default in the TUI and off by default in headless (`-n`) mode. Set this
+or `[ui].show_reasoning` in config.toml to choose for both modes. Parsed by
+`classify_env_bool` (an unrecognized value falls through to the config value
+rather than forcing the default). A recognized value outranks the config value
+but loses to `--show-reasoning`.
 """
 
 SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"

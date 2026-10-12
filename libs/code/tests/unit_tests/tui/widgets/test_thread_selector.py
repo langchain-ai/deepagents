@@ -2170,8 +2170,8 @@ class TestConvertMessagesToData:
             )
         ]
 
-        hidden = DeepAgentsApp._convert_messages_to_data(messages)
-        visible = DeepAgentsApp._convert_messages_to_data(messages, show_reasoning=True)
+        visible = DeepAgentsApp._convert_messages_to_data(messages)
+        hidden = DeepAgentsApp._convert_messages_to_data(messages, show_reasoning=False)
 
         assert [(message.type, message.content) for message in hidden] == [
             (MessageType.ASSISTANT, "Before after")

@@ -1396,6 +1396,7 @@ def load_bool_display_preference(
     key: str,
     *,
     fallback: bool,
+    default: bool | None = None,
     on_rejected: Callable[[str], None] | None = None,
 ) -> bool:
     """Resolve a boolean `Display` option through the config manifest.
@@ -1419,6 +1420,9 @@ def load_bool_display_preference(
             not a `BOOL` option — both mean a caller and the manifest disagree.
             Pinned against each option's declared default by
             `test_bool_display_preference_fallbacks_match_the_manifest`.
+        default: Value to use instead of the declared default when no tier
+            sets the option. For a mode whose default differs from the
+            manifest's, such as headless reasoning output.
         on_rejected: Called once per rejection reason when a tier at or above
             the winning tier supplied a value that failed to parse — a
             rejection a weaker tier could not have influenced, and one at a
@@ -1434,6 +1438,7 @@ def load_bool_display_preference(
     Returns:
         The resolved value.
     """
+    from deepagents_code.configuration.resolver import DEFAULT_RANK
     from deepagents_code.configuration.types import Invalid
 
     option = get_option(key)
@@ -1457,6 +1462,8 @@ def load_bool_display_preference(
     ranked = _resolve_option(option)
     _emit_ranked_diagnostics(option, ranked)
     resolved = bool(ranked.value)
+    if default is not None and ranked.ranks == (DEFAULT_RANK,):
+        resolved = default
     # Keep the source: a display option turned off by managed policy is
     # otherwise indistinguishable from one the user turned off themselves.
     # Visible under `DEEPAGENTS_CODE_DEBUG`; `dcode config get` is the answer
@@ -2351,7 +2358,10 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     ConfigOption(
         key="display.show_reasoning",
         group="Display",
-        summary="Show provider-visible reasoning in local output (on by default).",
+        summary=(
+            "Show provider-visible reasoning in local output "
+            "(on in the TUI, off in headless mode)."
+        ),
         kind=OptionKind.BOOL,
         default=True,
         env_var=_env_vars.SHOW_REASONING,

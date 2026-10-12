@@ -1760,7 +1760,7 @@ async def execute_task_textual(
     image_tracker: MediaTracker | None = None,
     context: CLIContext | None = None,
     *,
-    show_reasoning: bool = False,
+    show_reasoning: bool = True,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
     skill_name: str | None = None,

@@ -1848,6 +1848,26 @@ async def test_host_runs_scheduled_job_and_delivers_result(tmp_path: Path) -> No
     assert channel.sent == [("chat", "reply:scheduled prompt")]
 
 
+async def test_scheduled_job_passes_its_pinned_skills(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "test" / "cron")
+    job = store.create_job(
+        prompt="scheduled prompt",
+        schedule=CronSchedule.parse("in 5m"),
+        origin=CronOrigin(conversation_id="chat"),
+        skills=("weekly-report",),
+    )
+    await host.start()
+    try:
+        await host.run_scheduled_job(job)
+    finally:
+        await host.stop()
+
+    assert agent.requests[0].metadata["pinned_skills"] == ["weekly-report"]
+
+
 async def test_scheduled_job_runs_while_interactive_turn_remains_active(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = BlockingAgent()

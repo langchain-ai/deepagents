@@ -972,6 +972,7 @@ class DeepAgentRuntime:
             if request.metadata.get("trigger") == "cron"
             or request.metadata.get("background_delivery")
             else "user",
+            pinned_skills=_request_pinned_skills(request),
         )
         text = _last_text(state)
         if text:
@@ -999,6 +1000,7 @@ class DeepAgentRuntime:
         activity: AgentActivityCallback | None,
         *,
         source: str = "internal",
+        pinned_skills: Sequence[str] = (),
     ) -> object:
         payload: dict[str, object] = {
             "messages": [
@@ -1022,6 +1024,8 @@ class DeepAgentRuntime:
             # `None` makes `SkillsMiddleware` reload; otherwise a thread keeps
             # the skills it first loaded, even across restarts.
             payload["skills_metadata"] = None
+        if pinned_skills:
+            payload["pinned_skills"] = list(pinned_skills)
         try:
             return await self._invoke_payload_with_retries(payload, conversation_id, activity)
         except BaseException:
@@ -1114,9 +1118,10 @@ class DeepAgentRuntime:
         activity: AgentActivityCallback | None,
         *,
         source: str = "internal",
+        pinned_skills: Sequence[str] = (),
     ) -> object:
         state = await self._invoke_with_retries(
-            content, request.conversation_id, activity, source=source
+            content, request.conversation_id, activity, source=source, pinned_skills=pinned_skills
         )
         for _ in range(DEFAULT_MAX_APPROVAL_ROUNDS):
             interrupts = _interrupts_from_state(state)
@@ -1606,6 +1611,16 @@ def _cron_origin_from_request(request: AgentRequest) -> CronOrigin:
             else None
         ),
     )
+
+
+def _request_pinned_skills(request: AgentRequest) -> tuple[str, ...]:
+    """Skills a scheduled job pins; channel turns cannot pin through metadata."""
+    if request.metadata.get("trigger") != "cron":
+        return ()
+    names = request.metadata.get("pinned_skills")
+    if not isinstance(names, list):
+        return ()
+    return tuple(name for name in names if isinstance(name, str))
 
 
 def _request_model_content(request: AgentRequest) -> ModelContent:

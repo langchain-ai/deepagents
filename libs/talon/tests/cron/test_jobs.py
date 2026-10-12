@@ -712,3 +712,45 @@ def test_current_version_is_accepted(tmp_path) -> None:
 
     assert payload["version"] == 1
     assert [job.id for job in _store(tmp_path).list_jobs()] == [created.id]
+
+
+def test_pinned_skills_persist_and_clear_on_edit(tmp_path) -> None:
+    tools = CronTools(store=_store(tmp_path), origin=lambda: CronOrigin(conversation_id="chat"))
+
+    created = tools.create_job(
+        prompt="report", schedule="every 1h", skills=["weekly-report", "weekly-report"]
+    )
+    assert created["skills"] == ["weekly-report"]
+    assert tools.edit_job(created["id"], name="renamed")["skills"] == ["weekly-report"]
+    assert [job.skills for job in _store(tmp_path).list_jobs()] == [("weekly-report",)]
+
+    assert tools.edit_job(created["id"], skills=[])["skills"] == []
+    assert [job.skills for job in _store(tmp_path).list_jobs()] == [()]
+
+
+@pytest.mark.parametrize(
+    "skills",
+    [["../tools.json"], ["Weekly Report"], ["-leading"], [f"skill-{i}" for i in range(9)]],
+)
+def test_invalid_pinned_skills_are_rejected(tmp_path, skills) -> None:
+    store = _store(tmp_path)
+    tools = CronTools(store=store, origin=lambda: CronOrigin(conversation_id="chat"))
+
+    with pytest.raises(CronJobError, match="skill"):
+        tools.create_job(prompt="report", schedule="every 1h", skills=skills)
+    assert store.list_jobs() == []
+
+
+def test_job_saved_without_skills_loads_with_none_pinned(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.create_job(
+        prompt="report",
+        schedule=CronSchedule.parse("every 1h"),
+        origin=CronOrigin(conversation_id="chat"),
+        skills=("weekly-report",),
+    )
+    payload = json.loads(store.path.read_text(encoding="utf-8"))
+    del payload["jobs"][0]["skills"]
+    store.path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert [job.skills for job in _store(tmp_path).list_jobs()] == [()]

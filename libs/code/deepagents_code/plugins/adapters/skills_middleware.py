@@ -14,18 +14,15 @@ from deepagents.middleware.skills import SkillsMiddleware
 from langchain_core.messages import HumanMessage
 from langgraph.types import Overwrite
 
-from deepagents_code.config import _use_extra_skills_path_base
-from deepagents_code.config_manifest import get_option
-from deepagents_code.configuration.resolver import get_config_resolver
 from deepagents_code.goal_state_notice import is_internal_message
 from deepagents_code.plugins.adapters.skills import (
     CodeSkillSource,
     SkillNamespace,
     namespaced_skill_name,
 )
+from deepagents_code.skills.invocation import extra_skill_roots
 from deepagents_code.skills.load import load_skill_content
 from deepagents_code.skills.merge import merge_skill
-from deepagents_code.skills.trust import load_trusted_skill_dirs
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -296,25 +293,13 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             for source in sources
         )
 
-    def _pin_roots(self) -> list[Path]:
-        """Return configured and currently approved skill directories."""
-        roots = [*self._allowed_roots, *load_trusted_skill_dirs()]
-        option = get_option("skills.extra_allowed_dirs")
-        if option is not None:
-            with _use_extra_skills_path_base(self._path_base):
-                extra_roots = cast(
-                    "list[Path] | None", get_config_resolver().get(option).value
-                )
-            roots.extend(Path(root).resolve() for root in extra_roots or ())
-        return roots
-
     @staticmethod
-    def _pin_response(
+    def _pin_body(
         skill: sdk_skills.SkillMetadata,
         expected_path: str | None,
         roots: Sequence[Path],
-    ) -> FileDownloadResponse:
-        """Return the selected skill read within trusted directories.
+    ) -> str:
+        """Return the selected skill's instructions read within trusted roots.
 
         Raises:
             PermissionError: No trusted roots exist or the skill escapes them.
@@ -331,10 +316,10 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         response = FileDownloadResponse(
             path=skill["path"], content=content.encode("utf-8") if content else None
         )
-        if not sdk_skills._pinned_skill_body(skill, response):
+        if not (body := sdk_skills._pinned_skill_body(skill, response)):
             msg = f"Could not read instructions for skill '{skill['name']}'."
             raise ValueError(msg)
-        return response
+        return body
 
     def before_model(
         self, state: sdk_skills.SkillsState, runtime: Runtime
@@ -351,9 +336,8 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         by_name = {skill["name"]: skill for skill in state.get("skills_metadata") or []}
         marker = _skill_invocation(state)
         expected_name, expected_path = marker.get("name"), marker.get("path")
-        roots = self._pin_roots()
-        skills: list[sdk_skills.SkillMetadata] = []
-        responses: list[FileDownloadResponse] = []
+        roots = [*self._allowed_roots, *extra_skill_roots(self._path_base)]
+        messages: list[HumanMessage] = []
         for name in dict.fromkeys(names):
             if name not in by_name:
                 msg = f"Skill '{name}' is no longer available; invoke it again."
@@ -364,9 +348,9 @@ class PluginSkillsMiddleware(SkillsMiddleware):
                 if name == expected_name and isinstance(expected_path, str)
                 else None
             )
-            responses.append(self._pin_response(skill, path, roots))
-            skills.append(skill)
-        return sdk_skills._pin_update(skills, responses)
+            body = self._pin_body(skill, path, roots)
+            messages.append(sdk_skills._pinned_skill_message(skill, body))
+        return {"pinned_skills": Overwrite([]), "messages": messages}
 
     async def abefore_model(
         self, state: sdk_skills.SkillsState, runtime: Runtime

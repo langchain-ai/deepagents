@@ -123,11 +123,9 @@ class TestBuildSkillInvocationEnvelope:
         }
         envelope = build_skill_invocation_envelope(
             skill,  # ty: ignore
-            "# Instructions\nDo stuff",
             "review this patch",
         )
         assert "I'm invoking the skill `code-review`." in envelope.prompt
-        assert "# Instructions" not in envelope.prompt
         assert "**User request:** review this patch" in envelope.prompt
         meta = envelope.message_kwargs["additional_kwargs"]["__skill"]
         assert meta["name"] == "code-review"

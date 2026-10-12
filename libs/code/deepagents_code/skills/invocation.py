@@ -54,18 +54,9 @@ def discover_skills_and_roots(
 
     Returns:
         Tuple of `(skill metadata list, pre-resolved containment roots)`.
-
-    Raises:
-        RuntimeError: If the extra skill-directory option is absent from the
-            manifest.
     """
-    from pathlib import Path
-
-    from deepagents_code.config import _use_extra_skills_path_base, credentials
-    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
-    from deepagents_code.configuration.resolver import get_config_resolver
+    from deepagents_code.config import credentials
     from deepagents_code.skills.load import list_skills
-    from deepagents_code.skills.trust import load_trusted_skill_dirs
 
     skills = list_skills(
         built_in_skills_dir=get_built_in_skills_dir(),
@@ -93,15 +84,38 @@ def discover_skills_and_roots(
         )
         if path is not None
     ]
+    roots.extend(extra_skill_roots(path_base or Path.cwd()))
+    return skills, roots
+
+
+def extra_skill_roots(path_base: Path | None) -> list[Path]:
+    """Return configured extra and user-approved skill roots.
+
+    Args:
+        path_base: User working directory for resolving relative skill roots.
+
+    Returns:
+        Pre-resolved `skills.extra_allowed_dirs` entries, then persisted
+            trust-store approvals.
+
+    Raises:
+        RuntimeError: If the extra skill-directory option is absent from the
+            manifest.
+    """
+    from deepagents_code.config import _use_extra_skills_path_base
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+    from deepagents_code.skills.trust import load_trusted_skill_dirs
+
     option = get_option("skills.extra_allowed_dirs")
     if option is None:
         msg = "skills.extra_allowed_dirs is missing from the configuration manifest"
         raise RuntimeError(msg)
-    with _use_extra_skills_path_base(path_base or Path.cwd()):
+    with _use_extra_skills_path_base(path_base):
         resolved = get_config_resolver().get(option)
     _emit_ranked_diagnostics(option, resolved)
     extra_skills_dirs = cast("list[Path] | None", resolved.value)
-    roots.extend(path.resolve() for path in extra_skills_dirs or ())
+    roots = [path.resolve() for path in extra_skills_dirs or ()]
     # Persisted in-the-moment approvals extend the containment allowlist just
     # like the declarative `extra_allowed_dirs`, but are managed by the trust
     # store rather than hand-edited config. These entries are already the
@@ -110,26 +124,23 @@ def discover_skills_and_roots(
     # rather than re-resolved (re-resolving would follow an injected symlink to
     # a directory the user never approved).
     roots.extend(load_trusted_skill_dirs())
-    return skills, roots
+    return roots
 
 
 def build_skill_invocation_envelope(
     skill: ExtendedSkillMetadata,
-    content: str,
     args: str = "",
 ) -> SkillInvocationEnvelope:
     """Build the user request and persisted metadata for SDK skill pinning.
 
     Args:
         skill: Loaded skill metadata.
-        content: Preflight-loaded content, retained for caller compatibility.
         args: Optional user request accompanying the skill invocation.
 
     Returns:
         A `SkillInvocationEnvelope` with the composed prompt and
             `message_kwargs` containing persisted skill metadata.
     """
-    del content
     prompt = f"I'm invoking the skill `{skill['name']}`."
     if args:
         prompt += f"\n\n**User request:** {args}"

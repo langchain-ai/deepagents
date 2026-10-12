@@ -18094,7 +18094,7 @@ class DeepAgentsApp(App):
             )
             return
 
-        envelope = build_skill_invocation_envelope(cached, content, args)
+        envelope = build_skill_invocation_envelope(cached, args)
 
         await self._mount_message(
             SkillMessage(
@@ -20591,13 +20591,13 @@ class DeepAgentsApp(App):
         result: list[MessageData] = []
         # Maps tool_call_id -> index into result list
         pending_tool_indices: dict[str, int] = {}
-        pending_skill: MessageData | None = None
+        # Latest row from an explicit invocation; an SDK pin directly after it
+        # fills in its body instead of adding a row
+        invocation: MessageData | None = None
 
         for msg in messages:
             if is_internal_message(msg):
                 continue
-            invocation = pending_skill
-            pending_skill = None
             if isinstance(msg, HumanMessage):
                 content = (
                     msg.content if isinstance(msg.content, str) else str(msg.content)
@@ -20616,6 +20616,7 @@ class DeepAgentsApp(App):
                     if (
                         pinned
                         and invocation is not None
+                        and result[-1] is invocation
                         and invocation.skill_name == skill_meta["name"]
                     ):
                         invocation.skill_body = content
@@ -20634,7 +20635,7 @@ class DeepAgentsApp(App):
                         )
                         result.append(row)
                         if not pinned:
-                            pending_skill = row
+                            invocation = row
                 else:
                     result.append(MessageData(type=MessageType.USER, content=content))
 

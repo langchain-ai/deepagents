@@ -15,8 +15,8 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deepagents_code.local_context import LocalContextMiddleware
-from deepagents_code.plugins.adapters import skills_middleware
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
+from deepagents_code.skills import trust
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -120,16 +120,14 @@ async def test_pinning_rechecks_directory_trust(
     middleware = PluginSkillsMiddleware(
         backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
     )
-    monkeypatch.setattr(skills_middleware, "load_trusted_skill_dirs", list)
+    monkeypatch.setattr(trust, "load_trusted_skill_dirs", list)
     with pytest.raises(PermissionError, match="outside all allowed"):
         await _pin(middleware, _state(outside), mode)
-    monkeypatch.setattr(
-        skills_middleware, "load_trusted_skill_dirs", lambda: [outside.parent]
-    )
+    monkeypatch.setattr(trust, "load_trusted_skill_dirs", lambda: [outside.parent])
     result = await _pin(middleware, _state(outside), mode)
     assert result is not None
     assert result["messages"]
-    monkeypatch.setattr(skills_middleware, "load_trusted_skill_dirs", list)
+    monkeypatch.setattr(trust, "load_trusted_skill_dirs", list)
     with pytest.raises(PermissionError, match="outside all allowed"):
         await _pin(middleware, _state(outside), mode)
 
@@ -236,7 +234,7 @@ async def test_graph_recovers_from_failed_pin(
     elif failure == "untrusted":
         outside = _write_skill(tmp_path / "outside" / "SKILL.md")
         (root / "review").symlink_to(outside.parent, target_is_directory=True)
-    monkeypatch.setattr(skills_middleware, "load_trusted_skill_dirs", list)
+    monkeypatch.setattr(trust, "load_trusted_skill_dirs", list)
     middleware = PluginSkillsMiddleware(
         backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
     )

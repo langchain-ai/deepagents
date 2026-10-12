@@ -2085,6 +2085,7 @@ async def _run_agent_loop(
     approval_mode: ApprovalMode | None = None,
     prompt_id: UUID | None = None,
     summarization_model: str | None = None,
+    skill_name: str | None = None,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -2128,6 +2129,7 @@ async def _run_agent_loop(
         approval_mode: Effective client approval policy. Defaults to manual.
         prompt_id: Stable identifier for the headless turn.
         summarization_model: Model spec used only for context-compaction summaries.
+        skill_name: Explicitly invoked skill for the SDK to pin on this turn.
 
     Raises:
         ClientHookStopError: If a client-owned hook stops processing.
@@ -2277,13 +2279,9 @@ async def _run_agent_loop(
         )
         raise
 
-    skill = user_msg.get("additional_kwargs", {}).get("__skill")
-    if (
-        user_msg in stream_input["messages"]
-        and isinstance(skill, dict)
-        and isinstance(skill.get("name"), str)
-    ):
-        stream_input["pinned_skills"] = [skill["name"]]
+    # Skip the pin when a hook suppressed the prompt that requested it
+    if skill_name and user_msg in stream_input["messages"]:
+        stream_input["pinned_skills"] = [skill_name]
 
     start_time = time.monotonic()
 
@@ -2807,7 +2805,7 @@ async def run_non_interactive(
             )
             return 1
 
-        envelope = build_skill_invocation_envelope(skill, content, message)
+        envelope = build_skill_invocation_envelope(skill, message)
         message = envelope.prompt
         message_kwargs = envelope.message_kwargs
         skill_name = envelope.skill_name
@@ -2987,6 +2985,7 @@ async def run_non_interactive(
                 approval_mode=approval_mode,
                 prompt_id=turn_id,
                 summarization_model=summarization_model,
+                skill_name=skill_name,
             )
 
     except KeyboardInterrupt:

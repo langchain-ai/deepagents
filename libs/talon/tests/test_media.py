@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -52,7 +52,7 @@ def test_build_inbound_text_includes_video_path(tmp_path: Path) -> None:
     assert "unsupported" not in text
 
 
-def test_build_model_content_uses_inbound_image_data_url(tmp_path: Path) -> None:
+def test_build_model_content_uses_inbound_image_base64_block(tmp_path: Path) -> None:
     image = tmp_path / "image.png"
     image.write_bytes(b"not-a-real-png")
 
@@ -66,10 +66,12 @@ def test_build_model_content_uses_inbound_image_data_url(tmp_path: Path) -> None
     )
 
     assert isinstance(content, list)
-    image_url = cast("dict[str, str]", content[1]["image_url"])
     assert content[0] == {"type": "text", "text": "look"}
-    assert content[1]["type"] == "image_url"
-    assert image_url["url"].startswith("data:image/png;base64,")
+    assert content[1] == {
+        "type": "image",
+        "base64": base64.b64encode(b"not-a-real-png").decode("ascii"),
+        "mime_type": "image/png",
+    }
 
 
 def test_extract_markdown_media_ignores_code_spans(tmp_path: Path) -> None:

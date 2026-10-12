@@ -1352,7 +1352,7 @@ async def test_host_passes_inbound_photo_as_model_content(tmp_path: Path) -> Non
     content = cast("list[dict[str, object]]", agent.requests[0].metadata["model_content"])
     assert isinstance(content, list)
     assert content[0] == {"type": "text", "text": "look"}
-    assert content[1]["type"] == "image_url"
+    assert content[1]["type"] == "image"
 
 
 async def test_host_passes_inbound_video_path_in_text(tmp_path: Path) -> None:

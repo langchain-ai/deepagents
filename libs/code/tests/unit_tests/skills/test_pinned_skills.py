@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from deepagents.backends.filesystem import FilesystemBackend
+from deepagents.backends.protocol import LsResult
 from deepagents.middleware.skills import SkillsState
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -451,3 +452,47 @@ async def test_pin_reload_clears_stale_load_errors(tmp_path: Path, mode: str) ->
         update = middleware.before_agent(state, Runtime(), {})
     assert update is not None
     assert update["skills_load_errors"] == []
+
+
+class _CountingBackend(FilesystemBackend):
+    """Filesystem backend that counts directory listings."""
+
+    def __init__(self) -> None:
+        super().__init__(virtual_mode=False)
+        self.listings = 0
+
+    def ls(self, path: str) -> LsResult:
+        self.listings += 1
+        return super().ls(path)
+
+    async def als(self, path: str) -> LsResult:
+        self.listings += 1
+        return await super().als(path)
+
+
+async def test_pin_scans_sources_only_for_unloaded_skills(
+    tmp_path: Path, mode: str
+) -> None:
+    """A loaded skill pins without a rescan; a skill added later triggers one."""
+    root = tmp_path / "skills"
+    path = _write_skill(root / "review" / "SKILL.md")
+    backend = _CountingBackend()
+    middleware = PluginSkillsMiddleware(backend=backend, sources=[(str(root), "User")])
+    state = _state(path)
+    assert await _pin(middleware, state, mode) is not None
+    scanned = backend.listings
+    assert scanned > 0
+
+    state.update(_state(path))
+    assert await _pin(middleware, state, mode) is not None
+    assert backend.listings == scanned
+
+    added = _write_skill(root / "lint" / "SKILL.md", name="lint")
+    state.update(_state(added, "lint"))
+    result = await _pin(middleware, state, mode)
+    assert result is not None
+    assert backend.listings > scanned
+    messages = result["messages"]
+    assert isinstance(messages, list)
+    assert isinstance(messages[0], HumanMessage)
+    assert messages[0].additional_kwargs["skill"]["name"] == "lint"

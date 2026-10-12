@@ -77,6 +77,39 @@ def _pending_pin_update(state: sdk_skills.SkillsState) -> Overwrite | None:
     return Overwrite(selected) if selected != names else None
 
 
+def _needs_load(state: sdk_skills.SkillsState) -> bool:
+    """Return whether `before_agent` must scan the skill sources.
+
+    Loaded metadata serves a pending pin when it lists the selected skill at
+    the `SKILL.md` path recorded at invocation. Otherwise the skill was added
+    or moved since the load. `before_model` rereads the file either way.
+    """
+    loaded = state.get("skills_metadata")
+    if loaded is None:
+        return True
+    marker = _skill_invocation(state)
+    name, path = marker.get("name"), marker.get("path")
+    if name not in (state.get("pinned_skills") or []):
+        # No pin survives this turn, so the loaded metadata is enough.
+        return False
+    skill = next((skill for skill in loaded if skill["name"] == name), None)
+    return skill is None or str(Path(skill["path"]).resolve()) != path
+
+
+def _loaded_update(state: sdk_skills.SkillsState) -> _SkillsStateUpdate | None:
+    """Return the pin trim for a turn that keeps the loaded metadata.
+
+    Returns:
+        An update replacing `pinned_skills`, or `None` when nothing changes.
+    """
+    pins = _pending_pin_update(state)
+    if pins is None:
+        return None
+    return _SkillsStateUpdate(
+        skills_metadata=state.get("skills_metadata") or [], pinned_skills=pins
+    )
+
+
 def _entries(ls_result: object) -> list[FileInfo]:
     """Normalize a backend `ls` result to a list of entry dicts.
 
@@ -431,11 +464,11 @@ class PluginSkillsMiddleware(SkillsMiddleware):
 
         Returns:
             A state update containing collision-safe skill metadata and the
-                trimmed `pinned_skills`, or `None` when skills are already
-                loaded and no pin is pending.
+                trimmed `pinned_skills`, or `None` when the loaded skills serve
+                the turn unchanged.
         """
-        if "skills_metadata" in state and not state.get("pinned_skills"):
-            return None
+        if not _needs_load(state):
+            return _loaded_update(state)
 
         backend = self._backend
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}
@@ -478,11 +511,11 @@ class PluginSkillsMiddleware(SkillsMiddleware):
 
         Returns:
             A state update containing collision-safe skill metadata and the
-                trimmed `pinned_skills`, or `None` when skills are already
-                loaded and no pin is pending.
+                trimmed `pinned_skills`, or `None` when the loaded skills serve
+                the turn unchanged.
         """
-        if "skills_metadata" in state and not state.get("pinned_skills"):
-            return None
+        if not await asyncio.to_thread(_needs_load, state):
+            return _loaded_update(state)
 
         backend = self._backend
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}

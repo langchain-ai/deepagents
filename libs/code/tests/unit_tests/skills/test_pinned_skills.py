@@ -15,6 +15,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deepagents_code.app import DeepAgentsApp
+from deepagents_code.goal_state_notice import build_goal_continuation
 from deepagents_code.local_context import LocalContextMiddleware
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.skills import trust
@@ -247,7 +248,7 @@ async def test_graph_pins_once_and_preserves_snapshot(
         ("untrusted", "outside all allowed"),
     ],
 )
-@pytest.mark.parametrize("followup", ["ordinary", "fixed", "different"])
+@pytest.mark.parametrize("followup", ["ordinary", "goal", "fixed", "different"])
 async def test_graph_recovers_from_failed_pin(
     tmp_path: Path,
     mode: str,
@@ -282,7 +283,9 @@ async def test_graph_recovers_from_failed_pin(
             agent.invoke(_state(path), config)
     assert agent.get_state(config).values["pinned_skills"] == ["review"]
     request: SkillsState = {"messages": [HumanMessage("Continue without a skill")]}
-    if followup == "fixed":
+    if followup == "goal":
+        request = {"messages": [build_goal_continuation("resumed")]}
+    elif followup == "fixed":
         if failure == "untrusted":
             (root / "review").unlink()
         _write_skill(path, "Restored instructions")

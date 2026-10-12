@@ -14,7 +14,11 @@ from deepagents.middleware.skills import SkillsMiddleware
 from langchain_core.messages import HumanMessage
 from langgraph.types import Overwrite
 
-from deepagents_code.goal_state_notice import is_internal_message
+from deepagents_code.goal_state_notice import (
+    GOAL_CONTROL_MESSAGE_SOURCE,
+    is_internal_message,
+    message_source,
+)
 from deepagents_code.plugins.adapters.skills import (
     CodeSkillSource,
     SkillNamespace,
@@ -46,10 +50,15 @@ class _SkillsStateUpdate(sdk_skills.SkillsStateUpdate, total=False):
 def _skill_invocation(state: sdk_skills.SkillsState) -> dict[str, object]:
     """Return the `__skill` marker of the newest visible human message.
 
-    Stops at that message, so an older turn's selection never applies.
+    Stops at that message, so an older turn's selection never applies. A goal
+    continuation is hidden but starts its own turn, so it also stops the search.
     """
     for message in reversed(state.get("messages", [])):
-        if isinstance(message, HumanMessage) and not is_internal_message(message):
+        if not isinstance(message, HumanMessage):
+            continue
+        if message_source(message) == GOAL_CONTROL_MESSAGE_SOURCE:
+            return {}
+        if not is_internal_message(message):
             marker = message.additional_kwargs.get("__skill")
             return marker if isinstance(marker, dict) else {}
     return {}

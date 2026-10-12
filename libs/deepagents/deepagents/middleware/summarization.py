@@ -607,12 +607,39 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
 
             summarizer: Optional replacement for the summarization model call.
 
-                A `Runnable` or callable that receives the messages to summarize
-                and returns the summary text. Used for both automatic
-                summarization and the `compact_conversation` tool. When set,
-                `summary_prompt` is not used; `model` is still used for its
-                profile and token counting. See LangChain's
-                `SummarizationMiddleware` for details.
+                Used for both automatic summarization and the
+                `compact_conversation` tool. `model` is still used for its profile
+                and token counting, but is not called to write summaries.
+
+                Pass a model name or a `BaseChatModel` instance to summarize with
+                a different chat model; it is prompted with `summary_prompt`. Pass
+                a `Runnable` or function to generate the summary text another way;
+                it receives the messages to summarize and `summary_prompt` is not
+                used. See LangChain's `SummarizationMiddleware` for details.
+
+                !!! example
+
+                    ```python
+                    from deepagents import create_deep_agent
+                    from deepagents.backends import StateBackend
+                    from deepagents.middleware.summarization import SummarizationMiddleware
+
+                    backend = StateBackend()
+
+                    # Manage gpt-6-sol's context window, summarize with gpt-6-luna
+                    summarization = SummarizationMiddleware(
+                        model="openai:gpt-6-sol",
+                        backend=backend,
+                        trigger=("fraction", 0.85),
+                        keep=("fraction", 0.10),
+                        summarizer="openai:gpt-6-luna",
+                    )
+                    agent = create_deep_agent(
+                        model="openai:gpt-6-sol",
+                        backend=backend,
+                        middleware=[summarization],  # replaces the default
+                    )
+                    ```
 
         Raises:
             TypeError: If the removed `history_path_prefix` argument is provided.
@@ -1844,19 +1871,8 @@ def create_summarization_middleware(
             This factory defaults to `None`, unlike constructing
             `SummarizationMiddleware` directly, which defaults to 4000.
         token_counter: Function to count tokens in messages.
-        summarizer: Optional replacement for the summarization model call.
-
-            A `Runnable` or callable that receives the messages to summarize
-            and returns the summary text. The returned middleware's name is
-            still `"SummarizationMiddleware"`, so passing it to
-            `create_deep_agent(middleware=[...])` replaces the default.
-
-            !!! example
-
-                ```python
-                summarization = create_summarization_middleware(model, backend, summarizer=my_summarizer)
-                agent = create_deep_agent(model=model, backend=backend, middleware=[summarization])
-                ```
+        summarizer: Optional replacement for the summarization model call. See
+            `SummarizationMiddleware`.
 
     Returns:
         Configured `SummarizationMiddleware` instance.

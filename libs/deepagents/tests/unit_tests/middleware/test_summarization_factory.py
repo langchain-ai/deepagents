@@ -122,3 +122,20 @@ async def test_factory_passes_summarizer_through_async() -> None:
     middleware = create_summarization_middleware(model, cast("Any", MagicMock()), summarizer=summarizer)
 
     assert await middleware._acreate_summary([HumanMessage(content="hi")]) == "1 messages"
+
+
+def test_factory_chat_model_summarizer_uses_deepagents_prompt() -> None:
+    """A chat model summarizer gets the Deep Agents prompt; thresholds come from `model`."""
+    model = _make_model(with_profile_limit=120_000)
+    summary_model = GenericFakeChatModel(messages=iter([AIMessage(content="the summary")]))
+    summary_model.profile = {"max_input_tokens": 8_000}
+
+    middleware = create_summarization_middleware(model, cast("Any", MagicMock()), summarizer=summary_model)
+
+    assert middleware._create_summary([HumanMessage(content="hi")]) == "the summary"
+    assert model.call_history == []
+    prompt = summary_model.call_history[0]["messages"][-1].text
+    assert "preserve the media reference in your summary" in prompt
+    assert "hi" in prompt
+    assert middleware._lc_helper.trigger == ("fraction", 0.85)
+    assert middleware._get_profile_limits() == 120_000

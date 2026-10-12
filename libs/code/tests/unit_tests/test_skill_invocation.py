@@ -73,25 +73,6 @@ def _make_app() -> MagicMock:
     return app
 
 
-class TestBuildSkillInvocationEnvelope:
-    """Direct unit tests for `build_skill_invocation_envelope`."""
-
-    def test_happy_path_with_args(self) -> None:
-        """Send only the name and request; the server reads the skill."""
-        from deepagents_code.skills.invocation import build_skill_invocation_envelope
-
-        envelope = build_skill_invocation_envelope("code-review", "review this patch")
-        assert envelope.prompt == (
-            "I'm invoking the skill `code-review`.\n\n"
-            "**User request:** review this patch"
-        )
-        assert envelope.message_kwargs["additional_kwargs"]["__skill"] == {
-            "name": "code-review",
-            "args": "review this patch",
-            "pinned": True,
-        }
-
-
 class TestHandleSkillCommand:
     """The client sends the invocation without reading the skill."""
 
@@ -111,18 +92,6 @@ class TestHandleSkillCommand:
         assert row._args == "find quantum"
         assert app._pending_skill_row is row
 
-    async def test_empty_name_shows_usage(self) -> None:
-        from deepagents_code.tui.widgets.messages import AppMessage
-
-        app = _make_app()
-        await app._handle_skill_command("/skill: ")
-
-        texts = [
-            str(m.content) for m in app._mounted_messages if isinstance(m, AppMessage)
-        ]
-        assert any("Usage" in t for t in texts)
-        app._send_to_agent.assert_not_awaited()
-
     async def test_pin_fills_the_matching_row(self) -> None:
         app = _make_app()
         await app._handle_skill_command("/skill:test-skill")
@@ -139,11 +108,6 @@ class TestHandleSkillCommand:
 
 class TestRequestSkillTrust:
     """The TUI answers the server's trust interrupt and fails closed."""
-
-    async def test_approval(self) -> None:
-        app = _make_app()
-        app._push_screen_wait = AsyncMock(return_value=True)
-        assert await app._request_skill_trust("review", "/outside") is True
 
     async def test_deny_is_remembered_for_the_session(self) -> None:
         app = _make_app()

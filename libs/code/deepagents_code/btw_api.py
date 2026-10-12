@@ -7,10 +7,11 @@ import json
 import logging
 from typing import TYPE_CHECKING, cast, override
 
+from langchain_core.exceptions import ContextOverflowError
 from starlette.requests import ClientDisconnect
 from starlette.responses import JSONResponse, Response
 
-from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
+from deepagents_code.btw import BTW_OPERATION_ATTR, BtwLimitError, BtwOperation
 from deepagents_code.btw_cost import answer_with_cost, load_cost
 from deepagents_code.workspace import WorkspaceConflictError, require_thread_workspace
 
@@ -25,6 +26,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _MAX_QUESTION_LENGTH = 16_000
 _MAX_HISTORY_LENGTH = 128_000
+_OVERFLOW_DETAIL = (
+    "Side question is too large for the model's context. Ask a narrower question."
+)
+
+
+def _limit_detail(exc: BtwLimitError | ContextOverflowError) -> str:
+    """Describe an expected side-question limit without server internals.
+
+    Returns:
+        Text the client can show the user.
+    """
+    logger.info("Side question hit a limit: %s", exc)
+    return str(exc) if isinstance(exc, BtwLimitError) else _OVERFLOW_DETAIL
 
 
 def _parse_history(raw: object) -> list[tuple[str, str]]:
@@ -131,6 +145,8 @@ class _BtwStreamingResponse(Response):
                 text, cost = await self._answer(on_text)
         except TimeoutError:
             await emit("error", {"detail": "Side question timed out. Try again."})
+        except (BtwLimitError, ContextOverflowError) as exc:
+            await emit("error", {"detail": _limit_detail(exc)})
         except ClientDisconnect:
             raise  # A closed transport cannot receive an error event.
         except (Exception, SystemExit):
@@ -241,6 +257,8 @@ async def btw(request: Request) -> Response:
         return JSONResponse(
             {"detail": "Side question timed out. Try again."}, status_code=504
         )
+    except (BtwLimitError, ContextOverflowError) as exc:
+        return JSONResponse({"detail": _limit_detail(exc)}, status_code=422)
     except (Exception, SystemExit):
         logger.exception("Side question failed")
         return JSONResponse(

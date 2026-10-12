@@ -72,6 +72,10 @@ _MAX_RETRY_DELAY = 60
 BTW_OPERATION_ATTR = "_dcode_btw"
 
 
+class BtwLimitError(ValueError):
+    """A side question exceeded a limit; the message is safe to show the user."""
+
+
 class _InstructionState(MemoryState, SkillsState):
     """Local copy of the checkpoint channels used to assemble instructions."""
 
@@ -674,7 +678,7 @@ class BtwOperation(AgentMiddleware):
 
         Raises:
             TypeError: If the configured model is not a chat model.
-            ValueError: If the side conversation exceeds its tool budget.
+            BtwLimitError: If the side conversation exceeds its tool budget.
         """  # noqa: DOC502 — raised by _resolve_context
         from deepagents_code.config import use_environment
         from deepagents_code.model_retry import aretry_model_call
@@ -748,7 +752,7 @@ class BtwOperation(AgentMiddleware):
                     break
                 if len(response.tool_calls) > _MAX_TOOL_CALLS:
                     msg = "Too many side tools requested. Try a narrower question."
-                    raise ValueError(msg)
+                    raise BtwLimitError(msg)
                 result = await node.ainvoke(
                     {"messages": [response]}, config=config, runtime=Runtime()
                 )
@@ -768,7 +772,7 @@ class BtwOperation(AgentMiddleware):
                 )
             else:
                 msg = "Side tool limit reached. Try a narrower question."
-                raise ValueError(msg)
+                raise BtwLimitError(msg)
         text = "".join(parts)
         return (
             text.strip() or "No text answer was returned. Try rephrasing your question."

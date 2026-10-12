@@ -1,12 +1,15 @@
 ---
 type: delegation and progressive-disclosure concept
 title: Subagents and Skills
-description: Deep Agents delegates isolated, forked, compiled, and remote work across explicit state and lifecycle boundaries. Skills index backend-resident instruction bundles, can pin a one-turn instruction snapshot, and gate selected tools on model-visible disclosure.
+description: Deep Agents delegates local and remote work across explicit state, tracing, and lifecycle boundaries. The Code skill adapter discovers and pins trusted instruction bundles while the underlying skills middleware gates selected tools on visible disclosure.
 tags: [deepagents, subagents, delegation, skills, middleware, tool-gating, agent-protocol]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-09T08:07:51.383Z
 sources:
+  - id: openwiki-source-dc1e984fa4e6a51458e9ff9d
+    resource: repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py
+  - id: openwiki-source-1eafe6f1154067896b272b26
+    resource: repo://libs/code/deepagents_code/skills/invocation.py
+  - id: openwiki-source-7315c344b29bd7441321ac75
+    resource: repo://libs/code/deepagents_code/skills/trust.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-5c9c6a877b43f30407158658
@@ -17,127 +20,131 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-a6f0952b514b04c99bc51705
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_pinned_skills.py
-  - id: openwiki-source-ecfcdcb389d95ca759a82a61
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tool_resolver.py
-  - id: openwiki-source-13e0ea89aadd1a5e309ac7e3
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
-  - id: openwiki-source-c71ac20477155a66b7a8c60a
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
     resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-12T08:20:17.385Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-12T08:20:17.385Z" }
 ---
 
 # Subagents and Skills
 
-`create_deep_agent` combines two separate mechanisms. **Subagents** execute delegated work: a local `task` call waits for a child result, whereas an `AsyncSubAgent` starts and subsequently manages a remote Agent Protocol run. **Skills** are backend-resident instruction bundles: `SkillsMiddleware` indexes their metadata, prompts the model to read relevant `SKILL.md` files on demand, and can expose skill-selected tools only after disclosure.
+`create_deep_agent` combines two distinct delegation paths. A local `task` call runs a synchronous child and returns one result to its caller. An `AsyncSubAgent` starts a background run on an Agent Protocol server and records a task that the parent can manage later. Skills are instruction bundles: the SDK middleware indexes and progressively discloses them, while Deep Agents Code adds recursive plugin discovery, explicit `/skill:` invocation semantics, and trusted-root enforcement for instruction reads.
 
-A skill is not an authorization policy or a subagent. Its instructions guide the model, and `metadata.include_tools` participates in a tool-availability gate; filesystem access, registered tools, and approval/`interrupt_on` policy remain separate controls. See [Middleware stack](/openwiki/architecture/middleware-stack.md), [Middleware catalog](/openwiki/concepts/middleware-catalog.md), and [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md).
+A skill is neither a subagent nor an authorization policy. Its text guides the model; `metadata.include_tools` can participate in a model-visible tool gate, but filesystem permissions and approval/`interrupt_on` remain independent controls. See [Middleware stack](/openwiki/architecture/middleware-stack.md), [Permissions and HITL](/openwiki/concepts/permissions-hitl.md), and [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md).
 
-## Assembly and delegation boundaries
+## Assembly and local delegation
 
-`subagents=` accepts declarative `SubAgent` specs, caller-owned `CompiledSubAgent` specs, and remote `AsyncSubAgent` specs (identified by `graph_id`). The factory compiles declarative local specs, uses compiled runnables as supplied, and installs local `SubAgentMiddleware` and `AsyncSubAgentMiddleware` independently. Unless a harness profile disables it or a spec replaces it, it adds the synchronous `general-purpose` worker.
+The factory separates declarative `SubAgent` specifications and caller-owned `CompiledSubAgent` runnables from `AsyncSubAgent` specifications, which are recognized by `graph_id`. It compiles declarative local workers, uses compiled workers as supplied, installs the local and remote middleware independently, and normally adds `general-purpose` unless the harness profile disables it or a supplied local spec replaces that name.
 
 ```mermaid
 flowchart TD
     Parent["Parent model"] --> Task["task"]
-    Task --> Mode{"Local mode"}
-    Mode -->|"isolated"| Isolated["New task message and filtered state"]
-    Mode -->|"fork"| Fork["Effective history and inherited context"]
+    Task --> Choice{"Local mode"}
+    Choice -->|"isolated"| Isolated["New task message and filtered state"]
+    Choice -->|"fork"| Fork["Effective history and inherited context"]
     Isolated --> Local["Local runnable"]
     Fork --> Local
-    Local --> Result["ToolMessage and allowed state update"]
+    Local --> Result["One ToolMessage and allowed update"]
     Parent --> Start["start_async_task"]
     Start --> Remote["Agent Protocol thread and run"]
     Remote --> Tasks["async_tasks state"]
     Tasks --> Manage["check update cancel list"]
 ```
 
-*Local delegation waits for a child result; remote delegation stores a task ID and lets the parent continue.*
+*The local boundary waits for a result; the remote boundary records a task and lets the parent continue.*
 
-The local `task` interface accepts only `description` and `subagent_type` (besides injected runtime), rejects duplicate names and invalid modes while constructing the tool, and retains `handoff` as an alias for `isolated`. Invocation inherits ambient parent configuration, while LangSmith tracing and child configurable metadata mark the run as `ls_agent_type="subagent"`.
+### Task contract, isolation, and results
 
-### Isolated local work
+The `task` schema accepts `description` and `subagent_type` only, apart from injected `runtime`; unknown model-supplied arguments are validation errors rather than silently discarded. Construction rejects duplicate names and unsupported modes; legacy `handoff` means isolated. An unknown selected type produces a tool error, and a tool-call ID is required to return a correlated result.
 
-Isolation is the default. The child starts with a new `HumanMessage` containing the description and a state copy that excludes `messages`, `todos`, `structured_response`, `skills_metadata`, `pinned_skills`, `_skill_tools_disclosed`, the fork marker, and declared middleware-private fields. The same exclusions constrain state returned to the parent. This prevents a child transcript, skill index, pending pin, or latest disclosure record from overwriting the parent.
+Isolated mode is the default. The child receives a new `HumanMessage` containing the task and a state copy that excludes the parent transcript, todos, structured response, skill metadata, pending pins, disclosed-skill-tool record, fork marker, rubric, and middleware-private fields. The same output filtering prevents a child from replacing those parent-owned values. Unchanged inherited values are also dropped from the child update, avoiding duplicate additive reductions and conflicts between parallel calls.
 
-For a declarative worker, omitted `tools` inherit the parent application tools while an explicit list replaces them. Omitted `permissions` and `interrupt_on` inherit from the parent; explicit values take precedence. A compiled worker is an opaque runnable that owns its graph behavior and must return a state containing `messages` to communicate a result.
+For declarative workers, omitted `tools`, `permissions`, and `interrupt_on` inherit parent configuration; explicit values replace the relevant inherited setting (filesystem approval rules are then merged with the resolved permissions). A compiled runnable is an opaque graph: it owns its schema and behavior, but must return a state with `messages` so the boundary can communicate its result.
 
-One invocation produces one `ToolMessage` for the original call. A non-null `structured_response` is JSON-serialized; otherwise the boundary forwards the last non-empty child `AIMessage` text. It may return other non-excluded public state, but never the child transcript or private fields.
+One successful local invocation becomes one `ToolMessage` tied to the original call. A non-null `structured_response` is JSON serialized; otherwise the boundary walks backward to the last non-empty child `AIMessage` text. Other changed, public state may be returned, but not the transcript or excluded/private fields. The invocation relies on LangGraph's ambient configuration propagation and additionally marks both LangSmith tracing context and child configurable metadata with `ls_agent_type="subagent"`.
 
 ### Forked local work
 
-Experimental `mode="fork"` continues from the parent rather than creating a blank-task child. It applies the pending summarization event to recover effective history, removes the parent’s pending tool-call message, then appends a preamble and the delegated description. A declarative fork retains the state required to rebuild parent middleware context and uses the parent prompt plus its own prompt addendum; a compiled fork receives only non-excluded public state because its internal schema is unknown.
+Experimental `mode="fork"` is for context-dependent continuation rather than a narrow handoff. It removes the pending parent tool-call message, applies a pending summarization event to reconstruct effective history, and appends a preamble plus delegated description. A declarative fork retains the internal state needed for its recreated middleware to rebuild inherited prompt behavior; an opaque compiled fork receives only safe public state.
 
-A fork cannot declare `skills`: it replays parent skill behavior. It receives a guarded mirror of `task`, and the fork marker makes every nested `task` call return a refusal. Prefer a fork only for work that needs the effective conversation and prompt; use isolated mode for an intentional narrow boundary.
+A declarative fork cannot declare `skills`: it replays the parent's skills and prompt-producing middleware, with its own system prompt used as an addendum. It does receive a guarded mirror of `task`, but the fork-state marker makes any nested `task` or `atask` call return a refusal. Use isolated mode when explicit input and output isolation matters; use a fork only when the effective conversation is required.
 
-## Remote asynchronous work
+## Remote asynchronous delegation
 
-An `AsyncSubAgent` supplies remote `graph_id`, optional `url`, and optional headers. `start_async_task` creates an Agent Protocol thread and run with the description as a user message, then persists an `AsyncTask` under its thread ID in `async_tasks`. The reducer merges task updates, retaining agent name, thread and run IDs, status, and lifecycle timestamps across normal state updates.
+An `AsyncSubAgent` has a name, description, `graph_id`, optional URL, headers, and an isolated-or-fork mode. `start_async_task` creates a remote thread and run, sending a single user task in isolated mode. In fork mode it snapshots reconstructed parent history, removes nonportable tool artifacts and parent-local eviction metadata, hydrates blob-backed tool content, and serializes the resulting messages for the remote child. The remote graph still owns its own prompt, tools, permissions, and state; a conversation snapshot does not synchronize those settings.
 
-`check_async_task` retrieves the current run and, on success, returns its final remote message. `update_async_task` creates an interrupting replacement run on the same thread, preserving the task ID but replacing the run ID. `cancel_async_task` cancels the tracked run. `list_async_tasks` filters on cached status and refreshes selected nonterminal tasks; a failed status fetch retains the cached value. Unknown agent types or task IDs and SDK failures are tool errors, not task-state mutations.
+```mermaid
+sequenceDiagram
+    participant Parent
+    participant AsyncTools as Async task tools
+    participant Remote as Agent Protocol server
+    Parent->>AsyncTools: start_async_task
+    AsyncTools->>Remote: create thread and run
+    AsyncTools-->>Parent: task ID and async_tasks update
+    Parent->>AsyncTools: check update cancel or list
+    AsyncTools->>Remote: read run create replacement cancel or refresh
+    AsyncTools-->>Parent: ToolMessage and task state update
+```
 
-Clients are cached by URL and resolved headers. The middleware adds `x-auth-scheme: langsmith` unless the spec provides it; environment credentials serve managed deployments and `headers` are the self-hosted extension point. A spec without `url` uses in-process ASGI transport and therefore requires an async parent entry point such as `ainvoke`; synchronous invocation requires a URL. Remote graphs own their tools, permissions, HITL policy, and state schema rather than inheriting them from the local parent.
+*Remote work is tracked in parent state while execution and resources remain on the Agent Protocol server.*
 
-## Skills: discovery, prompt index, and pins
+`async_tasks` is a merge-reduced map keyed by the thread ID. Each record contains the task/thread ID, agent name, current run ID, cached status, and creation/check/update timestamps. `check_async_task` reads the tracked run and, when it succeeds, fetches the thread values to return its final message. `update_async_task` starts an interrupting replacement run on the same thread, retains the task ID, and replaces the run ID. `cancel_async_task` records cancellation only after remote cancellation succeeds. `list_async_tasks` filters on cached status before refreshing nonterminal entries; a status-fetch failure preserves the cached status.
 
-A skill source is a backend path or `(path, label)` pair. Before execution, the middleware lists immediate source directories and downloads each candidate `SKILL.md`. Valid frontmatter provides the required name and description; metadata additionally records the path, optional license and compatibility, `allowed-tools`, and arbitrary `metadata`. The injected prompt lists source labels, descriptions, and paths, then directs the model to use `read_file` for complete instructions and supporting files only when relevant.
+Unknown types or task IDs and SDK failures return tool errors without a task-state mutation. Clients are cached by URL and resolved headers; `x-auth-scheme: langsmith` is added unless supplied. Environment credentials support managed deployments, and `headers` is the self-hosted extension point. URL-less local ASGI transport is async-only, so it requires an entry point such as `ainvoke`; synchronous use requires a reachable URL.
+
+## Skills: SDK index and Code adapter
+
+The SDK `SkillsMiddleware` indexes metadata from backend-resident `SKILL.md` files, overlays same-named skills in source order, stores the result in `skills_metadata`, and injects a progressive-disclosure prompt directing the model to read full instructions only when relevant. An empty metadata list is cached; setting `skills_metadata` to `None` requests a reload. Source load failures are retained in `skills_load_errors`; the rendered prompt bounds and escapes them as untrusted diagnostics. `system_prompt=None` suppresses the fragment but not metadata loading.
+
+`PluginSkillsMiddleware` subclasses that middleware for Deep Agents Code. Ordinary sources use the SDK's one-level loader. Plugin-namespaced sources are recursively walked: any directory containing `SKILL.md` is a leaf, and intermediate directories qualify the name, for example `plugin:foo:bar:review`. The usual ordered, last-one-wins merge then applies to those qualified names. Metadata records the process that performed the scan: a retained thread is rescanned after a server restart or `/reload`, whereas ordinary turns reuse this process's metadata unless an explicitly selected pin is absent.
+
+### Invocation and pinned instruction snapshots
+
+A Code `/skill:` invocation creates a user-facing request plus an internal `__skill` marker and asks the SDK to pin just that selected name. The adapter only retains the selection from the newest visible user turn; it removes a stale or failed-turn pin on a later normal or goal-continuation turn. This stops a failed invocation from leaking instructions into another request.
+
+Before the next model call, the base mechanism resolves distinct requested names in first-seen order, removes frontmatter from each readable `SKILL.md`, appends attributed `<skill>` `HumanMessage` snapshots, and clears `pinned_skills` with `Overwrite([])`. The snapshot remains in message history, so later source edits do not change it; pinning again reads current content. The Code adapter makes an explicit invocation stricter: an unknown skill, unreadable/oversized/non-UTF-8 file, or file with no body raises an error rather than silently running without the requested instructions.
 
 ```mermaid
 flowchart TD
-    Begin["before_agent"] --> Cached{"skills_metadata is a list"}
-    Cached -->|"yes"| Prompt["Render metadata prompt"]
-    Cached -->|"no or None"| Scan["List sources and download SKILL.md"]
-    Scan --> Overlay["Later same-name source wins"]
-    Overlay --> Store["Store metadata and load errors"]
-    Store --> Pin{"pinned_skills requested"}
-    Prompt --> Pin
-    Pin -->|"yes"| Snapshot["Append SKILL.md body as human message"]
-    Pin -->|"no"| Model["Model call"]
-    Snapshot --> Model
-    Model --> Read["Read SKILL.md when needed"]
-    Read --> Gate["Disclose selected tools for next call"]
+    Invoke["Skill invocation marker"] --> Load["Load or refresh metadata"]
+    Load --> Select["Keep current selected pin"]
+    Select --> Trusted{"Resolved SKILL.md is trusted"}
+    Trusted -->|"yes"| Pin["Append instruction snapshot"]
+    Trusted -->|"no"| Ask["skill_trust interrupt"]
+    Ask -->|"approved and saved"| Pin
+    Ask -->|"denied or unsaved"| Fail["Fail invocation"]
+    Pin --> Clear["Overwrite pinned_skills with empty list"]
+    Clear --> Model["Next model call"]
 ```
 
-*Skill metadata is cached per state; a requested pin inserts an instruction snapshot before the next model call.*
+*Code validates the selected skill's containment before converting it into a one-turn pinned snapshot.*
 
-Sources are processed in order, with a later same-named skill replacing an earlier one. `skills_metadata` caches even an empty list; set it to `None` in invocation input or with `update_state` to reload. Source-level listing failures are written to `skills_load_errors`; the prompt bounds and escapes those diagnostics and labels them untrusted. `system_prompt=None` suppresses only this prompt fragment, not discovery or error collection. A custom prompt template must include `{skills_locations}`, `{skills_load_warnings}`, and `{skills_list}`.
+### Trusted roots and persisted approval
 
-### One-turn pinned-skill snapshots
+The adapter reads selected skill content only within trusted roots. Its default roots include configured skill sources; invocation discovery also includes built-in, plugin, user, project, Agent, and Claude skill locations. `skills.extra_allowed_dirs` (or `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS`) and previously verified approvals extend that allowlist. Relative configured roots resolve against the supplied user path base.
 
-Pass skill names in `pinned_skills` when the next model call must receive their full instructions without relying on a model-initiated `read_file`. Before that call, the middleware resolves distinct known names in first-seen order, downloads their current `SKILL.md` files, strips frontmatter, and appends one `HumanMessage` per readable file. Each message wraps the body in `<skill>` and carries `lc_source="pinned_skill"` plus name, path, and description metadata.
-
-The pin request is cleared with `Overwrite([])`, so it is a one-turn request rather than a persistent control value; appended messages remain in conversation state. A pin is consequently a snapshot: editing the file afterward does not alter the already appended message, while pinning again reads and appends the current body. Unknown, missing, empty, oversized, or non-UTF-8 skills are skipped and do not block other requested pins.
-
-Top-level `skills=` adds skills middleware to the main graph and auto-generated general-purpose worker. A named isolated declarative worker receives skills only from its own `skills` spec. Forks replay parent skill behavior and cannot declare separate sources. Normal isolation excludes metadata, pending pins, and disclosure state; a declarative fork retains enough private state to rebuild its inherited behavior.
+If a selected `SKILL.md` resolves outside all allowed roots, the run interrupts with `{type: "skill_trust", skill, directory}`. Approval persists the already resolved directory in `~/.deepagents/.state/skill_trust.json`; denial or a failure to save approval fails the pin. Reads fail closed if no trusted roots exist. At load time saved entries must still resolve to themselves, so a stored directory or parent replaced by a symlink is ignored; if the discovery symlink points to a new target, ordinary containment rejects it and requests approval again. The store uses atomic replacement, treats unreadable/corrupt data as no trust for enforcement, and refuses ordinary trust writes that cannot first read an existing store strictly.
 
 ## Skill-selected tools: disclosure is a gate
 
-`metadata.include_tools` is a space-separated list of include names. `SkillsMiddleware(tools=...)` accepts a list of tools/callables or a `SkillToolResolver`; list entries resolve by exact name, while a resolver can map an include name to runtime-dependent `BaseTool` instances. These tools are deliberately not registered on the ordinary tool node, so construction alone does not make them callable.
+`metadata.include_tools` names tools that `SkillsMiddleware(tools=...)` can resolve from a static list or a `SkillToolResolver`. These tools are deliberately absent from the ordinary tool node. A successful read of a known `SKILL.md`, or a pinned-skill message, triggers resolution before a later model call; the middleware records genuinely gated tool names and their include names in private `_skill_tools_disclosed`.
 
-A successful `read_file` result for a known normalized `SKILL.md` path, or a pinned-skill message, is a disclosure trigger. Offsets, limits, and later clipping do not negate it. The middleware evaluates visible triggers before the next model call, resolves unclaimed include names, anchors each generated tool at its earliest trigger, and records only gated names as `{tool name: include name}` in private `_skill_tools_disclosed`. If compaction removes an anchoring read or pin, a tool is withdrawn unless another visible trigger can re-anchor it.
+At execution time, an ordinary registered runtime tool takes precedence. Otherwise the name must be present in the latest disclosure record and its recorded include name must still resolve to a same-named tool. Calls before disclosure, in the triggering turn, after compaction removes their only trigger, or with stale resolver output remain invalid-tool calls. If compaction leaves another trigger, disclosure is re-anchored to it. This is an availability boundary only: a disclosed tool still passes through permissions and HITL middleware.
 
-At tool execution, an ordinarily registered runtime tool wins. Otherwise `wrap_tool_call` admits only a name in the latest disclosure record, re-resolves its recorded include name, and attaches a returned tool with the same name. Missing or malformed disclosure and stale resolver output therefore remain invalid-tool calls. Resolver errors and invalid return types propagate; an async resolver requires the async entry point. This is a model-visible availability boundary, not a substitute for permissions or `interrupt_on`: a disclosed tool still traverses approval middleware.
-
-A skill can name an already registered tool. That does not replace it. If the registered tool has `extras={"defer_loading": True}`, a trigger exposes its schema but it remains an ordinary, ungated tool; `disclosed_skill_tool_names()` reports only genuinely gated skill tools for middleware that needs the same gate semantics.
-
-### Provider request formats
-
-For models without supported mid-conversation additions, disclosed tools are added to the next request’s bound tool list. Supported Anthropic models receive inline `tool_addition` blocks; supported OpenAI Responses models receive `additional_tools` developer items. Both are placed after the triggering tool-result batch and queued follow-ups, preserving parallel-result grouping and stable request prefixes. The private disclosure record reflects what the latest model call was actually shown.
-
-Anthropic disclosure withholds a schema containing root `oneOf`, `anyOf`, or `allOf`, because that provider rejects such a definition; the withheld tool is not admitted. OpenAI Responses may receive the corresponding additional schema.
+Provider delivery is request-format specific. Supported Anthropic models receive inline `tool_addition` blocks and supported OpenAI Responses models receive anchored `additional_tools` developer items; other models receive tools bound on the next request. The disclosure record follows what the model was actually shown. Anthropic definitions with root `oneOf`, `anyOf`, or `allOf` are withheld because that provider rejects them.
 
 ## Operations and focused tests
 
-Use an isolated declarative subagent for a bounded task with explicit inputs and independent tool configuration. Use a fork only for context-dependent continuation, accepting beta behavior and nonrecursive delegation. Use a compiled worker when another graph owns the boundary, and an async worker for long-running remote work requiring status management.
+Choose an isolated declarative worker for bounded work with deliberately scoped inputs and configuration. Choose a fork only for context-dependent continuation and accept its experimental, nonrecursive contract. Use a compiled worker when another graph owns the child implementation, and an async worker for remote work that needs explicit status management.
 
-Focused tests cover task validation, state isolation, fork reconstruction and refusal, structured-result forwarding, tracing identity, remote launch/check/update/cancel/list behavior, discovery precedence and reload, and propagation to the appropriate worker. Skill-tool tests cover pre-read and same-turn rejection, pin-triggered disclosure, compaction withdrawal, resolver behavior, approval integration, and provider payload placement. Pinned-skill tests verify ordering, deduplication, one-turn clearing, snapshot semantics, unreadable-file skipping, parallel pins, and that subagent output cannot pin instructions into the parent.
+Focused local tests cover routing, input validation, state filtering, fork reconstruction and refusal, structured-result forwarding, and tracing. Async tests cover the five tools, duplicate/mode validation, headers, task reduction, launch/check/update/cancel/list behavior, cached-status fallback, and async-only ASGI transport. Code skill tests exercise sync and async trust interrupts, denial and persistence failures, pin snapshots, failed-pin cleanup, reload-driven rescans, root-base resolution, duplicate pins, and checking every requested name. SDK skill tests cover disclosure timing, resolver behavior, compaction, approval integration, and provider payloads.
 
 ## Related
 
 - [Middleware stack](/openwiki/architecture/middleware-stack.md)
-- [Middleware catalog](/openwiki/concepts/middleware-catalog.md)
-- [Talon integration](/openwiki/integrations/talon.md)
+- [Runtime behavior](/openwiki/architecture/runtime-behavior.md)
+- [Permissions and HITL](/openwiki/concepts/permissions-hitl.md)
+- [Testing guide](/openwiki/testing/testing-guide.md)
 - [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md)

@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Package-scoped, deterministic test routing for Deep Agents skills, dcode state and UI behavior, Talon Slack boundaries, and generated artifacts. Use it to select the smallest test that proves a changed observable contract.
+- [Testing Guide](testing-guide.md) - Focused, package-scoped test selection for Deep Agents subagents and media persistence, and dcode startup, headless, remote-client, skills, sandbox, and dependency automation behavior.

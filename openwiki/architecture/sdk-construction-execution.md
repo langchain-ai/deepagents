@@ -4,32 +4,22 @@ title: SDK Construction and Execution
 description: Explains how create_deep_agent resolves model and profile policy, assembles tools, subagents, approvals, and middleware, then compiles the LangChain and LangGraph execution loop.
 tags: [deepagents, sdk-construction, agent-execution, middleware, subagents, skills, langgraph]
 sources:
-  - id: openwiki-source-68ae2141dbec1e0915410ac3
-    resource: repo://libs/ARCHITECTURE.md
-  - id: openwiki-source-fd64c1b88759a3b897a5452c
-    resource: repo://libs/deepagents/deepagents/__init__.py
   - id: openwiki-source-b93533cac55718d75277d1cf
     resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
   - id: openwiki-source-822ae989625ba99d4c7cc08b
     resource: repo://libs/deepagents/deepagents/_messages_reducer.py
-  - id: openwiki-source-50173942904153d619b9ae0d
-    resource: repo://libs/deepagents/deepagents/_models.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
   - id: openwiki-source-66cf9d0832d3cb55bec2b5ed
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-837c84a3f3120bc778033547
-    resource: repo://libs/deepagents/deepagents/middleware/unsupported_content.py
-  - id: openwiki-source-10e4084b6aa57e5cc82620b3
-    resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
-  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
-    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+    at: 2026-10-12T08:20:17.385Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-12T08:20:17.385Z" }
 ---
 
 # SDK Construction and Execution
@@ -77,11 +67,11 @@ Tool-description overrides copy dictionary tool specifications and `BaseTool` in
 
 ## Backend, skills, and approvals
 
-Unless supplied, `backend` is one `StateBackend()` instance. The builder passes that instance into filesystem, summarization, skills, and memory middleware it constructs for the main graph and constructed subagent graphs. Filesystem permission rules, however, are enforced by `FilesystemMiddleware`, not by direct backend access.
+Unless supplied, `backend` is one `StateBackend()` instance. That instance backs filesystem and summarization middleware in the main and constructed child stacks, skills middleware wherever it is configured, and memory middleware on the main graph and forked declarative children. Filesystem permission rules, however, are enforced by `FilesystemMiddleware`, not by direct backend access.
 
 `skills=` identifies backend-relative, POSIX-style source directories. `SkillsMiddleware` uses backend APIs rather than direct filesystem access; it loads sources in order and later sources override an earlier skill with the same name. A caller can also supply a middleware named `SkillsMiddleware`: when no `skills=` value is provided, its sources fill the skills slot. This lets the explicit middleware replace the default slot rather than creating a competing skills layer.
 
-Permission-derived approval settings are built from filesystem rules and merged with `interrupt_on`; an explicit caller entry wins for the same tool. A nonempty result installs `HumanInTheLoopMiddleware`. The interrupt itself is part of graph execution, so a checkpointer is needed to persist and resume it.
+Permission-derived approval settings are built from filesystem rules and merged with `interrupt_on`; an explicit caller entry wins for the same tool. A nonempty result installs `HumanInTheLoopMiddleware`. A checkpointer is required to persist and resume approval interrupts.
 
 ## Subagent construction branches
 
@@ -98,6 +88,14 @@ A declarative child inherits parent tools, permissions, and `interrupt_on` unles
 A `mode="fork"` declarative child is experimental. It receives the effective parent conversation and rebuilt prompt context, with its own prompt appended; it inherits parent skills and may not declare skills of its own. Its task surface retains `task` but rejects recursive delegation at call time. In contrast, an isolated child receives a fresh human message containing only the delegated description. In either mode, returned state excludes messages handled by the task result, standard excluded keys, and private fields; the task result becomes a `ToolMessage` containing either serialized structured output or the last nonempty AI text.
 
 A custom `state_schema` is forwarded to `SubAgentMiddleware` and therefore declarative compilation, while compiled and remote graphs retain their own schemas. Before compilation, the builder gathers `PrivateStateAttr` fields from the graph schema and all middleware schemas and adds them to each installed `SubAgentMiddleware` private-key set, preventing those values from crossing the delegation boundary.
+
+### Remote asynchronous subagents
+
+An `AsyncSubAgent` targets an Agent Protocol graph through the LangGraph SDK. The middleware exposes `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`; launching creates a remote thread and run, returns immediately, and stores its task, thread, run, timestamps, and status in the `async_tasks` state channel. This is deliberately separate from synchronous delegation: the parent continues rather than waiting for a final child report.
+
+`check_async_task` reads the current remote run and, on success, retrieves the remote thread's last message as its result. `update_async_task` interrupts the active remote run and starts a new run on the same thread, preserving its conversation; cancel marks the tracked task cancelled after requesting remote cancellation. Operations report SDK failures as tool-result text, while task records remain state-addressable by `task_id`.
+
+Async `mode="fork"` snapshots the parent’s effective, compacted history at launch and sends it with the task; isolated mode sends only the description. It does **not** synchronize the parent prompt, model, tools, or approval policy to the remote graph. Omitting `url` selects local ASGI transport, which requires the parent’s asynchronous entrypoint such as `ainvoke`; synchronous launch without a reachable URL fails.
 
 ## Middleware composition and exclusion invariants
 
@@ -125,12 +123,12 @@ At runtime, LangGraph drives LangChain's model and tool loop. A model request re
 
 ## Focused verification
 
-`test_graph.py` covers model/profile selection, prompt composition, general-purpose construction, state-schema and private-state propagation, exclusion validation, tool exclusion ordering, and caller/profile/skills placement. The end-to-end fake-model test proves a constructed agent can execute a filesystem tool call and return the scripted final response. Subagent tests cover compilation, state handoff, fork behavior, and schema ownership; content-filter tests exercise request-safe multimodal filtering after a model switch.
+`test_graph.py` covers model/profile selection, prompt composition, general-purpose construction, state-schema and private-state propagation, exclusion validation, tool exclusion ordering, and caller/profile/skills placement. The end-to-end fake-model test proves a constructed agent can execute a filesystem tool call and return the scripted final response. Subagent tests cover synchronous and asynchronous routing, task result handoff, parallel delegation, private state isolation, fork behavior, and schema ownership; content-filter tests exercise request-safe multimodal filtering after a model switch.
 
 ## Related pages
 
 - [Middleware stack](middleware-stack.md) — hook responsibilities and ordering.
-- [Middleware catalog](../concepts/middleware-catalog.md) — feature middleware reference.
-- [Permissions and human-in-the-loop](../concepts/permissions-hitl.md) — permission and approval behavior.
-- [Subagents and skills](../concepts/subagents-skills.md) — delegation and skill concepts.
+- [Architecture overview](overview.md) — system scope and component relationships.
+- [Runtime behavior](runtime-behavior.md) — runtime execution and operational concerns.
+- [Tools and filesystem](../concepts/tools-filesystem.md) — backend and file-tool behavior.
 - [Build a Deep Agent](../workflows/build-a-deep-agent.md) — application-level construction workflow.

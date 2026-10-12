@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:d076dbb89954fdf62531ed4d3b7264ad487368922ebad33863dbf5769f241bcf",
+  "pageVersion": "sha256:921ec93c738b17cd93c48707379f1d6d2a4849c0c0d4ff67b5d8fdccaa878cc1",
   "claims": [
     {
       "id": "claim_d617c4883ed1484189ce1f493ffa8659",
@@ -273,10 +273,74 @@
           "version": "repo-lines-v1:sha256:2a374bff3eb1a4d3fa8f4c3f2fd87a1be028929f63c16c28f65ec47a66029b9d:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTY2ZTY0NmQ2YThkZWU5MGI2MWM1M2E0Njk2NmRjNDFmYmVjMTkzMjU1YTA2NjFkYjUzYWJlODIxYmI3NzVkNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWQzYjQ5NjI1ZmYwNWEyNDVlODkzMTNkNGMxMjVjZDE5MzgyM2Q4ODUzZDRjNjA3OGQwMTk2MDQ0MTIwMzkwMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZWY0ZmZiZWNiZjE1YzI5NTE5ZGFmN2E4ZGMyZDM0ZjhlZGI2MTk3NGZjMWVmYTE0OGYzZTIzMDM0OWYyNTVkMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmRmYzUyZTY5NmI4N2FkZWYwOTc0NmM5ZTA1ODg3ZmMxMjYwZGJlMjQ2Y2Y2YzQyYzkyZGRkNmZkZjkxNmFiNiJ9"
         }
       ]
+    },
+    {
+      "id": "claim_f05881a2d99d4895874dc0d877db0121",
+      "statement": "`RemoteAgent` caches server-validated workspace descriptors per thread, requires an explicitly configured workspace before binding, and changes its active cwd and cache only after a workspace-switch request succeeds.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L1132-L1262",
+          "version": "repo-lines-v1:sha256:acc3c55203a946ea24f9309b7154393e8f9c0011a6331a0fc7e58da83cb45e5c:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJiZjlmZGQwMTk2MDIwNWMwNzQ2N2U3MDJjNmE1YmRhZGJkMzFlZmE3NDU4NmY0M2Q5NjZkYmJiOGMwYjg2ZDY5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjZWVlZjcwZGM3ZjJhZWZmOWY4OWJmNTg2YjgyM2FmOGY4ZTc0Y2NhYmEzYWNkNzViYjc0M2JiNDQ0MTU3ODg3IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxNWFkMDg2MjcyYWM0Nzg3YzI3N2IyYzFlMzlmOTljMDgxZGY4MzM2ZWZjZmFkOTFjZjgyNjQ0Y2QzYmY4YTZlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiZjhiMTIyNGZiNjlhOGJjNGNmMTlhY2UwNzYyZDNlMGE2NmY1ZmEzYjU4NWM5ZmRjMmI0MTY2N2QzY2EzZDg4In0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_remote_client.py#L1262-L1389",
+          "version": "repo-lines-v1:sha256:87d352c3732a500a7570cf5b965018fc131d4b55947b7d88596e13e5c84e7eae:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlZGQyNDhkZGQ1MDcyZDhkNDQyNDFkODQ0OWU4YWU2YjA3M2U3NmRhZTkzNDBiNzVlNjE5ZDY4NzM0NzVhMDc3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1NTAzMmU5NjRkMDkzMjM1MWU1ZDE4NTI2OTI4MWIxNzFhM2EwOWIwOGIyODZlNjYxZWE0NzAzMjNjODJlYjRkIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4Y2M0YTdkMWNjNzk2YWJhM2U0NjcyMzMyN2Y1MTdlOWY4MTE5ODJkMjUwZjA3MDI5ODZlNGI1NzY0YWQ5NTg5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxNjZmZDVjZTIyNGFkNTY3MWRmNjkwOGI1MDgwNjIwODA0ZTg1MmRhOWYzMDc0Nzc1NmM1NmM1OWY4NjUyMWMwIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_a5a5468634bc49ac8ea6b0a0e33783b1",
+      "statement": "For a streamed execution, `make_graph` requires a nonempty thread ID and workspace context, verifies the durable workspace binding, and selects a workspace runtime keyed by binding identity and current runtime fingerprint; access-policy drift is rejected while runtime-only changes can rebuild the graph.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L1028-L1124",
+          "version": "repo-lines-v1:sha256:51ddc90b26f47c8e04bfef060848265a78f397ca9394456dc33a34f2e20d158d:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1MWUyNWQwMzI5MWFjMjZlY2U3ZjNmNTE5MTBkNWE1YjQ3ZmFhNjBkMmFjNzUyYjVmMjAxNjY5MzQyYzZkOTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxNjNkZjE0MzFkYjFhNmQ3MGMyYjM3OWM2OWJkYzg1NjdmZTVhZTY3ZmRiZjcwZDEyMjcyOTBmYTYxNmU3NDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ0YzJlOWE5NjA2YjhlNzAyYmViODIyNmY2MDVhZTRiNWE2Mzc4MDY1MGQyZWI3ZjFiNWQxMjk3MDAyYzk3ZDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/server_graph.py#L875-L1006",
+          "version": "repo-lines-v1:sha256:add89d79a9033d554bb695d657ab01410e8eeed4b0254fba3ebac3e32255b0e5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2MTM1NmQ5ZjJmMmNlNjY1MjQwODg4ODE0YWVhZDhjMzQ2ZDVlNzMxNjdlNDBlZWVlMTgzODQ3ODdjMTY3MmI2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJjNTM5ZDdlNmY3Mzg2NzYzYjM5ZmZkN2RiNGY3OTI0ZTFhMDQ3ZGU3NWRiZTc0YmJjZTI0YWE2MjBiZDMyYzI2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NThmYmU2ZjZhODlhMGQ0MDJkMzYzNmM5YTY4YWVjN2U4ZThlYzhkMmUwNGZlMTAyMGNiM2E3MjM3OGIxZDdkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmY2ZhMDZhN2QwZTFlMTRkMGUxYjU5MzRiZWEzMDg1Mzc3YWFkNTM4ZDYyYjYzZTdjZDBlMmQ2M2VjODk4YzQ5In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_9c3cc090bb5a4c96840cf008f2609d86",
+      "statement": "Server-owned context offload first idempotently registers the HTTP thread, transports workspace and ownership context, resumes hook interrupts using one operation ID, and on local cancellation waits for a terminal server acknowledgement before propagating cancellation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L1264-L1305",
+          "version": "repo-lines-v1:sha256:690e637ed55736fb351fbb28cafee2caca382301eea787fdbc2e1895250d4bd5:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkMDI0ZTkyNTgwYjZkNDFlZGU2MzlhMDZjZGQxNzJkZWI2ZWE0OGMzNmMwYzY2NDZmY2ZkY2RkMmM3MDZjYTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyOWM1MjQ0MzRjMDA5YWFmMGQ3ZmU5ZTJmZmU3MjJiMTcwY2Y4ZWIxYzhjMTU3NWU0ZTNiZDUxZTkyNmM3MWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjMDU0YjY3NWM1ODc2MGRkZjA0ODM3NmZhODYzOGZkZTVlNzY1OGM5MzIwZWVjMDIzZTJiNDAxZmNiNzg4ZDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUxNWMwNjlmMjdkZDI0NjkzZjk2NjQxMzlmMTU4YjA3NGNlYTY4OWMwZjU5ZDk4MzM3ZDVkODQ1Yjc5OTdmODcifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L657-L791",
+          "version": "repo-lines-v1:sha256:57a84781e323347ee9c058aa4429292738143efb24f3f31e3d58733bf030e2d9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNmY1OWM2ZjYwNDQ2ZmMxNzhlMDg0NmNlMWEyMTc5MjkzNzhlY2Y5NTZmMzVmNTgwZDM3YmQzZDRkMjQ4MTE2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2ZGJiZTNlNDFhNmE3MDliZjE2OGFmMzcyMTE4NDFiMjJhMTI1YzRkNjY3MzAwZjRjZjc4MjlmY2FhODE0OWJjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjYTlhMDljN2RiM2E2ZGY0NmY5MGE2ZWMwMWExMmFhZTg3N2YxMDQ0N2RjOWM0YjVmNWEyMjYyN2E3ZTQzMDAxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5ZDA3ZTI3MWIwNjkwZWEzZTFlYjRhNjAzM2M2NDZjZmQyYzZhZDg3MmEzZDUwYmM5YjFmOTBjODI0YWU1MTlhIn0"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_remote_client.py#L1405-L1535",
+          "version": "repo-lines-v1:sha256:fb5d563f4254fc719ee8e93b808f222a6f83a6beb22a087456a8347ced793660:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjZWI0NzkxZjRjMzk4MTM1YmE5MGNiNzU4ZmI3ZjM0MmM5ODJlYjRiMmZmYzkyNTQwZWM4YWU4M2M5YTIwZGNjIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI5NDcwNmViMDMxOGRlYmU1MzA3Y2I5MGQ3ZWFhM2RhZWMzZDJkYWE1YjI1YzdlMmNhNGMwMzVjOWNlMjI0MzhhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiNzA0NmZmN2I3ZTBjODYxMTkyMDQ4Nzc0NzUyNzI3NWI1MGI3YzI3YzE4MWMwMjVhYTQ3MGNkOWUyZjY1NjljIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjMTQ0YWQxM2FiZjcwNjYzM2I3YjgwNzAxNGU3MTBlZWYyZTg0ZTNmYjEyNjMwMjhkMTA3Y2U2YThiYTUzNzBmIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_d29abe86f3e949d7b0e407c8e433d627",
+      "statement": "Agent construction installs human approval only when neither automatic approval nor restrictive-shell headless handling disables it; an explicit filesystem tool allowlist is injected into synchronous subagents as well as the main agent to prevent delegated bypass.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py#L2792-L2821",
+          "version": "repo-lines-v1:sha256:67f85ab0ef176405f3d30cd6a3f48fe8934c6e4d21a9ba13be91fab51af7503e:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI1MmUxMTNlNDQ5ZDVkNzIyOGRkZmJiM2JkOGEwMTVjZmNhOTEyMjg4Y2VjMWNkZThmNmY4ZmJlNWE4ZjRhOGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhmYWIyMmYyZWU5ODdiZDlhMTEyYjUxM2M3N2Q4ZWVhZTIzZDlkYWUxYzE5MGFiZjUzNzRhYzg4MjMyY2EwZDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFmOWZlNWYyZDMyMWNkODRmYTM4ZTg5Yjc0Mzg3OTc3NjgxNTFhYjRiYzBiMTYzOWI3MjJkZTBlNDFkNWU5MmIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py#L3214-L3346",
+          "version": "repo-lines-v1:sha256:1277be1b121c7e8d086a59a269eadb50643fe8c7123598e7f36f43dc13e8a873:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyZjAzNjdjODM1N2QyNGNkMTU3YzhmZDhiMjZlNjcwNjE5ZDJiMGUyMmZiNTQ4YzM1NjYyNjBmOTViZTg2YmNiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0NzdlMDk1NTlmM2VmMmJiNjg1MDJjZjVjNDg5N2RiNmM1M2UyNDgyYTA5MjZmOGYyNzc3YjE0NjM0Y2JkOGU2IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJhMTY0ODYwMWIxZDBiYzFiMjlmNmI4YzhjOWYzZjUzM2Q1NGU3ZDk3OGJkMTNiNzk1ZWJiOTg1NWVkNDUwN2NjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjY2FiYjFhMjNhY2RjOTNjNDkxZmEyNDU4MzMxODNjYTQ5ZjJkY2UxMjJmMmI0NWIwN2IyZDU3N2VmYTA1NDExIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py#L3365-L3397",
+          "version": "repo-lines-v1:sha256:198396b756fca004dc10680960e433f350d51da87d349db22078edcd6dca987b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjYjU3NzYzNmY2NTg5YTFkMjk2OGFhZGUxOGFhOTllMjIzMzllZjM1MjU0MDI3MGQ5NThjMjRkMjc2NmVlOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjMmJiNzY5NjUxYzYxM2IyYWU0ZWE3MWRjZjMxMTNiYTU4M2ZmMjVkODc3ODAwOWQzN2M3MGU2YmE2ZTUwNWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4YzcwODZiMDE0NDAyZWQyZDQ4Zjg5MzgzYWNjYTU2MGMzNDVjYjJmNmMzNGVlZGJiMzA2YTczNWYxYTUzZDAifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-07T08:06:51.789Z"
+    "at": "2026-10-08T08:07:53.482Z"
   }
 }

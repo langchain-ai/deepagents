@@ -1,11 +1,11 @@
 ---
 type: integration guide
-title: Sandbox Provider Integrations
-description: Install and operate optional dcode sandbox providers, including ownership and lifetime rules. Distinguishes provider-backed remote execution from Talon routing and the local QuickJS middleware.
+title: Sandbox and Partner Integrations
+description: Map dcode's optional remote sandbox providers to the shared backend contract, selection and lifecycle rules, package constraints, and Talon routing. Distinguish those providers from the local QuickJS JavaScript REPL middleware.
 tags: [sandbox, providers, dcode, talon, quickjs]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-07T08:06:51.789Z
+    at: 2026-10-08T08:07:53.482Z
 sources:
   - id: openwiki-source-9f207ab48c42b84dcfd05f43
     resource: repo://libs/code/deepagents_code/integrations/sandbox_config.py
@@ -23,14 +23,22 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-d4463137befa776cd47750d4
     resource: repo://libs/deepagents/deepagents/backends/sandbox.py
+  - id: openwiki-source-7c1cff57fb2b25a4a7848547
+    resource: repo://libs/partners/daytona/langchain_daytona/sandbox.py
   - id: openwiki-source-da577cbe81ec29338f1388b2
     resource: repo://libs/partners/daytona/pyproject.toml
   - id: openwiki-source-936554ac5f0a201f8696be25
     resource: repo://libs/partners/modal/pyproject.toml
+  - id: openwiki-source-e93ea9e1f8eb3113683abb76
+    resource: repo://libs/partners/quickjs/langchain_quickjs/middleware.py
   - id: openwiki-source-b38d20ec21c25c8c726dc1b6
     resource: repo://libs/partners/quickjs/pyproject.toml
+  - id: openwiki-source-cbe167006ecbe803d01c6520
+    resource: repo://libs/partners/runloop/langchain_runloop/provider.py
   - id: openwiki-source-8d2c8381956c1c023bcdb565
     resource: repo://libs/partners/runloop/pyproject.toml
+  - id: openwiki-source-edb310aff3786a7a99593231
+    resource: repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py
   - id: openwiki-source-03a39f44d8ccfde2fd47e57a
     resource: repo://libs/partners/vercel/pyproject.toml
   - id: openwiki-source-81698d033a5726401d48b135
@@ -41,10 +49,10 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-57a0613315e23277d358df76
     resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-07T08:06:51.789Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
 ---
 
-# Sandbox Provider Integrations
+# Sandbox and Partner Integrations
 
 A **sandbox provider** acquires or attaches to an environment that implements filesystem and shell execution. It is not the same thing as `langchain-quickjs`: QuickJS is JavaScript REPL middleware running in the agent process, not a selectable remote-sandbox provider. Provider containment, network policy, credentials, and retention are properties of the provider and its deployment; protocol conformance alone is not an isolation guarantee.
 
@@ -72,9 +80,15 @@ sequenceDiagram
 
 *Provider-specific execution and transfer primitives support the shared sandbox filesystem interface.*
 
+### Adapter-specific operational behavior
+
+All curated partner adapters subclass `BaseSandbox`, but provider SDK semantics remain observable. Daytona runs each command in a newly created session, polls it, and deletes that session in `finally`; a positive timeout returns exit code `124`. Modal invokes `bash -c` and combines stdout and stderr. Vercel starts a detached `bash -lc` command, tries to kill it on timeout, and returns `124`; a failed kill can leave a command running. Vercel also caps returned output at `100_000` bytes and preserves a completed command's exit code if fetching its logs fails.
+
+These differences matter when choosing timeout, output, and cleanup policy. Test the concrete adapter as well as the shared contract; do not infer identical cancellation or output behavior from `BaseSandbox`.
+
 ## dcode installation and selection
 
-The `deepagents-code` distribution is version `0.1.81`, requires Python `>=3.12,<4.0`, and pins `deepagents==0.7.22`. It bundles `langsmith[sandbox]>=0.14.4` and `langchain-quickjs>=0.3.4,<0.4.0`. Thus LangSmith is available without a sandbox extra, and QuickJS is installed with dcode but remains middleware rather than a provider. The backward-compatible `quickjs` extra is empty.
+The `deepagents-code` distribution is version `0.1.83`, requires Python `>=3.12,<4.0`, and pins `deepagents==0.7.23`. It bundles `langsmith[sandbox]>=0.14.4` and `langchain-quickjs>=0.3.4,<0.4.0`. Thus LangSmith is available without a sandbox extra, and QuickJS is installed with dcode but remains middleware rather than a provider. The backward-compatible `quickjs` extra is empty.
 
 The curated provider adapters are optional extras. Install only the needed adapter, or all five:
 
@@ -99,6 +113,8 @@ All listed partner packages require Python `>=3.11,<4.0` and `deepagents>=0.7.0,
 The registry combines curated providers, third-party entry points in `deepagents_code.sandbox_providers`, and `[sandboxes.providers]` declarations. On a duplicate name, configuration wins over an entry point, which wins over a built-in. A configured `class_path` imports executable Python and is operator-trusted configuration. `[sandboxes].default` is considered only after the user enables sandbox mode; setting it does not silently enable remote execution.
 
 Built-in working directories are provider metadata: AgentCore `/tmp`, Daytona `/home/daytona`, LangSmith `/root`, Modal `/workspace`, Runloop `/home/user`, and Vercel `/vercel/sandbox`. Snapshot names are supported by LangSmith and Runloop; AgentCore does not support attachment by sandbox ID. Capability metadata is the authority for validation, so extensions should advertise accurate flags rather than relying on provider-name special cases.
+
+Runloop treats a snapshot as a blueprint name: it ensures a same-name blueprint is build-complete or creates it from the supplied Dockerfile, while an environment blueprint ID wins over names and skips that work. This is provider behavior behind the generic snapshot capability, not a portable snapshot lifecycle.
 
 ## Factory lifecycle and server ownership
 
@@ -133,7 +149,11 @@ Talon constructs a `CompositeBackend` whose default target, including every `exe
 
 ## QuickJS is not a provider
 
-`langchain-quickjs` version `0.3.8` is a JavaScript REPL middleware package, requiring Python `>=3.11,<4.0`. Its direct dependencies are `deepagents>=0.7.0,<0.8.0`, `quickjs-rs>=0.2.5,<0.3.0`, `langchain>=1.4.3,<2.0.0`, `langchain-core>=1.6.6,<2.0.0`, `langgraph>=1.2.13,<2.0.0`, and `bsdiff4>=1.2.6,<2.0.0`; it does not depend on a sandbox-provider SDK. It is installed by dcode's base dependency range, but it neither provisions an environment nor appears in the sandbox registry or `DEEPAGENTS_TALON_SANDBOX` choices. Use a provider for remote filesystem and shell execution; use QuickJS when the intended capability is local JavaScript evaluation and explicitly configured middleware/tool bridges.
+`langchain-quickjs` version `0.3.8` is a JavaScript REPL middleware package, requiring Python `>=3.11,<4.0`. Its direct dependencies are `deepagents>=0.7.0,<0.8.0`, `quickjs-rs>=0.2.5,<0.3.0`, `langchain>=1.4.3,<2.0.0`, `langchain-core>=1.6.7,<2.0.0`, `langgraph>=1.2.14,<2.0.0`, and `bsdiff4>=1.2.6,<2.0.0`; it does not depend on a sandbox-provider SDK. It is installed by dcode's base dependency range, but it neither provisions an environment nor appears in the sandbox registry or `DEEPAGENTS_TALON_SANDBOX` choices.
+
+Use `CodeInterpreterMiddleware` to expose an `eval` tool to the agent. The JavaScript evaluator has no direct filesystem, network, or real-clock access. Its default `thread` mode gives each LangGraph thread a separate QuickJS slot, while `turn` retains state only within one turn and `call` creates a fresh REPL per evaluation. Memory and VM-execution-time budgets are separate from host-call wall time.
+
+Programmatic tool calling is an explicit extension boundary: an allowlist can expose tools in the REPL as `tools.<camelCase>(input)`. These bridge calls bypass the normal `ToolNode` path, so parent `interrupt_on` / HITL approval is not applied per bridge call. Keep the `eval` tool gated, apply approval within subagent specifications, or disable PTC/subagents where that bypass is unacceptable. Persisted thread snapshots are only integrity-checked when `snapshot_signing_key` is configured.
 
 ## Extension and verification guidance
 

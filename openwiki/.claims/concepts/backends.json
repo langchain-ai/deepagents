@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b5060f52ac37e9392088a98d9d3272884507f37ca5860e2e20a61efbf3ce96f5",
+  "pageVersion": "sha256:3cf65fd64401f85437e990cb50302777919a262b5a6944b130677ddb07f26593",
   "claims": [
     {
       "id": "claim_9b577faaad1344b3b39669ae32d672d9",
@@ -387,10 +387,44 @@
           "version": "repo-lines-v1:sha256:9ac9d7a710ca1a9755e52493eeb51aed932dcb379d6afca5e225efc2957b80ea:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxZTQ1ZmQ5MGJjZWJlYmNkNzEyMjRhNTExMThhYzU2ZTE5MzJhNTU0ZWNiMTM1ODVlZmE5MjJmMzQ5N2I2MzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4NDgzNWExNTI5MWE1MjI0ZWQ3ZjJlMmMzMjM1N2Q2ZDUwMjY4NjIwZTRhMjc1MzE4MjhiNjFhNDFlNWJlYWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVlYzkyZGZiYmY4N2IyZmFjMTIyYjhjZmMyN2RiNDY4MjkyMzE5ZGI5NDk5MGIzZGVmZjcyNjZlNmNjNzJmNDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYzYzhhNjU0OGI0ODUwMTg1MzgwM2JhYTQwOWVhMzM3MWMzZTZiOGI3YzUwZjlhYWMzMmNiYmU4NTEzOWY0NzUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_3288674a0f9b49a0ab0bebcd2898ceaf",
+      "statement": "A completed execute tool call can represent a nonzero command exit: ExecuteArtifact documents that tool status is successful whenever a command ran, so consumers must use exit_code to identify command failure.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/protocol.py#L830-L846",
+          "version": "repo-lines-v1:sha256:b10872eeed05b376fe8b47530a95abfa1788f2b959d7d52c4f85e9675d82915f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2Yzc4YmEwNjQxMWEwNzJkMDBmYzg4MDJhMmI5MTljN2I1MzU4ZmM1YWQxMjllNzU0NjQ2NmExNjk0YmE1MGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYxNjVkODBlOWI0YTNhNTgyMjI4ZTY5ZjVjYzM3OTlkMzI5OWY5MjNjYjUxYWE0Y2Q0MDdhNTczYmI1ZTJiOWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlkNDViNjdmZThjOWMwZmEyN2YxZTM1ZTEwNjc3MDY1Y2U3ZTA2YTJkMzZlNDIwNzQ0OGNjYzc4NzgzODBiNWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyYjI1NzhkODVmMDU0N2ZhOTE3ZGE3YjE4ZDIwNzg5OTE4MjlhNTM4MmM3OTEyOGJlMTZmNmYxMDg4ZjdhYjUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b7da6ac67dc540bcbf05279b2922f0a9",
+      "statement": "BaseSandbox implements the sandbox backend surface from two required provider operations: concrete subclasses supply execute() and upload_files(), while the base derives the other file operations.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/sandbox.py#L2-L12",
+          "version": "repo-lines-v1:sha256:50cbf8ab68cfeea0b2da1624ad183f943a27907384bdb1e54656332d0449f3fa:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjOGQ5NTA3NWM1MTNkNTU4OTJlMzgyM2U2Njc2Y2E4MzM4ODE5NTVhZGQ1MDFjY2VlYjY0ZjIyZTUwZDk1ZTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoxLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlYmFlYjQ5NmQwYWRjMDk1OTM0MTQxYWExYTI1MGYwYjVmZmZjMDFmNzg1NTgwYTBmMTViODJlYzM1ZWI3NDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_072dd82a0eaf44499de375c705b6093d",
+      "statement": "FilesystemMiddleware enforces its private tool-level permissions, and refuses permissions for an execution-capable backend unless every permission path is scoped to composite routes because execute is not covered by those tool-level controls.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1820-L1825",
+          "version": "repo-lines-v1:sha256:200f0d896225c46bc8b4a2f47cffff367458562d0cfd0b836780f85b3b496184:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiOGJhY2VhMGY4MDcwMTAwMGU2ZjFjOWM4Y2I5ODkzZTdhYjdiZjNkMDRjNDcwOWZmNWU4YTcxYTRlZjk5OGZmZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjY1YjRhM2YzNzFmMzNjNGJlOGE5YmQzOTgxMzkyNmZkMmEyYjFlNjMzYjM4Y2M4MjQ2YWZkYjE2MTdiMjhjMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMThlNTFmNzBlNTE3YzQ3MWRmNTQ4MGU4YTQ2ZmUyNTliZDVjNjU2NmYwYWMwNjMxZTRkMjgwZGU3YWYzNTNjNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWIxODM0MzgwYjBkMTJhYjljODIwZjJjZTdlYzJlZmM2OWMxNTY5YmY2ZjY5NDdjMzQ3YzgxMjhmNTQ5N2ZkOSJ9"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1849-L1856",
+          "version": "repo-lines-v1:sha256:990548a59f26609e2a03df755ff237d5c689bbb31a7f0b591dbf834e7869f2f9:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGU0MzE5NDRhOTJkNWY0NDUwOTllNDIzM2RhY2RhZjY4ZTc2MWM5Zjc5MjZkOGRjMWE2MWY4OGEzNGNhMWIxMCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDE2Y2RiZGZjY2E2M2MyN2RkNjUwMDYzNTdmMmRiNzJiMmNmMTIxMTJmYWY1M2NiNmQzZTg5MGZhMTg0ODgwOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTYxNjRkZjRjOGJkZmY5ZjQxNjc1Y2I2YzdhMjNmZjA5YjRjMDRhZTM0ODY1OTJmYTJhOGViYzk2YTkwOGNkMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWRiZjYyZTlhZmFjYTcwNmJjZDk1NGUyMzc1OWYxNDdlMDExOTdjOGQzOGIyZTQyNmMyYWM5ZGVhODE3NmYzNiJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-03T08:05:07.881Z"
+    "at": "2026-10-08T08:07:53.482Z"
   }
 }

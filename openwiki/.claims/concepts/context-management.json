@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:62f1e47ba5609f9ec4c7a2dcf9ec2703a4c95d27ac6a83b6df74193feee501f0",
+  "pageVersion": "sha256:3c2635f907b4f27294f672ce819d15cb8fffb86fdfda7a5d4174a3ca3562f69e",
   "claims": [
     {
       "id": "claim_96c6150d94634eb995b0629ce730bfe6",
@@ -253,10 +253,132 @@
           "version": "repo-lines-v1:sha256:a1cd0531fda0c014d735b2dba49b0d4db454d22b2531726a41822bbdcb01cdfa:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxM2QyN2I3MWY5MzM2ZmU4OTZlZGZhOTQ0YzU2NGQ4NDI3NWZmYzIxZTIwNDVlODdmNzg2ZjAxMDU3MDQzOTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZiNDFlMmVkN2E2MWFhMmMyNjhhYjIwZTBlODQyYmNiZTQ2YTVjZmRmMTM5NzZiYTY4NTEyMmVlZTVlMWMyNTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ4MDcyY2ZmNjQ1MmQyNmFhZmExMjRkOWU4ZDIwZjUwNGVmYTA5ZDIyYWI5YmE1YTc3ZGJlOGFhZDExNjIxZjYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_23a7d83c57c34d77949566f22949bad3",
+      "statement": "MemoryMiddleware loads configured sources into private state once, skips missing files but raises on other download errors, and injects ordered, comment-stripped memory into the model system prompt without changing the underlying user messages.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/memory.py#L245-L277",
+          "version": "repo-lines-v1:sha256:2f87077dfe6d1b3cedd0814962ed596b0fafcf65cf8187f434393c13aa0bcf72:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxYTk3ZTdiMjUwNDg0NGQ5ODNkMzdlMGEyMmIwMTYyYWZhNjNiMzJhYjcxNTliZDUwYTMyMzA2NWExMzJmMjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4MGY0ODVkMzYxNjRhODI3MWFiMWFjNWY3NWNkNGU3MGRlYzgxNGEyZjEwYzJmMzhjM2I2M2QyM2ZjMmMwMmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMxMDFjYTIzMWVlMWI2ZDkyODY2OTI5OWNmNjA4NDI2MmI4ZTliYjdkZGI0Mjg3ZTY1ZTcyMWZlN2Q2Yzg5ZGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc1NWFiYjQyYWMzM2Q5ZTJkODdkNWIxYTc0MTJmYTkzYmY3YTlkYzE4MmI5MzNjYjg5ZDE4ZmFhYmQ4Y2IyZmQifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/memory.py#L279-L345",
+          "version": "repo-lines-v1:sha256:511987679e9cc0bca8063fb7ef3474cc4c0eeeb3df5dff4f4ac2440e593f1609:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3M2U3NjllYjEwNTM1OWZmZTQwMzdjZGVhNTc3Yzk1OWQ0ZTEwNTFiNGNiOGQwYTNmMWQ3MWU2MWExYzJjOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlOGQwY2VhMjVhMDJjMTE5NDM2MTc3YzFlYTA2YWJiMWE1YzUzZDkwOGJhZWY2NDY5ZTg0MDA1MThlZTkyYTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEzNDEzNmMxNzhlZDViYmIwM2Q2NDIzZTRjZDBmODljZDA0MWVmOWQ2YTZkYjllMTZmMGYyMTZlNWI3YmZkZDMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRjMzc0NmVkZDk3ZWI5N2JjMzBkZTQzZTIyOGE1NzViYzQwNmRjZWIzNWQwOGU5YTBkMzY2ZGZkMjc3MzRmMDMifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/memory.py#L347-L417",
+          "version": "repo-lines-v1:sha256:cd3139bddc7b744c962dd1d31dfb8574afc0e24f05e3dcccc5329bac820fd8fb:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyNDZhNTA5OTUwNzExMjY2NWJhZTM2OWU5MzY3NGIyMWE0OGJkZmI0NWI3NDkxZjJmNWI3MjIxMjI2ZGM1NzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM5NGUzZjU0MDA1OWE4MjYzYmM4MTM1ZGViOWYzYzQ2M2M1MTZlZGZlMmRiOTkyNmYyYTQ2MjY0YTczNjVhMzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA3NjUyYzIwODliNTk0N2QyNDlhZmJiNGMyNWNiMmY4MTA2NmIzYmI1MTE3MTRkZjEwNmE2NTZmNjkxOTAyMjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a7e141dafe874321a1e26c01c1e9d2ad",
+      "statement": "Deep-agent graph assembly appends provider-specific prompt caching before MemoryMiddleware, and MemoryMiddleware can place an Anthropic-only ephemeral cache-control marker on the final system block so the memory boundary is cacheable independently of the static prompt.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L922-L945",
+          "version": "repo-lines-v1:sha256:04d588df89bb4d4eb29453cf058b5aa53e755607925ffa3e5711b02f3545195b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5NTFkOTY3OGUxOWM3YjczZmFlYjM4NTA3MGRiYWY3OTEyMDE0ZjA3ZWVhZTE2YzFmNDUzYzJhZDJlZWVlMGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRjN2JiZGFhZGI0NmJkMTgzNzM4ODY0Nzc1NDg5MDg2N2I0ZDUxNWUyZTFjMjRmYmU2MmFjMzk1NDJkNTk4MWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJlYWNmYzVjZmJjYjA0MzY1MjU0ODBkMzA0MGU2MTU5NWJkYjhjNDc5Njk4ZTdmOWFlZjVhNjM1ZjIyNTkyOTIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_prompt_caching.py#L13-L49",
+          "version": "repo-lines-v1:sha256:330a7b0f2bd5819f01bfda1811c040fb2885cec5be7ca4f84ea13c61c45a8080:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlkNzNjYjJkOGIxM2YzMDFhOTRhZDQyMDc4YjA3ODZmZGEzZDZlMTE0MjliMWQwZTk2NTFjNjY1OTk2YTg2NTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkYWU3ZDg5YWRmYWFhMTk1Y2NhZjk5MjQwZmY2NzNhNjhjMGZmZmE0NGJkYTI5NjQwNjNhOTEzNmU1ZGRjMGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyMDA5N2U0YWE1MDA2OGJhMTU3ZjlhMjczOWZhZDg2OTk1ZTFlMGNkY2NkYWRjNTg5N2MyMDM0Yzc0ZDNlZmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/memory.py#L211-L226",
+          "version": "repo-lines-v1:sha256:5ec8d0b6a9bdf7c04265ce05439c502a9eed6237511d858b0b0156ba6d780cb4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0YTA1ZDU3Yzg0YzU3MjYwMjUwMzExYTVmMDQzNmUzZTlmYWM5MmE1YmVkZGVlNGMxNGJmYjE2Y2RlZjg4YTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkMjhmYzg5OTY1MGRkMTY2OGNiMjExYWJiNDBmMThhZDdmMGIzNmZjYjYyY2Y2NGE5OWJmYzNlYzVhNzhlNTEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFkZDM1MDBhN2FhMWUwNjRhMDUxNjhmOTE0NTBkMGI0MDg1MDdjNTA5ZTBmY2Y2YjlmMzIxMjllMDU5MDYzNzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4YTFkNDZjYzJjMjlhOTgxOTI5Y2MyNjdkMTg0MDMyYjllMzE1ZWFmZGZhMjg2YjlkNjlhNTgxNTJkYmU0YjAifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/memory.py#L363-L383",
+          "version": "repo-lines-v1:sha256:cac88b2a98ec09301ebb549da857a33ae53dabd69bcd0bdd4ef506d6af122c68:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3OWE5MThjNzdjYjJhM2NlYjNjZmRhZTMxN2MzNzE1MjAwYWFmNTA4M2VmMDc5NmY2NzM1ZWU5MDViNDY5NGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIwNzkxM2IyYWE3YjgxNzM1NGYxMjlkODQ1ZWU5MTcwNWFiZjZhZjlhMmEyNjhiZmI3NGJiNTk4ZmFkZjYwOTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzMzNiMTI0NTk1ODM5ZGRhMTVlMWU2OTVmNDNmMDYzOWEyMTViN2IwMWU4ODNmYjM2YWI1YTYyZTgyNjEzMmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyYTk2NjFkOGY1ZjViODU4OTFjNGNkNDg3ZmEyMzhkMGY0YzdmMDk2ZDc2OTAwZTJkZGIzOTY3N2MzNDE3NjgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0d109ccab39544ddb1d8027047f7ccfe",
+      "statement": "Dcode's RemoteAgent offload client keeps one operation id across hook-resume rounds, validates terminal results, limits hook fulfillments to 32, and on caller cancellation waits for the server's operation-specific cancelled-or-finished acknowledgement before re-raising cancellation.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L42-L121",
+          "version": "repo-lines-v1:sha256:a2478aecf713989513671c438b423309df9a86cdf2f6501374305ff04ef738fd:eyJzZWxlY3RlZExpbmVDb3VudCI6ODAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1MzA3YmIzNWUxYTA3MzMwYjYxOGNjMTgzNGMwMGQ4ODQ0ZDllYTdkMmZjYzFmNGFhZDEwOGEwMTczZjcxYTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzYjIyMzQzZTljNzU1OTIzM2RjNDZkY2VhNTg5OTY1OGY2Yzg2YTczMTRmYTQ2MjA5OGYyOTI4YWY2YWQzZjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEzN2RiNGI4M2E5MjlmZjg3MjliYzE1NWU0OTZiNWI3NzBjYjRlMjk1YjJmZTZiZGM3YTExZjhhN2Q3ZTBjODAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZjODIyMzNjODhkMzA4ODU3OGZlMzVlODRiZDU4YjZiZDFhZjFkMmM5Yzk3MDI1ZWYwMDQ2NjUzYTQ5NDgzNDAifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L657-L791",
+          "version": "repo-lines-v1:sha256:57a84781e323347ee9c058aa4429292738143efb24f3f31e3d58733bf030e2d9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM1LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxNmY1OWM2ZjYwNDQ2ZmMxNzhlMDg0NmNlMWEyMTc5MjkzNzhlY2Y5NTZmMzVmNTgwZDM3YmQzZDRkMjQ4MTE2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2ZGJiZTNlNDFhNmE3MDliZjE2OGFmMzcyMTE4NDFiMjJhMTI1YzRkNjY3MzAwZjRjZjc4MjlmY2FhODE0OWJjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjYTlhMDljN2RiM2E2ZGY0NmY5MGE2ZWMwMWExMmFhZTg3N2YxMDQ0N2RjOWM0YjVmNWEyMjYyN2E3ZTQzMDAxIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5ZDA3ZTI3MWIwNjkwZWEzZTFlYjRhNjAzM2M2NDZjZmQyYzZhZDg3MmEzZDUwYmM5YjFmOTBjODI0YWU1MTlhIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_21ac0eeed2764f20aeaa358b4ca865bf",
+      "statement": "The server-owned offload boundary serializes a thread operation, refuses active or pending work, reads and rechecks the checkpoint before commit, and permits only summary/session/cost state channels so it cannot overwrite conversation messages.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L1047-L1226",
+          "version": "repo-lines-v1:sha256:089e56bf5017f46c9618ffae352a2e0a56e8204cd7b83ff5de8cab325fb851a1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MTk1NGRhYjdiZjdkY2E2ZGFjZGRiZWQ0M2JlZjViYjY2MGQ3NmE5NmQ3ZTUwZDJmNDBkNmQ5ZjEzNDMzZGRhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlZjkwNGQ4OGRlN2ZiZTIwZDQ2ZTA5NzA0ZjFlNWY4ZmNkMzI1N2RlNjAzN2EwNDFhMzQ5NGQ5ZTgxZjZlOWFjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI5NDBiZGY1OTU1NGY4NDQ4Njg1Zjg1ZmIwYTFhNTA4NzMwNDU0YzBjMjlhNWVhMzgyOTkxZGM5YTI2MmQ1MDM4In0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_middleware.py#L514-L527",
+          "version": "repo-lines-v1:sha256:64f80b7a9960e4f2ae7c76d4cd60e7d81cc359c84bd386a22a51fce0e8da8aff:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmMThmMDk0NGE5NDliYjAyZDAyZjVkYmNlZDIwNWVhOGVkMTc3YmY4MWFhMWZjMDg3YmFkYjRlYmQxNWI0MTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxZTJhMGU5YWQwNWExNWFlODhhMGQxMTUxYzQzNGRhM2M5ZWJkYjk2OWE3ZWE1ZGNiOTBlZjI1ZTUwOGI2YzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMwMGI3ZTZjYTc4N2YxMGY0NDA4MWU4MzU0MjI0OWUwM2Y2ZTI2ZjljZjU1MWYzMzM5NjNmYjQyNGM2MTIzN2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZiMWVkZDk5NWNmODY4MjQxMGUzMGI3MDUyNmI5ZDFkNjkyNDU5NjA1MjRmNjYxZjVhNDhkZmZlMDQyMjJlOTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7cccb852f8324bdda35e28ec3fb22d4f",
+      "statement": "Dcode reserves the checkpoint summary before appending an offload archive, then links the archive path; an archive append is guarded against prerequisite read failures, confirmed link failure rolls the append back, and an unconfirmable link is surfaced as indeterminate.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L938-L999",
+          "version": "repo-lines-v1:sha256:e0f0d63aa38f1d85a2e7c39260a1aedb16edbfce49db2e2e7e5d48e13147ad09:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkYTVlNzEyNzliOGY2MDRjYTA4YTJkZThiMDIwN2IxNWE1ZjAwMDIxZjI5MTIyNTNlNzg1YTdkY2Y4Y2NlY2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAzY2FkOTY0OGVhNjViNTY4MWE3NjAwZmUzYjU2MjBmNmRlZDk2ZmVmZjZkYzljMDgzZWYzM2JiNDQzYmZjMmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzYThmYWJhMTNiNGVhOWQxN2UwMTlkZjhjNDlhZDI3ODFmMzczNGQzMTIyMmUyMGE4OWU4YjgyMjJhOTczNTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjOWI0NDYwZDQ0MGVkOTcwNzkwNTM3OTIwOTU3ZTUwMTcyMGZkMmQ0NzJkOWY2NzA4N2FlNzM0MDA1ODZlOTMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_middleware.py#L872-L968",
+          "version": "repo-lines-v1:sha256:5fa7cd5976e982329c3d5f4ea2eac9fccda87720436805f6a158abd90cb89689:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExYTk4NzBiYWE0ZDY0ZmFhMmEwOWNiMzk0NWIxOTRlZjQ0ZTU2ZmRhZDZjNTQzMDUwYWE0NTkwMjAwN2ExMzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlYWM0MDUyODc3NWM0YWIzYTEzZjhlZDhjOGQzNGM3YmZiNzU0NjY0YTE5ZWRmZDBjNjMzY2RkOTVlY2NlZDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJlYzhhY2VmNzAwNTU0ZjZlZWNlMGZjOTc2MWU4ZjVlNjFkNWNkZjc2MGI4NjEwYzA3ZTI0ZDkwNjZmODIxMTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_393a928802ca415a8e8bc11d94dcbd86",
+      "statement": "Local dcode conversation-history storage prefers a hardened per-user directory, marks fallback temporary storage as ephemeral, and performs best-effort retention and thread-deletion cleanup without allowing cleanup failures or suspicious thread ids to delete arbitrary paths.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload.py#L164-L252",
+          "version": "repo-lines-v1:sha256:e7b063c2a85f9b0c4799fa30258bf4189057bc4f1c766ae48fc3694740d9e7b9:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzNWNjMTI4MzdkZGQ3ZmU1ZThlYmQzNDQwNDViYWJkNTQ0ZGVmM2Y0ZDhiYWQyOTM4M2Y4YmM0N2NjNThlYmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5YzI4ZGZhYWVkMThlNGNhOTBhNDZhMjM2ZTdlYjVhZmU4MDY0ZDMwZWRiMmY3ZTM2NmFiZWI4MjkzN2RmZDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3Y2RiN2JjYzcyMTQyN2JmYjU4ODk3OTI1M2MzYmY3MjkxMzRiMTRkZDdlOTE3ZjE2ODA1OWZmMDUwYTdmMmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIwMWU0MGE4YTI4ZmYwMjA2MTAwYmJmZWE0ZTYwZmZiNDcwYTEwY2Y0ODA3MzA0OTI2MjJkZWM2OGM4NzdlMTQifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload.py#L349-L363",
+          "version": "repo-lines-v1:sha256:c6738ef8271df2b3710dbeb3660f1c644f2ce27b27cc008ca2ef3578eaf7b379:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2YzU3ZjAwNjc1Yjk3MTkyZjA0YzYzMGQ3OTk0NWQ1OTQ2NjFmNjYzZDc2MDVkOGVmMzhmNDQ2MTU1YjVmNmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhMTY4MDljMDc1ZGIzMDllMDliYmM5YWI3ZWZlZTY5ZWZiNWY0MTliZDRkODkzMGQwMzgwNjYwMmRkMDJmZDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMzMWU0MmZmZmM2NWFmZDNkZDZlYmI1YTlhNjk0YWMwY2MxMTA0Nzg1ZTdjMGM0MGUyYWNhOGEzYjcwZDI3NzkifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload.py#L414-L465",
+          "version": "repo-lines-v1:sha256:0fd2236fa18cc123af284c038f3f6a413c15d9e8a3667f2afaad49958ddf04d7:eyJzZWxlY3RlZExpbmVDb3VudCI6NTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjNjQ0NGE2YzBkNDJiZmVmZTUzZjcyMmMxMThjMWFiNzlmNWVkN2VhNmNjNDkwMzFkYWZjZmYxMDI1YzJiNjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1YTE5MGJjNWZkYTg0ZThiODcyNzEzZDhhODBiZjk5NDQzNzQ4NmUzZDY1OWNlZDFmYTZjY2IwNzI1YzIyZWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ3MGFkOWE1ZjNiZGU1OTA0NGUxNjc2ZDY0N2E1MzdjYjkyZmMyYjMwYzMzODRkNDAxMjBlYWRhMmE5ZGY5ZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE5MWQzN2Y5YjE5MWM5YTE3ZjI1YjBlMDcyZjIyNjRiMDkyOTRiZTkxODYwYjFlOTQxNWI3YzQ3N2RkYWE0OWMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload.py#L65-L80",
+          "version": "repo-lines-v1:sha256:1c531053b1d0f68613da33f0c5b58fd4c8a3c874c0aac5066eaf5cea5de68cc1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2ZDU4OGUxNjI4Y2JjZDZlOGQ0NjdiYjc2MGRiMmIyZjA5OWFmNTk3YTc3ZDg1MThiYWIzOGZhNDYwYTE1MmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2M2MyOGRjNWYxODIwYTU2M2ZiZWIyODU2YjRkMzg3YWQ3MjEyNjY5ZWViOTQzMTU5NWY5MjEwMTM1MDUwOWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI4MzBhZDJkNjhmZmJmZDZjMWM0ODAwNzFkNmIwNDU2YmIxYzEyN2ZmNDdhZDQ1NDdhYWJmN2YwNWQ2MTg4ZjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY4Zjg2MjQ1MGE1NmI5MzQwNzJlNGVjOWViZGVjNDNhYjM3ZDU3ZGY4NjExMDZkMzY0M2ExY2FhZjQwZjFhNTIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5830e089fb044e6cae0ed07e9dcfc41d",
+      "statement": "Remote state recovery retries one conflicted state update only after concurrently cancelling pending and running server runs with bounded waits; abandonment closes only trailing unanswered tool calls before clearing pending graph work.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L1367-L1440",
+          "version": "repo-lines-v1:sha256:0948f0d915b03f2a40ca525ab1283090fc2761137fdfad5c342531cc7e164518:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBhODA4MzdjYTJkNDUzMTFhMjdjMzI0NWU0YWFkMDgyZGIxYjhiY2YyZmZiYWFiZjcyNWZlNGJmOTE1YzkyNzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRmYjc4ZWM4NWRjODBiYzcyZWY2YTkzYzBjNTQ4YzRjZjY5ZDVhYWQ0ODk1ZWFjZThjZjk1ZjgyNDhkNzBlNDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiNTMwZWRlNGYzZTg4MmQ2ZTg1ZTllNmE3N2JiYTI5NTk5OTk3MWU2NTk5NGU0ZTA0MWJjMDAzYjE1NzhkMmYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczYTAwZjljZWI3YTQ1Yzc0ZGE0M2M4ODgzYTMzMTdkYWRmN2ZjMGU4NTcwODUwMTU1MmE2ZDU2YzM2ZGQ2NTYifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L232-L280",
+          "version": "repo-lines-v1:sha256:e9596be21e3974fc9699fec0cb13b5fb3ada16a059e4cc10e33e7c041bb57721:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ0YjRiZDVkNTAyNzYyZWI2Yzk4Y2M4NDNmODRhMTQzOTFjYjRkZDExMGRjNGI0MmUyNGIwOTkwMGQ0OTM3ZjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhMDE3NGQ4NDM1ZmMwNTFjYzFiYmIzZTk5ZGM3MzQwNzE4NmQ2MDg5NTg2YmY2MmNjOTczZDQ2NWRlZjI3YmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBjYWVhNmYxNzM3ZWI3MjZmOWY2MTMwOGJkZGJlZGQ2ZmQyMjFmMDMxZTVkZTlmYzIyMTBhNDZiYmMwYThlOGIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L987-L1094",
+          "version": "repo-lines-v1:sha256:ba518187a18e11cdf24c79dd7dc8a1d2eb4e4185cbe52f88e7a75948d31c8454:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI2ZWFlZTY0NWZhODFhNWE3OTQyZWM0MmY4ZDU2ZGZmYjMwYjMwMGI5NzBhODhkZTliZTUxODZhNDhkMjBmMWYwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhNWZlNzhmOTBkNzdmYjFiYjlhOTVmNDYxMDY4MjkzOTgwNzNmOWJiNTU0OGQ3OGQ2NmNjYmRmN2M5YjQ4MjQzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyMjBhZTJkNTc0MmU1YjBiNDhkNGNiZGIyOTI1MGZlM2I0MmQ3YTg3OGE5ZTg0YWU0Mzc1OTc2Y2IzM2M2YWZlIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3MzljMzgzMDZhNGFiYjc1OTgwMTY5MzdiOTNmMzA3YmVjZWYxMmNmODM2MTc2ZTdkNTRkYmY0ODJhMjkyNmU3In0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-25T08:06:00.203Z"
+    "at": "2026-10-08T08:07:53.482Z"
   }
 }

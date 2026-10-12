@@ -4,16 +4,14 @@
 
 ## [0.7.24](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.23...deepagents==0.7.24) (2026-10-12)
 
-
 ### Features
 
-* **sdk:** support fork mode for async subagents ([#6739](https://github.com/langchain-ai/deepagents/issues/6739)) ([c31c7fd](https://github.com/langchain-ai/deepagents/commit/c31c7fd89d0b7cf77af292f5629cc4929d51e429))
-
+- Added fork mode support for async subagents ([#6739](https://github.com/langchain-ai/deepagents/pull/6739)).
 
 ### Bug Fixes
 
-* **sdk:** preserve parent rubric during parallel subagent calls ([#6849](https://github.com/langchain-ai/deepagents/issues/6849)) ([9740b88](https://github.com/langchain-ai/deepagents/commit/9740b88c06109890447ddd005871943f251c99c5))
-* **sdk:** recover from context overflow in the summary call ([#6864](https://github.com/langchain-ai/deepagents/issues/6864)) ([efd88ff](https://github.com/langchain-ai/deepagents/commit/efd88ff8fd1279361de77a83c9f75d98ed2f36d5))
+- Recover from context overflow during summary calls ([#6864](https://github.com/langchain-ai/deepagents/pull/6864)).
+- Preserve the parent rubric during parallel subagent calls ([#6849](https://github.com/langchain-ai/deepagents/pull/6849)).
 
 ## [0.7.23](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.22...deepagents==0.7.23) (2026-10-07)
 

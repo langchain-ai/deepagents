@@ -191,6 +191,8 @@ def _content_updates(
     block ordering and block-type support cannot drift between them. Live
     chunks carry no message ID; replay passes the persisted one.
     """
+    if message.additional_kwargs.get("lc_source") == "local_context":
+        return []
     updates: list[AgentMessageChunk | AgentThoughtChunk] = []
     for block in message.content_blocks:
         if reasoning := _visible_reasoning(block):
@@ -846,6 +848,8 @@ class AgentServerACP(ACPAgent):
         message: Any,
     ) -> None:
         """Replay one persisted user message."""
+        if message.additional_kwargs.get("lc_source") == "local_context":
+            return
         for block in _content_blocks(message):
             await self._conn.session_update(
                 session_id=session_id,

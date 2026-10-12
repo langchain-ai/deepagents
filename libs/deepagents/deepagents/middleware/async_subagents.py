@@ -82,11 +82,18 @@ class AsyncSubAgent(TypedDict):
     """Additional headers to include in requests to the remote server."""
 
     mode: NotRequired[Literal["isolated", "fork"]]
-    """How much conversation context to send when starting a background task.
+    """When using `mode="fork"`, configure the remote agent to match the parent's model,
+    system prompt, tools, and prompt-processing middleware if you want prompt-cache
+    reuse. Fork mode copies conversation history; it does not synchronize those
+    settings. Matching configuration is necessary but not sufficient: the rendered
+    prefix must match, and cache hits depend on the provider.
 
     - `isolated` (default): send only the delegated task description.
     - `fork`: send a snapshot of the parent's conversation at launch, followed
-        by the task description.
+        by the task description, for background work.
+
+    Different configurations are supported for context sharing, but you should
+    not expect parent-to-child cache reuse with them.
 
     !!! warning "Experimental"
 

@@ -1,7 +1,7 @@
 """Server-side skill pinning preserves selected paths and directory trust."""
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import pytest
 from deepagents.backends.filesystem import FilesystemBackend
@@ -359,3 +359,76 @@ async def test_pinning_plugin_name(tmp_path: Path, mode: str) -> None:
     assert isinstance(messages, list)
     assert isinstance(messages[0], HumanMessage)
     assert messages[0].additional_kwargs["skill"]["name"] == "example:nested:review"
+
+
+@pytest.mark.parametrize("configured_base", [True, False])
+async def test_pinning_resolves_extra_dirs_against_path_base(
+    tmp_path: Path,
+    mode: str,
+    configured_base: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Relative `extra_allowed_dirs` resolve against the user's working dir."""
+    project = tmp_path / "project"
+    user_cwd = project / "subdir"
+    target = _write_skill(user_cwd / "shared" / "review" / "SKILL.md")
+    root = tmp_path / "skills"
+    root.mkdir()
+    (root / "review").symlink_to(target.parent, target_is_directory=True)
+    (tmp_path / "config.toml").write_text(
+        '[skills]\nextra_allowed_dirs = ["shared"]\n', encoding="utf-8"
+    )
+    monkeypatch.setattr(trust, "load_trusted_skill_dirs", list)
+    middleware = PluginSkillsMiddleware(
+        backend=FilesystemBackend(virtual_mode=False),
+        sources=[(str(root), "User")],
+        path_base=user_cwd if configured_base else project,
+    )
+    if configured_base:
+        result = await _pin(middleware, _state(target), mode)
+        assert result is not None
+        assert result["messages"]
+    else:
+        with pytest.raises(ValueError, match="outside all allowed"):
+            await _pin(middleware, _state(target), mode)
+
+
+async def test_pinning_checks_every_requested_name(
+    tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Duplicates pin once, and a name other than the selection is trust-checked.
+
+    Several names reach `before_model` only when a tool pins mid-turn, after
+    `before_agent` has run, so the model hook is called directly.
+    """
+    root = tmp_path / "skills"
+    path = _write_skill(root / "review" / "SKILL.md")
+    _write_skill(root / "lint" / "SKILL.md", "Lint instructions", name="lint")
+    outside = _write_skill(tmp_path / "outside" / "evil" / "SKILL.md", name="evil")
+    (root / "evil").symlink_to(outside.parent, target_is_directory=True)
+    monkeypatch.setattr(trust, "load_trusted_skill_dirs", list)
+    middleware = PluginSkillsMiddleware(
+        backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
+    )
+    state = _state(path)
+    metadata = middleware.before_agent(state, Runtime(), {})
+    assert metadata is not None
+    state["skills_metadata"] = metadata["skills_metadata"]
+
+    async def pin(names: list[str]) -> dict[str, object] | None:
+        state["pinned_skills"] = names
+        if mode == "async":
+            return await middleware.abefore_model(state, Runtime())
+        return middleware.before_model(state, Runtime())
+
+    result = await pin(["review", "review", "lint"])
+    assert result is not None
+    messages = result["messages"]
+    assert isinstance(messages, list)
+    assert all(isinstance(m, HumanMessage) for m in messages)
+    names = [
+        cast("HumanMessage", m).additional_kwargs["skill"]["name"] for m in messages
+    ]
+    assert names == ["review", "lint"]
+    with pytest.raises(ValueError, match="outside all allowed"):
+        await pin(["review", "evil"])

@@ -1504,6 +1504,45 @@ class TestMaxTurns:
         ]
         agent.astream.assert_not_called()
 
+    async def test_suppressed_prompt_does_not_pin_skill(
+        self,
+        lifecycle_runtime: MagicMock,
+    ) -> None:
+        """A hook that drops the prompt also drops the skill it requested."""
+        runtime = lifecycle_runtime
+        runtime.configured_events.return_value = frozenset(
+            {HookEvent.SESSION_START, HookEvent.USER_PROMPT_SUBMIT}
+        )
+        runtime.invoke = AsyncMock(
+            side_effect=[
+                SessionStartDecision(event=HookEvent.SESSION_START),
+                UserPromptSubmitDecision(
+                    event=HookEvent.USER_PROMPT_SUBMIT,
+                    context=["Replacement context"],
+                    suppress_original_prompt=True,
+                ),
+            ]
+        )
+        agent = _headless_agent()
+        agent.astream = MagicMock(return_value=_async_iter([]))
+
+        await _run_agent_loop(
+            agent,
+            "I'm invoking the skill `code-review`.",
+            {"configurable": {"thread_id": "t1"}},
+            Console(quiet=True),
+            MagicMock(),
+            quiet=True,
+            hooks=_manager(runtime),
+            skill_name="code-review",
+        )
+
+        stream_input = agent.astream.call_args.args[0]
+        assert "pinned_skills" not in stream_input
+        assert stream_input["messages"] == [
+            {"role": "system", "content": "Replacement context"}
+        ]
+
     async def test_compact_session_start_uses_active_model_before_continuation(
         self,
         lifecycle_runtime: MagicMock,

@@ -18127,6 +18127,8 @@ class DeepAgentsApp(App):
         asked once to allow the resolved target directory. Allowing persists the
         decision, extends the in-session containment allowlist, and retries the
         read. Denying (or a prior deny this session) shows the original error.
+        A decision that cannot be persisted fails, because the agent server
+        reads trust only from the persisted store.
 
         Args:
             skill_name: Normalized skill name, for messaging.
@@ -18186,18 +18188,17 @@ class DeepAgentsApp(App):
             return None
 
         if not await asyncio.to_thread(trust_skill_dir, target_dir):
-            # The modal told the user this location would be remembered for
-            # future sessions. Persisting failed (read-only/full `.state`), so
-            # surface that: we honor the approval this session, but they will be
-            # asked again next launch. Logging alone would silently break that
-            # promise.
+            # The agent server rechecks trust from the persisted store before
+            # pinning the skill, so an approval that exists only in this
+            # process cannot load it. Fail closed instead of sending a turn
+            # the server will reject.
             logger.warning("Could not persist skill trust for %s", target_dir)
-            self.notify(
-                "Approved for this session, but the decision could not be "
-                "saved — you may be asked again next time.",
-                severity="warning",
-                markup=False,
+            await mount_error(
+                f"Could not save trust for {target_dir}, so skill "
+                f"'{skill_name}' cannot run. Check that the state directory is "
+                "writable, or add the directory to [skills].extra_allowed_dirs.",
             )
+            return None
 
         target_path = Path(target_dir)
         for roots in (allowed_roots, self._skill_allowed_roots):

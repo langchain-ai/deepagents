@@ -322,8 +322,8 @@ class TestPromptSkillTrustAndRetry:
         assert any("could not read" in t.lower() for t in _app_message_texts(app))
         app._send_to_agent.assert_not_awaited()
 
-    async def test_persist_failure_still_allows_but_notifies(self) -> None:
-        """When the trust store can't be written, we read this session and warn."""
+    async def test_persist_failure_refuses_invocation(self) -> None:
+        """An unsaved approval fails because the server reads only saved trust."""
         app = self._cache_hit_app()
         app._push_screen_wait = AsyncMock(return_value=True)
         with (
@@ -335,9 +335,9 @@ class TestPromptSkillTrustAndRetry:
         ):
             await app._handle_skill_command("/skill:test-skill")
 
-        app.notify.assert_called_once()
-        assert app.notify.call_args.kwargs.get("severity") == "warning"
-        app._send_to_agent.assert_awaited_once()
+        assert any("could not save trust" in t.lower() for t in _app_message_texts(app))
+        assert Path(self._target_dir()) not in app._skill_allowed_roots
+        app._send_to_agent.assert_not_awaited()
 
     async def test_retry_os_error_shows_generic_read_failure(self) -> None:
         """A transient FS error on the post-approval retry surfaces distinctly."""

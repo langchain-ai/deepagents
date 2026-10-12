@@ -17519,12 +17519,17 @@ class DeepAgentsApp(App):
                 question: str,
                 on_text: Callable[[str], Awaitable[None]] | None = None,
             ) -> str:
+                from deepagents_code.hooks.models.domain import HookEvent
+
                 config = {"configurable": {"thread_id": thread_id}}
                 text = await remote.abtw(
                     question,
                     config=config,
                     history=tuple(history),
                     on_text=on_text,
+                    # Side tools run outside the hook gate, so a `PreToolUse`
+                    # policy could not deny their file reads.
+                    read_tools=not self._hooks.has_handlers(HookEvent.PRE_TOOL_USE),
                 )
                 cost = remote.get_cached_session_cost(config)
                 if cost is not None and thread_id == self._lc_thread_id:

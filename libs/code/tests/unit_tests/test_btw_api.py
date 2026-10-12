@@ -96,8 +96,10 @@ async def test_side_request_cleans_up_generation_and_disconnect_listener(
         *,
         history: object = (),
         on_text: Callable[[str], Awaitable[None]] | None = None,
+        read_tools: bool = True,
     ) -> str:
         assert not history
+        assert not read_tools
         if on_text is not None:
             await on_text("side ")
         started.set()

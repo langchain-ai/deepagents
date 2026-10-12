@@ -522,6 +522,7 @@ class RemoteAgent:
         config: Mapping[str, Any],
         history: Sequence[tuple[str, str]] = (),
         on_text: Callable[[str], Awaitable[None]] | None = None,
+        read_tools: bool = False,
     ) -> str:
         """Ask without submitting a run or writing conversation state.
 
@@ -530,6 +531,9 @@ class RemoteAgent:
             config: Configuration identifying the main conversation.
             history: Completed question/answer pairs from this side conversation.
             on_text: Optional receiver for streamed answer text.
+            read_tools: Let the server run read-only file tools. Side questions
+                cannot run `PreToolUse` hooks, so leave this off when any are
+                configured.
 
         Returns:
             The ephemeral answer.
@@ -543,7 +547,11 @@ class RemoteAgent:
         thread_id = _require_thread_id(config)
         workspace = await self._workspace_for_thread(config)
         await self.aensure_thread(dict(config))
-        payload: dict[str, object] = {"question": question, "workspace": workspace}
+        payload: dict[str, object] = {
+            "question": question,
+            "workspace": workspace,
+            "read_tools": read_tools,
+        }
         if history:
             payload["history"] = list(history)
         try:

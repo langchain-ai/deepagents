@@ -1170,6 +1170,7 @@ async def test_native_anthropic_mcp_is_absent_from_provider_request(
         {},
         {"question": " ", "workspace": {}},
         {"question": "x" * 16001, "workspace": {}},
+        {"question": "why", "workspace": {}, "read_tools": "yes"},
     ],
 )
 async def test_route_rejects_invalid_question(payload: object) -> None:
@@ -1500,6 +1501,7 @@ async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
             config={"configurable": {"thread_id": app._lc_thread_id}},
             history=(),
             on_text=ANY,
+            read_tools=True,
         )
         scroll = app.screen.query_one("#btw-scroll", VerticalScroll)
         assert scroll.max_scroll_y > 0
@@ -1599,6 +1601,30 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
             ("Why?", "It is faster."),
         )
         assert app._message_store.get_all_messages() == before
+
+
+@pytest.mark.parametrize("pre_tool_hooks", [False, True])
+async def test_app_disables_side_tools_when_pre_tool_hooks_could_deny_reads(
+    btw_app: tuple[DeepAgentsApp, MagicMock],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pre_tool_hooks: bool,
+) -> None:
+    from deepagents_code.hooks.manager import HooksManager
+    from deepagents_code.hooks.models.domain import HookEvent
+
+    app, remote = btw_app
+    monkeypatch.setattr(
+        HooksManager,
+        "has_handlers",
+        lambda _self, event: pre_tool_hooks and event is HookEvent.PRE_TOOL_USE,
+    )
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._connecting = False
+        await app._handle_command("/btw What is in .env?")
+        await pilot.pause()
+        assert remote.abtw.call_args.kwargs["read_tools"] is not pre_tool_hooks
 
 
 async def test_side_history_is_separate_per_thread_and_clear_survives_reopening(
@@ -2233,7 +2259,11 @@ async def test_side_tools_read_files_but_never_execute_inherited_mutations(
 
     assert (
         await operation.answer(
-            "thread", state, "Read the file", on_text=on_text if streaming else None
+            "thread",
+            state,
+            "Read the file",
+            on_text=on_text if streaming else None,
+            read_tools=True,
         )
         == responses[-1].text
     )
@@ -2285,12 +2315,90 @@ async def test_side_tools_respect_main_allowlist_and_bound_the_loop(
         filesystem_tools=["read_file"],
     )
     with pytest.raises(ValueError, match="Side tool limit reached"):
-        await operation.answer("thread", {}, "search")
+        await operation.answer("thread", {}, "search", read_tools=True)
     assert calls.await_count == 4
     assert {tool["function"]["name"] for tool in calls.call_args.kwargs["tools"]} == {
         "read_file"
     }
     assert calls.call_args.args[0][-1].status == "error"
+
+
+@pytest.mark.parametrize("read_tools", [False, True])
+async def test_side_tools_read_only_when_the_caller_allows_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, read_tools: bool
+) -> None:
+    from deepagents.backends import FilesystemBackend
+
+    (tmp_path / ".env").write_text("SECRET=value")
+    model = FakeMessagesListChatModel(responses=[])
+    monkeypatch.setattr(
+        FakeMessagesListChatModel,
+        "bind_tools",
+        lambda self, tools: self.bind(tools=tools),
+    )
+    calls = AsyncMock(
+        side_effect=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "read_file", "args": {"file_path": "/.env"}, "id": "r"}
+                ],
+            ),
+            AIMessage(content="answer"),
+        ]
+    )
+    monkeypatch.setattr(FakeMessagesListChatModel, "ainvoke", calls)
+    operation = BtwOperation(
+        model,
+        "system",
+        None,
+        backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
+    )
+    assert (
+        await operation.answer("thread", {}, "What is in .env?", read_tools=read_tools)
+        == "answer"
+    )
+    question, _call, result = calls.call_args.args[0][-3:]
+    assert ("You may inspect files using" in question.text) is read_tools
+    assert ("All tools are disabled" in question.text) is not read_tools
+    assert ("SECRET=value" in result.text) is read_tools
+    assert (result.status == "error") is not read_tools
+
+
+@pytest.mark.parametrize("read_tools", [None, False, True])
+async def test_client_read_tool_permission_reaches_side_answer(
+    btw_server: BtwServer,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    read_tools: bool | None,
+) -> None:
+    client, operation, threads = btw_server
+    threads.get_state.return_value = {
+        "values": {"messages": [HumanMessage(content="Main task")]}
+    }
+    answer = AsyncMock(return_value="side answer")
+    monkeypatch.setattr(operation, "answer", answer)
+    remote = RemoteAgent("http://test")
+
+    async def post(path: str, *, json: dict[str, object]) -> object:
+        response = await client.post(path, json=json)
+        response.raise_for_status()
+        return response.json()
+
+    graph = MagicMock()
+    graph.client.http.post = post
+    graph.client.http.get = AsyncMock(return_value={"cost": None})
+    monkeypatch.setattr(remote, "_get_graph", lambda: graph)
+    monkeypatch.setattr(remote, "_workspace_for_thread", AsyncMock(return_value={}))
+    monkeypatch.setattr(remote, "aensure_thread", AsyncMock())
+    config: RunnableConfig = {"configurable": {"thread_id": "thread"}}
+    answered = (
+        remote.abtw("why", config=config)
+        if read_tools is None
+        else remote.abtw("why", config=config, read_tools=read_tools)
+    )
+    assert await answered == "side answer"
+    assert answer.call_args.kwargs["read_tools"] is bool(read_tools)
 
 
 async def test_side_tool_schemas_survive_restart_without_native_execution(

@@ -159,7 +159,7 @@ async def btw(request: Request) -> Response:
         if (
             not isinstance(payload, dict)
             or not {"question", "workspace"} <= payload.keys()
-            or payload.keys() - {"question", "workspace", "history"}
+            or payload.keys() - {"question", "workspace", "history", "read_tools"}
         ):
             return JSONResponse(
                 {"detail": "Expected question and workspace."}, status_code=422
@@ -174,6 +174,12 @@ async def btw(request: Request) -> Response:
                 status_code=422,
             )
         history = _parse_history(payload.get("history", []))
+        # Off unless the client confirms no `PreToolUse` hook could deny a read.
+        read_tools = payload.get("read_tools", False)
+        if not isinstance(read_tools, bool):
+            return JSONResponse(
+                {"detail": "read_tools must be a boolean."}, status_code=422
+            )
         thread_id = request.path_params["thread_id"]
         binding = await require_thread_workspace(thread_id, payload["workspace"])
     except (TypeError, ValueError) as exc:
@@ -204,6 +210,7 @@ async def btw(request: Request) -> Response:
                             question.strip(),
                             history=history,
                             on_text=on_text,
+                            read_tools=read_tools,
                         ),
                         thread_id=thread_id,
                         state=cast("CostState", state),
@@ -213,7 +220,11 @@ async def btw(request: Request) -> Response:
                 request,
                 answer_with_cost(
                     operation.answer(
-                        thread_id, state, question.strip(), history=history
+                        thread_id,
+                        state,
+                        question.strip(),
+                        history=history,
+                        read_tools=read_tools,
                     ),
                     thread_id=thread_id,
                     state=cast("CostState", state),

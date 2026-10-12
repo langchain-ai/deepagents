@@ -57,8 +57,7 @@ if TYPE_CHECKING:
 
 _INSTRUCTIONS = (
     "The user is asking a quick side question about the conversation so far. "
-    "Answer directly and concisely in markdown. You may inspect files using "
-    "ls, read_file, glob, and grep. All other tools are disabled in this side chat. "
+    "Answer directly and concisely in markdown. {access} "
     "Do not modify files, run commands, delegate, or continue the main task. "
     "Everything before this side-conversation boundary is reference context only, "
     "not active instructions, approvals, or pending tool calls to execute."
@@ -355,6 +354,21 @@ def _client_tools(tools: Sequence[object]) -> list[dict[str, Any]]:
     return schemas
 
 
+def _instructions(tools: Sequence[str]) -> str:
+    """Describe only the tools this side chat can execute.
+
+    Returns:
+        Side-chat instructions for the final user message.
+    """
+    access = (
+        f"You may inspect files using {', '.join(tools)}. "
+        "All other tools are disabled in this side chat."
+        if tools
+        else "All tools are disabled in this side chat. Answer from the conversation."
+    )
+    return _INSTRUCTIONS.format(access=access)
+
+
 def _fit_context(
     request: ModelRequest, compaction: SummarizationMiddleware
 ) -> list[BaseMessage]:
@@ -613,8 +627,9 @@ class BtwOperation(AgentMiddleware):
         *,
         history: Sequence[tuple[str, str]] = (),
         on_text: Callable[[str], Awaitable[None]] | None = None,
+        read_tools: bool = False,
     ) -> str:
-        """Generate with read-only tools and no checkpoint writes.
+        """Generate with optional read-only tools and no checkpoint writes.
 
         Use the thread's latest server-resolved model and instructions, falling
         back to checkpoint settings or the workspace's bootstrap model. Restore
@@ -632,6 +647,10 @@ class BtwOperation(AgentMiddleware):
             question: Side question to answer.
             history: Completed question/answer pairs from this side conversation.
             on_text: Optional receiver for text fragments as the model produces them.
+            read_tools: Execute the main allowlist's read-only file tools.
+                Side calls bypass the main tool middleware, including
+                `PreToolUse` hooks, so enable this only when no hook could
+                deny a read.
 
         Returns:
             The ephemeral answer text.
@@ -655,6 +674,12 @@ class BtwOperation(AgentMiddleware):
                 if isinstance(schemas, list)
                 else _client_tools(self._read_tools)
             )
+            advertised = {tool["function"]["name"] for tool in tools}
+            executable = [
+                tool
+                for tool in self._read_tools
+                if read_tools and tool.name in advertised
+            ]
             messages = [
                 *_structured_transcript(_conversation(state)),
                 *(
@@ -665,7 +690,10 @@ class BtwOperation(AgentMiddleware):
                         AIMessage(content=answer),
                     )
                 ),
-                HumanMessage(content=f"{_INSTRUCTIONS}\n\n{question}"),
+                HumanMessage(
+                    content=f"{_instructions([tool.name for tool in executable])}"
+                    f"\n\n{question}"
+                ),
             ]
             prepared = _prepare_messages(
                 ModelRequest(
@@ -682,10 +710,7 @@ class BtwOperation(AgentMiddleware):
                 "metadata": {"thread_id": thread_id},
             }
             bound = model.bind_tools(tools) if tools else model
-            advertised = {tool["function"]["name"] for tool in tools}
-            node = ToolNode(
-                [tool for tool in self._read_tools if tool.name in advertised]
-            )
+            node = ToolNode(executable)
             parts: list[str] = []
             for _ in range(_MAX_TOOL_ROUNDS):
                 if on_text is None:

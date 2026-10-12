@@ -63,6 +63,22 @@ class TestPrepareConfig:
 
 
 class TestConvertMessageData:
+    @pytest.mark.parametrize(
+        "metadata",
+        [{}, {"chunk_position": None}, {"chunk_position": "last"}],
+        ids=["missing", "nonterminal", "terminal"],
+    )
+    def test_ai_message_preserves_chunk_position(
+        self, metadata: dict[str, str | None]
+    ) -> None:
+        """Remote chunks retain their explicit message-completion boundary."""
+        msg = _convert_message_data(
+            {"type": "AIMessageChunk", "content": "hello", "id": "m1", **metadata}
+        )
+        assert isinstance(msg, AIMessageChunk)
+        assert msg.chunk_position == metadata.get("chunk_position")
+        assert msg.content == "hello"
+
     def test_ai_message_with_tool_call_chunks(self) -> None:
         msg = _convert_message_data(
             {

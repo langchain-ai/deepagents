@@ -285,6 +285,30 @@ class TestQuietArg:
     """Tests for -q/--quiet argument parsing."""
 
 
+class TestNoTracingArg:
+    @pytest.mark.parametrize("extra", [[], ["--no-tracing"]])
+    def test_flag(self, monkeypatch: pytest.MonkeyPatch, extra: list[str]) -> None:
+        monkeypatch.setattr(sys, "argv", ["dcode", *extra])
+        assert parse_args().no_tracing is bool(extra)
+
+    def test_cli_disables_tracing_before_config_bootstrap(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from deepagents_code import config, main
+
+        monkeypatch.setattr(sys, "argv", ["dcode", "--no-tracing", "config"])
+        monkeypatch.setattr(config, "_bootstrap_state", config._BootstrapState())
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_TRACING_V2", "true")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "private-key")
+        with pytest.raises(SystemExit) as exc:
+            main.cli_main()
+        assert exc.value.code == 0
+        output = capsys.readouterr().out
+        assert "LangSmith agent tracing: OFF" in output
+        assert "private-key" not in output
+
+
 class TestNoMcpArg:
     """Tests for --no-mcp argument parsing."""
 

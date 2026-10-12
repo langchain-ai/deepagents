@@ -1830,11 +1830,12 @@ class TestUpdateInstallLock:
         lock, and every later attempt in the session reports a phantom
         concurrent install. Without the log that is undiagnosable.
         """
+        # A real lock would also call the failing release from its destructor,
+        # leaking the lock and emitting an unraisable-exception warning.
+        lock = MagicMock()
+        lock.release.side_effect = OSError("unlock failed")
         with (
-            patch(
-                "filelock.FileLock.release",
-                side_effect=OSError("unlock failed"),
-            ),
+            patch("filelock.FileLock", return_value=lock),
             caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
             update_install_lock() as holding,
         ):

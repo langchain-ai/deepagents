@@ -209,6 +209,27 @@ def _decode_metadata(
     return {str(key): item for key, item in decoded.items()}
 
 
+def _thread_name(
+    conn: sqlite3.Connection, thread_id: str, metadata: dict[str, object]
+) -> str | None:
+    """Prefer the durable name over potentially stale checkpoint metadata.
+
+    Returns:
+        Saved name, latest checkpoint name, or `None` for an unnamed thread.
+    """
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        ("dcode_thread_names",),
+    ).fetchone():
+        row = conn.execute(
+            "SELECT name FROM dcode_thread_names WHERE thread_id = ?", (thread_id,)
+        ).fetchone()
+        if row:
+            return str(row[0])
+    name = metadata.get("thread_name")
+    return name if isinstance(name, str) else None
+
+
 def _thread_summary(
     conn: sqlite3.Connection,
     thread_id: str,
@@ -236,6 +257,7 @@ def _thread_summary(
     ).fetchone()[0]
     summary: dict[str, object] = {
         "thread_id": thread_id,
+        "thread_name": _thread_name(conn, thread_id, metadata),
         "agent_name": metadata.get("agent_name"),
         "created_at": aggregate["created_at"],
         "updated_at": aggregate["updated_at"],

@@ -30,6 +30,7 @@ permissions:
 concurrency:
   group: release-notes-check-${{ github.event.pull_request.number || github.event.issue.number || inputs.pr_number }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   curated-release-notes:

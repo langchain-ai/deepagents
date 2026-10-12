@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2ebd3afd7848e4fc5a5e9051dd3a48ec8f681d5df252fe75eb75efbc0d9e5282",
+  "pageVersion": "sha256:5059a3adfff82c53512196dacabc9b50043586a536bd59d56fa576c543adf62f",
   "claims": [
     {
       "id": "claim_66c8cdf2e322499f9163f44abcb9af36",
@@ -189,10 +189,24 @@
           "version": "repo-lines-v1:sha256:610f3a8419dbe4925275a42046a6665239c31adac5e8ddf20c96f7a67eb54f30:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNiZDQ5ZDQ3Nzc0ZTQwYWM4NThiYmU4N2UxNjk3OGNkYjIyN2NmMDA0NzM3YWMzZGVkZTQ2MzM3ZmNjZjhlYzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJmZGFmYzA4YzlhZWRhZTYzMzkzMzAwNTRjYTQ5ODM2MTEwZTVjZmVkZmVkYzc4ZDJkZmMyNjNmYjBiZWY2YzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI5OWUzNmRmZThlOTUwYzBhODUxYTVmZGVmZjAzODJmMGY5MzYyZGMwNTMyY2M0ZWJlZTIyMTQxYzNiYTk3OGIifQ"
         }
       ]
+    },
+    {
+      "id": "claim_bfa55717c5a64265a5620ed3dc1da2fa",
+      "statement": "The GitHub action is a CLI adapter rather than the programmatic graph-construction API: it invokes `dcode`, whereas `create_deep_agent` accepts application construction options and returns a compiled state graph.",
+      "evidence": [
+        {
+          "resource": "repo://action.yml#L302-L305",
+          "version": "repo-lines-v1:sha256:a3f62c6e8fb57842c766d37b69d58d3c80e24441a5dfa7d3115b172c22329b43:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzUxMzI0OTQ0ODcyY2I1NTRlMzkyNWQ5MWZmZTNiNzkwNGViMzhmNmI3MjJmZmU5NjJmZjZmZTk0NjJkYTdlZiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWJjZDdmZTkxOTc5MGQ5YjdkMTkxYTUyMTFjNDFmY2M3ODc3MjYwNmU0YzA4Mzg3NmExNjQ5MzIyM2U1YjVhNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjBmMzRlODY4OTZmMDYyY2FhNjYyY2U2MDA1ZjY0ZGUyYmJhZGFlYmI4OWExNmJkMWZlYTAxZDc4MjlmYmRkYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTI1YTcwYzVjZGYwYjAwYTkxN2E4MjY5N2JlMDgwYzQ1NzVlYTg1ZTMwOGI1MzU0ODdmOTJmNzc4ODlhNGU4ZSJ9"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L277-L297",
+          "version": "repo-lines-v1:sha256:5718e37b6d2ffd360857192886ac185407b24a475e95f554a848ff2ae366c8e4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmOWZhMDZhOWI2ZGViYmQ4NzFiNjllMzI3ZjNhNjE4OTg3N2Q2YTg1OGI5OThjZTBkOWU3MDU1NTFiMDJkMjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjNWE4MjViOGYyY2YxYzNhYzc1OWYwNmUzMDVkMWQzYTExN2FhNzFmOWZhNTZkMmMyNzNhNWFiNjdhMWQ2ZDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM4YWU2MGEwOWE3ODRiNDdlYTA4NTMxNmJmZjkyYzY4MDExZGQ2NzBkODlmMjhkYWY1ZGE5YmI2YWU0MWJjNDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZkZDhkNjZjMGFmZDQyZWU3YjlkZWI0OWYwZTgwZWFmNmFmZDgxNjE3MzU3MTQ4Njg0NWExNThlNzNjYWNkNTYifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-18T16:46:37.183Z"
+    "at": "2026-10-08T08:07:53.482Z"
   }
 }

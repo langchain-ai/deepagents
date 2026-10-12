@@ -6,6 +6,7 @@ import hashlib
 import logging
 import math
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
@@ -32,6 +33,11 @@ class CacheActivity(TypedDict):
     model_spec: str
     endpoint: str
     params: dict[str, object] | None
+
+
+cache_request: ContextVar[CacheActivity | None] = ContextVar(
+    "cache_request", default=None
+)
 
 
 def parse_cache_activity(value: object) -> CacheActivity | None:

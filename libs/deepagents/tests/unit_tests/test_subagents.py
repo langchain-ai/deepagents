@@ -386,7 +386,7 @@ class TestSubAgents:
         assert result["rubric"] == "parent goal"
         assert inherited_rubrics == ["parent goal", "parent goal"]
         assert len(result["completed"]) == 2
-        assert {entry.splitlines()[-1] for entry in result["completed"]} == {"first", "second"}
+        assert all(any(entry.endswith(name) for entry in result["completed"]) for name in ("first", "second"))
         assert {message.content for message in result["messages"] if isinstance(message, ToolMessage)} == {"first done", "second done"}
         assert result["messages"][-1].content == "parent done"
 

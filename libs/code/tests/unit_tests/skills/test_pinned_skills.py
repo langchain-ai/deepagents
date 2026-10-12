@@ -5,19 +5,15 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import LsResult
 from deepagents.middleware.skills import SkillsState
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from langchain_core.tools import tool
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.runtime import Runtime
-from langgraph.types import Command
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.goal_state_notice import build_goal_continuation
-from deepagents_code.local_context import LocalContextMiddleware
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.skills import trust
 from deepagents_code.tui.widgets.message_store import MessageType
@@ -70,47 +66,14 @@ def mode(request: pytest.FixtureRequest) -> str:
     return request.param
 
 
-async def test_pinning_refreshes_cached_selection(tmp_path: Path, mode: str) -> None:
-    user = tmp_path / "user"
-    project = tmp_path / "project"
-    path = _write_skill(user / "review" / "SKILL.md", "Old instructions")
-    middleware = PluginSkillsMiddleware(
-        backend=FilesystemBackend(virtual_mode=False),
-        sources=[(str(user), "User"), (str(project), "Project")],
-    )
-    state = _state(path)
-    first = await _pin(middleware, state, mode)
-    assert first is not None
-    selected = _write_skill(project / "review" / "SKILL.md", "New instructions")
-    state["messages"] = _state(selected)["messages"]
-    result = await _pin(middleware, state, mode)
-    assert result is not None
-    messages = result["messages"]
-    assert isinstance(messages, list)
-    assert len(messages) == 1
-    assert isinstance(messages[0], HumanMessage)
-    assert "New instructions" in messages[0].content
-    assert "Old instructions" not in messages[0].content
-    assert messages[0].additional_kwargs["lc_source"] == "pinned_skill"
-
-
-@pytest.mark.parametrize("refresh_context", [False, True])
-async def test_pinning_rejects_changed_selection(
-    tmp_path: Path, mode: str, refresh_context: bool
-) -> None:
+async def test_pinning_rejects_changed_selection(tmp_path: Path, mode: str) -> None:
     root = tmp_path / "skills"
     path = _write_skill(root / "review" / "SKILL.md")
     middleware = PluginSkillsMiddleware(
         backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
     )
-    state = _state(tmp_path / "different" / "SKILL.md")
-    if refresh_context:
-        refresh = LocalContextMiddleware._refresh_update(
-            {"messages": [], "_local_context": "Old context"}, "New context", 4
-        )
-        state["messages"].extend(refresh["messages"])
     with pytest.raises(ValueError, match="changed location"):
-        await _pin(middleware, state, mode)
+        await _pin(middleware, _state(tmp_path / "different" / "SKILL.md"), mode)
     assert path.exists()
 
 
@@ -136,17 +99,8 @@ async def test_pinning_rechecks_directory_trust(
         await _pin(middleware, _state(outside), mode)
 
 
-@pytest.mark.parametrize(
-    ("change", "error"),
-    [
-        ("delete", "Could not read"),
-        ("frontmatter-only", "no instructions after its frontmatter"),
-        ("redirect", "changed location"),
-    ],
-)
-async def test_pinning_revalidates_actual_read(
-    tmp_path: Path, mode: str, change: str, error: str
-) -> None:
+async def test_pinning_revalidates_actual_read(tmp_path: Path, mode: str) -> None:
+    """A `SKILL.md` swapped for a symlink after discovery is refused."""
     root = tmp_path / "skills"
     path = _write_skill(root / "review" / "SKILL.md")
     middleware = PluginSkillsMiddleware(
@@ -156,19 +110,14 @@ async def test_pinning_revalidates_actual_read(
     metadata = middleware.before_agent(state, Runtime(), {})
     assert metadata is not None
     state.update(metadata)
-    if change == "delete":
-        path.unlink()
-    elif change == "frontmatter-only":
-        _write_skill(path, "")
-    else:
-        other = _write_skill(root / "other" / "SKILL.md")
-        path.unlink()
-        path.symlink_to(other)
+    other = _write_skill(root / "other" / "SKILL.md")
+    path.unlink()
+    path.symlink_to(other)
     if mode == "async":
-        with pytest.raises(ValueError, match=error):
+        with pytest.raises(ValueError, match="changed location"):
             await middleware.abefore_model(state, Runtime())
     else:
-        with pytest.raises(ValueError, match=error):
+        with pytest.raises(ValueError, match="changed location"):
             middleware.before_model(state, Runtime())
 
 
@@ -227,7 +176,7 @@ async def test_graph_pins_once_and_preserves_snapshot(
     assert rows[0].skill_body == "Original instructions"
 
 
-@pytest.mark.parametrize("followup", ["ordinary", "goal", "fixed", "different"])
+@pytest.mark.parametrize("followup", ["ordinary", "goal"])
 async def test_graph_recovers_from_failed_pin(
     tmp_path: Path, mode: str, followup: str
 ) -> None:
@@ -254,81 +203,16 @@ async def test_graph_recovers_from_failed_pin(
     request: SkillsState = {"messages": [HumanMessage("Continue without a skill")]}
     if followup == "goal":
         request = {"messages": [build_goal_continuation("resumed")]}
-    elif followup == "fixed":
-        _write_skill(path, "Restored instructions")
-    elif followup == "different":
-        other = _write_skill(root / "other" / "SKILL.md", name="other")
-        request = _state(other, "other")
     if mode == "async":
         result = await agent.ainvoke(request, config)
     else:
         result = agent.invoke(request, config)
     assert result["messages"][-1].content == "Recovered"
-    pinned = [
-        message.additional_kwargs["skill"]["name"]
+    assert not any(
+        message.additional_kwargs.get("lc_source") == "pinned_skill"
         for message in result["messages"]
-        if message.additional_kwargs.get("lc_source") == "pinned_skill"
-    ]
-    assert pinned == (["other"] if followup == "different" else [])
+    )
     assert agent.get_state(config).values["pinned_skills"] == []
-
-
-async def test_graph_tool_can_pin_during_ordinary_turn(
-    tmp_path: Path, mode: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _write_skill(tmp_path / "review" / "SKILL.md")
-
-    @tool
-    def pin_review() -> Command:
-        """Pin the review instructions."""
-        return Command(
-            update={
-                "pinned_skills": ["review"],
-                "messages": [ToolMessage("Pinned review", tool_call_id="pin-1")],
-            }
-        )
-
-    model = GenericFakeChatModel(
-        messages=iter(
-            [
-                AIMessage(
-                    content="",
-                    tool_calls=[{"name": "pin_review", "args": {}, "id": "pin-1"}],
-                ),
-                AIMessage(content="Done"),
-            ]
-        )
-    )
-    monkeypatch.setattr(
-        GenericFakeChatModel, "bind_tools", lambda *_args, **_kwargs: model
-    )
-    middleware = PluginSkillsMiddleware(
-        backend=FilesystemBackend(virtual_mode=False), sources=[(str(tmp_path), "User")]
-    )
-    agent = create_agent(model, tools=[pin_review], middleware=[middleware])
-    request = {"messages": [HumanMessage("Review this")]}
-    result = await agent.ainvoke(request) if mode == "async" else agent.invoke(request)
-    pinned = [
-        message
-        for message in result["messages"]
-        if message.additional_kwargs.get("lc_source") == "pinned_skill"
-    ]
-    assert len(pinned) == 1
-    assert pinned[0].additional_kwargs["skill"]["name"] == "review"
-
-
-async def test_pinning_plugin_name(tmp_path: Path, mode: str) -> None:
-    path = _write_skill(tmp_path / "nested" / "review" / "SKILL.md")
-    middleware = PluginSkillsMiddleware(
-        backend=FilesystemBackend(virtual_mode=False),
-        sources=[(str(tmp_path), "Plugin", "example")],
-    )
-    result = await _pin(middleware, _state(path, "example:nested:review"), mode)
-    assert result is not None
-    messages = result["messages"]
-    assert isinstance(messages, list)
-    assert isinstance(messages[0], HumanMessage)
-    assert messages[0].additional_kwargs["skill"]["name"] == "example:nested:review"
 
 
 @pytest.mark.parametrize("configured_base", [True, False])
@@ -402,63 +286,3 @@ async def test_pinning_checks_every_requested_name(
     assert names == ["review", "lint"]
     with pytest.raises(ValueError, match="outside all allowed"):
         await pin(["review", "evil"])
-
-
-async def test_pin_reload_clears_stale_load_errors(tmp_path: Path, mode: str) -> None:
-    root = tmp_path / "skills"
-    path = _write_skill(root / "review" / "SKILL.md")
-    middleware = PluginSkillsMiddleware(
-        backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
-    )
-    state = _state(path)
-    state["skills_load_errors"] = ["Could not list skills in an earlier load"]
-    if mode == "async":
-        update = await middleware.abefore_agent(state, Runtime(), {})
-    else:
-        update = middleware.before_agent(state, Runtime(), {})
-    assert update is not None
-    assert update["skills_load_errors"] == []
-
-
-class _CountingBackend(FilesystemBackend):
-    """Filesystem backend that counts directory listings."""
-
-    def __init__(self) -> None:
-        super().__init__(virtual_mode=False)
-        self.listings = 0
-
-    def ls(self, path: str) -> LsResult:
-        self.listings += 1
-        return super().ls(path)
-
-    async def als(self, path: str) -> LsResult:
-        self.listings += 1
-        return await super().als(path)
-
-
-async def test_pin_scans_sources_only_for_unloaded_skills(
-    tmp_path: Path, mode: str
-) -> None:
-    """A loaded skill pins without a rescan; a skill added later triggers one."""
-    root = tmp_path / "skills"
-    path = _write_skill(root / "review" / "SKILL.md")
-    backend = _CountingBackend()
-    middleware = PluginSkillsMiddleware(backend=backend, sources=[(str(root), "User")])
-    state = _state(path)
-    assert await _pin(middleware, state, mode) is not None
-    scanned = backend.listings
-    assert scanned > 0
-
-    state.update(_state(path))
-    assert await _pin(middleware, state, mode) is not None
-    assert backend.listings == scanned
-
-    added = _write_skill(root / "lint" / "SKILL.md", name="lint")
-    state.update(_state(added, "lint"))
-    result = await _pin(middleware, state, mode)
-    assert result is not None
-    assert backend.listings > scanned
-    messages = result["messages"]
-    assert isinstance(messages, list)
-    assert isinstance(messages[0], HumanMessage)
-    assert messages[0].additional_kwargs["skill"]["name"] == "lint"

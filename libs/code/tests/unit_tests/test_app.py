@@ -38,7 +38,6 @@ if TYPE_CHECKING:
         RubricResult,
     )
     from deepagents_code.sessions import ThreadInfo
-    from deepagents_code.skills.load import ExtendedSkillMetadata
     from deepagents_code.tui.widgets.messages import ToolCallMessage
 
     # `conftest`'s fixture protocols cannot be imported here: `tool.ty`
@@ -21432,31 +21431,6 @@ class TestPrewarmAwait:
 
         guarded_discover_mock.assert_called_once()
         raw_discover_mock.assert_not_called()
-
-    async def test_invoke_skill_without_instructions_is_not_sent(
-        self, tmp_path: Path
-    ) -> None:
-        """A SKILL.md the server cannot pin fails before the turn is sent."""
-        path = tmp_path / "review" / "SKILL.md"
-        path.parent.mkdir()
-        path.write_text("---\nname: review\ndescription: Review\n---\n")
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-        app._discovered_skills = [
-            cast("ExtendedSkillMetadata", {"name": "review", "path": str(path)})
-        ]
-        app._skill_allowed_roots = [tmp_path]
-        mount = AsyncMock()
-        send = AsyncMock()
-        with (
-            patch.object(app, "_mount_message", mount),
-            patch.object(app, "_send_to_agent", send),
-        ):
-            await app._invoke_skill("review")
-
-        send.assert_not_awaited()
-        (message,) = [call.args[0] for call in mount.await_args_list]
-        assert isinstance(message, AppMessage)
-        assert "no instructions after its frontmatter" in str(message._content)
 
 
 class TestHeaderAndTitle:

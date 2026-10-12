@@ -359,9 +359,6 @@ class LocalContextState(AgentState):
     runtimes, git, test command, files, tree, Makefile.
     """
 
-    _latest_local_context_fingerprint: NotRequired[Annotated[str, PrivateStateAttr]]
-    """Fingerprint of the latest snapshot, used to deduplicate refresh messages."""
-
     _local_context_refreshed_at_cutoff: NotRequired[Annotated[int, PrivateStateAttr]]
     """Cutoff index of the summarization event we last refreshed for.
 
@@ -440,10 +437,11 @@ class LocalContextMiddleware(AgentMiddleware):
         if not output:
             return update
         fingerprint = hashlib.sha256(output.encode()).hexdigest()
-        baseline = state.get("_latest_local_context_fingerprint")
-        if baseline is None:
-            baseline = hashlib.sha256(state.get("local_context", "").encode()).hexdigest()
-        update["_latest_local_context_fingerprint"] = fingerprint
+        baseline = hashlib.sha256(state.get("local_context", "").encode()).hexdigest()
+        for message in reversed(state.get("messages", [])[cutoff:]):
+            if message.additional_kwargs.get("lc_source") == "local_context":
+                baseline = message.additional_kwargs.get("local_context_fingerprint")
+                break
         if fingerprint != baseline:
             update["messages"] = [
                 HumanMessage(
@@ -454,7 +452,10 @@ class LocalContextMiddleware(AgentMiddleware):
                         f"<local_context_data>{html.escape(output)}</local_context_data>"
                     ),
                     id=f"local-context-{cutoff}-{fingerprint[:12]}",
-                    additional_kwargs={"lc_source": "local_context"},
+                    additional_kwargs={
+                        "lc_source": "local_context",
+                        "local_context_fingerprint": fingerprint,
+                    },
                 )
             ]
         return update

@@ -152,6 +152,10 @@ from deepagents_code.model_retry import (
     retry_status_from_event,
 )
 from deepagents_code.skills.invocation import pinned_skill_parts
+from deepagents_code.skills.load_errors import (
+    format_skills_load_errors,
+    skills_load_errors_from_event,
+)
 from deepagents_code.skills.trust import (
     SKILL_TRUST_INTERRUPT_TYPE,
     SkillTrustRequest,
@@ -2296,6 +2300,15 @@ async def execute_task_textual(
                                 logger.warning(
                                     "on_session_cost callback failed", exc_info=True
                                 )
+                        continue
+
+                    load_errors = skills_load_errors_from_event(data)
+                    if load_errors is not None:
+                        # A subagent scans the same sources, so show them once.
+                        if is_main_agent and load_errors:
+                            await adapter._mount_message(
+                                AppMessage(format_skills_load_errors(load_errors))
+                            )
                         continue
 
                     if isinstance(data, dict) and data.get("type") == "model_attempt":

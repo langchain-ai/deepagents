@@ -14,6 +14,7 @@ from deepagents.middleware import skills as sdk_skills
 from deepagents.middleware.skills import SkillsMiddleware
 from langchain.agents.middleware.types import OmitFromOutput
 from langchain_core.messages import HumanMessage
+from langgraph.config import get_stream_writer
 from langgraph.types import Overwrite, interrupt
 
 from deepagents_code.goal_state_notice import (
@@ -28,6 +29,7 @@ from deepagents_code.plugins.adapters.skills import (
 )
 from deepagents_code.skills.invocation import extra_skill_roots, pinned_skill_body
 from deepagents_code.skills.load import load_skill_content
+from deepagents_code.skills.load_errors import skills_load_errors_event
 from deepagents_code.skills.merge import merge_skill
 from deepagents_code.skills.trust import (
     SKILL_TRUST_INTERRUPT_TYPE,
@@ -183,14 +185,21 @@ def _trusted_directory(skill: sdk_skills.SkillMetadata, denied: str) -> str:
     return directory
 
 
-def _entries(ls_result: object) -> list[FileInfo]:
+def _entries(
+    ls_result: object, path: str, errors: list[str] | None = None
+) -> list[FileInfo]:
     """Normalize a backend `ls` result to a list of entry dicts.
+
+    Appends a listing error for `path` to `errors`, in the SDK's format for
+    skill source errors.
 
     Returns:
         The listing entries, or an empty list when the result is empty or an
         unexpected shape.
     """
     if isinstance(ls_result, LsResult):
+        if ls_result.error and errors is not None:
+            errors.append(sdk_skills._format_skills_source_error(path, ls_result.error))
         return list(ls_result.entries or [])
     if isinstance(ls_result, list):
         return cast("list[FileInfo]", ls_result)
@@ -227,6 +236,30 @@ def _has_skill_file(entries: list[FileInfo], root: str) -> bool:
     return False
 
 
+def _missing(path: str) -> bool:
+    """Return whether `path` does not exist, so its listing error is expected."""
+    try:
+        return not Path(path).exists()
+    except OSError:
+        # Cannot be checked, for example a parent without search permission.
+        return False
+
+
+def _report_unreadable(errors: list[str]) -> None:
+    """Stream errors for skill directories that exist but cannot be read.
+
+    The SDK shows skill load errors only to the model. The client shows these
+    to the user, because the agent silently loses the skills they hold.
+    """
+    if not errors:
+        return
+    try:
+        get_stream_writer()(skills_load_errors_event(errors))
+    except Exception:
+        # Best effort: a hook called outside a graph run has no stream.
+        logger.debug("Could not stream skill load errors", exc_info=True)
+
+
 def _skill_md_path(skill_dir: str) -> str:
     """Return the `SKILL.md` path inside a skill directory."""
     return str(PurePosixPath(to_posix_path(skill_dir)) / _SKILL_FILE)
@@ -250,6 +283,8 @@ def _namespace_skill(
 def discover_skill_dirs(
     backend: BackendProtocol,
     source_path: str,
+    *,
+    errors: list[str] | None = None,
 ) -> list[tuple[str, tuple[str, ...]]]:
     """Return `(skill_dir, subfolders)` pairs found under `source_path`.
 
@@ -257,6 +292,7 @@ def discover_skill_dirs(
     `SKILL.md` as a skill directory (a recursion leaf, like a plugin walker).
     `subfolders` holds the directory names between the source
     root and the skill directory, excluding the skill directory's own name.
+    A directory that cannot be listed adds a message to `errors`.
 
     Returns:
         Skill directories paired with their intermediate subfolder segments.
@@ -280,7 +316,7 @@ def discover_skill_dirs(
             continue
         visited.add(resolved)
         resolved_path = str(resolved)
-        entries = _entries(backend.ls(resolved_path))
+        entries = _entries(backend.ls(resolved_path), resolved_path, errors)
         if _has_skill_file(entries, resolved_path):
             found.append((resolved_path, path_segments[:-1]))
             continue
@@ -292,6 +328,8 @@ def discover_skill_dirs(
 async def adiscover_skill_dirs(
     backend: BackendProtocol,
     source_path: str,
+    *,
+    errors: list[str] | None = None,
 ) -> list[tuple[str, tuple[str, ...]]]:
     """Async counterpart of `discover_skill_dirs`.
 
@@ -313,7 +351,7 @@ async def adiscover_skill_dirs(
             continue
         visited.add(resolved)
         resolved_path = str(resolved)
-        entries = _entries(await backend.als(resolved_path))
+        entries = _entries(await backend.als(resolved_path), resolved_path, errors)
         if _has_skill_file(entries, resolved_path):
             found.append((resolved_path, path_segments[:-1]))
             continue
@@ -326,18 +364,21 @@ def load_namespaced_skills(
     backend: BackendProtocol,
     source_path: str,
     namespace: SkillNamespace,
+    *,
+    errors: list[str] | None = None,
 ) -> list[sdk_skills.SkillMetadata]:
     """Load and namespace every skill found under a plugin source.
 
     Reads each discovered skill directory's `SKILL.md` directly, since the SDK
     loader only scans one level below a source and would not read a leaf
     directory's own `SKILL.md`. Nested directories become `:`-joined namespace
-    segments (e.g. `plugin:foo:bar:review`).
+    segments (e.g. `plugin:foo:bar:review`). A directory that cannot be listed
+    adds a message to `errors`.
 
     Returns:
         Namespace-qualified skill metadata for the source.
     """
-    skill_dirs = discover_skill_dirs(backend, source_path)
+    skill_dirs = discover_skill_dirs(backend, source_path, errors=errors)
     if not skill_dirs:
         return []
     paths = [_skill_md_path(skill_dir) for skill_dir, _ in skill_dirs]
@@ -356,13 +397,15 @@ async def aload_namespaced_skills(
     backend: BackendProtocol,
     source_path: str,
     namespace: SkillNamespace,
+    *,
+    errors: list[str] | None = None,
 ) -> list[sdk_skills.SkillMetadata]:
     """Async counterpart of `load_namespaced_skills`.
 
     Returns:
         Namespace-qualified skill metadata for the source.
     """
-    skill_dirs = await adiscover_skill_dirs(backend, source_path)
+    skill_dirs = await adiscover_skill_dirs(backend, source_path, errors=errors)
     if not skill_dirs:
         return []
     paths = [_skill_md_path(skill_dir) for skill_dir, _ in skill_dirs]
@@ -508,9 +551,16 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     def _state_update(
         all_skills: dict[str, sdk_skills.SkillMetadata],
         errors: list[str],
+        unreadable: list[str],
         state: sdk_skills.SkillsState,
     ) -> _SkillsStateUpdate:
         """Build the middleware state update, logging any load errors.
+
+        Args:
+            all_skills: Merged skill metadata keyed by name.
+            errors: Every source error, shown to the model.
+            unreadable: Errors for sources that exist, also shown to the user.
+            state: State whose pending pins are trimmed.
 
         Returns:
             The state update carrying merged skill metadata and any errors.
@@ -525,7 +575,42 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             update["pinned_skills"] = pins
         if errors:
             logger.warning("Skills load errors: %s", errors)
+        _report_unreadable(unreadable)
         return update
+
+    def _load_source(
+        self, source_path: str, namespace: SkillNamespace | None
+    ) -> tuple[list[sdk_skills.SkillMetadata], list[str]]:
+        """Return one source's skills and the errors from listing it."""
+        if namespace is None:
+            skills, error = sdk_skills._list_skills_with_errors(
+                self._backend, source_path
+            )
+            return skills, [] if error is None else [error]
+        errors: list[str] = []
+        skills = load_namespaced_skills(
+            self._backend, source_path, namespace, errors=errors
+        )
+        return skills, errors
+
+    async def _aload_source(
+        self, source_path: str, namespace: SkillNamespace | None
+    ) -> tuple[list[sdk_skills.SkillMetadata], list[str]]:
+        """Async counterpart of `_load_source`.
+
+        Returns:
+            The source's skills and the errors from listing it.
+        """
+        if namespace is None:
+            skills, error = await sdk_skills._alist_skills_with_errors(
+                self._backend, source_path
+            )
+            return skills, [] if error is None else [error]
+        errors: list[str] = []
+        skills = await aload_namespaced_skills(
+            self._backend, source_path, namespace, errors=errors
+        )
+        return skills, errors
 
     def before_agent(
         self,
@@ -543,10 +628,10 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         if not _needs_load(state):
             return _loaded_update(state)
 
-        backend = self._backend
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}
         merged_source_labels: dict[str, str | None] = {}
         errors: list[str] = []
+        unreadable: list[str] = []
 
         # `self.sources`, `self.source_labels`, and `self._namespaces` are all
         # built from the same source sequence at the same indices (see
@@ -556,14 +641,11 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         for source_path, source_label, namespace in zip(
             self.sources, self.source_labels, self._namespaces, strict=True
         ):
-            if namespace is None:
-                source_skills, source_error = sdk_skills._list_skills_with_errors(
-                    backend, source_path
-                )
-                if source_error is not None:
-                    errors.append(source_error)
-            else:
-                source_skills = load_namespaced_skills(backend, source_path, namespace)
+            source_skills, source_errors = self._load_source(source_path, namespace)
+            errors.extend(source_errors)
+            # Optional skill directories often do not exist; that is not news.
+            if source_errors and not _missing(source_path):
+                unreadable.extend(source_errors)
             for skill in source_skills:
                 merge_skill(
                     all_skills,
@@ -572,7 +654,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
                     source_label=source_label,
                 )
 
-        return self._state_update(all_skills, errors, state)
+        return self._state_update(all_skills, errors, unreadable, state)
 
     async def abefore_agent(
         self,
@@ -590,27 +672,22 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         if not await asyncio.to_thread(_needs_load, state):
             return _loaded_update(state)
 
-        backend = self._backend
         all_skills: dict[str, sdk_skills.SkillMetadata] = {}
         merged_source_labels: dict[str, str | None] = {}
         errors: list[str] = []
+        unreadable: list[str] = []
 
         # See `before_agent`: the three sequences are index-aligned by
         # construction, and `strict=True` guards against future length drift.
         for source_path, source_label, namespace in zip(
             self.sources, self.source_labels, self._namespaces, strict=True
         ):
-            if namespace is None:
-                (
-                    source_skills,
-                    source_error,
-                ) = await sdk_skills._alist_skills_with_errors(backend, source_path)
-                if source_error is not None:
-                    errors.append(source_error)
-            else:
-                source_skills = await aload_namespaced_skills(
-                    backend, source_path, namespace
-                )
+            source_skills, source_errors = await self._aload_source(
+                source_path, namespace
+            )
+            errors.extend(source_errors)
+            if source_errors and not await asyncio.to_thread(_missing, source_path):
+                unreadable.extend(source_errors)
             for skill in source_skills:
                 merge_skill(
                     all_skills,
@@ -619,4 +696,4 @@ class PluginSkillsMiddleware(SkillsMiddleware):
                     source_label=source_label,
                 )
 
-        return self._state_update(all_skills, errors, state)
+        return self._state_update(all_skills, errors, unreadable, state)

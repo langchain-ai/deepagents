@@ -92,6 +92,10 @@ from deepagents_code.model_retry import (
     retry_status_from_event,
 )
 from deepagents_code.sessions import generate_thread_id
+from deepagents_code.skills.load_errors import (
+    format_skills_load_errors,
+    skills_load_errors_from_event,
+)
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.unicode_security import (
     check_url_safety,
@@ -1696,6 +1700,13 @@ def _process_stream_chunk(
             parsed = model_attempt_from_event(data)
             if parsed is not None:
                 _process_attempt_lifecycle(ns_key, parsed, state, console)
+        elif (load_errors := skills_load_errors_from_event(data)) is not None:
+            if load_errors:
+                console.print(
+                    f"[yellow]{escape_markup(format_skills_load_errors(load_errors))}"
+                    "[/yellow]",
+                    highlight=False,
+                )
         else:
             _process_rubric_event(cast("dict[str, Any]", data), state, console)
     elif stream_mode == "messages":

@@ -38,11 +38,16 @@ _SKILL_FILE = "SKILL.md"
 
 
 class _SkillsStateUpdate(sdk_skills.SkillsStateUpdate, total=False):
+    """SDK skills update that can also replace the pending `pinned_skills`."""
+
     pinned_skills: Overwrite
 
 
 def _skill_invocation(state: sdk_skills.SkillsState) -> dict[str, object]:
-    """Return the latest user turn's explicit skill selection."""
+    """Return the `__skill` marker of the newest visible human message.
+
+    Stops at that message, so an older turn's selection never applies.
+    """
     for message in reversed(state.get("messages", [])):
         if isinstance(message, HumanMessage) and not is_internal_message(message):
             marker = message.additional_kwargs.get("__skill")
@@ -51,7 +56,12 @@ def _skill_invocation(state: sdk_skills.SkillsState) -> dict[str, object]:
 
 
 def _pending_pin_update(state: sdk_skills.SkillsState) -> Overwrite | None:
-    """Return an update retaining only the current turn's explicit selection."""
+    """Return an update retaining only the current turn's explicit selection.
+
+    The SDK `pinned_skills` reducer appends any requested name. Only the name
+    from this turn's trust-checked `/skill:` invocation may be pinned, and a pin
+    left over from a failed turn is dropped.
+    """
     names = state.get("pinned_skills") or []
     name = _skill_invocation(state).get("name")
     selected = [name] if isinstance(name, str) and name in names else []
@@ -278,7 +288,9 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             sources: Ordered Code skill sources, optionally including a plugin
                 namespace as the third tuple item.
             system_prompt: Skills prompt template passed to the SDK middleware.
-            path_base: User working directory for relative extra skill roots.
+            path_base: Directory that relative `skills.extra_allowed_dirs`
+                entries resolve against. If `None`, the process working
+                directory is used.
         """
         self._allowed_roots = tuple(Path(source[0]).resolve() for source in sources)
         self._path_base = path_base
@@ -301,23 +313,49 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     ) -> str:
         """Return the selected skill's instructions read within trusted roots.
 
+        Errors are raised as `ValueError` because the agent server replaces the
+        message of most other exception types, including `PermissionError`,
+        before it reaches the client.
+
+        Args:
+            skill: Skill metadata loaded on the server for this turn.
+            expected_path: Resolved `SKILL.md` path recorded when the user
+                invoked the skill, or `None` to skip the location check.
+            roots: Trusted directories the skill must resolve within.
+
         Raises:
-            PermissionError: No trusted roots exist or the skill escapes them.
-            ValueError: The selected skill moved or cannot be read.
+            ValueError: The skill moved, escapes the trusted roots, or has no
+                readable instructions.
         """
+        name = skill["name"]
         path = Path(skill["path"]).resolve()
         if expected_path is not None and str(path) != expected_path:
-            msg = f"Skill '{skill['name']}' changed location; invoke it again."
+            msg = (
+                f"Skill '{name}' changed location since it was selected. "
+                "Run /reload, then invoke it again."
+            )
             raise ValueError(msg)
+        # `load_skill_content` skips containment when given no roots, so an
+        # empty list must fail here rather than read an unchecked path.
         if not roots:
-            msg = "No trusted skill directories are configured."
-            raise PermissionError(msg)
-        content = load_skill_content(str(path), allowed_roots=roots)
+            msg = f"Skill '{name}' cannot run: no trusted skill directories exist."
+            raise ValueError(msg)
+        try:
+            content = load_skill_content(str(path), allowed_roots=roots)
+        except PermissionError as exc:
+            raise ValueError(str(exc)) from exc
         response = FileDownloadResponse(
             path=skill["path"], content=content.encode("utf-8") if content else None
         )
-        if not (body := sdk_skills._pinned_skill_body(skill, response)):
-            msg = f"Could not read instructions for skill '{skill['name']}'."
+        body = sdk_skills._pinned_skill_body(skill, response)
+        if body is None:
+            msg = (
+                f"Could not read instructions for skill '{name}'. Check that "
+                "its SKILL.md exists, is UTF-8, and is not too large."
+            )
+            raise ValueError(msg)
+        if not body:
+            msg = f"Skill '{name}' has no instructions after its frontmatter."
             raise ValueError(msg)
         return body
 
@@ -326,8 +364,13 @@ class PluginSkillsMiddleware(SkillsMiddleware):
     ) -> dict[str, object] | None:
         """Return SDK pin updates after validating skill selection and trust.
 
+        Returns:
+            An update that appends one pinned-skill message per requested name
+                and clears `pinned_skills`, or `None` when nothing is pending.
+
         Raises:
-            ValueError: A requested skill is no longer available.
+            ValueError: A requested skill is missing on the server, or fails
+                the location, trust, or content checks.
         """
         del runtime
         names = state.get("pinned_skills")
@@ -340,7 +383,10 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         messages: list[HumanMessage] = []
         for name in dict.fromkeys(names):
             if name not in by_name:
-                msg = f"Skill '{name}' is no longer available; invoke it again."
+                msg = (
+                    f"Skill '{name}' is not available to the agent. "
+                    "Run /reload, then invoke it again."
+                )
                 raise ValueError(msg)
             skill = by_name[name]
             path = (
@@ -386,8 +432,9 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         """Load and namespace plugin skills before collision resolution.
 
         Returns:
-            A state update containing collision-safe skill metadata, or `None`
-            when skills are already loaded.
+            A state update containing collision-safe skill metadata and the
+                trimmed `pinned_skills`, or `None` when skills are already
+                loaded and no pin is pending.
         """
         if "skills_metadata" in state and not state.get("pinned_skills"):
             return None
@@ -432,8 +479,9 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         """Asynchronously load and namespace skills before collision resolution.
 
         Returns:
-            A state update containing collision-safe skill metadata, or `None`
-            when skills are already loaded.
+            A state update containing collision-safe skill metadata and the
+                trimmed `pinned_skills`, or `None` when skills are already
+                loaded and no pin is pending.
         """
         if "skills_metadata" in state and not state.get("pinned_skills"):
             return None

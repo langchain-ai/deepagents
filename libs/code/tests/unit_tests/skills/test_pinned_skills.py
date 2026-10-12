@@ -121,14 +121,14 @@ async def test_pinning_rechecks_directory_trust(
         backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
     )
     monkeypatch.setattr(trust, "load_trusted_skill_dirs", list)
-    with pytest.raises(PermissionError, match="outside all allowed"):
+    with pytest.raises(ValueError, match="outside all allowed"):
         await _pin(middleware, _state(outside), mode)
     monkeypatch.setattr(trust, "load_trusted_skill_dirs", lambda: [outside.parent])
     result = await _pin(middleware, _state(outside), mode)
     assert result is not None
     assert result["messages"]
     monkeypatch.setattr(trust, "load_trusted_skill_dirs", list)
-    with pytest.raises(PermissionError, match="outside all allowed"):
+    with pytest.raises(ValueError, match="outside all allowed"):
         await _pin(middleware, _state(outside), mode)
 
 
@@ -136,13 +136,22 @@ async def test_pinning_unknown_skill_fails(tmp_path: Path, mode: str) -> None:
     middleware = PluginSkillsMiddleware(
         backend=FilesystemBackend(virtual_mode=False), sources=[(str(tmp_path), "User")]
     )
-    with pytest.raises(ValueError, match="no longer available"):
+    with pytest.raises(ValueError, match="Run /reload"):
         await _pin(middleware, _state(tmp_path / "missing" / "SKILL.md"), mode)
 
 
-@pytest.mark.parametrize("change", ["delete", "empty", "invalid-utf8", "redirect"])
+@pytest.mark.parametrize(
+    ("change", "error"),
+    [
+        ("delete", "Could not read"),
+        ("empty", "Could not read"),
+        ("invalid-utf8", "Could not read"),
+        ("frontmatter-only", "no instructions after its frontmatter"),
+        ("redirect", "changed location"),
+    ],
+)
 async def test_pinning_revalidates_actual_read(
-    tmp_path: Path, mode: str, change: str
+    tmp_path: Path, mode: str, change: str, error: str
 ) -> None:
     root = tmp_path / "skills"
     path = _write_skill(root / "review" / "SKILL.md")
@@ -159,15 +168,17 @@ async def test_pinning_revalidates_actual_read(
         path.write_bytes(b"")
     elif change == "invalid-utf8":
         path.write_bytes(b"\xff")
+    elif change == "frontmatter-only":
+        _write_skill(path, "")
     else:
         other = _write_skill(root / "other" / "SKILL.md")
         path.unlink()
         path.symlink_to(other)
     if mode == "async":
-        with pytest.raises(ValueError, match=r"changed location|Could not read"):
+        with pytest.raises(ValueError, match=error):
             await middleware.abefore_model(state, Runtime())
     else:
-        with pytest.raises(ValueError, match=r"changed location|Could not read"):
+        with pytest.raises(ValueError, match=error):
             middleware.before_model(state, Runtime())
 
 
@@ -217,12 +228,20 @@ async def test_graph_pins_once_and_preserves_snapshot(
     assert agent.get_state(config).values["pinned_skills"] == []
 
 
-@pytest.mark.parametrize("failure", ["missing", "unreadable", "untrusted"])
+@pytest.mark.parametrize(
+    ("failure", "error"),
+    [
+        ("missing", "Run /reload"),
+        ("unreadable", "no instructions"),
+        ("untrusted", "outside all allowed"),
+    ],
+)
 @pytest.mark.parametrize("followup", ["ordinary", "fixed", "different"])
 async def test_graph_recovers_from_failed_pin(
     tmp_path: Path,
     mode: str,
     failure: str,
+    error: str,
     followup: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -245,10 +264,10 @@ async def test_graph_recovers_from_failed_pin(
     )
     config: RunnableConfig = {"configurable": {"thread_id": "failed-pin"}}
     if mode == "async":
-        with pytest.raises((ValueError, PermissionError)):
+        with pytest.raises(ValueError, match=error):
             await agent.ainvoke(_state(path), config)
     else:
-        with pytest.raises((ValueError, PermissionError)):
+        with pytest.raises(ValueError, match=error):
             agent.invoke(_state(path), config)
     assert agent.get_state(config).values["pinned_skills"] == ["review"]
     request: SkillsState = {"messages": [HumanMessage("Continue without a skill")]}

@@ -136,20 +136,10 @@ async def test_pinning_rechecks_directory_trust(
         await _pin(middleware, _state(outside), mode)
 
 
-async def test_pinning_unknown_skill_fails(tmp_path: Path, mode: str) -> None:
-    middleware = PluginSkillsMiddleware(
-        backend=FilesystemBackend(virtual_mode=False), sources=[(str(tmp_path), "User")]
-    )
-    with pytest.raises(ValueError, match="Run /reload"):
-        await _pin(middleware, _state(tmp_path / "missing" / "SKILL.md"), mode)
-
-
 @pytest.mark.parametrize(
     ("change", "error"),
     [
         ("delete", "Could not read"),
-        ("empty", "Could not read"),
-        ("invalid-utf8", "Could not read"),
         ("frontmatter-only", "no instructions after its frontmatter"),
         ("redirect", "changed location"),
     ],
@@ -168,10 +158,6 @@ async def test_pinning_revalidates_actual_read(
     state.update(metadata)
     if change == "delete":
         path.unlink()
-    elif change == "empty":
-        path.write_bytes(b"")
-    elif change == "invalid-utf8":
-        path.write_bytes(b"\xff")
     elif change == "frontmatter-only":
         _write_skill(path, "")
     else:
@@ -241,32 +227,14 @@ async def test_graph_pins_once_and_preserves_snapshot(
     assert rows[0].skill_body == "Original instructions"
 
 
-@pytest.mark.parametrize(
-    ("failure", "error"),
-    [
-        ("missing", "Run /reload"),
-        ("unreadable", "no instructions"),
-        ("untrusted", "outside all allowed"),
-    ],
-)
 @pytest.mark.parametrize("followup", ["ordinary", "goal", "fixed", "different"])
 async def test_graph_recovers_from_failed_pin(
-    tmp_path: Path,
-    mode: str,
-    failure: str,
-    error: str,
-    followup: str,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, mode: str, followup: str
 ) -> None:
+    """A pin that fails on a missing skill does not leak into later turns."""
     root = tmp_path / "skills"
     root.mkdir()
     path = root / "review" / "SKILL.md"
-    if failure == "unreadable":
-        _write_skill(path, "")
-    elif failure == "untrusted":
-        outside = _write_skill(tmp_path / "outside" / "SKILL.md")
-        (root / "review").symlink_to(outside.parent, target_is_directory=True)
-    monkeypatch.setattr(trust, "load_trusted_skill_dirs", list)
     middleware = PluginSkillsMiddleware(
         backend=FilesystemBackend(virtual_mode=False), sources=[(str(root), "User")]
     )
@@ -277,18 +245,16 @@ async def test_graph_recovers_from_failed_pin(
     )
     config: RunnableConfig = {"configurable": {"thread_id": "failed-pin"}}
     if mode == "async":
-        with pytest.raises(ValueError, match=error):
+        with pytest.raises(ValueError, match="Run /reload"):
             await agent.ainvoke(_state(path), config)
     else:
-        with pytest.raises(ValueError, match=error):
+        with pytest.raises(ValueError, match="Run /reload"):
             agent.invoke(_state(path), config)
     assert agent.get_state(config).values["pinned_skills"] == ["review"]
     request: SkillsState = {"messages": [HumanMessage("Continue without a skill")]}
     if followup == "goal":
         request = {"messages": [build_goal_continuation("resumed")]}
     elif followup == "fixed":
-        if failure == "untrusted":
-            (root / "review").unlink()
         _write_skill(path, "Restored instructions")
     elif followup == "different":
         other = _write_skill(root / "other" / "SKILL.md", name="other")

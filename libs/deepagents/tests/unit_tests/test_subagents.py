@@ -331,11 +331,9 @@ class TestSubAgents:
             f"Multiplication subagent should return exact message, got: {multiplication_tool_message.content}"
         )
 
-    @pytest.mark.parametrize("use_async", [False, True])
-    @pytest.mark.parametrize("change_child_rubric", [False, True])
-    @pytest.mark.parametrize("mode", ["fork", "isolated"])
-    async def test_parallel_subagents_preserve_parent_rubric(self, *, use_async: bool, change_child_rubric: bool, mode: str) -> None:
-        """Subagents must not inherit, conflict on, or overwrite the caller's `rubric`."""
+    @staticmethod
+    def _build_parallel_rubric_agent(*, change_child_rubric: bool, mode: str) -> tuple[Any, list[str | None]]:
+        """Build a parent that calls two subagents in parallel, and record the rubric each child sees."""
 
         class SharedState(RubricState):
             completed: Annotated[list[str], operator.add]
@@ -382,15 +380,32 @@ class TestSubAgents:
                 for name in ("first", "second")
             ],
         )
-        inputs = {"messages": [HumanMessage(content="Delegate both tasks")], "rubric": "parent goal"}
-        result = await agent.ainvoke(inputs) if use_async else agent.invoke(inputs)
+        return agent, inherited_rubrics
 
+    @staticmethod
+    def _assert_parent_rubric_preserved(result: dict[str, Any], inherited_rubrics: list[str | None]) -> None:
         assert result["rubric"] == "parent goal"
         assert inherited_rubrics == [None, None]
         assert len(result["completed"]) == 2
         assert all(any(entry.endswith(name) for entry in result["completed"]) for name in ("first", "second"))
         assert {message.content for message in result["messages"] if isinstance(message, ToolMessage)} == {"first done", "second done"}
         assert result["messages"][-1].content == "parent done"
+
+    @pytest.mark.parametrize("change_child_rubric", [False, True])
+    @pytest.mark.parametrize("mode", ["fork", "isolated"])
+    def test_parallel_subagents_preserve_parent_rubric(self, *, change_child_rubric: bool, mode: str) -> None:
+        """Subagents must not inherit, conflict on, or overwrite the caller's `rubric`."""
+        agent, inherited_rubrics = self._build_parallel_rubric_agent(change_child_rubric=change_child_rubric, mode=mode)
+        result = agent.invoke({"messages": [HumanMessage(content="Delegate both tasks")], "rubric": "parent goal"})
+        self._assert_parent_rubric_preserved(result, inherited_rubrics)
+
+    @pytest.mark.parametrize("change_child_rubric", [False, True])
+    @pytest.mark.parametrize("mode", ["fork", "isolated"])
+    async def test_parallel_subagents_preserve_parent_rubric_async(self, *, change_child_rubric: bool, mode: str) -> None:
+        """Async variant of `test_parallel_subagents_preserve_parent_rubric`."""
+        agent, inherited_rubrics = self._build_parallel_rubric_agent(change_child_rubric=change_child_rubric, mode=mode)
+        result = await agent.ainvoke({"messages": [HumanMessage(content="Delegate both tasks")], "rubric": "parent goal"})
+        self._assert_parent_rubric_preserved(result, inherited_rubrics)
 
     def test_private_state_does_not_propagate_between_sibling_subagents(self) -> None:
         """A private state field should not propagate from one sibling subagent to another."""

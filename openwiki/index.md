@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Repository Quickstart and Change Routing](quickstart.md) - Route a behavioral change to its independently released package, public entrypoint, neighboring design guide, and narrowest regression seam. Use this page to choose package-local development and avoid accidental release or dependency fan-out.
+- [Deep Agents Maintainer Quickstart](quickstart.md) - Routing map for changes across the independently released Deep Agents SDK, dcode, ACP, Talon, evals, and partner packages. Start at the behavior owner, preserve its boundary, and run focused package validation.
 
 # Directories
 

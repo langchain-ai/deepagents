@@ -39,6 +39,7 @@ if TYPE_CHECKING:
     from deepagents_code.hooks.trust import WorkspaceTrust
     from deepagents_code.mcp_tools import MCPServerInfo, ProjectServerSummary
     from deepagents_code.notifications import PendingNotification
+    from deepagents_code.thread_ownership import ThreadLease
 
 # Suppress Pydantic v1 compatibility warnings from langchain on Python 3.14+
 warnings.filterwarnings("ignore", message=".*Pydantic V1.*", category=UserWarning)
@@ -1125,6 +1126,22 @@ def _resolve_thread_list_display_options(
     _emit_ranked_diagnostics(relative_option, relative_time)
     sort_by = "created" if sort_order.value == "created_at" else "updated"
     return sort_by, bool(relative_time.value)
+
+
+def _resolve_headless_show_reasoning() -> bool:
+    """Resolve whether headless output shows provider-visible reasoning.
+
+    Headless output is often piped or parsed, so reasoning stays off unless
+    `--show-reasoning`, the env var, or config turns it on.
+
+    Returns:
+        The resolved preference, defaulting to `False`.
+    """
+    from deepagents_code.config_manifest import load_bool_display_preference
+
+    return load_bool_display_preference(
+        "display.show_reasoning", fallback=True, default=False
+    )
 
 
 def _install_cli_provider(args: argparse.Namespace) -> None:
@@ -2619,7 +2636,7 @@ def parse_args() -> argparse.Namespace:
         "--show-reasoning",
         action="store_true",
         default=None,
-        help="Show provider-visible reasoning (off by default).",
+        help=("Show provider-visible reasoning (on in the TUI, off in headless mode)."),
     )
 
     parser.add_argument(
@@ -2741,7 +2758,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--sandbox-snapshot-name",
         metavar="NAME",
-        help="Snapshot (langsmith) or blueprint (runloop) name to use or create",
+        help="Snapshot (langsmith, daytona) or blueprint (runloop) name "
+        "to use or create",
     )
 
     parser.add_argument(
@@ -2763,6 +2781,11 @@ def parse_args() -> argparse.Namespace:
         help="Path to MCP servers JSON configuration file (Claude Desktop format). "
         "Merged on top of auto-discovered configs (highest precedence). "
         "Run `dcode mcp config` to see discovery paths.",
+    )
+    parser.add_argument(
+        "--no-tracing",
+        action="store_true",
+        help="Disable LangSmith agent tracing for this session (keep local history)",
     )
     parser.add_argument(
         "--no-mcp",
@@ -3165,7 +3188,8 @@ async def run_textual_cli_async(
         sandbox_type: Type of sandbox
             ("none", "agentcore", "modal", "runloop", "daytona", "langsmith")
         sandbox_id: Optional existing sandbox ID to reuse.
-        sandbox_snapshot_name: Snapshot (langsmith) or blueprint (runloop) name.
+        sandbox_snapshot_name: Snapshot (langsmith, daytona) or blueprint
+            (runloop) name.
         sandbox_setup: Optional path to setup script to run in the sandbox
             after creation.
         model_name: Optional model name to use
@@ -3428,6 +3452,43 @@ async def run_textual_cli_async(
     return result
 
 
+def _owned_acp_server_class(
+    server_cls: type[Any], leases: "dict[str, ThreadLease]"
+) -> type[Any]:
+    """Build the ownership-aware ACP adapter.
+
+    Returns:
+        An adapter reserving sessions before restoration and checkpoint writes.
+    """
+    from langchain_core.runnables import RunnableConfig
+
+    from deepagents_code.thread_ownership import (
+        OWNER_KEY,
+        ThreadOwnershipError,
+        try_acquire,
+    )
+
+    class OwnedAgentServer(server_cls):
+        def _session_config(self, session_id: str) -> RunnableConfig:
+            config = super()._session_config(session_id)
+            lease = leases.get(session_id)
+            if lease is None:
+                lease = try_acquire(session_id)
+                if lease is None:
+                    msg = f"Thread {session_id} is open elsewhere."
+                    raise ThreadOwnershipError(msg)
+                leases[session_id] = lease
+            config["configurable"][OWNER_KEY] = lease.token
+            return config
+
+        def _forget_session(self, session_id: str) -> None:
+            super()._forget_session(session_id)
+            if lease := leases.pop(session_id, None):
+                lease.release()
+
+    return OwnedAgentServer
+
+
 async def _run_acp_cli_async(
     assistant_id: str,
     *,
@@ -3635,13 +3696,18 @@ async def _run_acp_cli_async(
             else:
                 server_cls = agent_server_cls
                 server_kwargs = {}
-            server = server_cls(
+            leases: dict[str, ThreadLease] = {}
+            server = _owned_acp_server_class(server_cls, leases)(
                 build_agent,
                 models=models,
                 load_sessions=True,
                 **server_kwargs,
             )
-            await run_acp_agent(server)
+            try:
+                await run_acp_agent(server)
+            finally:
+                for lease in leases.values():
+                    lease.release()
     except KeyboardInterrupt:
         pass
     except Exception as exc:
@@ -5294,6 +5360,8 @@ def cli_main() -> None:
 
     try:
         args = parse_args()
+        if getattr(args, "no_tracing", False):
+            os.environ["DEEPAGENTS_CODE_LANGSMITH_TRACING"] = "false"
         _install_cli_provider(args)
         explicit_approval_flag = (
             "--yolo"
@@ -6285,7 +6353,6 @@ def cli_main() -> None:
 
             # Non-interactive mode - execute single task and exit
             from deepagents_code.client.non_interactive import run_non_interactive
-            from deepagents_code.config_manifest import load_bool_display_preference
 
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
@@ -6323,9 +6390,7 @@ def cli_main() -> None:
                             startup_cmd=getattr(args, "startup_cmd", None),
                             quiet=args.quiet,
                             stream=not args.no_stream,
-                            show_reasoning=load_bool_display_preference(
-                                "display.show_reasoning", fallback=False
-                            ),
+                            show_reasoning=_resolve_headless_show_reasoning(),
                             mcp_config_path=getattr(args, "mcp_config", None),
                             no_mcp=getattr(args, "no_mcp", False),
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),

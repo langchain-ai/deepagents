@@ -341,7 +341,7 @@ class _LazySummaryModel:
                     logger.warning(
                         "Could not build the summarization model %r; compaction "
                         "summaries use the main agent model instead. Run "
-                        "`/summarization-model clear` to stop trying it.",
+                        "`/offload model clear` to stop trying it.",
                         self._model_spec,
                         exc_info=True,
                     )
@@ -381,7 +381,7 @@ class _LazySummaryModel:
                 logger.warning(
                     "The summarization model %r failed to generate a summary; "
                     "compaction summaries use the main agent model instead. Run "
-                    "`/summarization-model clear` to stop trying it.",
+                    "`/offload model clear` to stop trying it.",
                     self._model_spec,
                     exc_info=exc,
                 )
@@ -1047,7 +1047,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         self._environ = environ
         # One-entry memo for `_summarization_for_runtime`. Every model call
         # consults it, but the runtime model configuration only changes on
-        # `/model` or `/summarization-model`, so a single slot hits almost
+        # `/model` or `/offload model`, so a single slot hits almost
         # always and keeps `create_model`'s credential reads and client
         # construction off the per-turn path. It also lets one
         # `_LazySummaryModel` survive across compactions, which is what its

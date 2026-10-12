@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Deterministic, network-free regression seams and package commands for Deep Agents SDK graph and skills behavior, dcode prompt and TUI contracts, and Talon checkpoint, channel, cron, and concurrency behavior.
+- [Testing Guide](testing-guide.md) - Focused, package-scoped test selection for Deep Agents subagents and media persistence, and dcode startup, headless, remote-client, skills, sandbox, and dependency automation behavior.

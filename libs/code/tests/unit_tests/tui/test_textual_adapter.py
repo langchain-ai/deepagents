@@ -1735,6 +1735,7 @@ class TestExecuteTaskTextualStreamCompletion:
         message = mount_message.await_args_list[0].args[0]
         assert str(message._content) == f"Operation stopped by hook: {stop}"
         callback.assert_called_once_with()
+        assert adapter.stream_completed
 
     async def test_interrupted_stream_skips_completion_callback(self) -> None:
         adapter = TextualUIAdapter(
@@ -1758,6 +1759,7 @@ class TestExecuteTaskTextualStreamCompletion:
             )
 
         callback.assert_not_called()
+        assert not adapter.stream_completed
 
 
 class TestExecuteTaskTextualTurnMarkers:
@@ -1870,6 +1872,8 @@ class TestExecuteTaskTextualTurnMarkers:
         )
 
         assert agent.configs[0]["metadata"]["ls_skill_name"] == "code-review"
+        assert agent.stream_inputs[0]["pinned_skills"] == ["code-review"]
+        assert agent.stream_inputs[0]["messages"][0]["content"] == "review this"
 
 
 class TestExecuteTaskTextualClientLifecycle:
@@ -1897,6 +1901,7 @@ class TestExecuteTaskTextualClientLifecycle:
         ):
             await execute_task_textual(
                 user_input="secret prompt",
+                skill_name="code-review",
                 agent=agent,
                 assistant_id="assistant",
                 session_state=_session_state(),
@@ -1906,6 +1911,7 @@ class TestExecuteTaskTextualClientLifecycle:
         on_user_prompt.assert_awaited_once()
         stream_input = agent.stream_inputs[0]
         assert isinstance(stream_input, dict)
+        assert "pinned_skills" not in stream_input
         assert stream_input["messages"] == [
             {"role": "system", "content": "replacement context"}
         ]
@@ -3293,6 +3299,226 @@ def _tool_call_message(
 def _text_message(text: str) -> SimpleNamespace:
     """Build a message-like object with content_blocks containing one text block."""
     return SimpleNamespace(content_blocks=[{"type": "text", "text": text}])
+
+
+class TestCacheReconciliation:
+    @pytest.mark.parametrize("detail", ["cache_read", "cache_creation"])
+    @pytest.mark.parametrize("streamed_usage", [False, True])
+    async def test_request_reconciles_before_output_finishes(
+        self, detail: str, streamed_usage: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from datetime import UTC, datetime, timedelta
+
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.status import StatusBar
+
+        app = DeepAgentsApp()
+        app._lc_thread_id = "cache-test"
+        app._status_bar = StatusBar()
+        now = datetime.now(UTC)
+        app._status_bar.set_cache_timing(now - timedelta(seconds=280), ttl_seconds=300)
+        toast = MagicMock()
+        monkeypatch.setattr(app, "notify", toast)
+        monkeypatch.setattr(type(app._hooks), "notify", AsyncMock())
+        monkeypatch.setattr(app, "_refresh_cache_display", MagicMock())
+        activity = {
+            "requested_at": now.isoformat(),
+            "model_spec": "anthropic:claude-sonnet-4-6",
+            "endpoint": "default",
+            "params": None,
+        }
+        start = {
+            "type": "model_attempt",
+            "phase": "start",
+            "call_id": "call-1",
+            "attempt": 0,
+            "cache_activity": activity,
+        }
+        from langchain_core.messages import AIMessageChunk
+
+        usage = AIMessageChunk(
+            content="",
+            usage_metadata={
+                "input_tokens": 2000,
+                "output_tokens": 0,
+                "total_tokens": 2000,
+                "input_token_details": {detail: 2000},
+            },
+        )
+
+        class Agent(_FakeAgent):
+            async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple]:
+                yield ((), "custom", start)
+                assert app._cache_reconciliation_pending
+                await app._notify_cache_expiring()
+                toast.assert_not_called()
+                yield ((), "messages", (_text_message("hello"), {}))
+                assert app._cache_reconciliation_pending
+                yield (
+                    ("child",),
+                    "messages",
+                    (usage, {"dcode_cache_attempt": ["call-1", 0]}),
+                )
+                yield ((), "messages", (usage, {"dcode_cache_attempt": ["stale", 0]}))
+                yield ((), "custom", {**start, "call_id": "stale", "phase": "complete"})
+                assert app._cache_reconciliation_pending
+                if streamed_usage:
+                    yield (
+                        (),
+                        "messages",
+                        (usage, {"dcode_cache_attempt": ["call-1", 0]}),
+                    )
+                else:
+                    yield (
+                        (),
+                        "custom",
+                        {
+                            **start,
+                            "phase": "complete",
+                            "cache_read": detail == "cache_read",
+                            "cache_write": detail == "cache_creation",
+                        },
+                    )
+                assert not app._cache_reconciliation_pending
+                assert app._status_bar is not None
+                assert app._status_bar.cache_expires_at == now + timedelta(seconds=300)
+                assert app._last_cache_use == activity
+                assert (app._last_cache_write == activity) is (
+                    detail == "cache_creation"
+                )
+                yield ((), "custom", start)
+                yield ((), "messages", (_text_message("still streaming"), {}))
+                assert not app._cache_reconciliation_pending
+                with patch("deepagents_code.app.datetime") as clock:
+                    clock.now.return_value = now + timedelta(seconds=280)
+                    await app._notify_cache_expiring()
+                toast.assert_called_once()
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            on_cache_reconciliation=app._on_cache_reconciliation,
+        )
+        await execute_task_textual(
+            user_input="hi",
+            agent=Agent([]),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+        )
+        assert not app._cache_reconciliation_pending
+
+    @pytest.mark.parametrize(
+        "boundary", ["complete", "retry", "updates", "approval", "error", "cancel"]
+    )
+    async def test_no_usage_preserves_expiry_and_releases_suppression(
+        self, boundary: str
+    ) -> None:
+        from contextlib import nullcontext
+        from datetime import UTC, datetime
+
+        from deepagents_code.app import DeepAgentsApp
+        from deepagents_code.tui.widgets.status import StatusBar
+
+        app = DeepAgentsApp()
+        app._status_bar = StatusBar()
+        app._status_bar.set_cache_timing(datetime.now(UTC), ttl_seconds=300)
+        expiry = app._status_bar.cache_expires_at
+        start = {
+            "type": "model_attempt",
+            "phase": "start",
+            "call_id": "call-1",
+            "attempt": 0,
+            "cache_activity": {
+                "requested_at": datetime.now(UTC).isoformat(),
+                "model_spec": "anthropic:claude-sonnet-4-6",
+                "endpoint": "default",
+                "params": None,
+            },
+        }
+
+        class Agent(_FakeAgent):
+            completed = False
+
+            async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple]:
+                if self.completed:
+                    return
+                self.completed = True
+                yield ((), "custom", start)
+                assert app._cache_reconciliation_pending
+                if boundary == "error":
+                    msg = "failed"
+                    raise RuntimeError(msg)
+                if boundary == "cancel":
+                    raise asyncio.CancelledError
+                if boundary == "complete":
+                    yield ((), "custom", {**start, "phase": "complete"})
+                elif boundary == "retry":
+                    yield (
+                        (),
+                        "custom",
+                        {
+                            "type": "model_retry",
+                            "call_id": "call-1",
+                            "failed_attempt": 0,
+                            "output_may_have_started": False,
+                            "attempt": 1,
+                            "max_retries": 1,
+                        },
+                    )
+                elif boundary == "approval":
+                    yield _hitl_interrupt_chunk(
+                        {
+                            "action_requests": [
+                                {"name": "execute", "args": {"command": "echo hi"}}
+                            ],
+                            "review_configs": [
+                                {
+                                    "action_name": "execute",
+                                    "allowed_decisions": ["approve"],
+                                }
+                            ],
+                        }
+                    )
+                else:
+                    yield ((), "updates", {"model": {"messages": []}})
+                assert not app._cache_reconciliation_pending
+                assert app._status_bar is not None
+                assert app._status_bar.cache_expires_at == expiry
+                if boundary == "retry":
+                    yield ((), "custom", {**start, "attempt": 1})
+                    yield ((), "custom", {**start, "phase": "complete"})
+                    assert app._cache_reconciliation_pending
+
+        async def approval(*_: Any, **__: Any) -> asyncio.Future:
+            await asyncio.sleep(0)
+            assert not app._cache_reconciliation_pending
+            future = asyncio.Future()
+            future.set_result({"type": "approve"})
+            return future
+
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=approval,
+            on_cache_reconciliation=app._on_cache_reconciliation,
+        )
+        with (
+            pytest.raises(RuntimeError, match="failed")
+            if boundary == "error"
+            else nullcontext()
+        ):
+            await execute_task_textual(
+                user_input="hi",
+                agent=Agent([]),
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+        assert not app._cache_reconciliation_pending
+        assert app._status_bar.cache_expires_at == expiry
+        assert app._last_cache_use is None
 
 
 class TestExecuteTaskTextualUserVisibleOutputStarted:
@@ -5011,6 +5237,7 @@ class TestExecuteTaskTextualAskUser:
         assert len(app_messages) == 1
         assert str(app_messages[0]._content) == expected_message
         assert token_events == ["pending", "show:False"]
+        assert not adapter.stream_completed
 
     async def test_dismissed_questions_accumulate_across_cancelled_calls(self) -> None:
         """Two dismissed calls of one question each read as plural.
@@ -8653,3 +8880,90 @@ def _retry_lifecycle_session_state(tmp_path: Path, thread_id: str) -> tuple[Any,
     hooks._runtime = runtime
     session_state.hooks = hooks
     return session_state, runtime
+
+
+class TestServerSkillPinning:
+    """The adapter answers server skill trust requests and renders pins."""
+
+    @staticmethod
+    async def _run(
+        agent: _SequencedAgent,
+        *,
+        request_skill_trust: Callable[[str, str], Awaitable[bool]] | None = None,
+        on_skill_pinned: Callable[[str, str, str], None] | None = None,
+    ) -> None:
+        async def mount_message(_widget: object) -> bool:
+            await asyncio.sleep(0)
+            return True
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=AsyncMock(),
+            request_skill_trust=request_skill_trust,
+            on_skill_pinned=on_skill_pinned,
+        )
+        with (
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch("deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+    @pytest.mark.parametrize("approved", [True, False])
+    async def test_trust_request_resumes_with_the_answer(self, approved: bool) -> None:
+        request = {"type": "skill_trust", "skill": "review", "directory": "/outside"}
+        interrupt = SimpleNamespace(id="trust-1", value=request)
+        agent = _SequencedAgent(
+            streams_by_call=[[((), "updates", {"__interrupt__": [interrupt]})], []]
+        )
+        asked: list[tuple[str, str]] = []
+
+        async def request_skill_trust(skill: str, directory: str) -> bool:
+            await asyncio.sleep(0)
+            asked.append((skill, directory))
+            return approved
+
+        await self._run(agent, request_skill_trust=request_skill_trust)
+
+        assert asked == [("review", "/outside")]
+        resume = agent.stream_inputs[1]
+        assert isinstance(resume, Command)
+        assert resume.resume == {"trust-1": {"approved": approved}}
+
+    async def test_malformed_trust_request_is_denied_without_asking(self) -> None:
+        interrupt = SimpleNamespace(id="trust-1", value={"type": "skill_trust"})
+        agent = _SequencedAgent(
+            streams_by_call=[[((), "updates", {"__interrupt__": [interrupt]})], []]
+        )
+        ask = AsyncMock(return_value=True)
+
+        await self._run(agent, request_skill_trust=ask)
+
+        ask.assert_not_awaited()
+        resume = agent.stream_inputs[1]
+        assert isinstance(resume, Command)
+        assert resume.resume == {"trust-1": {"approved": False}}
+
+    async def test_pinned_message_reports_the_skill(self) -> None:
+        pinned = HumanMessage(
+            '<skill name="review" path="/s/SKILL.md">\nDo it.\n</skill>',
+            additional_kwargs={
+                "lc_source": "pinned_skill",
+                "skill": {"name": "review", "description": "Review code"},
+            },
+        )
+        agent = _SequencedAgent(streams_by_call=[[((), "messages", (pinned, {}))]])
+        seen: list[tuple[str, str, str]] = []
+
+        await self._run(agent, on_skill_pinned=lambda *parts: seen.append(parts))
+
+        assert seen == [("review", "Review code", "Do it.")]

@@ -1,9 +1,11 @@
 ---
 type: architecture concept
-title: Filesystem and Execution Tools
-description: FilesystemMiddleware exposes backend-backed file and optional shell tools, validates their results and capabilities, and controls how large text and binary media survive model requests and checkpoints.
+title: Filesystem Tools and Policies
+description: FilesystemMiddleware exposes backend-backed file and optional shell tools while enforcing capability, permission, and request-compatibility boundaries. It also defines text eviction and content-addressed binary-media handling across model requests and checkpoints.
 tags: [tools, filesystem, execution, middleware, backends, persistence, multimodal]
 sources:
+  - id: openwiki-source-f84c83d6fab6028c94be90bc
+    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
@@ -22,11 +24,11 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_filesystem_middleware_init.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-01T08:06:30.386Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-01T08:06:30.386Z" }
+    at: 2026-10-12T08:20:17.385Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-12T08:20:17.385Z" }
 ---
 
-# Filesystem and Execution Tools
+# Filesystem Tools and Policies
 
 `FilesystemMiddleware` is the model-facing adapter for an initialized `BackendProtocol`. It constructs file tools, validates inputs and backend results, formats model-facing messages, and manages oversized or binary content. The backend owns storage and implements the operations; a filesystem tool name is neither a guarantee that the backend supports it nor an authorization decision. For backend implementations and routing, see [Backends](backends.md); for approvals and path policy, see [Permissions & HITL](permissions-hitl.md).
 
@@ -72,9 +74,9 @@ A `LocalShellBackend` is execution-capable but is not a sandbox: it runs host co
 
 ## Permissions and compatibility recovery
 
-Filesystem permissions are applied inside tool implementations, not by hiding schemas. Paths are canonicalized before matching; invalid traversal and malformed permission patterns are rejected. Rules match operations and canonical paths in declaration order with `allow`, `deny`, or `interrupt` outcomes. Bulk tools conservatively interrupt when their search subtree could overlap an interrupt rule; denied entries can be filtered from list and search results. Graph construction converts interrupt rules to human-in-the-loop predicates. Because a path rule cannot constrain arbitrary shell syntax, unscoped filesystem permissions are rejected for execution-capable backends.
+Filesystem permissions are applied inside tool implementations, not by hiding schemas. Paths are canonicalized before matching; permission patterns must be absolute and reject traversal or `~`. For ordinary reads and writes, the first matching rule in declaration order supplies an `allow`, `deny`, or `interrupt` outcome. Bulk tools conservatively interrupt when their search subtree could overlap an interrupt rule; denied entries are filtered from list and search results. Recursive deletion is stricter: when a target may have descendants, any overlapping deny-write pattern blocks the all-or-nothing deletion, so a later specific deny cannot be bypassed by an earlier allow. Graph construction converts interrupt rules to human-in-the-loop predicates. `execute` has no path-aware permission enforcement; consequently, permission rules with an execution-capable backend are rejected except when every pattern is scoped to a route of a `CompositeBackend`, isolating those governed file-tool paths from the composite default shell.
 
-`UnsupportedContentMiddleware` runs last in the `create_deep_agent` middleware stack. On every request it consults the active request model's profile and replaces only blocks the model explicitly cannot accept with a placeholder that identifies the original `read_file` path. It copies request messages rather than mutating persisted history, so a later compatible model can receive the original media. Inline non-PDF base64 documents have a stricter OpenAI Responses API compatibility path.
+`create_deep_agent` adds `UnsupportedContentMiddleware` after the core, memory, and HITL middleware; later profile, caller, and tool-exclusion processing can still shape the final stack. On every request it consults the active request model's profile and replaces only blocks the model explicitly cannot accept with a placeholder that identifies the original `read_file` path. It copies request messages rather than mutating persisted history, so a later compatible model can receive the original media. Inline non-PDF base64 documents have a stricter OpenAI Responses API compatibility path.
 
 If a provider still raises `ModelInvalidRequestError`, filesystem middleware retries once only when the latest tool turn contains multimodal `read_file` material. It replaces those latest read results with an unsupported-content notice and leaves unrelated invalid model requests to raise normally.
 

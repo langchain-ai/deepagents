@@ -75,6 +75,7 @@ from deepagents_code._glm_5p2_profile import (
     _ensure_glm_5p2_profile_registered,
     _GlmTerminalStallRecovery,
 )
+from deepagents_code._invocation import invoked_name
 from deepagents_code._paths import (
     PATHS,
     ensure_agent_dir,
@@ -1787,6 +1788,7 @@ def get_system_prompt(
         .replace("{model_identity_section}", model_identity_section)
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
+        .replace("{cli_name}", invoked_name())
         .replace("{filesystem_tool_guidance}", filesystem_tool_guidance)
         .replace("{tool_approval_guidance}", tool_approval_guidance)
         .replace("{web_search_tool_guidance}", web_search_tool_guidance)
@@ -3099,6 +3101,7 @@ def create_cli_agent(
         skills_middleware = PluginSkillsMiddleware(
             backend=FilesystemBackend(virtual_mode=False),
             sources=sources,
+            path_base=effective_cwd,
         )
         agent_middleware.append(skills_middleware)
         instruction_middleware.append(skills_middleware)
@@ -3589,6 +3592,17 @@ def create_cli_agent(
         *custom_subagents,
         *(async_subagents or []),
     ]
+    from deepagents_code.goal_tools import ForkGoalToolsMiddleware
+
+    for spec in custom_subagents:
+        if spec.get("mode") == "fork" and "runnable" not in spec:
+            spec["middleware"] = cast(
+                "list[AgentMiddleware]",
+                [
+                    *spec.get("middleware", []),
+                    ForkGoalToolsMiddleware(),
+                ],
+            )
     _ensure_glm_5p2_profile_registered()
     from deepagents_code.config_manifest import resolve_recursion_limit
 

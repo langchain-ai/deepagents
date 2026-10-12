@@ -216,6 +216,12 @@ def show_help() -> None:
     )
     console.print("  --no-mcp                   Disable all MCP tool loading")
     console.print(
+        "  --no-tracing               Disable LangSmith agent tracing for this session"
+    )
+    console.print(
+        "                             Keeps local history and model-provider requests"
+    )
+    console.print(
         "  --trust-project-mcp        Trust project MCP configs (skip approval prompt)"
     )
     console.print(
@@ -258,6 +264,7 @@ def show_help() -> None:
         "  --no-stream                Buffer full response instead of streaming"
     )
     console.print("  --show-reasoning           Show provider-visible reasoning")
+    console.print("                             On in the TUI, off by default with -n")
     console.print(
         "  --max-turns N              Max agentic turns before stopping (needs -n)"
     )

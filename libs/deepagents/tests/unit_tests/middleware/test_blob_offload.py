@@ -44,11 +44,16 @@ def _capture_model_call(middleware: FilesystemMiddleware, messages: list[Any]) -
 
 def test_other_tools_are_not_offloaded(tmp_path: Path) -> None:
     middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=tmp_path), offload_binary_content=True)
+    message = _media_message().model_copy(update={"id": "custom_result", "name": "custom_tool"})
 
-    result = middleware.wrap_tool_call(_request("custom_tool"), lambda _: _media_message())
+    result = middleware.wrap_tool_call(_request("custom_tool"), lambda _: message)
 
     assert isinstance(result, ToolMessage)
     assert result.content[0]["base64"] == PNG_B64
+
+    response = ModelResponse(result=[AIMessage(content="ok")])
+    model_result = middleware.wrap_model_call(ModelRequest(model=None, messages=[result], state={"messages": [result]}, tools=[]), lambda _: response)
+    assert model_result is response  # No state update offloads the custom tool's media.
 
 
 def test_command_results_offload_every_message(tmp_path: Path) -> None:

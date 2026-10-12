@@ -1489,7 +1489,16 @@ def _load_provider_profiles(module_path: str) -> dict[str, Any]:
         file_spec.loader.exec_module(module)
         profiles = getattr(module, "_PROFILES", {})
         if module_path == "langchain_anthropic.data._profiles":
-            profiles = {**ANTHROPIC_MODEL_PROFILE_FALLBACKS, **profiles}
+            profiles = {
+                **ANTHROPIC_MODEL_PROFILE_FALLBACKS,
+                **{
+                    model: {
+                        **ANTHROPIC_MODEL_PROFILE_FALLBACKS.get(model, {}),
+                        **profile,
+                    }
+                    for model, profile in profiles.items()
+                },
+            }
         _provider_profiles_cache[module_path] = profiles
         return profiles
 

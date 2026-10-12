@@ -623,7 +623,8 @@ def test_prefixed_same_format_route_can_be_priced(endpoint: str) -> None:
     ("context_tokens", "cold_cost", "incremental_cost"),
     [
         (150_000, 1.875, 1.725),
-        (272_000, 6.8, 6.256),
+        (272_000, 3.4, 3.128),
+        (272_001, 6.800025, 6.256023),
     ],
 )
 def test_astra_rewarm_pricing_covers_long_context_tier(

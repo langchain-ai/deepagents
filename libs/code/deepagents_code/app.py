@@ -17980,7 +17980,10 @@ class DeepAgentsApp(App):
             args: Optional user request to append after the skill body.
             command: Original slash command text for UI echo, if any.
         """
-        from deepagents_code.skills.invocation import build_skill_invocation_envelope
+        from deepagents_code.skills.invocation import (
+            build_skill_invocation_envelope,
+            pinned_skill_body,
+        )
         from deepagents_code.skills.load import load_skill_content
 
         normalized_name = skill_name.strip().lower()
@@ -18096,6 +18099,13 @@ class DeepAgentsApp(App):
                 f"Skill '{normalized_name}' has an empty SKILL.md file. "
                 "Add instructions to the file before invoking.",
             )
+            return
+
+        # Refuse here what the server would refuse when it pins the skill.
+        try:
+            pinned_skill_body(cached, content)
+        except ValueError as exc:
+            await _mount_error(str(exc))
             return
 
         envelope = build_skill_invocation_envelope(cached, args)

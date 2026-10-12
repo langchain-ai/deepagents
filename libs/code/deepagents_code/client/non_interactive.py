@@ -2718,6 +2718,7 @@ async def run_non_interactive(
         from deepagents_code.skills.invocation import (
             build_skill_invocation_envelope,
             discover_skills_and_roots,
+            pinned_skill_body,
         )
         from deepagents_code.skills.load import (
             ExtendedSkillMetadata,
@@ -2803,6 +2804,13 @@ async def run_non_interactive(
                 "SKILL.md file. "
                 "Add instructions to the file before invoking."
             )
+            return 1
+
+        # Refuse here what the server would refuse when it pins the skill.
+        try:
+            pinned_skill_body(skill, content)
+        except ValueError as exc:
+            console.print(f"[bold red]Error:[/bold red] {escape_markup(str(exc))}")
             return 1
 
         envelope = build_skill_invocation_envelope(skill, message)

@@ -1313,6 +1313,50 @@ class TestNonInteractivePrompt:
         assert result == 1
         mock_start_server.assert_not_awaited()
 
+    async def test_initial_skill_without_instructions_fails_before_server(
+        self,
+    ) -> None:
+        """A SKILL.md the server cannot pin fails before the server starts."""
+        skill = {
+            "name": "code-review",
+            "description": "Review code changes",
+            "path": "/skills/code-review/SKILL.md",
+            "license": None,
+            "compatibility": None,
+            "metadata": {},
+            "allowed_tools": [],
+            "source": "user",
+        }
+        with (
+            patch(
+                "deepagents_code.client.non_interactive._resolve_shell_allow_list",
+            ) as mock_settings,
+            patch(
+                "deepagents_code.skills.invocation.discover_skills_and_roots",
+                return_value=([skill], []),
+            ),
+            patch(
+                "deepagents_code.skills.load.load_skill_content",
+                return_value="---\nname: code-review\ndescription: Review\n---\n",
+            ),
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+            ) as mock_start_server,
+        ):
+            mock_settings.return_value = None
+            mock_settings.has_tavily = False
+            runtime_state.model_name = None
+
+            result = await run_non_interactive(
+                message="review this patch",
+                initial_skill="code-review",
+                quiet=True,
+            )
+
+        assert result == 1
+        mock_start_server.assert_not_awaited()
+
 
 def _make_interrupt_chunk(interrupt_id: str = "i1") -> tuple:
     """Return a stream chunk that triggers one HITL interrupt.

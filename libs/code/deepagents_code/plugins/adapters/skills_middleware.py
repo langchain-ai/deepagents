@@ -7,7 +7,7 @@ import logging
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, cast
 
-from deepagents.backends.protocol import FileDownloadResponse, FileInfo, LsResult
+from deepagents.backends.protocol import FileInfo, LsResult
 from deepagents.backends.utils import to_posix_path
 from deepagents.middleware import skills as sdk_skills
 from deepagents.middleware.skills import SkillsMiddleware
@@ -24,7 +24,7 @@ from deepagents_code.plugins.adapters.skills import (
     SkillNamespace,
     namespaced_skill_name,
 )
-from deepagents_code.skills.invocation import extra_skill_roots
+from deepagents_code.skills.invocation import extra_skill_roots, pinned_skill_body
 from deepagents_code.skills.load import load_skill_content
 from deepagents_code.skills.merge import merge_skill
 
@@ -353,20 +353,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             content = load_skill_content(str(path), allowed_roots=roots)
         except PermissionError as exc:
             raise ValueError(str(exc)) from exc
-        response = FileDownloadResponse(
-            path=skill["path"], content=content.encode("utf-8") if content else None
-        )
-        body = sdk_skills._pinned_skill_body(skill, response)
-        if body is None:
-            msg = (
-                f"Could not read instructions for skill '{name}'. Check that "
-                "its SKILL.md exists, is UTF-8, and is not too large."
-            )
-            raise ValueError(msg)
-        if not body:
-            msg = f"Skill '{name}' has no instructions after its frontmatter."
-            raise ValueError(msg)
-        return body
+        return pinned_skill_body(skill, content)
 
     def before_model(
         self, state: sdk_skills.SkillsState, runtime: Runtime

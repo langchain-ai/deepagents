@@ -17,6 +17,8 @@ from deepagents_code._paths import (
 )
 
 if TYPE_CHECKING:
+    from deepagents.middleware.skills import SkillMetadata
+
     from deepagents_code.skills.load import ExtendedSkillMetadata
 
 
@@ -125,6 +127,43 @@ def extra_skill_roots(path_base: Path | None) -> list[Path]:
     # a directory the user never approved).
     roots.extend(load_trusted_skill_dirs())
     return roots
+
+
+def pinned_skill_body(skill: SkillMetadata, content: str | None) -> str:
+    """Return the instructions the SDK pins for `skill`.
+
+    The client checks this before sending a skill turn, and the agent server
+    checks it again before pinning, so both refuse the same files.
+
+    Args:
+        skill: Metadata of the skill to pin.
+        content: Raw `SKILL.md` text, or `None` when it could not be read.
+
+    Returns:
+        The `SKILL.md` body without its frontmatter.
+
+    Raises:
+        ValueError: The file is unreadable or too large, or has no
+            instructions after its frontmatter.
+    """
+    from deepagents.backends.protocol import FileDownloadResponse
+    from deepagents.middleware import skills as sdk_skills
+
+    name = skill["name"]
+    response = FileDownloadResponse(
+        path=skill["path"], content=content.encode("utf-8") if content else None
+    )
+    body = sdk_skills._pinned_skill_body(skill, response)
+    if body is None:
+        msg = (
+            f"Could not read instructions for skill '{name}'. Check that "
+            "its SKILL.md exists, is UTF-8, and is not too large."
+        )
+        raise ValueError(msg)
+    if not body:
+        msg = f"Skill '{name}' has no instructions after its frontmatter."
+        raise ValueError(msg)
+    return body
 
 
 def build_skill_invocation_envelope(

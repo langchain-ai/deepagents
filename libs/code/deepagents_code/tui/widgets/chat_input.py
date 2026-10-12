@@ -652,6 +652,10 @@ class ChatTextArea(PasteBurstTextArea):
         if owner is not None and owner._prompt_search_active:
             owner.focus_input()
 
+    def on_text_area_changed(self) -> None:
+        """Highlight the active line whenever the chat input contains a newline."""
+        self.set_class(self.document.line_count > 1, "multiline")
+
     def _render_line(self, y: int) -> Strip:
         """Render a line, keeping shell token colors visible on the cursor line.
 

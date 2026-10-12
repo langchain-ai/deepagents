@@ -157,7 +157,17 @@ async def test_scheduled_job_does_not_block_sibling_thread(tmp_path: Path) -> No
         await host.stop()
 
 
-async def test_scheduled_history_uses_discord_parent_and_replies_in_thread(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("provider", "conversation", "parent", "deliver_to"),
+    [
+        ("discord", "thread-1", "100", "channel"),
+        ("discord", "thread-1", "100", "thread"),
+        ("slack", "C1:1700000000.000100", "C1", "channel"),
+    ],
+)
+async def test_scheduled_history_uses_parent_and_delivers_by_choice(  # noqa: PLR0913  # Shared provider fixture.
+    tmp_path, monkeypatch, provider, conversation, parent, deliver_to
+):
     origins = []
     scopes = []
 
@@ -177,7 +187,7 @@ async def test_scheduled_history_uses_discord_parent_and_replies_in_thread(tmp_p
         return graph.compile(checkpointer=kwargs["checkpointer"])
 
     monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", factory)
-    channel = RecordingChannel("discord")
+    channel = RecordingChannel(provider)
     async with make_saver(tmp_path / "history.sqlite") as saver:
         host = TalonHost(
             config=_config(tmp_path), agent=make_runtime(saver, tmp_path), channels=[channel]
@@ -185,23 +195,34 @@ async def test_scheduled_history_uses_discord_parent_and_replies_in_thread(tmp_p
         await host.start()
         try:
             await host.receive_message(
-                channel, ChannelMessage("thread-1", "hello", metadata={"history_chat": "100"})
+                channel,
+                ChannelMessage(
+                    conversation,
+                    "hello",
+                    metadata={"history_chat": parent, "is_dm": False},
+                ),
             )
             await asyncio.gather(*host._tasks.values())
             store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
             job = store.create_job(
-                prompt="recall", schedule=CronSchedule.parse("in 5m"), origin=origins[0]
+                prompt="recall",
+                schedule=CronSchedule.parse("in 5m"),
+                origin=origins[0],
+                deliver_to=deliver_to,
             )
             saved = store.get_job(job.id)
             assert saved is not None
-            assert saved.origin.conversation_id == "thread-1"
-            assert saved.origin.history_chat == "100"
+            assert saved.origin.conversation_id == conversation
+            assert saved.origin.history_chat == parent
             result = await host.run_scheduled_job(saved)
             assert [entry["preview"] for entry in scopes] == ["hello"]
             await host.deliver_scheduled_result(channel, saved, result)
-            assert channel.sent[-1] == ("thread-1", "noted")
+            assert channel.sent[-1] == (
+                parent if deliver_to == "channel" else conversation,
+                "noted",
+            )
             entries = await saver.archive.entries(
-                {"talon_history_channel": "discord", "talon_history_chat": "100"},
+                {"talon_history_channel": provider, "talon_history_chat": parent},
                 session_id=f"{job.id}:talon-cron",
             )
             assert [entry["text"] for entry in entries] == ["noted"]
@@ -264,3 +285,32 @@ async def test_scheduled_history_preserves_whatsapp_archive_address(tmp_path, mo
             assert channel.sent[-1] == ("chat@lid", "recalled")
         finally:
             await host.stop()
+
+
+class _ThreadedChannel(RecordingChannel):
+    def top_level_conversation_id(self, conversation_id: str) -> str:
+        return conversation_id.partition(":")[0]
+
+
+@pytest.mark.parametrize(
+    ("channel", "deliver_to", "target"),
+    [
+        (_ThreadedChannel("slack"), "channel", "C1"),
+        (_ThreadedChannel("slack"), "thread", "C1:1.2"),
+        (RecordingChannel("whatsapp"), "channel", "C1:1.2"),
+    ],
+)
+async def test_scheduled_result_posts_to_the_thread_parent_by_choice(
+    tmp_path: Path, channel: RecordingChannel, deliver_to: str, target: str
+) -> None:
+    host = TalonHost(config=_config(tmp_path), agent=BlockingAgent(), channels=[channel])
+    job = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron").create_job(
+        prompt="report",
+        schedule=CronSchedule.parse("in 5m"),
+        origin=CronOrigin(conversation_id="C1:1.2", channel=channel.provider),
+        deliver_to=deliver_to,
+    )
+
+    await host.deliver_scheduled_result(channel, job, "done")
+
+    assert channel.sent == [(target, "done")]

@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Engineer Navigation Guide](quickstart.md) - Concise navigation for engineers changing the Deep Agents SDK, dcode, ACP, Talon, partner integrations, or evaluation suite. Routes common work to the architecture, concepts, workflows, operations, and focused testing guidance.
+- [Deep Agents Maintainer Quickstart](quickstart.md) - A routing map for maintainers of the independently versioned Deep Agents packages. Start with the behavior owner and runtime boundary, then run the narrowest package-local validation.
 
 # Directories
 

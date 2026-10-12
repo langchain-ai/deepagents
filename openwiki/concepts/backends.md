@@ -1,11 +1,11 @@
 ---
 type: architecture concept
-title: Backends and Capability Routing
-description: DeepAgents backends determine file storage, persistence scope, path routing, and whether the filesystem middleware can expose shell execution. Isolation is established by the selected backend and sandbox, not by model intent or virtual paths.
-tags: [backends, capability-routing, filesystem, state, persistence, sandbox, routing]
+title: Backends and Storage Routing
+description: DeepAgents backends define file storage, persistence scope, virtual-path routing, artifact placement, and optional command execution. This page explains the backend protocol, composite mounts, graph-context requirements, and the security consequences of local or sandboxed implementations.
+tags: [backends, storage-routing, filesystem, state, persistence, sandbox, artifacts]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-09-18T16:46:37.183Z
+    at: 2026-10-08T08:07:53.482Z
 sources:
   - id: openwiki-source-a1549ea98d425efea270be93
     resource: repo://libs/deepagents/deepagents/backends/composite.py
@@ -19,12 +19,24 @@ sources:
     resource: repo://libs/deepagents/deepagents/backends/local_shell.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
+  - id: openwiki-source-d4463137befa776cd47750d4
+    resource: repo://libs/deepagents/deepagents/backends/sandbox.py
   - id: openwiki-source-07f9eac13e71bcbdb4e6994b
     resource: repo://libs/deepagents/deepagents/backends/state.py
   - id: openwiki-source-21e2b0401425a427d8cea9c1
     resource: repo://libs/deepagents/deepagents/backends/store.py
+  - id: openwiki-source-303a7196a0e1a36cc078621b
+    resource: repo://libs/deepagents/deepagents/middleware/_blob_offload.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
+  - id: openwiki-source-ff7e5dfd747aa11f43332e1b
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_file_format.py
+  - id: openwiki-source-58bc0b41ad72708cee0fee6e
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_blob_offload.py
+  - id: openwiki-source-f913f8fa643e6c2796621ca5
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_filesystem_middleware_init.py
+  - id: openwiki-source-f445d59792df76394a37a768
+    resource: repo://libs/deepagents/tests/unit_tests/test_artifacts_root.py
   - id: openwiki-source-7c1cff57fb2b25a4a7848547
     resource: repo://libs/partners/daytona/langchain_daytona/sandbox.py
   - id: openwiki-source-5e387cb8bab7ca8537e7d97c
@@ -33,68 +45,58 @@ sources:
     resource: repo://libs/partners/runloop/langchain_runloop/sandbox.py
   - id: openwiki-source-edb310aff3786a7a99593231
     resource: repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-18T16:46:37.183Z" }
+  - id: openwiki-source-580d91c607e0a09e0659e565
+    resource: repo://libs/talon/deepagents_talon/sandbox.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
 ---
 
-# Backends and Capability Routing
+# Backends and Storage Routing
 
-A **backend** is the implementation boundary behind agent file operations. It selects where files live, how long they persist, how virtual paths are routed, and whether a shell exists. It is not a model-visible tool or an authorization policy: [Filesystem middleware](/openwiki/concepts/tools-filesystem.md) registers and dispatches tools, while [permissions and HITL](/openwiki/concepts/permissions-hitl.md) are separate controls.
+A **backend** is the implementation boundary behind agent file operations. It determines where files live, how long they persist, how virtual paths are routed, where middleware artifacts are written, and whether a shell exists. It is not a model-visible tool or an authorization policy: [filesystem tools](/openwiki/concepts/tools-filesystem.md) register and dispatch operations, while storage selection determines persistence and execution behavior.
 
-The important security rule is that **the backend's execution environment establishes the boundary, not model intent, a tool description, a virtual prefix, or a path allowlist**. A local shell remains a host shell even when its file API presents a virtual root. Choose a genuinely isolated sandbox for untrusted execution.
+> **Security boundary:** routing is not filesystem sandboxing. A route selects a backend for file-tool calls; it neither authorizes access nor constrains a shell. The composite default selects the environment that runs commands. In particular, a local shell remains a host shell even when its file API exposes a virtual root. Use an isolated sandbox for untrusted execution.
 
 ## Contract and result semantics
 
-`BackendProtocol` is the uniform, deliberately partial interface. Its file operations—`ls`, `read`, `grep`, `glob`, `write`, `edit`, optional `delete`, and batch upload/download—default to `NotImplementedError`, so a backend may implement only the operations it can provide. File operations are on this base protocol rather than the shell subtype: `StateBackend` and `StoreBackend` have no process to execute and search in Python.
+`BackendProtocol` is the uniform, deliberately partial interface. Its file operations—`ls`, `read`, `grep`, `glob`, `write`, `edit`, optional `delete`, and batch upload/download—default to `NotImplementedError`, so an implementation can provide only the operations it supports. File operations live on this base protocol rather than the shell subtype: `StateBackend` and `StoreBackend` can search their data in Python but have no process to execute.
 
-This is not a promise that tools can fall back to raw shell commands. The backend search contract is literal (not regex), produces structured `GrepResult` and `GlobResult`, honors `max_count`, and preserves filesystem permission behavior. `GlobResult.truncation_reason` distinguishes a recoverable search budget from unreadable paths or transport clipping. Shared glob matching applies relative to the search root: a pattern without `/` matches a basename at any depth; a leading `/` anchors it to the root; dot names require a dot-prefixed pattern. Invalid traversal in glob patterns is returned as an error rather than executed.
+File tools are not shell fallbacks. The search contract is literal, not regex; it produces structured `GrepResult` and `GlobResult`, honors `max_count`, and preserves filesystem permission behavior. `GlobResult.truncation_reason` differentiates a search budget from unreadable paths or transport clipping. Glob patterns are relative to the search root: a pattern without `/` matches a basename at any depth, a leading `/` anchors at that root, and dot names need a dot-prefixed pattern. A refused traversal in a glob is returned as an error rather than executed.
 
-Operations report ordinary failures through typed result dataclasses such as `ReadResult`, `WriteResult`, `EditResult`, `DeleteResult`, `LsResult`, `GrepResult`, and `GlobResult`, rather than raising. Batch transfer likewise returns one `FileUploadResponse` or `FileDownloadResponse` per input in input order, allowing partial success and standardized errors such as `file_not_found`, `permission_denied`, `is_directory`, and `invalid_path`.
+Operations report ordinary failures in typed result dataclasses such as `ReadResult`, `WriteResult`, `EditResult`, `DeleteResult`, `LsResult`, `GrepResult`, and `GlobResult`, rather than by raising. Batch transfer returns one `FileUploadResponse` or `FileDownloadResponse` per input in input order, so partial success is representable with standardized errors.
 
 ### Reads, edits, and asynchronous calls
 
-Backends return raw file content; middleware adds model-facing line-number gutters. `ReadResult` enforces coherent pagination at construction: its shown line window is co-present and forward, `total_lines` covers the window, and `next_offset` is exactly the first unshown line. Read implementations clamp a negative offset to zero. A non-positive text limit produces an uninspected empty window (`no_lines_requested`); binary reads are not line-paginated. Exact edit requires a unique old string unless `replace_all=True`.
+Backends return raw file content; middleware adds model-facing line-number gutters. `ReadResult` validates pagination at construction: its shown line window is co-present and forward, `total_lines` covers that window, and `next_offset` is exactly the first unshown line. A non-positive text limit produces an empty, uninspected window; binary reads are not line-paginated. Exact edit requires a unique old string unless `replace_all=True`.
 
-Every synchronous protocol method has an async counterpart. Default async methods use `asyncio.to_thread`; `agrep` additionally uses a 35-second outer wait and forwards `max_count` only when the concrete implementation accepts it, trimming after completion otherwise. That timeout bounds the caller's wait, not the already-running worker. `delete` is optional, so callers use `_supports_delete` rather than calling the base method to probe support.
+Every synchronous protocol method has an async counterpart. Default async methods use `asyncio.to_thread`; `agrep` also bounds the caller wait, conditionally passes `max_count` to compatible concrete implementations, and trims afterward when needed. That timeout does not stop an already-running worker thread. `delete` is optional, so capability checks use `_supports_delete` instead of invoking the base method merely to discover its `NotImplementedError`.
 
-Search limits are deliberate operational safeguards: a sync grep phase has `DEFAULT_GREP_TIMEOUT = 15`, `ASYNC_GREP_TIMEOUT = 35`, and a sandbox glob round trip has `ASYNC_GLOB_TIMEOUT = 30`. The sandbox-side glob walk separately caps itself at five seconds, 1,000 brace expansions, and 10,000 matches; the outer timeout also covers interpreter startup, transport, and transfer, preventing a wedged sandbox from indefinitely blocking the caller.
+`SandboxBackendProtocol` adds `id`, `execute()`, and `aexecute()` to the file contract. `ExecuteResponse` reports combined output, an optional exit code, and output truncation; a nonzero command exit is still a completed execution, so consumers must inspect `exit_code` rather than treating a completed tool call as command success.
 
 ## Capability decision and routing path
 
-`SandboxBackendProtocol` adds only `id`, `execute()`, and `aexecute()` to the file contract. Middleware's `supports_execution()` uses this marker—checking a composite's default backend—to decide whether `execute` is exposed. It inspects `execute` before forwarding a timeout to remain compatible with older backend packages that lack that keyword.
-
 ```mermaid
 flowchart TD
-    Start["Filesystem middleware receives configured backend"]
-    Composite{"CompositeBackend"}
-    DefaultCheck{"Default implements SandboxBackendProtocol"}
-    DirectCheck{"Backend implements SandboxBackendProtocol"}
+    Start["Filesystem middleware receives backend"]
     FilePath["File tool path"]
-    Route{"Longest matching route prefix"}
+    Route{"Matching route prefix"}
     Routed["Strip prefix and call routed backend"]
     Fallback["Call default backend"]
     Restore["Restore virtual prefix in result"]
-    Execute["execute tool request"]
-    Shell["Expose and call default shell"]
-    NoShell["Do not expose execute"]
-    Boundary["Selected backend environment establishes execution boundary"]
-    Start --> Composite
-    Composite -->|yes| DefaultCheck
-    Composite -->|no| DirectCheck
-    DefaultCheck -->|yes| FilePath
-    DefaultCheck -->|no| FilePath
-    DirectCheck --> FilePath
+    Execute["Execute tool request"]
+    Shell["Call default shell"]
+    Boundary["Selected environment is the boundary"]
+    Start --> FilePath
     FilePath --> Route
     Route -->|yes| Routed --> Restore
     Route -->|no| Fallback
-    DefaultCheck -->|yes| Execute --> Shell --> Boundary
-    DefaultCheck -->|no| NoShell
-    DirectCheck -->|yes| Execute
-    DirectCheck -->|no| NoShell
+    Start --> Execute --> Shell --> Boundary
 ```
 
-This decision path separates file-path routing from execution: file operations can be mounted; shell execution always goes to the default execution-capable backend. The selected local or remote environment—not the model's requested path—sets the execution boundary.
+This flow shows that file paths can be routed, while commands always use the composite default backend.
 
-## Storage and execution choices
+A prefix does not grant permission and does not make a routed backend's files available to the default shell. Middleware exposes `execute` only when the backend is a `SandboxBackendProtocol`; for a composite it checks the default backend.
+
+## Storage scope and lifecycle
 
 | Backend | Storage scope | Shell capability |
 | --- | --- | --- |
@@ -104,38 +106,50 @@ This decision path separates file-path routing from execution: file operations c
 | `LocalShellBackend` | Local disk and host process environment | Yes—unrestricted host shell |
 | `LangSmithSandbox` | Isolated LangSmith sandbox filesystem | Yes |
 | `ContextHubBackend` | Remote LangSmith Hub agent repository with commits | No |
-| `CompositeBackend` | Default plus mounted backend routes | Only when its default has it |
+| `CompositeBackend` | Default backend plus mounted routes | Only when its default has it |
 
-### State and persistent stores
+### State and durable stores
 
-`FilesystemMiddleware()` defaults to `StateBackend()`, and accepts initialized backend instances rather than callable factories (removed in deepagents 0.7). `StateBackend` stores files in LangGraph agent state under `files` through Pregel `CONFIG_KEY_READ` and `CONFIG_KEY_SEND`. Its `fresh=True` read gives read-your-writes behavior within a superstep; queued updates commit at the node boundary. State is checkpointed within a conversation thread, not shared across threads, and using it outside graph execution raises `RuntimeError`. See [State and persistence](/openwiki/concepts/state-persistence.md).
+`FilesystemMiddleware()` defaults to `StateBackend()` and accepts initialized backend instances rather than callable factories. During initialization it recursively inspects a composite default and every nested route. If any branch is a `StateBackend`, it uses a state schema containing the `files` channel; a topology with no state-backed branch uses the base schema. See [State and persistence](/openwiki/concepts/state-persistence.md).
 
-`StoreBackend` is the cross-thread option. A caller-supplied `NamespaceFactory` scopes its `BaseStore` data; namespace components are validated against a safe character set so wildcard/glob syntax cannot broaden lookup scope. It uses the explicitly supplied store or resolves one through `get_store()` at call time. A runtime-dependent namespace needs graph context, while a factory that ignores its runtime can work with an explicit store. Several async methods use the store's native async APIs rather than only protocol thread wrappers.
+`StateBackend` is graph-context dependent: it stores files in LangGraph agent state under `files` through Pregel `CONFIG_KEY_READ` and `CONFIG_KEY_SEND`. Its `fresh=True` read provides read-your-writes within a superstep; queued updates commit at the node boundary. Checkpointed state persists within a conversation thread, not across threads. Direct use outside a graph execution context, or without required graph config, raises `RuntimeError`; pre-populate files through agent invocation state rather than calling this backend outside the graph.
 
-`ContextHubBackend` persists remote Hub repository content. It maintains a cached tree and overlays pending and in-flight accepted mutations so reads see local changes. A worker batches mutations briefly, each mutator waits for its commit outcome, and a Hub conflict refreshes the tree and rematerializes write, edit, or delete intents before retrying. It has no shell.
+`StoreBackend` is the cross-thread option. A caller supplies a `NamespaceFactory` that scopes data in a `BaseStore`; each namespace component is validated as non-empty safe text, rejecting wildcard and glob syntax so a namespace cannot broaden a store lookup. The backend uses an explicit store when supplied or resolves one through `get_store()` at call time. A namespace factory that depends on `Runtime` still needs graph context; an explicit store plus a factory that does not inspect runtime can be used directly.
+
+`ContextHubBackend` persists remote Hub repository content. It caches the tree and overlays accepted pending and in-flight mutations so reads see local changes. A worker batches mutations briefly, each mutator waits for its commit outcome, and a Hub conflict refreshes the tree and rematerializes write, edit, or delete intents before retrying. It has file semantics, not shell execution.
+
+The shared state/store format represents UTF-8 uploads as text and non-UTF-8 uploads as base64. Downloads restore original bytes; a later text write replaces the binary encoding with `utf-8` while retaining the original creation timestamp.
 
 ### Local filesystem versus a real sandbox
 
-`FilesystemBackend(root_dir, virtual_mode=True)` maps virtual paths under `root_dir`, blocks traversal and verifies resolved containment. It is a virtual-path and path guardrail, **not** process isolation. With `virtual_mode=False`, absolute paths bypass `root_dir` and relative traversal can escape it; use that mode only in trusted local workflows. Its Python grep fallback skips files over configurable `max_file_size_mb`.
+`FilesystemBackend(root_dir, virtual_mode=True)` maps virtual paths under `root_dir`, blocks traversal, and checks resolved containment. It is a virtual-path guardrail, **not** process isolation or a general permission system. With `virtual_mode=False`, absolute paths bypass `root_dir` and relative traversal can escape it; use that mode only in trusted local workflows.
 
-`LocalShellBackend` adds `SandboxBackendProtocol` to the filesystem backend, but runs commands on the host with the user's permissions. `virtual_mode` restricts only file operations and never `execute()`. Its default timeout is 120 seconds and its default output capture is 100,000 bytes. Its command environment is empty unless `env` is provided or `inherit_env=True`; inheritance copies `os.environ` and then applies explicit overrides. Do not rely on virtual paths or middleware permissions to contain this backend.
+`LocalShellBackend` combines the filesystem backend with `SandboxBackendProtocol`, but its commands run on the host with the user's permissions. `virtual_mode` applies only to file operations, never `execute()`. Its default execute timeout is 120 seconds; commands use `root_dir` as their working directory, but are not confined there. Do not rely on route prefixes, virtual paths, or middleware path rules to contain it.
 
-`BaseSandbox` is the extension point for a real execution environment. A subclass implements `id`, `execute()`, `upload_files()`, and `download_files()`; inherited file operations are built from execution and transfer helpers. Those helpers do not reduce the shell trust boundary. Sandbox file reads cap rendered text at `MAX_OUTPUT_BYTES = 500 * 1024` and append `TRUNCATION_MSG`. `LangSmithSandbox` is a `BaseSandbox` implementation over an isolated LangSmith sandbox; it opts into capture-at-source output offload and caches its async client per event loop. Partner packages provide the same adapter shape for Daytona, Modal, Runloop, and Vercel sandboxes; see [sandbox partners](/openwiki/integrations/sandbox-partners.md) for setup and provider-specific behavior.
+`BaseSandbox` is the extension point for an execution environment. Concrete subclasses implement `execute()` and `upload_files()`; the base derives listing, searching, reading, writing, editing, deletion, and download behavior from those capabilities. `LangSmithSandbox` is a `BaseSandbox` adapter over an isolated LangSmith sandbox. Partner packages provide the same adapter shape for Daytona, Modal, Runloop, and Vercel sandboxes; see [sandbox partners](/openwiki/integrations/sandbox-partners.md) for setup and provider behavior.
 
-## Composite mounts
+## Composite mounts and artifact placement
 
-`CompositeBackend` routes paths using prefixes pre-sorted longest-first. A matched prefix is stripped before delegation (the route root becomes `/`); unmatched paths go to `default`; returned paths are re-prefixed. `ls('/')` combines the default listing with synthetic route directories. Writes and edits restore the original path in their result. For batch uploads/downloads, the composite groups inputs by backend, issues one batch per target, then restores virtual paths and input order.
+`CompositeBackend` routes paths by prefixes sorted longest-first. A matching prefix is stripped before delegation—the routed backend sees its root as `/`; unmatched paths go to `default`; returned paths are re-prefixed. `ls('/')` combines the default listing with synthetic route directories. Batch uploads and downloads group inputs by backend, then restore virtual paths and original input order.
 
-Root searches aggregate the default then routes. They surface the first backend error rather than pretending partial success and OR truncation; glob merging keeps `unreadable` ahead of a simultaneous `budget` reason. Root-wide composite `grep` treats `max_count` as a global cap, passes each route the remaining budget, and conservatively marks results truncated once later routes are skipped. A root-anchored glob skips routes unless its pattern explicitly targets their prefix, preserving root anchoring.
+Root searches aggregate the default and routes. They surface the first backend error rather than presenting partial success; glob merging ORs truncation and gives `unreadable` precedence over a simultaneous `budget` reason. Root-wide composite `grep` treats `max_count` as a global cap, gives each route the remaining budget, and conservatively marks output truncated when later routes are skipped. A root-anchored glob skips routes unless the pattern explicitly targets the route prefix, preserving the protocol's search-root anchoring semantics.
 
-`execute` is intentionally not path-routable: it delegates only to `default` and raises `NotImplementedError` if that backend is not a `SandboxBackendProtocol`. A composite may therefore pair a sandbox default for working files and commands with a `StoreBackend` mounted at `/memories/`; that does not make `/memories/` a shell-visible directory. Only when the default is `LocalShellBackend` and a route is `FilesystemBackend` can middleware provide a virtual-to-host mapping. Store routes, and local routes paired with a remote sandbox default, must be accessed through file tools. If a routed backend lacks optional `delete`, composite converts its `NotImplementedError` to a `DeleteResult` error.
+`execute` is intentionally not path-routable: it delegates only to `default` and raises `NotImplementedError` when that backend is not a `SandboxBackendProtocol`. A composite can mount a `StoreBackend` at `/memories/` beneath a sandbox default, but that does not make `/memories/` shell-visible. Middleware can provide a virtual-to-host mapping only when the default is `LocalShellBackend` and the route is a `FilesystemBackend`; store routes and local routes combined with a remote sandbox default must be accessed through file tools.
 
-## Tool surface, permissions, and verification
+A `CompositeBackend` also owns `artifacts_root`, defaulting to `/`. `FilesystemMiddleware` normalizes this root and places large tool-result files, conversation-history files, and binary blobs below it. A non-composite backend uses `/`. Choose the artifact root because of the storage route it resolves to, not because routing supplies a security policy.
 
-Middleware resolves the chosen backend to a local `resolved_backend` before dispatching file and shell tools. The `tools` allowlist controls model visibility independently of capabilities: an explicit list must contain `read_file`, and listing `execute` or `delete` is a no-op if the backend cannot support it. It also evicts oversized tool or human-message content into backend storage, so the selected backend determines where those artifacts live.
+### Binary payload persistence
 
-Permissions are enforced in middleware tool implementations, not as a general `BackendProtocol` authorization system. Since a command can evade path-level checks, middleware rejects tool-level permissions for execution-capable backends unless every permission path is scoped to composite routes. Configure HITL separately, and select isolation rather than assuming a permission rule contains a host shell.
+Set `offload_binary_content=True` to keep binary `read_file` blocks and inline human-message media out of checkpoint history. Middleware writes decoded payloads with batch upload to `<artifacts_root>/blobs/<sha256>`, replaces a successful inline base64 value with a `deepagents_blob` digest reference in state, and hydrates references before a model call. The per-run base64 cache is private and untracked; persisted blobs allow a resumed thread to reload content.
 
-Use `StateBackend` for thread-local scratch files, `StoreBackend` for namespace-scoped durable memory, `FilesystemBackend` for trusted local files without shell access, and `LocalShellBackend` only for trusted development or controlled CI. Use an isolated `BaseSandbox` implementation for command execution, `ContextHubBackend` for versioned Hub content, and `CompositeBackend` when these scopes must coexist—choosing its default deliberately because it determines shell capability.
+This is best effort rather than a data-loss transformation: a failed upload leaves the payload inline. Hydration accepts only a 64-hex reference whose downloaded bytes hash to that digest. A missing, malformed, unreadable, or tampered blob is replaced with a text notice instead of being sent to the model. Middleware disables offload with a warning when the resolved `blobs/` route is a `StateBackend`, because that would retain bytes in checkpointed state and defeat the option.
 
-Focused filesystem tests cover virtual and non-virtual resolution, direct-child listings, literal grep including metacharacters, shared glob/dotfile semantics, line pagination, binary/video guards, symlink containment, and ordered partial-success transfers. Composite tests cover prefix normalization and remapping, root aggregation, global grep caps, anchored glob behavior, optional deletion, default-only execution, and batch ordering.
+## Configuration and operational guidance
+
+The `tools` allowlist controls model visibility independently of backend capability: an explicit list must contain `read_file`, and listing `execute` or `delete` has no effect when the selected backend does not support it. Tool-level filesystem permissions are enforced by `FilesystemMiddleware`, not by backend routing. Since a shell can bypass path restrictions, middleware rejects unscoped permission rules with execution-capable backends; this does not turn a shell into a restricted filesystem.
+
+Use `StateBackend` for thread-local scratch files, `StoreBackend` for namespace-scoped durable memory, `FilesystemBackend` for trusted local file access without a shell, and `LocalShellBackend` only for trusted development or controlled CI. Use an isolated `BaseSandbox` implementation for command execution, `ContextHubBackend` for versioned Hub content, and `CompositeBackend` when these scopes must coexist. Choose the composite default deliberately because it determines shell capability, and choose `artifacts_root` deliberately because it determines artifact persistence location.
+
+Talon illustrates this split: sandbox mode builds a composite with the provider sandbox as default and host-backed skills and memory routes. Commands therefore go to the sandbox while only those mounted directories are host-backed; configured sandbox startup failure raises `SandboxStartupError` instead of falling back to host execution.
+
+Focused tests cover state-schema selection for direct and nested state branches, artifact-root normalization, blob upload failure and tamper rejection, the shared state/store file format, and composite search/routing boundaries. They are useful safeguards when changing persistence, routing, or model-visible tool behavior.

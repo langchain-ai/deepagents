@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
-from langchain.agents.middleware import TodoListMiddleware
+from langchain.agents.middleware import ModelFallbackMiddleware, TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware, PrivateStateAttr
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage
@@ -37,6 +37,7 @@ from deepagents.middleware._prompt_caching import (
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware.async_subagents import AsyncSubAgentMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import SubAgent, SubAgentMiddleware, create_sub_agent
 from deepagents.middleware.summarization import SummarizationMiddleware, _DeepAgentsSummarizationMiddleware
 from deepagents.profiles import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
@@ -2610,6 +2611,11 @@ def _named_mw(name: str) -> AgentMiddleware[Any, Any, Any]:
     return _MW()
 
 
+def _fallback_mw() -> ModelFallbackMiddleware:
+    """Return a `ModelFallbackMiddleware`, which skill tool disclosure must run inside."""
+    return ModelFallbackMiddleware(GenericFakeChatModel(messages=iter([])))
+
+
 class TestApplyUserMiddleware:
     """Unit tests for the _apply_user_middleware helper."""
 
@@ -3048,3 +3054,178 @@ class TestSubagentMiddlewareIsolation:
         )
         helper_spec = next(s for s in sub_mw._subagents if s.get("name") == "helper")
         assert not any(isinstance(m, _DeepAgentsSummarizationMiddleware) for m in helper_spec["middleware"])
+
+
+class TestSkillsMiddlewarePlacement:
+    """`SkillsMiddleware` sits innermost, just outside prompt caching, in every stack.
+
+    From there skill tool disclosure sees the compacted conversation and the
+    model actually called, after any user fallback or routing middleware.
+    """
+
+    def _build(self, model: str | BaseChatModel | None = None, **kwargs: Any) -> tuple[list[AgentMiddleware], dict[str, list[AgentMiddleware]]]:
+        """Return the main stack and each subagent's stack by name."""
+        kwargs.setdefault("skills", ["/skills/"])
+        fake_agent = MagicMock()
+        fake_agent.with_config.return_value = "compiled-agent"
+        with (
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
+            patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
+        ):
+            create_deep_agent(model=model or GenericFakeChatModel(messages=iter([])), **kwargs)
+        subagents = {spec["name"]: spec["middleware"] for spec in mock_subagents.call_args.kwargs["subagents"]}
+        return mock_create.call_args.kwargs["middleware"], subagents
+
+    @staticmethod
+    def _skills_slot(stack: list[AgentMiddleware]) -> int:
+        """Return the index of the Skills entry, asserting prompt caching follows it."""
+        names = [m.name for m in stack]
+        index = names.index("SkillsMiddleware")
+        assert names[index + 1] == "AnthropicPromptCachingMiddleware", names
+        return index
+
+    @staticmethod
+    def _tail(stack: list[AgentMiddleware]) -> list[str]:
+        """Return the names from `PatchToolCallsMiddleware` through prompt caching."""
+        names = [m.name for m in stack]
+        return names[names.index("PatchToolCallsMiddleware") : names.index("AnthropicPromptCachingMiddleware") + 1]
+
+    def test_main_and_general_purpose_stacks_put_skills_after_user_middleware(self) -> None:
+        novel = _named_mw("NovelMW")
+
+        main, subagents = self._build(middleware=[novel])
+
+        assert main.index(novel) < self._skills_slot(main)
+        self._skills_slot(subagents["general-purpose"])
+
+    def test_profile_extra_middleware_precedes_skills(self) -> None:
+        extra = _StubMW()
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile("skillsslot", HarnessProfile(extra_middleware=[extra]))
+            with patch("deepagents.graph.resolve_model", return_value=GenericFakeChatModel(messages=iter([]))):
+                main, subagents = self._build(model="skillsslot:some-model")
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
+        assert main.index(extra) < self._skills_slot(main)
+        general_purpose = subagents["general-purpose"]
+        assert any(isinstance(m, _StubMW) for m in general_purpose[: self._skills_slot(general_purpose)])
+
+    def test_same_name_user_middleware_replaces_skills_in_its_slot(self) -> None:
+        replacement = _named_mw("SkillsMiddleware")
+
+        main, subagents = self._build(middleware=[replacement])
+
+        assert main[self._skills_slot(main)] is replacement
+        general_purpose = subagents["general-purpose"]
+        assert general_purpose[self._skills_slot(general_purpose)] is replacement
+
+    def test_custom_skills_middleware_takes_its_slot_without_skills(self) -> None:
+        custom = SkillsMiddleware(backend=StateBackend(), sources=["/skills/"])
+
+        main, subagents = self._build(skills=None, middleware=[custom])
+
+        assert main[self._skills_slot(main)] is custom
+        general_purpose = subagents["general-purpose"]
+        assert general_purpose[self._skills_slot(general_purpose)] is custom
+
+    def test_declarative_subagent_puts_its_own_middleware_before_skills(self) -> None:
+        own = _named_mw("OwnMW")
+        worker: SubAgent = {"name": "worker", "description": "d", "skills": ["/skills/"], "middleware": [own]}
+
+        _, subagents = self._build(subagents=[worker])
+
+        stack = subagents["worker"]
+        assert stack.index(own) < self._skills_slot(stack)
+
+    def test_fork_puts_inherited_and_own_middleware_before_skills(self) -> None:
+        inherited, own = _named_mw("ParentMW"), _named_mw("OwnMW")
+        worker: SubAgent = {"name": "worker", "description": "d", "mode": "fork", "middleware": [own]}
+
+        _, subagents = self._build(middleware=[inherited], subagents=[worker])
+
+        stack = subagents["worker"]
+        skills = self._skills_slot(stack)
+        assert stack.index(inherited) < skills
+        assert stack.index(own) < skills
+
+    @pytest.mark.parametrize("skills", [None, ["/skills/"]], ids=["without_skills", "with_skills"])
+    def test_declarative_subagent_skills_middleware_takes_its_slot(self, skills: list[str] | None) -> None:
+        own = SkillsMiddleware(backend=StateBackend(), sources=["/skills/"])
+        helper: SubAgent = {"name": "helper", "description": "d", "middleware": [own, _fallback_mw()]}
+        if skills is not None:
+            helper["skills"] = skills
+
+        main, subagents = self._build(skills=None, subagents=[helper])
+
+        stack = subagents["helper"]
+        assert stack[self._skills_slot(stack)] is own
+        assert self._tail(stack) == ["PatchToolCallsMiddleware", "ModelFallbackMiddleware", "SkillsMiddleware", "AnthropicPromptCachingMiddleware"]
+        assert not any(isinstance(m, SkillsMiddleware) for m in [*main, *subagents["general-purpose"]])
+
+    def test_fork_skills_middleware_takes_its_slot_without_main_skills(self) -> None:
+        own = SkillsMiddleware(backend=StateBackend(), sources=["/skills/"])
+        worker: SubAgent = {"name": "worker", "description": "d", "mode": "fork", "middleware": [own, _fallback_mw()]}
+
+        main, subagents = self._build(skills=None, subagents=[worker])
+
+        stack = subagents["worker"]
+        assert stack[self._skills_slot(stack)] is own
+        assert self._tail(stack) == ["PatchToolCallsMiddleware", "ModelFallbackMiddleware", "SkillsMiddleware", "AnthropicPromptCachingMiddleware"]
+        assert not any(isinstance(m, SkillsMiddleware) for m in [*main, *subagents["general-purpose"]])
+
+    def test_declarative_subagent_keeps_its_last_skills_middleware(self) -> None:
+        first = SkillsMiddleware(backend=StateBackend(), sources=["/first/"])
+        last = SkillsMiddleware(backend=StateBackend(), sources=["/last/"])
+        helper: SubAgent = {"name": "helper", "description": "d", "middleware": [first, last]}
+
+        _, subagents = self._build(skills=None, subagents=[helper])
+
+        stack = subagents["helper"]
+        assert [m for m in stack if isinstance(m, SkillsMiddleware)] == [last]
+        assert stack[self._skills_slot(stack)] is last
+
+    def test_declarative_subagent_profile_extra_middleware_precedes_its_skills_middleware(self) -> None:
+        extra = _StubMW()
+        own = SkillsMiddleware(backend=StateBackend(), sources=["/skills/"])
+        helper: SubAgent = {"name": "helper", "description": "d", "model": "skillsslot:some-model", "middleware": [own]}
+
+        with patch.dict(_HARNESS_PROFILES):
+            register_harness_profile("skillsslot", HarnessProfile(extra_middleware=[extra]))
+            with patch("deepagents.graph.resolve_model", return_value=GenericFakeChatModel(messages=iter([]))):
+                _, subagents = self._build(skills=None, subagents=[helper])
+
+        stack = subagents["helper"]
+        assert stack[self._skills_slot(stack)] is own
+        assert stack.index(extra) < self._skills_slot(stack)
+
+    def test_fork_skills_middleware_replaces_the_inherited_one_in_its_slot(self) -> None:
+        own = SkillsMiddleware(backend=StateBackend(), sources=["/fork/"])
+        worker: SubAgent = {"name": "worker", "description": "d", "mode": "fork", "middleware": [own, _fallback_mw()]}
+
+        main, subagents = self._build(skills=["/main/"], subagents=[worker])
+
+        stack = subagents["worker"]
+        assert stack[self._skills_slot(stack)] is own
+        assert self._tail(stack) == ["PatchToolCallsMiddleware", "ModelFallbackMiddleware", "SkillsMiddleware", "AnthropicPromptCachingMiddleware"]
+        assert main[self._skills_slot(main)] is not own
+
+    def test_differently_named_skills_middleware_subclass_stays_novel_in_a_subagent(self) -> None:
+        class PluginSkillsMiddleware(SkillsMiddleware):
+            pass
+
+        plugin = PluginSkillsMiddleware(backend=StateBackend(), sources=["/plugins/"])
+        helper: SubAgent = {"name": "helper", "description": "d", "middleware": [plugin, _fallback_mw()]}
+
+        _, subagents = self._build(skills=None, subagents=[helper])
+
+        names = [m.name for m in subagents["helper"]]
+        assert "SkillsMiddleware" not in names
+        assert self._tail(subagents["helper"]) == [
+            "PatchToolCallsMiddleware",
+            "PluginSkillsMiddleware",
+            "ModelFallbackMiddleware",
+            "AnthropicPromptCachingMiddleware",
+        ]

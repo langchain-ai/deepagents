@@ -1,7 +1,7 @@
 # Files
 
-- [Agent Client Protocol Integration](acp.md) - Explains how deepagents-acp projects a LangGraph agent into an ACP stdio server, including session-scoped graph construction, streaming, permissions, cancellation, and optional durable recovery. It also describes dcode's ACP launcher and its separate tool, policy, and checkpoint ownership.
+- [Agent Client Protocol](acp.md) - How deepagents-acp adapts a LangGraph graph to an editor-facing ACP server, including sessions, streaming, interrupts, and optional recovery. It also explains dcode ACP launch and the ownership boundary between its in-process ACP graphs and normal loopback server sessions.
 - [GitHub Action Integration](github-action.md) - Run one bounded, non-interactive dcode task from a GitHub Actions job. Documents the public action contract, credential and workspace handoff, memory cache lifecycle, and headless tool controls.
-- [MCP Servers, Trust, and OAuth](mcp.md) - How dcode discovers and trust-gates MCP servers, loads transports and tools, persists OAuth credentials, coordinates refresh, and connects CLI and TUI login interactions.
-- [Sandbox Providers and Execution Boundaries](sandbox-partners.md) - Explains how dcode selects and owns optional remote sandbox providers, why a server sandbox belongs to only one workspace, and how Talon reuses the same provider lifecycle while retaining selected control-plane paths on the host.
-- [Talon Channels, Models, MCP, and Sandboxes](talon.md) - Integration-facing operating guide for Talon's channel adapters, per-chat models, MCP and OAuth lifecycle, media, tracing, optional sandboxes, and experimental security boundary.
+- [MCP Integration](mcp.md) - How dcode discovers, trust-gates, connects, and authenticates MCP servers, then adapts, bounds, and reports their tools across primary and delegated agents.
+- [Sandbox and Partner Integrations](sandbox-partners.md) - Map dcode's optional remote sandbox providers to the shared backend contract, selection and lifecycle rules, package constraints, and Talon routing. Distinguish those providers from the local QuickJS JavaScript REPL middleware.
+- [Talon Runtime Host](talon.md) - Experimental local runtime host for long-running Deep Agents, channel adapters, durable conversation state, scheduling, MCP tools, and optional sandbox execution.

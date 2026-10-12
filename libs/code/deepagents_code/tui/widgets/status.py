@@ -478,6 +478,27 @@ class MetricsLine(Widget):
     """
 
     segments: reactive[tuple[Content, ...]] = reactive((), layout=True)
+    _cost_hovered: reactive[bool] = reactive(False)
+
+    async def on_click(self, event: events.Click) -> None:
+        """Open the breakdown only for a left-click on the cost span."""
+        if event.button != _LEFT_BUTTON or not event.style.meta.get(
+            "status-cost-target"
+        ):
+            return
+        event.stop()
+        if event.chain == _SINGLE_CLICK_CHAIN:
+            await self.run_action("app.open_cost_breakdown")
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        """Indicate that the cost span is clickable."""
+        self._cost_hovered = bool(event.style.meta.get("status-cost-target"))
+        self.styles.pointer = "pointer" if self._cost_hovered else "default"
+
+    def on_leave(self) -> None:
+        """Clear the cost hover indication."""
+        self._cost_hovered = False
+        self.styles.pointer = "default"
 
     def _separator(self) -> Content:  # noqa: PLR6301 — reads the active glyph set
         """Return the styled separator drawn between two segments."""
@@ -489,7 +510,17 @@ class MetricsLine(Widget):
         Returns:
             Joined metric segments.
         """
-        return self._separator().join(self.segments[:count])
+        return self._separator().join(
+            segment.stylize(Style(underline=True))
+            if self._cost_hovered
+            and any(
+                isinstance(span.style, Style)
+                and span.style.meta.get("status-cost-target")
+                for span in segment.spans
+            )
+            else segment
+            for segment in self.segments[:count]
+        )
 
     def get_content_width(self, container: Size, viewport: Size) -> int:  # noqa: ARG002
         """Return the intrinsic width of the full chain so `width: auto` works.
@@ -1203,7 +1234,9 @@ class StatusBar(Vertical):
             segment
             for segment in (
                 self._context_segment(count, approximate=approximate),
-                Content(cost) if cost else Content(""),
+                Content.styled(cost, Style.from_meta({"status-cost-target": True}))
+                if cost
+                else Content(""),
             )
             if segment.plain
         )

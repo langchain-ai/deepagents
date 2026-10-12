@@ -253,6 +253,22 @@ class ChannelAdapter(Protocol):
 
 
 @runtime_checkable
+class ThreadedChannelAdapter(Protocol):
+    """Optional channel surface for channels whose conversations can be threads."""
+
+    def top_level_conversation_id(self, conversation_id: str) -> str:
+        """Return the conversation that posts to a thread's parent channel.
+
+        Args:
+            conversation_id: Conversation id, which may name a thread.
+
+        Returns:
+            The parent channel's conversation id, or `conversation_id` itself
+                when it is not a thread.
+        """
+
+
+@runtime_checkable
 class ReactionChannelAdapter(Protocol):
     """Optional channel surface for inbound reaction events."""
 

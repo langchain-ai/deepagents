@@ -317,10 +317,11 @@ class TestDefaultModelScope:
     @staticmethod
     def _stub_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
         """Reduce the catalog to a single deterministic row."""
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_available_models",
             lambda: {"anthropic": ["claude-sonnet-5"]},
         )
@@ -340,6 +341,7 @@ class TestDefaultModelScope:
         shape alike, so "check permissions" alone sends users to inspect
         permissions that are already correct.
         """
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         self._stub_catalog(monkeypatch)
@@ -381,6 +383,7 @@ class TestDefaultModelScope:
         the provider unavailable to `dcode`. The remedy must flow through
         `safe_install_extra_recovery_command` like `/install` failures do.
         """
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
         from deepagents_code.tui.widgets.model_selector import (
             AUTO_CLASSIFIER_DEFAULT_SCOPE,
@@ -466,10 +469,11 @@ class TestNamesToggle:
         holds because `_restore_help_text` recomputes rather than replaying a
         string captured when the message was set.
         """
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_available_models",
             lambda: {"anthropic": ["claude-sonnet-5"]},
         )
@@ -499,10 +503,11 @@ class TestNamesToggle:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Ctrl+N must not wipe the only notice that saving the default failed."""
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_available_models",
             lambda: {"anthropic": ["claude-sonnet-5"]},
         )
@@ -545,10 +550,11 @@ class TestRecentModelsSection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The Recent tag uses the compact brand, not the verbose auth label."""
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_available_models",
             lambda: {"openai_codex": ["gpt-5.5"]},
         )
@@ -586,10 +592,11 @@ class TestModelSelectorAuthRouting:
     @staticmethod
     def _patch_missing_auth(monkeypatch: pytest.MonkeyPatch) -> None:
         """Force every provider to report missing (start-blocking) creds."""
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_provider_auth_status",
             lambda provider: ProviderAuthStatus(
                 state=ProviderAuthState.MISSING,
@@ -858,17 +865,18 @@ class TestModelSelectorCurrentModelPreselection:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A remote-only current model survives the recommended-only subset."""
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_available_models",
             lambda: {"openai": ["gpt-5.6-sol"]},
         )
-        monkeypatch.setattr(model_selector, "get_model_profiles", lambda **_kwargs: {})
+        monkeypatch.setattr(model_catalog, "get_model_profiles", lambda **_kwargs: {})
         monkeypatch.setattr(model_selector, "load_recent_models", list)
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_provider_auth_status",
             lambda provider: ProviderAuthStatus(
                 state=ProviderAuthState.CONFIGURED,
@@ -989,6 +997,7 @@ class TestAvailabilityOrdering:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A configured provider listed last renders first when unfiltered."""
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         def fake_auth(provider: str) -> ProviderAuthStatus:
@@ -999,7 +1008,7 @@ class TestAvailabilityOrdering:
             )
             return self._status(state, provider)
 
-        monkeypatch.setattr(model_selector, "get_provider_auth_status", fake_auth)
+        monkeypatch.setattr(model_catalog, "get_provider_auth_status", fake_auth)
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
@@ -1041,6 +1050,7 @@ class TestAvailabilityOrdering:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A filtered search ignores availability and keeps fuzzy-score order."""
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         def fake_auth(provider: str) -> ProviderAuthStatus:
@@ -1051,7 +1061,7 @@ class TestAvailabilityOrdering:
             )
             return self._status(state, provider)
 
-        monkeypatch.setattr(model_selector, "get_provider_auth_status", fake_auth)
+        monkeypatch.setattr(model_catalog, "get_provider_auth_status", fake_auth)
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
@@ -1085,6 +1095,7 @@ class TestAvailabilityOrdering:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Same-rank providers keep their declared order (stable sort)."""
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         def fake_auth(provider: str) -> ProviderAuthStatus:
@@ -1095,7 +1106,7 @@ class TestAvailabilityOrdering:
             )
             return self._status(state, provider)
 
-        monkeypatch.setattr(model_selector, "get_provider_auth_status", fake_auth)
+        monkeypatch.setattr(model_catalog, "get_provider_auth_status", fake_auth)
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
@@ -1132,6 +1143,7 @@ class TestAvailabilityOrdering:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A recent entry pins to the top even when its provider is unusable."""
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         def fake_auth(provider: str) -> ProviderAuthStatus:
@@ -1142,7 +1154,7 @@ class TestAvailabilityOrdering:
             )
             return self._status(state, provider)
 
-        monkeypatch.setattr(model_selector, "get_provider_auth_status", fake_auth)
+        monkeypatch.setattr(model_catalog, "get_provider_auth_status", fake_auth)
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
@@ -1378,7 +1390,7 @@ class TestModelSelectorInstallRouting:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Recommended models missing from an installed provider's profiles surface."""
-        from deepagents_code import config_manifest
+        from deepagents_code import config_manifest, model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         spec = "fireworks:accounts/fireworks/models/kimi-k3"
@@ -1387,7 +1399,7 @@ class TestModelSelectorInstallRouting:
         # Provider is installed/discoverable but its profiles omit the curated
         # model, mirroring an upstream profile list that lags the hardcoded set.
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_available_models",
             lambda: {"fireworks": ["accounts/fireworks/models/some-other-model"]},
         )
@@ -1397,7 +1409,7 @@ class TestModelSelectorInstallRouting:
             lambda provider: provider == "fireworks",
         )
 
-        all_models, _default, _profiles, _recent, install_extras = (
+        all_models, _default, _profiles, _recent, install_extras, _catalog = (
             ModelSelectorScreen._load_model_data(
                 None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
             )
@@ -1412,14 +1424,14 @@ class TestModelSelectorInstallRouting:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Config-listed models do not make a missing provider look installed."""
-        from deepagents_code import config_manifest
+        from deepagents_code import config_manifest, model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         spec = "baseten:moonshotai/Kimi-K3"
         assert spec in model_selector._RECOMMENDED_MODELS
 
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_available_models",
             lambda: {"baseten": ["moonshotai/config-listed-model"]},
         )
@@ -1429,7 +1441,7 @@ class TestModelSelectorInstallRouting:
             lambda provider: provider != "baseten",
         )
 
-        all_models, _default, _profiles, _recent, install_extras = (
+        all_models, _default, _profiles, _recent, install_extras, _catalog = (
             ModelSelectorScreen._load_model_data(
                 None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
             )
@@ -1442,7 +1454,7 @@ class TestModelSelectorInstallRouting:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A recommended model already in profiles surfaces exactly once."""
-        from deepagents_code import config_manifest
+        from deepagents_code import config_manifest, model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         spec = "fireworks:accounts/fireworks/models/kimi-k3"
@@ -1452,7 +1464,7 @@ class TestModelSelectorInstallRouting:
         # The provider is installed and its profiles already surface the curated
         # model, so the recommended-merge must not re-append it.
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_available_models",
             lambda: {"fireworks": [model]},
         )
@@ -1462,7 +1474,7 @@ class TestModelSelectorInstallRouting:
             lambda provider: provider == "fireworks",
         )
 
-        all_models, _default, _profiles, _recent, install_extras = (
+        all_models, _default, _profiles, _recent, install_extras, _catalog = (
             ModelSelectorScreen._load_model_data(
                 None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
             )
@@ -1476,7 +1488,7 @@ class TestModelSelectorInstallRouting:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Every unprofiled recommended spec for one installed provider surfaces."""
-        from deepagents_code import config_manifest
+        from deepagents_code import config_manifest, model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         expected = {
@@ -1491,7 +1503,7 @@ class TestModelSelectorInstallRouting:
         # Provider installed/discoverable, but its profiles list none of the
         # curated specs, so each must be added as a normal selectable row.
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_available_models",
             lambda: {"fireworks": ["accounts/fireworks/models/some-other-model"]},
         )
@@ -1501,7 +1513,7 @@ class TestModelSelectorInstallRouting:
             lambda provider: provider == "fireworks",
         )
 
-        all_models, _default, _profiles, _recent, install_extras = (
+        all_models, _default, _profiles, _recent, install_extras, _catalog = (
             ModelSelectorScreen._load_model_data(
                 None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
             )
@@ -1515,6 +1527,7 @@ class TestModelSelectorInstallRouting:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Onboarding selections install from the launch flow before auth."""
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         results: list[tuple[str, str] | None] = []
@@ -1536,7 +1549,7 @@ class TestModelSelectorInstallRouting:
             lambda _provider: False,
         )
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_provider_auth_status",
             lambda _provider: pytest.fail("auth should wait until after install"),
         )
@@ -1697,6 +1710,7 @@ class TestModelSelectorInstallRouting:
     async def test_remote_selection_skips_local_provider_requirements(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        from deepagents_code import model_catalog
         from deepagents_code.tui.widgets import model_selector
 
         results: list[tuple[str, str] | None] = []
@@ -1712,7 +1726,7 @@ class TestModelSelectorInstallRouting:
             lambda _provider: pytest.fail("local install should not be checked"),
         )
         monkeypatch.setattr(
-            model_selector,
+            model_catalog,
             "get_provider_auth_status",
             lambda _provider: pytest.fail("local credentials should not be checked"),
         )

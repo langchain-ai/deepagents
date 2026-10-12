@@ -18,6 +18,7 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from html import escape
 from pathlib import Path
 from typing import IO, TYPE_CHECKING, NoReturn, Protocol
 
@@ -59,7 +60,7 @@ from deepagents_talon.interfaces import (
     ReactionHandler,
     SendResult,
 )
-from deepagents_talon.mcp_auth import extract_oauth_callback_url
+from deepagents_talon.mcp_auth import extract_loopback_oauth_callback_url
 from deepagents_talon.observability import log_debug_event
 from deepagents_talon.pairing import SenderPairing, pairing_from_env
 
@@ -84,6 +85,9 @@ _FILE_HOST = "files.slack.com"
 
 _SEEN_EVENT_LIMIT = 1024
 _SENT_MESSAGE_LIMIT = 1024
+_THREAD_CONTEXT_PAGES = 20
+_THREAD_CONTEXT_MESSAGES = 40
+_THREAD_CONTEXT_CHARS = 12000
 
 _COMMAND_UNAVAILABLE_MESSAGE = "That command is not available here."
 _COMMAND_DM_ONLY_MESSAGE = (
@@ -135,6 +139,8 @@ class SlackChannelConfig:
         request_timeout_seconds: Timeout for connecting and for file downloads.
         pairing: Optional sender pairing policy that admits approved DM senders
             and issues codes to unknown ones.
+        include_other_thread_participants: Include history from non-allowlisted
+            senders, accepting their potential influence on privileged tools.
     """
 
     bot_token: str = field(repr=False)
@@ -147,6 +153,7 @@ class SlackChannelConfig:
     max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     pairing: SenderPairing | None = None
+    include_other_thread_participants: bool = field(default=False, kw_only=True)
 
     @classmethod
     def from_talon_config(cls, config: TalonConfig) -> SlackChannelConfig:
@@ -162,6 +169,12 @@ class SlackChannelConfig:
             ValueError: If a token is missing or exposure configuration is invalid.
         """
         env = config.env
+        include_participants = env.get(
+            "DEEPAGENTS_TALON_SLACK_INCLUDE_OTHER_THREAD_PARTICIPANTS", "0"
+        )
+        if include_participants not in {"0", "1"}:
+            msg = "DEEPAGENTS_TALON_SLACK_INCLUDE_OTHER_THREAD_PARTICIPANTS must be 0 or 1"
+            raise ValueError(msg)
         bot_token = env.get("DEEPAGENTS_TALON_SLACK_BOT_TOKEN")
         if not bot_token:
             msg = "Slack bot token is required (DEEPAGENTS_TALON_SLACK_BOT_TOKEN)"
@@ -190,6 +203,7 @@ class SlackChannelConfig:
             ),
             outbound_media_dir=outbound_media_root_from_env(env),
             exposure=exposure,
+            include_other_thread_participants=include_participants == "1",
             allowed_user_ids=frozenset(
                 split_csv(env.get("DEEPAGENTS_TALON_SLACK_ALLOWLIST_USERS", "")),
             ),
@@ -373,6 +387,11 @@ class _SlackGateway(Protocol):
     async def post_message(self, channel_id: str, text: str, *, thread_ts: str | None) -> str:
         """Post a message and return its timestamp."""
 
+    async def thread_context(
+        self, channel_id: str, thread_ts: str, before_ts: str
+    ) -> list[tuple[str, str]]:
+        """Read bounded preceding replies from a channel thread."""
+
     async def open_dm(self, user_id: str) -> str:
         """Open a DM with a user and return its channel id."""
 
@@ -504,6 +523,52 @@ class _SlackSdkGateway:
             thread_ts=thread_ts,
         )
         return str(response["ts"])
+
+    async def thread_context(
+        self, channel_id: str, thread_ts: str, before_ts: str
+    ) -> list[tuple[str, str]]:
+        messages: list[tuple[str, str]] = []
+        cursor: str | None = None
+        more = False
+        for _ in range(_THREAD_CONTEXT_PAGES):
+            response = await self._client().conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                latest=before_ts,
+                limit=100,
+                cursor=cursor,
+            )
+            for item in response.get("messages", []):
+                if not isinstance(item, dict) or item.get("ts") == before_ts:
+                    continue
+                sender = optional_str(item.get("user"))
+                raw_text = str(item.get("text") or "")
+                if _contains_oauth_callback(raw_text):
+                    continue
+                text = _decode_mrkdwn(raw_text)
+                if sender and text and sender != self._bot_id:
+                    text = escape(text[:1000], quote=False)
+                    if item.get("bot_id") or item.get("subtype") == "bot_message":
+                        text = (
+                            f'<input-message sender="slack:{escape(sender)}" surface="slack" '
+                            f'kind="message" sender_type="bot">\n{text}\n</input-message>'
+                        )
+                    messages.append((sender, text))
+            messages = messages[-_THREAD_CONTEXT_MESSAGES:]
+            cursor = optional_str(response.get("response_metadata", {}).get("next_cursor"))
+            more = bool(response.get("has_more") or cursor)
+            if not more or not cursor:
+                break
+        if more:
+            msg = "Slack thread history exceeds the retrieval limit"
+            raise ValueError(msg)
+        while (
+            messages
+            and sum(len(sender) + len(text) + 3 for sender, text in messages)
+            > _THREAD_CONTEXT_CHARS
+        ):
+            messages.pop(0)
+        return messages
 
     async def open_dm(self, user_id: str) -> str:
         response = await self._client().conversations_open(users=user_id)
@@ -729,6 +794,18 @@ class SlackChannel:
         log_debug_event(logger, "slack.outbound.media.completed", media_type=checked.media_type)
         return SendResult(success=True, message_id=message_id)
 
+    def top_level_conversation_id(self, conversation_id: str) -> str:
+        """Return the conversation that posts to a thread's channel, not the thread.
+
+        Args:
+            conversation_id: DM channel id, or `channel:thread_ts` for a thread.
+
+        Returns:
+            The channel id on its own, which Slack posts to the channel's top level.
+        """
+        channel_id, _ = _parse_conversation_id(conversation_id)
+        return channel_id
+
     async def edit_message(self, conversation_id: str, message_id: str, text: str) -> SendResult:
         """Edit a previously posted message.
 
@@ -833,9 +910,14 @@ class SlackChannel:
             return _UNAUTHORIZED_MESSAGE
         if not known:
             return _COMMAND_UNAVAILABLE_MESSAGE
-        if not inbound.is_dm:
-            # A slash command carries no thread, so in a channel it would act on a
-            # conversation that never holds an agent thread.
+        parts = (inbound.argument or "").split()
+        approving = (
+            inbound.command == "pair"
+            and bool(parts)
+            and parts[0].lower() == "approve"
+            and inbound.sender_id in self._exposure.operator_ids
+        )
+        if not inbound.is_dm and not approving:
             return _COMMAND_DM_ONLY_MESSAGE
         return None
 
@@ -885,6 +967,29 @@ class SlackChannel:
             if self.config.pairing is not None:
                 await self._offer_pairing(message, inbound)
             return
+        if not inbound.is_dm and inbound.thread_ts:
+            try:
+                replies = await self._gateway.thread_context(
+                    inbound.channel_id, inbound.thread_ts, inbound.ts
+                )
+                senders = self._exposure.operator_ids | self.config.allowed_user_ids
+                context = "\n".join(
+                    f"{sender}: {text}"
+                    for sender, text in replies
+                    if (self.config.include_other_thread_participants or sender in senders)
+                    and not _contains_oauth_callback(text)
+                )
+            except (SlackApiError, OSError, TimeoutError, ValueError):
+                logger.warning("Could not read Slack thread context", exc_info=True)
+                context = "[Slack thread history unavailable; ask for context before acting.]"
+            if context:
+                message = ChannelMessage(
+                    conversation_id=message.conversation_id,
+                    text=message.text,
+                    sender_id=message.sender_id,
+                    message_id=message.message_id,
+                    metadata={**message.metadata, "slack_thread_context": context},
+                )
         message = await self._prepare_inbound_media(message, inbound.files)
         log_debug_event(
             logger,
@@ -1241,6 +1346,18 @@ def _convert_event(event: dict, *, bot_id: str | None) -> _SlackInboundMessage |
     )
 
 
+def _contains_oauth_callback(text: str) -> bool:
+    """Exclude whole historical messages before truncation can hide credentials.
+
+    Scan URLs within prose and Slack mentions using the interception recognizer.
+    This intentionally does not validate or complete a pending authorization.
+    """
+    return any(
+        extract_loopback_oauth_callback_url(candidate) is not None
+        for candidate in re.findall(r"http://[^\s<>\"'`]+", _decode_mrkdwn(text), re.IGNORECASE)
+    )
+
+
 def _decode_mrkdwn(text: str) -> str:
     """Turn Slack's inbound message encoding back into the text the user typed.
 
@@ -1261,7 +1378,7 @@ def _decode_mrkdwn(text: str) -> str:
         if (
             not label
             or url in {label, f"mailto:{label}"}
-            or extract_oauth_callback_url(url.replace("&amp;", "&"))
+            or extract_loopback_oauth_callback_url(url.replace("&amp;", "&"))
         ):
             return url
         return f"{label} ({url})"
@@ -1391,6 +1508,8 @@ def _message_metadata(inbound: _SlackInboundMessage) -> dict[str, object]:
         "is_dm": inbound.is_dm,
         "from_self": False,
     }
+    if not inbound.is_dm:
+        metadata["history_chat"] = inbound.channel_id
     if inbound.files:
         file = inbound.files[0]
         metadata["media_type"] = _file_media_type(file)

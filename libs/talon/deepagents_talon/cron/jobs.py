@@ -10,7 +10,9 @@ import json
 import logging
 import os
 import tempfile
+import threading
 import uuid
+import weakref
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
@@ -78,6 +80,7 @@ _SCHEDULE_FORMS_HELP = (
 JobStatus = Literal["ok", "error"]
 ScheduleKind = Literal["one_shot", "recurring"]
 ScheduleForm = Literal["interval", "at", "daily", "cron"]
+DeliverTo = Literal["thread", "channel"]
 
 _FileIdentity = tuple[int, int, int]
 """Store file fingerprint: modification time in ns, size, and inode."""
@@ -85,6 +88,7 @@ _FileIdentity = tuple[int, int, int]
 _JOB_STATUSES: tuple[str, ...] = ("ok", "error")
 _SCHEDULE_KINDS: tuple[str, ...] = ("one_shot", "recurring")
 _SCHEDULE_FORMS: tuple[str, ...] = ("interval", "at", "daily", "cron")
+_DELIVER_TO: tuple[str, ...] = ("thread", "channel")
 
 
 class CronOriginDict(TypedDict):
@@ -167,6 +171,7 @@ class CronJobDict(TypedDict):
     origin: CronOriginDict
     until: NotRequired[int | None]
     claimed_at: NotRequired[int | None]
+    deliver_to: NotRequired[DeliverTo]
 
 
 class CronJobWireDict(TypedDict):
@@ -187,6 +192,7 @@ class CronJobWireDict(TypedDict):
     origin: CronOriginDict
     until: str | None
     claimed_at: str | None
+    deliver_to: DeliverTo
 
 
 class CronStoreDict(TypedDict):
@@ -206,7 +212,7 @@ class CronOrigin:
         message_id: Optional source message id that created or edited the job.
         sender_id: Optional channel sender id of whoever created the job, so
             revoking a paired sender can find jobs they made in shared chats.
-        history_chat: Optional parent channel used for history in public Discord threads.
+        history_chat: Optional parent channel used for history in public Discord or Slack threads.
     """
 
     conversation_id: str
@@ -666,6 +672,8 @@ class CronJob:
         claimed_at: When the scheduler claimed the current run, or `None` once
             its outcome is recorded. Still set after a restart means the run
             was interrupted and its outcome is unknown.
+        deliver_to: Where results post when the origin is a channel thread:
+            `channel` posts to the parent channel, `thread` replies in the thread.
     """
 
     id: str
@@ -683,6 +691,7 @@ class CronJob:
     origin: CronOrigin
     until: datetime | None = None
     claimed_at: datetime | None = None
+    deliver_to: DeliverTo = "channel"
 
     def upcoming(self, count: int = 3) -> list[datetime]:
         """Return the next few scheduled runs, honoring `until` and the repeat cap.
@@ -732,6 +741,7 @@ class CronJob:
             "origin": self.origin.to_dict(),
             "until": _to_optional_epoch(self.until),
             "claimed_at": _to_optional_epoch(self.claimed_at),
+            "deliver_to": self.deliver_to,
         }
 
     def to_wire(self) -> CronJobWireDict:
@@ -760,6 +770,7 @@ class CronJob:
             "origin": self.origin.to_dict(),
             "until": _format_optional_time(self.until),
             "claimed_at": _format_optional_time(self.claimed_at),
+            "deliver_to": self.deliver_to,
         }
 
     @classmethod
@@ -795,11 +806,37 @@ class CronJob:
             origin=CronOrigin.from_dict(record.get("origin")),
             until=_from_optional_epoch(_optional_int_field(record, "until")),
             claimed_at=_from_optional_epoch(_optional_int_field(record, "claimed_at")),
+            # Jobs saved before this field existed default to the channel.
+            deliver_to=cast(
+                "DeliverTo",
+                _optional_literal_field(record, "deliver_to", _DELIVER_TO) or "channel",
+            ),
         )
 
 
+_STORE_LOCKS: weakref.WeakValueDictionary[Path, threading.RLock] = weakref.WeakValueDictionary()
+_STORE_LOCKS_GUARD = threading.Lock()
+
+
+def _store_lock(path: Path) -> threading.RLock:
+    """Share a lock across live stores addressing the same resolved path."""
+    with _STORE_LOCKS_GUARD:
+        lock = _STORE_LOCKS.get(path)
+        if lock is None:
+            lock = threading.RLock()
+            _STORE_LOCKS[path] = lock
+        return lock
+
+
 class CronJobStore:
-    """JSON-backed store for assistant-scoped cron jobs."""
+    """JSON-backed store for assistant-scoped cron jobs.
+
+    Stores sharing a resolved file path serialize reads and complete mutations
+    within this process. Reentrant locking permits mutations to call read helpers.
+    Other processes and external file writers are not coordinated; each file must
+    have a single owning process. Locks cover storage only, never job execution
+    or delivery.
+    """
 
     def __init__(self, *, assistant_id: str, cron_dir: Path) -> None:
         """Initialize the store.
@@ -809,8 +846,9 @@ class CronJobStore:
             cron_dir: Directory that contains `jobs.json`.
         """
         self.assistant_id = assistant_id
-        self.cron_dir = cron_dir
-        self.path = cron_dir / "jobs.json"
+        self.cron_dir = cron_dir.resolve()
+        self.path = self.cron_dir / "jobs.json"
+        self._lock = _store_lock(self.path)
         self._cache: list[CronJob] | None = None
         self._cache_identity: _FileIdentity | None = None
 
@@ -823,6 +861,7 @@ class CronJobStore:
         name: str = "",
         repeat_times: int | None = None,
         until: datetime | None = None,
+        deliver_to: DeliverTo = "channel",
         now: datetime | None = None,
     ) -> CronJob:
         """Create and persist a cron job.
@@ -834,6 +873,7 @@ class CronJobStore:
             name: Human-readable label.
             repeat_times: Optional cap for recurring jobs.
             until: Optional last instant a recurring job may run, inclusive.
+            deliver_to: Whether a thread origin's results post to its channel or thread.
             now: Creation time override for deterministic tests.
 
         Returns:
@@ -843,33 +883,35 @@ class CronJobStore:
             CronJobError: If the options do not fit the schedule, or no run
                 falls before `until`.
         """
-        current = _coerce_utc(now)
-        repeat = CronRepeat(times=repeat_times)
-        if schedule.kind == "one_shot" and repeat_times is not None:
-            msg = "repeat cap is only valid for recurring jobs"
-            raise CronJobError(msg)
-        until = None if until is None else _coerce_utc(until)
-        next_run_at = _first_run_at(schedule, current)
-        _check_until(schedule, next_run_at, until)
-        job = CronJob(
-            id=uuid.uuid4().hex[:12],
-            assistant_id=self.assistant_id,
-            name=name,
-            prompt=prompt,
-            schedule=schedule,
-            repeat=repeat,
-            enabled=True,
-            created_at=current,
-            next_run_at=next_run_at,
-            last_run_at=None,
-            last_status=None,
-            last_error=None,
-            origin=origin,
-            until=until,
-        )
-        jobs = [*self.list_jobs(), job]
-        self._write_jobs(jobs)
-        return job
+        with self._lock:
+            current = _coerce_utc(now)
+            repeat = CronRepeat(times=repeat_times)
+            if schedule.kind == "one_shot" and repeat_times is not None:
+                msg = "repeat cap is only valid for recurring jobs"
+                raise CronJobError(msg)
+            until = None if until is None else _coerce_utc(until)
+            next_run_at = _first_run_at(schedule, current)
+            _check_until(schedule, next_run_at, until)
+            job = CronJob(
+                id=uuid.uuid4().hex[:12],
+                assistant_id=self.assistant_id,
+                name=name,
+                prompt=prompt,
+                schedule=schedule,
+                repeat=repeat,
+                enabled=True,
+                created_at=current,
+                next_run_at=next_run_at,
+                last_run_at=None,
+                last_status=None,
+                last_error=None,
+                origin=origin,
+                until=until,
+                deliver_to=deliver_to,
+            )
+            jobs = [*self.list_jobs(), job]
+            self._write_jobs(jobs)
+            return job
 
     def list_jobs(self, *, origin: CronOrigin | None = None) -> list[CronJob]:
         """List jobs, optionally scoped to an origin conversation.
@@ -928,6 +970,7 @@ class CronJobStore:
         repeat_times: int | None = None,
         until: datetime | None = None,
         clear_until: bool = False,
+        deliver_to: DeliverTo | None = None,
         now: datetime | None = None,
     ) -> CronJob:
         """Edit a job within the current conversation scope.
@@ -942,6 +985,7 @@ class CronJobStore:
             repeat_times: Optional replacement repeat cap for recurring jobs.
             until: Optional replacement for the job's last allowed run instant.
             clear_until: Remove the job's `until` bound.
+            deliver_to: Optional replacement delivery target.
             now: Timestamp used to recalculate `next_run_at` when schedule changes.
 
         Returns:
@@ -951,46 +995,48 @@ class CronJobStore:
             CronJobError: If no scoped job matches, or the edit leaves no run
                 before `until`.
         """
-        if until is not None and clear_until:
-            msg = "pass either until or clear_until, not both"
-            raise CronJobError(msg)
-        jobs = self.list_jobs()
-        updated: CronJob | None = None
-        current = _coerce_utc(now)
-        result: list[CronJob] = []
-        for job in jobs:
-            if job.id != job_id or not _same_origin_scope(job.origin, origin):
-                result.append(job)
-                continue
-            next_run_at = (
-                _first_run_at(schedule, current) if schedule is not None else job.next_run_at
-            )
-            new_schedule = schedule or job.schedule
-            new_repeat = job.repeat
-            if repeat_times is not None:
-                if new_schedule.kind != "recurring":
-                    msg = "repeat cap is only valid for recurring jobs"
-                    raise CronJobError(msg)
-                new_repeat = CronRepeat(times=repeat_times)
-            new_until = _edited_until(job.until, until, clear=clear_until)
-            if next_run_at is not None:
-                _check_until(new_schedule, next_run_at, new_until)
-            updated = replace(
-                job,
-                name=job.name if name is None else name,
-                prompt=job.prompt if prompt is None else prompt,
-                schedule=new_schedule,
-                repeat=new_repeat,
-                enabled=job.enabled if enabled is None else enabled,
-                next_run_at=next_run_at,
-                until=new_until,
-            )
-            result.append(updated)
-        if updated is None:
-            msg = f"cron job not found in current conversation: {job_id}"
-            raise CronJobError(msg)
-        self._write_jobs(result)
-        return updated
+        with self._lock:
+            if until is not None and clear_until:
+                msg = "pass either until or clear_until, not both"
+                raise CronJobError(msg)
+            jobs = self.list_jobs()
+            updated: CronJob | None = None
+            current = _coerce_utc(now)
+            result: list[CronJob] = []
+            for job in jobs:
+                if job.id != job_id or not _same_origin_scope(job.origin, origin):
+                    result.append(job)
+                    continue
+                next_run_at = (
+                    _first_run_at(schedule, current) if schedule is not None else job.next_run_at
+                )
+                new_schedule = schedule or job.schedule
+                new_repeat = job.repeat
+                if repeat_times is not None:
+                    if new_schedule.kind != "recurring":
+                        msg = "repeat cap is only valid for recurring jobs"
+                        raise CronJobError(msg)
+                    new_repeat = CronRepeat(times=repeat_times)
+                new_until = _edited_until(job.until, until, clear=clear_until)
+                if next_run_at is not None:
+                    _check_until(new_schedule, next_run_at, new_until)
+                updated = replace(
+                    job,
+                    name=job.name if name is None else name,
+                    prompt=job.prompt if prompt is None else prompt,
+                    schedule=new_schedule,
+                    repeat=new_repeat,
+                    enabled=job.enabled if enabled is None else enabled,
+                    next_run_at=next_run_at,
+                    until=new_until,
+                    deliver_to=job.deliver_to if deliver_to is None else deliver_to,
+                )
+                result.append(updated)
+            if updated is None:
+                msg = f"cron job not found in current conversation: {job_id}"
+                raise CronJobError(msg)
+            self._write_jobs(result)
+            return updated
 
     def remove_job(self, job_id: str, *, origin: CronOrigin) -> CronJob:
         """Remove a job within the current conversation scope.
@@ -1005,19 +1051,20 @@ class CronJobStore:
         Raises:
             CronJobError: If no scoped job matches.
         """
-        jobs = self.list_jobs()
-        removed: CronJob | None = None
-        result: list[CronJob] = []
-        for job in jobs:
-            if job.id == job_id and _same_origin_scope(job.origin, origin):
-                removed = job
-                continue
-            result.append(job)
-        if removed is None:
-            msg = f"cron job not found in current conversation: {job_id}"
-            raise CronJobError(msg)
-        self._write_jobs(result)
-        return removed
+        with self._lock:
+            jobs = self.list_jobs()
+            removed: CronJob | None = None
+            result: list[CronJob] = []
+            for job in jobs:
+                if job.id == job_id and _same_origin_scope(job.origin, origin):
+                    removed = job
+                    continue
+                result.append(job)
+            if removed is None:
+                msg = f"cron job not found in current conversation: {job_id}"
+                raise CronJobError(msg)
+            self._write_jobs(result)
+            return removed
 
     def advance_next_run(self, job_id: str, *, now: datetime | None = None) -> CronJob | None:
         """Claim the next scheduled interval before running a due job.
@@ -1034,27 +1081,28 @@ class CronJobStore:
             Updated claimed job, or `None` if the job is no longer due or has
             expired.
         """
-        current = _coerce_utc(now)
-        jobs = self.list_jobs()
-        claimed: CronJob | None = None
-        expired = False
-        result: list[CronJob] = []
-        for job in jobs:
-            if job.id != job_id:
-                result.append(job)
-                continue
-            if not job.enabled or job.next_run_at is None or job.next_run_at > current:
-                result.append(job)
-                continue
-            if _is_expired(job, current):
-                result.append(replace(job, enabled=False, next_run_at=None))
-                expired = True
-                continue
-            claimed = _advance_claimed_job(job, current)
-            result.append(claimed)
-        if claimed is not None or expired:
-            self._write_jobs(result)
-        return claimed
+        with self._lock:
+            current = _coerce_utc(now)
+            jobs = self.list_jobs()
+            claimed: CronJob | None = None
+            expired = False
+            result: list[CronJob] = []
+            for job in jobs:
+                if job.id != job_id:
+                    result.append(job)
+                    continue
+                if not job.enabled or job.next_run_at is None or job.next_run_at > current:
+                    result.append(job)
+                    continue
+                if _is_expired(job, current):
+                    result.append(replace(job, enabled=False, next_run_at=None))
+                    expired = True
+                    continue
+                claimed = _advance_claimed_job(job, current)
+                result.append(claimed)
+            if claimed is not None or expired:
+                self._write_jobs(result)
+            return claimed
 
     def mark_job_run(
         self,
@@ -1075,24 +1123,25 @@ class CronJobStore:
         Returns:
             Updated job, or `None` if the job no longer exists.
         """
-        current = _coerce_utc(now)
-        updated: CronJob | None = None
-        result: list[CronJob] = []
-        for job in self.list_jobs():
-            if job.id != job_id:
-                result.append(job)
-                continue
-            updated = replace(
-                job,
-                last_run_at=current,
-                last_status=status,
-                last_error=error,
-                claimed_at=None,
-            )
-            result.append(updated)
-        if updated is not None:
-            self._write_jobs(result)
-        return updated
+        with self._lock:
+            current = _coerce_utc(now)
+            updated: CronJob | None = None
+            result: list[CronJob] = []
+            for job in self.list_jobs():
+                if job.id != job_id:
+                    result.append(job)
+                    continue
+                updated = replace(
+                    job,
+                    last_run_at=current,
+                    last_status=status,
+                    last_error=error,
+                    claimed_at=None,
+                )
+                result.append(updated)
+            if updated is not None:
+                self._write_jobs(result)
+            return updated
 
     def discard_finished(self, *, now: datetime | None = None) -> list[CronJob]:
         """Delete jobs that will never run again, or whose `until` has passed.
@@ -1111,23 +1160,24 @@ class CronJobStore:
         Returns:
             Removed job records.
         """
-        current = _coerce_utc(now)
-        jobs = self.list_jobs()
-        kept: list[CronJob] = []
-        removed: list[CronJob] = []
-        for job in jobs:
-            expired = _is_expired(job, current)
-            if not (expired or _is_finished(job)):
-                kept.append(job)
-            elif job.last_status != "error" and job.claimed_at is None:
-                removed.append(job)
-            elif expired:
-                kept.append(replace(job, enabled=False, next_run_at=None))
-            else:
-                kept.append(job)
-        if removed or kept != jobs:
-            self._write_jobs(kept)
-        return removed
+        with self._lock:
+            current = _coerce_utc(now)
+            jobs = self.list_jobs()
+            kept: list[CronJob] = []
+            removed: list[CronJob] = []
+            for job in jobs:
+                expired = _is_expired(job, current)
+                if not (expired or _is_finished(job)):
+                    kept.append(job)
+                elif job.last_status != "error" and job.claimed_at is None:
+                    removed.append(job)
+                elif expired:
+                    kept.append(replace(job, enabled=False, next_run_at=None))
+                else:
+                    kept.append(job)
+            if removed or kept != jobs:
+                self._write_jobs(kept)
+            return removed
 
     def prune_completed(
         self,
@@ -1147,22 +1197,23 @@ class CronJobStore:
         Raises:
             CronJobError: If `retain_for` is negative.
         """
-        if retain_for < timedelta(0):
-            msg = "cron retention window cannot be negative"
-            raise CronJobError(msg)
+        with self._lock:
+            if retain_for < timedelta(0):
+                msg = "cron retention window cannot be negative"
+                raise CronJobError(msg)
 
-        cutoff = _coerce_utc(now) - retain_for
-        kept: list[CronJob] = []
-        removed: list[CronJob] = []
-        for job in self.list_jobs():
-            reference = job.last_run_at or job.created_at
-            if not job.enabled and job.next_run_at is None and reference <= cutoff:
-                removed.append(job)
-            else:
-                kept.append(job)
-        if removed:
-            self._write_jobs(kept)
-        return removed
+            cutoff = _coerce_utc(now) - retain_for
+            kept: list[CronJob] = []
+            removed: list[CronJob] = []
+            for job in self.list_jobs():
+                reference = job.last_run_at or job.created_at
+                if not job.enabled and job.next_run_at is None and reference <= cutoff:
+                    removed.append(job)
+                else:
+                    kept.append(job)
+            if removed:
+                self._write_jobs(kept)
+            return removed
 
     def _read_jobs(self) -> list[CronJob]:
         """Return the stored jobs, reparsing only when the file changed.
@@ -1179,18 +1230,19 @@ class CronJobStore:
         Returns:
             Stored jobs, or an empty list if the file is absent or unreadable.
         """
-        self._ensure_store()
-        identity = self._stat_identity()
-        if identity is None:
-            self._cache = []
-            self._cache_identity = None
-            return []
-        if self._cache is not None and self._cache_identity == identity:
-            return list(self._cache)
-        jobs, loaded = self._load_jobs()
-        self._cache = jobs
-        self._cache_identity = loaded
-        return list(jobs)
+        with self._lock:
+            self._ensure_store()
+            identity = self._stat_identity()
+            if identity is None:
+                self._cache = []
+                self._cache_identity = None
+                return []
+            if self._cache is not None and self._cache_identity == identity:
+                return list(self._cache)
+            jobs, loaded = self._load_jobs()
+            self._cache = jobs
+            self._cache_identity = loaded
+            return list(jobs)
 
     def _stat_identity(self) -> _FileIdentity | None:
         try:
@@ -1248,8 +1300,8 @@ class CronJobStore:
                 tmp_path.unlink()
         # Seed the cache from what was just written; no reparse on the next read.
         # This trusts that no other process replaced the file between the rename
-        # above and this stat. Cron stores are single-writer, and the surrounding
-        # read-all/write-all pattern already offered no cross-process guarantee.
+        # above and this stat. The caller holds the shared path lock, but external
+        # writers are outside the single-process ownership contract.
         self._cache = list(jobs)
         self._cache_identity = self._stat_identity()
 
@@ -1568,7 +1620,15 @@ def _positive_int(value: str) -> int:
 
 
 def _same_origin_scope(left: CronOrigin, right: CronOrigin) -> bool:
-    return left.conversation_id == right.conversation_id and left.channel == right.channel
+    return left.channel == right.channel and _origin_scope(left) == _origin_scope(right)
+
+
+def _origin_scope(origin: CronOrigin) -> str:
+    if origin.channel == "slack" and origin.conversation_id.startswith(("C", "G")):
+        return origin.conversation_id.split(":", maxsplit=1)[0]
+    if origin.channel == "discord":
+        return origin.history_chat or origin.conversation_id
+    return origin.conversation_id
 
 
 def _coerce_utc(value: datetime | None = None) -> datetime:

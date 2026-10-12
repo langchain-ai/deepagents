@@ -34,6 +34,7 @@ from deepagents_code._startup_error import (
 )
 from deepagents_code.configuration.interpreter import InterpreterConfig
 from deepagents_code.configuration.resolver import get_config_resolver
+from deepagents_code.model_metadata import ModelMetadata
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 from deepagents_code.workspace import (
     PROJECT_POLICY_DRIFT_REASON,
@@ -329,6 +330,12 @@ class ServerRuntime(NamedTuple):
     mcp_server_info: list[MCPServerInfo] | None = None
     """Workspace-scoped MCP metadata for the interactive client."""
 
+    model_metadata: ModelMetadata | None = None
+    """Resolved startup model properties for the interactive client."""
+
+    model_environment: Mapping[str, str] | None = None
+    """Immutable workspace environment shared by metadata resolution and inference."""
+
 
 async def _make_graphs(
     *,
@@ -605,6 +612,13 @@ async def _make_graphs_in_environment(
             backend=composite_backend,
             offload=offload,
             mcp_server_info=mcp_server_info,
+            model_metadata=ModelMetadata(
+                result.model_name,
+                result.provider,
+                result.context_limit,
+                result.unsupported_modalities,
+            ),
+            model_environment=workspace_env,
         )
 
     from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy

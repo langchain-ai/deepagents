@@ -28,7 +28,7 @@ OPEN_EXPOSURE_ACK_VALUE = "allow-arbitrary-senders"
 OUTBOUND_MEDIA_DIR_ENV = "DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR"
 WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
 
-ASR_ELIGIBLE_MEDIA_TYPES = frozenset({"voice", "video"})
+ASR_ELIGIBLE_MEDIA_TYPES = frozenset({"voice", "video", "audio"})
 """Media types that may contain audio eligible for ASR transcription."""
 
 _LINK_PATTERN = re.compile(r"\[([^\]]+)]\(([^)]+)\)")

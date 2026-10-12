@@ -442,22 +442,29 @@ async def _wait_for_request(agent: BlockingAgent) -> None:
     raise AssertionError(msg)
 
 
-async def test_operator_approves_code_from_their_dm(tmp_path: Path) -> None:
+@pytest.mark.parametrize("is_dm", [True, False])
+async def test_operator_approves_code_from_any_chat(tmp_path: Path, *, is_dm: bool) -> None:
     host, gateway, agent, _ = await _host(tmp_path, Clock())
     await gateway.deliver_message(_dm(STRANGER, "let me in"))
     code = _issued_code(gateway)
 
-    await gateway.deliver_message(_dm(OPERATOR, f"/pair approve {format_code(code)}"))
+    conversation_id = OPERATOR_DM if is_dm else "guild"
+    await gateway.deliver_message(
+        _dm(OPERATOR, f"/pair approve {format_code(code)}", channel_id=conversation_id, is_dm=is_dm)
+    )
     await gateway.deliver_message(_dm(STRANGER, "hello agent"))
     await _wait_for_request(agent)
     await host.stop()
 
     assert (STRANGER_DM, APPROVED_NOTICE) in gateway.sent_text
-    assert (OPERATOR_DM, f"Paired sender {STRANGER}.") in gateway.sent_text
+    assert (conversation_id, f"Paired sender {STRANGER}.") in gateway.sent_text
     assert [request.text for request in agent.requests] == ["hello agent"]
 
 
-async def test_non_operator_cannot_approve_and_never_reaches_the_agent(tmp_path: Path) -> None:
+@pytest.mark.parametrize("is_dm", [True, False])
+async def test_non_operator_cannot_approve_and_never_reaches_the_agent(
+    tmp_path: Path, *, is_dm: bool
+) -> None:
     host, gateway, agent, _ = await _host(tmp_path, Clock())
     await gateway.deliver_message(_dm(STRANGER, "let me in"))
     code = _issued_code(gateway)
@@ -469,33 +476,28 @@ async def test_non_operator_cannot_approve_and_never_reaches_the_agent(tmp_path:
         "discord", cast("str", store.request("discord", helper, "dm-helper", now=0)), now=0
     )
 
-    await gateway.deliver_message(_dm(helper, f"/pair approve {code}", channel_id="dm-helper"))
+    conversation_id = "dm-helper" if is_dm else "guild"
+    await gateway.deliver_message(
+        _dm(helper, f"/pair approve {code}", channel_id=conversation_id, is_dm=is_dm)
+    )
     await gateway.deliver_message(_dm(OPERATOR, f"/pair approve {code}"))
     await host.stop()
 
-    assert ("dm-helper", "Only an operator can manage sender pairing.") in gateway.sent_text
+    assert (conversation_id, "Only an operator can manage sender pairing.") in gateway.sent_text
     assert (OPERATOR_DM, "No live pairing request matches that code.") in gateway.sent_text
     assert (OPERATOR_DM, f"Paired sender {STRANGER}.") in gateway.sent_text
     assert agent.requests == []
 
 
-async def test_pair_is_refused_outside_a_dm(tmp_path: Path) -> None:
+@pytest.mark.parametrize("command", ["/pair", "/pair list", f"/pair revoke {STRANGER}"])
+async def test_pair_administration_is_refused_outside_a_dm(tmp_path: Path, command: str) -> None:
     host, gateway, agent, _ = await _host(tmp_path, Clock())
 
-    await gateway.deliver_message(_dm(OPERATOR, "/pair list", channel_id="guild", is_dm=False))
+    await gateway.deliver_message(_dm(OPERATOR, command, channel_id="guild", is_dm=False))
     await host.stop()
 
     assert gateway.sent_text == [("guild", "Run /pair in a direct message with this assistant.")]
     assert agent.requests == []
-
-
-def test_jobs_saved_without_a_creator_still_load() -> None:
-    origin = CronOrigin.from_dict(
-        {"conversation_id": "c", "channel": "discord", "message_id": None}
-    )
-
-    assert origin.sender_id is None
-    assert CronOrigin.from_dict(origin.to_dict()) == origin
 
 
 def _job(cron: CronJobStore, conversation_id: str, sender_id: str | None):
@@ -510,8 +512,7 @@ async def test_revoke_stops_the_run_pauses_jobs_and_blocks_the_sender(tmp_path: 
     host, gateway, agent, cron = await _host(tmp_path, Clock())
     await gateway.deliver_message(_dm(STRANGER, "let me in"))
     await gateway.deliver_message(_dm(OPERATOR, f"/pair approve {_issued_code(gateway)}"))
-    # Saved before creators were recorded: matched by the sender's DM.
-    legacy_job = _job(cron, STRANGER_DM, None)
+    dm_job = _job(cron, STRANGER_DM, STRANGER)
     shared_job = _job(cron, "guild", STRANGER)
     operator_job = _job(cron, "guild", OPERATOR)
     await gateway.deliver_message(_dm(STRANGER, "block", channel_id="guild", is_dm=False))
@@ -528,7 +529,7 @@ async def test_revoke_stops_the_run_pauses_jobs_and_blocks_the_sender(tmp_path: 
     ) in gateway.sent_text
     assert [request.text for request in agent.requests] == ["block"]
     assert [(saved.id, saved.enabled) for saved in cron.list_jobs()] == [
-        (legacy_job.id, False),
+        (dm_job.id, False),
         (shared_job.id, False),
         (operator_job.id, True),
     ]
@@ -599,7 +600,7 @@ async def _approved_stranger_with_job(tmp_path: Path):
     job = cron.create_job(
         prompt="block",
         schedule=CronSchedule.parse("every 1h"),
-        origin=CronOrigin(conversation_id=STRANGER_DM, channel="discord"),
+        origin=CronOrigin(conversation_id=STRANGER_DM, channel="discord", sender_id=STRANGER),
     )
     return host, gateway, agent, job
 
@@ -688,13 +689,13 @@ def test_cli_approves_lists_and_revokes(
     job = cron.create_job(
         prompt="report",
         schedule=CronSchedule.parse("every 1h"),
-        origin=CronOrigin(conversation_id=STRANGER_DM, channel="telegram"),
+        origin=CronOrigin(conversation_id=STRANGER_DM, channel="telegram", sender_id=STRANGER),
     )
     capsys.readouterr()
 
     assert _cli(monkeypatch, tmp_path, "revoke", "telegram", STRANGER) == 0
     assert not store.is_paired("telegram", STRANGER)
-    follow_up = f"deepagents-talon pairing pause-jobs telegram {STRANGER} --dm {STRANGER_DM}"
+    follow_up = f"deepagents-talon pairing pause-jobs telegram {STRANGER}"
     assert follow_up in capsys.readouterr().out
     assert _cli(monkeypatch, tmp_path, *follow_up.split()[2:]) == 0
     assert [(saved.id, saved.enabled) for saved in cron.list_jobs()] == [(job.id, False)]

@@ -60,6 +60,10 @@ Charset-dependent characters and animations have **single sources of truth**. Re
 - **Message passing** for widget communication - see [Events guide](https://textual.textualize.io/guide/events/)
 - **Reactive attributes** for state management - see [Reactivity guide](https://textual.textualize.io/guide/reactivity/)
 
+### Shared notification sources
+
+When a lifecycle condition needs both a TUI notification and a hook, detect it once and fan out to both from the same source. Share timing, deduplication, and message data rather than adding separate timers or parallel condition checks. Built-in UI notifications must work without configured hooks and must not wait for hook execution or depend on its success. Prefer a small shared dispatch path over introducing an event bus solely for this purpose.
+
 ### UI component organization
 
 Apply these rules to new UI; do not treat them as a mandate to refactor existing code.

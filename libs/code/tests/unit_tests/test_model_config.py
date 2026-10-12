@@ -4524,6 +4524,36 @@ class TestLoadMcpServerTrustLists:
 class TestGetModelProfiles:
     """Tests for get_model_profiles() function."""
 
+    def test_anthropic_fallback_fills_only_missing_profile_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        profiles_path = tmp_path / "data" / "_profiles.py"
+        profiles_path.parent.mkdir()
+        profiles_path.write_text(
+            "_PROFILES = {'claude-haiku-5-5': {'structured_output': False, "
+            "'reasoning_effort_default': 'high'}}"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "langchain_anthropic", tmp_path / "__init__.py"
+        )
+        monkeypatch.setattr(importlib.util, "find_spec", lambda _: spec)
+        clear_caches()
+
+        profiles = model_config._load_provider_profiles(
+            "langchain_anthropic.data._profiles"
+        )
+
+        assert profiles["claude-haiku-5-5"]["structured_output"] is False
+        assert profiles["claude-haiku-5-5"]["reasoning_effort_default"] == "high"
+        assert profiles["claude-haiku-5-5"]["reasoning_effort_levels"] == [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ]
+        clear_caches()
+
     def test_haiku_discovery_and_effort_without_upstream_profile(self) -> None:
         from deepagents_code.reasoning_effort import (
             default_effort_for_model,

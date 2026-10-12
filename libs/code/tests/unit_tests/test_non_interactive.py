@@ -875,6 +875,48 @@ class TestNoStreamMode:
         assert text_writes[1] == "world"
 
 
+class TestServerErrorOutput:
+    """Server-raised errors print their type and message."""
+
+    async def test_remote_exception_prints_server_message(self) -> None:
+        mock_console = MagicMock(spec=Console)
+        payload = {"error": "ValueError", "message": "Skill 'review' moved."}
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.Console",
+                return_value=mock_console,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive._resolve_shell_allow_list",
+            ) as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive._run_agent_loop",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError(payload),
+            ),
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(_headless_agent(), MagicMock(), None),
+            ),
+        ):
+            mock_settings.return_value = None
+            mock_settings.has_tavily = False
+            runtime_state.model_name = None
+
+            code = await run_non_interactive(message="test", quiet=True)
+
+        printed = [
+            str(call.args[0]) for call in mock_console.print.call_args_list if call.args
+        ]
+        assert code == 1
+        assert any(
+            "Agent error: ValueError: Skill 'review' moved." in line for line in printed
+        )
+        assert not any("{'error'" in line for line in printed)
+
+
 class TestFastFollowLangsmithLink:
     """Tests for best-effort fast-follow LangSmith link output."""
 

@@ -3010,10 +3010,17 @@ async def run_non_interactive(
         return 1
     except Exception as e:
         logger.exception("Unexpected error during non-interactive execution")
-        console.print(
-            f"\n[red]Unexpected error ({type(e).__name__}): "
-            f"{escape_markup(str(e))}[/red]"
-        )
+        if e.args and isinstance(e.args[0], dict):
+            # The server raised it; show its type and message, not the dict.
+            from deepagents_code.client.remote_client import format_agent_exception
+
+            detail = format_agent_exception(e)
+            console.print(f"\n[red]Agent error: {escape_markup(detail)}[/red]")
+        else:
+            console.print(
+                f"\n[red]Unexpected error ({type(e).__name__}): "
+                f"{escape_markup(str(e))}[/red]"
+            )
         return 1
     else:
         return 0

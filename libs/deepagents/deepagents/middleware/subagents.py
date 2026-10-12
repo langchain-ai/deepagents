@@ -50,7 +50,14 @@ SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
 
 _FORK_EXCLUDED_STATE_KEYS = frozenset(
-    {"structured_response", "pinned_skills", SUMMARIZATION_EVENT_KEY, SUMMARIZATION_SESSION_ID_KEY, _SKILL_TOOLS_DISCLOSED_KEY}
+    {
+        "structured_response",
+        "pinned_skills",
+        _RUBRIC_KEY,
+        SUMMARIZATION_EVENT_KEY,
+        SUMMARIZATION_SESSION_ID_KEY,
+        _SKILL_TOOLS_DISCLOSED_KEY,
+    }
 )
 """State a fork must not resume.
 
@@ -58,7 +65,8 @@ The summarization event is folded into the fork's messages instead. Dropping the
 session ID lets the subagent generate its own, and dropping a prior structured response
 ensures it cannot be mistaken for the fork's result. The disclosed skill tools
 describe the parent's last model call; the fork records its own. Skills the parent
-has yet to pin are the parent's own.
+has yet to pin are the parent's own. The rubric grades the parent's whole goal,
+not the fork's task.
 """
 
 _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
@@ -377,6 +385,7 @@ _EXCLUDED_STATE_KEYS = {
     "pinned_skills",
     _SKILL_TOOLS_DISCLOSED_KEY,
     _FORKED_CONTEXT_KEY,
+    _RUBRIC_KEY,
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.
@@ -393,19 +402,12 @@ When returning updates:
     parent's list with its own. `_skill_tools_disclosed` is excluded because it
     describes one agent's latest model call, and `pinned_skills` because a
     pending pin belongs to the agent it was requested for.
-4. Agent-private fields on middleware state schemas are excluded from both
+4. `rubric` belongs to the caller. A child that inherits it is graded against
+    the caller's whole goal instead of its own task. It has no reducer, so
+    parallel `task` calls that each return it would conflict, and one child
+    could also replace the caller's rubric.
+5. Agent-private fields on middleware state schemas are excluded from both
     subagent output and subagent inputs.
-
-See `_EXCLUDED_OUTPUT_STATE_KEYS` for keys excluded only from subagent output.
-"""
-
-
-_EXCLUDED_OUTPUT_STATE_KEYS = _EXCLUDED_STATE_KEYS | {_RUBRIC_KEY}
-"""State keys dropped from a subagent's update to its caller.
-
-Children still inherit `rubric` as input, but it belongs to the caller. `rubric`
-has no reducer, so parallel `task` calls that each return it would conflict,
-and one child could also replace the parent's rubric.
 """
 
 
@@ -715,7 +717,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             )
             raise ValueError(error_msg)
 
-        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_OUTPUT_STATE_KEYS and k not in private_state_keys}
+        state_update = {k: v for k, v in result.items() if k not in _EXCLUDED_STATE_KEYS and k not in private_state_keys}
 
         structured = result.get("structured_response")
         if structured is not None:

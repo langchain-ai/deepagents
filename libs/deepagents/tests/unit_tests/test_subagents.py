@@ -335,7 +335,7 @@ class TestSubAgents:
     @pytest.mark.parametrize("change_child_rubric", [False, True])
     @pytest.mark.parametrize("mode", ["fork", "isolated"])
     async def test_parallel_subagents_preserve_parent_rubric(self, *, use_async: bool, change_child_rubric: bool, mode: str) -> None:
-        """Parallel `task` calls must not conflict on, or overwrite, the caller's `rubric`."""
+        """Subagents must not inherit, conflict on, or overwrite the caller's `rubric`."""
 
         class SharedState(RubricState):
             completed: Annotated[list[str], operator.add]
@@ -343,11 +343,11 @@ class TestSubAgents:
         class SharedMiddleware(AgentMiddleware[SharedState]):
             state_schema = SharedState
 
-        inherited_rubrics: list[str] = []
+        inherited_rubrics: list[str | None] = []
 
         class ChildMiddleware(SharedMiddleware):
             def before_agent(self, state: SharedState, runtime: object) -> dict[str, Any]:
-                inherited_rubrics.append(state["rubric"])
+                inherited_rubrics.append(state.get("rubric"))
                 update: dict[str, Any] = {"completed": [state["messages"][-1].content]}
                 if change_child_rubric:
                     update["rubric"] = "child-local goal"
@@ -386,7 +386,7 @@ class TestSubAgents:
         result = await agent.ainvoke(inputs) if use_async else agent.invoke(inputs)
 
         assert result["rubric"] == "parent goal"
-        assert inherited_rubrics == ["parent goal", "parent goal"]
+        assert inherited_rubrics == [None, None]
         assert len(result["completed"]) == 2
         assert all(any(entry.endswith(name) for entry in result["completed"]) for name in ("first", "second"))
         assert {message.content for message in result["messages"] if isinstance(message, ToolMessage)} == {"first done", "second done"}

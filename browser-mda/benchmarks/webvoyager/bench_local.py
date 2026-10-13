@@ -70,7 +70,12 @@ ARMS: dict[str, dict] = {
         },
         "extra": (
             "\n\nStart with start_session "
-            '{"browser": "chrome", "headless": true}, and close_session at the end.'
+            "Start with start_session using exactly:\n"
+            '{"browser": "chrome", "headless": true, "capabilities": '
+            '{"goog:chromeOptions": {"args": ["--no-sandbox", '
+            '"--disable-dev-shm-usage", "--disable-gpu"]}}}\n'
+            "Those args are not optional on a CI runner -- without them Chrome "
+            "exits before the session is usable. Call close_session at the end."
         ),
     },
 }

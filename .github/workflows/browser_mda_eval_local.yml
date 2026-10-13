@@ -105,6 +105,40 @@ jobs:
           google-chrome --version
           google-chrome --headless --dump-dom about:blank >/dev/null && echo "headless launch OK"
 
+      # Each arm brings its own browser and its own way of configuring it, so
+      # the PATH shim above only covers the ones that shell out to
+      # `google-chrome`. These three do not.
+      - name: Provision the arm's browser
+        env:
+          ARM: ${{ matrix.arm }}
+        run: |
+          set -euo pipefail
+          case "$ARM" in
+            agent-browser)
+              # The CLI has to be on PATH: one smoke task reported
+              # "agent-browser is not available in this sandbox environment".
+              npm install -g agent-browser@latest
+              agent-browser --version
+              ;;
+            browser-use)
+              # Drives Playwright's own Chromium, not the system Chrome, and
+              # takes its flags from a config file rather than argv.
+              npx -y playwright@latest install --with-deps chromium
+              mkdir -p "$HOME/.config/browseruse"
+              cat > "$HOME/.config/browseruse/config.json" <<'JSON'
+              {"browser_profile": {"ci": {"id": "ci", "default": true,
+                "headless": true, "chromium_sandbox": false,
+                "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]}}}
+              JSON
+              sed -i 's/^ *//' "$HOME/.config/browseruse/config.json"
+              cat "$HOME/.config/browseruse/config.json"
+              ;;
+            wdio)
+              # Resolves its own Chrome for Testing plus a matching driver.
+              npx -y playwright@latest install --with-deps chromium
+              ;;
+          esac
+
       - name: Run the suite
         working-directory: browser-mda/benchmarks/webvoyager
         env:
@@ -126,6 +160,7 @@ jobs:
           # runner has no display, so anything that ignored it would fail loudly
           # rather than silently opening a window.
           BROWSER_USE_HEADLESS: "true"
+          BROWSER_USE_CONFIG_FILE: /home/runner/.config/browseruse/config.json
           ARM: ${{ matrix.arm }}
           DATASET: ${{ github.event.inputs.dataset || 'webvoyager-100' }}
           DATASET_ID: ${{ needs.prep.outputs.dataset_id }}

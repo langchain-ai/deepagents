@@ -169,6 +169,7 @@ def test_detection_and_gate_preserve_parent_result(
         ["bash", "-e", "-c", gate["run"]],
         env={
             **env,
+            "LOCKFILES_RESULT": "success",
             "CURATED_APPLY_ONLY": outputs["only"],
             "CURATED_APPLY_PARENT_CONCLUSION": outputs["prior-conclusion"],
         },

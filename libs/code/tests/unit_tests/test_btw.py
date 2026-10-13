@@ -36,7 +36,7 @@ from textual import events
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, Static, TextArea
 
-from deepagents_code.btw import BtwLimitError, BtwOperation
+from deepagents_code.btw import _MAX_TOOL_ROUNDS, BtwLimitError, BtwOperation
 from deepagents_code.client.remote_client import RemoteAgent
 from deepagents_code.tui.modals.btw import BtwScreen, BtwTextArea
 from deepagents_code.tui.widgets.messages import AssistantMessage, UserMessage
@@ -119,7 +119,7 @@ async def test_structured_snapshot_keeps_state_and_closes_pending_tools(
     assert messages[2:6] == state["messages"][1:5]
     assert isinstance(messages[6], ToolMessage)
     assert messages[6].tool_call_id == "2"
-    assert "reference context only" in messages[-1].text
+    assert messages[-1].text.endswith("Why?")
     assert invoke.call_args.kwargs == {
         "config": {"callbacks": [], "metadata": {"thread_id": "thread"}}
     }
@@ -2316,7 +2316,7 @@ async def test_side_tools_respect_main_allowlist_and_bound_the_loop(
     )
     with pytest.raises(ValueError, match="Side tool limit reached"):
         await operation.answer("thread", {}, "search", read_tools=True)
-    assert calls.await_count == 4
+    assert calls.await_count == _MAX_TOOL_ROUNDS + 1
     assert {tool["function"]["name"] for tool in calls.call_args.kwargs["tools"]} == {
         "read_file"
     }

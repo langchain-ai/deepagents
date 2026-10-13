@@ -4,10 +4,9 @@
 
 ## [0.3.9](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.8...langchain-quickjs==0.3.9) (2026-10-13)
 
-
 ### Features
 
-* **quickjs:** make subagent concurrency configurable ([#6926](https://github.com/langchain-ai/deepagents/issues/6926)) ([f957b8e](https://github.com/langchain-ai/deepagents/commit/f957b8edd29d3146bf265aa7886c24e5fcd9a50f))
+- Subagent concurrency is now configurable.
 
 ## [0.3.8](https://github.com/langchain-ai/deepagents/compare/langchain-quickjs==0.3.7...langchain-quickjs==0.3.8) (2026-09-29)
 

@@ -1,0 +1,23 @@
+libs/deepagents/deepagents/middleware/browser.py
+  s_199de864fdc442::t_d6776a766f8a46 30
+  s_199de864fdc442::t_7418c210cd4859 184-208,346
+  s_199de864fdc442::t_3442b74f1148bb 324-326,330-336,345,382-387,390-391,396-399
+examples/browser-agent/agent.py
+  s_199de864fdc442::t_d6776a766f8a46 22,30-31,33-34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2137f6f67c2a8b883588feb119eef2d10aaf2930",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

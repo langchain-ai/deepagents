@@ -2336,7 +2336,7 @@ async def test_side_tools_respect_main_allowlist_and_bound_the_loop(
         backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
         filesystem_tools=["read_file"],
     )
-    with pytest.raises(ValueError, match="Side tool limit reached"):
+    with pytest.raises(BtwLimitError, match="Side tool limit reached"):
         await operation.answer("thread", {}, "search", read_tools=True)
     assert calls.await_count == _MAX_TOOL_ROUNDS + 1
     assert {tool["function"]["name"] for tool in calls.call_args.kwargs["tools"]} == {

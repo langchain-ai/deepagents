@@ -1,0 +1,32 @@
+examples/browser-agent/agent.py
+  s_199de864fdc442::t_fc5202cf2acb0d 44-46,48-50,55
+  s_199de864fdc442::t_c2b71c632de640 3-6,10-11
+  s_199de864fdc442::t_28651f966ba30f 47,51
+  s_199de864fdc442::t_ba353868602632 21
+libs/deepagents/deepagents/middleware/browser.py
+  s_199de864fdc442::t_28651f966ba30f 66-71
+examples/browser-agent/sandbox_chrome.py
+  s_199de864fdc442::t_fd8a4ccad90ffc 1-6,8,11-23,25-45,55-56,58-62,64-72,74-75,78-81,83-89
+  s_199de864fdc442::t_fc5202cf2acb0d 7,9-10,46-54,63,90
+  s_199de864fdc442::t_5b4b419b39864e 24,73,77,82
+  s_199de864fdc442::t_28651f966ba30f 57,76
+examples/browser-agent/README.md
+  s_199de864fdc442::t_28651f966ba30f 12,14-16,29-46
+  s_199de864fdc442::t_76e7fe3ee20dd8 47
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b9a4b08d1d6e72ab23b68e7b199fc168cd6b8dfd",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

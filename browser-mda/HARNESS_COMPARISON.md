@@ -1,6 +1,6 @@
-# Five browsing harnesses, one benchmark
+# Six browsing harnesses, one benchmark
 
-Five Managed Deep Agents solve the same WebVoyager tasks. They differ only in
+Six browsing agents solve the same WebVoyager tasks. They differ only in
 **how the agent reaches a browser** -- same dataset, same judge, same grading
 thresholds. This is the write-up of what that difference bought.
 
@@ -137,9 +137,35 @@ shows, this one for the decomposition.
 | MCP | 100 | 83 | 13 | 4 | 83.0% | 13 | 101,206 | $0.0770 | $17.87 | 30 |
 | **facade** | 100 | 85 | 10 | 5 | 85.0% | 10 | **31,157** | $0.0171 | **$2.46** | **22** |
 | facade-repl | 100 | **86** | **7** | 7 | **86.0%** | 11 | 40,825 | $0.0185 | $2.98 | 30 |
+| playwright MCP | 98 | 81 | 15 | 2 | 82.7% | 42 | 205,474 | $0.4337 | $66.16 | 92 |
 
 **The facade arm is 7.3x cheaper than hosted MCP at higher accuracy** -- $2.46
 against $17.87, a third of the tokens, a quarter of the wall clock.
+
+## Playwright MCP: excellent tools, expensive surface
+
+`@playwright/mcp` 1.64.0-alpha exposes **25 tools** -- `browser_snapshot`,
+`browser_click`, `browser_type`, `browser_fill_form`, `browser_evaluate`,
+`browser_run_code_unsafe`, `browser_network_requests`, `browser_console_messages`,
+`browser_tabs`, `browser_wait_for` and more. It is the richest surface in this
+comparison by some distance, and it is also the only arm where that is a
+liability.
+
+It costs **$66.16 against the facade's $2.46 -- 27x -- for four fewer correct
+answers.** 205,474 median tokens to the facade's 31,157; 42 median steps to 10.
+
+Nothing is wrong with the tools. Accuracy is competitive at 81, with only **2
+INCORRECT** in 98 graded rows: this arm almost never answers wrongly, it gets
+walled. The cost is structural. Twenty-five fine-grained verbs mean a model
+turn per action, and `browser_snapshot` returns a full page representation
+where the facade's `run` returns whatever the snippet chose.
+
+That is the same mechanism that made hosted MCP expensive, further along the
+same axis, and it is the clearest statement of the pattern this benchmark keeps
+producing: **what a tool returns matters more than how good the tools are.**
+
+This arm ran on a laptop rather than a deployment, so its wall clock is not
+comparable to the rows above it. Token counts and cost are.
 
 ## Does code mode help? Only when the tools are atomic
 

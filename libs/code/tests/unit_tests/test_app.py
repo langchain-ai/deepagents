@@ -1376,6 +1376,8 @@ class TestFooterCostBreakdown:
     async def test_footer_cost_opens_live_modal_and_restores_focus(
         self,
     ) -> None:
+        from textual.widgets import Markdown
+
         from deepagents_code.cost_tracking import _empty_cost_breakdown
         from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
         from deepagents_code.tui.widgets.status import MetricsLine
@@ -1396,9 +1398,9 @@ class TestFooterCostBreakdown:
 
             modal = app.screen
             assert isinstance(modal, CostBreakdownScreen)
-            body = modal.query_one(".cost-breakdown-body", Static)
-            assert "123" in str(body.render())
-            assert "1.25" in str(body.render())
+            body = modal.query_one(".cost-breakdown-body", Markdown)
+            assert "123" in body._markdown
+            assert "1.25" in body._markdown
             stack_size = len(app.screen_stack)
             app.action_open_cost_breakdown()
             await pilot.pause()
@@ -1409,8 +1411,8 @@ class TestFooterCostBreakdown:
             updated["input_tokens"] = 456
             app._set_session_cost(2.5, breakdown=updated)
             await pilot.pause(delay=0.6)
-            assert "456" in str(body.render())
-            assert "2.5" in str(body.render())
+            assert "456" in body._markdown
+            assert "2.5" in body._markdown
 
             await pilot.press("escape")
             await pilot.pause()

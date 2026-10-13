@@ -7,9 +7,12 @@ run directly on the host machine with full system access.
 
 from __future__ import annotations
 
+import codecs
+import locale
 import os
 import subprocess
 import sys
+import time
 import uuid
 from typing import TYPE_CHECKING
 
@@ -22,6 +25,36 @@ if TYPE_CHECKING:
 
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
+
+_OUTPUT_POLL_INTERVAL = 0.05
+_OUTPUT_DRAIN_TIMEOUT = 0.5
+
+
+def _decode_partial_output(output: bytes | str | None, encoding: str) -> str:
+    """Apply text-mode decoding and newline normalization to partial pipe output."""
+    text = codecs.getincrementaldecoder(encoding)().decode(output) if isinstance(output, bytes) else output or ""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _collect_output(process: subprocess.Popen[str], timeout: int, encoding: str) -> tuple[str, str, bool]:
+    """Drain both pipes while monitoring shell exit, then bound the EOF wait."""
+    deadline = time.monotonic() + timeout
+    while process.poll() is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        try:
+            return (*process.communicate(timeout=min(remaining, _OUTPUT_POLL_INTERVAL)), False)
+        except subprocess.TimeoutExpired:
+            pass
+    try:
+        return (*process.communicate(timeout=_OUTPUT_DRAIN_TIMEOUT), False)
+    except subprocess.TimeoutExpired as error:
+        return (
+            _decode_partial_output(error.output, encoding),
+            _decode_partial_output(error.stderr, encoding),
+            True,
+        )
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -219,75 +252,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         *,
         timeout: int | None = None,
     ) -> ExecuteResponse:
-        r"""Execute a shell command directly on the host system.
-
-        !!! danger "Unrestricted Execution"
-
-            Commands are executed directly on your host system
-            using `subprocess.run()` with `shell=True`. There is **no sandboxing,
-            isolation, or security restrictions**. The command runs with
-            your user's full permissions and can:
-
-            - Access any file on the filesystem (regardless of `virtual_mode`)
-            - Execute any program or script
-            - Make network connections
-            - Modify system configuration
-            - Spawn additional processes
-            - Install packages or modify dependencies
-
-            **Always use Human-in-the-Loop (HITL) middleware when using this method.**
-
-        The command is executed using the system shell (`/bin/sh` or equivalent)
-        with the working directory set to the backend's `root_dir`.
-        Stdout and stderr are combined into a single output stream.
-
-        Args:
-            command: Shell command string to execute.
-
-                Examples: `"python script.py"`, `"ls -la"`, `"grep pattern file.txt"`
-
-                **Security:** This string is passed directly to the shell.
-                Agents can execute arbitrary commands including pipes,
-                redirects, command substitution, etc.
-            timeout: Maximum time in seconds to wait for this command.
-
-                Overrides the default timeout set at init.
-
-                If `None`, uses the default.
-
-        Returns:
-            `ExecuteResponse` containing:
-                - `output`: Combined stdout and stderr (stderr lines prefixed with `[stderr]`)
-                - `exit_code`: Process exit code (0 for success, non-zero for failure)
-                - `truncated`: `True` if output was truncated due to size limits
-
-        Raises:
-            ValueError: If per-command timeout is not positive.
-
-        Examples:
-            ```python
-            # Run a simple command
-            result = backend.execute("echo hello")
-            assert result.output == "hello\\n"
-            assert result.exit_code == 0
-
-            # Handle errors
-            result = backend.execute("cat nonexistent.txt")
-            assert result.exit_code != 0
-            assert "[stderr]" in result.output
-
-            # Check for truncation
-            result = backend.execute("cat huge_file.txt")
-            if result.truncated:
-                print("Output was truncated")
-
-            # Override timeout for long-running commands
-            result = backend.execute("make build", timeout=300)
-
-            # Commands run in root_dir, but can access any path
-            result = backend.execute("cat /etc/passwd")  # Can read system files!
-            ```
-        """
+        """Execute an unrestricted shell command with bounded post-exit output collection."""
         if not command or not isinstance(command, str):
             return ExecuteResponse(
                 output="Error: Command must be a non-empty string.",
@@ -301,18 +266,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             raise ValueError(msg)
 
         try:
-            result = subprocess.run(  # noqa: S602
-                command,
-                check=False,
-                shell=True,  # Intentional: designed for LLM-controlled shell execution
-                capture_output=True,
-                stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
-                text=True,
-                timeout=effective_timeout,
-                env=self._env,
-                cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
-                start_new_session=(sys.platform != "win32"),
-            )
+            result, background_running = self._run_command(command, effective_timeout)
 
             # Combine stdout and stderr
             # Prefix each stderr line with [stderr] for clear attribution.
@@ -332,6 +286,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 output = output[: self._max_output_bytes]
                 output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
                 truncated = True
+
+            output = f"{output.rstrip()}\n\nNote: background processes are still running." if background_running else output
 
             # Add exit code info if non-zero
             if result.returncode != 0:
@@ -361,6 +317,29 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 exit_code=1,
                 truncated=False,
             )
+
+    def _run_command(self, command: str, timeout: int) -> tuple[subprocess.CompletedProcess[str], bool]:
+        """Collect command output without waiting for background descendants to exit."""
+        encoding = locale.getpreferredencoding(do_setlocale=False)
+        with subprocess.Popen(  # noqa: S602  # Intentional unrestricted shell execution.
+            command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            text=True,
+            encoding=encoding,
+            env=self._env,
+            cwd=str(self.cwd),
+            start_new_session=(sys.platform != "win32"),
+        ) as process:
+            try:
+                stdout, stderr, background_running = _collect_output(process, timeout, encoding)
+            except BaseException:
+                process.kill()
+                process.wait()
+                raise
+            return subprocess.CompletedProcess(command, process.wait(), stdout, stderr), background_running
 
 
 __all__ = ["DEFAULT_EXECUTE_TIMEOUT", "LocalShellBackend"]

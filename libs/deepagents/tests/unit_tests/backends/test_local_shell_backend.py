@@ -1,9 +1,15 @@
 """Unit tests for LocalShellBackend."""
 
+import asyncio
 import os
+import shlex
+import signal
 import sys
 import tempfile
+import time
 import warnings
+from collections.abc import Iterator
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -12,6 +18,80 @@ from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="LocalShellBackend requires sh, not available on Windows")
+
+
+@pytest.fixture
+def background_pid_file(tmp_path: Path) -> Iterator[Path]:
+    """Clean up background processes even when execution assertions fail."""
+    pid_file = tmp_path / "background.pid"
+    try:
+        yield pid_file
+    finally:
+        if pid_file.exists():
+            with suppress(ProcessLookupError):
+                os.kill(int(pid_file.read_text()), signal.SIGKILL)
+
+
+def test_local_shell_backend_background_and_list(tmp_path: Path, background_pid_file: Path) -> None:
+    """A bash background and-list must not consume the command timeout."""
+    backend = LocalShellBackend(root_dir=tmp_path, inherit_env=True)
+    command = (
+        f"cd /tmp && nohup sleep 30 > {shlex.quote(str(tmp_path / '_bg_out'))} "
+        f"2> {shlex.quote(str(tmp_path / '_bg_err'))} & "
+        f"echo $! > {shlex.quote(str(background_pid_file))}; echo started"
+    )
+    started = time.monotonic()
+    result = backend.execute(f"bash -c {shlex.quote(command)}", timeout=5)
+
+    assert time.monotonic() - started < 2
+    assert result.exit_code == 0
+    assert "started" in result.output
+    os.kill(int(background_pid_file.read_text()), 0)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_local_shell_backend_inherited_background_pipes(tmp_path: Path, background_pid_file: Path, *, asynchronous: bool) -> None:
+    """Inherited output pipes must not delay either execution API until EOF."""
+    backend = LocalShellBackend(root_dir=tmp_path, inherit_env=True)
+    script = "import os, time; time.sleep(0.1); os.write(1, b'late\\r\\n\\xc3'); time.sleep(30)"
+    command = (
+        f"{shlex.quote(sys.executable)} -c {shlex.quote(script)} & echo $! > {shlex.quote(str(background_pid_file))}; "
+        "printf 'started\\r\\n'; printf 'warning\\r\\n' >&2; exit 7"
+    )
+    started = time.monotonic()
+    result = await backend.aexecute(command, timeout=5) if asynchronous else backend.execute(command, timeout=5)
+
+    assert time.monotonic() - started < 2
+    assert result.exit_code == 7
+    assert result.output == "started\nlate\n\n[stderr] warning\n\nNote: background processes are still running.\n\nExit code: 7"
+    assert result.truncated is False
+    os.kill(int(await asyncio.to_thread(background_pid_file.read_text)), 0)
+
+
+def test_local_shell_backend_drains_both_streams(tmp_path: Path) -> None:
+    """Foreground output exceeding pipe capacity must be drained before exit."""
+    backend = LocalShellBackend(root_dir=tmp_path, max_output_bytes=300_000, inherit_env=True)
+    script = "import os; os.write(1, b'o' * 100000); os.write(2, b'e' * 100000)"
+    result = backend.execute(f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}", timeout=5)
+
+    assert result.exit_code == 0
+    assert result.output == "o" * 100_000 + "\n[stderr] " + "e" * 100_000
+    assert result.truncated is False
+
+
+@pytest.mark.parametrize("redirect", ["", "> /dev/null 2>&1"])
+def test_local_shell_backend_timeout_terminates_shell(tmp_path: Path, redirect: str) -> None:
+    """A foreground timeout must terminate and reap the shell process."""
+    pid_file = tmp_path / "shell.pid"
+    backend = LocalShellBackend(root_dir=tmp_path, inherit_env=True)
+    started = time.monotonic()
+    result = backend.execute(f"echo $$ > {shlex.quote(str(pid_file))}; exec sleep 30 {redirect}", timeout=1)
+
+    assert time.monotonic() - started < 2
+    assert result.exit_code == 124
+    assert "custom timeout" in result.output
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid_file.read_text()), 0)
 
 
 def _execute_controlling_terminal_probe(directory: Path, result_file: Path) -> None:

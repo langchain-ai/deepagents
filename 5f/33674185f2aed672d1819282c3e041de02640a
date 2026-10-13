@@ -1,0 +1,63 @@
+browser-mda/benchmarks/webvoyager/experiment_native.py
+  s_199de864fdc442::t_831495b52963b2 38-41
+browser-mda/HARNESS_COMPARISON.md
+  s_199de864fdc442::t_36853c5e77990a 114-169
+  s_199de864fdc442::t_8bed87f0a384be 1,3,7-16,55-70,106-112
+  s_199de864fdc442::t_d1a1fe7dbeb967 113
+browser-mda-repl/tools/browser.py
+  s_199de864fdc442::t_831495b52963b2 36-39
+browser-mda-facade-repl/.gitignore
+  s_199de864fdc442::t_ac646dd4ee5334 1-20
+browser-mda-facade-repl/agent.py
+  s_199de864fdc442::t_0f7039a9225be1 1-46
+browser-mda-facade-repl/instructions.md
+  s_199de864fdc442::t_97771fa6bd5098 1-61
+browser-mda-facade-repl/middleware/__init__.py
+  s_199de864fdc442::t_573eefe91c1e49 1-5
+browser-mda-facade-repl/middleware/session.py
+  s_199de864fdc442::t_46c1fabb097cd3 1-30
+browser-mda-facade-repl/middleware/tool_errors.py
+  s_199de864fdc442::t_3950d4931f28ba 1-52
+browser-mda-facade-repl/pyproject.toml
+  s_199de864fdc442::t_26372eab3e9c37 1-13
+browser-mda-facade-repl/tools/facade.py
+  s_199de864fdc442::t_5d7f46b76d7862 1-299
+browser-mda-facade-repl/uv.lock
+  s_199de864fdc442::t_15786bc3cde81d 1-1904
+browser-mda-facade/.gitignore
+  s_199de864fdc442::t_d5133250d95469 1-20
+browser-mda-facade/agent.py
+  s_199de864fdc442::t_b401360eaa0a4b 1-27
+browser-mda-facade/instructions.md
+  s_199de864fdc442::t_e0340ea82e5371 1-39
+browser-mda-facade/middleware/__init__.py
+  s_199de864fdc442::t_233761bc004856 1-5
+browser-mda-facade/middleware/session.py
+  s_199de864fdc442::t_14b1f6db8f1a4a 1-30
+browser-mda-facade/middleware/tool_errors.py
+  s_199de864fdc442::t_ba606f53b2b2f2 1-52
+browser-mda-facade/pyproject.toml
+  s_199de864fdc442::t_ed58229ad7248c 1-12
+browser-mda-facade/tools/facade.py
+  s_199de864fdc442::t_670b7abdc7d988 1-299
+browser-mda-facade/uv.lock
+  s_199de864fdc442::t_a519851c226e19 1-1804
+browser-mda/BROWSER_MIDDLEWARE_PROPOSAL.md
+  s_199de864fdc442::t_a653fced6ddcdc 1-122
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "5f33674185f2aed672d1819282c3e041de02640a",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

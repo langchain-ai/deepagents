@@ -99,8 +99,8 @@ def build_model_content(text: str, metadata: dict[str, object]) -> str | list[Co
         metadata: Channel metadata containing media paths and MIME types.
 
     Returns:
-        Plain text for non-photo messages, or LangChain-compatible content blocks
-        containing a text block followed by image data URLs.
+        Plain text for non-photo messages, or a text block followed by standard
+            base64 image blocks, which Deep Agents can offload to backend blobs.
     """
     if _normalized_media_type(metadata) != "image":
         return text
@@ -117,7 +117,7 @@ def build_model_content(text: str, metadata: dict[str, object]) -> str | list[Co
             data = base64.b64encode(path.read_bytes()).decode("ascii")
         except OSError:
             continue
-        blocks.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}})
+        blocks.append({"type": "image", "base64": data, "mime_type": mime})
 
     if not blocks:
         return text

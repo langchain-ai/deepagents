@@ -1735,6 +1735,7 @@ class TestExecuteTaskTextualStreamCompletion:
         message = mount_message.await_args_list[0].args[0]
         assert str(message._content) == f"Operation stopped by hook: {stop}"
         callback.assert_called_once_with()
+        assert adapter.stream_completed
 
     async def test_interrupted_stream_skips_completion_callback(self) -> None:
         adapter = TextualUIAdapter(
@@ -1758,6 +1759,7 @@ class TestExecuteTaskTextualStreamCompletion:
             )
 
         callback.assert_not_called()
+        assert not adapter.stream_completed
 
 
 class TestExecuteTaskTextualTurnMarkers:
@@ -1870,6 +1872,8 @@ class TestExecuteTaskTextualTurnMarkers:
         )
 
         assert agent.configs[0]["metadata"]["ls_skill_name"] == "code-review"
+        assert agent.stream_inputs[0]["pinned_skills"] == ["code-review"]
+        assert agent.stream_inputs[0]["messages"][0]["content"] == "review this"
 
 
 class TestExecuteTaskTextualClientLifecycle:
@@ -1897,6 +1901,7 @@ class TestExecuteTaskTextualClientLifecycle:
         ):
             await execute_task_textual(
                 user_input="secret prompt",
+                skill_name="code-review",
                 agent=agent,
                 assistant_id="assistant",
                 session_state=_session_state(),
@@ -1906,6 +1911,7 @@ class TestExecuteTaskTextualClientLifecycle:
         on_user_prompt.assert_awaited_once()
         stream_input = agent.stream_inputs[0]
         assert isinstance(stream_input, dict)
+        assert "pinned_skills" not in stream_input
         assert stream_input["messages"] == [
             {"role": "system", "content": "replacement context"}
         ]
@@ -5231,6 +5237,7 @@ class TestExecuteTaskTextualAskUser:
         assert len(app_messages) == 1
         assert str(app_messages[0]._content) == expected_message
         assert token_events == ["pending", "show:False"]
+        assert not adapter.stream_completed
 
     async def test_dismissed_questions_accumulate_across_cancelled_calls(self) -> None:
         """Two dismissed calls of one question each read as plural.
@@ -8873,3 +8880,90 @@ def _retry_lifecycle_session_state(tmp_path: Path, thread_id: str) -> tuple[Any,
     hooks._runtime = runtime
     session_state.hooks = hooks
     return session_state, runtime
+
+
+class TestServerSkillPinning:
+    """The adapter answers server skill trust requests and renders pins."""
+
+    @staticmethod
+    async def _run(
+        agent: _SequencedAgent,
+        *,
+        request_skill_trust: Callable[[str, str], Awaitable[bool]] | None = None,
+        on_skill_pinned: Callable[[str, str, str], None] | None = None,
+    ) -> None:
+        async def mount_message(_widget: object) -> bool:
+            await asyncio.sleep(0)
+            return True
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=AsyncMock(),
+            request_skill_trust=request_skill_trust,
+            on_skill_pinned=on_skill_pinned,
+        )
+        with (
+            patch(
+                "deepagents_code.tui.textual_adapter.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch("deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=agent,
+                assistant_id="assistant",
+                session_state=_session_state(auto_approve=False),
+                adapter=adapter,
+            )
+
+    @pytest.mark.parametrize("approved", [True, False])
+    async def test_trust_request_resumes_with_the_answer(self, approved: bool) -> None:
+        request = {"type": "skill_trust", "skill": "review", "directory": "/outside"}
+        interrupt = SimpleNamespace(id="trust-1", value=request)
+        agent = _SequencedAgent(
+            streams_by_call=[[((), "updates", {"__interrupt__": [interrupt]})], []]
+        )
+        asked: list[tuple[str, str]] = []
+
+        async def request_skill_trust(skill: str, directory: str) -> bool:
+            await asyncio.sleep(0)
+            asked.append((skill, directory))
+            return approved
+
+        await self._run(agent, request_skill_trust=request_skill_trust)
+
+        assert asked == [("review", "/outside")]
+        resume = agent.stream_inputs[1]
+        assert isinstance(resume, Command)
+        assert resume.resume == {"trust-1": {"approved": approved}}
+
+    async def test_malformed_trust_request_is_denied_without_asking(self) -> None:
+        interrupt = SimpleNamespace(id="trust-1", value={"type": "skill_trust"})
+        agent = _SequencedAgent(
+            streams_by_call=[[((), "updates", {"__interrupt__": [interrupt]})], []]
+        )
+        ask = AsyncMock(return_value=True)
+
+        await self._run(agent, request_skill_trust=ask)
+
+        ask.assert_not_awaited()
+        resume = agent.stream_inputs[1]
+        assert isinstance(resume, Command)
+        assert resume.resume == {"trust-1": {"approved": False}}
+
+    async def test_pinned_message_reports_the_skill(self) -> None:
+        pinned = HumanMessage(
+            '<skill name="review" path="/s/SKILL.md">\nDo it.\n</skill>',
+            additional_kwargs={
+                "lc_source": "pinned_skill",
+                "skill": {"name": "review", "description": "Review code"},
+            },
+        )
+        agent = _SequencedAgent(streams_by_call=[[((), "messages", (pinned, {}))]])
+        seen: list[tuple[str, str, str]] = []
+
+        await self._run(agent, on_skill_pinned=lambda *parts: seen.append(parts))
+
+        assert seen == [("review", "Review code", "Do it.")]

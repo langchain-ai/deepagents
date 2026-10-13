@@ -18,7 +18,6 @@ import pytest
 from langchain.agents import create_agent
 from langchain.agents.middleware import ModelFallbackMiddleware
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
-from langchain_anthropic.chat_models import _supports_mid_conversation_system_messages
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
@@ -339,10 +338,17 @@ def test_model_fallback_builds_blocks_for_the_model_actually_called(tmp_path: Pa
     assert openai_addition["tools"] == [_CREATE_CUSTOMER_REQUEST_FUNCTION]
 
 
-def test_inline_anthropic_models_are_sent_in_place_by_langchain_anthropic() -> None:
-    """If these lists drift, `langchain-anthropic` strips the blocks with only a warning."""
-    for prefix in _ANTHROPIC_INLINE_TOOL_MODELS:
-        assert _supports_mid_conversation_system_messages(prefix), prefix
+@pytest.mark.parametrize("model", _ANTHROPIC_INLINE_TOOL_MODELS)
+def test_inline_anthropic_models_are_sent_in_place_by_langchain_anthropic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, model: str
+) -> None:
+    """Inline-capable models preserve tool additions in the provider payload."""
+    write_skill(tmp_path, "crm", "create_customer_request")
+    chat_model, stub = stub_anthropic(monkeypatch, [[read("r1")], "done"], model=model)
+
+    invoke(skills_agent(tmp_path, chat_model), {"messages": [HumanMessage("go")]}, mode)
+
+    assert _anthropic_system_turns(stub.bodies[1]) == [(_anthropic_tool_result_index(stub.bodies[1], "r1") + 1, [_CREATE_CUSTOMER_REQUEST_ADDITION])]
 
 
 def _stub(provider: str, monkeypatch: pytest.MonkeyPatch, turns: list[Any], **model_kwargs: Any) -> tuple[BaseChatModel, ProviderStub]:
@@ -388,7 +394,8 @@ def test_inline_disclosure_sees_through_a_bound_model(tmp_path: Path, monkeypatc
 @pytest.mark.parametrize("provider", ["anthropic", "openai"])
 def test_unsupported_content_filtering_keeps_disclosure_blocks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, provider: str) -> None:
     write_skill(tmp_path, "crm", "create_customer_request")
-    model, stub = _stub(provider, monkeypatch, ["done"], profile={"image_inputs": False})
+    model, stub = _stub(provider, monkeypatch, ["done"])
+    model.profile = {**(model.profile or {}), "image_inputs": False}
     screenshot = HumanMessage(content=[{"type": "text", "text": "see this"}, {"type": "image", "base64": "iVBORw0KGgo=", "mime_type": "image/png"}])
 
     invoke(skills_agent(tmp_path, model), {"messages": [screenshot, ai(read("r1")), ToolMessage("# crm", tool_call_id="r1")]}, mode)

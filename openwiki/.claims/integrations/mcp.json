@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:62a8efc5e1ee4ef0c9df8794ac95b8e31ed4bcecf1199aebdff736efd6d6700f",
+  "pageVersion": "sha256:050bdb3d58036e9be55e925507673dac1d5cb1483d5c6fe2e4e340681b099813",
   "claims": [
     {
       "id": "claim_d2dc6dcc59684e6188e7b93bec965a71",
@@ -305,10 +305,34 @@
           "version": "repo-lines-v1:sha256:dccb528bd6c11878fd40bef74ef6acc2f84b410c639428d966ef316706aafee7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTU3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZjM0NTgzYTU5ODc2N2JmNTZhZWZlYjY1ZTIwMzNhMTY1MWNjNGM4ZDdlNmYwYWYzZTVjZmQzMjkzZjkzM2IzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwZDI2MDE3NzhiNDdkZTEwNjQyMDlkZTlhNmZkNGRjYjBmODc3OWZlMDhiOTBlNjZmOTEyMmVkYWJhZjgzNGI0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0YjUzMGVkZTRmM2U4ODJkNmU4NWU5ZTZhNzdiYmEyOTU5OTk5NzFlNjU5OTRlNGUwNDFiYzAwM2IxNTc4ZDJmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
         }
       ]
+    },
+    {
+      "id": "claim_14bb9d851c8243cea84960126d06fceb",
+      "statement": "For remote MCP servers, dcode uses explicit OAuth configuration or stored OAuth tokens unless a static `Authorization` header overrides them; explicit OAuth with no stored token is reported as an unauthenticated server without attempting connection.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_tools.py#L2152-L2204",
+          "version": "repo-lines-v1:sha256:9d06748f2eaf4b9df5d94517729c2c554ac85acc9ee3cf2b56cec0fc294dbec3:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1NjljYjA5MjgwZWUwNzgxOTQ1ZTQ4ZDQwNDFiZDJkZmFhZTY5MWFkMmVhYmY1ZDNjYmEwODQ2YzcyMTZjYWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjBkNjA3MWU3ODViNjM4ZjdiYTcwZWU4MWQzMjUzZmZkZjgzNGM3MjBkNTQyY2I4NzgwNGMxYWQwZDY1ZDZlNWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3Yjk3MjMyMGY0ODRkZDI0ZDk1OGM2NmFkMDRjYzBmMTU3YWVlMWI4OGVmNDgxMzdmNTE0YTQwMTdiNmZkMjIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_90b6a3325bcc4644b473a7a5498ade4a",
+      "statement": "MCP OAuth provider selection is an ordered URL-matching extension point: provider policies can customize client metadata, callback behavior, and pre-handshake login work, while `GenericProvider` is the final fallback for spec-compliant servers.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_providers/_registry.py#L1-L39",
+          "version": "repo-lines-v1:sha256:e80294d2acab2885ece808d810340a67fb3fbc118946ae56532ea762fa0b3b24:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjNWMwN2QwOWY2YTAxZjY1NGJkMDYyYWNhZGExMjdlZjkxMDhhY2JhNTBlMzg0ZGQ4ZjBhMjU2MzRkMDZhYzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4YmMxOWQ0YWMzOWYxM2Q3OTZlMWU2ZjYwYTk0Y2M1MmI4ZGU4OTliMDRjZmI2NzU1YWRkMjgzOTIyYzAxOTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_providers/base.py#L1-L117",
+          "version": "repo-lines-v1:sha256:58f4c151a25d177a1669ab23ab439a1480fe9c7f9f23f0a0f583e74084fb7123:eyJzZWxlY3RlZExpbmVDb3VudCI6MTE3LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjOWMwNjExMzUxMTc4NTE4Yjc4NzQ3NjFkMWMxNjA1ODEzYTkwNGVmYjlmMTE3MWFjNTk1NzNiN2NlZTA5MjQzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4NWJmMmUzNDE2ZTlkYzk2ZDIzYjA0Nzc4NDFjN2ZiZmQ2NjFjMmYzMjRlYTVmOGY2YmIwMGZkZTE3YzMwY2ExIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MCwicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI0MWRjODk3OTA0YmQ5ODUzYWUzZDQ2ZTM2Y2I1YTk4Yjk2ODJjYmQ0MTI4ZDMwZjMwMjViZjg0NmRhNjY2YWI2In0"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-30T08:06:28.871Z"
+    "at": "2026-10-08T08:07:53.482Z"
   }
 }

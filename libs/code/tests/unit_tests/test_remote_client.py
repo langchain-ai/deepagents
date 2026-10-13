@@ -63,6 +63,22 @@ class TestPrepareConfig:
 
 
 class TestConvertMessageData:
+    @pytest.mark.parametrize(
+        "metadata",
+        [{}, {"chunk_position": None}, {"chunk_position": "last"}],
+        ids=["missing", "nonterminal", "terminal"],
+    )
+    def test_ai_message_preserves_chunk_position(
+        self, metadata: dict[str, str | None]
+    ) -> None:
+        """Remote chunks retain their explicit message-completion boundary."""
+        msg = _convert_message_data(
+            {"type": "AIMessageChunk", "content": "hello", "id": "m1", **metadata}
+        )
+        assert isinstance(msg, AIMessageChunk)
+        assert msg.chunk_position == metadata.get("chunk_position")
+        assert msg.content == "hello"
+
     def test_ai_message_with_tool_call_chunks(self) -> None:
         msg = _convert_message_data(
             {
@@ -118,6 +134,23 @@ class TestConvertMessageData:
         )
         assert isinstance(msg, ToolMessage)
         assert msg.additional_kwargs[AUTO_DENIED_METADATA_KEY] is True
+
+    def test_human_message_keeps_pinned_skill_marker(self) -> None:
+        """The TUI fills a live skill row only from a recognizable pin."""
+        from deepagents_code.skills.invocation import pinned_skill_parts
+
+        msg = _convert_message_data(
+            {
+                "type": "human",
+                "content": '<skill name="review" path="/s/SKILL.md">\nDo it.\n</skill>',
+                "id": "m5",
+                "additional_kwargs": {
+                    "lc_source": "pinned_skill",
+                    "skill": {"name": "review", "description": "Review code"},
+                },
+            }
+        )
+        assert pinned_skill_parts(msg) == ("review", "Review code", "Do it.")
 
     def test_tool_message_additional_kwargs_defaults_to_empty(self) -> None:
         """A missing or non-dict `additional_kwargs` does not discard the message."""

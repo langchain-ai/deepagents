@@ -77,13 +77,33 @@ jobs:
       - name: Install Google Chrome
         run: |
           set -euo pipefail
-          if command -v google-chrome >/dev/null; then
-            google-chrome --version && exit 0
+          if ! command -v google-chrome >/dev/null; then
+            wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq ./google-chrome-stable_current_amd64.deb
           fi
-          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ./google-chrome-stable_current_amd64.deb
           google-chrome --version
+
+      # Chrome will not start on a CI runner without --no-sandbox, and dies
+      # part way through a page without --disable-dev-shm-usage because /dev/shm
+      # is 64 MB here. Playwright passes both itself; browser-use and
+      # WebdriverIO launch Chrome through their own code and expose no hook for
+      # it, so the flags go on a shim ahead of the real binary on PATH.
+      #
+      # Worth the trouble because the failure is silent: a browser that never
+      # starts produces an agent that politely explains it could not browse,
+      # which the judge scores INCORRECT. A broken arm looks like a bad arm.
+      - name: Make Chrome runnable headless in CI
+        run: |
+          set -euo pipefail
+          real=$(command -v google-chrome)
+          sudo mv "$real" "${real}-real"
+          printf '%s\n' '#!/bin/sh' \
+            'exec '"${real}"'-real --no-sandbox --disable-dev-shm-usage --disable-gpu "$@"' \
+            | sudo tee "$real" >/dev/null
+          sudo chmod +x "$real"
+          google-chrome --version
+          google-chrome --headless --dump-dom about:blank >/dev/null && echo "headless launch OK"
 
       - name: Run the suite
         working-directory: browser-mda/benchmarks/webvoyager

@@ -697,21 +697,6 @@ def _build_check_result(run: Run, thread_id: str, thread: Thread | None) -> dict
     return result
 
 
-def _with_status(task: AsyncTask, status: str, run_id: str) -> AsyncTask:
-    """Copy a checked `task` with its live status and run, stamping the check and change times."""
-    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return AsyncTask(
-        task_id=task["task_id"],
-        agent_name=task["agent_name"],
-        thread_id=task["thread_id"],
-        run_id=run_id,
-        status=status,
-        created_at=task["created_at"],
-        last_checked_at=now,
-        last_updated_at=now if status != task["status"] or run_id != task["run_id"] else task["last_updated_at"],
-    )
-
-
 def _build_check_command(
     result: dict[str, Any],
     task: AsyncTask,
@@ -719,7 +704,18 @@ def _build_check_command(
     tool_call_id: str | None,
 ) -> Command:
     """Build the `Command` update for a check result."""
-    updated_task = _with_status(task, result["status"], run_id)
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    changed = result["status"] != task["status"] or run_id != task["run_id"]
+    updated_task = AsyncTask(
+        task_id=task["task_id"],
+        agent_name=task["agent_name"],
+        thread_id=task["thread_id"],
+        run_id=run_id,
+        status=result["status"],
+        created_at=task["created_at"],
+        last_checked_at=now,
+        last_updated_at=now if changed else task["last_updated_at"],
+    )
     return Command(
         update={
             "messages": [ToolMessage(json.dumps(result), tool_call_id=tool_call_id)],
@@ -1060,8 +1056,22 @@ def _filter_tasks(
 
 def _build_list_command(filtered: list[AsyncTask], live: list[tuple[str, str]], tool_call_id: str | None) -> Command:
     """Build the `Command` listing tasks with their live statuses and storing them."""
-    entries = [_format_task_entry(task, status) for task, (status, _) in zip(filtered, live, strict=True)]
-    updated = {task["task_id"]: _with_status(task, status, run_id) for task, (status, run_id) in zip(filtered, live, strict=True)}
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    entries: list[str] = []
+    updated: dict[str, AsyncTask] = {}
+    for task, (status, run_id) in zip(filtered, live, strict=True):
+        entries.append(_format_task_entry(task, status))
+        changed = status != task["status"] or run_id != task["run_id"]
+        updated[task["task_id"]] = AsyncTask(
+            task_id=task["task_id"],
+            agent_name=task["agent_name"],
+            thread_id=task["thread_id"],
+            run_id=run_id,
+            status=status,
+            created_at=task["created_at"],
+            last_checked_at=now,
+            last_updated_at=now if changed else task["last_updated_at"],
+        )
     msg = f"{len(entries)} tracked task(s):\n" + "\n".join(entries)
     return Command(
         update={

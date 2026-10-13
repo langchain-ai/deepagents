@@ -1326,6 +1326,19 @@ class TestBackgroundSubagents:
         assert configurable["deepagents_parent"]["thread_id"] == "thread_parent"
 
     @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_task_thread_records_the_helper(self, mock_get_client: MagicMock) -> None:
+        client = MagicMock()
+        create_thread = MagicMock(return_value={"thread_id": "thread_abc"})
+        client.threads.create = lambda **kwargs: _async_return(create_thread(**kwargs))()
+        client.runs.create = _async_return({"run_id": "run_xyz"})
+        mock_get_client.return_value = client
+        launch = _get_tool(_build_async_subagent_tools([_worker_spec()]), "start_async_task")
+
+        await launch.coroutine(description="dig in", subagent_type="helper", runtime=_parent_runtime())
+
+        create_thread.assert_called_once_with(metadata={"deepagents_worker": "helper"})
+
+    @patch("deepagents.middleware.async_subagents.get_client")
     async def test_task_off_agent_server_is_an_error(self, mock_get_client: MagicMock) -> None:
         client = MagicMock()
         client.threads.create = _async_return({"thread_id": "thread_abc"})
@@ -1412,7 +1425,9 @@ class TestBackgroundSubagents:
         assert "/report.md" in second["files"]
         assert "draft one" in second["messages"][-2].content
 
-    def test_helper_can_pause_and_resume(self) -> None:
+    def test_helper_resumed_on_its_thread_without_the_config(self) -> None:
+        # The user answering on the task thread sends no `configurable` key; the
+        # Agent Server copies the thread's metadata, which names the helper, into the run.
         @tool
         def deploy(env: str) -> str:
             """Deploy."""
@@ -1424,9 +1439,11 @@ class TestBackgroundSubagents:
         agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([])), subagents=[spec], checkpointer=InMemorySaver())
         config = {"configurable": {"thread_id": "helper_thread", "deepagents_worker": "helper"}}
 
+        answer = {"configurable": {"thread_id": "helper_thread"}, "metadata": {"deepagents_worker": "helper"}}
+
         paused = agent.invoke({"messages": [HumanMessage(content="dig in")]}, config)
         pending = agent.get_state(config).interrupts
-        done = agent.invoke(Command(resume={pending[0].id: {"decisions": [{"type": "approve"}]}}), config)
+        done = agent.invoke(Command(resume={pending[0].id: {"decisions": [{"type": "approve"}]}}), answer)
 
         assert "__interrupt__" in paused
         assert [message.content for message in done["messages"]][-2:] == ["deployed prod", "helper done"]

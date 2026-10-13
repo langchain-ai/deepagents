@@ -494,7 +494,17 @@ def parent_sandbox_id(config: RunnableConfig, provider: type[SandboxBackendProto
 
 
 _WORKER_KEY = "deepagents_worker"
-"""`configurable` key naming the background subagent a run of the main agent's graph should be."""
+"""Key naming the background subagent a run of the main agent's graph should be.
+
+Set in the run's `configurable` and in the task thread's metadata, which the
+Agent Server copies into every run's `metadata`, so a run started elsewhere on
+the thread (such as the user answering the subagent) still runs the subagent.
+"""
+
+
+def _thread_options(spec: AsyncSubAgent) -> dict[str, Any]:
+    """`threads.create` arguments for a task: a background subagent's thread records its name."""
+    return {"metadata": {_WORKER_KEY: spec["name"]}} if _is_worker(spec) else {}
 
 
 def _launch_target(spec: AsyncSubAgent, runtime: ToolRuntime, backend: BackendProtocol | None) -> dict[str, Any]:
@@ -587,7 +597,7 @@ def _build_start_tool(
         spec = agent_map[subagent_type]
         try:
             client = clients.get_sync(subagent_type)
-            thread = client.threads.create()
+            thread = client.threads.create(**_thread_options(spec))
             run = client.runs.create(
                 thread_id=thread["thread_id"],
                 input={"messages": [{"role": "user", "content": description}]},
@@ -627,7 +637,7 @@ def _build_start_tool(
         spec = agent_map[subagent_type]
         try:
             client = clients.get_async(subagent_type)
-            thread = await client.threads.create()
+            thread = await client.threads.create(**_thread_options(spec))
             run = await client.runs.create(
                 thread_id=thread["thread_id"],
                 input={"messages": [{"role": "user", "content": description}]},
@@ -1314,7 +1324,8 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         Raises:
             ValueError: If the run names a subagent this agent doesn't run in the background.
         """
-        name = (get_config().get("configurable") or {}).get(_WORKER_KEY)
+        config = get_config()
+        name = (config.get("configurable") or {}).get(_WORKER_KEY) or (config.get("metadata") or {}).get(_WORKER_KEY)
         if name is None:
             return None
         if name not in self._workers:

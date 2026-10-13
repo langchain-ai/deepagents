@@ -35,6 +35,10 @@ VARIANTS = {
             "browser-agent-mcp"),
     "repl": ("https://browser-agent-repl-f60393f1fadc5b898e56d4f190de4f2d.us.langgraph.app",
              "browser-agent-repl"),
+    "facade": ("https://browser-agent-facade-c02954d868c45753911471d1251e2739.us.langgraph.app",
+               "browser-agent-facade"),
+    "facade-repl": ("https://browser-agent-facade-repl-554ead703a1f548f8c0f082c7abaed37.us.langgraph.app",
+                    "browser-agent-facade-repl"),
 }
 PROMPT = """{ques}
 

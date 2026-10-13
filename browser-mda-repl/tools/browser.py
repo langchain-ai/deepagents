@@ -33,7 +33,10 @@ from stagehand import Stagehand, browserbase
 # can use directly, and the gateway key in ANTHROPIC_API_KEY is not one. This
 # direction needs no new credential.
 _MODEL = os.environ.get("STAGEHAND_MODEL", "google/gemini-2.5-flash-lite")
-_SESSION_TIMEOUT = int(os.environ.get("BROWSERBASE_SESSION_TIMEOUT", "900"))
+# Backstop only -- the session is closed explicitly on `after_agent`. A long
+# TTL is what let a finished suite keep all 75 concurrency slots occupied,
+# so if a run dies before teardown the slot should come back quickly.
+_SESSION_TIMEOUT = int(os.environ.get("BROWSERBASE_SESSION_TIMEOUT", "300"))
 _MAX_CHARS = 8_000
 
 logger = logging.getLogger(__name__)

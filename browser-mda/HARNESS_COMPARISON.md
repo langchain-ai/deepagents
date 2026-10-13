@@ -1,16 +1,19 @@
-# Three browsing harnesses, one benchmark
+# Five browsing harnesses, one benchmark
 
-Three Managed Deep Agents solve the same WebVoyager tasks. They differ only in
+Five Managed Deep Agents solve the same WebVoyager tasks. They differ only in
 **how the agent reaches a browser** -- same dataset, same judge, same grading
 thresholds. This is the write-up of what that difference bought.
 
-| | `browser-mda` (CLI) | `browser-mda-repl` (REPL) | `browser-mda-mcp` (MCP) |
-|---|---|---|---|
-| Browser | **Local Chrome in a LangSmith sandbox** | Browserbase hosted | Browserbase hosted |
-| Agent's tool surface | `execute` (shell) | `eval` (JavaScript) | 6 MCP tools |
-| Browser API | `browse` CLI | Stagehand v4.2.0 Python SDK | Browserbase hosted MCP |
-| Reasoning for act/extract | local model | Browserbase-side model | Browserbase-side model |
-| Sandbox | yes | no | no |
+| | CLI | REPL | MCP | facade | facade-repl |
+|---|---|---|---|---|---|
+| Browser | **sandbox Chrome** | Browserbase | Browserbase | Browserbase | Browserbase |
+| Tool surface | `execute` (shell) | `eval` (JS) | 6 MCP tools | 3 facade tools | `eval` (JS) |
+| Browser API | `browse` CLI | Stagehand v4 SDK | hosted MCP | Stagehand v4 SDK | Stagehand v4 SDK |
+| Second model for act/extract | no | yes | yes | **no** | **no** |
+| Sandbox | yes | no | no | no | no |
+
+Projects: `browser-mda`, `browser-mda-repl`, `browser-mda-mcp`,
+`browser-mda-facade`, `browser-mda-facade-repl`.
 
 ## The three arms
 
@@ -49,6 +52,22 @@ _EXTRAS = [evaluateJs, currentUrl]   # REPL_BROWSER_EXTRAS=1
 decision drives most of the cost result below -- and, it turns out, most of the
 accuracy result too.
 
+### facade -- `browser-mda-facade`
+
+Stagehand's facade contract -- `snapshot`, `run`, `screenshot` -- handed to the
+model directly. `snapshot` returns an accessibility tree with bracketed IDs;
+`run` takes either JavaScript or a batch of actions against those IDs.
+
+No `act`/`extract`/`observe`, which is the point: those spend a Stagehand-side
+model call that never enters this agent's trace. Here the agent reads the tree
+and decides for itself, so every token is ours and visible.
+
+### facade-repl -- `browser-mda-facade-repl`
+
+The same three tools, reached through `CodeInterpreterMiddleware` instead of
+being given to the model. The only clean A/B in the set: identical tools,
+identical browser, identical model, invocation style the only variable.
+
 ### MCP -- `browser-mda-mcp`
 
 Browserbase's hosted MCP (`stagehand-api`) as the whole browser layer. No
@@ -84,8 +103,70 @@ shows, this one for the decomposition.
 | arm | graded | CORRECT | BLOCKED | INCORRECT | **rate** | med steps | med tokens | med $ | **total $** | med secs |
 |---|---|---|---|---|---|---|---|---|---|---|
 | CLI | 99 | 80 | 15 | 4 | 80.8% | 8 | 49,270 | $0.0511 | $11.65 | 63 |
-| REPL | 99 | 74 | 21 | 4 | 74.7% | 10 | **34,492** | **$0.0146** | **$4.45** | 51 |
-| MCP | 100 | **83** | 13 | 4 | **83.0%** | 13 | 101,206 | $0.0770 | $17.87 | **30** |
+| REPL | 99 | 74 | 21 | 4 | 74.7% | 10 | 34,492 | $0.0146 | $4.45 | 51 |
+| MCP | 100 | 83 | 13 | 4 | 83.0% | 13 | 101,206 | $0.0770 | $17.87 | 30 |
+| **facade** | 100 | 85 | 10 | 5 | 85.0% | 10 | **31,157** | $0.0171 | **$2.46** | **22** |
+| facade-repl | 100 | **86** | **7** | 7 | **86.0%** | 11 | 40,825 | $0.0185 | $2.98 | 30 |
+
+**The facade arm is 7.3x cheaper than hosted MCP at higher accuracy** -- $2.46
+against $17.87, a third of the tokens, a quarter of the wall clock.
+
+## Does code mode help? Only when the tools are atomic
+
+`facade` and `facade-repl` run the same three tools over the same browser; the
+only difference is whether the model calls them or writes code that calls them.
+The scores tie (86 vs 85, with 4-7 INCORRECT either way) and the REPL costs 21%
+more.
+
+The traces say why. Across 10 traces the REPL issued **1.67 `tools.*` calls per
+`eval`**, and 11 of 42 snippets called exactly one tool -- a pass-through
+paying an interpreter hop for nothing. Model turns barely moved: 50 against 54.
+One snippet makes it plain:
+
+```js
+for (let i = 0; i < 6; i++) {
+  await tools.run({code: `const f = document.querySelector('[role=feed]');
+                          f.scrollTop = f.scrollHeight; return 1`});
+}
+```
+
+Six round trips through QuickJS to run a loop that belonged inside the page JS.
+
+**`run({code})` is already code mode.** When the tools are atomic and
+unprogrammable -- `navigate`, `extract`, `act`, `observe` -- a REPL collapses a
+sequence into one model turn and wins, which is what the original REPL arm
+showed against MCP. When one of the tools is "execute arbitrary JavaScript",
+the batching is already inside it and the outer interpreter only adds a layer.
+
+## A session leak that invalidated a run, and how to spot one
+
+The first facade run scored 66/100 with 30 BLOCKED. It was void. The split
+gives it away:
+
+| | CORRECT | BLOCKED |
+|---|---|---|
+| first 50 rows | 45 | 4 |
+| last 50 rows | 21 | 26 |
+
+A harness does not get six times worse at browsing halfway through a run.
+Sampling the blocked answers, 9 of 14 said some version of *"every browser call
+failed with BrowserbaseSessionError: Failed to create a Browserbase session"*.
+Live sessions were pinned at the project cap of 75.
+
+`browserbase.launch(timeout=900)` sets a session TTL and **nothing closed the
+session**: the thread ended, the session sat there holding a concurrency slot
+for 15 minutes. At concurrency 8 with 35s tasks that is demand for ~205
+sessions against a cap of 75. The hosted-MCP arm leaks the same way for a
+different reason -- it calls `browserbase_start` and never `browserbase_end`,
+with `keepAlive=true` on the URL.
+
+Two fixes, both in the arms now: close the session on `after_agent`, and drop
+the TTL to 300s as a backstop for runs that die before teardown. Afterwards,
+two suites at concurrency 6 held 36 live sessions instead of saturating 75.
+
+**The general lesson: a blocked rate that climbs through a run is an
+infrastructure signal, not a site signal.** Check the first half against the
+second before reporting any number.
 
 ## Why CLI and REPL are so much cheaper
 

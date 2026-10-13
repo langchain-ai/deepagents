@@ -87,6 +87,24 @@ The API's 120-second deadline covers every call of one answer, so a slow
 answer with several tool rounds can still time out.
 """
 _PENDING_RESULT = "Main tool call had no result in the side snapshot."
+_SERVER_TOOL_BLOCKS = frozenset(
+    {
+        "server_tool_use",
+        "mcp_tool_use",
+        "server_tool_call",
+        "server_tool_call_chunk",
+        "server_tool_result",
+        "web_search_call",
+        "file_search_call",
+        "code_interpreter_call",
+        "image_generation_call",
+        "mcp_call",
+        "mcp_list_tools",
+        "mcp_approval_request",
+    }
+)
+"""Provider-executed tool blocks, plus any type ending in `_tool_result`."""
+_OMITTED_SERVER_TOOLS = "[Provider tool output omitted from the side snapshot.]"
 BTW_OPERATION_ATTR = "_dcode_btw"
 
 
@@ -333,6 +351,34 @@ def _tool_result_context(message: ToolMessage) -> HumanMessage:
     )
 
 
+def _is_server_tool_block(block: object) -> bool:
+    """Check whether a content block records a provider-executed tool.
+
+    Returns:
+        `True` for server tool calls and their results.
+    """
+    kind = block.get("type") if isinstance(block, dict) else None
+    return isinstance(kind, str) and (
+        kind in _SERVER_TOOL_BLOCKS or kind.endswith("_tool_result")
+    )
+
+
+def _without_server_tools(message: AIMessage) -> AIMessage:
+    """Drop provider-executed tool blocks that the side request cannot define.
+
+    Returns:
+        `message`, or a copy without server tool blocks.
+    """
+    if not isinstance(message.content, list) or not any(
+        _is_server_tool_block(block) for block in message.content
+    ):
+        return message
+    content = [block for block in message.content if not _is_server_tool_block(block)]
+    if not content and not message.tool_calls:
+        content = [{"type": "text", "text": _OMITTED_SERVER_TOOLS}]
+    return message.model_copy(update={"content": content})
+
+
 def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
     """Render tool calls and results as text for a request that defines no tools.
 
@@ -356,6 +402,8 @@ def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
             ]
             text = "\n\n".join(part for part in [message.text, *calls] if part)
             transcript.append(AIMessage(content=text))
+        elif isinstance(message, AIMessage):
+            transcript.append(_without_server_tools(message.model_copy(deep=True)))
         else:
             transcript.append(cast("AnyMessage", message.model_copy(deep=True)))
     return transcript
@@ -390,6 +438,7 @@ def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
                 continue
             pending.pop(message.tool_call_id)
         if isinstance(message, AIMessage):
+            message = _without_server_tools(message)
             # Providers send unparsable calls too, so they need results as well.
             pending.update(
                 {

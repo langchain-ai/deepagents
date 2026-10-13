@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import aclosing
@@ -55,6 +56,8 @@ if TYPE_CHECKING:
         MessageLikeRepresentation,
     )
     from langchain_core.runnables import Runnable, RunnableConfig
+
+logger = logging.getLogger(__name__)
 
 _INSTRUCTIONS = (
     "The user is asking a quick side question about the conversation so far. "
@@ -789,7 +792,20 @@ class BtwOperation(AgentMiddleware):
                     )
                 if response.text:
                     parts.append(response.text)
-                if not isinstance(response, AIMessage) or not response.tool_calls:
+                if not isinstance(response, AIMessage):
+                    break
+                if response.invalid_tool_calls and not response.tool_calls:
+                    logger.warning(
+                        "Side model sent unparsable tool calls: %s",
+                        [call.get("name") for call in response.invalid_tool_calls],
+                    )
+                    if parts:
+                        break
+                    msg = (
+                        "The model sent a tool call that could not be read. Try again."
+                    )
+                    raise BtwLimitError(msg)
+                if not response.tool_calls:
                     break
                 if round_index == _MAX_TOOL_ROUNDS or not executable:
                     if parts:

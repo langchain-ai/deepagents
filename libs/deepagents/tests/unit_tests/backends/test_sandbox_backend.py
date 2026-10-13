@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -643,6 +644,23 @@ def test_build_grep_cmd_slash_glob_does_not_mask_errors() -> None:
     """
     cmd = _build_grep_cmd("needle", "/test", "src/**/*.py")
     assert "|| true" not in cmd
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
+def test_build_grep_cmd_slash_glob_runs_through_a_shell(tmp_path: Path) -> None:
+    """The template is wrapped in `python3 -c "..."`, so a stray double quote truncates the script."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("needle\n")
+
+    for max_count in (None, 5):
+        proc = subprocess.run(  # noqa: S603  # command is built from the project's sandbox template
+            ["/bin/sh", "-c", _build_grep_cmd("needle", str(tmp_path), "src/**/*.py", max_count)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0
+        assert proc.stdout == f"{tmp_path}/src/app.py\x001:needle\n"
 
 
 def test_build_grep_cmd_no_glob_uses_grep() -> None:
@@ -2780,3 +2798,70 @@ class TestCaptureWrapperNotices:
     def test_head_tail_line_budget_matches_surplus_arithmetic(self) -> None:
         """The surplus the wrapper reports is relative to these two constants."""
         assert f"$((__da_lines - {_EXECUTE_CAPTURE_HEAD_LINES} - {_EXECUTE_CAPTURE_TAIL_LINES}))" in self.cmd
+
+
+# -- grep directory exclusion ----------------------------------------------------
+# Runs the real grep / Python-template commands, since exclusion semantics live in
+# GNU grep's `--exclude-dir` and the template's glob walk rather than in parsing.
+
+_GREP: Final = shutil.which("grep")
+_GNU_GREP: Final = (
+    bool(_GREP)
+    and "(GNU grep)"
+    in subprocess.run(  # noqa: S603  # fixed argv, resolved grep binary
+        [_GREP or "grep", "--version"], capture_output=True, text=True, check=False
+    ).stdout
+)
+
+
+class _ShellSandbox(MockSandbox):
+    """Runs commands with the local shell."""
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        proc = subprocess.run(  # noqa: S603  # command is built from the project's sandbox templates
+            ["/bin/sh", "-c", command],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return ExecuteResponse(output=proc.stdout + proc.stderr, exit_code=proc.returncode, truncated=False)
+
+
+@pytest.fixture
+def checkout(tmp_path: Path) -> Path:
+    for rel in ("src/app.py", "src/app.js", ".git/packed-refs", "node_modules/pkg/index.js"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("needle\n")
+    return tmp_path
+
+
+def _grep_paths(sandbox: BaseSandbox, path: Path, glob: str | None = None) -> set[str]:
+    result = sandbox.grep("needle", str(path), glob)
+    assert result.error is None
+    return {str(Path(match["path"]).relative_to(path)) for match in result.matches or []}
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
+@pytest.mark.skipif(not _GNU_GREP, reason="the grep route targets GNU grep")
+def test_grep_skips_git_but_still_searches_an_explicit_git_root(checkout: Path) -> None:
+    sandbox = _ShellSandbox()
+
+    assert _grep_paths(sandbox, checkout) == {"src/app.py", "src/app.js", "node_modules/pkg/index.js"}
+    assert _grep_paths(sandbox, checkout / ".git") == {"packed-refs"}
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
+@pytest.mark.skipif(not _GNU_GREP, reason="the grep route targets GNU grep")
+def test_grep_exclude_dirs_can_be_extended_on_the_grep_route(checkout: Path) -> None:
+    sandbox = _ShellSandbox()
+    sandbox.grep_exclude_dirs = (".git", "node_modules")
+
+    assert _grep_paths(sandbox, checkout, "*.js") == {"src/app.js"}
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
+def test_grep_exclude_dirs_apply_to_path_globs(checkout: Path) -> None:
+    sandbox = _ShellSandbox()
+    sandbox.grep_exclude_dirs = (".git", "node_modules")
+
+    assert _grep_paths(sandbox, checkout, "**/*.js") == {"src/app.js"}

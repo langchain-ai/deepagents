@@ -31,6 +31,7 @@ dependencies = [
 
 [project.optional-dependencies]
 aws = ["langchain-aws>=1.8.2,<2.0.0"]
+browser = ["stagehand>=4.2.0"]
 quickjs = ["langchain-quickjs>=0.3.8"]
 video = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<13.0.0"]
 
@@ -66,6 +67,7 @@ test = [
   # needs stubs, so we install them into the type-checker venv.
   "av>=18.0.0,<19.0.0",
   "pillow>=12.3.0,<13.0.0",
+  "stagehand>=4.2.0",
 ]
 [build-system]
 requires = ["setuptools>=83.0.0", "wheel"]

@@ -48,6 +48,14 @@ Use a **plain tool** when:
 """
 
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.browser import (
+    CDP,
+    Browserbase,
+    BrowserContext,
+    BrowserMiddleware,
+    BrowserProvider,
+    LocalChrome,
+)
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import (
@@ -78,11 +86,16 @@ from deepagents.middleware.summarization import (
 from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 
 __all__ = [
+    "CDP",
     "DEEPAGENTS_DEFAULT_SUMMARY_PROMPT",
     "GRADER_SYSTEM_PROMPT",
     "RUBRIC_GRADER_MESSAGE_SOURCE",
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
+    "BrowserContext",
+    "BrowserMiddleware",
+    "BrowserProvider",
+    "Browserbase",
     "CompiledSubAgent",
     "CriterionEval",
     "CriterionFail",
@@ -91,6 +104,7 @@ __all__ = [
     "FilesystemPermission",
     "GraderResponse",
     "GraderVerdict",
+    "LocalChrome",
     "MemoryMiddleware",
     "RubricEvaluation",
     "RubricMiddleware",

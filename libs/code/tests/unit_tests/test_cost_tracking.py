@@ -2511,6 +2511,93 @@ def side_cost_db(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return path
 
 
+@pytest.mark.parametrize("outcome", ["automatic", "rejected", "invalid", "switched"])
+@pytest.mark.usefixtures("side_cost_db")
+async def test_thread_naming_cost_is_durable_and_updates_display(
+    recorder: _SessionCostRecorder,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+) -> None:
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.btw_cost import load_cost
+    from deepagents_code.client.remote_client import RemoteAgent
+    from deepagents_code.config import ModelResult
+    from deepagents_code.tui.modals.session_cost import SessionCostWarningScreen
+
+    response = _message(_usage(), message_id="naming")
+    response.content = "" if outcome == "invalid" else "Cache repair"
+    # The dedicated naming model's identity must survive absent response metadata.
+    response.response_metadata = {}
+    model = _fake_model(response)
+    _set_configured_model_metadata(model, KNOWN_MODEL, KNOWN_PROVIDER)
+    monkeypatch.setattr(
+        "deepagents_code.config.create_model",
+        lambda *_args, **_kwargs: ModelResult(model, KNOWN_MODEL, KNOWN_PROVIDER),
+    )
+    state = {
+        "messages": [HumanMessage("Fix caching"), AIMessage("Here is the fix")],
+        "_model_spec": "other:chat-model",
+        "_session_cost_usd": 1.0,
+    }
+    app = DeepAgentsApp(thread_id=THREAD_ID)
+    remote = RemoteAgent("http://test")
+    remote._cost_tracker(THREAD_ID).update_graph(1.0, None)
+    monkeypatch.setattr(app, "_remote_agent", lambda: remote)
+    monkeypatch.setattr(app, "_get_thread_state_values", AsyncMock(return_value=state))
+    monkeypatch.setattr(app, "notify", MagicMock())
+    monkeypatch.setattr(app, "call_after_refresh", MagicMock())
+    monkeypatch.setattr(app, "_refresh_thread_name_selectors", MagicMock())
+    monkeypatch.setattr(
+        "deepagents_code.sessions.get_thread_name", AsyncMock(return_value=None)
+    )
+    rename = AsyncMock(return_value=True)
+    monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+    show_warning = MagicMock()
+    monkeypatch.setattr(app, "push_screen", show_warning)
+    app._session_cost_usd = 1.0
+    app._provisional_cost_usd = 0.5
+    app._session_cost_warning_threshold_usd = 1.0
+
+    # A main request awaiting settlement must not be drained with the title.
+    await _fake_model(_message(_usage(), message_id="main")).ainvoke(
+        [HumanMessage("main")], config={"metadata": {"thread_id": THREAD_ID}}
+    )
+    app._start_thread_name_generation(
+        THREAD_ID,
+        f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+        automatic=outcome == "automatic",
+    )
+    if outcome == "switched":
+        app._lc_thread_id = "other-thread"
+    await asyncio.gather(*app._thread_name_tasks.values())
+
+    saved = await asyncio.to_thread(load_cost, THREAD_ID)
+    assert saved is not None
+    expected = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
+    assert expected is not None
+    assert expected > 0
+    assert saved["total_cost_usd"] == pytest.approx(expected)
+    assert saved["request_count"] == 1
+    assert await asyncio.to_thread(load_cost, "other-thread") is None
+    assert [record.message_id for record in recorder.drain(THREAD_ID)] == ["main"]
+    assert cost_tracking._RECORDER.drain(THREAD_ID) == []
+    assert state["_session_cost_usd"] == pytest.approx(1.0)
+    assert app._provisional_cost_usd == pytest.approx(0.5)
+    cached = remote.get_cached_session_cost({"configurable": {"thread_id": THREAD_ID}})
+    assert cached is not None
+    assert cached["total"] == pytest.approx(1.0 + expected)
+    if outcome == "switched":
+        assert app._session_cost_usd == pytest.approx(1.0)
+        show_warning.assert_not_called()
+    else:
+        assert app._session_cost_usd == pytest.approx(1.0 + expected)
+        assert isinstance(show_warning.call_args.args[0], SessionCostWarningScreen)
+    if outcome == "automatic":
+        rename.assert_awaited_once_with(THREAD_ID, "Cache repair", only_if_unnamed=True)
+    else:
+        rename.assert_not_awaited()
+
+
 @pytest.mark.parametrize("saved_before_deletion", [False, True])
 async def test_thread_deletion_erases_cost_and_discards_late_settlements(
     side_cost_db: Path,

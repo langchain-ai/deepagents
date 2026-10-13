@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Focused deterministic regression guidance for dcode server lifecycle, model selection and retries, cache and thread safety, skills, prompts, Textual UI, integration recovery, and CI workflow contracts.
+- [Testing Guide](testing-guide.md) - Focused, package-scoped test routing for filesystem permissions and HITL, ACP approval and local context, dcode model configuration, and Talon sandbox and media boundaries.

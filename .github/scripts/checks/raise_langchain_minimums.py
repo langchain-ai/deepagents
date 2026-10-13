@@ -606,14 +606,33 @@ def lock_dirs_for(
     return stale_lock_dirs(changed_manifests)
 
 
-def edits_markdown(edits: Sequence[RequirementEdit], *, heading: str) -> str:
-    """Render applied edits as a Markdown table for the PR body/summary."""
-    lines = [heading, "", "| Manifest | Dependency | Change |", "|---|---|---|"]
-    lines.extend(
-        f"| `{edit.manifest_path}` | `{edit.dependency_name}` | "
-        f"`{edit.old_requirement}` → `{edit.new_requirement}` |"
-        for edit in edits
+def _edit_markdown(edit: RequirementEdit) -> str:
+    """Render the affected package and any extras or marker on its dependency."""
+    project = tomllib.loads(
+        (REPO_ROOT / edit.manifest_path).read_text(encoding="utf-8")
     )
+    target = f"`{project['project']['name']}`"
+    requirement = Requirement(edit.old_requirement)
+    if requirement.extras:
+        target += f" (extras: `{','.join(sorted(requirement.extras))}`)"
+    if requirement.marker:
+        target += f"; `{requirement.marker}`"
+    return target.replace("|", r"\|")
+
+
+def edits_markdown(edits: Sequence[RequirementEdit], *, heading: str) -> str:
+    """Render package targets grouped by dependency and changed lower bounds."""
+    grouped: dict[tuple[str, str, str], list[str]] = {}
+    for edit in edits:
+        old = _raiseable_specifier(Requirement(edit.old_requirement).specifier)
+        new = _raiseable_specifier(Requirement(edit.new_requirement).specifier)
+        key = (edit.dependency_name, str(old), str(new))
+        grouped.setdefault(key, []).append(_edit_markdown(edit))
+    lines = [heading, "", "| Dependency | Minimum | Targets |", "|---|---|---|"]
+    for (dependency, old, new), targets in sorted(grouped.items()):
+        lines.append(
+            f"| `{dependency}` | `{old}` → `{new}` | {', '.join(sorted(targets))} |"
+        )
     return "\n".join(lines)
 
 
@@ -787,7 +806,10 @@ def _run(
     for plan in plans:
         (REPO_ROOT / plan.manifest_path).write_text(plan.new_text, encoding="utf-8")
 
-    summary = edits_markdown(all_edits, heading=f"Raised {len(all_edits)} minimum(s):")
+    noun = "minimum" if len(all_edits) == 1 else "minimums"
+    summary = edits_markdown(
+        all_edits, heading=f"Raised {len(all_edits)} dependency {noun}:"
+    )
     if fetch_failures or plan_failures:
         summary += "\n\n" + failures_markdown(fetch_failures, plan_failures)
     print(summary)

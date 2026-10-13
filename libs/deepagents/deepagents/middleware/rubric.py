@@ -118,6 +118,9 @@ when a single tool call returns a large blob (e.g. a file dump or test
 log).
 """
 
+_RUBRIC_KEY = "rubric"
+"""Name of the public `RubricState` key that holds the caller's rubric."""
+
 _PAYLOAD_CLOSER_RE = re.compile(r"</(rubric|transcript|criteria)", re.IGNORECASE)
 """Matches a closing `rubric`, `transcript`, or `criteria` tag in payload content."""
 
@@ -637,7 +640,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         return self._reset_for_new_rubric(state)
 
     def _reset_for_new_rubric(self, state: RubricState) -> dict[str, Any] | None:
-        rubric = state.get("rubric")
+        rubric = state.get(_RUBRIC_KEY)
         if not rubric:
             # No rubric ever supplied -> middleware is a no-op for this run.
             return None
@@ -727,7 +730,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         Returns `None` if the middleware should no-op for this run (no
         rubric has been supplied on this thread).
         """
-        if not state.get("rubric"):
+        if not state.get(_RUBRIC_KEY):
             return None
         iteration = state.get("_rubric_iterations", 0) or 0
         grading_run_id = state.get("_current_grading_run_id") or str(uuid.uuid4())
@@ -1114,7 +1117,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         Returns:
             The grader's user message.
         """
-        rubric = state.get("rubric", "")
+        rubric = state.get(_RUBRIC_KEY, "")
         frozen = state.get("_rubric_criteria") or []
         transcript = _build_grader_transcript(state.get("messages", []))
         nonce = secrets.token_hex(8)

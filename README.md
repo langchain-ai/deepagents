@@ -57,7 +57,6 @@ from deepagents import create_deep_agent
 
 agent = create_deep_agent(
     model="openai:gpt-6-astra",
-    tools=[my_custom_tool],
     system_prompt="You are a research assistant.",
 )
 result = agent.invoke({"messages": "Research LangGraph and write a summary"})
@@ -98,6 +97,7 @@ The layers compose: any LangGraph `CompiledStateGraph` can be passed in as a sub
 - [API reference](https://reference.langchain.com/python/deepagents/) — complete reference for all public classes, functions, and types
 - [Discussions](https://forum.langchain.com/c/oss-product-help-lc-and-lg/deep-agents/18) — community forum for technical questions, ideas, and feedback
 - [LangChain Academy](https://academy.langchain.com/) — Comprehensive, free courses on LangChain libraries and products, made by the LangChain team.
+- [Development Guide](libs/DEVELOPMENT.md) — local setup and package-specific checks
 - [Contributing Guide](https://docs.langchain.com/oss/python/contributing/overview) — how to contribute and find good first issues
 - [Code of Conduct](https://github.com/langchain-ai/langchain/?tab=coc-ov-file) — community guidelines and standards
 

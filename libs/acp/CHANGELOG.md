@@ -2,6 +2,14 @@
 
 # Changelog
 
+## [0.0.13](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.12...deepagents-acp==0.0.13) (2026-10-12)
+
+### Bug Fixes
+
+- Shell permissions now apply only to the exact commands authorized.
+- Local context prompts are preserved across compaction.
+- The demo now uses valid Claude 5.5 model IDs.
+
 ## [0.0.12](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.11...deepagents-acp==0.0.12) (2026-09-18)
 
 ### Bug Fixes

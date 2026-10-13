@@ -953,6 +953,63 @@ async def test_side_instructions_survive_a_fresh_runtime(
     assert (await graph.aget_state(config)) == before
 
 
+async def test_side_instructions_list_skills_changed_before_restart(
+    instruction_workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from deepagents_code._testing_models import DeterministicIntegrationChatModel
+    from deepagents_code.agent import create_cli_agent
+    from deepagents_code.btw import BTW_OPERATION_ATTR
+    from deepagents_code.plugins.adapters import skills_middleware
+
+    model = DeterministicIntegrationChatModel()
+    monkeypatch.setattr(
+        "deepagents_code.config.create_model",
+        lambda *_args, **_kwargs: SimpleNamespace(model=model),
+    )
+    saver = InMemorySaver()
+    config: RunnableConfig = {"configurable": {"thread_id": "instructions"}}
+
+    def build() -> tuple[Pregel, BtwOperation]:
+        graph, backend = create_cli_agent(
+            model=model,
+            assistant_id="test-btw-instructions",
+            cwd=instruction_workspace,
+            enable_shell=False,
+            system_prompt="Explain the project.",
+            checkpointer=saver,
+        )
+        return graph, getattr(backend, BTW_OPERATION_ATTR)
+
+    graph, _warm = build()
+    await graph.ainvoke({"messages": [HumanMessage("Hello")]}, config)
+    before = await graph.aget_state(config)
+    skills = instruction_workspace / "skills"
+    (skills / "review" / "SKILL.md").unlink()
+    (skills / "review").rmdir()
+    (skills / "deploy").mkdir()
+    (skills / "deploy" / "SKILL.md").write_text(
+        "---\nname: deploy\ndescription: Ship the release build.\n---\nDeploy.\n"
+    )
+    monkeypatch.setattr(skills_middleware, "_PROCESS_ID", "restarted")
+    _new_graph, cold = build()
+    captured: list[str] = []
+
+    def answer(messages: list[BaseMessage], **_kwargs: object) -> AIMessage:
+        captured.append(messages[0].text)
+        return AIMessage(content="Una respuesta.")
+
+    with patch.object(
+        DeterministicIntegrationChatModel, "ainvoke", new=AsyncMock(side_effect=answer)
+    ):
+        await cold.answer("instructions", before.values, "Why?")
+    assert "Ship the release build." in captured[0]
+    assert "Review database migrations." not in captured[0]
+    assert "Always answer in Spanish." in captured[0]
+    assert (await graph.aget_state(config)) == before
+
+
 @pytest.mark.parametrize("source", ["bootstrap", "snapshot", "checkpoint"])
 @pytest.mark.parametrize("container", ["model_kwargs", "extra_body"])
 async def test_constructor_tools_are_absent_from_provider_request(

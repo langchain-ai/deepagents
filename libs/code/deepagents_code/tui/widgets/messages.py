@@ -57,6 +57,7 @@ from deepagents_code.tool_display import (
     EXECUTE_HEADER_MAX_LENGTH,
     JS_EVAL_HEADER_MAX_LENGTH,
     format_tool_display,
+    is_skill_read,
 )
 from deepagents_code.tui.widgets._js_eval_display import (
     JsEvalBlock,
@@ -1341,6 +1342,33 @@ class SkillMessage(Vertical):
             self._md_widget.update(body)
         self._md_rendered = True
 
+    def set_instructions(self, description: str, body: str) -> None:
+        """Show instructions that arrive after the row mounts.
+
+        The agent server reads the skill, so a live invocation learns its
+        description and body only when the pinned message streams back.
+
+        Args:
+            description: Short description of the skill.
+            body: `SKILL.md` body.
+        """
+        self._description = description
+        self._body = body
+        self._stripped_body = _strip_frontmatter(body)
+        if not self.is_mounted:
+            # `compose` and `on_mount` render the updated fields.
+            return
+        if description:
+            self.mount(
+                _SkillToggle(
+                    Content.styled(description, "dim"),
+                    classes="skill-description",
+                ),
+                after=self.query_one(".skill-header"),
+            )
+        if stripped := self._stripped_body.strip():
+            self._prepare_body(stripped)
+
     def toggle_body(self) -> None:
         """Toggle between preview and full body display."""
         if not self._stripped_body.strip():
@@ -1845,6 +1873,10 @@ class ToolCallMessage(Vertical):
         text-style: bold;
     }
 
+    ToolCallMessage.-skill-read .tool-header {
+        color: $skill;
+    }
+
     ToolCallMessage .tool-task-desc {
         color: $text-muted;
         margin-left: 3;
@@ -1986,6 +2018,7 @@ class ToolCallMessage(Vertical):
         super().__init__(**kwargs)
         self._tool_name = tool_name
         self._args = args or {}
+        self.set_class(is_skill_read(tool_name, self._args), "-skill-read")
         self._status: _ToolStatus = "pending"  # Waiting for approval or auto-approve
         self._output: str = ""
         self._expanded: bool = False
@@ -2205,8 +2238,13 @@ class ToolCallMessage(Vertical):
                 if self._status_widget:
                     self._status_widget.add_class("pending")
                     frame = get_glyphs().spinner_frames[0]
+                    color = (
+                        colors.skill
+                        if self.has_class("-skill-read")
+                        else colors.warning
+                    )
                     self._status_widget.update(
-                        Content.styled(f"{frame} Running...", colors.warning)
+                        Content.styled(f"{frame} Running...", color)
                     )
                     self._status_widget.display = True
             case _:
@@ -2246,9 +2284,9 @@ class ToolCallMessage(Vertical):
                 elapsed = f" ({format_duration(elapsed_secs)})"
 
         text = f"{frame} Running...{elapsed}"
-        self._status_widget.update(
-            Content.styled(text, theme.get_theme_colors(self).warning)
-        )
+        colors = theme.get_theme_colors(self)
+        color = colors.skill if self.has_class("-skill-read") else colors.warning
+        self._status_widget.update(Content.styled(text, color))
 
     def pause_running(self) -> None:
         """Pause the running spinner while the tool awaits a user decision.

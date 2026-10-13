@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:424d11343e86b4a02eaef14a0d69c06471196f1a5bf3126f556f9eae8542980e",
+  "pageVersion": "sha256:7921652c724f99c897272c451a313974e84d3323ceacf9666d691e2e8a6f01c0",
   "claims": [
     {
       "id": "claim_f041b93d7989464ba90194b9530849ad",
@@ -245,10 +245,56 @@
           "version": "repo-lines-v1:sha256:3ac8d26434090255fc81536cfd4de219ff1759e005d8fba739751f909a95edcf:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyYWYxMmM5ZjAwYWJjMWIxN2QwYzZlNTcwYmI4NjA5MDI5MjM0MmQxZmU0MjZkNGQ3ZGZlMGY1Yjc1OTUyZjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRlNzU3NWMzYjc3NzZjZjJmOWMyYmZiY2E0NGYyMTQ4MTNhNzgyN2VhYTljMzg0NTRjNzAzYjY4OWE3NDQzODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc2MTg0MDFmYzdmNTE4ZjA5MzNkMDBhYWVhYTdiYWZhNjllZTEzNWNkY2NmN2ZjMzNjMzZhNGZlMTRjZjBjOGYifQ"
         }
       ]
+    },
+    {
+      "id": "claim_b5c982ee094a4c9b9a47d752713e7e3a",
+      "statement": "User `config.toml` updates are serialized, reject writes to the managed path and malformed existing TOML, replace the target atomically, and only best-effort refresh the shared resolver after the write has committed.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/writer.py#L159-L205",
+          "version": "repo-lines-v1:sha256:09b009d1c559b2deabe6a98d808a33c74c2a9345783ab85ffaafe6af12241c08:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNhZmNlMmIyOTEyZTEwMWRjZWMzMzFlZjA3MGFmNjYzZjcxNzY5MWJmYWYxODNlNmRmYmVmNWNiNWE4NjYyMTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY0OGM3ZGRhYjNlMjNkNmVkODc3ZmY4OTBkZTcyZjc3Njg2ZjQ4M2M3ZmRlN2E3MTAyMDRiMGEzYjljYTI3OTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/writer.py#L53-L156",
+          "version": "repo-lines-v1:sha256:e56e0b5b170df9ed9135a15efae32ac3361e3a642a58595f315b0eef5de3d6e7:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmZjRjMWIzYTI2MGYzM2QxZTg4ZmE2YTU2ODA2M2E0OGRmM2NlMmUwZWM5YjE1MGI4MmE3ODdjODNhNzRkMmY2IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIxOTk5NWIyMWZjNTgxZmNiYWM4ZjhjZjEzZWE3NGE1MTgwOTUyOGIzZWU2ZWJkYjFmYjcyNDA2MWNiZjc0MjY3IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3Y2RlMTgwYmFmZTA1MWY1MjBjMTBiYWQ3Zjg4NWMyMWYwODFiOThlNzYzMmFlNDgxMjVjOTkwODczZjkzYTEzIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyMGMyMDlkMmU0OGZhODM0ZDUwZDIwZGVkNzNmOWJhOTQ2MTQzYjkxODdjNGNiZjg3N2FlYjRhNjNkYTg5ZDZmIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_81ab12b36abf4e689ac7d37a8032968e",
+      "statement": "The configuration manifest defines option types, defaults, TOML locations, and environment-variable names; malformed scalar environment or TOML values are treated as invalid and resolution falls through without discarding valid sibling settings, while secret-bearing structured tables are redacted in introspection.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/config_manifest.py#L2-L31",
+          "version": "repo-lines-v1:sha256:1a87e1a1e11c3fb10ecf4e4b0d61cae7fda677d048e3901b3b9fcfc040cf4f7d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1NDIzMjYyYmFlYzVhZWU1MTBiZWUzMmQ0MzQwYmI4MWZkYjVmNzk1ZGY1MTU2MTg4ZmU2MmUxNjNkZTNkOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoxLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQwODhjNTFmMGQ0MDU5YmY3MTZiMmFkZDBjYmFlNDNiZmNjOTA1ODQyMjNhMWM3ZGMzYWRkM2QyODVmNDUxMDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFhYWY3NjM3Y2I2ZTdlNWRiODVkNjM0Mjc0NjAxNGRmMDQxY2NkNTU4YTkyMGIyOWViNmFjNzE5ZDdiYWY1YzIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/providers.py#L138-L265",
+          "version": "repo-lines-v1:sha256:2ee9a54d63bc9397c2102011055a1d907f312567cc05089864ab35f52d962c84:eyJzZWxlY3RlZExpbmVDb3VudCI6MTI4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhOGMxZmZkNmQ2MWViODljNzgyOTAyNjg0ZjgyODlmZWU1NjY0YmVkMDkxMzAyZDk0MzFhMWY0MzU1ODZmYTc0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlYjRjYTA0YmUyZDgyMWRkM2VkMTc4MmFkNzgxMjgxZDk2ZWRhMjcwNmZkZjc3NTkwNjhhZjQwMTA2M2EyOGZmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3NTI5MTkzMDkzMGQ0MTFmYzY5NmI4ZTQ0MjVjZWUyMGIzOWY1MzY4MWJlZTQyYjFkZjZkMmMyNGU1NTU2ZTAwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmOGE5YzQ3NmIzNzYyM2I4YjY0ODk3M2EwY2I2NjdlMzJjMDMwNTVmNTk0NzcyYjBhZmEzOGM2MGM3YmYzZGFmIn0"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/configuration/providers.py#L268-L300",
+          "version": "repo-lines-v1:sha256:96b1a927e818a691ca0a6211b8bfaa20ccb29f2c085b11451aad662ac9c61a2c:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMjI4YjQ5YTFmYWE5MmUyZTMwZmQ5NmZjM2M3YmE2OWU0ODZkMTI3NTJiZThjZDgxOWM0MTNlZTU1NGQ3YTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzZGM4MzYzY2Y1YjNlM2UyNjljY2Y0M2I3NjE0YjhiZWIzZWZjN2Y3NTQ0MzVmNjkyYmU0NDBkYzJhN2IwODYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYwZWY4ZTEzMjZhZTQyNjFiYTc4ODY3M2RlN2MyNGM0OTIyNWEwMmQxNzgwYTQwYmE2MDU2YjI0YzI0ODNhZDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZlNDI5YThmYzliZmI2Y2Q4ODQ3Nzk5MTc3OWQyYzA4NWNkYjY2MzQ2ODZjNWZhNDJmZGE2ZjE1ZmY4ZTE0NzMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f97cda72f90742e0bfd050e5d17309e9",
+      "statement": "A `DEEPAGENTS_CODE_`-prefixed environment variable takes precedence over its canonical name even when empty, allowing an empty prefixed variable to suppress a canonical credential or setting.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L102-L148",
+          "version": "repo-lines-v1:sha256:0a5021b16c5743a18bbedce165b23e6f1ab4d90841a4b9428d66f56938cc275f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ0ZmIyNTAzNDU5MDRiNjNkNGE5NGVjNTExNWFlYzBjM2E2ZmM1MjA0M2MzZGE3MGVlYzM5ZWM5NjViOWM4OGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjMmExMDgxMTQ3NjBjMmMyZTIxOGFlM2ZlZWQ4NTYzMzg3ZDNlOGIyMGRhMWJhZmExNTBlZjI1MzAzYTEwOWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwZmRlMjNkY2Y0MDJkMjliMjJhZWMzMzljYjNmYTIyZTUyMWRjZTk2ZWUwMmVlODA2NTcxNzRjNzZkODk5YmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNmZGMzZDVmMmJlYjQzZmMxNjNmY2MzZTE0OTNhYzAzMjhjNmM3ZmZlNWM3MTg3MjcyZDEzZjBlYmIwODhkNTAifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L59-L75",
+          "version": "repo-lines-v1:sha256:e12a98b7e05b3decba0834f8ed21d97b73c7c944de851b9e833b98627a92ff90:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5MmY0OWVhNjNhNWFiNjI4NGVlYzQ5MmZmZGFhNmM4YTJkYWNlN2FlYzhiNjU0NWU1NjcyMDdlYjc4YjNkNDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1MGQxYmQzMzRkNDAyNzM1ZjA4NmUzNTBmNzYxZjk0YjBkOTA5YjdkYmRjNjM1MTA0OTgwM2Y5YWFkNjg4N2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZlZjQ3NmIwODVkMjYyNmFlM2UzNGE0MGI0ZmZlZTFjZTJkMGY1MDM5ZjI4NWY4Y2MxYjg4NTJhMTI1NDU3MDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNmMDc2ZmI5Mjg2OTZiMWFjMDQ1NzcwMDBlZmFiN2I4YTM4NzZkZjYyOWQxMDI2MDIzNjQ0Y2E2NzdjYmU0NGIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-06T08:06:27.683Z"
+    "at": "2026-10-08T08:07:53.482Z"
   }
 }

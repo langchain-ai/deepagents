@@ -6,7 +6,7 @@ import urllib.parse
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, TypeVar, cast
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -23,7 +23,7 @@ from langsmith.run_helpers import get_tracing_context
 from langsmith.run_trees import RunTree
 
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend, StateBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
@@ -33,7 +33,6 @@ from deepagents.middleware.async_subagents import (
     _resolve_headers,
     _tasks_reducer,
     parent_reference,
-    parent_sandbox_id,
     parent_trace_context,
     with_parent_trace,
 )
@@ -1411,22 +1410,19 @@ def _parent_runtime(tool_call_id: str = "tc_parent") -> ToolRuntime:
     )
 
 
-def _launch(mock_get_client: MagicMock, backend: Any = None) -> MagicMock:  # noqa: ANN401
-    """Launch a subagent with `backend` as the parent's and return the mocked client."""
+def _launch(mock_get_client: MagicMock) -> MagicMock:
+    """Launch a subagent from the parent's runtime and return the mocked client."""
     mock_client = MagicMock()
     mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
     mock_client.runs.create.return_value = {"run_id": "run_xyz"}
     mock_get_client.return_value = mock_client
-    launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha")], backend), "start_async_task")
+    launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha")]), "start_async_task")
     launch.func(description="analyze data", subagent_type="alpha", runtime=_parent_runtime())
     return mock_client
 
 
 def _sent_reference(mock_client: MagicMock) -> dict[str, Any]:
     return mock_client.runs.create.call_args.kwargs["config"]["configurable"]["deepagents_parent"]
-
-
-LOCAL_SHELL = "deepagents.backends.local_shell.LocalShellBackend"
 
 
 class TestParentReference:
@@ -1436,63 +1432,18 @@ class TestParentReference:
         assert _sent_reference(client) == {"thread_id": "thread_parent", "assistant_id": "assistant_parent"}
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_launch_sends_parent_sandbox(self, mock_get_client: MagicMock, tmp_path: Path) -> None:
-        sandbox = LocalShellBackend(root_dir=tmp_path)
-        reference = _sent_reference(_launch(mock_get_client, sandbox))
-        assert reference["sandbox_id"] == sandbox.id
-        assert reference["sandbox_provider"] == LOCAL_SHELL
-
-    @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_launch_finds_sandbox_behind_composite_backend(self, mock_get_client: MagicMock, tmp_path: Path) -> None:
-        sandbox = LocalShellBackend(root_dir=tmp_path)
-        backend = CompositeBackend(default=sandbox, routes={"/memories/": StateBackend()})
-        assert _sent_reference(_launch(mock_get_client, backend))["sandbox_id"] == sandbox.id
-
-    @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_launch_without_sandbox_sends_no_sandbox(self, mock_get_client: MagicMock) -> None:
-        reference = _sent_reference(_launch(mock_get_client, StateBackend()))
-        assert "sandbox_id" not in reference
-
-    @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_unreadable_sandbox_id_still_launches(self, mock_get_client: MagicMock, tmp_path: Path) -> None:
-        sandbox = LocalShellBackend(root_dir=tmp_path)
-        with patch.object(LocalShellBackend, "id", new_callable=PropertyMock, side_effect=RuntimeError("down")):
-            client = _launch(mock_get_client, sandbox)
-        assert client.runs.create.called
-        assert "sandbox_id" not in _sent_reference(client)
-
-    @patch("deepagents.middleware.async_subagents.get_sync_client")
-    def test_update_resends_parent_reference(self, mock_get_client: MagicMock, tmp_path: Path) -> None:
+    def test_update_resends_parent_reference(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.create.return_value = {"run_id": "run_new"}
         mock_get_client.return_value = mock_client
-        sandbox = LocalShellBackend(root_dir=tmp_path)
-        update = _get_tool(_build_async_subagent_tools([_make_spec()], sandbox), "update_async_task")
+        update = _get_tool(_build_async_subagent_tools([_make_spec()]), "update_async_task")
         runtime = _make_runtime_with_task()
         runtime.config = _parent_runtime().config
         update.func(task_id="thread_abc", message="more", runtime=runtime)
-        assert _sent_reference(mock_client)["sandbox_id"] == sandbox.id
-
-
-class TestParentSandboxId:
-    def _config(self, **reference: str) -> dict[str, Any]:
-        return {"configurable": {"deepagents_parent": reference}}
-
-    def test_returns_id_for_matching_provider(self) -> None:
-        config = self._config(sandbox_id="sb-1", sandbox_provider=LOCAL_SHELL)
-        assert parent_sandbox_id(config, LocalShellBackend) == "sb-1"
-
-    def test_other_provider_gets_its_own_sandbox(self) -> None:
-        config = self._config(sandbox_id="sb-1", sandbox_provider="langchain_modal.sandbox.ModalSandbox")
-        assert parent_sandbox_id(config, LocalShellBackend) is None
-
-    def test_no_parent_sandbox(self) -> None:
-        assert parent_sandbox_id(self._config(thread_id="t"), LocalShellBackend) is None
-        assert parent_sandbox_id({}, LocalShellBackend) is None
-        assert parent_sandbox_id(self._config(sandbox_provider=LOCAL_SHELL), LocalShellBackend) is None
+        assert _sent_reference(mock_client)["thread_id"] == "thread_parent"
 
     def test_parent_reference_reads_config(self) -> None:
-        assert parent_reference(self._config(thread_id="t")) == {"thread_id": "t"}
+        assert parent_reference({"configurable": {"deepagents_parent": {"thread_id": "t"}}}) == {"thread_id": "t"}
         assert parent_reference({"configurable": {}}) is None
 
 

@@ -939,7 +939,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     if async_subagents:
         # Async here means that we run these subagents in a non-blocking manner.
         # Currently this supports agents deployed via LangSmith deployments.
-        async_subagent_middleware = AsyncSubAgentMiddleware(async_subagents=async_subagents, backend=backend)
+        async_subagent_middleware = AsyncSubAgentMiddleware(async_subagents=async_subagents)
         deepagent_middleware.append(async_subagent_middleware)
 
     # Names of the core stack, captured before the tail is appended so new user

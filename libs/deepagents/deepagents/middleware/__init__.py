@@ -52,7 +52,6 @@ from deepagents.middleware.async_subagents import (
     AsyncSubAgentMiddleware,
     ParentReference,
     parent_reference,
-    parent_sandbox_id,
     parent_trace_context,
     with_parent_trace,
 )
@@ -116,7 +115,6 @@ __all__ = [
     "UnsupportedContentMiddleware",
     "create_summarization_tool_middleware",
     "parent_reference",
-    "parent_sandbox_id",
     "parent_trace_context",
     "with_parent_trace",
 ]

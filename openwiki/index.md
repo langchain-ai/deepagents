@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Repository Quickstart and Change Routing](quickstart.md) - Find the owning package, lifecycle boundary, focused regression neighborhood, and companion guide for Deep Agents SDK, dcode, ACP, Talon, evals, partners, and repository automation changes.
+- [Deep Agents Maintainer Quickstart](quickstart.md) - Routing map for changes across independently released Deep Agents packages, their current dependency relationships, and focused validation paths. Start at the behavior owner, validate affected editable consumers, and release each package independently.
 
 # Directories
 

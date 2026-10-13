@@ -43,7 +43,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/quit` | `/q` | Exit app |
 | `/reload` |  | Reload environment and config |
 | `/remember` |  | Save useful context to memory or skills |
-| `/rename` |  | Name this thread |
+| `/rename` |  | Name this thread or generate a suggested name |
 | `/restart` |  | Restart the agent server |
 | `/rubric` | `/criteria` | Set explicit acceptance criteria for rubric grading |
 | `/scrollbar` |  | Show or hide the chat scrollbar |

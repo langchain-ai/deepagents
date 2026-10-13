@@ -1376,6 +1376,8 @@ class TestFooterCostBreakdown:
     async def test_footer_cost_opens_live_modal_and_restores_focus(
         self,
     ) -> None:
+        from textual.widgets import Markdown
+
         from deepagents_code.cost_tracking import _empty_cost_breakdown
         from deepagents_code.tui.modals.cost_breakdown import CostBreakdownScreen
         from deepagents_code.tui.widgets.status import MetricsLine
@@ -1396,9 +1398,9 @@ class TestFooterCostBreakdown:
 
             modal = app.screen
             assert isinstance(modal, CostBreakdownScreen)
-            body = modal.query_one(".cost-breakdown-body", Static)
-            assert "123" in str(body.render())
-            assert "1.25" in str(body.render())
+            body = modal.query_one(".cost-breakdown-body", Markdown)
+            assert "123" in body._markdown
+            assert "1.25" in body._markdown
             stack_size = len(app.screen_stack)
             app.action_open_cost_breakdown()
             await pilot.pause()
@@ -1409,8 +1411,8 @@ class TestFooterCostBreakdown:
             updated["input_tokens"] = 456
             app._set_session_cost(2.5, breakdown=updated)
             await pilot.pause(delay=0.6)
-            assert "456" in str(body.render())
-            assert "2.5" in str(body.render())
+            assert "456" in body._markdown
+            assert "2.5" in body._markdown
 
             await pilot.press("escape")
             await pilot.pause()
@@ -6654,7 +6656,6 @@ class TestRunAgentTaskMediaTracker:
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._show_reasoning = True
 
             with patch(
                 "deepagents_code.tui.textual_adapter.execute_task_textual",
@@ -10766,6 +10767,25 @@ class TestRubricCommand:
 class TestAutoClassifierModelCommand:
     """Tests for `/auto model`, which picks the Auto classifier model."""
 
+    @pytest.mark.parametrize("role", ["auto", "summarization", "rubric", "goal"])
+    async def test_sidecar_picker_recommends_haiku(self, role: str) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        with patch.object(app, "push_screen") as push:
+            if role == "auto":
+                await app._show_auto_classifier_model_selector()
+            elif role == "summarization":
+                await app._show_summarization_model_selector()
+            else:
+                await app._show_rubric_model_selector(
+                    source="goal" if role == "goal" else "rubric"
+                )
+
+        screen = push.call_args.args[0]
+        haiku = ("anthropic:claude-haiku-5-5", "anthropic")
+        assert haiku in screen._apply_subset(
+            [haiku, ("anthropic:claude-haiku-4-5", "anthropic")]
+        )
+
     async def test_auto_model_selector_persists_to_auto_classifier_key(self) -> None:
         """Ctrl+S in the classifier picker must not retarget the agent's model."""
         from deepagents_code.model_config import save_auto_classifier_model
@@ -14003,6 +14023,52 @@ class TestInterruptApprovalPriority:
 class TestApprovalPositionBindings:
     """Tests for app-level approval fallback shortcuts."""
 
+    async def test_tab_stays_in_thread_name_modal_with_pending_approval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tab cannot alter the pending approval until the rename dialog closes."""
+        from deepagents_code.tui.modals.thread_name import ThreadNameScreen
+        from deepagents_code.tui.widgets.approval import ApprovalMenu
+
+        app = DeepAgentsApp(thread_id="thread-123")
+        monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+        rename = AsyncMock()
+        monkeypatch.setattr("deepagents_code.sessions.rename_thread", rename)
+        async with app.run_test(size=(110, 36)) as pilot:
+            messages = app.query_one("#messages", Container)
+            approval = ApprovalMenu({"name": "execute", "args": {"command": "pwd"}})
+            await messages.mount(approval)
+            app._pending_approval_widget = approval
+            reason = approval.query_one("#approval-reason-input", Input)
+            selected = approval.query_one(".approval-option-selected", Static)
+
+            app._offer_thread_name(
+                "thread-123", "Cache repair", app._thread_name_revision
+            )
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ThreadNameScreen)
+            field = screen.query_one("#thread-name", Input)
+            assert field.has_focus
+            assert not reason.display
+
+            await pilot.press("tab")
+            assert not reason.display
+            assert selected.has_class("approval-option-selected")
+            assert field.has_focus
+            await pilot.press("end", "!")
+            assert field.value == "Cache repair!"
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert app.screen is not screen
+            rename.assert_not_awaited()
+            assert app._pending_approval_widget is approval
+            approval.focus()
+            await pilot.press("tab")
+            assert reason.display
+            assert reason.has_focus
+
     async def test_tab_navigates_btw_when_background_approval_arrives(
         self, btw_app: tuple[DeepAgentsApp, MagicMock]
     ) -> None:
@@ -14952,9 +15018,9 @@ class TestFetchThreadHistoryData:
         mock_agent.aget_state.return_value = state
         app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
 
-        hidden = await app._fetch_thread_history_data("t-1")
-        app._show_reasoning = True
         visible = await app._fetch_thread_history_data("t-1")
+        app._show_reasoning = False
+        hidden = await app._fetch_thread_history_data("t-1")
 
         assert [(message.type, message.content) for message in hidden.messages] == [
             (MessageType.ASSISTANT, "Before after"),
@@ -21349,24 +21415,6 @@ class TestPrewarmAwait:
 
         assert discovered is True
         assert app._session_plugin_ids == frozenset({"quality@tools"})
-
-    async def test_invoke_skill_cache_miss_uses_import_gate(self) -> None:
-        """Cache-miss skill discovery must use the process import gate."""
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-
-        with (
-            patch.object(
-                app,
-                "_discover_skills_and_roots_with_import_lock",
-                return_value=([], []),
-            ) as guarded_discover_mock,
-            patch.object(app, "_discover_skills_and_roots") as raw_discover_mock,
-            patch.object(app, "_mount_message", AsyncMock()),
-        ):
-            await app._invoke_skill("missing")
-
-        guarded_discover_mock.assert_called_once()
-        raw_discover_mock.assert_not_called()
 
 
 class TestHeaderAndTitle:
@@ -29533,8 +29581,18 @@ class TestToolGroupCollapse:
             assert isinstance(rendered, Content)
             assert "Read 1 file, ran 1 shell command" in rendered.plain
 
-    @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
-    async def test_regroup_leaves_excluded_tools_expanded(self, tool_name: str) -> None:
+    @pytest.mark.parametrize(
+        ("tool_name", "args"),
+        [
+            ("ask_user", {}),
+            ("edit_file", {}),
+            ("write_todos", {}),
+            ("read_file", {"file_path": "/skills/review/SKILL.md"}),
+        ],
+    )
+    async def test_regroup_leaves_excluded_tools_expanded(
+        self, tool_name: str, args: dict[str, Any]
+    ) -> None:
         """Excluded tools stay visible and split adjacent tool groups.
 
         `edit_file` is included deliberately: a row only self-hides once
@@ -29553,7 +29611,7 @@ class TestToolGroupCollapse:
                 messages,
                 [
                     ("before", "read_file", {"file_path": "a.py"}, "success"),
-                    ("excluded", tool_name, {}, "success"),
+                    ("excluded", tool_name, args, "success"),
                     ("after", "execute", {"command": "ls"}, "success"),
                 ],
             )
@@ -29922,9 +29980,17 @@ class TestToolGroupCollapse:
             assert not diff.has_class("-grouped")
             assert app._active_tool_group is None
 
-    @pytest.mark.parametrize("tool_name", ["ask_user", "edit_file", "write_todos"])
+    @pytest.mark.parametrize(
+        ("tool_name", "args"),
+        [
+            ("ask_user", {}),
+            ("edit_file", {}),
+            ("write_todos", {}),
+            ("read_file", {"path": "/skills/review/skill.md"}),
+        ],
+    )
     async def test_mount_excluded_tool_closes_open_live_group(
-        self, tool_name: str
+        self, tool_name: str, args: dict[str, Any]
     ) -> None:
         """An excluded tool closes the live group; the next tool opens a new one."""
         from deepagents_code.tui.widgets.messages import ToolCallMessage
@@ -29936,7 +30002,7 @@ class TestToolGroupCollapse:
             await messages.remove_children()
 
             first = ToolCallMessage("execute", {"command": "ls"})
-            excluded = ToolCallMessage(tool_name, {})
+            excluded = ToolCallMessage(tool_name, args)
             later = ToolCallMessage("read_file", {"file_path": "a.py"})
 
             await app._mount_message(first)

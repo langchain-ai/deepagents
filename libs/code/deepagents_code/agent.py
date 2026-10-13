@@ -3101,6 +3101,7 @@ def create_cli_agent(
         skills_middleware = PluginSkillsMiddleware(
             backend=FilesystemBackend(virtual_mode=False),
             sources=sources,
+            path_base=effective_cwd,
         )
         agent_middleware.append(skills_middleware)
         instruction_middleware.append(skills_middleware)
@@ -3591,6 +3592,17 @@ def create_cli_agent(
         *custom_subagents,
         *(async_subagents or []),
     ]
+    from deepagents_code.goal_tools import ForkGoalToolsMiddleware
+
+    for spec in custom_subagents:
+        if spec.get("mode") == "fork" and "runnable" not in spec:
+            spec["middleware"] = cast(
+                "list[AgentMiddleware]",
+                [
+                    *spec.get("middleware", []),
+                    ForkGoalToolsMiddleware(),
+                ],
+            )
     _ensure_glm_5p2_profile_registered()
     from deepagents_code.config_manifest import resolve_recursion_limit
 

@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
-from typing import ClassVar
+from typing import ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
@@ -829,6 +829,46 @@ def _tool_msg_app(tool_name: str, args: dict | None = None) -> _ToolMsgApp:
         An unmounted `App` exposing the message as `app.msg`.
     """
     return _ToolMsgApp(tool_name, args)
+
+
+class TestSkillReadMessage:
+    """Skill reads retain normal tool output and lifecycle behavior."""
+
+    @pytest.mark.parametrize("error", [False, True])
+    async def test_skill_read_output_and_round_trip(self, error: bool) -> None:
+        app = _tool_msg_app("read_file", {"file_path": "/skills/[review]/SKILL.md"})
+        output = "Permission denied" if error else "# Review\nCheck the changes."
+        async with app.run_test() as pilot:
+            assert app.msg.has_class("-skill-read")
+            header = app.msg.query_one("#tool-header", Static).render()
+            assert isinstance(header, Content)
+            assert (
+                "read_file(/skills/[review]/SKILL.md) [skill: [review]]" in header.plain
+            )
+            if error:
+                app.msg.set_error(output)
+            else:
+                app.msg.set_success(output)
+                await pilot.pause()
+                assert app.msg._full_row is not None
+                assert not app.msg._full_row.display
+                await pilot.click("#tool-header")
+            await pilot.pause()
+            assert app.msg.has_class("-status-error" if error else "-status-success")
+            assert app.msg._full_row is not None
+            assert app.msg._full_row.display
+            rendered = app.msg.query_one("#output-full", Static).render()
+            assert isinstance(rendered, Content)
+            assert output in rendered.plain
+            data = MessageData.from_widget(app.msg)
+
+        restored = data.to_widget()
+        assert isinstance(restored, ToolCallMessage)
+        assert restored.has_class("-skill-read")
+        restored._restore_deferred_state()
+        assert restored._expanded
+        assert restored._output == output
+        assert restored._status == ("error" if error else "success")
 
 
 class TestToolCallMessageAppearance:
@@ -3287,6 +3327,24 @@ class TestSkillMessageMarkupSafety:
         # (Markdown widget) so we verify fields instead.
         assert msg._description == content
         assert msg._args == content
+
+
+class TestSkillMessageSetInstructions:
+    """A live row shows instructions that stream in after it mounts."""
+
+    async def test_mounted_row_shows_description_and_body(self) -> None:
+        class _App(App[None]):
+            def compose(self) -> ComposeResult:
+                yield SkillMessage(skill_name="review", args="this patch")
+
+        async with _App().run_test() as pilot:
+            msg = pilot.app.query_one(SkillMessage)
+            msg.set_instructions("Review code", "Check the tests.")
+            await pilot.pause()
+
+            [description] = msg.query(".skill-description")
+            assert "Review code" in str(cast("Static", description).render())
+            assert msg._expanded is True
 
 
 class TestStripSuccessExitLine:

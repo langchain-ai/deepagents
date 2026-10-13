@@ -8,6 +8,7 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from contextlib import aclosing
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from deepagents.backends import StateBackend
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
         MessageLikeRepresentation,
     )
     from langchain_core.runnables import Runnable, RunnableConfig
+    from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
 
@@ -487,6 +489,177 @@ def _prepare_messages(request: ModelRequest) -> list[AnyMessage]:
     )
 
 
+def _side_messages(
+    state: Mapping[str, object],
+    history: Sequence[tuple[str, str]],
+    question: str,
+    tool_names: Sequence[str],
+) -> list[AnyMessage]:
+    """Place the side history and instructed question after the main transcript.
+
+    Returns:
+        Messages for the first side request, before fitting.
+    """
+    return [
+        *_structured_transcript(_conversation(state)),
+        *(
+            message
+            for prompt, answer in history
+            for message in (HumanMessage(content=prompt), AIMessage(content=answer))
+        ),
+        HumanMessage(content=f"{_instructions(tool_names)}\n\n{question}"),
+    ]
+
+
+@dataclass(frozen=True)
+class _SideRequest:
+    """Resolved settings shared by every model call of one side answer."""
+
+    model: BaseChatModel
+    system: SystemMessage
+    settings: dict[str, Any]
+    tools: list[dict[str, Any]]
+    config: RunnableConfig
+
+    def prepare(self, messages: Sequence[BaseMessage]) -> list[AnyMessage]:
+        """Fit `messages` and the system prompt to the model's input budget.
+
+        Returns:
+            Messages that start with the system prompt.
+        """
+        return _prepare_messages(
+            ModelRequest(
+                model=self.model,
+                system_message=self.system,
+                messages=cast("list[AnyMessage]", [*messages]),
+                tools=[*self.tools],
+                model_settings=self.settings,
+                runtime=Runtime(),
+            )
+        )
+
+    async def generate(
+        self,
+        messages: Sequence[BaseMessage],
+        on_text: Callable[[str], Awaitable[None]] | None,
+    ) -> BaseMessage:
+        """Call the model once, streaming text to `on_text` when given.
+
+        Returns:
+            The complete model response, including any tool calls.
+        """
+        from deepagents_code.model_retry import aretry_model_call
+
+        bound = self.model.bind_tools(self.tools) if self.tools else self.model
+        if on_text is not None:
+            return await _stream_answer(
+                bound, messages, self.config, self.settings, on_text, self.model
+            )
+        return await aretry_model_call(
+            self.model,
+            lambda: bound.ainvoke(messages, config=self.config, **self.settings),
+            max_total_delay=_MAX_RETRY_DELAY,
+        )
+
+
+def _blocked_reason(
+    response: AIMessage, round_index: int, *, can_run: bool
+) -> str | None:
+    """Explain why the side call must not run this response's tool calls.
+
+    Returns:
+        A message for the user, or `None` when the calls may run.
+    """
+    if not response.tool_calls:
+        logger.warning(
+            "Side model sent unparsable tool calls: %s",
+            [call.get("name") for call in response.invalid_tool_calls],
+        )
+        return "The model sent a tool call that could not be read. Try again."
+    if not can_run:
+        return (
+            "File reads are off for this side question. "
+            "Ask about the conversation instead."
+        )
+    if round_index == _MAX_TOOL_ROUNDS:
+        return "Side tool limit reached. Try a narrower question."
+    if len(response.tool_calls) > _MAX_TOOL_CALLS:
+        return "Too many side tools requested. Try a narrower question."
+    return None
+
+
+def _should_run_tools(
+    response: BaseMessage, round_index: int, *, can_run: bool
+) -> bool:
+    """Decide whether the side answer continues with a tool round.
+
+    Returns:
+        `True` to run the response's tool calls, `False` when it is the answer.
+
+    Raises:
+        BtwLimitError: If the calls cannot run and the response has no text.
+    """
+    if not isinstance(response, AIMessage) or not (
+        response.tool_calls or response.invalid_tool_calls
+    ):
+        return False
+    reason = _blocked_reason(response, round_index, can_run=can_run)
+    if reason is None:
+        return True
+    if response.text:
+        return False
+    raise BtwLimitError(reason)
+
+
+def _round_results(
+    messages: Sequence[BaseMessage], round_index: int
+) -> list[BaseMessage]:
+    """Bound tool results and tell the model when no tool round is left.
+
+    Returns:
+        Tool results to add to the next request.
+    """
+    results: list[BaseMessage] = [
+        _bound_result(message) if isinstance(message, ToolMessage) else message
+        for message in messages
+    ]
+    if round_index == _MAX_TOOL_ROUNDS - 1 and isinstance(results[-1], ToolMessage):
+        results[-1] = _with_note(results[-1], _LAST_ROUND_NOTE)
+    return results
+
+
+async def _run_rounds(
+    request: _SideRequest,
+    messages: list[AnyMessage],
+    executable: Sequence[BaseTool],
+    on_text: Callable[[str], Awaitable[None]] | None,
+) -> list[str]:
+    """Alternate model calls and read-only tool rounds until the model answers.
+
+    Returns:
+        Text from each model call, in order.
+    """
+    node = ToolNode(executable)
+    parts: list[str] = []
+    for round_index in range(_MAX_TOOL_ROUNDS + 1):
+        response = await request.generate(
+            messages,
+            None if on_text is None else _separated(on_text, after_text=bool(parts)),
+        )
+        if response.text:
+            parts.append(response.text)
+        if not _should_run_tools(response, round_index, can_run=bool(executable)):
+            break
+        result = await node.ainvoke(
+            {"messages": [response]}, config=request.config, runtime=Runtime()
+        )
+        # `prepare` adds the system prompt back, so drop its first copy.
+        messages = request.prepare(
+            [*messages[1:], response, *_round_results(result["messages"], round_index)]
+        )
+    return parts
+
+
 class BtwOperation(AgentMiddleware):
     """Capture effective main-call context and answer read-only side questions.
 
@@ -679,6 +852,30 @@ class BtwOperation(AgentMiddleware):
             setattr(model, MODEL_RETRIES_ATTR, retries)
         return model, system, settings
 
+    def _side_tools(
+        self, thread_id: str, state: Mapping[str, object], *, read_tools: bool
+    ) -> tuple[list[dict[str, Any]], list[BaseTool]]:
+        """Advertise the main call's tools but run only reads it advertised.
+
+        Returns:
+            Tool schemas to bind and the read tools this side call may run.
+        """
+        schemas = (
+            self._tool_snapshots.get(thread_id)
+            if thread_id in self._snapshots
+            else state.get("_btw_tools")
+        )
+        tools = (
+            _client_tools(schemas)
+            if isinstance(schemas, list)
+            else _client_tools(self._read_tools if read_tools else [])
+        )
+        advertised = {tool["function"]["name"] for tool in tools}
+        executable = [
+            tool for tool in self._read_tools if read_tools and tool.name in advertised
+        ]
+        return tools, executable
+
     async def answer(
         self,
         thread_id: str,
@@ -720,122 +917,25 @@ class BtwOperation(AgentMiddleware):
             BtwLimitError: If the side conversation exceeds its tool budget.
         """  # noqa: DOC502 — raised by _resolve_context
         from deepagents_code.config import use_environment
-        from deepagents_code.model_retry import aretry_model_call
 
         with use_environment(self._environ):
             model, system, settings = await self._resolve_context(thread_id, state)
-            schemas = (
-                self._tool_snapshots.get(thread_id)
-                if thread_id in self._snapshots
-                else state.get("_btw_tools")
+            tools, executable = self._side_tools(
+                thread_id, state, read_tools=read_tools
             )
-            tools = (
-                _client_tools(schemas)
-                if isinstance(schemas, list)
-                else _client_tools(self._read_tools if read_tools else [])
+            request = _SideRequest(
+                model,
+                system,
+                settings,
+                tools,
+                {"callbacks": [], "metadata": {"thread_id": thread_id}},
             )
-            advertised = {tool["function"]["name"] for tool in tools}
-            executable = [
-                tool
-                for tool in self._read_tools
-                if read_tools and tool.name in advertised
-            ]
-            messages = [
-                *_structured_transcript(_conversation(state)),
-                *(
-                    message
-                    for prompt, answer in history
-                    for message in (
-                        HumanMessage(content=prompt),
-                        AIMessage(content=answer),
-                    )
-                ),
-                HumanMessage(
-                    content=f"{_instructions([tool.name for tool in executable])}"
-                    f"\n\n{question}"
-                ),
-            ]
-            prepared = _prepare_messages(
-                ModelRequest(
-                    model=model,
-                    system_message=system,
-                    messages=messages,
-                    tools=[*tools],
-                    model_settings=settings,
-                    runtime=Runtime(),
-                )
+            messages = _side_messages(
+                state, history, question, [tool.name for tool in executable]
             )
-            config: RunnableConfig = {
-                "callbacks": [],
-                "metadata": {"thread_id": thread_id},
-            }
-            bound = model.bind_tools(tools) if tools else model
-            node = ToolNode(executable)
-            parts: list[str] = []
-            for round_index in range(_MAX_TOOL_ROUNDS + 1):
-                if on_text is None:
-                    response = await aretry_model_call(
-                        model,
-                        lambda messages=prepared: bound.ainvoke(
-                            messages, config=config, **settings
-                        ),
-                        max_total_delay=_MAX_RETRY_DELAY,
-                    )
-                else:
-                    response = await _stream_answer(
-                        bound,
-                        prepared,
-                        config,
-                        settings,
-                        _separated(on_text, after_text=bool(parts)),
-                        model,
-                    )
-                if response.text:
-                    parts.append(response.text)
-                if not isinstance(response, AIMessage):
-                    break
-                if response.invalid_tool_calls and not response.tool_calls:
-                    logger.warning(
-                        "Side model sent unparsable tool calls: %s",
-                        [call.get("name") for call in response.invalid_tool_calls],
-                    )
-                    if parts:
-                        break
-                    msg = (
-                        "The model sent a tool call that could not be read. Try again."
-                    )
-                    raise BtwLimitError(msg)
-                if not response.tool_calls:
-                    break
-                if round_index == _MAX_TOOL_ROUNDS or not executable:
-                    if parts:
-                        break
-                    msg = (
-                        "Side tool limit reached. Try a narrower question."
-                        if executable
-                        else "File reads are off for this side question. "
-                        "Ask about the conversation instead."
-                    )
-                    raise BtwLimitError(msg)
-                if len(response.tool_calls) > _MAX_TOOL_CALLS:
-                    msg = "Too many side tools requested. Try a narrower question."
-                    raise BtwLimitError(msg)
-                result = await node.ainvoke(
-                    {"messages": [response]}, config=config, runtime=Runtime()
-                )
-                results = [_bound_result(message) for message in result["messages"]]
-                if round_index == _MAX_TOOL_ROUNDS - 1:
-                    results[-1] = _with_note(results[-1], _LAST_ROUND_NOTE)
-                prepared = _prepare_messages(
-                    ModelRequest(
-                        model=model,
-                        system_message=system,
-                        messages=[*prepared[1:], response, *results],
-                        tools=[*tools],
-                        model_settings=settings,
-                        runtime=Runtime(),
-                    )
-                )
+            parts = await _run_rounds(
+                request, request.prepare(messages), executable, on_text
+            )
         text = _ROUND_SEPARATOR.join(parts)
         return (
             text.strip() or "No text answer was returned. Try rephrasing your question."

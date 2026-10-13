@@ -623,6 +623,24 @@ def _should_run_tools(
     raise BtwLimitError(reason)
 
 
+def _tool_messages(result: object) -> list[BaseMessage]:
+    """Collect tool results from either `ToolNode` output shape.
+
+    `ToolNode` returns a list instead of a dict when any tool returns a
+    `Command`, as `read_file` does for images and other media.
+
+    Returns:
+        Tool result messages, in call order.
+    """
+    messages: list[BaseMessage] = []
+    for output in result if isinstance(result, list) else [result]:
+        update = output.update if isinstance(output, Command) else output
+        batch = update.get("messages", []) if isinstance(update, Mapping) else update
+        if isinstance(batch, list):
+            messages.extend(item for item in batch if isinstance(item, BaseMessage))
+    return messages
+
+
 def _round_results(
     messages: Sequence[BaseMessage], round_index: int
 ) -> list[BaseMessage]:
@@ -635,8 +653,20 @@ def _round_results(
         _bound_result(message) if isinstance(message, ToolMessage) else message
         for message in messages
     ]
-    if round_index == _MAX_TOOL_ROUNDS - 1 and isinstance(results[-1], ToolMessage):
-        results[-1] = _with_note(results[-1], _LAST_ROUND_NOTE)
+    if round_index == _MAX_TOOL_ROUNDS - 1:
+        # Media reads follow their tool result with a human message.
+        last = max(
+            (
+                i
+                for i, message in enumerate(results)
+                if isinstance(message, ToolMessage)
+            ),
+            default=None,
+        )
+        if last is not None:
+            results[last] = _with_note(
+                cast("ToolMessage", results[last]), _LAST_ROUND_NOTE
+            )
     return results
 
 
@@ -667,7 +697,11 @@ async def _run_rounds(
         )
         # `prepare` adds the system prompt back, so drop its first copy.
         messages = request.prepare(
-            [*messages[1:], response, *_round_results(result["messages"], round_index)]
+            [
+                *messages[1:],
+                response,
+                *_round_results(_tool_messages(result), round_index),
+            ]
         )
     return parts
 

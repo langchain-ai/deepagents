@@ -55,13 +55,43 @@ profile = BrowserProfile(**get_default_profile(load_browser_use_config()))
 assert profile.chromium_sandbox is False, "chromium_sandbox did not stick"
 assert "--no-sandbox" in (profile.args or []), "args did not stick"
 print(f"browser-use profile ready: headless={profile.headless} args={profile.args}")
+
+# Start it here. Every previous fix was a guess checked by reading what the
+# agent said three steps later; this puts the real traceback in the job log.
+import asyncio, traceback
+from browser_use.browser.session import BrowserSession
+
+
+async def smoke() -> None:
+    session = BrowserSession(browser_profile=profile)
+    try:
+        await session.start()
+        print("browser-use: session started OK")
+    except BaseException:
+        print("browser-use: SESSION FAILED TO START")
+        traceback.print_exc()
+        raise
+    finally:
+        try:
+            await session.stop()
+        except BaseException:
+            pass
+
+
+asyncio.run(smoke())
 PYEOF
     ;;
 
   wdio)
-    # Resolves its own Chrome for Testing; flags go through start_session
-    # capabilities, which the prompt pins.
+    # Resolves its own Chrome for Testing; the prompt pins
+    # goog:chromeOptions.binary at the system Chrome instead. Prove that
+    # binary works headless here rather than inferring it from a dead session.
     npx -y playwright@latest install --with-deps chromium
+    BIN="$(command -v google-chrome)"
+    echo "wdio will drive: $BIN"
+    "$BIN" --headless --disable-gpu --dump-dom about:blank >/dev/null \
+      && echo "wdio: pinned Chrome runs headless OK"
+    npx -y chromedriver@latest --version || echo "note: chromedriver resolved at session time"
     ;;
 
   *)

@@ -646,6 +646,7 @@ def test_build_grep_cmd_slash_glob_does_not_mask_errors() -> None:
     assert "|| true" not in cmd
 
 
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
 def test_build_grep_cmd_slash_glob_runs_through_a_shell(tmp_path: Path) -> None:
     """The template is wrapped in `python3 -c "..."`, so a stray double quote truncates the script."""
     (tmp_path / "src").mkdir()
@@ -2840,6 +2841,7 @@ def _grep_paths(sandbox: BaseSandbox, path: Path, glob: str | None = None) -> se
     return {str(Path(match["path"]).relative_to(path)) for match in result.matches or []}
 
 
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
 @pytest.mark.skipif(not _GNU_GREP, reason="the grep route targets GNU grep")
 def test_grep_skips_git_but_still_searches_an_explicit_git_root(checkout: Path) -> None:
     sandbox = _ShellSandbox()
@@ -2848,6 +2850,7 @@ def test_grep_skips_git_but_still_searches_an_explicit_git_root(checkout: Path) 
     assert _grep_paths(sandbox, checkout / ".git") == {"packed-refs"}
 
 
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
 @pytest.mark.skipif(not _GNU_GREP, reason="the grep route targets GNU grep")
 def test_grep_exclude_dirs_can_be_extended_on_the_grep_route(checkout: Path) -> None:
     sandbox = _ShellSandbox()
@@ -2856,6 +2859,7 @@ def test_grep_exclude_dirs_can_be_extended_on_the_grep_route(checkout: Path) -> 
     assert _grep_paths(sandbox, checkout, "*.js") == {"src/app.js"}
 
 
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
 def test_grep_exclude_dirs_apply_to_path_globs(checkout: Path) -> None:
     sandbox = _ShellSandbox()
     sandbox.grep_exclude_dirs = (".git", "node_modules")

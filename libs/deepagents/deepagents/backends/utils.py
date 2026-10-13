@@ -523,7 +523,7 @@ def create_file_data(
         encoding: Content encoding — `"utf-8"` for text, `"base64"` for binary.
 
     Returns:
-        FileD`ata dict with content, encoding, and timestamps.
+        `FileData` dict with content, encoding, and timestamps.
     """
     now = datetime.now(UTC).isoformat()
 

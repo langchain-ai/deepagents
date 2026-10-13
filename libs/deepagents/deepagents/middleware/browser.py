@@ -27,7 +27,7 @@ from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import BaseTool, ToolRuntime, tool
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Sequence
+    from collections.abc import Callable, Coroutine
 
     from langchain.agents.middleware.types import AgentState
     from langgraph.runtime import Runtime
@@ -181,10 +181,31 @@ def _thread_id(runtime: AnyRuntime) -> str:
     raise RuntimeError(msg)
 
 
-def _as_expression(code: str) -> str:
-    """`page.evaluate` takes an expression, but models write `return`."""
-    body = code.strip()
-    return f"(async () => {{ {body} }})()" if "return" in body else body
+# `experimental_batch` hands the callback a worker-local batch context whose
+# `page` and `context` are already Playwright-shaped, so a snippet can call
+# `await page.goto(...)` and `page.locator(sel).click()` the way the facade
+# contract documents. Wrapping the body in an async IIFE is what makes a
+# top-level `return` legal.
+_RUN_SOURCE = """async (batch, input) => {
+  const page = batch.page;
+  const context = batch.context;
+  return await (async () => { %s })();
+}"""
+
+# One round trip for a whole batch, rather than one per step.
+_ACTIONS_SOURCE = """async (batch, input) => {
+  for (const step of input.steps) {
+    const target = batch.page.locator(step.selector);
+    if (step.op === "click") await target.click();
+    else if (step.op === "hover") await target.hover();
+    else if (step.op === "fill") await target.fill(step.value);
+    else if (step.op === "type" || step.op === "press") await target.type(step.value);
+    else if (step.op === "select") await target.selectOption(step.value);
+  }
+  return { completed: input.steps.length, url: await batch.page.url() };
+}"""
+
+RUN_TIMEOUT_MS = 60_000
 
 
 @dataclass
@@ -300,17 +321,19 @@ class BrowserMiddleware(AgentMiddleware):
         ) -> str:
             """Drive the browser with JavaScript or with snapshot actions.
 
-            Provide exactly one of `code` or `actions`.
+            Provide exactly one of `code` or `actions`. Navigate with
+            `await page.goto("https://example.com")`; there is no separate
+            navigate tool.
 
             Args:
                 runtime: Injected by the agent.
-                code: JavaScript evaluated **in the page** -- `document` and
-                    `window` are in scope, `page` is not. Return a
-                    JSON-serializable value.
-                actions: Steps like `{"op": "goto", "url": ...}` or
-                    `{"op": "click", "id": "1-42"}`, where ids come from the
-                    most recent snapshot. Ops: goto, click, hover, fill, type,
-                    press, select.
+                code: JavaScript with Playwright-shaped `page` and `context` in
+                    scope -- `page.goto`, `page.locator(sel).click()`,
+                    `page.title()`. Return a JSON-serializable value.
+                actions: Steps like `{"op": "click", "id": "1-42"}`, where ids
+                    come from the most recent snapshot. Ops: click, hover,
+                    fill, type, press, select. The whole batch runs in one
+                    round trip.
             """
             if (code is None) == (actions is None):
                 return "error: provide exactly one of `code` or `actions`."
@@ -319,7 +342,8 @@ class BrowserMiddleware(AgentMiddleware):
 
             async def go(session: _Session, page: Page) -> str:
                 if code is not None:
-                    return _clip(str(await page.evaluate(_as_expression(code))))
+                    result = await session.stagehand.experimental_batch(_RUN_SOURCE % code, {}, timeout=RUN_TIMEOUT_MS, page=page)
+                    return _clip(str(result))
                 return await _apply(session, page, actions or [])
 
             return await middleware._call(runtime, go)
@@ -355,36 +379,21 @@ class BrowserMiddleware(AgentMiddleware):
 
 
 async def _apply(session: _Session, page: Page, actions: list[dict]) -> str:
-    """Replay snapshot actions. IDs index a map we built, never a raw selector."""
-    done = []
+    """Replay snapshot actions in one round trip.
+
+    IDs index the map the last snapshot built, so a model-supplied string
+    never becomes a selector on its own.
+    """
+    steps = []
     for step in actions:
         op = str(step.get("op", "")).lower()
-        if op == "goto":
-            url = str(step.get("url") or "")
-            if not url.startswith(("http://", "https://")):
-                return f"error: goto needs an absolute http(s) url, got {url!r}."
-            await page.goto(url)
-            session.ids = {}  # the page changed; old ids are stale
-            done.append(f"goto {url}")
-            continue
-
+        if op not in {"click", "hover", "fill", "type", "press", "select"}:
+            return f"error: unsupported op {op!r}. Navigate with `code` and `page.goto`."
         ref = str(step.get("id", ""))
         xpath = session.ids.get(ref)
         if xpath is None:
             return f"error: unknown id {ref!r}. Call `snapshot` first; {len(session.ids)} ids are currently valid."
-        locator = page.locator(xpath)
-        if op == "click":
-            await locator.click()
-        elif op == "hover":
-            await locator.hover()
-        elif op == "fill":
-            await locator.fill(str(step.get("value", "")))
-        elif op in ("type", "press"):
-            await locator.type(str(step.get("value", "")))
-        elif op == "select":
-            values: str | Sequence[str] = step.get("values") or step.get("value") or ""
-            await locator.select_option(values)
-        else:
-            return f"error: unsupported op {op!r}."
-        done.append(f"{op} {ref}")
-    return _clip("ok: " + ", ".join(done))
+        steps.append({"op": op, "selector": f"xpath={xpath}", "value": str(step.get("value", ""))})
+
+    result = await session.stagehand.experimental_batch(_ACTIONS_SOURCE, {"steps": steps}, timeout=RUN_TIMEOUT_MS, page=page)
+    return _clip(str(result))

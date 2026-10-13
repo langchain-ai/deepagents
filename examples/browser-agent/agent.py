@@ -19,7 +19,7 @@ from deepagents.middleware.browser import Browserbase, BrowserMiddleware, LocalC
 
 INSTRUCTIONS = """You browse with three tools.
 
-1. `run` with `{"actions": [{"op": "goto", "url": "..."}]}` to navigate.
+1. `run` with `code` to navigate: `await page.goto("https://example.com")`.
 2. `snapshot` to read the page -- it returns an accessibility tree where every
    interactive element has a bracketed ID.
 3. `run` with `{"actions": [{"op": "click", "id": "1-42"}]}` to act on those IDs.
@@ -27,9 +27,11 @@ INSTRUCTIONS = """You browse with three tools.
 
 `run` with `code` is usually cheapest -- the snippet picks what comes back:
 
-    return [...document.querySelectorAll('h3')].slice(0, 5).map(e => e.innerText)
+    await page.goto("https://news.ycombinator.com");
+    return await page.locator(".titleline a").first().innerText();
 
-It runs in the page, so `document` and `window` are in scope and `page` is not.
+`page` and `context` are Playwright-shaped, so `goto`, `locator`, `title` and
+friends all work, and the whole snippet is one round trip.
 
 Answer from what the page actually showed. If a site blocks you, say so. Never
 guess a value you did not read."""

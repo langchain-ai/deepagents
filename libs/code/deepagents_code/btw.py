@@ -641,7 +641,7 @@ def _should_run_tools(
         `True` to run the response's tool calls, `False` when it is the answer.
 
     Raises:
-        BtwLimitError: If the calls cannot run and the response has no text.
+        BtwLimitError: If the response has tool calls that cannot run.
     """
     if not isinstance(response, AIMessage) or not (
         response.tool_calls or response.invalid_tool_calls
@@ -650,9 +650,20 @@ def _should_run_tools(
     reason = _blocked_reason(response, round_index, can_run=can_run)
     if reason is None:
         return True
-    if response.text:
-        return False
     raise BtwLimitError(reason)
+
+
+async def _append_note(
+    note: str,
+    parts: list[str],
+    on_text: Callable[[str], Awaitable[None]] | None,
+) -> None:
+    """Tell the user why the answer stops after the model's lead-in text."""
+    logger.info("Side tool calls skipped: %s", note)
+    text = f"_{note}_"
+    parts.append(text)
+    if on_text is not None:
+        await _separated(on_text, after_text=True)(text)
 
 
 def _tool_messages(result: object) -> list[BaseMessage]:
@@ -711,7 +722,11 @@ async def _run_rounds(
     """Alternate model calls and read-only tool rounds until the model answers.
 
     Returns:
-        Text from each model call, in order.
+        Text from each model call, in order, plus a note when tool calls
+        that came with text could not run.
+
+    Raises:
+        BtwLimitError: If tool calls cannot run and the model sent no text.
     """
     node = ToolNode(executable)
     parts: list[str] = []
@@ -722,7 +737,13 @@ async def _run_rounds(
         )
         if response.text:
             parts.append(response.text)
-        if not _should_run_tools(response, round_index, can_run=bool(executable)):
+        try:
+            if not _should_run_tools(response, round_index, can_run=bool(executable)):
+                break
+        except BtwLimitError as exc:
+            if not response.text:
+                raise
+            await _append_note(str(exc), parts, on_text)
             break
         result = await node.ainvoke(
             {"messages": [response]}, config=request.config, runtime=Runtime()

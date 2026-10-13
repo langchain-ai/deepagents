@@ -91,7 +91,13 @@ jobs:
           # The agent model and the Jev judge both go through the LangSmith
           # gateway on this key; the judge needs TYPESAFE_API_KEY configured as
           # a workspace secret or it returns 424.
+          #
+          # BASE_URL is not optional here. The deployment arms never needed it
+          # because the deployment talks to the gateway itself; these arms run
+          # the model in this process, so without it langchain-anthropic calls
+          # api.anthropic.com with a LangSmith key and every task dies 401.
           ANTHROPIC_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          ANTHROPIC_BASE_URL: https://gateway.smith.langchain.com/anthropic
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           # Belt and braces: the arms set their own headless switch, but a
           # runner has no display, so anything that ignored it would fail loudly

@@ -1,0 +1,19 @@
+browser-mda/benchmarks/webvoyager/provision_browser.sh
+  s_199de864fdc442::t_d52542477c918c 58-81,86-88,90-94
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "faaf3a4431e3edd94a03f7ccb0686ec8f678bb61",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

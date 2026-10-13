@@ -21,7 +21,7 @@ import base64
 import logging
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, TypeVar
+from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain.tools import BaseTool, ToolRuntime, tool
@@ -206,6 +206,40 @@ _ACTIONS_SOURCE = """async (batch, input) => {
 }"""
 
 RUN_TIMEOUT_MS = 60_000
+MAX_QUALITY = 100
+
+# Tool descriptions and argument names are copied verbatim from Stagehand's
+# facade contract (`packages/integrations/core/src/facade/contract.ts`), which
+# pins them string-exact on purpose: "models are prompted against these
+# descriptions". Reword these and the agent is running a different contract
+# from every published benchmark of it.
+RUN_DESCRIPTION = (
+    "Browse and automate websites in the persistent browser by executing JavaScript "
+    "against a Playwright-shaped API. The code runs inside an async function with "
+    "page, context, and browser in scope (Playwright Page, BrowserContext, and "
+    "Browser); use await directly and return a JSON-serializable value when useful. "
+    'Navigate with await page.goto("https://example.com"); there is no separate '
+    "navigate or start tool. Alternatively, provide a batch of actions using IDs from "
+    "the latest snapshot. Provide exactly one of code or actions. Each action must use "
+    '"op" (never "kind") and "id" (never "ref"). Copy the bracketed snapshot ID as a '
+    'string. Examples: {"actions":[{"op":"click","id":"1-42"}]}, '
+    '{"actions":[{"op":"fill","id":"2-14","value":"Miami"}]}, '
+    '{"actions":[{"op":"select","id":"3-9","values":"Lowest price"}]}.'
+)
+
+SNAPSHOT_DESCRIPTION = (
+    "Capture the active page's Stagehand accessibility tree and hydrate its displayed "
+    "IDs for subsequent run actions. Every call replaces the active page's ID map."
+)
+
+SCREENSHOT_DESCRIPTION = (
+    "Capture a screenshot of the active page. For size-constrained MCP clients, prefer "
+    'a viewport JPEG: {"type":"jpeg","quality":40,"fullPage":false}.'
+)
+
+# Per-op required fields, also from the contract: `type` carries `text`, not
+# `value`, and `press` carries `key`.
+_ACTION_FIELDS: dict[str, str] = {"fill": "value", "type": "text", "press": "key"}
 
 
 @dataclass
@@ -295,46 +329,24 @@ class BrowserMiddleware(AgentMiddleware):
 
     # -- tools ----------------------------------------------------------
 
-    def _build_tools(self) -> list[BaseTool]:
+    def _build_tools(self) -> list[BaseTool]:  # noqa: C901 - three tool closures, each flat
         middleware = self
 
-        @tool(parse_docstring=True)
-        async def snapshot(runtime: ToolRuntime) -> str:
-            """Capture the page's accessibility tree, with an ID on every element.
-
-            The bracketed IDs are what `run`'s `actions` refer to. They are only
-            valid until the next snapshot.
-            """
-
+        @tool(description=SNAPSHOT_DESCRIPTION)
+        async def snapshot(runtime: ToolRuntime, *, includeIframes: bool = True) -> str:  # noqa: N803 - wire contract name
             async def go(session: _Session, page: Page) -> str:
-                result = await page.snapshot()
+                result = await page.snapshot(include_iframes=includeIframes)
                 session.ids = dict(getattr(result, "xpath_map", {}) or {})
                 return _clip(str(result.formatted_tree))
 
             return await middleware._call(runtime, go)
 
-        @tool(parse_docstring=True)
+        @tool(description=RUN_DESCRIPTION)
         async def run(
             runtime: ToolRuntime,
             code: str | None = None,
             actions: list[dict] | None = None,
         ) -> str:
-            """Drive the browser with JavaScript or with snapshot actions.
-
-            Provide exactly one of `code` or `actions`. Navigate with
-            `await page.goto("https://example.com")`; there is no separate
-            navigate tool.
-
-            Args:
-                runtime: Injected by the agent.
-                code: JavaScript with Playwright-shaped `page` and `context` in
-                    scope -- `page.goto`, `page.locator(sel).click()`,
-                    `page.title()`. Return a JSON-serializable value.
-                actions: Steps like `{"op": "click", "id": "1-42"}`, where ids
-                    come from the most recent snapshot. Ops: click, hover,
-                    fill, type, press, select. The whole batch runs in one
-                    round trip.
-            """
             if (code is None) == (actions is None):
                 return "error: provide exactly one of `code` or `actions`."
             if code is not None and not middleware.allow_javascript:
@@ -350,24 +362,29 @@ class BrowserMiddleware(AgentMiddleware):
 
         tools = [snapshot, run]
 
-        @tool(parse_docstring=True)
-        async def screenshot(runtime: ToolRuntime, *, full_page: bool = False) -> list[dict[str, str]] | str:
-            """Photograph the page when the accessibility tree is not enough.
+        @tool(description=SCREENSHOT_DESCRIPTION)
+        async def screenshot(
+            runtime: ToolRuntime,
+            *,
+            fullPage: bool = False,  # noqa: N803 - wire contract name
+            type: str = "jpeg",  # noqa: A002 - wire contract name
+            quality: int | None = 60,
+        ) -> list[dict[str, str]] | str:
+            problem = _check_image(type, quality)
+            if problem is not None:
+                return problem
+            if type == "png":
+                quality = None  # meaningless for png
 
-            Costs far more than `snapshot`. For charts, maps, canvas, layout.
-
-            Args:
-                runtime: Injected by the agent.
-                full_page: Capture the whole scrollable page, not the viewport.
-            """
+            image_type: Literal["png", "jpeg"] = "png" if type == "png" else "jpeg"
 
             async def go(_session: _Session, page: Page) -> list[dict[str, str]]:
-                raw = await page.screenshot(type="jpeg", quality=60, full_page=full_page)
+                raw = await page.screenshot(type=image_type, quality=quality, full_page=fullPage)
                 return [
                     {
                         "type": "image",
                         "source_type": "base64",
-                        "mime_type": "image/jpeg",
+                        "mime_type": f"image/{image_type}",
                         "data": base64.b64encode(raw).decode(),
                     }
                 ]
@@ -378,22 +395,62 @@ class BrowserMiddleware(AgentMiddleware):
         return tools
 
 
+def _check_image(image_type: str, quality: int | None) -> str | None:
+    """Validate the screenshot arguments the contract advertises."""
+    if image_type not in ("png", "jpeg"):
+        return "error: type must be png or jpeg."
+    if image_type == "jpeg" and quality is not None and not 0 <= quality <= MAX_QUALITY:
+        return f"error: quality must be between 0 and {MAX_QUALITY}."
+    return None
+
+
+def _hydrate(session: _Session, step: dict) -> tuple[dict | None, str | None]:
+    """Turn one contract action into a selector step, or explain why not."""
+    op = str(step.get("op", "")).lower()
+    if op not in {"click", "hover", "fill", "type", "press", "select"}:
+        return None, (f"error: unsupported op {op!r}. Use click, hover, fill, type, press or select; navigate with `code` and `page.goto`.")
+    ref = step.get("id")
+    if not isinstance(ref, str) or not ref:
+        return None, 'error: each action requires a non-empty string "id".'
+    xpath = session.ids.get(ref)
+    if xpath is None:
+        return None, (f"error: snapshot ID {ref!r} is stale or not actionable; snapshot again. {len(session.ids)} ids are currently valid.")
+
+    value: str | list[str] = ""
+    if field := _ACTION_FIELDS.get(op):
+        raw = step.get(field)
+        if not isinstance(raw, str):
+            return None, f'error: {op} requires string field "{field}".'
+        value = raw
+    elif op == "select":
+        values = step.get("values")
+        if isinstance(values, str):
+            value = values
+        elif isinstance(values, list) and values and all(isinstance(v, str) for v in values):
+            value = values[0] if len(values) == 1 else values
+        else:
+            return None, 'error: select requires "values" as a string or non-empty string list.'
+
+    return {"op": op, "selector": f"xpath={xpath}", "value": value}, None
+
+
 async def _apply(session: _Session, page: Page, actions: list[dict]) -> str:
     """Replay snapshot actions in one round trip.
 
-    IDs index the map the last snapshot built, so a model-supplied string
-    never becomes a selector on its own.
+    Field names are the contract's, not conveniences: `type` carries `text`,
+    `press` carries `key`, `select` carries `values`. A model prompted on the
+    reference description sends exactly these, and quietly accepting a
+    different key would hide its mistakes.
     """
+    if not actions:
+        return "error: actions must not be empty."
+
     steps = []
-    for step in actions:
-        op = str(step.get("op", "")).lower()
-        if op not in {"click", "hover", "fill", "type", "press", "select"}:
-            return f"error: unsupported op {op!r}. Navigate with `code` and `page.goto`."
-        ref = str(step.get("id", ""))
-        xpath = session.ids.get(ref)
-        if xpath is None:
-            return f"error: unknown id {ref!r}. Call `snapshot` first; {len(session.ids)} ids are currently valid."
-        steps.append({"op": op, "selector": f"xpath={xpath}", "value": str(step.get("value", ""))})
+    for action in actions:
+        step, problem = _hydrate(session, action)
+        if problem is not None:
+            return problem
+        steps.append(step)
 
     result = await session.stagehand.experimental_batch(_ACTIONS_SOURCE, {"steps": steps}, timeout=RUN_TIMEOUT_MS, page=page)
     return _clip(str(result))

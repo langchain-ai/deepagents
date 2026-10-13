@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:938e14d96a6cb173ff97b4a802165bc982a558217663a6a97b8d372f9234e190",
+  "pageVersion": "sha256:faaee9bc0341887d9811fa3151a0d9b1f31bc12f61c97d89213a136fe986d42b",
   "claims": [
     {
       "id": "claim_e4cc5adf9c014b83acb1b08d3fa32171",
@@ -249,10 +249,148 @@
           "version": "repo-lines-v1:sha256:e02ec1de55dd5d0ada747c825e38ca944eb90022a6ec00c56c84bc10f5a98cb3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMzLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1YjkxZTIwYTUzZmY0YjNiZmFhMTZkNzY4YzU3NmQ3ZTI2NmI3MzMzMjFlZDMyODIwNDE0Y2MzMzQ3NzUyMzBlIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiMWQxNmNjMmFkMDRhNDVmM2YzYzJhYjhlODJmMWZmYzkyNjA4NzFjMDc2ZDNmM2NhOWFlMGU4ZTNiOWRjYzE4IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI0ZmJkMDA5MzE0YmMyNzA4NDE2NzM0YTAyYWU1ZmYzOWExZTQ4YTA1MGJlOTFmNDNiMmZhYTkyMDAyYzYyYmZjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
         }
       ]
+    },
+    {
+      "id": "claim_ae99b008be2e404daa3d5b1ea05b1f4b",
+      "statement": "ACP execute approval tests require reusable approval to be keyed by the exact serializable command arguments and session context, scoped to one session, and cleared when that session is forgotten; malformed or missing-context calls cannot receive always-allow approval.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/deepagents_acp/server.py#L1209-L1295",
+          "version": "repo-lines-v1:sha256:90aed20086631acbad5f819e2bcf21af1998729e236cde72a7d6d92ca273296a:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5ZjhhNzI5NmRjYjFkNDJiZDVmNTQxM2FiZGViNzkzYjhhM2NiNzY3YjRhNTg4ZTJhNjFkZjBmNzA5YTQyYjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxMTQyMjQyYWRhYWZjZTFkOTE5ZjExMjc4ODE3YzA2NzhlZTkxNTg2ODNjY2YzMDI0Y2ViOGEzZmMyZGU3YzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3ZmI0NmM4NjlkZDFiZWRkNTIwNDU0MGRlZmM3MTYyOTBhNWU1ODliODRjM2M4ZDY0OTU3MWM5OTBjNDk3NDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwMmYwZDFlNzA4YWM2NjI5ZTBlYmU1OTdjMWIzM2E5NzAwMWY5MzE0NjRkMGNjYjY2YjY4NDUyZjY2NDgzYWQifQ"
+        },
+        {
+          "resource": "repo://libs/acp/tests/unit_tests/test_execute_permissions.py#L197-L218",
+          "version": "repo-lines-v1:sha256:86d6f97d609c5aca6e1549a78ce3da8adca1266c67948fbd15cc6307b0042ab1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk0OTBlMGVlYzg2YmRiM2VkZDcyODhjOGI5ZmQxNDM4MjQ1NjBlM2NmZTkwZDg3ZTM1NzBlMWRmYzQ5YTU4MWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjYzQwM2NmMzAzYWE3MjRkMWQ1NDdmNjcyZmNlMWM5ZDJlMTc4MzA4ZTYwYWY2OWMyZWNjZmM5Mzk0NWE1ZGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY2MmNmZDQ5MWQ5ZTVhNGRlN2ZjZjhjODZhZTE1NGExZmIwMmU0ZGIzZmU1YTViOTI2NWM1MmQwYWFjNTc1NzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/acp/tests/unit_tests/test_execute_permissions.py#L52-L185",
+          "version": "repo-lines-v1:sha256:8f96da7d8d6988a261ab3e6780b83d0acf11fe386b38ca568eb6dd1aeb74a6a9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZjM0NTgzYTU5ODc2N2JmNTZhZWZlYjY1ZTIwMzNhMTY1MWNjNGM4ZDdlNmYwYWYzZTVjZmQzMjkzZjkzM2IzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1Y2M0MDNjZjMwM2FhNzI0ZDFkNTQ3ZjY3MmZjZTFjOWQyZTE3ODMwOGU2MGFmNjljMmVjY2ZjOTM5NDVhNWRjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJjNDMzN2NmMDdlNjIyNzljMWVkZDExYTBhNDBjOThiYjMxNWY1YmI0NGRmNDg1MTcyNzc0NTMwMzY5NGIwYTAwIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyZjlmMDI0N2U4MzBhZmI2ZmJlMDI2Nzk1ODlmNmI0MjMxODZjMDY3M2RiM2JlOWRjM2MwOGEzZDE3MzgzYzA5In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_e43e0e72aaa7497ba82fbff793a6eafe",
+      "statement": "ACP local-context middleware keeps initial detected context in the system prompt, then records each summarization cutoff and appends an escaped untrusted internal snapshot only when the detected context fingerprint changes, including recording a failed refresh to avoid retries.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/examples/local_context.py#L376-L509",
+          "version": "repo-lines-v1:sha256:b3eab075da79018898a3b985e6ce2ba86a754a85cf6c9d7352be3a2a63df0941:eyJzZWxlY3RlZExpbmVDb3VudCI6MTM0LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyN2U3MzBiNTY5NTBlN2I2MjIzOTUwZmNhOWRjNTVjYjAzZGExOTczYTY0YjBkMjAxZWNiODRmZWE5NGY2ZTQ5IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlZTdjOTU3YmNiNDRmYjY3M2M5OGIwMDUwYTc1ZDM4MDgyZGI4MWQ5MThkZTMxM2EzZjA3YzEyMzUzMDZkN2VjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIwODI2NzZjODg4YzFhNGQ5ZmE3NzJmY2RjMzAyZjc3M2JjNzI5MGVlYmZmOWRhMzZhMzlmNDRjMzIxMTk4Mzg1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlOWMxMmM1OTA3ZGYyNzljZGQwOWY3MTBjODdmN2Y4YTAwYmFiOTBkMDc2ZmE0YjYxY2UxZDJlZTVhZjVhNTkyIn0"
+        },
+        {
+          "resource": "repo://libs/acp/tests/unit_tests/test_local_context.py#L15-L109",
+          "version": "repo-lines-v1:sha256:7e4cbeedba0c00cd04118928231b9280c05644e29c50c5a802a50d5e6f27db3a:eyJzZWxlY3RlZExpbmVDb3VudCI6OTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5MjY0ZDQ4YTI4NmJiZjlmZGRhNDExNWYxNDZiY2UwM2Q5NmEwYjk1Njk2ZGM2ODdmMDg2ODYzZWEyMTNiZmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5ZTMyZmQ5ZGRmZDY1NzZmYjAxYTg5NTViMTM4MzJlMzg3YzE2MWEwOTNkNDc4OTM4YWE1NjBkOTAzMWEzMDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVlYjEzNjMzZDhlMjJlYmI5M2MxOGUzY2ZhNTRmNmFkY2JiMmM2MWVlNmNlYzk4OGJkMWI0Y2ZiZDM4MjY3NTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_61380edf1bc04a57876b37093df5c749",
+      "statement": "Filesystem permission tests distinguish first-match access policy from recursive-delete policy: exact leaf deletion can use the first matching rule, while a deletion with descendants is blocked without mutation by any overlapping write-deny pattern.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_permissions.py#L129-L380",
+          "version": "repo-lines-v1:sha256:3bc25aed93aa00048b2e2ac99e708a1451f0f5b8e0304552b5d2382a9d7b3e42:eyJzZWxlY3RlZExpbmVDb3VudCI6MjUyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI3MzU5ODFhZDI0YjZiZGYwMmU3ZWZiZmMyMmZiZDMwZTQ2MmNmYzJhODQwYWJkZmI2OWU0ZjhmZGYyNThlOTAxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwMWJhNDcxOWM4MGI2ZmU5MTFiMDkxYTdjMDUxMjRiNjRlZWVjZTk2NGUwOWMwNThlZjhmOTgwNWRhY2E1NDZiIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkM2QxNzFkZTc1NDMxYTAyMWEwZDk0ZmE3NmZhYmYwZDcxMzljODk4YzFhMGI0NGI0M2NhNjA5MDNmYTFiODQ1IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJiZThmODcxNmVlYjc5YjFiYmNmMDM4YmUxMjk0ODdiOTJlZTFmNTdkMWEwYjYwMzZkNDYxNTA1NjIxNTNjNzExIn0"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_permissions.py#L495-L533",
+          "version": "repo-lines-v1:sha256:f03071338ba893319b16676d782bbb4772455be4c3223b826f9dc9f412a8b48d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyMGNiZWNkZGY5MzA2NjYwZjU4NDRmNWRiNzUzYzc0ZTJmNDlkMTUxMDM0MGE4ODJlZDBmNDdiNWEzZWY0ZDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhjNjYyOWZkYzhlOTM2MDU0NmI5OGY5YjcxNDg5NDM3MDllZDQ0NTZjMzhiOGUwZjdmY2RjNDRhZGQyYzQ2Y2IiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhmMjNiZWVmYTk4MThkYzRmYzdjYTZhMDQ3YmUyYWY4NWM3ZmU3OTdiY2IwNWEzYjlkM2VhMGZkYzlkZmRhNTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg4MDNhNjc1MjViODllZDI5ZDQ4MmJhN2NlMTAwZjU0ODg4Y2Q5MjVmNzA3NWM3YThhOGEzMzkxZDljZTI5NWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_504fe1d4df4d4d67b01f1f4649d0287a",
+      "statement": "Filesystem interrupt predicates treat bulk operations conservatively: pathless and current-directory searches can intersect protected paths, and `glob` checks an absolute or escaping pattern independently of its nominal path to prevent HITL bypass.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py#L111-L171",
+          "version": "repo-lines-v1:sha256:8294e842814b4c4fb6af19bff16f00ad8a4d21b59e9d9de50779965048f88a87:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjNmJlYjU1ZmM3ZDZiN2RjOWM5N2RkMDkzZDI3ODZjOTllYjQ2ZDg2MDY0ODJjMDg5ZDdlMGFmM2RlMzUxOGUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM2MTM1YjIxNmI5MjhjNjE3MWRlYWNmMGJlNDY3Yzc3Y2VjMjI1NTAwN2YzZGZhNGNkOGU1MjdjYTY0YTllZDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU2YjEwMTE0MTkyMDJiMDM3OTE5ZmE5ZDc5NThjOGY2NTViNjkxMGQxNjRhN2E2NDYzM2VmNzdiYThkMGNmMmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVkYTczYjYzMzM3NDJmMzRhMDM5YmNjZWE1ODUwNjU2OTZmNDVkMGQyMDliMDIzMGNmMzM3NDk3MmJhY2QzZGQifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py#L22-L75",
+          "version": "repo-lines-v1:sha256:b107688d7a6897935b8f98a17fcab0aa7c9d4c4862fb4683220ad850469a430a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZjNmRiOTY2NzhlOTQ1NTQ5ODg0NDgxMjdjN2RjYjk4NTI3YWJjNWZmZjJlZmEzZWYwMzE5ZWJkYzU4NDhmNzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI4MWJmNzAzODIwOTVjYTIyNWNhZDhkYjFlNGQ2NjFlMTUyZTY4YmE0NGUxNzIyMzY1MzZkNDkxNzg1YTM3NjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUxN2I4NzE5ZDA4YTgzNDBiMGZmZmNlZWY2OTYzYmZiMWVkYmVkMTNhNmY4MTA3YmY1MGI5ZWRkZTMxZGI3NGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFmYTU4YjA5ZGI0MGRjZjg0MzJlN2RkZDIwZWFkYThmMGI2MjlhMmU4MzNiOTY2MzJkMWI4NzRlNjQ2OWNjMTIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_permissions.py#L638-L747",
+          "version": "repo-lines-v1:sha256:b719e23a0cd7468615fe77b3d1d600100b309f844427098e0b9238b5dd012be1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIyN2UxYTk4MDliYTU1NWU1ZTEwNjQyYmNmMjYwMzc1MGQ1MmE4MmU2NjEzYmY5Yzk5NGNkYzU1ZTA3YTI1YTgzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJhOGI1Y2I1ZGM1ZTc2YjE1NmJjMGIyMzZiMjUwYjc5MGE5OWE3M2ViOWU5OTQ5YzcwMjMyY2EyNTUxMjQ2ZmU5IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlNjRiNTBhN2M2NmE3MDZlODYyNDhjNGY4NzU1MWI4MTU4YmI2ZDJjOTFhNmNjZGNmYTk2NDA1ZTBkNmQzOTI5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIzNzkwMTE3ZDVmZmRiOWE1YWQ5NmIwMTZhMmE4Mzk3ZmVlNDA1NzQ5YWZmOGU2MTlhZjExMmM5YzcxOTM1NTRiIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_f26e43b7095641fbaeb0c75bf7db1212",
+      "statement": "Filesystem backend tests enforce virtual-root containment and media safety: traversal is rejected, ripgrep results through symlinks escaping the root are filtered, and oversized video files are rejected before their bytes are read.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py#L147-L192",
+          "version": "repo-lines-v1:sha256:ee1a8713ff464bf2303800bd656a941fc8811b49e1c73e17c400f993c0a58973:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkOWFkMzJlYmZiYTM0YmI3MGQ2MzY5YTAwYzUyNTgxMDgzOGVmNTIzMWFkMTlhYWEyMTMwZGM1ZmIyZTAyZmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVkNjUyMzY3ODc1ZTBkYjI3NWM0ZGEwYjgyZjgzNmRhMGJmZjNhZjJhMTNmZWI1ZjIzZmUxNzc0NjNhN2RmYzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE3MWIwNzQ5YjE5MzZkMGFjNDhmODg1OGE0NDIwMDNkMjJmMTIxNjBiN2ZkZTE5ODAwOTA5N2RlZDhmNzY0MDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhYThjM2ZmNDYxYWQ0MmYzMjhmMGMzNjIwNDg4NTgyYzZiOTdhZWI0NDM1ODZkNmI4Y2VhZDI2Y2VkYjAxMDYifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py#L434-L474",
+          "version": "repo-lines-v1:sha256:7a0f21a7d5c4e2dc27b094014451f7a0c4ebf385f803a2f5f54257b2bb3f09d8:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2ODAzNDU0OWRkM2NlMzVlMmY0MTMwNDg2NDkyMTcyZDNmNWU5MmZmN2E5NWRiY2I0NmU3M2MyMzQ2NDQyYjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1NzlhNjUzN2E5YTFkYzY5YzM4ZWU0MmIyNTE1MGQ5ZDNkOWZmY2U4ZmFkMjc5NjBmYTA1ODJlYWRiYmI2MTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA3YmYzMDAwYzM2ZjFjZjQzMWFlNjM5MDY2NzZkYTljMzMyMzdkMzZlZmNmOGQzNDBmODBhYzJhYjM4ZjRiNzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxY2Y5OGM4ZmZlMTE5N2JmMmNkOWQ2ODVjMGNmMTYyZTg4MWU1YzVmNjM0YWI4MWVkZjNkNzg1MjdiMjFjMWYifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py#L902-L928",
+          "version": "repo-lines-v1:sha256:62e2a7ed90af39a5c6144f866870be41f643f2dc2a8d7194d93958854689e152:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2MDQ1MWFlNDJiYzJhYjM0ZTEyNjc4NjUzYmUxNDA4YjhhYzVmYjQ1M2M3NTU2Y2YyOWFlYTk5ZGU1ZjYwYWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE4NTQzZDcyNjcyYjg4OTBiZTlkOTU1NTU1MjNmNzIxYTBhOWJjZDk1YTExZTczZGM5OTU2YTZjODhmOWQwOWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhZjA0MDVhMWJmOTUyNmRjNzRhZjEzYTRiYmFjYjMzYjcyNTc3MTQ2MmEyNTJhYzQyZDM0NjE4M2MwZTE5OTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJmNWVlYWEwMjc5MWI5NTYzNzU1ZDllN2YyMGRkYjVjOTYzNzU4ODYwMDBkZDZlMjA2YjFiNjBlYThkOWE1ZjUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0d0f787370a2441792cf73c35191fd04",
+      "statement": "dcode model allowlist parsing accepts ordered, deduplicated exact provider:model entries and provider wildcards, while rejecting malformed or bare Bedrock entries so a declared policy cannot silently become unmatched.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/model_config.py#L531-L612",
+          "version": "repo-lines-v1:sha256:60dfd26c32fa8b5ba4324dc1d87daf581a4f84a89f28e28e67ce8329737e39c4:eyJzZWxlY3RlZExpbmVDb3VudCI6ODIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVlNjlhMDljYjhhOWRkNzg1MWQxZTdiM2EwYTIxNTIyMjUzMzk5MDExZGYyYzIyNTg4YWIwY2YzMjNhYWRkNWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0YWE2NzNiM2VmN2E1M2E4MjA4NGVmZDhjMGRkZGRiYWMxNzNlYzU2YThkOGExZjBiMGFkN2IwODMwNjRlMWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNkNTNlN2VkOTczYmEyNDk2YTUxYmRiZTAxNTBkNGRjMTdiMGNhNGU2N2QxNmEwYWQzMWMzN2M0NzIzZDA3NmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1MGM4MDhhNWU0NzI1MTY0ODdiNTA4OTM2Mzc3N2E0MWUxMTJkNDU1OGNhZDg4YzA3YmE0MjRkYmEwNTVmZjIifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_model_config.py#L207-L314",
+          "version": "repo-lines-v1:sha256:13f7e254c4164d3b064052efc7c3356131df2517170f85dbc549f3558f30afed:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJjMjUwNTU1OGY5NDI4MDYwMDkxM2RjZmU5MzE0Y2VmM2RhZGRlMjU5NGNkZGY5OGQzYzA1MGEyMDBlYWYyNTRhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI3ZGI4Y2MzMjFiMzk5MTI1OWE3NjY5NjM5Yzc1NTU4OGQ0OTNlOWI5Mjk0NTViYjg2N2YyZDUwNDQ1MWU0NmI1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiM2Y2MTYwZDQxZDUwZGFhOWIwMmI1MDUyMGY0MzY3YjEzYjI3MDllMjBhYTdlZGViNDVkNTBmOTJkYTNlZWJhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1YWQ0N2I0ZWMzNmZkNjMxZTU0Nzg5NzQxMTVlODU3YmUzNzNlNzdiZjhmNmYzYjQ1N2VlMmZlOWMxOWVlMDVlIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_6c9f06230fb540b290c7b7c02e4d14ce",
+      "statement": "Talon media tests require outbound markdown media under a supplied root to resolve to a supported regular image or video within that root after symlink resolution, rejecting absolute, traversal, home, URL, and escaping paths.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/media.py#L156-L238",
+          "version": "repo-lines-v1:sha256:f5753701d9ee8161a803612e2181bb1cbdf9e24497d35a5850b85aca17290d45:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlODU2ZWQ5NjA1ZDBhNGM4Y2QwNTVhMjViYmZjMzRiYWZjNTVmNDc3MTk0Y2ZhMmE2YzExMzBlNTJmNTliY2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ5N2UxOTk2MDRjYWIyZTNhYjk2YTczNTA5YzcyNjMzNTE3MmI5MDliYjQ1MWUzMDdjMTBmNWVhMTllNDg3NDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhZTYzYWViNmQ0YzQyNDJlZjE5MGUwNzI4ODc3OGM1MWVjN2MxMzg3Zjc4Y2M5M2NlYzYyOTJkOGU3ZjkxMmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2NzM3OWY5NzZlMGMwZWZkYzNiOGI4NjM2M2U1NjgzNjM0M2ZkOGUyNDA2YzYyNWEzNThlZTUyNzQzM2UwZmQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_media.py#L77-L151",
+          "version": "repo-lines-v1:sha256:a48c7c4ca4cb085dd16055de1ab5ffacbd3cdb7b2acdd080a91c9ee662cc6760:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzNjQxOWQ5OGY1NzI0MzYxYmJkZGM5YzE4YTEzMzU0MmZjNzgxODkxZDc4Y2ZjNDQ2YmFlOGMyN2MyNjQyYjUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmNmRlZjI5YzU4ODQzOGIyZDY4OTY3NDBhNTAyODliYTRhYWQ1ZmJiMjllMmE0MGE1NDNhMzU5MDM0ZTgxMjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRmYmQwMDkzMTRiYzI3MDg0MTY3MzRhMDJhZTVmZjM5YTFlNDhhMDUwYmU5MWY0M2IyZmFhOTIwMDJjNjJiZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhmZjYwOTYyNzNlY2Q5OTBiNjc1OGQ0Zjg1MmRiZjczZTk1NDRjNWNlMDFmMmRhMjNhODBiNWZmNmE5ZTdlYmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6bb01c9b125c40fb96c417632d612984",
+      "statement": "Talon sandbox startup is fail closed and its composite backend routes only assistant skills, memory, and blob namespaces to host filesystems while execution and other files use the sandbox; cancellation during asynchronous startup still closes the owned sandbox.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L133-L186",
+          "version": "repo-lines-v1:sha256:60154f47a3679e19eb6f3fe30ee99ddf930077fee83983484f9be914e3137268:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1YTc5OWNmODczYmVhMTkyMzg2N2EwMWM0YzhjOWNjOWE0OGVjYzE4NTAzNmZkZDFhODE2ODY1ZDI3YzUzZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4ZGJkZTBlMGM2ODgwOWQwOTZmYmQzZWI3OTMwY2M3YjIyMTA1MTk1Njc2YTYwYjg0ODY0ZmMxZDQzYWQwNDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxNTNiYjYwNzM4Y2ExZDMzNTczYjE1NWQzOWNiMjZiODdmNzg0OTk3ODI1ODgyZjgzMGM4YjYxMTJkNTEwODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYwMWJmYWQ2M2YxNWYyNWU1Y2M2YzhhNGI1MWY4NTRjZWY0ZDkwMmEyZTk5YjllN2UzNDNhMTI3ZjkzN2I4NDUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L71-L130",
+          "version": "repo-lines-v1:sha256:22d5bc16f6f2fdd697b8c4df333d74f91b319193ff946d03a01ac9607b4a75be:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3N2M3N2YzOTM5OGIxYjIzODE1NDkwMzlmNTdkNjU3YzgwZDc0YWE4OGNlYmUwNzMxNGQ2NzQwMDdlOWExM2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3M2IxNWUxMDhkNjdmY2JjOTQ2MThjMGU5NjIyMjk5ZDAzOTg4ODIyNTRkMmE2ZTBiOGZiNDQxZGUwZDdmM2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyNDdkOTRlMjdmOGZkMjE2Y2Y3ZDZlNjhmNzNkNDQ3ZTBhNWE2YzA2YjBhMTFkZjdmOTY0MTMzNjc3ZmQwN2MifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_sandbox.py#L111-L210",
+          "version": "repo-lines-v1:sha256:87b42ccb60bf7ddbd76cb225a5c79cc2e97282f8fdd9365c44ebcb9220b3de6b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkNWNkYWNmM2FjMGM5M2I5YTlhN2ZmZGNkZGQwNDkxN2I0YmQ3ZDY3N2MyNzczNTEzZjIxNThhYmIxZjc3MjYzIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzODI0MzVjZTg1YzI3ZmI0ZTEwMWJmZjdiY2Y3N2Q5NjQxM2EzOGNhOGM2OTZkZDlhYmZlYjhmMmRlMTI4MzAxIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiMzM1NjM4MzcxZTEzYWI1ZWVlZjBhMzU5NGViNWU5NjBkMDUxZDM1YjM0NjRlY2Q2ZTkyODExZjgyNDI1OTNhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlMzdhMDE1MjQ0MzM4MzcxNWY2MjQ5MzFjZWVmMjI2ZTg2MTc4ODczNjJmODk2NGYyOTUyMmNlYmM1M2Y3NjRkIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_445b423451944bcf8cfe19b1266f93d1",
+      "statement": "Talon stores inbound image payloads as SHA-256 blobs in the assistant artifacts directory rather than checkpoint message state, and rehydrates the image in the model request.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_media_blobs.py#L48-L79",
+          "version": "repo-lines-v1:sha256:7566ae457c6f772f988fcc25e671c35ddb633b1207fe4b029c950830ad12f565:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4NzhmOTI2ZWQ3YTNiNTAyODJlYWNhYWY0NWQ0MmNmMGUyYjdlNzBiMzc5NTNjMTk3NzQwNTE0ZWI5MzI3NjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyYTJkM2U4YzE5ODU4Y2U3NGEwNzg5NDg1NDA1YzgzM2FmZmU4ZWQ1M2I1MmVjYjEzZjQ2MTU5OWRkZjk3NTAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-12T08:20:17.385Z"
+    "at": "2026-10-13T08:11:05.854Z"
   }
 }

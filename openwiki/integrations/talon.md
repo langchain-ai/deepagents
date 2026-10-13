@@ -42,12 +42,18 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-266f810628c26d9ced8dfceb
     resource: repo://libs/talon/tests/channels/test_slack.py
+  - id: openwiki-source-e0db085f967450f48196d999
+    resource: repo://libs/talon/tests/test_media.py
+  - id: openwiki-source-e264ca9ac3bacf697861a60e
+    resource: repo://libs/talon/tests/unit_tests/test_media_blobs.py
+  - id: openwiki-source-57a0613315e23277d358df76
+    resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
   - id: openwiki-source-8f71a0fa13257ebf54bc782f
     resource: repo://libs/talon/tests/unit_tests/test_slack_oauth_context.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-09T08:07:51.383Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-09T08:07:51.383Z" }
+    at: 2026-10-13T08:11:05.854Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
 ---
 
 # Talon Runtime Host
@@ -116,7 +122,13 @@ The shared command registry drives host parsing, `/help`, and platform advertise
 
 Pairing is available only for Discord, Slack, and Telegram and is refused in `open` exposure. An unknown sender is stopped before the host/model and receives a channel-bound, one-hour, one-use code; an operator can approve it with `/pair approve <code>` or `deepagents-talon pairing approve <channel> <code>`. Pairing grants admission, never operator authority. Its persisted store uses locked atomic updates and fails closed when unreadable or invalid, leaving only environment-configured admission.
 
-Supported inbound images are converted to bounded multimodal data-URL blocks. Outbound Markdown media must resolve to a supported regular file below the trusted outbound root; URLs, traversal, and symlink escape are rejected.
+## Media path and bounds
+
+Channel adapters download inbound files into assistant-home media storage and enforce their configured `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` cap (the shared default is 1 GiB). Before the model turn, the host adds bounded fallback text: readable UTF-8 documents from an allowlist of text/code extensions are inlined only through 100 KiB, oversized or unavailable attachments are described instead, and video/other binary attachments are represented by a path notice. Voice and audio are not text-inlined.
+
+For an image message, `build_model_content` retains only readable images at or below 5 MiB and produces a text block plus standard base64 image blocks (`type: "image"`, `base64`, `mime_type`), not data URLs. MIME is taken from an `image/` report when available, otherwise guessed from the filename or sniffed for PNG, JPEG, GIF, and WebP; an unreadable, oversized, or unrecognized image falls back to ordinary text. The host supplies these blocks as request metadata and the runtime's filesystem middleware offloads binary content, so the model can receive the image without a base64 copy being retained in the graph checkpoint; the blob is stored under the assistant artifacts directory.
+
+Agent responses may contain Markdown image syntax such as `![chart](result.png)`. Talon strips recognized references outside inline/fenced code, resolves each path relative to the trusted outbound root (`DEEPAGENTS_TALON_OUTBOUND_MEDIA_DIR`, then `DEEPAGENTS_TALON_WORKSPACE`, then the current directory), and sends only recognized image or video files. The path must be a local, existing regular file beneath that root after resolution: URLs, home expansion, absolute paths in Markdown references, `..` traversal, and symlink escapes are rejected. A failed reference becomes an attachment-failure notice while any remaining text can still be delivered; adapters independently revalidate type, containment, and their size cap before upload.
 
 ## Slack Socket Mode
 
@@ -136,7 +148,9 @@ Outbound Markdown becomes Slack `mrkdwn`, is split at 4,000 characters, and may 
 
 At startup, `MCPToolProvider` loads configured MCP tools (default `~/.deepagents/.mcp.json`, overridden with `DEEPAGENTS_TALON_MCP_CONFIG`) and management capabilities. `deepagents-talon mcp config` shows configuration discovery and `deepagents-talon mcp login <server>` provides terminal OAuth. `/mcp-reload` replaces runtime tools and rebuilds the graph under the runtime lock. On failure, the previous graph remains usable and reload is marked inactive; already-active tasks retain their original capabilities.
 
-Without `DEEPAGENTS_TALON_SANDBOX`, agent shell and file tools run on the host. A configured `deepagents-code` provider creates a sandbox for the host lifetime; startup fails rather than falling back to host execution if it cannot start. An attached `DEEPAGENTS_TALON_SANDBOX_ID` is retained, while a Talon-owned session is closed at shutdown. The composite backend routes only assistant `skills/` and `memory/` to host storage; all other filesystem and execution operations go to the sandbox. MCP, web, and channel/media handling remain host-side, so this is not complete containment.
+Without `DEEPAGENTS_TALON_SANDBOX`, agent shell and file tools use a local-shell backend rooted at `DEEPAGENTS_TALON_WORKSPACE` (or the current directory); child commands receive a small allowlist of environment values, a fixed safe `PATH`, and no inherited environment. A configured `deepagents-code` provider is opened before the model host and used for its lifetime; startup fails rather than falling back to host execution if it cannot start. `DEEPAGENTS_TALON_SANDBOX_ID` attaches an existing sandbox, which Talon keeps. Otherwise Talon owns the provider context and closes it at shutdown; its cancellation handoff also closes an owned sandbox that finishes starting after its caller was cancelled. For LangSmith without an attached ID, Talon defaults the snapshot name to `talon-<assistant-id>` unless an explicit snapshot or the provider's own snapshot override is supplied.
+
+The sandbox composite backend sends every execution and ordinary filesystem operation to the sandbox. It deliberately routes only assistant `skills/`, `memory/`, and `/blobs/` to host storage. Host blobs live at `<assistant-home>/artifacts/blobs`, so offloaded inbound-image blobs survive a recreated sandbox; keeping other assistant state off host routes prevents a sandboxed agent from rewriting `tools.json`. In sandbox mode, only the assistant `skills/` directory is treated as a host skill source, and memory paths outside host-routed `memory/` are ignored. MCP, web, channel, download, and media-upload handling remain host-side, so this is not complete containment.
 
 LangSmith tracing runs only when `LANGSMITH_TRACING` is truthy and `LANGSMITH_API_KEY` is present. It tags invocations with Talon assistant, conversation, trigger, and request metadata; a missing optional package produces a warning and disables tracing. `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING=true` enables local agent/model/tool lifecycle logs. Tool input/output previews are redacted, structurally bounded, and truncated to 1,000 characters, but can still contain sensitive data.
 
@@ -148,4 +162,6 @@ Run the Talon suite from `libs/talon`:
 uv run --group test pytest tests/
 ```
 
-For deployment changes, run `deepagents-talon --once` with the intended model, channel, checkpoint/history URI, MCP configuration, and sandbox environment. For Slack changes, focus on `tests/channels/test_slack.py`: it exercises admission, event conversion, DM/thread identity, private slash-command routing, mentions, media, reactions, and thread context. `tests/unit_tests/test_slack_oauth_context.py` specifically verifies that loopback OAuth callbacks are excluded from retrieved thread context before truncation and never reach the model request. Also exercise host lifecycle/interruption tests and the relevant persistence, pairing, and cron tests for changes at those boundaries.
+For deployment changes, run `deepagents-talon --once` with the intended model, channel, checkpoint/history URI, MCP configuration, and sandbox environment. For media changes, `tests/test_media.py` covers text-document and image bounds, code-span-safe Markdown extraction, outbound type selection, and path rejection; `tests/test_host.py` verifies that the host passes image blocks to the agent; `tests/unit_tests/test_media_blobs.py` verifies that the base64 image is offloaded once into assistant artifacts rather than retained in checkpoint messages. `tests/unit_tests/test_sandbox.py` covers disabled, configured, failed, cancelled, and cleanup paths, host routes for skills/memory/blobs, and sandbox memory restrictions.
+
+For Slack changes, focus on `tests/channels/test_slack.py`: it exercises admission, event conversion, DM/thread identity, private slash-command routing, mentions, media, reactions, and thread context. `tests/unit_tests/test_slack_oauth_context.py` specifically verifies that loopback OAuth callbacks are excluded from retrieved thread context before truncation and never reach the model request. Also exercise host lifecycle/interruption tests and the relevant persistence, pairing, and cron tests for changes at those boundaries.

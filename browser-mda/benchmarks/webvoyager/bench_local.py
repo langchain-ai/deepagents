@@ -119,6 +119,12 @@ INSTRUCTIONS = "Browse with the tools you have been given to answer the question
 
 MAX_SECONDS = 600
 
+# Every arm in this benchmark runs the same agent model, deployed or local.
+# An earlier revision of this file typed "claude-sonnet-5" here while the five
+# deployed arms ran "claude-sonnet-5-5", which quietly made a cost comparison
+# across them meaningless.
+MODEL = "anthropic:claude-sonnet-5-5"
+
 
 async def run_one(arm, ls, project, ex, sem, out, rep=0):
     async with sem:
@@ -131,14 +137,14 @@ async def run_one(arm, ls, project, ex, sem, out, rep=0):
                 from deepagents.backends import LocalShellBackend
 
                 agent = create_deep_agent(
-                    model="anthropic:claude-sonnet-5",
+                    model=MODEL,
                     backend=LocalShellBackend(),
                     system_prompt=SHELL_ARMS[arm] + "\n\n" + ANSWER_RULES,
                 )
             else:
                 client = MultiServerMCPClient({arm: ARMS[arm]["server"]})
                 agent = create_agent(
-                    model="anthropic:claude-sonnet-5",
+                    model=MODEL,
                     tools=await client.get_tools(),
                     system_prompt=INSTRUCTIONS + ARMS[arm]["extra"],
                 )

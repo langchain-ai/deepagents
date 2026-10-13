@@ -63,6 +63,10 @@ def invoke(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
 type BtwServer = tuple[AsyncClient, BtwOperation, MagicMock]
 
 
+def _tool_schema(name: str) -> dict[str, object]:
+    return {"type": "function", "function": {"name": name, "parameters": {}}}
+
+
 @pytest.fixture
 async def btw_server(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[BtwServer]:
     from deepagents_code import offload_api
@@ -87,11 +91,17 @@ async def btw_server(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[BtwServer
 
 
 async def test_structured_snapshot_keeps_state_and_closes_pending_tools(
-    invoke: AsyncMock,
+    invoke: AsyncMock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(
+        FakeMessagesListChatModel,
+        "bind_tools",
+        lambda self, tools: self.bind(tools=tools),
+    )
     model = FakeMessagesListChatModel(responses=[AIMessage(content="The answer")])
     operation = BtwOperation(model, "Main instructions", None)
     state = {
+        "_btw_tools": [_tool_schema("execute")],
         "messages": [
             HumanMessage(content="Archived secret"),
             HumanMessage(content="Current request"),
@@ -120,9 +130,10 @@ async def test_structured_snapshot_keeps_state_and_closes_pending_tools(
     assert isinstance(messages[6], ToolMessage)
     assert messages[6].tool_call_id == "2"
     assert messages[-1].text.endswith("Why?")
-    assert invoke.call_args.kwargs == {
-        "config": {"callbacks": [], "metadata": {"thread_id": "thread"}}
-    }
+    assert invoke.call_args.kwargs == {"tools": state["_btw_tools"]}
+    config = invoke.call_args.args[1]
+    assert config["callbacks"] == []
+    assert config["metadata"] == {"thread_id": "thread"}
     assert state == before
 
 
@@ -333,8 +344,18 @@ async def test_side_context_filters_for_selected_model_before_budgeting(
     ],
 )
 async def test_side_context_truncates_old_file_arguments(
-    tool: str, context_limit: int | None, invoke: AsyncMock, *, summarized: bool
+    tool: str,
+    context_limit: int | None,
+    invoke: AsyncMock,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    summarized: bool,
 ) -> None:
+    monkeypatch.setattr(
+        FakeMessagesListChatModel,
+        "bind_tools",
+        lambda self, tools: self.bind(tools=tools),
+    )
     model = FakeMessagesListChatModel(
         responses=[],
         profile={"max_input_tokens": context_limit} if context_limit else None,
@@ -344,6 +365,7 @@ async def test_side_context_truncates_old_file_arguments(
     recent_content = "recent file contents\n" * 101
     argument = "content" if tool == "write_file" else "new_string"
     state: dict[str, object] = {
+        "_btw_tools": [_tool_schema(tool)],
         "messages": [
             HumanMessage(content="Archived request"),
             HumanMessage(content="Update the file"),

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections import OrderedDict
 from collections.abc import Mapping
@@ -332,6 +333,29 @@ def _tool_result_context(message: ToolMessage) -> HumanMessage:
     )
 
 
+def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
+    """Render tool calls and results as text for a request that defines no tools.
+
+    Returns:
+        Isolated messages without tool blocks; other messages are unchanged.
+    """
+    transcript: list[AnyMessage] = []
+    for message in messages:
+        if isinstance(message, ToolMessage):
+            transcript.append(_tool_result_context(message))
+        elif isinstance(message, AIMessage) and message.tool_calls:
+            calls = [
+                f"[tool call {call['id']}: {call['name']}]\n"
+                + json.dumps(call["args"], ensure_ascii=False)
+                for call in message.tool_calls
+            ]
+            text = "\n\n".join(part for part in [message.text, *calls] if part)
+            transcript.append(AIMessage(content=text))
+        else:
+            transcript.append(cast("AnyMessage", message.model_copy(deep=True)))
+    return transcript
+
+
 def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
     """Copy messages so every tool call with an id has a result.
 
@@ -483,8 +507,9 @@ def _prepare_messages(request: ModelRequest) -> list[AnyMessage]:
     """Reuse SDK compaction policies without running summaries or backend writes.
 
     Returns:
-        A structured transcript that starts with the system prompt, sized for
-        the resolved model and output settings.
+        A transcript that starts with the system prompt, sized for the resolved
+        model and output settings. It keeps tool blocks only when the request
+        defines tools.
     """
     request = UnsupportedContentMiddleware()._filter_request(request)
     compaction = create_summarization_middleware(request.model, StateBackend())
@@ -494,6 +519,13 @@ def _prepare_messages(request: ModelRequest) -> list[AnyMessage]:
             request.messages, request.system_message, request.tools
         ),
     )
+    if not request.tools:
+        # Providers reject tool blocks in a request that defines no tools.
+        flat = _tool_free_transcript(messages)
+        return cast(
+            "list[AnyMessage]",
+            _fit_context(request.override(messages=flat), compaction),
+        )
     return _structured_transcript(
         _fit_context(
             request.override(messages=_structured_transcript(messages)), compaction

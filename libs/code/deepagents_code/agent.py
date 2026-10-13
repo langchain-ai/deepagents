@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from deepagents.backends.sandbox import SandboxBackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+    from deepagents.profiles import HarnessProfile
     from langchain.agents.middleware.types import AgentState
     from langchain.messages import ToolCall
     from langchain_core.language_models import BaseChatModel
@@ -249,17 +250,39 @@ def _get_harness_tool_descriptions(
     Returns:
         Copy of the matching harness profile's tool-description overrides.
     """
+    profile = _get_harness_profile_for(model)
+    return dict(profile.tool_description_overrides) if profile is not None else {}
+
+
+def _get_harness_excluded_tools(model: str | BaseChatModel) -> frozenset[str]:
+    """Return the tool names the SDK harness hides from `model`.
+
+    Args:
+        model: Model spec or resolved chat model used by the agent.
+
+    Returns:
+        The matching harness profile's tool exclusions.
+    """
+    profile = _get_harness_profile_for(model)
+    return profile.excluded_tools if profile is not None else frozenset()
+
+
+def _get_harness_profile_for(model: str | BaseChatModel) -> HarnessProfile | None:
+    """Resolve the SDK harness profile that `create_deep_agent` uses for `model`.
+
+    Returns:
+        The matching harness profile, or `None` for a spec without one.
+    """
     # deepagents-code exactly pins the SDK, and these are the same resolution
-    # helpers used by `create_deep_agent` for its filesystem middleware.
+    # helpers used by `create_deep_agent` for its middleware.
     from deepagents.profiles.harness.harness_profiles import (
         _get_harness_profile,  # noqa: PLC2701  # Mirrors SDK profile lookup.
         _harness_profile_for_model,  # noqa: PLC2701  # Mirrors SDK profile lookup.
     )
 
     if isinstance(model, str):
-        profile = _get_harness_profile(model)
-        return dict(profile.tool_description_overrides) if profile is not None else {}
-    return dict(_harness_profile_for_model(model, None).tool_description_overrides)
+        return _get_harness_profile(model)
+    return _harness_profile_for_model(model, None)
 
 
 def _inject_fs_tools_into_subagents(
@@ -3643,6 +3666,7 @@ def create_cli_agent(
             environment,
             backend=composite_backend,
             filesystem_tools=fs_tools,
+            excluded_tools=_get_harness_excluded_tools(model),
             profile_overrides=profile_overrides,
             instruction_middleware=[
                 item

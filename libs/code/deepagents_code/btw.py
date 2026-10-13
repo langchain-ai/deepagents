@@ -104,6 +104,18 @@ _SERVER_TOOL_BLOCKS = frozenset(
     }
 )
 """Provider-executed tool blocks, plus any type ending in `_tool_result`."""
+_MCP_TOOL_BLOCKS = frozenset(
+    {
+        "mcp_tool_use",
+        "mcp_tool_result",
+        "mcp_call",
+        "mcp_list_tools",
+        "mcp_approval_request",
+    }
+)
+"""Provider MCP connector blocks, which side calls never keep."""
+_MCP_TOOL_TYPES = frozenset({"mcp", "mcp_toolset"})
+"""Provider MCP connector tools, which can change remote state."""
 _EXTRAS_KEY = "_dcode_extras"
 """Snapshot key for the `BaseTool.extras` that schema conversion drops."""
 _OMITTED_SERVER_TOOLS = "[Provider tool output omitted from the side snapshot.]"
@@ -339,29 +351,39 @@ def _tool_result_context(message: ToolMessage) -> HumanMessage:
     )
 
 
-def _is_server_tool_block(block: object) -> bool:
-    """Check whether a content block records a provider-executed tool.
+def _is_server_tool_block(block: object, *, provider_tools: bool) -> bool:
+    """Check whether a content block records a tool the side request lacks.
 
     Returns:
-        `True` for server tool calls and their results.
+        `True` for MCP connector blocks, and for other server tool calls and
+        results when the side request defines no provider tools.
     """
     kind = block.get("type") if isinstance(block, dict) else None
-    return isinstance(kind, str) and (
+    if not isinstance(kind, str):
+        return False
+    if kind in _MCP_TOOL_BLOCKS:
+        return True
+    return not provider_tools and (
         kind in _SERVER_TOOL_BLOCKS or kind.endswith("_tool_result")
     )
 
 
-def _without_server_tools(message: AIMessage) -> AIMessage:
+def _without_server_tools(message: AIMessage, *, provider_tools: bool) -> AIMessage:
     """Drop provider-executed tool blocks that the side request cannot define.
 
     Returns:
-        `message`, or a copy without server tool blocks.
+        `message`, or a copy without those blocks.
     """
     if not isinstance(message.content, list) or not any(
-        _is_server_tool_block(block) for block in message.content
+        _is_server_tool_block(block, provider_tools=provider_tools)
+        for block in message.content
     ):
         return message
-    content = [block for block in message.content if not _is_server_tool_block(block)]
+    content = [
+        block
+        for block in message.content
+        if not _is_server_tool_block(block, provider_tools=provider_tools)
+    ]
     if not content and not message.tool_calls:
         content = [{"type": "text", "text": _OMITTED_SERVER_TOOLS}]
     return message.model_copy(update={"content": content})
@@ -391,17 +413,20 @@ def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
             text = "\n\n".join(part for part in [message.text, *calls] if part)
             transcript.append(AIMessage(content=text))
         elif isinstance(message, AIMessage):
-            transcript.append(_without_server_tools(message))
+            transcript.append(_without_server_tools(message, provider_tools=False))
         else:
             transcript.append(cast("AnyMessage", message))
     return transcript
 
 
-def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
+def _structured_transcript(
+    messages: Sequence[BaseMessage], *, provider_tools: bool
+) -> list[AnyMessage]:
     """Pair every tool call that has an id with a result.
 
     Calls without a result get a placeholder result, and results without a
-    call become labeled human context.
+    call become labeled human context. Server tool blocks stay only when
+    `provider_tools` says the request defines their tools.
 
     Returns:
         Messages that providers accept as a tool transcript.
@@ -410,7 +435,7 @@ def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
     pending: dict[str, str] = {}
     for original in messages:
         message = (
-            _without_server_tools(original)
+            _without_server_tools(original, provider_tools=provider_tools)
             if isinstance(original, AIMessage)
             else original
         )
@@ -477,27 +502,63 @@ def _with_note(message: ToolMessage, note: str) -> ToolMessage:
     return message.model_copy(update={"content": content})
 
 
-def _client_tools(tools: Sequence[object]) -> list[dict[str, Any]]:
-    """Retain only client-dispatched schemas, never provider-executed tools.
+def _is_mcp_tool(tool: object) -> bool:
+    """Check whether a tool is a provider MCP connector.
 
     Returns:
-        Isolated client tool definitions.
+        `True` for MCP connector tools, as dicts or tool definitions.
+    """
+    extras = getattr(tool, "extras", None)
+    if isinstance(extras, dict):
+        tool = extras.get("provider_tool_definition")
+    return isinstance(tool, dict) and tool.get("type") in _MCP_TOOL_TYPES
+
+
+def _is_provider_tool(tool: object) -> bool:
+    """Check whether the provider, not the side call, executes a tool.
+
+    Returns:
+        `True` for provider tool dicts and tools that wrap their definition.
+    """
+    if isinstance(tool, dict):
+        return tool.get("type") != "function"
+    extras = getattr(tool, "extras", None)
+    return isinstance(extras, dict) and "provider_tool_definition" in extras
+
+
+def _tool_name(tool: object) -> str | None:
+    """Name a tool the way the SDK's tool exclusion does.
+
+    Returns:
+        The tool's name, or `None` when it has none.
+    """
+    name = tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
+    return name if isinstance(name, str) else None
+
+
+def _client_tools(tools: Sequence[object]) -> list[dict[str, Any]]:
+    """Keep the main call's tools as isolated, checkpointable definitions.
+
+    Provider tools stay so the side request matches the main prompt cache,
+    except MCP connectors, which could change remote state.
+
+    Returns:
+        Tool definitions in the main call's order.
     """
     from langchain_core.tools import BaseTool
     from langchain_core.utils.function_calling import convert_to_openai_tool
 
     schemas: list[dict[str, Any]] = []
     for tool in tools:
+        if _is_mcp_tool(tool):
+            continue
         if isinstance(tool, BaseTool):
-            extras = tool.extras or {}
-            if "provider_tool_definition" in extras:
-                continue
             schema = convert_to_openai_tool(tool)
-            if extras:
+            if tool.extras:
                 # Conversion drops extras such as `defer_loading`.
-                schema[_EXTRAS_KEY] = deepcopy(extras)
+                schema[_EXTRAS_KEY] = deepcopy(tool.extras)
             schemas.append(schema)
-        elif isinstance(tool, dict) and tool.get("type") == "function":
+        elif isinstance(tool, dict):
             schemas.append(deepcopy(cast("dict[str, Any]", tool)))
     return schemas
 
@@ -606,10 +667,11 @@ def _prepare_messages(request: ModelRequest) -> list[AnyMessage]:
             "list[AnyMessage]",
             _fit_context(request.override(messages=flat), compaction),
         )
+    provider_tools = any(_is_provider_tool(tool) for tool in request.tools)
+    structured = _structured_transcript(messages, provider_tools=provider_tools)
     return _structured_transcript(
-        _fit_context(
-            request.override(messages=_structured_transcript(messages)), compaction
-        )
+        _fit_context(request.override(messages=structured), compaction),
+        provider_tools=provider_tools,
     )
 
 
@@ -618,6 +680,8 @@ def _side_messages(
     history: Sequence[tuple[str, str]],
     question: str,
     tool_names: Sequence[str],
+    *,
+    provider_tools: bool,
 ) -> list[AnyMessage]:
     """Place the side history and instructed question after the main transcript.
 
@@ -627,7 +691,8 @@ def _side_messages(
     return [
         # Copy once here; later steps copy only the messages they change.
         *_structured_transcript(
-            [message.model_copy(deep=True) for message in _conversation(state)]
+            [message.model_copy(deep=True) for message in _conversation(state)],
+            provider_tools=provider_tools,
         ),
         *(
             message
@@ -915,6 +980,7 @@ class BtwOperation(AgentMiddleware):
         profile_overrides: dict[str, object] | None = None,
         backend: BackendProtocol | None = None,
         filesystem_tools: Sequence[FsToolName] | None = None,
+        excluded_tools: frozenset[str] = frozenset(),
     ) -> None:
         """Keep workspace defaults and the read-only instruction loaders.
 
@@ -928,6 +994,9 @@ class BtwOperation(AgentMiddleware):
                 `None` to turn side tools off.
             filesystem_tools: Main filesystem allowlist, or `None` for all read
                 tools. Side tools stay off unless `read_file` is allowed.
+            excluded_tools: Harness profile tool exclusions. The SDK removes
+                these after this middleware captures the main request, so
+                the capture removes them too.
         """
         allowed = [
             name
@@ -940,6 +1009,7 @@ class BtwOperation(AgentMiddleware):
             else []
         )
         self._tool_snapshots: dict[str, list[dict[str, Any]]] = {}
+        self._excluded_tools = excluded_tools
         self._model = model
         self._system = SystemMessage(content=system_prompt)
         self._environ = environ
@@ -966,7 +1036,13 @@ class BtwOperation(AgentMiddleware):
                 (request.system_message or self._system).model_copy(deep=True),
                 deepcopy(request.model_settings),
             )
-            self._tool_snapshots[info.thread_id] = _client_tools(request.tools)
+            self._tool_snapshots[info.thread_id] = _client_tools(
+                [
+                    tool
+                    for tool in request.tools
+                    if _tool_name(tool) not in self._excluded_tools
+                ]
+            )
             self._snapshots.move_to_end(info.thread_id)
             while len(self._snapshots) > _MAX_SNAPSHOTS:
                 evicted, _ = self._snapshots.popitem(last=False)
@@ -1120,9 +1196,10 @@ class BtwOperation(AgentMiddleware):
         back to checkpoint settings or the workspace's bootstrap model. Restore
         the checkpointed instructions, generation settings, retry budget, and
         tool schemas when no live snapshot exists.
-        Bind the main call's client tool schemas even though only reads run:
-        providers need definitions for the structured tool calls in the
+        Bind the main call's tools, except MCP connectors, even though only
+        reads run: providers need definitions for the tool calls in the
         transcript, and the same tools keep the main prompt cache valid.
+        Provider tools such as web search can still run on the provider.
         New and legacy threads restore memory and skills through the main
         agent's loaders without writing updates back to the conversation.
         Large older file arguments are truncated using the main agent's policy;
@@ -1167,7 +1244,11 @@ class BtwOperation(AgentMiddleware):
                 {"callbacks": [], "metadata": {"thread_id": thread_id}},
             )
             messages = _side_messages(
-                state, history, question, [tool.name for tool in executable]
+                state,
+                history,
+                question,
+                [tool.name for tool in executable],
+                provider_tools=any(_is_provider_tool(tool) for tool in request.tools),
             )
             parts = await _run_rounds(
                 request, request.prepare(messages), executable, on_text

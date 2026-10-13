@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import BaseMessage
     from langchain_core.runnables import RunnableConfig
+    from langchain_core.tools import BaseTool
     from langgraph.pregel import Pregel
 
     from deepagents_code.app import DeepAgentsApp
@@ -2467,7 +2468,7 @@ async def test_side_tools_read_only_when_the_caller_allows_it(
     assert "SECRET=value" in calls.call_args.args[0][-1].text
 
 
-async def test_side_tool_schemas_survive_restart_without_native_execution(
+async def test_side_tool_schemas_survive_restart_without_mcp_connectors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from deepagents.backends import FilesystemBackend
@@ -2508,6 +2509,93 @@ async def test_side_tool_schemas_survive_restart_without_native_execution(
     assert isinstance(state, dict)
     restored = BtwOperation(model, "system", None, backend=backend)
     await restored.answer("thread", state, "why")
+    read_file, *provider = invoke.call_args.kwargs["tools"]
+    assert read_file["function"]["name"] == "read_file"
+    assert provider == [{"type": "web_search"}]
+
+
+def _capture_main_tools(
+    operation: BtwOperation, model: BaseChatModel, tools: list[BaseTool | dict]
+) -> None:
+    operation.wrap_model_call(
+        ModelRequest(
+            model=model,
+            messages=[],
+            tools=tools,
+            runtime=Runtime(
+                execution_info=ExecutionInfo(
+                    thread_id="thread",
+                    checkpoint_id="c",
+                    checkpoint_ns="",
+                    task_id="t",
+                )
+            ),
+        ),
+        MagicMock(return_value=ModelResponse(result=[])),
+    )
+
+
+async def test_side_history_keeps_provider_tool_blocks_but_not_mcp(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    model = FakeMessagesListChatModel(responses=[])
+    monkeypatch.setattr(
+        FakeMessagesListChatModel,
+        "bind_tools",
+        lambda self, tools: self.bind(tools=tools),
+    )
+    invoke = AsyncMock(return_value=AIMessage(content="answer"))
+    monkeypatch.setattr(FakeMessagesListChatModel, "ainvoke", invoke)
+    operation = BtwOperation(model, "system", None)
+    search = {"type": "web_search_20250305", "name": "web_search"}
+    _capture_main_tools(
+        operation, model, [search, {"type": "mcp_toolset", "mcp_server_name": "x"}]
+    )
+    search_blocks = [
+        {"type": "server_tool_use", "id": "s", "name": "web_search", "input": {}},
+        {"type": "web_search_tool_result", "tool_use_id": "s", "content": []},
+    ]
+    mcp_blocks = [
+        {"type": "mcp_tool_use", "id": "m", "name": "x", "input": {}},
+        {"type": "mcp_tool_result", "tool_use_id": "m", "content": []},
+    ]
+    state = {
+        "messages": [
+            HumanMessage("main"),
+            AIMessage(content=[*search_blocks, *mcp_blocks, "answer"]),
+        ]
+    }
+
+    await operation.answer("thread", state, "why")
+
+    assert invoke.call_args.kwargs["tools"] == [search]
+    assert invoke.call_args.args[0][2].content == [*search_blocks, "answer"]
+
+
+async def test_side_tools_omit_harness_exclusions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from deepagents.backends import StateBackend
+    from deepagents.middleware.filesystem import FilesystemMiddleware
+
+    model = FakeMessagesListChatModel(responses=[])
+    monkeypatch.setattr(
+        FakeMessagesListChatModel,
+        "bind_tools",
+        lambda self, tools: self.bind(tools=tools),
+    )
+    invoke = AsyncMock(return_value=AIMessage(content="answer"))
+    monkeypatch.setattr(FakeMessagesListChatModel, "ainvoke", invoke)
+    operation = BtwOperation(
+        model, "system", None, excluded_tools=frozenset({"execute"})
+    )
+    tools = FilesystemMiddleware(
+        backend=StateBackend(), tools=["read_file", "execute"]
+    ).tools
+    _capture_main_tools(operation, model, [*tools])
+
+    await operation.answer("thread", {}, "why")
+
     assert [tool["function"]["name"] for tool in invoke.call_args.kwargs["tools"]] == [
         "read_file"
     ]

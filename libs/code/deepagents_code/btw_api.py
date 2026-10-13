@@ -53,7 +53,7 @@ def _tool_hooks_ran(state: Mapping[str, object]) -> bool:
 
 
 def _limit_detail(exc: BtwLimitError | ContextOverflowError) -> str:
-    """Describe an expected side-question limit without server internals.
+    """Log an expected side-question limit and describe it without server internals.
 
     Returns:
         Text the client can show the user.

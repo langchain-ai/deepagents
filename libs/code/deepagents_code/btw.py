@@ -81,7 +81,7 @@ _MAX_TOOL_CALLS = 8
 _ROUND_SEPARATOR = "\n\n"
 _READ_TOOLS: tuple[FsToolName, ...] = ("ls", "read_file", "glob", "grep")
 _MAX_RETRY_DELAY = 60
-"""Retry budget for each model call.
+"""Maximum total retry delay, in seconds, for each model call.
 
 The API's 120-second deadline covers every call of one answer, so a slow
 answer with several tool rounds can still time out.
@@ -405,13 +405,13 @@ def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
 
 
 def _bound_result(message: ToolMessage) -> ToolMessage:
-    """Shorten a side tool result the main agent would evict.
+    """Cap a side tool result at the main eviction threshold.
 
-    Side tools run outside `FilesystemMiddleware`, so large results would
-    otherwise enter the next request in full and overflow its budget.
+    Side reads skip the main tool wrapper, so a large result would otherwise
+    enter the next request in full and overflow its budget.
 
     Returns:
-        `message`, or a copy with its text cut to the main eviction limit.
+        `message`, or a copy with its text cut to the threshold.
     """
     limit = NUM_CHARS_PER_TOKEN * TOOL_RESULT_TOKEN_LIMIT
     if not isinstance(message.content, str) or len(message.content) <= limit:
@@ -481,7 +481,7 @@ def _fit_context(
     budget = compaction._input_budget(request)
     if budget is None or not compaction._over_budget(request):
         return messages
-    # Never drop or shorten the user's question to make the request fit.
+    # Fail rather than drop or shorten the user's question to make it fit.
     question_index = next(
         (
             index
@@ -800,7 +800,8 @@ class BtwOperation(AgentMiddleware):
             environ: Workspace environment for lazy model resolution.
             instruction_middleware: Main agent memory and skill loaders, in order.
             profile_overrides: Session profile fields to retain during reconstruction.
-            backend: Main filesystem backend for read-only inspection.
+            backend: Main filesystem backend for read-only inspection, or
+                `None` to turn side tools off.
             filesystem_tools: Main filesystem allowlist, or `None` for all read
                 tools. Side tools stay off unless `read_file` is allowed.
         """
@@ -1020,8 +1021,12 @@ class BtwOperation(AgentMiddleware):
 
         Raises:
             TypeError: If the configured model is not a chat model.
-            BtwLimitError: If the side conversation exceeds its tool budget.
-        """  # noqa: DOC502 — raised by _resolve_context
+            BtwLimitError: If the model asks for tools that cannot run and
+                sends no text: reads are off, a limit is hit, or a tool call
+                cannot be parsed.
+            ContextOverflowError: If the instructions, question, or a later
+                tool round cannot fit the model's context.
+        """  # noqa: DOC502 — raised by helpers
         from deepagents_code.config import use_environment
 
         with use_environment(self._environ):

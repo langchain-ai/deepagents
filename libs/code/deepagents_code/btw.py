@@ -343,11 +343,16 @@ def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
     for message in messages:
         if isinstance(message, ToolMessage):
             transcript.append(_tool_result_context(message))
-        elif isinstance(message, AIMessage) and message.tool_calls:
+        elif isinstance(message, AIMessage) and (
+            message.tool_calls or message.invalid_tool_calls
+        ):
             calls = [
                 f"[tool call {call['id']}: {call['name']}]\n"
                 + json.dumps(call["args"], ensure_ascii=False)
                 for call in message.tool_calls
+            ] + [
+                f"[tool call {call['id']}: {call['name'] or 'tool'}]\n{call['args']}"
+                for call in message.invalid_tool_calls
             ]
             text = "\n\n".join(part for part in [message.text, *calls] if part)
             transcript.append(AIMessage(content=text))
@@ -385,10 +390,11 @@ def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
                 continue
             pending.pop(message.tool_call_id)
         if isinstance(message, AIMessage):
+            # Providers send unparsable calls too, so they need results as well.
             pending.update(
                 {
-                    call["id"]: call["name"]
-                    for call in message.tool_calls
+                    call["id"]: call["name"] or "tool"
+                    for call in [*message.tool_calls, *message.invalid_tool_calls]
                     if call["id"] is not None
                 }
             )
@@ -624,7 +630,8 @@ def _blocked_reason(
     Returns:
         A message for the user, or `None` when the calls may run.
     """
-    if not response.tool_calls:
+    if response.invalid_tool_calls:
+        # Running only the valid calls would leave the others without results.
         logger.warning(
             "Side model sent unparsable tool calls: %s",
             [call.get("name") for call in response.invalid_tool_calls],

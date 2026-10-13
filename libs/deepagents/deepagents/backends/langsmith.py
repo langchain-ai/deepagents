@@ -7,9 +7,14 @@ import logging
 from typing import TYPE_CHECKING
 
 from deepagents.backends.protocol import (
+    FILE_NOT_FOUND,
+    INVALID_PATH,
+    IS_DIRECTORY,
+    PERMISSION_DENIED,
     ExecuteResponse,
     FileData,
     FileDownloadResponse,
+    FileOperationError,
     FileUploadResponse,
     ReadResult,
     WriteResult,
@@ -51,6 +56,54 @@ def _binary_read_result(file_path: str, raw: bytes) -> ReadResult:
             encoding="base64",
         )
     )
+
+
+def _classify_sdk_error(exc: Exception) -> FileOperationError | str:
+    """Map a LangSmith SDK exception to a `FileOperationError` code.
+
+    The SDK raises a typed hierarchy for file transfers (see
+    `handle_sandbox_http_error` in `langsmith.sandbox`): 404 / `FileNotFound`
+    becomes `ResourceNotFoundError`, 403 becomes `SandboxOperationError` with
+    `error_type="PermissionDenied"`, and daemon-side failures become
+    `SandboxOperationError` with `error_type` `ReadError` / `WriteError`. The
+    daemon does not expose an errno for those, so the message text is checked
+    for the OS error strings that the standard codes cover. Anything else
+    (auth, connection, not-ready, unexpected API errors) is passed through as
+    `TypeName: message` so the caller sees a real diagnosis instead of a
+    misleading standard code.
+
+    Args:
+        exc: Exception raised by `Sandbox.read()` or `Sandbox.write()`.
+
+    Returns:
+        A `FileOperationError` literal when the failure is a known recoverable
+        condition, otherwise a backend-specific error string.
+    """
+    from langsmith.sandbox import ResourceNotFoundError, SandboxOperationError  # noqa: PLC0415
+
+    if isinstance(exc, ResourceNotFoundError):
+        return FILE_NOT_FOUND
+    if isinstance(exc, SandboxOperationError):
+        if exc.error_type == "PermissionDenied":
+            return PERMISSION_DENIED
+        classified = _classify_operation_message(str(exc).removesuffix(f" [{exc.error_type}]"))
+        if classified is not None:
+            return classified
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _classify_operation_message(message: str) -> FileOperationError | None:
+    """Recognize terminal OS errors without matching text in file paths."""
+    text = message.rsplit(": ", 1)[-1].strip().lower()
+    if text in {"permission denied", "read-only file system"}:
+        return PERMISSION_DENIED
+    if text == "is a directory":
+        return IS_DIRECTORY
+    if text == "no such file or directory":
+        return FILE_NOT_FOUND
+    if text in {"not a directory", "file name too long", "invalid argument"}:
+        return INVALID_PATH
+    return None
 
 
 class LangSmithSandbox(BaseSandbox):
@@ -305,21 +358,19 @@ class LangSmithSandbox(BaseSandbox):
 
                 Response order matches input order.
         """
-        from langsmith.sandbox import ResourceNotFoundError, SandboxClientError  # noqa: PLC0415
+        from langsmith.sandbox import SandboxClientError  # noqa: PLC0415
 
         responses: list[FileDownloadResponse] = []
         for path in paths:
             if not path.startswith("/"):
-                responses.append(FileDownloadResponse(path=path, content=None, error="invalid_path"))
+                responses.append(FileDownloadResponse(path=path, content=None, error=INVALID_PATH))
                 continue
             try:
                 content = self._sandbox.read(path)
                 responses.append(FileDownloadResponse(path=path, content=content, error=None))
-            except ResourceNotFoundError:
-                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
             except SandboxClientError as e:
-                msg = str(e).lower()
-                error = "is_directory" if "is a directory" in msg else "file_not_found"
+                error = _classify_sdk_error(e)
+                logger.debug("Failed to download %s: %s", path, e)
                 responses.append(FileDownloadResponse(path=path, content=None, error=error))
         return responses
 
@@ -342,12 +393,13 @@ class LangSmithSandbox(BaseSandbox):
         responses: list[FileUploadResponse] = []
         for path, content in files:
             if not path.startswith("/"):
-                responses.append(FileUploadResponse(path=path, error="invalid_path"))
+                responses.append(FileUploadResponse(path=path, error=INVALID_PATH))
                 continue
             try:
                 self._sandbox.write(path, content)
                 responses.append(FileUploadResponse(path=path, error=None))
             except SandboxClientError as e:
+                error = _classify_sdk_error(e)
                 logger.debug("Failed to upload %s: %s", path, e)
-                responses.append(FileUploadResponse(path=path, error="permission_denied"))
+                responses.append(FileUploadResponse(path=path, error=error))
         return responses

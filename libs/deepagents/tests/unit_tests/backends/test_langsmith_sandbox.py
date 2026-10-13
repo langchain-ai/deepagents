@@ -7,7 +7,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from langsmith.sandbox import ResourceNotFoundError, SandboxClientError
+from langsmith.sandbox import (
+    ResourceNotFoundError,
+    SandboxAuthenticationError,
+    SandboxClientError,
+    SandboxConnectionError,
+    SandboxNotReadyError,
+    SandboxOperationError,
+)
 
 from deepagents.backends import sandbox as base_sandbox
 from deepagents.backends.langsmith import LangSmithSandbox
@@ -168,7 +175,7 @@ def test_upload_files_success() -> None:
 
 def test_upload_files_error() -> None:
     sb, mock_sdk = _make_sandbox()
-    mock_sdk.write.side_effect = SandboxClientError("permission denied")
+    mock_sdk.write.side_effect = SandboxOperationError("forbidden", error_type="PermissionDenied")
 
     responses = sb.upload_files([("/readonly/test.txt", b"content")])
 
@@ -179,7 +186,7 @@ def test_upload_files_error() -> None:
 
 def test_upload_files_partial_success() -> None:
     sb, mock_sdk = _make_sandbox()
-    mock_sdk.write.side_effect = [None, SandboxClientError("fail"), None]
+    mock_sdk.write.side_effect = [None, SandboxOperationError("forbidden", error_type="PermissionDenied"), None]
 
     responses = sb.upload_files(
         [
@@ -193,6 +200,128 @@ def test_upload_files_partial_success() -> None:
     assert responses[0].error is None
     assert responses[1].error == "permission_denied"
     assert responses[2].error is None
+
+
+def test_upload_files_relative_path_is_invalid() -> None:
+    sb, mock_sdk = _make_sandbox()
+
+    responses = sb.upload_files([("relative.txt", b"content")])
+
+    assert responses[0].error == "invalid_path"
+    mock_sdk.write.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("open /etc/x: permission denied", "permission_denied"),
+        ("write /sys/x: read-only file system", "permission_denied"),
+        ("open /tmp: is a directory", "is_directory"),
+        ("open /nope/x.txt: no such file or directory", "file_not_found"),
+        ("open /etc/passwd/x: not a directory", "invalid_path"),
+        ("open /x: file name too long", "invalid_path"),
+        ("open /tmp/permission denied/x: is a directory", "is_directory"),
+        ("open /tmp/no such file or directory/x: invalid argument", "invalid_path"),
+    ],
+)
+def test_upload_files_classifies_write_error_message(message: str, expected: str) -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.write.side_effect = SandboxOperationError(message, operation="write", error_type="WriteError")
+
+    responses = sb.upload_files([("/x", b"content")])
+
+    assert responses[0].error == expected
+
+
+@pytest.mark.parametrize("message", ["disk quota exceeded", "open /tmp/permission denied/x: disk quota exceeded"])
+def test_upload_files_unrecognized_write_error_passes_through(message: str) -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.write.side_effect = SandboxOperationError(message, operation="write", error_type="WriteError")
+
+    responses = sb.upload_files([("/x", b"content")])
+
+    assert responses[0].error == f"SandboxOperationError: {message} [WriteError]"
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        SandboxAuthenticationError("invalid api key"),
+        SandboxConnectionError("connection refused"),
+        SandboxNotReadyError("sandbox is starting"),
+        SandboxClientError("something unexpected"),
+    ],
+)
+def test_upload_files_non_file_errors_are_not_permission_denied(exc: SandboxClientError) -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.write.side_effect = exc
+
+    responses = sb.upload_files([("/x", b"content")])
+
+    assert responses[0].error == f"{type(exc).__name__}: {exc}"
+
+
+def test_download_files_relative_path_is_invalid() -> None:
+    sb, mock_sdk = _make_sandbox()
+
+    responses = sb.download_files(["relative.txt"])
+
+    assert responses[0].error == "invalid_path"
+    assert responses[0].content is None
+    mock_sdk.read.assert_not_called()
+
+
+def test_download_files_permission_denied() -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.side_effect = SandboxOperationError("forbidden", error_type="PermissionDenied")
+
+    responses = sb.download_files(["/root/secret"])
+
+    assert responses[0].error == "permission_denied"
+    assert responses[0].content is None
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("read /tmp: is a directory", "is_directory"),
+        ("open /root/x: permission denied", "permission_denied"),
+        ("open /nope: no such file or directory", "file_not_found"),
+        ("open /etc/passwd/x: not a directory", "invalid_path"),
+        ("open /tmp/permission denied/x: is a directory", "is_directory"),
+        ("open /tmp/no such file or directory/x: invalid argument", "invalid_path"),
+        (
+            "open /tmp/permission denied/x: disk quota exceeded",
+            "SandboxOperationError: open /tmp/permission denied/x: disk quota exceeded [ReadError]",
+        ),
+    ],
+)
+def test_download_files_classifies_read_error_message(message: str, expected: str) -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.side_effect = SandboxOperationError(message, operation="read", error_type="ReadError")
+
+    responses = sb.download_files(["/x"])
+
+    assert responses[0].error == expected
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        SandboxAuthenticationError("invalid api key"),
+        SandboxConnectionError("connection refused"),
+        SandboxNotReadyError("sandbox is starting"),
+        SandboxClientError("something unexpected"),
+    ],
+)
+def test_download_files_non_file_errors_are_not_file_not_found(exc: SandboxClientError) -> None:
+    sb, mock_sdk = _make_sandbox()
+    mock_sdk.read.side_effect = exc
+
+    responses = sb.download_files(["/x"])
+
+    assert responses[0].content is None
+    assert responses[0].error == f"{type(exc).__name__}: {exc}"
 
 
 # -- read() tests -----------------------------------------------------------

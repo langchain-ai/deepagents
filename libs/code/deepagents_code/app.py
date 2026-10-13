@@ -6067,12 +6067,16 @@ class DeepAgentsApp(App):
         """Reserve a locally managed thread before reading or adopting it."""
         if self._server_kwargs is None and self._server_proc is None:
             return
+        if thread_id in self._thread_leases:
+            return
         from deepagents_code.thread_ownership import ensure_owned
 
         self._thread_leases[thread_id] = ensure_owned(thread_id)
 
     def _release_thread(self, thread_id: str | None) -> None:
         """Release an abandoned thread while retaining the active reservation."""
+        if thread_id == self._lc_thread_id:
+            return
         if thread_id and (lease := self._thread_leases.pop(thread_id, None)):
             lease.release()
 
@@ -10036,8 +10040,8 @@ class DeepAgentsApp(App):
             if self._lc_thread_id != child_id:
                 self._release_thread(child_id)
 
-    @staticmethod
     async def _seed_handoff_thread(
+        self,
         remote: RemoteAgent,
         text: str,
         *,
@@ -10045,11 +10049,7 @@ class DeepAgentsApp(App):
         agent_name: str,
         context: CLIContext,
     ) -> str:
-        """Create a thread whose only message is the handoff summary.
-
-        Returns:
-            The new thread ID.
-        """
+        """Return the ID of a thread seeded with the handoff summary."""
         from uuid import uuid4
 
         from langchain_core.messages import HumanMessage
@@ -10059,6 +10059,7 @@ class DeepAgentsApp(App):
             set_thread_metadata,
             thread_exists,
         )
+        from deepagents_code.thread_ownership import held_lease
 
         child_id = str(uuid4())
         config = {
@@ -10069,6 +10070,7 @@ class DeepAgentsApp(App):
                 "updated_at": datetime.now(UTC).isoformat(),
             },
         }
+        previous_lease = held_lease(child_id)
         seeded = False
         try:
             await remote.aensure_thread(config)
@@ -10093,11 +10095,13 @@ class DeepAgentsApp(App):
             seeded = True
             return child_id
         finally:
-            if not seeded:
-                from deepagents_code.thread_ownership import held_lease
-
-                if lease := held_lease(child_id):
-                    lease.release()
+            if (
+                not seeded
+                and previous_lease is None
+                and child_id != self._lc_thread_id
+                and (lease := held_lease(child_id))
+            ):
+                lease.release()
 
     async def _switch_to_handoff(self, thread_id: str, child_id: str) -> None:
         """Open the child thread unless new work would be stranded on the source."""
@@ -30286,10 +30290,12 @@ class DeepAgentsApp(App):
         initial_threads = get_cached_threads(limit=thread_limit)
 
         def validate_selection(thread_id: str) -> None:
-            already_owned = thread_id in self._thread_leases
+            from deepagents_code.thread_ownership import held_lease
+
+            if thread_id == self._lc_thread_id or held_lease(thread_id) is not None:
+                return
             self._reserve_thread(thread_id)
-            if not already_owned:
-                self._release_thread(thread_id)
+            self._release_thread(thread_id)
 
         async def resume_and_refocus(thread_id: str) -> None:
             """Resume a selected thread, then restore focus to chat input."""

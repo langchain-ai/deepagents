@@ -34,8 +34,9 @@ def isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
 
 @pytest.mark.usefixtures("isolated_state")
 @pytest.mark.parametrize("transition", ["clear", "switch", "failed_switch"])
+@pytest.mark.parametrize("target", ["target", "current"])
 async def test_prestarted_server_releases_initial_thread_after_transition(
-    monkeypatch: pytest.MonkeyPatch, transition: str
+    monkeypatch: pytest.MonkeyPatch, transition: str, target: str
 ) -> None:
     from deepagents_code.app import TextualSessionState
     from deepagents_code.client.remote_client import RemoteAgent
@@ -55,7 +56,7 @@ async def test_prestarted_server_releases_initial_thread_after_transition(
     monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
     monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
     monkeypatch.setattr(app, "_run_session_start_hook", AsyncMock(return_value=True))
-    monkeypatch.setattr("deepagents_code.app._new_thread_id", lambda: "target")
+    monkeypatch.setattr("deepagents_code.app._new_thread_id", lambda: target)
 
     def switch(thread_id: str) -> None:
         if transition == "failed_switch":
@@ -69,11 +70,11 @@ async def test_prestarted_server_releases_initial_thread_after_transition(
             await app._handle_command("/clear")
         elif transition == "failed_switch":
             with pytest.raises(RuntimeError, match="history failed"):
-                await app._resume_thread("target")
+                await app._resume_thread(target)
         else:
-            await app._resume_thread("target")
+            await app._resume_thread(target)
 
-        if transition == "failed_switch":
+        if transition == "failed_switch" or target == "current":
             assert app._lc_thread_id == "current"
             assert held_lease("current") is initial
             assert try_acquire("current") is None
@@ -374,12 +375,17 @@ async def test_cross_agent_resume_retries_after_cwd_cancellation(
 
 @pytest.mark.usefixtures("isolated_state")
 @pytest.mark.parametrize("failure", ["ensure", "metadata"])
+@pytest.mark.parametrize(
+    ("preowned", "active"), [(False, False), (True, False), (False, True), (True, True)]
+)
 async def test_handoff_seed_releases_failed_reservations(
-    monkeypatch: pytest.MonkeyPatch, failure: str
+    monkeypatch: pytest.MonkeyPatch, failure: str, preowned: bool, active: bool
 ) -> None:
     from deepagents_code.thread_ownership import ensure_owned
 
     monkeypatch.setattr("uuid.uuid4", lambda: "child")
+    original = ensure_owned("child") if preowned else None
+    app = DeepAgentsApp(thread_id="child" if active else "source", server_kwargs={})
     remote = MagicMock()
 
     def ensure(_config: object) -> None:
@@ -400,11 +406,13 @@ async def test_handoff_seed_releases_failed_reservations(
         ),
     )
     with pytest.raises(RuntimeError, match="seed failed"):
-        await DeepAgentsApp._seed_handoff_thread(
+        await app._seed_handoff_thread(
             remote, "summary", cwd="/tmp", agent_name="agent", context={}
         )
-    assert held_lease("child") is None
-    assert try_acquire("child") is not None
+    if preowned:
+        assert held_lease("child") is original
+    assert (held_lease("child") is not None) == (preowned or active)
+    assert (try_acquire("child") is None) == (preowned or active)
 
 
 @pytest.mark.usefixtures("isolated_state")
@@ -417,13 +425,16 @@ async def test_handoff_seed_releases_failed_reservations(
         ("adopted", True),
     ],
 )
+@pytest.mark.parametrize("alias", [False, True])
 async def test_handoff_releases_only_unadopted_child(
-    monkeypatch: pytest.MonkeyPatch, pause_at: str, cancel: bool
+    monkeypatch: pytest.MonkeyPatch, pause_at: str, cancel: bool, alias: bool
 ) -> None:
     from deepagents_code.thread_ownership import ensure_owned
 
     app = DeepAgentsApp(thread_id="source", server_kwargs={})
     app._reserve_thread("source")
+    if alias:
+        monkeypatch.setattr("uuid.uuid4", lambda: "source")
     app._shell_running = pause_at == "activity"
     paused = asyncio.Event()
     proceed = asyncio.Event()
@@ -479,7 +490,7 @@ async def test_handoff_releases_only_unadopted_child(
 
         adopted = pause_at == "adopted" or (pause_at == "saved" and not cancel)
         assert app._lc_thread_id == (child_id if adopted else "source")
-        if adopted:
+        if adopted or alias:
             assert held_lease(child_id) is not None
             assert try_acquire(child_id) is None
         else:
@@ -492,6 +503,133 @@ async def test_handoff_releases_only_unadopted_child(
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.usefixtures("isolated_state")
+@pytest.mark.parametrize("selected", ["current", "borrowed", "available"])
+async def test_picker_preserves_remote_reservations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selected: str
+) -> None:
+    from langgraph.checkpoint.base import empty_checkpoint
+
+    from deepagents_code.client.remote_client import RemoteAgent
+    from deepagents_code.thread_ownership import owned_saver_class
+    from deepagents_code.tui.widgets.thread_selector import ThreadSelectorScreen
+
+    remote = RemoteAgent("http://test:0", local_ownership=True)
+    prepared = remote._prepare_mutation(
+        {"configurable": {"thread_id": "current", "checkpoint_ns": ""}}
+    )
+    original = held_lease("current")
+    if selected == "borrowed":
+        remote._prepare_mutation({"configurable": {"thread_id": selected}})
+    selected_lease = held_lease(selected)
+    app = DeepAgentsApp(thread_id="current", server_kwargs={}, cwd=tmp_path)
+    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    threads: list[sessions.ThreadInfo] = [
+        {
+            "thread_id": selected,
+            "initial_prompt": "Saved conversation",
+            "agent_name": None,
+            "updated_at": None,
+        }
+    ]
+    monkeypatch.setattr(sessions, "get_cached_threads", lambda **_kwargs: threads)
+    monkeypatch.setattr(sessions, "list_threads", AsyncMock(return_value=threads))
+    app._agent_running = True
+    async with app.run_test() as pilot:
+        await app._show_thread_selector()
+        await pilot.pause()
+        assert isinstance(app.screen, ThreadSelectorScreen)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert held_lease("current") is original
+        assert held_lease(selected) is selected_lease
+        assert try_acquire("current") is None
+        config: RunnableConfig = {"configurable": prepared["configurable"]}
+        async with owned_saver_class(db_path=sessions.get_db_path()).from_conn_string(
+            str(sessions.get_db_path())
+        ) as saver:
+            saved = await saver.aput(config, empty_checkpoint(), {}, {})
+            assert await saver.aget_tuple(saved) is not None
+
+
+@pytest.mark.usefixtures("isolated_state")
+async def test_midrun_message_and_cancel_preserve_final_checkpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from langgraph.checkpoint.base import empty_checkpoint
+
+    from deepagents_code.client.remote_client import RemoteAgent
+    from deepagents_code.thread_ownership import owned_saver_class
+
+    remote = RemoteAgent("http://test:0", local_ownership=True)
+    prepared = remote._prepare_mutation(
+        {"configurable": {"thread_id": "current", "checkpoint_ns": ""}}
+    )
+    config: RunnableConfig = {"configurable": prepared["configurable"]}
+    original = held_lease("current")
+    app = DeepAgentsApp(thread_id="current", server_kwargs={})
+    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    entered = asyncio.Event()
+    async with owned_saver_class(db_path=sessions.get_db_path()).from_conn_string(
+        str(sessions.get_db_path())
+    ) as saver:
+
+        async def turn() -> None:
+            try:
+                entered.set()
+                await asyncio.Event().wait()
+            finally:
+                await saver.aput(config, empty_checkpoint(), {}, {})
+
+        async with app.run_test() as pilot:
+            task = asyncio.create_task(turn())
+            await entered.wait()
+            worker = MagicMock()
+            worker.cancel.side_effect = task.cancel
+            app._agent_worker = worker
+            app._agent_running = True
+            app._agent_turn_started = True
+            try:
+                await app._submit_input("status update", "normal")
+                assert app._pending_messages
+                await pilot.press("ctrl+c")
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert held_lease("current") is original
+                assert try_acquire("current") is None
+                assert await saver.aget_tuple(config) is not None
+                saved = await saver.aput(config, empty_checkpoint(), {}, {})
+                assert await saver.aget_tuple(saved) is not None
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.usefixtures("isolated_state")
+@pytest.mark.parametrize("target", ["current", "target"])
+async def test_agent_swap_cancellation_keeps_active_reservation(
+    monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    from deepagents_code.client.remote_client import RemoteAgent
+
+    remote = RemoteAgent("http://test:0", local_ownership=True)
+    remote._prepare_mutation({"configurable": {"thread_id": "current"}})
+    original = held_lease("current")
+    app = DeepAgentsApp(thread_id="current", server_kwargs={})
+    monkeypatch.setattr(
+        app,
+        "_restart_server_for_owned_agent_swap",
+        AsyncMock(side_effect=asyncio.CancelledError()),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await app._restart_server_for_agent_swap("other", resume_thread_id=target)
+    assert held_lease("current") is original
+    assert try_acquire("current") is None
+    if target != "current":
+        assert held_lease(target) is None
+        assert try_acquire(target) is not None
 
 
 @pytest.mark.usefixtures("isolated_state")

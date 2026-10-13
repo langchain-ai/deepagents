@@ -21,6 +21,8 @@ from deepagents_code.thread_ownership import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from langchain_core.runnables import RunnableConfig
 
 _CLIENT = """
@@ -111,6 +113,23 @@ async def test_inflight_writer_blocks_takeover_after_client_release(tmp_path):
     replacement = try_acquire("thread", db_path=db_path)
     assert replacement is not None
     replacement.release()
+
+
+async def test_lost_reservation_requires_reopening_without_accepting_stale_token(
+    tmp_path: "Path",
+) -> None:
+    db_path = tmp_path / "sessions.db"
+    lease = ensure_owned("thread", db_path=db_path)
+    lease.release()
+    with pytest.raises(ThreadOwnershipError, match="Restart the client and reopen"):
+        async with writer_guard("thread", db_path=db_path, token=lease.token):
+            pytest.fail("A matching token alone must not revive an orphaned writer")
+    with pytest.raises(ThreadOwnershipError, match="ownership changed"):
+        async with writer_guard("thread", db_path=db_path, token="stale"):
+            pytest.fail("A mismatched token must not recover ownership")
+    successor = try_acquire("thread", db_path=db_path)
+    assert successor is not None
+    successor.release()
 
 
 async def test_saver_fences_checkpoints_writes_and_deletion(tmp_path, monkeypatch):

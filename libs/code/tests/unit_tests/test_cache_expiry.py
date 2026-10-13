@@ -545,7 +545,8 @@ async def test_seeding_handoff_preserves_active_workspace(
     active_config = {"configurable": {"thread_id": "other"}}
     await remote.aswitch_workspace(active_config, "/other-project")
 
-    child_id = await DeepAgentsApp._seed_handoff_thread(
+    app = DeepAgentsApp(thread_id="other")
+    child_id = await app._seed_handoff_thread(
         remote, "summary", cwd="/source-project", agent_name="agent", context={}
     )
 

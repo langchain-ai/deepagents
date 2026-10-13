@@ -185,7 +185,11 @@ def _validate(path: Path, token: str) -> None:
     except Timeout:
         return
     reservation.release()
-    msg = "The thread's client exited or released ownership; refusing a stale write."
+    msg = (
+        "The thread's client exited or released ownership; its reservation is lost. "
+        "Restart the client and reopen the thread before retrying; "
+        "refusing an unreserved write."
+    )
     raise ThreadOwnershipError(msg)
 
 

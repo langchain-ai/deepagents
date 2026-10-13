@@ -465,3 +465,64 @@ That trial was run by the other session (job `2026-10-09__12-41-36`, the
 `webvoyager-apple-processor` task), not by the addendum's author, whose own
 Harbor runs produced zero completed trials. The backend finding does not rest on
 it — it was verified directly against the installed runtime, as above.
+
+---
+
+## Appendix — two findings from building the Online-Mind2Web suite
+
+Appended, not edited. Both were measured on `harbor[langsmith]==0.21.0`,
+`managed-deepagents` 0.9.0, macOS, while bringing up
+`evals/online-mind2web/` (100 generated browsing tasks).
+
+### A. The environment image is built once per TASK, not once per environment
+
+`trial.py:658` passes `environment_name=self.task.short_name` into the
+environment, and `environments/langsmith.py::_snapshot_name` seeds the snapshot
+name with it. So two tasks with a byte-identical `environment/Dockerfile` get two
+snapshot names and two independent builds.
+
+Observed directly: three tasks in one job, one shared `Dockerfile`, three
+concurrent BuildKit runs in three separate `trial.log`s — not one build and two
+waiters.
+
+For a generated suite this is the dominant wall-clock cost and it buys nothing:
+100 tasks means ~100 builds of the same image. The content hash
+(`environment_id`) is already in the seed and is already identical across them;
+only the task name makes the names differ.
+
+**Ask:** key the snapshot on `environment_id` alone (optionally with the task
+name as a label rather than part of the identity), so a suite of N tasks sharing
+an environment pays one build. Failing that, document that a generated suite
+should point `[environment] docker_image` at a prebuilt image.
+
+### B. A build-timeout overrun takes down the whole job, and the error names neither
+
+Default `build_timeout_sec` is 600 s (`models/task/config.py:422`). This
+environment's `node:24-bookworm` base does not reliably build on LangSmith
+infrastructure inside that, especially with several builds in flight.
+
+What an overrun looks like — job `2026-10-10__08-54-49`, 3 trials, all still in
+`starting environment...`:
+
+```
+⠋ 0/3 Running trials...   0:10:04
+⠋ 0:10:04 828c2d98…: starting environment...Task was destroyed but it is pending!
+task: <Task pending name='Task-1' coro=<start.<locals>._run_job() …>>
+RuntimeWarning: coroutine 'LangSmithEnvironment.stop' was never awaited
+RuntimeError: no running event loop
+  File "harbor/job.py", line 716, in _write_job_result_async
+```
+
+Every per-trial `exception.txt` records `RuntimeError: There is no current event
+loop in thread 'MainThread'` from `_stop_agent_environment`. Nothing in the job
+result, the trial records or the log says "the image build timed out" — the only
+clue is that the elapsed clock stopped at 10:00. `result.json` is left with
+`n_running_trials: 3` and `finished_at: null` forever.
+
+Setting `build_timeout_sec` per task fixes it. The diagnosis cost a job.
+
+**Ask:** two things. (1) Raise or auto-scale the default for Dockerfile-built
+environments. (2) Far more important — surface the cause. A build timeout should
+fail its own trial with a message naming the build and the limit, not tear down
+the event loop under every other in-flight trial and surface as an asyncio
+shutdown error.

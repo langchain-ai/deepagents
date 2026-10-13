@@ -1,0 +1,13 @@
+[project]
+name = "browser-mda-repl"
+version = "0.0.0"
+description = "Browsing Managed Deep Agent driving Stagehand from a QuickJS REPL via programmatic tool calling."
+requires-python = ">=3.11"
+dependencies = [
+    "managed-deepagents>=0.9.0,<0.10",
+    "langchain-quickjs>=0.3,<0.4",
+    "stagehand>=4",
+]
+
+[tool.mda]
+python-version = "3.12"

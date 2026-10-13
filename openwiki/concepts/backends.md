@@ -1,8 +1,8 @@
 ---
 type: architecture concept
-title: Backends, Routing, and Artifact Persistence
-description: DeepAgents backends define file storage, persistence scope, virtual-path routing, artifact placement, and optional command execution. This page explains the backend contract, composite mounts, binary-content offload and hydration, and the security implications of local or sandboxed implementations.
-tags: [backends, storage-routing, filesystem, state, persistence, sandbox, artifacts]
+title: Backends
+description: DeepAgents backends define file storage, persistence scope, virtual-path routing, artifact placement, and optional command execution. This page explains the backend contract, composite mounts, binary-content offload, and Talon's host-versus-sandbox routing and lifecycle.
+tags: [backends, storage-routing, filesystem, state, persistence, sandbox, artifacts, talon]
 sources:
   - id: openwiki-source-a1549ea98d425efea270be93
     resource: repo://libs/deepagents/deepagents/backends/composite.py
@@ -42,15 +42,25 @@ sources:
     resource: repo://libs/partners/runloop/langchain_runloop/sandbox.py
   - id: openwiki-source-edb310aff3786a7a99593231
     resource: repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py
+  - id: openwiki-source-6a038e6e1a11f450bcafce54
+    resource: repo://libs/talon/deepagents_talon/__main__.py
+  - id: openwiki-source-81698d033a5726401d48b135
+    resource: repo://libs/talon/deepagents_talon/config.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-580d91c607e0a09e0659e565
     resource: repo://libs/talon/deepagents_talon/sandbox.py
+  - id: openwiki-source-e264ca9ac3bacf697861a60e
+    resource: repo://libs/talon/tests/unit_tests/test_media_blobs.py
+  - id: openwiki-source-57a0613315e23277d358df76
+    resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-12T08:20:17.385Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-12T08:20:17.385Z" }
+    at: 2026-10-13T08:11:05.854Z
 ---
 
-# Backends, Routing, and Artifact Persistence
+# Backends
 
 A **backend** is the implementation boundary behind agent file operations. It determines where files live, how long they persist, how virtual paths are routed, where middleware artifacts are written, and whether a shell exists. It is not a model-visible tool or an authorization policy: [filesystem tools](/openwiki/concepts/tools-filesystem.md) register and dispatch operations, while storage selection determines persistence and execution behavior.
 
@@ -150,6 +160,31 @@ The `tools` allowlist controls model visibility independently of backend capabil
 
 Use `StateBackend` for thread-local scratch files, `StoreBackend` for namespace-scoped durable memory, `FilesystemBackend` for trusted local file access without a shell, and `LocalShellBackend` only for trusted development or controlled CI. Use an isolated `BaseSandbox` implementation for command execution, `ContextHubBackend` for versioned Hub content, and `CompositeBackend` when these scopes must coexist. Choose the composite default deliberately because it determines shell capability, and choose `artifacts_root` deliberately because it determines artifact persistence location.
 
-Talon illustrates this split: sandbox mode builds a composite with the provider sandbox as default and host-backed skills and memory routes. Commands therefore go to the sandbox while only those mounted directories are host-backed; configured sandbox startup failure raises `SandboxStartupError` instead of falling back to host execution.
+### Talon sandbox routing and lifecycle
 
-Focused tests cover state-schema selection for direct and nested state branches, artifact-root normalization, blob upload failure and tamper rejection, the shared state/store file format, and composite search/routing boundaries. They are useful safeguards when changing persistence, routing, or model-visible tool behavior.
+Talon enables remote execution only when `DEEPAGENTS_TALON_SANDBOX` resolves to a provider. For a model-backed host, the host opens that sandbox before constructing `DeepAgentRuntime`, passes the resulting composite backend and provider working directory into the runtime, and keeps the context open for the model host lifetime. The runtime adds a system-prompt notice that shell and file tools run in the remote working directory. When the setting is absent, `open_sandbox()` yields `None` and the runtime uses its normal local-shell default.
+
+In sandbox mode, `sandbox_backend()` makes the provider `SandboxBackendProtocol` the composite default, so every unmatched file operation and every `execute` call remains sandbox-routed. It creates restrictive (`0700`) host directories and mounts exactly three assistant-owned areas as virtual routes: `<assistant_dir>/skills/`, `<assistant_dir>/memory/`, and `/blobs/`, the last backed by `<assistant_dir>/artifacts/blobs/`. Thus `tools.json`, `AGENTS.md`, and other assistant-home paths are not host routes and are read or written in the sandbox; a traversal attempt from the host-routed memory mount cannot reach `tools.json`. Keeping blobs on the host lets offloaded media survive replacement of the remote sandbox.
+
+```mermaid
+flowchart TD
+    Host["Talon model host"] --> Open["open_sandbox"]
+    Open --> Provider["Provider sandbox default backend"]
+    Open --> Routes["Composite host routes"]
+    Routes --> Skills["assistant skills"]
+    Routes --> Memory["assistant memory"]
+    Routes --> Blobs["assistant artifacts blobs"]
+    Provider --> Files["Unmatched file tools"]
+    Provider --> Execute["All execute calls"]
+    Blobs --> Persist["Media survives sandbox replacement"]
+```
+
+This routing model shows the only assistant-owned data deliberately retained on the host during sandbox mode; commands and all unmatched paths stay with the provider sandbox.
+
+The runtime aligns its metadata loading with that boundary. It fingerprints and reloads host skills only from `<assistant_dir>/skills/` in sandbox mode, ignoring skill-directory environment paths because those paths would resolve inside the sandbox. It likewise retains configured or manifest memory only if its resolved path lies beneath `<assistant_dir>/memory/`, logs and drops other candidates, and rejects paths that escape through `..`. Binary offload remains enabled for the composite backend, so inbound image bytes are stored once in the host blob route while the hydrated content is supplied to the model.
+
+`open_sandbox()` calls the optional provider factory in a worker thread with the provider name, optional attached `sandbox_id`, resolved snapshot name, and optional setup script. A Talon-created sandbox is closed on context exit, whereas an attached existing sandbox is not deleted by Talon. Startup errors are wrapped as `SandboxStartupError` (with a snapshot-name hint for snapshot failures), escape the CLI as exit status 1, and never fall back to host execution. Cancellation is also fail-closed: an `_Handoff` coordinates the worker and awaiting task so a sandbox that finishes starting after cancellation is closed rather than leaked.
+
+For LangSmith without an attached sandbox ID, Talon defaults the snapshot to `talon-<assistant_id>` unless `DEEPAGENTS_TALON_SANDBOX_SNAPSHOT` supplies one or the provider's own `LANGSMITH_SANDBOX_SNAPSHOT_NAME` override is set. Operators can use `DEEPAGENTS_TALON_SANDBOX_ID` to attach rather than own a sandbox, and `DEEPAGENTS_TALON_SANDBOX_SETUP` to pass a host script to the provider factory. Talon warns when `DEEPAGENTS_TALON_SKILLS_DIRS` or `SKILLS_DIRS` is set in sandbox mode because those locations are not host-mounted.
+
+Focused tests cover state-schema selection for direct and nested state branches, artifact-root normalization, blob upload failure and tamper rejection, the shared state/store file format, and composite search/routing boundaries. Talon's sandbox tests additionally verify that approvals stay out of host routes, blobs land under the host artifact directory, provider cleanup occurs on normal exit and cancelled startup, configured startup fails closed, and non-routed memory paths are excluded. They are useful safeguards when changing persistence, routing, or model-visible tool behavior.

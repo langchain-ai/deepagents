@@ -1,8 +1,8 @@
 ---
 type: runtime architecture
 title: Runtime Behavior, State, and Delegation
-description: Runtime contracts for Deep Agents graph construction, checkpointed state, binary blob hydration, synchronous and remote delegation, and recovery from interrupted tool calls. Explains ownership boundaries that must survive graph and middleware changes.
-tags: [deepagents, runtime, state, middleware, checkpoints, subagents, delegation]
+description: Runtime contracts for Deep Agents graph construction, path-sensitive filesystem approval, checkpointed state, binary blob hydration, and synchronous and remote delegation. Explains the ownership boundaries that must survive graph and middleware changes.
+tags: [deepagents, runtime, state, middleware, checkpoints, subagents, delegation, permissions, human-in-the-loop]
 sources:
   - id: openwiki-source-822ae989625ba99d4c7cc08b
     resource: repo://libs/deepagents/deepagents/_messages_reducer.py
@@ -10,10 +10,14 @@ sources:
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-303a7196a0e1a36cc078621b
     resource: repo://libs/deepagents/deepagents/middleware/_blob_offload.py
+  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
+    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
   - id: openwiki-source-421bc4b065189ae1165ca326
     resource: repo://libs/deepagents/deepagents/middleware/_state.py
   - id: openwiki-source-e51c4102234507d1529a2440
     resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-fed4b84a38685f37e58018c5
+    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-13b8cea81b8a29f0950cc836
     resource: repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
@@ -24,41 +28,73 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-dc64f28a66d10932b86fcd61
     resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
+  - id: openwiki-source-851e3a9c96663d8db5ca3dec
+    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
     resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-12T08:20:17.385Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-12T08:20:17.385Z" }
+    at: 2026-10-13T08:11:05.854Z
 ---
 
 # Runtime Behavior, State, and Delegation
 
 `create_deep_agent()` is the runtime assembly boundary. It calls LangChain `create_agent()` with caller tools, the selected backend's middleware, the assembled Deep Agents stack, and optional `context_schema`, `checkpointer`, `store`, `cache`, and state schema. The resulting graph has recursion limit `9_999` and Deep Agents integration/version metadata. Deep Agents forwards persistence objects; it does not select or operate a durable checkpointer for the application.
 
-A caller chooses continuation by invoking the graph with the same LangGraph `thread_id`. In particular, configure a checkpointer before depending on multi-turn continuation or a human-approval pause. See [State Persistence](/openwiki/concepts/state-persistence.md) for persistence operations, [Backends](/openwiki/concepts/backends.md) for file-storage ownership, and [Subagents and Skills](/openwiki/concepts/subagents-skills.md) for configuration guidance.
+A caller chooses continuation by invoking the graph with the same LangGraph `thread_id`. Configure a checkpointer before depending on multi-turn continuation or a human-approval pause. See [State Persistence](/openwiki/concepts/state-persistence.md), [Permissions and Human-in-the-Loop](/openwiki/concepts/permissions-hitl.md), and [Filesystem Tools](/openwiki/concepts/tools-filesystem.md).
 
 ## Assembly and enforcement order
 
-The main graph begins with `FilesystemMiddleware`; `SubAgentMiddleware` follows when synchronous subagents are available. Summarization and `PatchToolCallsMiddleware` follow, and `AsyncSubAgentMiddleware` is added when remote specs are configured. User middleware is inserted after that base stack and before the profile/skills/prompt-cache/memory tail, unless it replaces a named built-in in place. Human approval and unsupported-content handling are tail layers. Profile middleware exclusion is applied around user customization, while `_ToolExclusionMiddleware` is deliberately appended last: a custom model wrapper cannot restore a tool that the profile excluded.
+The main graph begins with `FilesystemMiddleware`; `SubAgentMiddleware` follows when synchronous subagents are available. Summarization and `PatchToolCallsMiddleware` follow, and `AsyncSubAgentMiddleware` is added when remote specs are configured. User middleware is inserted after that base stack and before the profile/skills/prompt-cache/memory tail, unless it replaces a named built-in in place. The filesystem-derived or explicit `HumanInTheLoopMiddleware`, `UnsupportedContentMiddleware`, and finally tool exclusion are tail layers. `_ToolExclusionMiddleware` is deliberately appended after custom middleware: a custom model wrapper cannot restore a tool that the profile excluded.
 
 The default synchronous `general-purpose` subagent is added unless the active harness profile disables it or a spec of that name was supplied. Consequently, async-only subagents do not imply the synchronous `task` tool, and a graph without synchronous specs and with the default disabled has no `task` tool. Async specs are recognized and routed separately into `AsyncSubAgentMiddleware`.
 
 ```mermaid
 flowchart TD
     Build["create_deep_agent"] --> Files["Filesystem middleware"]
-    Files --> Sync["Synchronous task middleware"]
-    Sync --> Repair["Summarization and repair"]
-    Repair --> Remote["Async task middleware"]
+    Files --> Sync["Synchronous task middleware when available"]
+    Sync --> Repair["Summarization and tool call repair"]
+    Repair --> Remote["Async task middleware when configured"]
     Remote --> Custom["Caller middleware"]
-    Custom --> Tail["Profile skills cache memory"]
-    Tail --> Guards["Approval content tool exclusion"]
-    Guards --> Graph["Compiled LangGraph agent"]
+    Custom --> Tail["Profile skills prompt cache memory"]
+    Tail --> Approval["Human approval middleware when configured"]
+    Approval --> Content["Unsupported content middleware"]
+    Content --> Exclusion["Final tool exclusion"]
+    Exclusion --> Graph["Compiled LangGraph agent"]
 ```
 
-This is the middleware assembly order. Replacement and exclusion rules can alter individual layers, but tool exclusion remains the final tool visibility boundary.
+Caption: `create_deep_agent()` builds the main middleware stack in this order; replacement and profile filtering can alter individual layers, while tool exclusion remains the final model-facing tool boundary.
 
-Filesystem permissions are enforced at built-in filesystem tools, not at direct backend access. Rules are evaluated in declaration order; the first match can allow, deny, or interrupt and unmatched calls are allowed. Interrupting filesystem rules become `interrupt_on` entries; explicit `interrupt_on` entries win for a duplicate tool name. A top-level configuration installs `HumanInTheLoopMiddleware`; declarative subagents inherit it unless their specification supplies its own. Compiled and remote subagents are separate graphs and own their own approval policy.
+### Path-sensitive filesystem approval
+
+Filesystem permissions are enforced by `FilesystemMiddleware` for built-in filesystem tools, not by direct backend access. A rule applies to `read` and/or `write` operations over absolute glob paths; rules are evaluated in declaration order and an unmatched ordinary operation is allowed. `deny` remains a tool-level enforcement decision. An `interrupt` rule instead contributes a path-sensitive `when` predicate to the `HumanInTheLoopMiddleware` configuration assembled by `create_deep_agent()`.
+
+The assembly helper registers only filesystem tools whose operation has an interrupt rule: `ls`, `read_file`, `glob`, and `grep` for reads; `write_file`, `edit_file`, and `delete` for writes. Its generated entries permit the standard human decisions `approve`, `edit`, `reject`, and `respond`. Explicit `interrupt_on` entries are merged afterward and therefore replace a generated entry with the same tool name. That replacement changes approval routing, not filesystem denial enforcement.
+
+Exact-path tools (`read_file`, `write_file`, and `edit_file`) pause only when the requested path resolves to an interrupt decision. The predicate validates the path and, when a backend is available, evaluates both the requested path and its symlink-resolved target. A deny decision suppresses the pause because the tool will return a permission error instead.
+
+Bulk tools use a different safety rule: `ls`, `glob`, `grep`, and recursive `delete` can affect or disclose descendants, so their predicate pauses when the requested subtree overlaps the literal anchor of an interrupt glob. A missing bulk path and current-directory aliases are treated as root and pause whenever that operation has an interrupt rule. `glob` also gates an absolute `pattern`, which can ignore its nominal `path`; a relative pattern containing `..` is conservatively interrupting. These rules prevent a benign-looking search root from bypassing review of a protected subtree. After approval, interrupt-mode results are retained; only `deny` results are filtered.
+
+```mermaid
+flowchart TD
+    Call["Filesystem tool call"] --> Scope{"Exact or bulk path scope"}
+    Scope --> Exact["Validate requested and resolved path"]
+    Scope --> Bulk["Check search or delete scope against interrupt anchors"]
+    Exact --> Route{"Interrupt predicate true"}
+    Bulk --> Route
+    Route -->|Yes| Pause["HumanInTheLoopMiddleware interrupt"]
+    Pause --> Decision{"Human decision"}
+    Decision -->|Approve or edit| Enforce["Filesystem tool permission check"]
+    Decision -->|Reject or respond| Skip["Do not execute call"]
+    Route -->|No| Enforce
+    Enforce -->|Denied| Denied["Permission error"]
+    Enforce -->|Allowed| Backend["Backend operation"]
+```
+
+Caption: interrupt rules route only calls whose path or bulk scope can reach an interrupt pattern; the filesystem tool still enforces denial when execution is attempted.
+
+Permissions do not constrain arbitrary direct backend calls. They also cannot represent policy for a shell-capable default backend: a nonempty permission set is rejected when that backend supports command execution, except when every pattern is scoped to a route of a `CompositeBackend`. Treat this as a containment boundary, not a reason to assume `execute` is permission-filtered.
 
 ## Checkpointed state and recovery
 
@@ -81,7 +117,7 @@ sequenceDiagram
     Delta-->>Runtime: reconstructed messages
 ```
 
-This is the continuation path for a checkpointed conversation.
+Caption: a configured checkpointer, keyed by the caller's thread ID, owns continuation storage while `DeltaChannel` reconstructs the message history.
 
 `PatchToolCallsMiddleware` handles a different resume hazard before the agent loop begins. It detects AI tool calls, including invalid calls, with no matching `ToolMessage`; it appends a correlated error result that distinguishes malformed/truncated arguments from a call that may have been cancelled or interrupted. It replaces message state atomically with `REMOVE_ALL_MESSAGES` followed by the repaired history, so the resumed model does not receive a dangling call.
 
@@ -103,6 +139,8 @@ The `task` tool selects an inline child, invokes it through `invoke` or `ainvoke
 
 An isolated child receives a new `HumanMessage` containing the task description plus eligible non-private state. A declarative child is compiled by Deep Agents with the parent state schema. By contrast, a `CompiledSubAgent` is opaque: it does not inherit that schema and must be independently compiled with compatible channels.
 
+Declarative children have their own filesystem middleware and effective permission/HITL configuration. Omitted `permissions` inherits the parent rules, while a supplied subagent list replaces them. Its explicit `interrupt_on` similarly replaces the inherited parent map, after filesystem-derived entries are merged for that child's effective permissions. The auto-added general-purpose child uses the parent rules. Compiled children and remote async children are separate graphs: they inherit neither the parent filesystem permissions nor its approval configuration.
+
 Forks are experimental and intentionally narrower:
 
 - A declarative fork receives the parent effective conversation, including an applied summarization event, its permitted inherited state, and a task message. It sets an internal fork marker so its visible `task` tool refuses recursive delegation at call time.
@@ -117,12 +155,14 @@ Parent configuration and callbacks propagate through the LangGraph runtime; Deep
 
 A check fetches the current remote run and, on success, fetches thread values to report the final message content. An update starts a new run on the same remote thread with `multitask_strategy="interrupt"`, replaces the tracked run ID, and keeps the task ID. Cancellation calls the SDK for the tracked run. List fetches live status for nonterminal entries but falls back to cached status if that lookup fails; it filters on cached state before the live lookup. Errors launching, checking, updating, or cancelling return tool-error text rather than corrupting the stored task record.
 
-Async isolated launches send only the task description. An experimental async fork snapshots the parent's effective history, clears nonportable tool artifacts and local eviction metadata, hydrates portable blobs, then serializes messages for the remote graph. It inherits conversation at launch only: remote tools, prompt, checkpointing, credentials, and approval configuration remain the remote graph's responsibility.
+Async isolated launches send only the task description. An experimental async fork snapshots the parent's effective history, clears nonportable tool artifacts and local eviction metadata, hydrates portable blobs, then serializes messages for the remote graph. It inherits conversation at launch only: remote tools, prompt, checkpointing, credentials, filesystem permissions, and approval configuration remain the remote graph's responsibility.
 
 A remote specification may provide headers; the SDK defaults `x-auth-scheme` to `langsmith` unless supplied. Omitting `url` chooses local ASGI transport, which is valid only from an async parent entrypoint such as `ainvoke`; synchronous `invoke` requires a reachable URL.
 
 ## Change and test checklist
 
+- Preserve the assembly order: filesystem enforcement must exist before generated HITL routing is added, and `_ToolExclusionMiddleware` must remain last after custom middleware.
+- Test exact and bulk filesystem interrupts independently, including missing paths, current-directory aliases, absolute and escaping glob patterns, symlink resolution, and an earlier deny decision.
 - Preserve the `DeltaChannel` on `messages`, its reducer semantics, and the `REMOVE_ALL_MESSAGES` repair path when changing state or resume behavior.
 - Test private-state stripping in both directions and parallel inline tasks; runtime-resolvable annotations are required for the protection to apply.
 - Keep `ToolMessage` results correlated with the originating call. Verify structured and empty-terminal child result cases and the compiled-child `messages` failure.

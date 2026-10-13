@@ -20,17 +20,17 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
-    "langchain>=1.4.4,<2.0.0",
+    "langchain>=1.4.5,<2.0.0",
     "langchain-core>=1.6.10,<2.0.0",
     "langchain-anthropic>=1.7.6,<2.0.0",
     "langchain-google-genai>=4.4.1,<5.0.0",
-    "langsmith>=0.14.7",
+    "langsmith>=0.14.8",
     "packaging>=23.2",
     "wcmatch>=11.0",
 ]
 
 [project.optional-dependencies]
-aws = ["langchain-aws>=1.8.1,<2.0.0"]
+aws = ["langchain-aws>=1.8.2,<2.0.0"]
 quickjs = ["langchain-quickjs>=0.3.8"]
 video = ["av>=18.0.0,<19.0.0", "pillow>=12.3.0,<13.0.0"]
 

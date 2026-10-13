@@ -403,16 +403,12 @@ class TestEditsMarkdown:
         assert edits_markdown([edit], heading="Raised 1 dependency minimum:") == (
             "Raised 1 dependency minimum:\n"
             "\n"
-            "### `deepagents-code`\n"
-            "\n"
-            "`libs/code/pyproject.toml`\n"
-            "\n"
-            "| Dependency | Minimum |\n"
-            "|---|---|\n"
-            f"| `langsmith` | {minimum} |"
+            "| Dependency | Minimum | Targets |\n"
+            "|---|---|---|\n"
+            f"| `langsmith` | {minimum} | `deepagents-code` |"
         )
 
-    def test_groups_manifests_without_repeating_paths(self) -> None:
+    def test_groups_dependencies_with_sorted_package_targets(self) -> None:
         edits = [
             raise_langchain_minimums.RequirementEdit(
                 manifest, name, f"{name}>=0.1,<1.0", f"{name}>=0.4,<1.0"
@@ -426,15 +422,39 @@ class TestEditsMarkdown:
 
         result = edits_markdown(edits, heading="Raised 3 dependency minimums:")
 
-        assert result.count("libs/code/pyproject.toml") == 1
-        assert result.count("libs/deepagents/pyproject.toml") == 1
-        assert result.count("| Dependency | Minimum |") == 2
+        assert result == (
+            "Raised 3 dependency minimums:\n\n"
+            "| Dependency | Minimum | Targets |\n"
+            "|---|---|---|\n"
+            "| `langgraph` | `>=0.1` → `>=0.4` | `deepagents-code` |\n"
+            "| `langsmith` | `>=0.1` → `>=0.4` | `deepagents-code`, `deepagents` |"
+        )
         assert (
-            "| `langsmith` | `>=0.1` → `>=0.4` |\n"
-            "| `langgraph` | `>=0.1` → `>=0.4` |\n\n"
-            "### `deepagents`\n\n"
-            "`libs/deepagents/pyproject.toml`"
-        ) in result
+            edits_markdown(
+                list(reversed(edits)), heading="Raised 3 dependency minimums:"
+            )
+            == result
+        )
+
+    def test_keeps_distinct_bounds_in_separate_dependency_rows(self) -> None:
+        edits = [
+            raise_langchain_minimums.RequirementEdit(
+                "libs/code/pyproject.toml",
+                "langsmith",
+                f"langsmith{old}",
+                f"langsmith{new}",
+            )
+            for old, new in [(">=0.2", ">=0.4"), (">=0.1", ">=0.4"), (">=0.1", ">=0.3")]
+        ]
+
+        assert edits_markdown(edits, heading="Raised 3 dependency minimums:") == (
+            "Raised 3 dependency minimums:\n\n"
+            "| Dependency | Minimum | Targets |\n"
+            "|---|---|---|\n"
+            "| `langsmith` | `>=0.1` → `>=0.3` | `deepagents-code` |\n"
+            "| `langsmith` | `>=0.1` → `>=0.4` | `deepagents-code` |\n"
+            "| `langsmith` | `>=0.2` → `>=0.4` | `deepagents-code` |"
+        )
 
     def test_preserves_extras_and_markers_for_distinct_declarations(self) -> None:
         identities = [
@@ -457,9 +477,13 @@ class TestEditsMarkdown:
 
         result = edits_markdown(edits, heading="Raised 4 dependency minimums:")
 
-        for identity in identities:
-            escaped = identity.replace("|", r"\|")
-            assert f"| `{escaped}` | `>=0.1` → `>=0.4` |" in result
+        assert result.count("| `langsmith` | `>=0.1` → `>=0.4` |") == 1
+        assert "`deepagents-code`, " in result
+        assert '`deepagents-code` (extras: `otel`); `python_version < "3.12"`' in result
+        assert (
+            '`deepagents-code` (extras: `otel`); `python_version >= "3.12"`' in result
+        )
+        assert '`deepagents-code`; `os_name == "a\\|b"`' in result
 
 
 class TestParseDependencyCsv:
@@ -521,7 +545,7 @@ class TestRunNarrowing:
         assert _run("pkg", skip_dependent_locks=True) == 0
         noun = "minimum" if count == 1 else "minimums"
         assert outputs["summary"].startswith(f"Raised {count} dependency {noun}:\n")
-        assert "| Dependency | Minimum |" in outputs["summary"]
+        assert "| Dependency | Minimum | Targets |" in outputs["summary"]
 
     def test_unknown_requested_name_fails_closed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

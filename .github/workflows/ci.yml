@@ -41,6 +41,10 @@ env:
   UV_NO_SYNC: "true"
 
 jobs:
+  check-lockfiles:
+    name: "🔒 Check Lockfiles"
+    uses: ./.github/workflows/check_lockfiles.yml
+
   # Detect which packages have changes
   changes:
     name: "🔍 Detect Changes"
@@ -690,6 +694,7 @@ jobs:
     name: "✅ CI Success"
     needs:
       - changes
+      - check-lockfiles
       - lint-deepagents
       - lint-code
       - lint-talon
@@ -827,6 +832,7 @@ jobs:
       - name: "🎉 All Checks Passed"
         env:
           EVENT_NAME: ${{ github.event_name }}
+          LOCKFILES_RESULT: ${{ needs.check-lockfiles.result }}
           CURATED_APPLY_ONLY: ${{ needs.changes.outputs.curated-apply-only }}
           CURATED_APPLY_PARENT_CONCLUSION: ${{ needs.changes.outputs.curated-apply-parent-conclusion }}
           # Full needs context: the wildcard `toJSON(needs.*.result)` form
@@ -837,6 +843,10 @@ jobs:
           TALON_CHANGED: ${{ needs.changes.outputs.talon-src }}
         run: |
           set -euo pipefail
+          if [ "$LOCKFILES_RESULT" != success ]; then
+            echo "Lockfile validation did not pass: $LOCKFILES_RESULT"
+            exit 1
+          fi
           if [ "$CURATED_APPLY_ONLY" = true ]; then
             if [ "$CURATED_APPLY_PARENT_CONCLUSION" = success ]; then
               echo "The release-bot commit only updates the managed changelog; prior-head CI passed."

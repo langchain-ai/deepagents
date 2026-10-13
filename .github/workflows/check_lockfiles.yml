@@ -5,14 +5,7 @@
 name: "🔒 Check Lockfiles"
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  merge_group:
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_call:
 
 permissions:
   contents: read
@@ -38,7 +31,5 @@ jobs:
           # but `uv_setup` doesn't forward it.)
           enable-cache: "false"
 
-      - name: "🔍 Check changed lockfiles"
-        run: |
-          mapfile -t changed < <(git diff --name-only HEAD^ HEAD)
-          python3 .github/scripts/checks/check_lockfiles_pre_commit.py "${changed[@]}"
+      - name: "🔍 Check all lockfiles"
+        run: python3 .github/scripts/checks/check_lockfiles_pre_commit.py

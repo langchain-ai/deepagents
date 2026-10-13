@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:6e8dadbeeccea9c67c425d814ec3ad1aed45823c237350952b8c4b07c612b4e6",
+  "pageVersion": "sha256:fb4439973c7cf1ab457e1454a3eb94e32e5a0c7e56f47c4970a7963e66308192",
   "claims": [
     {
       "id": "claim_6c4b652136014ccdbf50d7e0fcb06b8f",
@@ -18,7 +18,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py#L888-L969",
-          "version": "repo-lines-v1:sha256:e7c322d905d900a1acae3d2b9a7c330e2b25382ca4ba91e4afb70ac5c841d4a2:eyJzZWxlY3RlZExpbmVDb3VudCI6ODIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczZDQyN2Q4MzdjM2M5NTZhNzA2NmQ5NTQ3Y2ZkNzNlYWFiNWJiZjM1MDlhNzI1OTJjMTE1OTg5NmFhOWNjODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmOGQyNGRhMjI3NGM2MTFiMDc5ZjFhMWIwYTMyMmRmMjg3MzVmNDIxMDhjZGNhNmJkMzkxM2YzMTlkYmEwZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImExNjQ5YWQxOWU3NDQ1YWYwZjY0NDA0ZTBkMDViZGY1OWM5MTdhODU4ODMzMTU4ZGM4YjUwODM0ZjM3ZjllN2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1NzAxMmNhNDg0YWE3OTJhMTQ5YWVkYzIzZDRhODYyMTVhZTg0ZjcwY2VkODc4NjNhNWQ1MGUwOTgzMDY0MDYifQ"
+          "version": "repo-lines-v1:sha256:c8dc48f01b1f09a647bc6643097b7bfdf64b703960998b3308f149760f95b3cd:eyJzZWxlY3RlZExpbmVDb3VudCI6ODIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczZDQyN2Q4MzdjM2M5NTZhNzA2NmQ5NTQ3Y2ZkNzNlYWFiNWJiZjM1MDlhNzI1OTJjMTE1OTg5NmFhOWNjODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmOGQyNGRhMjI3NGM2MTFiMDc5ZjFhMWIwYTMyMmRmMjg3MzVmNDIxMDhjZGNhNmJkMzkxM2YzMTlkYmEwZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImExNjQ5YWQxOWU3NDQ1YWYwZjY0NDA0ZTBkMDViZGY1OWM5MTdhODU4ODMzMTU4ZGM4YjUwODM0ZjM3ZjllN2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1NzAxMmNhNDg0YWE3OTJhMTQ5YWVkYzIzZDRhODYyMTVhZTg0ZjcwY2VkODc4NjNhNWQ1MGUwOTgzMDY0MDYifQ"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/unsupported_content.py#L109-L207",
@@ -194,19 +194,23 @@
     },
     {
       "id": "claim_57855f48e8cd471f95a33704c56a9260",
-      "statement": "Filesystem permissions are enforced by tool implementations using first-match path rules for ordinary operations, filter denied paths from bulk results, and turn interrupt rules into HITL predicates; recursive deletion instead fails closed when a deny-write pattern overlaps a target subtree.",
+      "statement": "Filesystem permissions are enforced by tool implementations with first-match path rules for ordinary operations and requested/resolved symlink targets; graph assembly turns interrupt rules into scope-aware HITL predicates, while bulk results filter only denied paths and a delete that may be recursive fails closed for any overlapping deny-write pattern.",
       "evidence": [
         {
-          "resource": "repo://libs/deepagents/deepagents/graph.py#L946-L952",
-          "version": "repo-lines-v1:sha256:e065f5980a183e89ff4ea9ffd05f4b341161bebb82ca3e6f29a7a95b57e2e318:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTUyZDIyZmI5ZWFhM2ZiNDQxMmZjMGU1NDc4YjhlYjFjNTFmOWVkOTNmMmU5MjRjOGE5NDc5MmRkNDgyYzAzMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmI3ZmI2ZGI3YzQ4YTM1NzM1NGZiZTY4YmE5NGQ3MWEwMzg3NDI1MmFjMzJlZWEyYTBiYjBmZjc5M2UwZDUzZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmJmMGNhYTM0NWMyZTEyMDhkMDk5MWNkOTAwNGI4NTM3N2Q4ZjM4ZGYyMzQxNTUyMzdhOWUxMTVjYjhjYTE0ZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWYyMjllNzE3ZWQ4ZDRlYTEwNWY0ZjdkZWFjNGYzOTgwYTBjZDIxZWRmMTE2NDhlMGUzNmUyMGQ3YjkwOTk0NSJ9"
+          "resource": "repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py#L22-L202",
+          "version": "repo-lines-v1:sha256:2b456459ee4c9dca1a0b2075d6a25e5ebdd46ca7bb747a8614f37b8711faa112:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJmYzZkYjk2Njc4ZTk0NTU0OTg4NDQ4MTI3YzdkY2I5ODUyN2FiYzVmZmYyZWZhM2VmMDMxOWViZGM1ODQ4Zjc3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJlMTdiODcxOWQwOGE4MzQwYjBmZmZjZWVmNjk2M2JmYjFlZGJlZDEzYTZmODEwN2JmNTBiOWVkZGUzMWRiNzRmIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MSwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJmYTExYzA1NjdkMGE1ZjllOWIxMzVmNjVjZDI1MzcyZGZkNjI4Nzc1ZjdjMWVkMjUzZjhiYWQ0MmRkMmQ2NjY5In0"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L365-L413",
-          "version": "repo-lines-v1:sha256:342a4073994b214eb81fa1f404d52da5f5be13f7d4ffbb2c06d4dd0066de1036:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxZDZhMTlkY2YzM2M4NmI0NTI1YWMwMjU0YmNjZjgyZjhjZWM5YzYyNzQ4NzA1NWQwYWZjOTNhZmI0YmVhYzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdlZTQ3Nzc1NjBjMzNlNWE5ZWMxNjk2ZjgyOTIzNDdmZDk5ZTMxOTc2NTBiYzEwOTMwOTAyMjRiNTcwZjY4MjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwZjgxZDljMjM2ODM1NGVhYzM3YWQ5Y2Y3ZjcxNDg2NjBhYTY5YjQyNmZiOTAxZTIwY2Q5MGVlY2FkNDM5YTMifQ"
+          "version": "repo-lines-v1:sha256:20c3ca6e3a5864ee284b4841e206ca0905cf64b0fc1919651b259260548a55c7:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk2ODQ5MzY3OTAwMTZhZDAxYmI0NWUxMDliNTFjMTg5MzJlMTdmMTUyZTM3NzIwZWZlN2Y5NDAyMDEzNDJlZDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdlZTQ3Nzc1NjBjMzNlNWE5ZWMxNjk2ZjgyOTIzNDdmZDk5ZTMxOTc2NTBiYzEwOTMwOTAyMjRiNTcwZjY4MjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUyMGYwN2JmOTg0Zjg4NDk2M2EyYjQxZmQxYTMwZmViNmJlZWFjMDFlZTZlZGMxZTYwZWViOGYwZjI2ODMxNjQifQ"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L541-L618",
-          "version": "repo-lines-v1:sha256:588b58c15c406f178e12f175cbd71e6483b7a483e2efb196785a73e9b5a79da5:eyJzZWxlY3RlZExpbmVDb3VudCI6NzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4MDI0ODUxMTM3Mjg3Njk2ZjQwOWMzMWJiYTBjZjIwNmFjYWZiZmFiMGQxZDgyZjI1MmYzMDM4NzVmMzdkZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwYjkzMzg4OGI5OTJhYzc3YzRlMjJiNDZiZGVhOTc5NWNkY2MxZjYxYjNhMTY2MjI4MGJiYjdlYmZlZTAwZWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhMDdiNjdjZmI3YjEzMWE1ZmNjYzgwNTY3Mzc3YTY5MzJmNzM5MTM3MjgwZDgyODU2ZDgxZGQ3OGMxYzdlZTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc2NzAwYTVkOGRlODE5Y2ZmZTBkMmJlYTQ4OWM1NjcxY2EwYTQ5ODQ4ZmYzNjNhODMwYmUwZTg5MWMzOWU5ZjQifQ"
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L421-L507",
+          "version": "repo-lines-v1:sha256:476f221c52c92df3c7d4de03c8ded8eedb219c76cd028562caa032de77e81d7e:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3NjQ4ZTZhZTM2MTAwZjRhNzRlNzFiZDQ1Mjk3YTY3NDNlZjk0ZDE0OTVjZjZhMDM4NTFhMTVhY2EzOTE2YTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2NmYzNGU4MzllYjUxYmY5YmE3ODQzODA2YWVjMjYyMzZjMjBhYTI0NjdjNGZjM2NiZjE3YTcxZDA5MDRjMDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIzMjVhYTMwYTA1YzgxNzk0OTU2M2RmM2E2NTlhNjZiM2RjY2JlNTExNjczMzFkZmE4MmU2ZjEyN2ZjYmU1NTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQwZjgxZDljMjM2ODM1NGVhYzM3YWQ5Y2Y3ZjcxNDg2NjBhYTY5YjQyNmZiOTAxZTIwY2Q5MGVlY2FkNDM5YTMifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L635-L735",
+          "version": "repo-lines-v1:sha256:faf99d89c50c5f7be94b41b843a32fee1dd589c526031d5e244eb29fd7ceb460:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAxLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIxODAyNDg1MTEzNzI4NzY5NmY0MDljMzFiYmEwY2YyMDZhY2FmYmZhYjBkMWQ4MmYyNTJmMzAzODc1ZjM3ZGVhIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI2NGI1NWVjMzBkNjRhMjU3NTEyZjVmZTVlNTg2OTRlODA0YTVmYzkyMjM1NWVmMDhiMTY5ZmIyMmM3ZmFhOWNlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3YTA3YjY3Y2ZiN2IxMzFhNWZjY2M4MDU2NzM3N2E2OTMyZjczOTEzNzI4MGQ4Mjg1NmQ4MWRkNzhjMWM3ZWU4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI3NjcwMGE1ZDhkZTgxOWNmZmUwZDJiZWE0ODljNTY3MWNhMGE0OTg0OGZmMzYzYTgzMGJlMGU4OTFjMzllOWY0In0"
         }
       ]
     },
@@ -273,10 +277,74 @@
           "version": "repo-lines-v1:sha256:f054d4c1046f9ed6ede7741b8d419517fd7991352e7c69ebc9d3426afb75e0ab:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUwYzVhNGEzZjE2ZmQyMjJkMWE3Y2JhNDY4ZWZlYzNkNTUyODBlYTRhOTU2Nzk0YzAwY2VhODgzYzg1NzBkOTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQwNzhmMjBkNzJlNGZlYjMxNDgyOWJkZDhkMWM5NTk0MjY2NDM4ZDcyZTk4ZjZkMTNjNDQ0ZDE2MjhhZmQ2OTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkMmQwZGZkYWE2YTVlMjI2OWNlMDRhYjkyMGE3ZDkyNjk4YTlmNzc1YWU2ZDcyMjJkZTVlZmRjMmU3ZTM5YTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM3YzUwOTFmNDJlMjg5ZjM0ZjZkYjg5ZDkwN2FmZjk2MmEyMTg3MDcwNmM5YTViNTg0OWIzM2FkMDQ0NjRhYWQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_8d4a4918b49b47a5b1ba1e5f56996e81",
+      "statement": "`FilesystemBackend` defaults to `virtual_mode=True`, maps virtual absolute paths below `root_dir`, rejects traversal and resolved paths outside that root, and renders paths without leaking the host root; disabling virtual mode permits unrestricted host-path semantics.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/filesystem.py#L139-L223",
+          "version": "repo-lines-v1:sha256:ae2a0521349e04adcf929910d8e5cd8826984a443eff31f05d2f74cdf8cba9fd:eyJzZWxlY3RlZExpbmVDb3VudCI6ODUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmZDdhMDdhODNkZDE5OTZmYjUxNjg0YjQyYWVjYWY0ZTkwZmI3OGJhNzIzMGU1NDJlZDdiZDAxZDQyMzAxYmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU2MjJiNzc0YjExYTI1NGRlOTU1MmMyMWIxOTYxMWE3MTg1NzY1YTIxMDZmY2QzOTJkZTQ1YWZjYWMwMzk5ODgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYyNTE1M2VlMjlhMjZiMzJhZThiNzJlYTcyNmI2OTdmNjUzOGFiMzI0MmEyODA0MzRiMWI2OTdlMTFkNzVlMzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE1MTMxZGIzNTY4OTNjNjRkNDM4YWNhMWNhZThlMGExZDM4ZDAzNjJiMmRhYjA2Nzk3MzUwYjU0YjdjNjExMmQifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/filesystem.py#L244-L283",
+          "version": "repo-lines-v1:sha256:6d854efc30b77d522396370f3cca44558a7d6d8939917531b323a6b45084543d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwYWQxYTYyNjZhZTY4ZTJkNTdmNTc5OTczZjhmNDk3OGE4YWI1YWYxMjEwMDI4YmZhZDJkZTI2MjNkMWRmMzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3MjJiMjAwZTJmMTFmMGM0ODNlZDAyNmNhMzEyNDI3NmVmY2I4YzdiY2MwYjhiMjQ0Nzg2NDVjNzM0YTIwNDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVhMzRkMDdkMzU2YzJiNjUyOWE5ZmQ4OWQzYmVjNjk3YjBlMjgzNGFmNDNjNWY2Y2E5ZTBmZTcxNWI3MWQ4ZDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwNmE2ZGQ3OWQ2YjRhM2QzOWVlMzhhMTkyY2E3NmEzNDEwN2IyMTIwZThmYmM5ZjBlMjQzMmIyYzA5NWU3NzAifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py#L2526-L2545",
+          "version": "repo-lines-v1:sha256:cfe98f1c8a42185470ffa889854bab976abe27740c0342b814b1179d3982a78a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlZTc2YmIwZmZjYzNlMTkzNzgwMzg2YzUyMmFlMGNjYzJjMGZhNzExZGYwNmI0NDIxNDkxMDJkYWUyMWZjYTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM1NmJhOTk2NWRlMzViZDE2ODBiM2RiODA1MjY3NjllZWNjM2NlYTkyN2RiOWY2ZmViZjNhOTgyYTA4YjNlOGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIyNjRkZDZkYThkMTdlMjY0ZjQ0ZDBlMjY2YThiOTgwZGZjMzE5MWNiMmNjM2MxMTljOGVkZGUzMzlhM2ZiNjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxNDExODE0OGU0YjY3YmQ4YWI5MjNlYTE5NzNhMGEwMzJmODY0NWQ4NTZmYTBhZTE3MTIwYThiZmY2NWU0OGIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_85055465c94b4c5b9ec50847dec82d88",
+      "statement": "FilesystemBackend's local `glob` applies shared basename-relative and dotfile-aware pattern semantics, rejects refused patterns as result errors, and returns partial matches marked with `truncation_reason=\"budget\"` when its bounded walk expires.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/filesystem.py#L1320-L1459",
+          "version": "repo-lines-v1:sha256:ad876cd648d0e0c4a42fc10dab0ad0e413c03853770fd206ef0d34e79faf150d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJkYzJlZDI1ZDYxYTQwNDY2NmNmNjg2MGE0ZmFjMTQxMDU5MTY5OWU4NTQxM2U0NDg4MTFhODNmNTI3MjE5YjExIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkNWRhZjVjZWVmM2JiMGE2ZWU1YjlmN2U1M2I1ZjU2ZDc0MDkzYTE3YWY4MTkzMzM0OTIxZjhiNjI1YTFjN2Q2IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI4ODE1YTEyZWY1Y2NmYTBjNDA4Yzg5ZDY4OGY4YjBlZWE1NTUxZGNhYTdmMWEwMGQyYmVlNjkyMjhlMjUxYTgwIn0"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/protocol.py#L598-L648",
+          "version": "repo-lines-v1:sha256:d183f14f4ea9102a79c0d96114ee997f8069a7050fab2f07f6dc0a31dca73752:eyJzZWxlY3RlZExpbmVDb3VudCI6NTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzYzk2NDQ3NzczYjcwZmM1MWMzYzEwYzVlOTI4MzUwZGExN2I4NDU5ZGE1MDU5ZTkyM2EyNjhjY2ExNjA2MDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkYjU3YjViMGQ3MmNlMzU4YzNkNTI0MTNkNGM4NmRhZGEwY2UxZDAzYjZiNmI0M2Y0MmYyZWFlNGE5YzA3OWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhNGUwMTQ1MDExODc5MDA1Zjg5NDA0MmFlZTk1ODNlNmNkZWRkMzM1ZGNiNWI3MjQwMDVjYzZkMGY5NWUwODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNiNDgxZTkwNzhjNjg3Mzc0NDlhNjFiYzVmNmZhNTA5MTM0MGY3NzYzZmVkMjQxNWY3OGVmOTU5MWU3NzFiNTkifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py#L116-L144",
+          "version": "repo-lines-v1:sha256:1e8432ede96f29607d2f3f2e8f9d15a6d2fe29c93ea2f60128772530ce0a7874:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyMTc2MTI2MTEzNWIwZTI5N2E0NjFmZTFjYTM2YmJkMDcyNmFjY2FhYjIyYTY1MTQxNWRlYTg3ZjYzYmRhZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyNmI2NDlkNGViM2MwYmEwYWJjMTYwN2Y5MzZhZTk3ZmQzN2I1YzE4Y2ViYTQ4OTdkZTg2YTg4NzY3ZjU0ODciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY1ZmYzZmE2MDM0OWIzYjFjNDMxNzAxOTM2ZTM0MzkxNGUyOWM3NmY1ODQ3NTNiNDlkMTJiN2MzNWMzYTAyYTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM0M2YxMTgzM2I3ZWExOGQ2ZTcxNzQ1OGE4NWU0NDJmOWZiYTUyNmE1OGQyNzhmYTRlMzQxZjA5ZWQyOTM3NjEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a04e4eeb8d754d478e96554084b3d0e6",
+      "statement": "FilesystemBackend batch upload and download preserve input order and report per-path errors, so a batch can partially succeed while traversal and common filesystem failures are standardized rather than escaping the backend boundary.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/backends/filesystem.py#L1461-L1550",
+          "version": "repo-lines-v1:sha256:b586710df900e1e704194e7ab38e8f0c3a58da46f20d3940fc0224efccbbd305:eyJzZWxlY3RlZExpbmVDb3VudCI6OTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyMGY3NDM2NjcyMTJmNDVkODkxODhjODVkMmFmZjViMDYzN2Y2NzI3MzFiOTc2NGEwZGZjYTAwNDdmMGUyYTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI1OWE5ZjkwNjY2YzI5OGU3NjA5MWRmNTZmNWNmZjIxMDAwYWZhYzZhZDk3OGMyM2NjOTM4YzgzM2E3MTE4N2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMwMzI4MGFiMTk2YWUwY2I1ZTk2OTI5MGNkYzliMWEzYzIyMjJlM2VjZjkwYzg1YzgxNGNkYjFiZDhjYjIzZmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyOTMyOGRiZDJmYzhkYzVkOThkODc0MTgwZjc0ZDA5MjI4ODg0NTY3OWQyY2JkNDVjM2VlNGUwMjk5ZTIyZjMifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py#L494-L695",
+          "version": "repo-lines-v1:sha256:90d8240987228c9ef4ac8cc253b65ab598ea3ad6971639ce00177820276e718d:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwODljNjI2ZDY4N2JmMjQwM2E5ZDkzYTdiNjU2ZDJiZGNhMDhlODI3OTgyZTdkYTk5Y2YwZGYwN2E2NDZlZDJiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIwOTg2ODQ0MTg2NDM4MTliZjQ1NWJkZWI5MDQ0MGFmN2VlMDk4ZmZiMTE4NjcxYTYyZmVlODk0ZmRhYThiMDRjIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJkY2RiOWVhMmE5ZTgzMDczZTI0NDhiMGZiYmJiOGUyM2EwN2I4ODBmYTBmOTU1ZmQwNDcwY2ZjOWE5ODJmOTFjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIxOWQyYWFkZjJhNWI4YzYwYTcyZDEyNGZhYjVhNjk4YWFlMzQ5ZTI0YWU2NTg5Y2Y0N2UwOTIwOTRjNmVhMThiIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_a2ae642ddc4c4ffc9f42b8a12c7222c2",
+      "statement": "When execution is active on a CompositeBackend, FilesystemMiddleware supplies virtual-to-host route guidance only for FilesystemBackend routes sharing a LocalShellBackend default; it does not rewrite commands, and routes without that shared host filesystem remain file-tool-only.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L1614-L1702",
+          "version": "repo-lines-v1:sha256:e303519376495aace83b3c308dc75c4bbccab67f9c5e629706343c4595b0ac41:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNmNGI1NDY0N2Y5OGVjZGE4Mjc3MWQwMGQ4ZDIzNjBlNGE1MGIwOWU2YjRkYzZjZWMzZGVhOGUxYzAxNDQzY2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzZTdiYjMxNTZkZjFmNzcyOGY0NTMxOTM0NDlhYTc0NmQ3MWE1NDEzYTQ0M2FjZGVkMTZkYzcwNTI2Nzg0ODEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE4MjM3Njc1NzgzZTJkNDNhMmRjMzU0MDNhYWE1Yjc3NzU3YTU3NjcxYWQ1N2Q0YTdiYjI2OWJjMzU1ZWE1YzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjEwM2QwODE1MmEyMjk4MzAzMjcxYWNkZDc2MTgxZmI4YzlmY2YyN2I3OWFlZWYwZjk3OWZhYWU1YThlNmVjNjMifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/filesystem.py#L3333-L3379",
+          "version": "repo-lines-v1:sha256:40b0d5506251c38804bc992cf20753969cfb27ffa8d7ec131984ad02a718252b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyNjM1MDE4OTEzOWQ5MzJkNWZlZjIyZTgyZDYxNmU5MjMwM2U4OTg0OTExNTc0MWNlNGEwYTBlNmVkN2ViZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyNjIyZjAwNDhmMzFkM2MxZWMyNjVjYzA4NWJmNDRlMjdlM2MxODBiZTkzNDEzZGIzODZmZWIyNTJjMmEyMGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFiZWQwNjM5NTdlMmVkNjA0MDhkZjNkMTBhYWFlMmMzM2FmNDc4YjJhNWVhODBkOGJjY2E1NjcwYWE3NGY0MzMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyYTk2NjFkOGY1ZjViODU4OTFjNGNkNDg3ZmEyMzhkMGY0YzdmMDk2ZDc2OTAwZTJkZGIzOTY3N2MzNDE3NjgifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-12T08:20:17.385Z"
+    "at": "2026-10-13T08:11:05.854Z"
   }
 }

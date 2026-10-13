@@ -5,7 +5,7 @@ description: Package-scoped uv and Make workflows, lockfile closure, dependency-
 tags: [development, dependencies, uv, lockfiles, releases, release-please]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-12T08:20:17.385Z
+    at: 2026-10-13T08:11:05.854Z
 sources:
   - id: openwiki-source-594b8b7a84e0fb527fbafd52
     resource: repo://.github/scripts/checks/raise_langchain_minimums.py
@@ -47,7 +47,7 @@ sources:
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-12T08:20:17.385Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
 ---
 
 # Development, Dependencies, and Releases
@@ -102,13 +102,13 @@ The following runtime constraints are representative compatibility boundaries, n
 
 | Package | Current compatibility-critical requirements |
 | --- | --- |
-| `libs/deepagents` | `langchain>=1.4.4,<2.0.0`, `langchain-core>=1.6.9,<2.0.0`, and `langsmith>=0.14.7` |
-| `libs/code` | Exact `deepagents==0.7.23` consumer pin; `langchain>=1.4.4,<2.0.0`; `deepagents-acp>=0.0.10,<1.0.0` |
+| `libs/deepagents` | `langchain>=1.4.4,<2.0.0`, `langchain-core>=1.6.10,<2.0.0`, and `langsmith>=0.14.7` |
+| `libs/code` | Exact `deepagents==0.7.24` consumer pin; `langchain>=1.4.4,<2.0.0`; `deepagents-acp>=0.0.10,<1.0.0` |
 | `libs/acp` | Editable local `deepagents` source and `agent-client-protocol>=0.10.1` |
-| `libs/talon` | `deepagents>=0.7.0`, `deepagents-code>=0.1.71,<1.0.0`, `langchain>=1.4.4,<2.0.0`, `langgraph>=1.2.14,<2.0.0` |
-| `libs/partners/quickjs` | `deepagents>=0.7.0,<0.8.0`, `langchain>=1.4.4,<2.0.0`, `langchain-core>=1.6.9,<2.0.0`, `langgraph>=1.2.14,<2.0.0` |
+| `libs/talon` | `deepagents>=0.7.24`, `deepagents-code>=0.1.71,<1.0.0`, `langchain>=1.4.4,<2.0.0`, `langgraph>=1.2.14,<2.0.0` |
+| `libs/partners/quickjs` | `deepagents>=0.7.0,<0.8.0`, `langchain>=1.4.4,<2.0.0`, `langchain-core>=1.6.10,<2.0.0`, `langgraph>=1.2.14,<2.0.0` |
 
-The current Deep Agents release baseline is `0.7.24`, while Code deliberately remains pinned to `deepagents==0.7.23`. Do not casually convert that exact consumer pin into a floor: the daily minimum-raise automation intentionally excludes `==` requirements. A successful Deep Agents publish instead dispatches the dedicated Code SDK-pin bump workflow as a non-blocking follow-up.
+The current Deep Agents release baseline is `0.7.24`, and Code's exact consumer pin is `deepagents==0.7.24`. Do not casually convert that exact consumer pin into a floor: the daily minimum-raise automation intentionally excludes `==` requirements. A successful Deep Agents publish instead dispatches the dedicated Code SDK-pin bump workflow as a non-blocking follow-up.
 
 Local consumers use editable `[tool.uv.sources]` paths. For example, Code resolves Deep Agents, ACP, and partner integrations from sibling directories, so source changes can be consumed without publishing a distribution. This means a producer manifest change is also a consumer-lock concern: a consumer lock embeds requirements resolved through its local path.
 
@@ -160,8 +160,8 @@ The release-please manifest records last-release state, not a development versio
 | Manifest path | Baseline |
 | --- | --- |
 | `libs/deepagents` | `0.7.24` |
-| `libs/acp` | `0.0.12` |
-| `libs/code` | `0.1.83` |
+| `libs/acp` | `0.0.13` |
+| `libs/code` | `0.1.84` |
 | `libs/talon` | `0.0.9` |
 | `libs/partners/daytona` | `0.0.8` |
 | `libs/partners/modal` | `0.0.6` |
@@ -171,7 +171,7 @@ The release-please manifest records last-release state, not a development versio
 
 When adding a managed package, update both `release-please-config.json` and `.release-please-manifest.json`. For an unreleased first source version `0.0.1`, use a `0.0.0` manifest baseline; a `0.0.1` baseline means that version was already released and would make the first release PR target `0.0.2`.
 
-Code illustrates the metadata invariant: `deepagents-code` is `0.1.83` in project metadata and its annotated version marker, its changelog starts at that release, and it has the exact `deepagents==0.7.23` SDK pin.
+Code illustrates the metadata invariant: `deepagents-code` is `0.1.84` in project metadata and its annotated version marker, its changelog starts at that release, and it has the exact `deepagents==0.7.24` SDK pin.
 
 Release attribution is path-based. Keep bump-worthy work scoped to one managed component: a changed dependent lock may fan out to other components, while a pathless commit can fan out to every package. The release-please workflow rejects ordinary empty commits before release-please runs; its narrowly defined repository-hotfix merge exception still requires every merged second-parent commit to touch files. After a release PR merge, publication dispatch requires both the matching `release(component): version` title and that component's `CHANGELOG.md` change.
 

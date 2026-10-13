@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:3c81d5c6a0cfefe3054257bfeba822b136d48193553de6dbd517445cf20d1e6b",
+  "pageVersion": "sha256:dc577c5f3f878c53568dd959f68cc5adc94bf05ee5505d47b879232aa897f98d",
   "claims": [
     {
       "id": "claim_f69e854889dc465d8c71bec1dd14bbd5",
@@ -26,7 +26,7 @@
         },
         {
           "resource": "repo://libs/code/deepagents_code/model_config.py",
-          "version": "repo-file-v1:sha256:a058fa00257ae885a3bda451d1f71e2417490766859fe77735b0da944e6d5b41"
+          "version": "repo-file-v1:sha256:c03b0b52eaf3a99f252f313942b485f67fb8e60331acc797342fe194546dcb6c"
         },
         {
           "resource": "repo://libs/code/deepagents_code/model_config.py#L3970-L4026",
@@ -50,7 +50,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/model_config.py",
-          "version": "repo-file-v1:sha256:a058fa00257ae885a3bda451d1f71e2417490766859fe77735b0da944e6d5b41"
+          "version": "repo-file-v1:sha256:c03b0b52eaf3a99f252f313942b485f67fb8e60331acc797342fe194546dcb6c"
         }
       ]
     },
@@ -401,10 +401,24 @@
           "version": "repo-lines-v1:sha256:082d629030d10835baaf0be60936725c01806a95b5bbda73ccec9c7af823702c:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzMmZhNDdjMzcwNGQyYTdkNmJhYTAxYjgxZGQ5ODdmY2Y0MTA3YTQ4YjU1MmQ4NDViZmQ0NjdmZjNjNTk5ODQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIwNjEzMzI1ZTkxYjBiN2VhYjEzOTRmNmZhY2JlY2Q2ODQ4ZDIwYmIyNzM3YjJiYzlhODY0OGEzYzRmNWE5YzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM4NWRkODExNmI4YjZhNWM0NjYwYzQzYTZlZTU4NTI3ZWYzMjRhYmY3NjBlN2U1NzllOTM4MmJmY2FhMGFhOTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZjM2QwNmE3NzVkMTZjZGEyY2Q5MDdlMGU5NDI0ZWQ2YTM4ZTU5Zjc0MGI3ZDM3NDQ4NjYyOTZiZjkyYmE5NTMifQ"
         }
       ]
+    },
+    {
+      "id": "claim_75f09905c34e4b29a4107b5a461841c0",
+      "statement": "The deepagents-code 0.1.84 package requires Python >=3.12,<4.0 and pins deepagents==0.7.24; its base dependencies include Anthropic, Google GenAI, and OpenAI integrations, while additional model providers are exposed as optional extras including an all-providers aggregate.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml#L108-L136",
+          "version": "repo-lines-v1:sha256:faa492cd2945c1a9f3c8c182f43a7b9d7331688cc61209761ab7b86524ed5d46:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5MjE4ZGM0Y2U5NzFjYmUzZDM4ZDc3NDMwZTYzOTkxODg4NGRkNzdkNzE4NGM3YjkzZGZkYzJlOTk4NjkxYjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI3N2NiMzU3MTJjY2ZiMzc3YzQ3NjBhNDZlMzhjM2EzNzBkY2I5ZWU3YzAyOTMxYjQ2NjA2ZTg2ZTYxYTBhNDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4YTc1MzhlMDA5MTUyNGJjODY0MWI1OWViNmIxZGIzNWI4YTc0YTQxYjVmYjc0ZDE4Yjk4YjJjNjZmOTdlMzEifQ"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L5-L44",
+          "version": "repo-lines-v1:sha256:ab44917a736208b68579137a27d1abf500729bf8a9a920e0b2e3b11e952c3fad:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUyODEyYjY1OGEzNWZjNTc2YzNkODEwNzIyMjcxMzA1OTZhMjczNTkxZjY0NzIyNTM1Y2RiNjBhNjdjYWU2MzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNkNDBhMWU0ODA1OTA1Mzc1YTc5Yjg0MTczNDAxMWZkNTkxYjRmN2M1MmIxOTk5NDUwMDZiNzcwZmU1NTAxODkifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-08T08:07:53.482Z"
+    "at": "2026-10-13T08:11:05.854Z"
   }
 }

@@ -1,0 +1,23 @@
+browser-mda/benchmarks/webvoyager/bench_local.py
+  s_199de864fdc442::t_8b9b15d1454047 34-40,58
+  s_199de864fdc442::t_0e4c9ac6ac8d4d 78-94,96,107-122,165
+  s_199de864fdc442::t_a3d229678a99bd 50-57,59-64
+.github/workflows/browser_mda_eval_local.yml
+  s_199de864fdc442::t_23197146cd3b85 1-145
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "67917fc7d396e35da2a8f52805da066aa25bb9f6",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

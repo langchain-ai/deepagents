@@ -104,6 +104,8 @@ _SERVER_TOOL_BLOCKS = frozenset(
     }
 )
 """Provider-executed tool blocks, plus any type ending in `_tool_result`."""
+_EXTRAS_KEY = "_dcode_extras"
+"""Snapshot key for the `BaseTool.extras` that schema conversion drops."""
 _OMITTED_SERVER_TOOLS = "[Provider tool output omitted from the side snapshot.]"
 BTW_OPERATION_ATTR = "_dcode_btw"
 
@@ -500,10 +502,42 @@ def _client_tools(tools: Sequence[object]) -> list[dict[str, Any]]:
     schemas: list[dict[str, Any]] = []
     for tool in tools:
         if isinstance(tool, BaseTool):
-            schemas.append(convert_to_openai_tool(tool))
+            extras = tool.extras or {}
+            if "provider_tool_definition" in extras:
+                continue
+            schema = convert_to_openai_tool(tool)
+            if extras:
+                # Conversion drops extras such as `defer_loading`.
+                schema[_EXTRAS_KEY] = deepcopy(extras)
+            schemas.append(schema)
         elif isinstance(tool, dict) and tool.get("type") == "function":
             schemas.append(deepcopy(cast("dict[str, Any]", tool)))
     return schemas
+
+
+def _bindable(schema: dict[str, Any]) -> dict[str, Any] | BaseTool:
+    """Rebuild a tool with saved extras so providers bind them as before.
+
+    Returns:
+        `schema`, or a tool stub that carries its extras.
+    """
+    from langchain_core.tools import StructuredTool
+
+    extras = schema.get(_EXTRAS_KEY)
+    function = schema.get("function")
+    if not isinstance(extras, dict) or not isinstance(function, dict):
+        return schema
+    return StructuredTool(
+        name=function["name"],
+        description=function.get("description", ""),
+        args_schema=function.get("parameters", {}),
+        func=_unused_tool,
+        extras=extras,
+    )
+
+
+def _unused_tool(**_: object) -> None:
+    """Never runs: side calls execute only the main read tools."""
 
 
 def _tool_name(schema: Mapping[str, Any]) -> object:
@@ -627,7 +661,7 @@ class _SideRequest:
     model: BaseChatModel
     system: SystemMessage
     settings: dict[str, Any]
-    tools: list[dict[str, Any]]
+    tools: list[dict[str, Any] | BaseTool]
     config: RunnableConfig
 
     def prepare(self, messages: Sequence[BaseMessage]) -> list[AnyMessage]:
@@ -1104,7 +1138,7 @@ class BtwOperation(AgentMiddleware):
                 model,
                 system,
                 settings,
-                tools,
+                [_bindable(tool) for tool in tools],
                 {"callbacks": [], "metadata": {"thread_id": thread_id}},
             )
             messages = _side_messages(

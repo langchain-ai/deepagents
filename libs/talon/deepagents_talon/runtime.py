@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
 import yaml
 from deepagents import create_deep_agent
-from deepagents.backends import CompositeBackend, LocalShellBackend
+from deepagents.backends import CompositeBackend, LocalShellBackend, StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.summarization import (
@@ -466,7 +466,14 @@ class DeepAgentRuntime:
         tools.append(self._attachment_tool(attachments))
         # The summarizer replacement lands in the Deep Agents summarizer's slot; the
         # selection middleware still swaps the model for everything after it.
-        middleware = [
+        middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            # Replaces the default by name. Talon passes no `permissions` and registers
+            # no harness profile, so only the blob offload differs from the default.
+            # A `StateBackend` would keep blobs in checkpointed state, so skip it there.
+            FilesystemMiddleware(
+                backend=self.backend,
+                offload_binary_content=not isinstance(self.backend, StateBackend),
+            ),
             SelectedModelSummarization(
                 partial(self._build_model, model) if isinstance(model, str) else lambda: model,
                 self.backend,

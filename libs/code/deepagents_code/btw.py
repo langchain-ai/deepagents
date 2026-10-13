@@ -451,6 +451,16 @@ def _client_tools(tools: Sequence[object]) -> list[dict[str, Any]]:
     return schemas
 
 
+def _tool_name(schema: Mapping[str, Any]) -> object:
+    """Read a function tool's name from the nested or flat schema form.
+
+    Returns:
+        The name, or `None` when the schema has none.
+    """
+    function = schema.get("function")
+    return (function if isinstance(function, Mapping) else schema).get("name")
+
+
 def _instructions(tools: Sequence[str]) -> str:
     """Describe only the tools this side chat can execute.
 
@@ -973,7 +983,7 @@ class BtwOperation(AgentMiddleware):
             if isinstance(schemas, list)
             else _client_tools(self._read_tools if read_tools else [])
         )
-        advertised = {tool["function"]["name"] for tool in tools}
+        advertised = {_tool_name(tool) for tool in tools}
         executable = [
             tool for tool in self._read_tools if read_tools and tool.name in advertised
         ]

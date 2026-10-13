@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:f473d11757d9b03291131d1a95628ffe39aa013cac47afc56d21c9e4b72bc33b",
+  "pageVersion": "sha256:84fd76779c56166f8ffd19ee113899c980586eae1593eef4c9fd9370d3cee3e1",
   "claims": [
     {
       "id": "claim_9b577faaad1344b3b39669ae32d672d9",
@@ -362,15 +362,19 @@
     },
     {
       "id": "claim_463d032da5244fcdb9a020032479918e",
-      "statement": "Talon sandbox mode builds a composite with the provider sandbox as default and host-backed skills and memory routes, sends execute calls to the sandbox, and raises SandboxStartupError instead of falling back to host execution when configured startup fails.",
+      "statement": "Talon sandbox mode builds a CompositeBackend whose provider sandbox is the default and whose only host-backed routes are the assistant's skills and memory directories plus /blobs/ backed by assistant artifacts; unmatched file operations and every execute call therefore stay sandbox-routed, while tools.json and other non-routed assistant paths do not reach the host.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L155-L180",
-          "version": "repo-lines-v1:sha256:62a9f1eb5ee178e6b8d1be6bf6c6963ff7f55bf544a7fbf4fc7e95fdcd68c5b6:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1OTdiMjMyNzU4MWVlN2VjNjlhMTI4MjdhMjg2YjYyMWZmMjFkNmQ5ODA2ZTdkYjdkM2Y1YjAzNzI3YWFkN2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4ZGJkZTBlMGM2ODgwOWQwOTZmYmQzZWI3OTMwY2M3YjIyMTA1MTk1Njc2YTYwYjg0ODY0ZmMxZDQzYWQwNDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0MGY2Y2MwZDYyYzczYzlkMzI5ZGM4YTQ0MDg3ZWRlZDM5NDg3ZDkyNGI0MzgxNTJiOWI3ZDY1OTI2MTFjMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYwMWJmYWQ2M2YxNWYyNWU1Y2M2YzhhNGI1MWY4NTRjZWY0ZDkwMmEyZTk5YjllN2UzNDNhMTI3ZjkzN2I4NDUifQ"
+          "resource": "repo://libs/deepagents/deepagents/backends/composite.py#L814-L850",
+          "version": "repo-lines-v1:sha256:ddf54d42fdeb8af108a4e8a81cf8b64537553a0ba9714b2442f4c27586127197:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhmMWRlNzZkY2FlNGQ1NmVmYTJmNmE1YTY1NzhlYzFlY2ZjZDk1NmQwN2UwMTQ4OWIwNWU5MTcyZjE1MDIyYTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzM2IzNjc5NjdlODc3ZWJhMmRhMTZmNDBmYjljMDgwYzAwZjM3MmNmODE2ZmU2N2MxNjczMWNmMzJlN2FhNGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhkZDVkY2MzMWUyY2Q5MzgzMjVhMTk0NDA4YTg2ZDIzODczNWVhZTdhNzI4NjAwMzlmYWQ5ZDliNDA4OTc2YjYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYzYTIxN2Q3YjY2NGNhMzk2YzBiMzYyNzI4NTMwMmI1YmRmMWRiNzU1NWQ4ZTIxZmMzOWU4NGE2NTA0YWMwNDcifQ"
         },
         {
-          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L65-L124",
-          "version": "repo-lines-v1:sha256:a06a2e8ca0e94c8002770ffbe605ea96b324c036d874bec7b6b565c5cd73e0d9:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3N2M3N2YzOTM5OGIxYjIzODE1NDkwMzlmNTdkNjU3YzgwZDc0YWE4OGNlYmUwNzMxNGQ2NzQwMDdlOWExM2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NzI2ZGY3MDFjNzg1NjlhNjQ4YmI4M2FkMmMzYjk1ZGRiNTdjYzgzMDViYmY3YTVjZjdhNDViNzcwNTg2ODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyNDdkOTRlMjdmOGZkMjE2Y2Y3ZDZlNjhmNzNkNDQ3ZTBhNWE2YzA2YjBhMTFkZjdmOTY0MTMzNjc3ZmQwN2MifQ"
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L101-L130",
+          "version": "repo-lines-v1:sha256:b327d7639c64735d83cba20d99ea485015d215a1ff00472036da9c02de43ba1f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjODhkMzdjNWUyZTIwMGJmYjkzZjA1YzVlYTNkZGQyZTYzMTNhYWYwNDE3NzkzNmI5Y2UzNjdkZDFhYmNjNDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3N2M3N2YzOTM5OGIxYjIzODE1NDkwMzlmNTdkNjU3YzgwZDc0YWE4OGNlYmUwNzMxNGQ2NzQwMDdlOWExM2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRjMDc4ZWFhYmU4ZWY1MDRlNzBhY2EwNmRjNTVlMTc3ZDM1NDIxMGZmMzI2N2M4YTg1OGNmZDczMjIwMDhmODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyNDdkOTRlMjdmOGZkMjE2Y2Y3ZDZlNjhmNzNkNDQ3ZTBhNWE2YzA2YjBhMTFkZjdmOTY0MTMzNjc3ZmQwN2MifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_sandbox.py#L111-L136",
+          "version": "repo-lines-v1:sha256:c26f546e4c6cca8b2cb33bf5593af763558154ee2378ed165900eab0e2f029ba:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1Y2RhY2YzYWMwYzkzYjlhOWE3ZmZkY2RkZDA0OTE3YjRiZDdkNjc3YzI3NzM1MTNmMjE1OGFiYjFmNzcyNjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiMmExY2MzM2E4Yjc4MGJkMzhmOWVmYThhYmZlMDlhMDY4Mzk5MDhiMzMxOWRmZGQ3NDZmZTViMmVlYmQyMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzMzU2MzgzNzFlMTNhYjVlZWVmMGEzNTk0ZWI1ZTk2MGQwNTFkMzViMzQ2NGVjZDZlOTI4MTFmODI0MjU5M2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRmOTU3Mjk3ZjM4ODgxY2FmMWQwM2RmNGYzN2MwYzk1MmYxZWI3ZTc0MDllZDNkMThlMzY1MWVmZDM3OTJjYTcifQ"
         }
       ]
     },
@@ -461,10 +465,108 @@
           "version": "repo-lines-v1:sha256:14a7df0f6cd58e0c56419b89b17f18da94ddba9a410dd67ed0298f5815ec4589:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE0YzE2YTEzNmQ0NGU4Zjg4YzZlNjFjYWZhMGJhMmRmZWM3NmQzNGE3YWJmNmQ1YTg1OTliMDg2NmMxNDRiNGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzZDM5OWFkYTAzODY5MjViMDQ1OTk4ZjYwYzIyYWQyNGMwZGI0M2UxZWQ3MmYxMDBlY2VhYjI0MTdmZDFiOGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZlMGNmMTYwNDMyZTI0MjZhNmNiOWM1YTljMWE1OGI0YTE0MTkxNzY2OWFhYmUxZThlOWEzMjMwMmJjMjgwMTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk4NjNhNzc0MWQwODE4ZmJlYzE4YjM4MmU3ZjI3NmNlNDE0ZWU4ZjU0ZjJjNmM1ZTQ4YTNhN2Q0MjM0MDE3ODEifQ"
         }
       ]
+    },
+    {
+      "id": "claim_27a5bffa36094bb1b8be37d961d18b24",
+      "statement": "For a model-backed Talon host, open_sandbox runs for the host lifetime and its session backend and working directory are passed to DeepAgentRuntime; absent sandbox configuration yields no session, so the runtime selects its normal LocalShellBackend-based composite.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L296-L306",
+          "version": "repo-lines-v1:sha256:38cc430ad525f6f0cd7f1c8d3ccb5f30c8be5eab98ec2ba81221aedfc9eaf882:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmYzkyMjNhY2Y4NmU1MDA5NmE0NDUzMzMzNDE4ODZkMTc0MWU1NTdhZDFmMDRhMjA2ZmFhOGJmOTg2MzdhOWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjNmQ0NDI2ZjRmZTllYzdkZDJlYmUyYzUyNDE0ODdlZGEzMjAwOGJlMjcyMzU1MGZlMWU3Nzk1NWQ3YmViMGYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkYTViZmQzZDAyM2QwZTZjOGZlZDdkNzg2ODYyNWQ3MTg2NDdmNzAxNTk3MmY2ZGJjODNhYmYzOWZlNjBlOTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIwOWFjYTM5ODk4NzkwNDY3MDZhZjlhODE1MzRmNzk2YzQyYzE2YjMyOTlkYzc1NjQ3NmE2YjRhZGNlZjc0MzgifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L359-L394",
+          "version": "repo-lines-v1:sha256:5e6fc288685e902c2d8580da0eadfefed706ea47c359df72e01152aa77c4255d:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFhZDgzMDFjYzBmYjBjNjYwZWNhMjkyODY4ZTdkMjYwNzEwODk4YTgyMjU5MTBiNGMxZGQ5OWZlOTkyZjUwZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkzZjgyZWJlNTc4ZGU5YzkzZTdhNThkNzNjZDIyMWRkMzExNDNlNTA5NmVlNzA5ZTY0MTEyMWEwZGFiM2JiNmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ0NWRjY2NiN2JmYmEwYTZjNzI0MjNlYTE2NjdiMjMwNTBjNzY5MzM1MmEzOTU1YjZhNmNhYWRmMTVkZTA3NmUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L1427-L1438",
+          "version": "repo-lines-v1:sha256:3fd72fc0959d51fde58093f61ada5dad5d4e3504d262b7492044f4b1d87b5e01:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJmZTk4MDMzYjM3YTQ4Y2IwZmRmNzE1YTRkN2IwMDBjYWQ4YmM3MWQ1NTdkMjQxZmVlNzE0ODcyZWRhMTE2MmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzOGQ2NzVmOTVmZTJiMmE2Y2U5NWYwOTMyMzdiZjg2MTJkMzVhNWQxNzg2YTQyMmJiMjVlYjQ3NGUzZTMzMjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM4OTFjYjVjMTcxNWY1NWY5OTliODdmZTI1M2Q4ODA1NDAxZjQ3YzQ0NjM0ZTZiYmJhMzMwY2MwMzg1N2U5MWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM5ZGE4MTJlMDQwZWY3MjBkNGY3NGI1MjhjNjZkODZkNTA0ODNhNjhmMTdhOWY5NmU5OTYxNWMxMWY1ZGQyZjUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L65-L98",
+          "version": "repo-lines-v1:sha256:c7a72e2f7bdf15c64ec6f98da23aab70c95192f21bcb80280cc1d097b86bd914:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzNWNkMWNmY2RhZjVlOTcyZTIxNDdhMzZkM2E3YTAzMDFlZDM0MTgzZDUyZGRjMWMyNzcwMmI4YTc4YTAxMTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NzI2ZGY3MDFjNzg1NjlhNjQ4YmI4M2FkMmMzYjk1ZGRiNTdjYzgzMDViYmY3YTVjZjdhNDViNzcwNTg2ODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxMzUyMzRhM2NkMjkzM2Q1ZWZhNzlhMTA1YWYyYWJiMmI4MTI0NzFjM2ZiYzA2ZGVhZGI3YjIwZmFkMWQyYzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d6151a0649a046d8a8dae4c3b3f84a74",
+      "statement": "In Talon sandbox mode, runtime skill fingerprinting uses only the assistant skills directory, and configured or manifest memory is retained only when its resolved path remains within the assistant memory directory; other memory candidates are logged and ignored.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L1031-L1049",
+          "version": "repo-lines-v1:sha256:0ade4c65cd526c74acdef4ebbe9962dd6e34a069c3da9c32a9d3a5fb34e026f4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5NjhlOTRiZWYzNTVmMTM3NmYzMDcyN2I0ZjRhNWYwODRmOTgyMzY2YjQxMjY2MjZhNGYyYjhlMTViMDg4ZDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyMTI1YjM5YmJjYjBlMWUxZmViNDE3MTI5YzhjNmIyMmM4MmZkYjlkOTJkN2I1NjkyOGI4ZWIwM2NmZmNmZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ0ZTA2NTI5MTQwMmZjY2U0MzY0MGQ2YmE3OTE0YTJmZGMwZTkxZmNkY2ZmYWM1NDkyNjYxZTJlYjY0Mjc1OTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkYTAxYTZlYTk2YzM1OGU3MGFjMTI2ZjEyMGQwMTQ0NTlmOTVkOTM2NzlhMDZhNjFiMmJmZThmMmJjMDViMzMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L1219-L1266",
+          "version": "repo-lines-v1:sha256:bf6a24ffa0086f4ad9493e4e20e360b873aa4a06e4426fbba588487fcce2b8e9:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3ZmNjMTZhZmZjMzRhNDQ2Y2FiNDYyODZhNGMxZDI3MTBhM2U5NmE3ZTFiNWIwYzc4NzAyYzI2Zjc5NTM1YTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3MTFhMmI3OWY1ZTRjZmJmMzEzMDYxZDFiNDg5NDQwNDc1OGQ0YjA5YWQxNmE4ZjA2MmI2ZWYxOWE3MjllMjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZiZTc3NzU5ZDBhZjY0Y2U2N2Y1ZGI4NzI1N2ViODA2N2ZlYjgzYzcxZDY4NTIyODczMjRhZjY0YTEzOWQ0YWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0MWEwNTc0NWI3ZjU1ZDdhNGY4ODczNTVjODAxOGIwZGNjNGFkMTRjZmY0Y2VkMWVmMzYxNjkwMzcwMWVkNWMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_sandbox.py#L235-L250",
+          "version": "repo-lines-v1:sha256:1e0a85d16cdbdbf866ec54818f0b59de27ce1651a396df023054788646e6e14f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljMDZlODcyN2I3ZWZlM2FkY2RhNDgwZjdmNzkwZmVlYzdkNDJiOTEwNTZhMTYyYTAwZThhODdjODdjZTAxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE1OTllMDNiMzhkNmVjMDhiMGRmYjdiMzAxNGQzOTMxZjJiZjEyN2VmNDY3NzI2NDk3OTg4YWFmMzRmNDQ2ZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE3ZTEzYTQ5NjY4NTg0MWU2ODFmMTVjYTkxNmRiNmIxOTVkMDJhNTFiYzBkYmRiYzcyYzM1NjM0OTQ5Y2RjZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_70947d11cdaa48a2ac3548b8f253dfb2",
+      "statement": "Talon enables binary blob offload for its sandbox composite backend, and its host /blobs/ route stores offloaded inbound image bytes under the assistant artifacts directory rather than in the provider sandbox.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L469-L476",
+          "version": "repo-lines-v1:sha256:674025dc5282d862f5f305132c568f4e83bcc0a80965b2bc4b0e61752baac5cd:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWZlNzdhNDcyOWJkOTlmMTQyZjQ4M2E3MmVhY2U2Njc1Nzc1YWZhOTk2MDhlNTJmYzFhYzZlY2RlMzY3MTE2ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGQzNGE5ZGY3NzliOTU2NmIwNGFkMmI5ZTZjZGRlM2IxZDVlNmMxYThjOGI5N2FiN2MyOGE3YjEzYTMzYmQ2YSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNWVmYmI5NTAwNjZjZGE4ZWI2MTMxNDM4OGE1NDBiZWRmYWYxM2RjYzc2OTY1ZDk1NWFlMzM4Y2VkZDAyMWM5NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOWZhYmFlYzgzOTU5MDJmOTUxZmRjOGI5YWM5MDViNTY5ODMwZWEzMWY3NmM1YmQxYzlhYmFlMTcwNWM0NjJkNSJ9"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L125-L130",
+          "version": "repo-lines-v1:sha256:b149a9ae5fd7e5e964f2721058b91ab3525edc20ad103121545c2a5fe4771af9:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmUzZWFmY2FmOTVlODU2YWNhZjM5NmJlZGIwYmIzZWIyZWI3OGFiZGZkMGU5MWRmNzAzNWFjMzljNTk2MTQxYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDc3Yzc3ZjM5Mzk4YjFiMjM4MTU0OTAzOWY1N2Q2NTdjODBkNzRhYTg4Y2ViZTA3MzE0ZDY3NDAwN2U5YTEzYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjlkY2U4NDBlZWZkZTNjZWQyODY4ZTNlOWFhZDcyZDAzNWVmOTNjODJkOGFiYzQ5MTY0NmY5Nzc2NjI0MzExYyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDI0N2Q5NGUyN2Y4ZmQyMTZjZjdkNmU2OGY3M2Q0NDdlMGE1YTZjMDZiMGExMWRmN2Y5NjQxMzM2NzdmZDA3YyJ9"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_media_blobs.py#L48-L78",
+          "version": "repo-lines-v1:sha256:27522cae8cb84975468aceb102b0d9002acd7a9f9094c3ec33f23e625981a8e9:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4NzhmOTI2ZWQ3YTNiNTAyODJlYWNhYWY0NWQ0MmNmMGUyYjdlNzBiMzc5NTNjMTk3NzQwNTE0ZWI5MzI3NjciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkYTgwN2Q4YTAyNTEzYmNjMmNiN2E1Y2EwMWQ5ZmU3M2JhNjYzNDE0MmQxNGJhNTFkYWIzMWViNTE2MGI5ZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMyYTJkM2U4YzE5ODU4Y2U3NGEwNzg5NDg1NDA1YzgzM2FmZmU4ZWQ1M2I1MmVjYjEzZjQ2MTU5OWRkZjk3NTAifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_sandbox.py#L127-L136",
+          "version": "repo-lines-v1:sha256:a1fcb4d7878bbe8122f3886b855d553946d572168c68188f0743fc9d3a4698d0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzMjhkMGE4ZTBjN2Q5MmVkM2RkYjViNzE2NDQxOTViM2ViNjJhN2FhMjU2YmI4ZWVmOWMwMGE3MWM5NThiYzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiMmExY2MzM2E4Yjc4MGJkMzhmOWVmYThhYmZlMDlhMDY4Mzk5MDhiMzMxOWRmZGQ3NDZmZTViMmVlYmQyMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliZDQwOTMwNDhkZWY5ZmE3ZjI2YTk0MTJkYWIwOThlNTIwMmRmYTgyZmE0NWQxNmI0MTk1YmZiZjE0OGZhODUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRmOTU3Mjk3ZjM4ODgxY2FmMWQwM2RmNGYzN2MwYzk1MmYxZWI3ZTc0MDllZDNkMThlMzY1MWVmZDM3OTJjYTcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_12768026fcfa41a681de8ce2cec00d13",
+      "statement": "Talon creates provider sandboxes through a worker-thread context manager and closes owned sandboxes at host-context exit but retains attached sandbox IDs; startup failure is wrapped as SandboxStartupError without host fallback, and the handoff closes a late-started owned sandbox after cancellation to prevent a leak.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L133-L186",
+          "version": "repo-lines-v1:sha256:60154f47a3679e19eb6f3fe30ee99ddf930077fee83983484f9be914e3137268:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1YTc5OWNmODczYmVhMTkyMzg2N2EwMWM0YzhjOWNjOWE0OGVjYzE4NTAzNmZkZDFhODE2ODY1ZDI3YzUzZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4ZGJkZTBlMGM2ODgwOWQwOTZmYmQzZWI3OTMwY2M3YjIyMTA1MTk1Njc2YTYwYjg0ODY0ZmMxZDQzYWQwNDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxNTNiYjYwNzM4Y2ExZDMzNTczYjE1NWQzOWNiMjZiODdmNzg0OTk3ODI1ODgyZjgzMGM4YjYxMTJkNTEwODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYwMWJmYWQ2M2YxNWYyNWU1Y2M2YzhhNGI1MWY4NTRjZWY0ZDkwMmEyZTk5YjllN2UzNDNhMTI3ZjkzN2I4NDUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L65-L98",
+          "version": "repo-lines-v1:sha256:c7a72e2f7bdf15c64ec6f98da23aab70c95192f21bcb80280cc1d097b86bd914:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzNWNkMWNmY2RhZjVlOTcyZTIxNDdhMzZkM2E3YTAzMDFlZDM0MTgzZDUyZGRjMWMyNzcwMmI4YTc4YTAxMTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NzI2ZGY3MDFjNzg1NjlhNjQ4YmI4M2FkMmMzYjk1ZGRiNTdjYzgzMDViYmY3YTVjZjdhNDViNzcwNTg2ODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQxMzUyMzRhM2NkMjkzM2Q1ZWZhNzlhMTA1YWYyYWJiMmI4MTI0NzFjM2ZiYzA2ZGVhZGI3YjIwZmFkMWQyYzQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_sandbox.py#L144-L210",
+          "version": "repo-lines-v1:sha256:c4a22093a7269721fa6e486b1c8aea8836f9f9aa40feff723f6e7e3dc2b32433:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZkYTdlYWY2ZjhmZmRiNzc4MWY2M2Y0ZmZjZjVmYThiZjVmNDEyODk0ZmRiNmIwMmQ2NjgwOThkM2RkNDFlMDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4MjQzNWNlODVjMjdmYjRlMTAxYmZmN2JjZjc3ZDk2NDEzYTM4Y2E4YzY5NmRkOWFiZmViOGYyZGUxMjgzMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhYTNhNWE4MjhhOWE4MWRjOTA3YzdhNTEwNmIxNzQ4YTgyMjE5NTQ4YmIxOTQ4NDJmMzZiMTFmZDg2ZGQ3N2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzN2EwMTUyNDQzMzgzNzE1ZjYyNDkzMWNlZWYyMjZlODYxNzg4NzM2MmY4OTY0ZjI5NTIyY2ViYzUzZjc2NGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9a7c2a067fb544ba8ee897512d7fbace",
+      "statement": "For LangSmith without an attached sandbox ID, Talon derives the default snapshot name talon-<assistant_id>, unless an explicit Talon snapshot or provider snapshot-name environment override takes precedence; it passes an optional setup-script path to the provider factory and warns that configured host skill directories resolve inside the sandbox.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/config.py#L160-L181",
+          "version": "repo-lines-v1:sha256:1b3c2669bd15364269e5b8904d06639e810c85b43afae0cc8ba3964bba5600b4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQyYmRjODNlODFiMjFiMjFlYmJhNjdiYjgyOWRjNDNlZWQ5ZmZlNWE5Y2YzYmFmMDIxMmEwZTlmOTA4NWRmZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjMjRjOWNiYjU4YzFkZjkyZDRjMjJiZGJmOGY2Yjc1NmJjMmRmMDg1ODM2YjkxMmUxNDU1YzZlMTQzNmVkZjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFiNWU2OTQzMjZiMzZmOGI4M2M2MTgxYzA3NTdmNDM5ZTZkZDc4MzY0MGIyNWRiOTUzOGY2YjZhODliNDliM2UiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk5ODY3MjFlOTk0NDRlNzQwYWM0YTVhN2ZmYjE3ZWQwMmI3NDcxNmJkMDVlNGNiZmQyMjNhYmIwYmEyYjg3NTMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L161-L209",
+          "version": "repo-lines-v1:sha256:d25ef9248048a4f41a2fde22bf5f80cede06fc87802686623ac8b3b2b1d431ab:eyJzZWxlY3RlZExpbmVDb3VudCI6NDksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1OTdiMjMyNzU4MWVlN2VjNjlhMTI4MjdhMjg2YjYyMWZmMjFkNmQ5ODA2ZTdkYjdkM2Y1YjAzNzI3YWFkN2EiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0MGY2Y2MwZDYyYzczYzlkMzI5ZGM4YTQ0MDg3ZWRlZDM5NDg3ZDkyNGI0MzgxNTJiOWI3ZDY1OTI2MTFjMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_sandbox.py#L69-L108",
+          "version": "repo-lines-v1:sha256:b52f55c59e322dae2af5d4a5ea91424326f824d4af7db4157661eff1d85303d8:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA4ZDk5MWZlMDcwMzA1NDY2MDIyMjE2ZjFiZjY1NTAwZTNmZTI0MmJlYWQzYjI4M2ExOWEyNTkyMGNjOTEyODYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFjMmJlZDNjMjdmYTkzMTgxMzYyZDQzZmU5Yjc4MmYxYTIwMDQ1NmVlN2I1ZmIzN2JkN2Y3MGZiYThiMjcwMzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgyMmRlYTQxM2MyZjA5N2NhNDVmYTUzY2FmMDdkNDdlOTAxMThhMmZkOWVjMTUwNTBmZjU1NzQzNGUwNGE5NjQifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-12T08:20:17.385Z"
+    "at": "2026-10-13T08:11:05.854Z"
   }
 }

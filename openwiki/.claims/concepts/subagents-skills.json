@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:56f4e955680e9a392e1d917b82dc0910e29f6d81213086d0b67f238e847fceeb",
+  "pageVersion": "sha256:f8210d61c0f365779fc1ee2dc9ebd50a2738d0cfb20b644be49dd6e0e760d9d1",
   "claims": [
     {
       "id": "claim_3f6e4d8c4f6f470a94669778d16a96b1",
@@ -8,7 +8,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:d4c3f3cf3af6e88c13893404d5f605a8b61316d7ac4ed507e63f975a6bb12199"
+          "version": "repo-file-v1:sha256:b0a5e4bd56c07a35db2f4ee62666f28db99d1d78e60f3c5f8c52553c642ce2fc"
         }
       ]
     },
@@ -18,7 +18,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:d4c3f3cf3af6e88c13893404d5f605a8b61316d7ac4ed507e63f975a6bb12199"
+          "version": "repo-file-v1:sha256:b0a5e4bd56c07a35db2f4ee62666f28db99d1d78e60f3c5f8c52553c642ce2fc"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
@@ -32,7 +32,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:d4c3f3cf3af6e88c13893404d5f605a8b61316d7ac4ed507e63f975a6bb12199"
+          "version": "repo-file-v1:sha256:b0a5e4bd56c07a35db2f4ee62666f28db99d1d78e60f3c5f8c52553c642ce2fc"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
@@ -76,15 +76,15 @@
     },
     {
       "id": "claim_56fc24f37964489e8c7ae557a4f27efa",
-      "statement": "Top-level skills are applied to the main graph and its auto-generated general-purpose worker; named isolated declarative subagents receive skills only from their own `skills` spec, while forked subagents replay the parent's skill behavior and cannot specify separate sources.",
+      "statement": "Top-level skills are applied to the main graph and its auto-generated general-purpose worker, while named isolated declarative subagents receive skills only from their own `skills` spec or an exact-name `SkillsMiddleware`; a fork's `skills` field is forbidden, but its own exact-name middleware can replace the inherited skills slot.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:d4c3f3cf3af6e88c13893404d5f605a8b61316d7ac4ed507e63f975a6bb12199"
+          "version": "repo-file-v1:sha256:b0a5e4bd56c07a35db2f4ee62666f28db99d1d78e60f3c5f8c52553c642ce2fc"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:0eb0b232e0707f1f679cd20d8cd9357b6e91bfef4dd89b09789f13b2d62e9156"
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py",
+          "version": "repo-file-v1:sha256:f360fd9dcae597dc05022579a9fb5a29e90f7fdc11f26c489eb3fa54a8ad289a"
         }
       ]
     },
@@ -251,10 +251,24 @@
           "version": "repo-file-v1:sha256:d3f1a591331366de951799f4d22c119d9f36c6e51e87c2238465d61dcaced871"
         }
       ]
+    },
+    {
+      "id": "claim_2d319b7cf331475fbf9468039e3d7c9a",
+      "statement": "`create_deep_agent` reserves a `SkillsMiddleware` slot immediately before prompt-caching middleware. Profile and novel user middleware run before that slot, while middleware named `SkillsMiddleware` replaces the slot in place; the generated general-purpose worker inherits only main middleware that overrides one of its default-stack names.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:b0a5e4bd56c07a35db2f4ee62666f28db99d1d78e60f3c5f8c52553c642ce2fc"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py",
+          "version": "repo-file-v1:sha256:f360fd9dcae597dc05022579a9fb5a29e90f7fdc11f26c489eb3fa54a8ad289a"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-12T08:20:17.385Z"
+    "at": "2026-10-13T08:11:05.854Z"
   }
 }

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:e64b5712ce2ff1c846c05225df970f98ee5a005c350e073efaadcf12313427ab",
+  "pageVersion": "sha256:db8e1f5d1784c07d729bc285d761b584a28fa463652ea884e7201cc186c6254a",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -253,10 +253,94 @@
           "version": "repo-lines-v1:sha256:5e3a3facaf796da882cea5f44a3afc2aebc95e46e8bd944b2d04b2f221c1594b:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWFjNzcyOWIzZmVkYWJiMmNhODY5YjQ3NmE5OWU4NjI0NzAzNDlkOTU0YmZhNGY5M2VhMmRiZWM5NGQ1ZGY0OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjgzZTczODIyZTAyNWIyYzBmYzY0NzI3MjQ3ZTc4NTZkMjc1MzQ1OGUzODJmNWJlZTY0YTc3MWQ2YzRlNGZlMyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDVmYzczNjhjNGQ4NGVlYzEyYzI5ZDA3NTYwNWZmYTUwY2ZmNzkwOWY1YzNhNDZkNzU3MWY0MTQ5ZGMwYWYxNCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYmI0YjVjODVlYzRiMzM1MmUyZDkzZWZkMTFiOWMyNjJhYjI1YmYwMTc3NjJjMzViYjQxOWJkZjUyZmY5NjVhYSJ9"
         }
       ]
+    },
+    {
+      "id": "claim_335a73d14c804368bc93f95f68707cc2",
+      "statement": "The release manifest versions `deepagents` at 0.7.24, `deepagents-acp` at 0.0.13, `deepagents-code` at 0.1.84, and `deepagents-talon` at 0.0.9.",
+      "evidence": [
+        {
+          "resource": "repo://.release-please-manifest.json#L1-L10",
+          "version": "repo-lines-v1:sha256:6b33d732669d48d7c172cedb55cfd4d40ace0b5a6d396dae9c77efd8caba0938:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5Y2NiZWZjOGNlY2FkNjU3MjAzODI0OTUzODIwOWM2OWRjYjc1ZmVkMzMyMWY1ODVmNWUzZDhhZGM1MDY3ZDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_30890b1f96cd4093aad60f70c4df171e",
+      "statement": "`deepagents-code` 0.1.84 has an exact `deepagents==0.7.24` requirement, whereas Talon 0.0.9 declares compatibility floors of `deepagents>=0.7.24` and `deepagents-code>=0.1.71,<1.0.0`; both use editable sibling sources during repository development.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml#L213-L220",
+          "version": "repo-lines-v1:sha256:d17072bf7263abf884a8260ad4ae1059ed3b0302391e9a981c6677cba58f44ca:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjUyZmM1OGIzZjRiOTczNzM2YjNhZDc5ZDFkNzQ5NTEwNTIzMGY2NWUzZDk4NjM3YTQ2YWU4ZTJmZWEyOTUyZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmZlYjcxZTU4NGZjZjYxMzlmMTU4ODY4OGM2NDE3Nzc0Y2ZjOTFjZjNhZGNlYmRhMzYzMjY2NWIyNGI4NzJlMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiM2UxMTZhYjgzZDA2YzE2MDkwYTgwMzc2OTc3ZDZmNzFkNjY1NmY5N2U5MmJmNjM4OWRkMTBiOTc3NTEyZWE2OCJ9"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L5-L38",
+          "version": "repo-lines-v1:sha256:9a755c89237e2658ed081b1b09b2da27499007b00433bffdaecfd24c17829906:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OGNmYTA0N2MyMWZmNzU5NTMxOWE3ZjBhYTJhYThjY2FhMDcwM2RmMDY5YjkzZDViOGNmM2I3NDdkMTdjYmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyNzExY2Q5YjNhMmU3NzEzYWMwNjQ4MjAwODk2NThlYzE2NmJjZmI4YWI0Yzk1MjRiNTI4YTgxOTRhOTQwODEifQ"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml#L123-L129",
+          "version": "repo-lines-v1:sha256:57c41bfe73cb3369f628d33175df4217f0c1ff8563851f0c83395db8b0a6622b:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDY1NzQ2ZWY3MDVmYTYyYzg4ZGM5Y2RhNTEyM2M1YzRkOTRjNDliMjcyYWY1M2NmMjE1N2Q0MzRmMmYyMzIzMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDMxYWFiNDQ2YTRiN2M4YjdkOWUzYWJiMzczNDU2YzNlYzY1MzAxNmE4MzRkZDZlMmYxYjQzZGU4YTlkMTIzMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjZmZTE5ZWUzN2I3NmNkOGYxOWZlZTkxZWZhMDFhZmY1ZTk5NGNiYWIxNWQ2YzBmZTc0NjNiOWNiYzhhMWYzOCJ9"
+        },
+        {
+          "resource": "repo://libs/talon/pyproject.toml#L5-L51",
+          "version": "repo-lines-v1:sha256:73c62ab1a9a840ed13181fc4ef84b664fead7b09a46e6131420fb806e87450cb:eyJzZWxlY3RlZExpbmVDb3VudCI6NDcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3NGY3NjBkNTIwMzNjZGJmMGNiODVmYzMwNmI1MjJhNzA5NjBhZmFmMTg5ZmEyNjQ3OTlmYjAwODkyNzgxM2EifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a6b2c81d18034ae8811f40ed80b620a8",
+      "statement": "ACP's reusable execute approval is scoped to the session and exact command arguments plus session context: command, arguments, cwd, mode, model, or session changes require a new approval, and only the always-allow option permits reuse.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/tests/unit_tests/test_execute_permissions.py#L176-L217",
+          "version": "repo-lines-v1:sha256:14ebddc08ab964c3a02acaeb353aa467299cabd3b807dfb5fd7fb39868ba6fb3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4ODQwNzczNzFiODdmNmM5OTk5NTVlNjU4ZjEwZDI3ODA2ZmRkMGY3YWIxOGYyYmE4NTE1NTVmMTAyMTE2MGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNjOGQ4ZWQwMWJhOGY3YTEwMTFhMGI0MjFiYWY1OWM3ZGIyMGM2ZTE1Y2E1NmZiNDJiYzc5YjEyNjBmYmRiMzEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA4ZTllNDhmNzFhNWU2ODQ2ZWRlYmQyYWRkZTBmNTBhMzJjYzhkODU4ZTU2ZmZiYjVkZTBmMzU3MDJiYzQwMjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVjYzQwM2NmMzAzYWE3MjRkMWQ1NDdmNjcyZmNlMWM5ZDJlMTc4MzA4ZTYwYWY2OWMyZWNjZmM5Mzk0NWE1ZGMifQ"
+        },
+        {
+          "resource": "repo://libs/acp/tests/unit_tests/test_execute_permissions.py#L52-L148",
+          "version": "repo-lines-v1:sha256:3503305ac0222f33c863ba38dbf020b7c7897cb47a232a9d2621b618bc55de75:eyJzZWxlY3RlZExpbmVDb3VudCI6OTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVjYzQwM2NmMzAzYWE3MjRkMWQ1NDdmNjcyZmNlMWM5ZDJlMTc4MzA4ZTYwYWY2OWMyZWNjZmM5Mzk0NWE1ZGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM0MzM3Y2YwN2U2MjI3OWMxZWRkMTFhMGE0MGM5OGJiMzE1ZjViYjQ0ZGY0ODUxNzI3NzQ1MzAzNjk0YjBhMDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY3OTUyZTBmMjllODRkNDk3Mzg2ZTg3MWIyYTliODA3NzA2MGJmOWQwNmVlMWJmYTNlYWYxOWE3NmYwYTE1YmEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_28ea98df80694cccb9391c8e459d5289",
+      "statement": "Talon sandbox mode fails closed when startup fails; it routes shell/filesystem work to the sandbox but keeps memory and media blobs host-routed, and cleans up a created sandbox on normal context exit.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_sandbox.py#L111-L165",
+          "version": "repo-lines-v1:sha256:e533c2da4e009a76d846fcd42713f44fad3fb4ecf5c93fc0b6abcdc439765c37:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1Y2RhY2YzYWMwYzkzYjlhOWE3ZmZkY2RkZDA0OTE3YjRiZDdkNjc3YzI3NzM1MTNmMjE1OGFiYjFmNzcyNjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM0ZjExMjQ0ZWJmNzk3NGU2OGViMDM1MDI5ODU4NDEyYWMwYmYxYTVkZTViYzkxNWM1ZjkwZmEwZWMyN2E2MjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzMzU2MzgzNzFlMTNhYjVlZWVmMGEzNTk0ZWI1ZTk2MGQwNTFkMzViMzQ2NGVjZDZlOTI4MTFmODI0MjU5M2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZkOWJhNDhmNzMyMTg0ZTM5ZGMwYzhlNGU3YWI2MTRmMGVjOWM3ZTcwNTkzNTdmMjMzZTQwYTVlNzUyZmQyODIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_sandbox.py#L198-L210",
+          "version": "repo-lines-v1:sha256:1cec662add8411ab7ab10a411897aba43e2ef558ef438c36379d06f83ea60299:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhkZWFkM2I4M2EyYjIzMWRlZWY5MmYyZjkwYmQ5NmZjNTg5Y2UwZWExN2EyODQyZDczM2U4YjFiODE1YmIwNzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4MjQzNWNlODVjMjdmYjRlMTAxYmZmN2JjZjc3ZDk2NDEzYTM4Y2E4YzY5NmRkOWFiZmViOGYyZGUxMjgzMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNkMjdhZTNhZTM5ZDg2NWQ4ZTg4ZWYyMmZjYWU2MzA4YzFmNWE2NTFhZDljZDg3OThjNzE0ODdiNTJjNzNmMzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzN2EwMTUyNDQzMzgzNzE1ZjYyNDkzMWNlZWYyMjZlODYxNzg4NzM2MmY4OTY0ZjI5NTIyY2ViYzUzZjc2NGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_9dd5810452bf4e2996e5bc5b9a0d838f",
+      "statement": "Talon outbound media validation rejects absolute, traversal, home-relative, URI, and symlink-escape paths when resolving media under an outbound root.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/tests/test_media.py#L111-L151",
+          "version": "repo-lines-v1:sha256:3136cc1c860717ed8517bbef300096a442834e3ad760da25a8cf734ae319c26c:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRlMDk2YzY2N2Q3ZjU4N2I1MDYxNWMxOTg0YzhmOWU4NTZmODMwYjdmNjllM2E1NDViNzgwYmY1OWJkNGRmMzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmNmRlZjI5YzU4ODQzOGIyZDY4OTY3NDBhNTAyODliYTRhYWQ1ZmJiMjllMmE0MGE1NDNhMzU5MDM0ZTgxMjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjEwNGE5MDJlNWJiYjNiNGI1MzU5MzdjMjBhNTgwMzFlNDlkNzE4YmE5MWI5NGE1NWIwNzRlNjBiOGU5NDIzMmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhmZjYwOTYyNzNlY2Q5OTBiNjc1OGQ0Zjg1MmRiZjczZTk1NDRjNWNlMDFmMmRhMjNhODBiNWZmNmE5ZTdlYmIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_bcc2935c6b814ff297ac64b3b5e97c0e",
+      "statement": "The ACP and Talon standard `make test` targets disable network sockets; Talon's target first runs WhatsApp bridge Node tests.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/Makefile#L10-L16",
+          "version": "repo-lines-v1:sha256:f8f53bcac379c043faf8140bcd7f84871919720741f92bd235734a1c31786632:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmJlMDg2YmM3MTZlNDVmNWM3Y2QyMzAxMWRlODI2ODI1ZTZmMzk2Yjk0MGU5MzI0N2MzNjFmMmY5ZDlhY2M4ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzYzOWQ4NjYxOGNlMGIyYzZjZjJiMDg2OWEyYjZiZDAwOTBjMWU0ZGI1MDk2OTZjZGY3NzU1ZWYzYTBiMmFiMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDMxZmVlMDgyMjk5OThjZmJiM2RjY2EwMDZmM2U5MzM4YTk1YTFlY2ExYWMzNmRkYzM0ZGYzN2E4ZjYyNDEyNCJ9"
+        },
+        {
+          "resource": "repo://libs/talon/Makefile#L8-L18",
+          "version": "repo-lines-v1:sha256:0952ce0f926e46b95cf4e1d3875222090398f364f47d7ba2ffac617907e1c0d8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTA4NmJjNzE2ZTQ1ZjVjN2NkMjMwMTFkZTgyNjgyNWU2ZjM5NmI5NDBlOTMyNDdjMzYxZjJmOWQ5YWNjOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlNjI5YWM1NjQ1YjZiMmYwZDEyNjYwYzhiNTA0MjgxZGMzYjg2M2I5YjYyNTRiYTY2YjdmZmQ5MTg2MWRkNzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI0NjNkZTM4NmUwNzkxYWRkNTJlM2Y2ZTNhMDlmMmJmNjQ4ZmU0MzEzMThlMTkxNWI3ZTVkZTk5ZjdhNTg0NTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiZGQ2ODEwMjRlZDhkZjcyOTU4N2JkZDdiMTZmYzI3YWVjMDk2NGJlZTE0Nzc3NDg3ZTg2NGQ0ZTg3ZjkwOWQifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-12T08:20:17.385Z"
+    "at": "2026-10-13T08:11:05.854Z"
   }
 }

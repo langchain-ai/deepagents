@@ -9,6 +9,7 @@ import functools
 import json
 import logging
 import os
+import re
 import tempfile
 import threading
 import uuid
@@ -23,6 +24,7 @@ from deepagents_talon.cron.expression import iter_local_matches, parse_expressio
 from deepagents_talon.timezones import TimeZoneError, resolve_zone
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
     from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
@@ -89,6 +91,8 @@ _JOB_STATUSES: tuple[str, ...] = ("ok", "error")
 _SCHEDULE_KINDS: tuple[str, ...] = ("one_shot", "recurring")
 _SCHEDULE_FORMS: tuple[str, ...] = ("interval", "at", "daily", "cron")
 _DELIVER_TO: tuple[str, ...] = ("thread", "channel")
+MAX_PINNED_SKILLS = 8
+_SKILL_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,63}")
 
 
 class CronOriginDict(TypedDict):
@@ -172,6 +176,7 @@ class CronJobDict(TypedDict):
     until: NotRequired[int | None]
     claimed_at: NotRequired[int | None]
     deliver_to: NotRequired[DeliverTo]
+    skills: NotRequired[list[str]]
 
 
 class CronJobWireDict(TypedDict):
@@ -193,6 +198,7 @@ class CronJobWireDict(TypedDict):
     until: str | None
     claimed_at: str | None
     deliver_to: DeliverTo
+    skills: list[str]
 
 
 class CronStoreDict(TypedDict):
@@ -674,6 +680,7 @@ class CronJob:
             was interrupted and its outcome is unknown.
         deliver_to: Where results post when the origin is a channel thread:
             `channel` posts to the parent channel, `thread` replies in the thread.
+        skills: Skill names whose full instructions load into each run.
     """
 
     id: str
@@ -692,6 +699,7 @@ class CronJob:
     until: datetime | None = None
     claimed_at: datetime | None = None
     deliver_to: DeliverTo = "channel"
+    skills: tuple[str, ...] = ()
 
     def upcoming(self, count: int = 3) -> list[datetime]:
         """Return the next few scheduled runs, honoring `until` and the repeat cap.
@@ -742,6 +750,7 @@ class CronJob:
             "until": _to_optional_epoch(self.until),
             "claimed_at": _to_optional_epoch(self.claimed_at),
             "deliver_to": self.deliver_to,
+            "skills": list(self.skills),
         }
 
     def to_wire(self) -> CronJobWireDict:
@@ -771,6 +780,7 @@ class CronJob:
             "until": _format_optional_time(self.until),
             "claimed_at": _format_optional_time(self.claimed_at),
             "deliver_to": self.deliver_to,
+            "skills": list(self.skills),
         }
 
     @classmethod
@@ -811,6 +821,8 @@ class CronJob:
                 "DeliverTo",
                 _optional_literal_field(record, "deliver_to", _DELIVER_TO) or "channel",
             ),
+            # Jobs saved before this field existed pin no skills.
+            skills=pinned_skills(_list_field(record, "skills")),
         )
 
 
@@ -862,6 +874,7 @@ class CronJobStore:
         repeat_times: int | None = None,
         until: datetime | None = None,
         deliver_to: DeliverTo = "channel",
+        skills: Sequence[str] = (),
         now: datetime | None = None,
     ) -> CronJob:
         """Create and persist a cron job.
@@ -874,15 +887,17 @@ class CronJobStore:
             repeat_times: Optional cap for recurring jobs.
             until: Optional last instant a recurring job may run, inclusive.
             deliver_to: Whether a thread origin's results post to its channel or thread.
+            skills: Skill names to pin to each run; see `pinned_skills`.
             now: Creation time override for deterministic tests.
 
         Returns:
             Created job record.
 
         Raises:
-            CronJobError: If the options do not fit the schedule, or no run
-                falls before `until`.
+            CronJobError: If the options do not fit the schedule, no run falls
+                before `until`, or a skill name is invalid.
         """
+        pinned = pinned_skills(skills)
         with self._lock:
             current = _coerce_utc(now)
             repeat = CronRepeat(times=repeat_times)
@@ -908,6 +923,7 @@ class CronJobStore:
                 origin=origin,
                 until=until,
                 deliver_to=deliver_to,
+                skills=pinned,
             )
             jobs = [*self.list_jobs(), job]
             self._write_jobs(jobs)
@@ -971,6 +987,7 @@ class CronJobStore:
         until: datetime | None = None,
         clear_until: bool = False,
         deliver_to: DeliverTo | None = None,
+        skills: Sequence[str] | None = None,
         now: datetime | None = None,
     ) -> CronJob:
         """Edit a job within the current conversation scope.
@@ -986,15 +1003,17 @@ class CronJobStore:
             until: Optional replacement for the job's last allowed run instant.
             clear_until: Remove the job's `until` bound.
             deliver_to: Optional replacement delivery target.
+            skills: Optional replacement pinned skills; an empty list unpins all.
             now: Timestamp used to recalculate `next_run_at` when schedule changes.
 
         Returns:
             Updated job.
 
         Raises:
-            CronJobError: If no scoped job matches, or the edit leaves no run
-                before `until`.
+            CronJobError: If no scoped job matches, the edit leaves no run
+                before `until`, or a skill name is invalid.
         """
+        pinned = None if skills is None else pinned_skills(skills)
         with self._lock:
             if until is not None and clear_until:
                 msg = "pass either until or clear_until, not both"
@@ -1030,6 +1049,7 @@ class CronJobStore:
                     next_run_at=next_run_at,
                     until=new_until,
                     deliver_to=job.deliver_to if deliver_to is None else deliver_to,
+                    skills=job.skills if pinned is None else pinned,
                 )
                 result.append(updated)
             if updated is None:
@@ -1812,6 +1832,43 @@ def _optional_literal_field(record: _Record, key: str, allowed: tuple[str, ...])
     if value is None or value in allowed:
         return value
     raise _field_error(key, value, f"one of {allowed} or null")
+
+
+def _list_field(record: _Record, key: str) -> list[object]:
+    value = record.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise _field_error(key, value, "a list or null")
+    return cast("list[object]", value)
+
+
+def pinned_skills(names: Iterable[object]) -> tuple[str, ...]:
+    """Validate skill names pinned to a job, dropping repeats but keeping order.
+
+    Names are not checked against installed skills, which can change before a
+    run; Deep Agents skips any it cannot find.
+
+    Args:
+        names: Candidate skill names.
+
+    Returns:
+        Unique valid names.
+
+    Raises:
+        CronJobError: If a name is not a lowercase skill name or there are
+            more than `MAX_PINNED_SKILLS`.
+    """
+    result: dict[str, None] = {}
+    for name in names:
+        if not isinstance(name, str) or not _SKILL_NAME.fullmatch(name):
+            msg = f"invalid skill name {name!r}: use lowercase letters, digits, and hyphens"
+            raise CronJobError(msg)
+        result[name] = None
+    if len(result) > MAX_PINNED_SKILLS:
+        msg = f"a job can pin at most {MAX_PINNED_SKILLS} skills, not {len(result)}"
+        raise CronJobError(msg)
+    return tuple(result)
 
 
 def _field_error(key: str, value: object, expected: str) -> CronJobError:

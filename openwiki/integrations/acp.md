@@ -3,9 +3,6 @@ type: protocol integration
 title: Agent Client Protocol
 description: How deepagents-acp adapts a LangGraph graph to an editor-facing ACP server, including sessions, streaming, interrupts, and optional recovery. It also explains dcode ACP launch and the ownership boundary between its in-process ACP graphs and normal loopback server sessions.
 tags: [acp, deepagents, langgraph, dcode, stdio, sessions, streaming]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
 sources:
   - id: openwiki-source-532ea636a0657c1d2714bd7a
     resource: repo://libs/acp/CHANGELOG.md
@@ -15,16 +12,16 @@ sources:
     resource: repo://libs/acp/deepagents_acp/server.py
   - id: openwiki-source-1ffb4d0f447fcc4e9ca248ef
     resource: repo://libs/acp/deepagents_acp/utils.py
+  - id: openwiki-source-c6d9f9d7206b6a3e9d7394fe
+    resource: repo://libs/acp/examples/local_context.py
   - id: openwiki-source-bb78950c8b36b7b9f6746e96
     resource: repo://libs/acp/pyproject.toml
   - id: openwiki-source-8288b43b279d5cf7aaf1505d
     resource: repo://libs/acp/tests/test_agent.py
-  - id: openwiki-source-50847de2816cad7dfeca96d7
-    resource: repo://libs/acp/tests/test_command_allowlist.py
-  - id: openwiki-source-912f6fd213a91dec13f6c089
-    resource: repo://libs/acp/tests/test_dangerous_patterns.py
-  - id: openwiki-source-6459ac49eafda0be2c80b813
-    resource: repo://libs/acp/tests/test_model_switching.py
+  - id: openwiki-source-f188d13aef04b643ced86520
+    resource: repo://libs/acp/tests/unit_tests/test_execute_permissions.py
+  - id: openwiki-source-986e87e057d803bd0fa17738
+    resource: repo://libs/acp/tests/unit_tests/test_local_context.py
   - id: openwiki-source-4d4186e9d62fb4abe495cdd0
     resource: repo://libs/code/deepagents_code/acp.py
   - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
@@ -37,7 +34,10 @@ sources:
     resource: repo://libs/code/tests/integration_tests/test_acp_mode.py
   - id: openwiki-source-e0e6f6b6ce0dbf7a671d682f
     resource: repo://libs/code/tests/unit_tests/test_main_acp_mode.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-13T08:11:05.854Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
 ---
 
 # Agent Client Protocol
@@ -49,7 +49,7 @@ There are two ways this repository uses that boundary:
 - A custom ACP process calls `run_agent` with `AgentServerACP` around a compatible compiled LangGraph graph or graph factory.
 - `dcode --acp` runs an ACP server over stdio in the dcode process. It constructs its session graphs locally; it does **not** start the normal dcode Textual UI or attach to a `RemoteGraph`.
 
-`deepagents-acp` version `0.0.12` requires Python 3.11 or later and `agent-client-protocol>=0.10.1`. Its `0.0.12` release scoped cancellation to the requested ACP session; the two prior releases added visible reasoning chunks and persistent-session loading.
+`deepagents-acp` version `0.0.13` requires Python 3.11 or later and `agent-client-protocol>=0.10.1`. Its `0.0.13` release narrows reusable shell approval to the exact command request and preserves local-context prompts across compaction. Version `0.0.12` scoped cancellation to the requested ACP session; the two earlier releases added visible reasoning chunks and persistent-session loading.
 
 ## Execution boundary in dcode
 
@@ -108,7 +108,7 @@ sequenceDiagram
 
 The `mode` and `model` ACP configuration options accept strings only. Unknown option IDs, unavailable modes, and unavailable models produce invalid-parameter errors; a valid selection resets the session graph and is persisted when loading is enabled. Factory calls receive the resulting `cwd`, mode, and model.
 
-`load_sessions=True` is a protocol capability, not storage. Creating or loading a durable session requires a graph compiled with a checkpointer, and restart recovery requires that checkpointer to outlive the server; the `MemorySaver` fallback used for a prompted graph without a saver is only ephemeral. Loading requires an ACP-marked checkpoint thread and the exact original cwd. It restores only still-supported persisted mode/model selections, rebuilds a factory graph when required, and replays conversation, visible assistant content and thoughts, tool activity, and plans through ACP updates. A missing, unrelated, or relocated session is rejected. For the underlying persistence model, see [State persistence](/openwiki/concepts/state-persistence.md).
+`load_sessions=True` is a protocol capability, not storage. Creating or loading a durable session requires a graph compiled with a checkpointer, and restart recovery requires that checkpointer to outlive the server; the `MemorySaver` fallback used for a prompted graph without a saver is only ephemeral. Loading requires an ACP-marked checkpoint thread and the exact original cwd. It restores only still-supported persisted mode/model selections, rebuilds a factory graph when required, and replays the retained conversation, visible assistant content and thoughts, tool activity, and plans through ACP updates. Internal messages marked `lc_source="local_context"` are deliberately excluded from both user-message replay and assistant-content projection, so backend-derived environment context never becomes editor transcript content. A missing, unrelated, or relocated session is rejected. For the underlying persistence model, see [State persistence](/openwiki/concepts/state-persistence.md).
 
 ## Prompt, stream, and permission projection
 
@@ -118,7 +118,13 @@ Cancellation is in-memory and session-scoped. `cancel(session_id)` sets that ses
 
 ACP can show only fixed permission choices. Free-form LangGraph `interrupt()` values are rejected; compatible graphs emit `HumanInTheLoopMiddleware`-style `action_requests`. After an interrupt stream update, the adapter waits for the stream iterator to close before reading checkpoint state, requests a decision from the client, and resumes with `Command(resume={"decisions": ...})`. A cancelled permission request is rejection.
 
-The offered choices are Approve, Reject, and Always allow. “Always allow” is adapter-memory state scoped to one ACP session, not durable authorization. Non-shell tools are allowlisted by name. For `execute`, all extracted command signatures must already be allowed and the command must not contain dangerous shell patterns before it is auto-approved. Dcode can remove those interrupts independently: its resolved YOLO policy passes `auto_approve=True` to graph creation, so the ACP adapter renders only interrupts the chosen dcode policy leaves for a human.
+The offered choices are Approve, Reject, and Always allow. “Always allow” is adapter-memory state scoped to one ACP session, not durable authorization. Non-shell tools are allowlisted by name. For `execute`, the reusable permission is an exact, canonical JSON representation of the full tool arguments paired with the current `AgentSessionContext` (`cwd`, mode, and model). Thus a changed command, timeout, environment, working directory, selector state, or session requires a new review; object-key order alone does not. The adapter offers “Always allow this exact command in this session” only when the request has a nonblank string command, serializable arguments, and known session context. Forgetting a session discards its exact-command permissions. Dcode can remove those interrupts independently: its resolved YOLO policy passes `auto_approve=True` to graph creation, so the ACP adapter renders only interrupts the chosen dcode policy leaves for a human.
+
+### Local context: model-only, compactable, and hidden from ACP
+
+The `LocalContextMiddleware` example detects the backend environment on the first interaction and appends that initial snapshot to the system prompt. It keeps that prompt snapshot fixed for prompt-cache stability. After a summarization event, it runs detection again once for that event: if the output changed, it appends a `HumanMessage` tagged `lc_source="local_context"` after the compaction cutoff, with escaped data and a content fingerprint. That message tells the model that it supersedes earlier local-context facts but is untrusted data, not instructions. If the snapshot is unchanged—or detection fails—the middleware records the cutoff without adding a duplicate message, preventing retry loops while retaining the original system-prompt context.
+
+Those internal messages preserve refreshed local context in graph state after compaction while remaining invisible to ACP clients: the live projection suppresses tagged content, and durable-session replay suppresses it again. Hosts that use this middleware should retain the tag when transforming messages; removing it could expose internal environment details to the editor transcript.
 
 ## MCP ownership
 
@@ -152,4 +158,6 @@ Dcode detects raw `--acp` before parsing to bypass Textual dependency checks and
 
 ## Focused verification
 
-`libs/code/tests/integration_tests/test_acp_mode.py` launches `deepagents --acp --no-mcp`, connects an ACP pipe client, initializes, opens a session, and checks for a returned session ID. `libs/code/tests/unit_tests/test_main_acp_mode.py` covers ACP-only argument validation, Auto classifier resolution, and ownership-fenced persistence: a second server cannot load an open thread, and an old configuration cannot write after the lease changes. The generic adapter tests cover session capabilities and recovery, selector validation, streaming, cancellation, and fixed-decision interrupts.
+`libs/code/tests/integration_tests/test_acp_mode.py` launches `deepagents --acp --no-mcp`, connects an ACP pipe client, initializes, opens a session, and checks for a returned session ID. `libs/code/tests/unit_tests/test_main_acp_mode.py` covers ACP-only argument validation, Auto classifier resolution, and ownership-fenced persistence: a second server cannot load an open thread, and an old configuration cannot write after the lease changes. The generic adapter tests cover session capabilities and recovery, selector validation, streaming, cancellation, fixed-decision interrupts, local-context suppression in live and replay paths, and recovery after compacted history.
+
+`libs/acp/tests/unit_tests/test_execute_permissions.py` is the security-focused regression suite for the new approval boundary: it verifies that only `approve_always` reuses permission, a byte-for-byte changed command or any changed argument/context is reviewed again, equivalent argument dictionaries with different key order reuse the grant, invalid requests receive no reusable option, and a forgotten or different session cannot inherit permission. `libs/acp/tests/unit_tests/test_local_context.py` verifies that the initial system prompt remains stable through refreshes, changed post-compaction snapshots are escaped and deduplicated, unchanged snapshots survive repeated compaction, and a failed refresh preserves the prior snapshot without retrying the same cutoff.

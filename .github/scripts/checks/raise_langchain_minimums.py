@@ -607,42 +607,32 @@ def lock_dirs_for(
 
 
 def _edit_markdown(edit: RequirementEdit) -> str:
-    """Render a requirement's identity and changed lower bound without its ceiling."""
-    old = Requirement(edit.old_requirement)
-    new = Requirement(edit.new_requirement)
-    dependency = edit.dependency_name
-    if old.extras:
-        dependency += f"[{','.join(sorted(old.extras))}]"
-    if old.marker:
-        dependency += f"; {old.marker}"
-    dependency = dependency.replace("|", r"\|")
-    return (
-        f"| `{dependency}` | `{_raiseable_specifier(old.specifier)}` → "
-        f"`{_raiseable_specifier(new.specifier)}` |"
+    """Render the affected package and any extras or marker on its dependency."""
+    project = tomllib.loads(
+        (REPO_ROOT / edit.manifest_path).read_text(encoding="utf-8")
     )
+    target = f"`{project['project']['name']}`"
+    requirement = Requirement(edit.old_requirement)
+    if requirement.extras:
+        target += f" (extras: `{','.join(sorted(requirement.extras))}`)"
+    if requirement.marker:
+        target += f"; `{requirement.marker}`"
+    return target.replace("|", r"\|")
 
 
 def edits_markdown(edits: Sequence[RequirementEdit], *, heading: str) -> str:
-    """Render compact lower-bound tables grouped by manifest for the PR/summary."""
-    grouped: dict[str, list[str]] = {}
+    """Render package targets grouped by dependency and changed lower bounds."""
+    grouped: dict[tuple[str, str, str], list[str]] = {}
     for edit in edits:
-        grouped.setdefault(edit.manifest_path, []).append(_edit_markdown(edit))
-    lines = [heading]
-    for manifest, rows in grouped.items():
-        project = tomllib.loads((REPO_ROOT / manifest).read_text(encoding="utf-8"))
-        package_name = project["project"]["name"]
-        lines.extend(
-            [
-                "",
-                f"### `{package_name}`",
-                "",
-                f"`{manifest}`",
-                "",
-                "| Dependency | Minimum |",
-                "|---|---|",
-            ]
+        old = _raiseable_specifier(Requirement(edit.old_requirement).specifier)
+        new = _raiseable_specifier(Requirement(edit.new_requirement).specifier)
+        key = (edit.dependency_name, str(old), str(new))
+        grouped.setdefault(key, []).append(_edit_markdown(edit))
+    lines = [heading, "", "| Dependency | Minimum | Targets |", "|---|---|---|"]
+    for (dependency, old, new), targets in sorted(grouped.items()):
+        lines.append(
+            f"| `{dependency}` | `{old}` → `{new}` | {', '.join(sorted(targets))} |"
         )
-        lines.extend(rows)
     return "\n".join(lines)
 
 

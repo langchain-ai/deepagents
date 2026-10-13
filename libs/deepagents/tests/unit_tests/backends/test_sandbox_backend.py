@@ -2925,6 +2925,62 @@ async def test_grep_remote_tool_parity(grep_shell: _ShellSandbox, tmp_path: Path
     ]
 
 
+@pytest.mark.parametrize(
+    ("glob", "expected"),
+    [
+        ("{a,b}.py", {"{a,b}.py"}),
+        ("#x.py", {"#x.py"}),
+        ("!x.py", {"!x.py"}),
+        ("a.py ", {"a.py "}),
+        ("[a.py", {"[a.py"}),
+        ("[[:alpha:]].py", {"a.py", "b.py"}),
+        ("a.py\\", {"a.py\\"}),
+        (r"\a.py", {"a.py"}),
+        ("**.py", {"a.py", "b.py", "{a,b}.py", "#x.py", "!x.py", "[a.py"}),
+    ],
+)
+async def test_grep_glob_dialect_compatibility(grep_shell: _ShellSandbox, tmp_path: Path, glob: str, expected: set[str]) -> None:
+    root = tmp_path / "search"
+    root.mkdir()
+    for name in ("a.py", "b.py", "{a,b}.py", "#x.py", "!x.py", "a.py ", "a.py\\", "[a.py"):
+        (root / name).write_text("needle\n")
+    assert len(grep_shell.grep("needle", str(root)).matches or []) == 8
+    assert _grep_paths(grep_shell, root, glob) == expected
+    result = await grep_shell.agrep("needle", str(root), glob)
+    assert result.error is None
+    assert {Path(match["path"]).name for match in result.matches or []} == expected
+
+
+@pytest.mark.parametrize(
+    ("excluded", "expected"),
+    [
+        ("{a,b}", {"a/file", "b/file", "[ab]/file", "cache/file", "cache1/file"}),
+        ("[ab]", {"{a,b}/file", "[ab]/file", "cache/file", "cache1/file"}),
+        ("cache**", {"a/file", "b/file", "{a,b}/file", "[ab]/file"}),
+        (r"\a", {"b/file", "{a,b}/file", "[ab]/file", "cache/file", "cache1/file"}),
+    ],
+)
+def test_grep_exclusion_dialect_compatibility(grep_shell: _ShellSandbox, tmp_path: Path, excluded: str, expected: set[str]) -> None:
+    root = tmp_path / "search"
+    for name in ("a", "b", "{a,b}", "[ab]", "cache", "cache1"):
+        (root / name).mkdir(parents=True)
+        (root / name / "file").write_text("needle\n")
+    assert len(grep_shell.grep("needle", str(root)).matches or []) == 6
+    grep_shell.grep_exclude_dirs = (excluded,)
+    assert _grep_paths(grep_shell, root) == expected
+
+
+@pytest.mark.parametrize("pattern", ["needle\nother", "needle\n", "\nneedle"])
+def test_grep_newline_patterns_are_alternatives(grep_shell: _ShellSandbox, tmp_path: Path, pattern: str) -> None:
+    root = tmp_path / "search"
+    root.mkdir()
+    (root / "file").write_text("needle\nother\n")
+    assert len(grep_shell.grep("needle", str(root)).matches or []) == 1
+    result = grep_shell.grep(pattern, str(root))
+    assert result.error is None
+    assert [match["text"] for match in result.matches or []] == ["needle", "other"]
+
+
 @pytest.mark.parametrize("count", [2, 3, 4])
 def test_grep_remote_tool_truncation(grep_shell: _ShellSandbox, tmp_path: Path, count: int) -> None:
     root = tmp_path / "search"

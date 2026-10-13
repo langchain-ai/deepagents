@@ -978,6 +978,16 @@ def _build_grep_cmd(
     *,
     exclude_dirs: tuple[str, ...] = (),
 ) -> str:
+    """Prefer rg while preserving GNU grep's wildcard and newline-pattern semantics.
+
+    Ripgrep uses gitignore globs: braces expand alternatives, leading !/# negate
+    or comment, and trailing spaces are stripped. Escape literal braces and
+    prefixes; conservatively retain GNU grep for classes, escapes, **, and
+    trailing whitespace rather than translating those dialects. Exclusions
+    containing such syntax also retain GNU semantics. Newline patterns are
+    alternatives in GNU grep but rejected by rg; explicit files retain GNU
+    include filtering and binary-file handling.
+    """
     search_path = shlex.quote(path or ".")
     excluded = _grep_excluded_dirs(path, exclude_dirs)
     # `-Z` separates the filename from line data with NUL, so filenames may
@@ -1026,7 +1036,7 @@ def _build_grep_cmd(
         rg_cmd = f"{rg_opts} --glob {shlex.quote(rg_glob)} {rg_args}"
     if (
         "\n" in pattern
-        or (glob and any(token in glob for token in ("[", "\\", "**")))
+        or (glob and (glob != glob.rstrip() or any(token in glob for token in ("[", "\\", "**"))))
         or any(any(token in name for token in ("[", "\\", "**", "{", "}", "/")) for name in excluded)
     ):
         rg_cmd = grep_cmd

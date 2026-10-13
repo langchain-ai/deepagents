@@ -645,6 +645,22 @@ def test_build_grep_cmd_slash_glob_does_not_mask_errors() -> None:
     assert "|| true" not in cmd
 
 
+def test_build_grep_cmd_slash_glob_runs_through_a_shell(tmp_path: Path) -> None:
+    """The template is wrapped in `python3 -c "..."`, so a stray double quote truncates the script."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("needle\n")
+
+    for max_count in (None, 5):
+        proc = subprocess.run(  # noqa: S603  # command is built from the project's sandbox template
+            ["/bin/sh", "-c", _build_grep_cmd("needle", str(tmp_path), "src/**/*.py", max_count)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0
+        assert proc.stdout == f"{tmp_path}/src/app.py\x001:needle\n"
+
+
 def test_build_grep_cmd_no_glob_uses_grep() -> None:
     """No glob falls through to the plain grep command."""
     cmd = _build_grep_cmd("needle", "/test", None)

@@ -50,6 +50,12 @@ class HookEvent(StrEnum):
     SUBAGENT_STOP = "SubagentStop"
 
 
+TOOL_HOOK_EVENTS = frozenset(
+    {HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE, HookEvent.POST_TOOL_USE_FAILURE}
+)
+"""Events that can deny or observe a tool call."""
+
+
 class HookOwner(StrEnum):
     """Process responsible for originating an event."""
 

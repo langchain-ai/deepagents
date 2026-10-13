@@ -17516,18 +17516,11 @@ class DeepAgentsApp(App):
             history = self._btw_history.setdefault(thread_id, [])
 
             def tool_hooks() -> bool:
-                from deepagents_code.hooks.models.domain import HookEvent
+                from deepagents_code.hooks.models.domain import TOOL_HOOK_EVENTS
 
                 # Side tools run outside the hook gate, so tool hooks could
                 # neither deny nor observe their file reads.
-                return any(
-                    self._hooks.has_handlers(event)
-                    for event in (
-                        HookEvent.PRE_TOOL_USE,
-                        HookEvent.POST_TOOL_USE,
-                        HookEvent.POST_TOOL_USE_FAILURE,
-                    )
-                )
+                return any(self._hooks.has_handlers(e) for e in TOOL_HOOK_EVENTS)
 
             if tool_hooks():
                 self.notify("File reads are off in /btw because tool hooks are set.")

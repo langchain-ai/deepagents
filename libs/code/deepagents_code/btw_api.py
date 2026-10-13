@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse, Response
 
 from deepagents_code.btw import BTW_OPERATION_ATTR, BtwLimitError, BtwOperation
 from deepagents_code.btw_cost import answer_with_cost, load_cost
-from deepagents_code.hooks.models.domain import HookEvent
+from deepagents_code.hooks.models.domain import TOOL_HOOK_EVENTS
 from deepagents_code.workspace import WorkspaceConflictError, require_thread_workspace
 
 if TYPE_CHECKING:
@@ -31,10 +31,6 @@ _OVERFLOW_DETAIL = (
     "Side question is too large for the model's context. Ask a narrower question."
 )
 
-_TOOL_HOOK_EVENTS = frozenset(
-    {HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE, HookEvent.POST_TOOL_USE_FAILURE}
-)
-
 
 def _tool_hooks_ran(state: Mapping[str, object]) -> bool:
     """Check whether the thread's last turn ran tool hooks on the server.
@@ -49,7 +45,7 @@ def _tool_hooks_ran(state: Mapping[str, object]) -> bool:
     events = gate.get("events") if isinstance(gate, dict) else None
     if not isinstance(events, (list, tuple, set, frozenset)):
         return False
-    return any(event in _TOOL_HOOK_EVENTS for event in events)
+    return any(event in TOOL_HOOK_EVENTS for event in events)
 
 
 def _limit_detail(exc: BtwLimitError | ContextOverflowError) -> str:

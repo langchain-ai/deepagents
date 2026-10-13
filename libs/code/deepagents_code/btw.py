@@ -269,8 +269,12 @@ async def _stream_answer(
     settings: Mapping[str, Any],
     on_text: Callable[[str], Awaitable[None]],
     retry_model: BaseChatModel,
+    *,
+    prefix: str = "",
 ) -> AIMessageChunk:
     """Retry before visible output; never replay an answer already being shown.
+
+    `prefix` starts the first visible fragment, such as a round separator.
 
     Returns:
         The complete response, including streamed tool calls.
@@ -285,30 +289,12 @@ async def _stream_answer(
     response = first
     async with aclosing(stream):
         if first.text:
-            await on_text(first.text)
+            await on_text(prefix + first.text)
         async for chunk in stream:
             response += chunk
             if fragment := chunk.text:
                 await on_text(fragment)
     return response
-
-
-def _separated(
-    on_text: Callable[[str], Awaitable[None]], *, after_text: bool
-) -> Callable[[str], Awaitable[None]]:
-    """Start a later round's streamed text on a new paragraph.
-
-    Returns:
-        A receiver that prefixes the first fragment when earlier text was shown.
-    """
-    prefix = _ROUND_SEPARATOR if after_text else ""
-
-    async def emit(fragment: str) -> None:
-        nonlocal prefix
-        await on_text(prefix + fragment)
-        prefix = ""
-
-    return emit
 
 
 def _conversation(state: Mapping[str, object]) -> list[AnyMessage]:
@@ -428,21 +414,13 @@ def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
             if isinstance(original, AIMessage)
             else original
         )
-        if not isinstance(message, ToolMessage):
-            transcript.extend(
-                ToolMessage(
-                    content=_PENDING_RESULT,
-                    tool_call_id=call_id,
-                    name=name,
-                )
-                for call_id, name in pending.items()
-            )
-            pending.clear()
         if isinstance(message, ToolMessage):
-            if message.tool_call_id not in pending:
+            if pending.pop(message.tool_call_id, None) is None:
                 transcript.append(_tool_result_context(message))
                 continue
-            pending.pop(message.tool_call_id)
+        else:
+            transcript.extend(_placeholders(pending))
+            pending.clear()
         if isinstance(message, AIMessage):
             # Providers send unparsable calls too, so they need results as well.
             pending.update(
@@ -453,15 +431,20 @@ def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
                 }
             )
         transcript.append(cast("AnyMessage", message))
-    transcript.extend(
-        ToolMessage(
-            content=_PENDING_RESULT,
-            tool_call_id=call_id,
-            name=name,
-        )
-        for call_id, name in pending.items()
-    )
+    transcript.extend(_placeholders(pending))
     return transcript
+
+
+def _placeholders(pending: Mapping[str, str]) -> list[ToolMessage]:
+    """Answer main tool calls that have no result in the snapshot.
+
+    Returns:
+        One placeholder result per pending call id.
+    """
+    return [
+        ToolMessage(content=_PENDING_RESULT, tool_call_id=call_id, name=name)
+        for call_id, name in pending.items()
+    ]
 
 
 def _bound_result(message: ToolMessage) -> ToolMessage:
@@ -542,16 +525,6 @@ def _bindable(schema: dict[str, Any]) -> dict[str, Any] | BaseTool:
 
 def _unused_tool(**_: object) -> None:
     """Never runs: side calls execute only the main read tools."""
-
-
-def _tool_name(schema: Mapping[str, Any]) -> object:
-    """Read a function tool's name from the nested or flat schema form.
-
-    Returns:
-        The name, or `None` when the schema has none.
-    """
-    function = schema.get("function")
-    return (function if isinstance(function, Mapping) else schema).get("name")
 
 
 def _instructions(tools: Sequence[str]) -> str:
@@ -692,7 +665,9 @@ class _SideRequest:
         self,
         messages: Sequence[BaseMessage],
         on_text: Callable[[str], Awaitable[None]] | None,
-    ) -> BaseMessage:
+        *,
+        prefix: str = "",
+    ) -> AIMessage:
         """Call the model once, streaming text to `on_text` when given.
 
         Returns:
@@ -703,7 +678,13 @@ class _SideRequest:
         bound = self.model.bind_tools(self.tools) if self.tools else self.model
         if on_text is not None:
             return await _stream_answer(
-                bound, messages, self.config, self.settings, on_text, self.model
+                bound,
+                messages,
+                self.config,
+                self.settings,
+                on_text,
+                self.model,
+                prefix=prefix,
             )
         return await aretry_model_call(
             self.model,
@@ -739,27 +720,6 @@ def _blocked_reason(
     return None
 
 
-def _should_run_tools(
-    response: BaseMessage, round_index: int, *, can_run: bool
-) -> bool:
-    """Decide whether the side answer continues with a tool round.
-
-    Returns:
-        `True` to run the response's tool calls, `False` when it is the answer.
-
-    Raises:
-        BtwLimitError: If the response has tool calls that cannot run.
-    """
-    if not isinstance(response, AIMessage) or not (
-        response.tool_calls or response.invalid_tool_calls
-    ):
-        return False
-    reason = _blocked_reason(response, round_index, can_run=can_run)
-    if reason is None:
-        return True
-    raise BtwLimitError(reason)
-
-
 async def _append_note(
     note: str,
     parts: list[str],
@@ -770,7 +730,7 @@ async def _append_note(
     text = f"_{note}_"
     parts.append(text)
     if on_text is not None:
-        await _separated(on_text, after_text=True)(text)
+        await on_text(_ROUND_SEPARATOR + text)
 
 
 def _tool_messages(result: object) -> list[BaseMessage]:
@@ -805,13 +765,13 @@ def _round_results(
     ]
     if round_index == _MAX_TOOL_ROUNDS - 1:
         # Media reads follow their tool result with a human message.
-        last = max(
+        last = next(
             (
                 i
-                for i, message in enumerate(results)
-                if isinstance(message, ToolMessage)
+                for i in range(len(results) - 1, -1, -1)
+                if isinstance(results[i], ToolMessage)
             ),
-            default=None,
+            None,
         )
         if last is not None:
             results[last] = _with_note(
@@ -839,18 +799,16 @@ async def _run_rounds(
     parts: list[str] = []
     for round_index in range(_MAX_TOOL_ROUNDS + 1):
         response = await request.generate(
-            messages,
-            None if on_text is None else _separated(on_text, after_text=bool(parts)),
+            messages, on_text, prefix=_ROUND_SEPARATOR if parts else ""
         )
         if response.text:
             parts.append(response.text)
-        try:
-            if not _should_run_tools(response, round_index, can_run=bool(executable)):
-                break
-        except BtwLimitError as exc:
+        if not (response.tool_calls or response.invalid_tool_calls):
+            break
+        if reason := _blocked_reason(response, round_index, can_run=bool(executable)):
             if not response.text:
-                raise
-            await _append_note(str(exc), parts, on_text)
+                raise BtwLimitError(reason)
+            await _append_note(reason, parts, on_text)
             break
         result = await node.ainvoke(
             {"messages": [response]}, config=request.config, runtime=Runtime()
@@ -1077,12 +1035,11 @@ class BtwOperation(AgentMiddleware):
             if thread_id in self._snapshots
             else state.get("_btw_tools")
         )
-        tools = (
-            _client_tools(schemas)
-            if isinstance(schemas, list)
-            else _client_tools(self._read_tools if read_tools else [])
-        )
-        advertised = {_tool_name(tool) for tool in tools}
+        if isinstance(schemas, list):
+            tools = _client_tools(schemas)
+        else:
+            tools = _client_tools(self._read_tools) if read_tools else []
+        advertised = {tool.get("function", {}).get("name") for tool in tools}
         executable = [
             tool for tool in self._read_tools if read_tools and tool.name in advertised
         ]

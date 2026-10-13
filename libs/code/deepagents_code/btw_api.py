@@ -13,10 +13,11 @@ from starlette.responses import JSONResponse, Response
 
 from deepagents_code.btw import BTW_OPERATION_ATTR, BtwLimitError, BtwOperation
 from deepagents_code.btw_cost import answer_with_cost, load_cost
+from deepagents_code.hooks.models.domain import HookEvent
 from deepagents_code.workspace import WorkspaceConflictError, require_thread_workspace
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Coroutine
+    from collections.abc import Awaitable, Callable, Coroutine, Mapping
 
     from starlette.requests import Request
     from starlette.types import Receive, Scope, Send
@@ -29,6 +30,26 @@ _MAX_HISTORY_LENGTH = 128_000
 _OVERFLOW_DETAIL = (
     "Side question is too large for the model's context. Ask a narrower question."
 )
+
+_TOOL_HOOK_EVENTS = frozenset(
+    {HookEvent.PRE_TOOL_USE, HookEvent.POST_TOOL_USE, HookEvent.POST_TOOL_USE_FAILURE}
+)
+
+
+def _tool_hooks_ran(state: Mapping[str, object]) -> bool:
+    """Check whether the thread's last turn ran tool hooks on the server.
+
+    Side reads skip the hook gate, so the server keeps them off even when a
+    client asks for them.
+
+    Returns:
+        `True` when the checkpointed hook gate includes a tool event.
+    """
+    gate = state.get("_hooks_session_gate")
+    events = gate.get("events") if isinstance(gate, dict) else None
+    if not isinstance(events, (list, tuple, set, frozenset)):
+        return False
+    return any(event in _TOOL_HOOK_EVENTS for event in events)
 
 
 def _limit_detail(exc: BtwLimitError | ContextOverflowError) -> str:
@@ -190,7 +211,8 @@ async def btw(request: Request) -> Response:
                 status_code=422,
             )
         history = _parse_history(payload.get("history", []))
-        # Off unless the client confirms no tool hook could deny or audit a read.
+        # Off unless the client confirms no tool hook could deny or audit a read;
+        # the server also checks the hooks its last turn ran.
         read_tools = payload.get("read_tools", False)
         if not isinstance(read_tools, bool):
             return JSONResponse(
@@ -216,6 +238,7 @@ async def btw(request: Request) -> Response:
             # responses without saved costs. Keep the checkpoint untouched.
             state = dict(snapshot.get("values") or {})
             state["messages"] = convert_to_messages(state.get("messages", []))
+            read_tools = read_tools and not _tool_hooks_ran(state)
             if "text/event-stream" in request.headers.get("accept", ""):
                 return _BtwStreamingResponse(
                     request,

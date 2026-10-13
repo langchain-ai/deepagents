@@ -1185,6 +1185,84 @@ async def test_native_anthropic_mcp_is_absent_from_provider_request(
         )
 
 
+async def test_anthropic_side_request_reuses_main_cache_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from anthropic import AsyncAnthropic
+    from deepagents.backends import StateBackend
+    from deepagents.middleware.filesystem import FilesystemMiddleware
+    from langchain_anthropic import ChatAnthropic
+    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+    from pydantic import SecretStr
+
+    payloads: list[dict[str, object]] = []
+
+    def respond(request: Request) -> Response:
+        payloads.append(json.loads(request.content))
+        return Response(
+            200,
+            json={
+                "id": "answer",
+                "type": "message",
+                "role": "assistant",
+                "model": "test-model",
+                "content": [{"type": "text", "text": "answer"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 10, "output_tokens": 1},
+            },
+        )
+
+    async with AsyncAnthropic(
+        api_key="test",
+        http_client=AsyncClient(transport=MockTransport(respond)),
+        max_retries=0,
+    ) as client:
+        monkeypatch.setattr(
+            ChatAnthropic, "_async_client", property(lambda _self: client)
+        )
+        model = ChatAnthropic(model_name="test-model", api_key=SecretStr("test"))
+        operation = BtwOperation(model, "system", None)
+        caching = AnthropicPromptCachingMiddleware()
+
+        async def send(request: ModelRequest) -> ModelResponse:
+            bound = request.model.bind_tools(request.tools)
+            message = await bound.ainvoke(
+                [cast("SystemMessage", request.system_message), *request.messages],
+                **request.model_settings,
+            )
+            return ModelResponse(result=[message])
+
+        async def cache(request: ModelRequest) -> ModelResponse:
+            return cast("ModelResponse", await caching.awrap_model_call(request, send))
+
+        # The SDK runs prompt caching inside custom middleware such as `BtwOperation`.
+        await operation.awrap_model_call(
+            ModelRequest(
+                model=model,
+                messages=[HumanMessage(content="main")],
+                system_message=SystemMessage(content="Main system"),
+                tools=[*FilesystemMiddleware(backend=StateBackend()).tools],
+                runtime=Runtime(
+                    execution_info=ExecutionInfo(
+                        thread_id="thread",
+                        checkpoint_id="checkpoint",
+                        checkpoint_ns="",
+                        task_id="task",
+                    )
+                ),
+            ),
+            cache,
+        )
+        state = {"messages": [HumanMessage("main"), AIMessage("answer")]}
+        assert await operation.answer("thread", state, "why") == "answer"
+
+    main, side = payloads
+    assert side["cache_control"] == main["cache_control"]
+    assert side["system"] == main["system"]
+    assert side["tools"] == main["tools"]
+    assert cast("list", side["messages"])[0] == cast("list", main["messages"])[0]
+
+
 @pytest.mark.parametrize(
     "payload",
     [

@@ -502,8 +502,12 @@ def _client_tools(tools: Sequence[object]) -> list[dict[str, Any]]:
     return schemas
 
 
-def _bindable(schema: dict[str, Any]) -> dict[str, Any] | BaseTool:
+def _bindable(
+    schema: dict[str, Any], *, stub: bool = False
+) -> dict[str, Any] | BaseTool:
     """Rebuild a tool with saved extras so providers bind them as before.
+
+    `stub` forces a tool stub, which prompt caching needs to tag a tool.
 
     Returns:
         `schema`, or a tool stub that carries its extras.
@@ -512,14 +516,14 @@ def _bindable(schema: dict[str, Any]) -> dict[str, Any] | BaseTool:
 
     extras = schema.get(_EXTRAS_KEY)
     function = schema.get("function")
-    if not isinstance(extras, dict) or not isinstance(function, dict):
+    if not isinstance(function, dict) or not (stub or isinstance(extras, dict)):
         return schema
     return StructuredTool(
         name=function["name"],
         description=function.get("description", ""),
         args_schema=function.get("parameters", {}),
         func=_unused_tool,
-        extras=extras,
+        extras=extras if isinstance(extras, dict) else None,
     )
 
 
@@ -634,6 +638,25 @@ def _side_messages(
     ]
 
 
+def _with_prompt_caching(request: ModelRequest) -> ModelRequest:
+    """Tag `request` as the SDK's Anthropic prompt caching middleware would.
+
+    Returns:
+        The tagged request, or `request` for other providers.
+    """
+    from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
+
+    tagged = [request]
+
+    def keep(request: ModelRequest) -> ModelResponse:
+        tagged[0] = request
+        return ModelResponse(result=[])
+
+    caching = AnthropicPromptCachingMiddleware(unsupported_model_behavior="ignore")
+    caching.wrap_model_call(request, keep)
+    return tagged[0]
+
+
 @dataclass(frozen=True)
 class _SideRequest:
     """Resolved settings shared by every model call of one side answer."""
@@ -643,6 +666,42 @@ class _SideRequest:
     settings: dict[str, Any]
     tools: list[dict[str, Any] | BaseTool]
     config: RunnableConfig
+
+    @classmethod
+    def cached(
+        cls,
+        model: BaseChatModel,
+        system: SystemMessage,
+        settings: dict[str, Any],
+        tools: Sequence[dict[str, Any]],
+        config: RunnableConfig,
+    ) -> _SideRequest:
+        """Add the cache breakpoints that the main call's prompt caching adds.
+
+        `BtwOperation` captures the main request before the SDK's prompt
+        caching middleware tags it, so an untagged side call reads no cache.
+
+        Returns:
+            A request that can read the main call's cached prefix.
+        """
+        bindable = [_bindable(tool) for tool in tools]
+        request = ModelRequest(
+            model=model,
+            system_message=system,
+            messages=[],
+            # Caching tags only a tool stub, so the last tool must be one.
+            tools=[
+                *bindable[:-1],
+                *(_bindable(tool, stub=True) for tool in tools[-1:]),
+            ],
+            model_settings=settings,
+            runtime=Runtime(),
+        )
+        tagged = _with_prompt_caching(request)
+        if tagged is request:
+            return cls(model, system, settings, bindable, config)
+        system = tagged.system_message or system
+        return cls(model, system, tagged.model_settings, tagged.tools, config)
 
     def prepare(self, messages: Sequence[BaseMessage]) -> list[AnyMessage]:
         """Fit `messages` and the system prompt to the model's input budget.
@@ -1100,11 +1159,11 @@ class BtwOperation(AgentMiddleware):
             tools, executable = self._side_tools(
                 thread_id, state, read_tools=read_tools
             )
-            request = _SideRequest(
+            request = _SideRequest.cached(
                 model,
                 system,
                 settings,
-                [_bindable(tool) for tool in tools],
+                tools,
                 {"callbacks": [], "metadata": {"thread_id": thread_id}},
             )
             messages = _side_messages(

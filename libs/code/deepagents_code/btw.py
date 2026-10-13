@@ -1047,7 +1047,9 @@ class BtwOperation(AgentMiddleware):
             parts = await _run_rounds(
                 request, request.prepare(messages), executable, on_text
             )
-        text = _ROUND_SEPARATOR.join(parts)
-        return (
-            text.strip() or "No text answer was returned. Try rephrasing your question."
-        )
+        text = _ROUND_SEPARATOR.join(parts).strip()
+        if not text:
+            # A content filter, thinking-only output, or a cut-off stream.
+            logger.warning("Side answer for thread %s had no text", thread_id)
+            return "No text answer was returned. Try rephrasing your question."
+        return text

@@ -532,7 +532,7 @@ class RemoteAgent:
             history: Completed question/answer pairs from this side conversation.
             on_text: Optional receiver for streamed answer text.
             read_tools: Let the server run read-only file tools. Side questions
-                cannot run `PreToolUse` hooks, so leave this off when any are
+                cannot run tool hooks, so leave this off when any are
                 configured.
 
         Returns:

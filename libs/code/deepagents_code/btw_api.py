@@ -190,7 +190,7 @@ async def btw(request: Request) -> Response:
                 status_code=422,
             )
         history = _parse_history(payload.get("history", []))
-        # Off unless the client confirms no `PreToolUse` hook could deny a read.
+        # Off unless the client confirms no tool hook could deny or audit a read.
         read_tools = payload.get("read_tools", False)
         if not isinstance(read_tools, bool):
             return JSONResponse(

@@ -708,9 +708,9 @@ class BtwOperation(AgentMiddleware):
             history: Completed question/answer pairs from this side conversation.
             on_text: Optional receiver for text fragments as the model produces them.
             read_tools: Execute the main allowlist's read-only file tools.
-                Side calls bypass the main tool middleware, including
-                `PreToolUse` hooks, so enable this only when no hook could
-                deny a read.
+                Side calls bypass the main tool middleware, including tool
+                hooks, so enable this only when no hook could deny or audit
+                a read.
 
         Returns:
             The ephemeral answer text.

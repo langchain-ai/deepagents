@@ -17515,21 +17515,34 @@ class DeepAgentsApp(App):
 
             history = self._btw_history.setdefault(thread_id, [])
 
+            def tool_hooks() -> bool:
+                from deepagents_code.hooks.models.domain import HookEvent
+
+                # Side tools run outside the hook gate, so tool hooks could
+                # neither deny nor observe their file reads.
+                return any(
+                    self._hooks.has_handlers(event)
+                    for event in (
+                        HookEvent.PRE_TOOL_USE,
+                        HookEvent.POST_TOOL_USE,
+                        HookEvent.POST_TOOL_USE_FAILURE,
+                    )
+                )
+
+            if tool_hooks():
+                self.notify("File reads are off in /btw because tool hooks are set.")
+
             async def answer(
                 question: str,
                 on_text: Callable[[str], Awaitable[None]] | None = None,
             ) -> str:
-                from deepagents_code.hooks.models.domain import HookEvent
-
                 config = {"configurable": {"thread_id": thread_id}}
                 text = await remote.abtw(
                     question,
                     config=config,
                     history=tuple(history),
                     on_text=on_text,
-                    # Side tools run outside the hook gate, so a `PreToolUse`
-                    # policy could not deny their file reads.
-                    read_tools=not self._hooks.has_handlers(HookEvent.PRE_TOOL_USE),
+                    read_tools=not tool_hooks(),
                 )
                 cost = remote.get_cached_session_cost(config)
                 if cost is not None and thread_id == self._lc_thread_id:

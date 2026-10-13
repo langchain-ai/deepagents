@@ -15,7 +15,7 @@ on:
       arms:
         description: 'JSON list, e.g. ["playwright","browser-use","wdio","agent-browser"]'
         type: string
-        default: '["browser-use","wdio","agent-browser"]'
+        default: '["playwright","browser-use","agent-browser"]'
       dataset:
         description: "LangSmith dataset name"
         type: string
@@ -60,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arm: ${{ fromJSON(github.event.inputs.arms || '["browser-use","wdio","agent-browser"]') }}
+        arm: ${{ fromJSON(github.event.inputs.arms || '["playwright","browser-use","agent-browser"]') }}
     name: "local (${{ matrix.arm }})"
     runs-on: ubuntu-latest
     environment: oss
@@ -138,6 +138,14 @@ jobs:
           # runner has no display, so anything that ignored it would fail loudly
           # rather than silently opening a window.
           BROWSER_USE_HEADLESS: "true"
+          # browser-use drives a Browserbase session per task rather than a
+          # local Chrome, which is how the hosted-MCP arm sidestepped every
+          # browser-on-a-runner problem these arms hit. Sessions are minted
+          # with keepAlive and released explicitly after each task, so live
+          # sessions track concurrency instead of accumulating toward the
+          # project cap.
+          BROWSERBASE_API_KEY: ${{ secrets.BROWSERBASE_API_KEY }}
+          BROWSERBASE_PROJECT_ID: ${{ secrets.BROWSERBASE_PROJECT_ID }}
           BROWSER_USE_CONFIG_PATH: /home/runner/.config/browseruse/config.json
           ARM: ${{ matrix.arm }}
           DATASET: ${{ github.event.inputs.dataset || 'webvoyager-100' }}

@@ -19,9 +19,16 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import logging
 import os
+import subprocess
 import sys
+import tempfile
 import time
+from pathlib import Path
+
+import httpx
 
 from langchain.agents import create_agent
 from langchain_core.tracers.context import tracing_v2_enabled
@@ -76,23 +83,27 @@ ARMS: dict[str, dict] = {
             "to a second agent, which is not what is being measured here."
         ),
     },
+    # BLOCKED, left here as a record rather than deleted. `provider: external`
+    # wants a W3C WebDriver endpoint on localhost -- "Unable to connect to
+    # http://127.0.0.1:4445/" -- and Browserbase speaks CDP, so there is no URL
+    # that satisfies it. Its real remote options are the named providers
+    # (browserstack, saucelabs, testingbot), which need their own accounts.
     "wdio": {
         "server": {
             "command": "npx",
             "args": ["-y", "@wdio/mcp@latest"],
             "transport": "stdio",
         },
+        # `external` plus a webdriverConfig pointed at the session: the
+        # provider enum is local/browserstack/saucelabs/testmu/testingbot/
+        # digitalai/external, and only the last one takes an arbitrary endpoint.
         "extra": (
-            "\n\nStart with start_session "
-            "Start with start_session using exactly:\n"
-            '{"browser": "chrome", "headless": true, "capabilities": '
-            '{"goog:chromeOptions": {"binary": "/usr/bin/google-chrome", '
-            '"args": ["--no-sandbox", "--disable-dev-shm-usage", '
-            '"--disable-gpu"]}}}\n'
-            "Neither the binary nor those args is optional on a CI runner: "
-            "left to itself WebdriverIO resolves its own Chrome for Testing, "
-            "which exits before the session is usable. Call close_session at "
-            "the end."
+            "\n\nStart with start_session using exactly:\n"
+            '{{"provider": "external", "browser": "chrome", "headless": true, '
+            '"webdriverConfig": {{"capabilities": {{"goog:chromeOptions": '
+            '{{"debuggerAddress": "{cdp_url}"}}}}}}}}\n'
+            "That endpoint is a hosted browser; do not try to launch a local "
+            "one. Call close_session at the end."
         ),
     },
 }
@@ -111,13 +122,87 @@ SHELL_ARMS = {
     ),
 }
 
+BROWSERBASE_SESSIONS = "https://api.browserbase.com/v1/sessions"
+
+
+def _bb_headers() -> dict[str, str]:
+    return {"X-BB-API-Key": os.environ["BROWSERBASE_API_KEY"],
+            "Content-Type": "application/json"}
+
+
+def browserbase_session() -> tuple[str, str]:
+    """Mint a Browserbase session; return its id and CDP endpoint.
+
+    The hosted-MCP arm never had a browser to provision, which is why it never
+    hit any of the Chrome-on-a-runner problems these arms did. Same trick:
+    hand them a remote browser instead of installing one.
+
+    `keepAlive` is required, not a nicety. Without it the session ends on the
+    first disconnect -- which happens during MCP tool discovery, long before
+    the task runs -- and the real connection then gets `HTTP 410`.
+    """
+    response = httpx.post(
+        BROWSERBASE_SESSIONS, timeout=60, headers=_bb_headers(),
+        json={"projectId": os.environ["BROWSERBASE_PROJECT_ID"],
+              "keepAlive": True,
+              "timeout": SESSION_TIMEOUT_S},
+    )
+    response.raise_for_status()
+    body = response.json()
+    # connectUrl is only on the create response, never on a later read.
+    return body["id"], body["connectUrl"]
+
+
+def release_browserbase(session_id: str) -> None:
+    """End a session. `keepAlive` means nothing else will.
+
+    One suite leaked its way to the project's full 75-slot concurrency cap
+    this week and started failing every later task; this is the other half of
+    that lesson.
+    """
+    try:
+        httpx.post(f"{BROWSERBASE_SESSIONS}/{session_id}", timeout=30,
+                   headers=_bb_headers(),
+                   json={"projectId": os.environ["BROWSERBASE_PROJECT_ID"],
+                         "status": "REQUEST_RELEASE"})
+    except Exception:  # noqa: BLE001 - teardown must not fail a finished task
+        logging.getLogger(__name__).debug("releasing %s failed", session_id, exc_info=True)
+
+
+def browser_use_config(cdp_url: str) -> str:
+    """Write a browser-use config pinned to `cdp_url`, return its path.
+
+    One file per task, because `BROWSER_USE_CONFIG_PATH` is read per server
+    process and every task spawns its own. The file is minted by browser-use
+    and then patched: a hand-written one is treated as old-format and silently
+    replaced with a fresh default.
+    """
+    directory = Path(tempfile.mkdtemp(prefix="browseruse-"))
+    path = directory / "config.json"
+    env = {**os.environ, "BROWSER_USE_CONFIG_PATH": str(path)}
+    subprocess.run(
+        ["uv", "run", "--no-project", "--with", "browser-use", "python", "-c",
+         "from browser_use.config import load_browser_use_config; load_browser_use_config()"],
+        env=env, check=True, capture_output=True,
+    )
+    config = json.loads(path.read_text())
+    for entry in config["browser_profile"].values():
+        if entry.get("default"):
+            entry.update(headless=True, cdp_url=cdp_url)
+    path.write_text(json.dumps(config, indent=2))
+    return str(path)
+
+
 ANSWER_RULES = """Answer directly and concisely, from what the page actually showed.
 If the site blocks you or the information is not there, say exactly that and
 why. Never guess a value you did not read."""
 
+REMOTE_BROWSER_ARMS = {"browser-use", "wdio"}
+
 INSTRUCTIONS = "Browse with the tools you have been given to answer the question.\n\n" + ANSWER_RULES
 
 MAX_SECONDS = 600
+SESSION_TIMEOUT_S = 900  # a task cap of 600s plus room for setup
 
 # Every arm in this benchmark runs the same agent model, deployed or local.
 # An earlier revision of this file typed "claude-sonnet-5" here while the five
@@ -131,6 +216,7 @@ async def run_one(arm, ls, project, ex, sem, out, rep=0):
         inp = ex.inputs
         t0 = time.time()
         answer, steps, run_id, status = "", 0, None, "ok"
+        session_id = None
         try:
             if arm in SHELL_ARMS:
                 from deepagents import create_deep_agent
@@ -142,11 +228,22 @@ async def run_one(arm, ls, project, ex, sem, out, rep=0):
                     system_prompt=SHELL_ARMS[arm] + "\n\n" + ANSWER_RULES,
                 )
             else:
-                client = MultiServerMCPClient({arm: ARMS[arm]["server"]})
+                server = dict(ARMS[arm]["server"])
+                extra = ARMS[arm]["extra"]
+                if arm in REMOTE_BROWSER_ARMS:
+                    # A Browserbase session per task, so neither arm needs a
+                    # browser installed where it runs.
+                    session_id, cdp = browserbase_session()
+                    if arm == "browser-use":
+                        server["env"] = {**server.get("env", os.environ),
+                                         "BROWSER_USE_CONFIG_PATH": browser_use_config(cdp)}
+                    else:
+                        extra = extra.format(cdp_url=cdp)
+                client = MultiServerMCPClient({arm: server})
                 agent = create_agent(
                     model=MODEL,
                     tools=await client.get_tools(),
-                    system_prompt=INSTRUCTIONS + ARMS[arm]["extra"],
+                    system_prompt=INSTRUCTIONS + extra,
                 )
             # The local counterpart of the deployment's `langsmith_tracing=`:
             # it roots the run in the experiment project and binds it to the
@@ -168,6 +265,9 @@ async def run_one(arm, ls, project, ex, sem, out, rep=0):
             answer = (c or "").strip()
         except Exception as err:  # noqa: BLE001 - one task must not stop the suite
             status = f"{type(err).__name__}: {str(err)[:90]}"
+        finally:
+            if session_id:
+                release_browserbase(session_id)
 
         secs = round(time.time() - t0, 1)
         scores = None

@@ -41,7 +41,7 @@ from langchain_quickjs._ptc import (
     filter_tools_for_ptc,
     render_ptc_prompt,
 )
-from langchain_quickjs._repl import _Registry
+from langchain_quickjs._repl import _DEFAULT_MAX_SUBAGENT_CONCURRENCY, _Registry
 from langchain_quickjs._snapshot import (
     encode_snapshot,
     normalize_signing_key,
@@ -162,6 +162,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 HITL approval per dispatch. Gate the `eval` tool itself, add
                 approval middleware inside subagent specs, or set
                 `subagents=False` if per-dispatch parent approval is required.
+        max_subagent_concurrency: Positive integer limiting simultaneous `task()`
+            calls per REPL, defaulting to 32. Excess calls wait for capacity.
+            Higher values increase memory use, downstream load, and model cost;
+            use external admission controls when increasing this limit.
+            This is not a process-wide limit or a total dispatch budget.
         ptc: Programmatic tool calling — expose agent tools inside the
             REPL as `tools.<camelCase>(input) => Promise<string>`. One
             `eval` call can then orchestrate many tool calls (loops,
@@ -235,6 +240,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
         capture_console: bool = True,
         subagents: bool = True,
+        max_subagent_concurrency: int = _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
         ptc: PTCOption | None = None,
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
@@ -248,6 +254,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if max_snapshot_bytes is not None and max_snapshot_bytes < 1:
             msg = "`max_snapshot_bytes` must be >= 1 or None"
             raise ValueError(msg)
+        if type(max_subagent_concurrency) is not int or max_subagent_concurrency < 1:
+            msg = "`max_subagent_concurrency` must be a positive integer"
+            raise ValueError(msg)
         self._memory_limit = memory_limit
         self._timeout = timeout
         self._max_ptc_calls = max_ptc_calls
@@ -255,6 +264,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._max_result_chars = max_result_chars
         self._capture_console = capture_console
         self._subagents = subagents
+        self._max_subagent_concurrency = max_subagent_concurrency
         self._ptc = ptc
         self._mode = _resolve_mode(mode=mode)
         self._max_snapshot_bytes = (
@@ -272,6 +282,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             max_stdout_chars=max_result_chars,
             max_ptc_calls=max_ptc_calls,
             subagents_enabled=subagents,
+            max_subagent_concurrency=max_subagent_concurrency,
         )
         self._memory_limit_mb = memory_limit // (1024 * 1024)
         self._base_prompt_cache: dict[bool, str] = {}
@@ -541,7 +552,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
 
         subagent_section = ""
         if self._subagents and find_subagent_task_tool(request_tools) is not None:
-            subagent_section = render_subagent_system_prompt(tool_name=self._tool_name)
+            subagent_section = render_subagent_system_prompt(
+                tool_name=self._tool_name,
+                max_subagent_concurrency=self._max_subagent_concurrency,
+            )
 
         if self._ptc is None:
             return self._base_prompt(ptc_attached=False) + subagent_section

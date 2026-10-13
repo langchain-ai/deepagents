@@ -31,9 +31,13 @@ from langsmith import Client
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from experiment_native import DATASET, PROMPT, grade  # noqa: E402
 
-# Headless either way: Playwright by flag, WebdriverIO by instruction, because
-# its `start_session` takes `headless` as a tool argument and the server has no
-# CLI switch for it.
+# Every arm runs headless, by a different mechanism each time:
+#   playwright    --headless flag
+#   browser-use   BROWSER_USE_HEADLESS env var
+#   wdio          a `start_session` tool argument -- no CLI switch exists, so
+#                 it has to come from the prompt and is worth checking in the
+#                 traces rather than assuming
+#   agent-browser headless by default; `--headed` is the opt-in
 ARMS: dict[str, dict] = {
     "playwright": {
         "server": {
@@ -42,6 +46,21 @@ ARMS: dict[str, dict] = {
             "transport": "stdio",
         },
         "extra": "",
+    },
+    # Ships its own agent loop as `retry_with_browser_use_agent`; the system
+    # prompt forbids it, so this measures browser-use's tool surface rather
+    # than browser-use's agent.
+    "browser-use": {
+        "server": {
+            "command": "uv",
+            "args": ["run", "--with", "browser-use", "python", "-m", "browser_use.mcp.server"],
+            "transport": "stdio",
+            "env": {**os.environ, "BROWSER_USE_HEADLESS": "true"},
+        },
+        "extra": (
+            "\n\nDo not call retry_with_browser_use_agent: it delegates the whole task "
+            "to a second agent, which is not what is being measured here."
+        ),
     },
     "wdio": {
         "server": {
@@ -56,11 +75,25 @@ ARMS: dict[str, dict] = {
     },
 }
 
-INSTRUCTIONS = """Browse with the tools you have been given to answer the question.
+SHELL_ARMS = {
+    # Vercel Labs' agent-browser is a CLI, so the agent drives it through
+    # `execute` -- the same shape as the sandbox `browse` CLI arm, and the
+    # reason this runner needs two kinds of arm rather than one.
+    "agent-browser": (
+        "You browse by running the `agent-browser` CLI through `execute`.\n\n"
+        "Run `agent-browser skills get core --full` first: it ships the command\n"
+        "reference and the ref/selector patterns, and is version-matched to the\n"
+        "CLI. Then use `agent-browser open <url>`, `read`, `click`, and friends.\n"
+        "Chain commands with && and trim output with `head -c` so you pull back\n"
+        "only what you need."
+    ),
+}
 
-Answer directly and concisely, from what the page actually showed. If the site
-blocks you or the information is not there, say exactly that and why. Never
-guess a value you did not read."""
+ANSWER_RULES = """Answer directly and concisely, from what the page actually showed.
+If the site blocks you or the information is not there, say exactly that and
+why. Never guess a value you did not read."""
+
+INSTRUCTIONS = "Browse with the tools you have been given to answer the question.\n\n" + ANSWER_RULES
 
 MAX_SECONDS = 600
 
@@ -71,12 +104,22 @@ async def run_one(arm, ls, project, ex, sem, out, rep=0):
         t0 = time.time()
         answer, steps, run_id, status = "", 0, None, "ok"
         try:
-            client = MultiServerMCPClient({arm: ARMS[arm]["server"]})
-            agent = create_agent(
-                model="anthropic:claude-sonnet-5",
-                tools=await client.get_tools(),
-                system_prompt=INSTRUCTIONS + ARMS[arm]["extra"],
-            )
+            if arm in SHELL_ARMS:
+                from deepagents import create_deep_agent
+                from deepagents.backends import LocalShellBackend
+
+                agent = create_deep_agent(
+                    model="anthropic:claude-sonnet-5",
+                    backend=LocalShellBackend(),
+                    system_prompt=SHELL_ARMS[arm] + "\n\n" + ANSWER_RULES,
+                )
+            else:
+                client = MultiServerMCPClient({arm: ARMS[arm]["server"]})
+                agent = create_agent(
+                    model="anthropic:claude-sonnet-5",
+                    tools=await client.get_tools(),
+                    system_prompt=INSTRUCTIONS + ARMS[arm]["extra"],
+                )
             # The local counterpart of the deployment's `langsmith_tracing=`:
             # it roots the run in the experiment project and binds it to the
             # example, which is what makes it a row.
@@ -119,7 +162,7 @@ async def run_one(arm, ls, project, ex, sem, out, rep=0):
 
 async def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--arm", required=True, choices=list(ARMS))
+    ap.add_argument("--arm", required=True, choices=[*ARMS, *SHELL_ARMS])
     ap.add_argument("--concurrency", type=int, default=4)
     ap.add_argument("--dataset", default=DATASET)
     ap.add_argument("--dataset-id", default=os.environ.get("DATASET_ID") or None)

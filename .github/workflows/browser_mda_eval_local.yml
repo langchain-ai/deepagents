@@ -1,0 +1,145 @@
+name: "🌐 Browser MDA eval — local surfaces"
+
+# Sibling of browser_mda_eval.yml for browser surfaces that run on the runner
+# rather than on a deployment: Playwright's and WebdriverIO's and browser-use's
+# stdio MCP servers, and Vercel's agent-browser CLI. Same dataset, same Jev
+# judge, same experiment shape -- so these rows sit alongside the deployment
+# arms in one comparison.
+#
+# One job per arm, which is the real reason to run here: four arms on four
+# runners finish in the time one takes on a laptop, and none of them contend
+# for the same CPU.
+on:
+  workflow_dispatch:
+    inputs:
+      arms:
+        description: 'JSON list, e.g. ["playwright","browser-use","wdio","agent-browser"]'
+        type: string
+        default: '["playwright","browser-use","wdio","agent-browser"]'
+      dataset:
+        description: "LangSmith dataset name"
+        type: string
+        default: webvoyager-100
+      concurrency:
+        description: "Parallel tasks per arm"
+        type: string
+        default: "4"
+      limit:
+        description: "Only the first N tasks (0 = all)"
+        type: string
+        default: "0"
+  push:
+    branches: [evals/browser-local-run]
+
+jobs:
+  # Seeded once, before any arm runs, so the matrix cannot race to create the
+  # same dataset. Mirrors the prep job in browser_mda_eval.yml.
+  prep:
+    runs-on: ubuntu-latest
+    environment: evals
+    outputs:
+      dataset_id: ${{ steps.seed.outputs.dataset_id }}
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+      - name: Ensure the dataset exists
+        id: seed
+        working-directory: browser-mda/benchmarks/webvoyager
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          DATASET: ${{ github.event.inputs.dataset || 'webvoyager-100' }}
+        run: |
+          set -euo pipefail
+          uv run --with "langsmith>=0.14.7" python ensure_dataset.py \
+            --dataset "$DATASET" --file webvoyager_100.jsonl
+
+  eval:
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix:
+        arm: ${{ fromJSON(github.event.inputs.arms || '["playwright","browser-use","wdio","agent-browser"]') }}
+    name: "local (${{ matrix.arm }})"
+    runs-on: ubuntu-latest
+    environment: evals
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+
+      # Installed from the .deb rather than apt's `chromium`, which on Ubuntu
+      # is a snap shim that cannot run in CI. Every arm drives a real Chrome.
+      - name: Install Google Chrome
+        run: |
+          set -euo pipefail
+          if command -v google-chrome >/dev/null; then
+            google-chrome --version && exit 0
+          fi
+          wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ./google-chrome-stable_current_amd64.deb
+          google-chrome --version
+
+      - name: Run the suite
+        working-directory: browser-mda/benchmarks/webvoyager
+        env:
+          # The agent model and the Jev judge both go through the LangSmith
+          # gateway on this key; the judge needs TYPESAFE_API_KEY configured as
+          # a workspace secret or it returns 424.
+          ANTHROPIC_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          # Belt and braces: the arms set their own headless switch, but a
+          # runner has no display, so anything that ignored it would fail loudly
+          # rather than silently opening a window.
+          BROWSER_USE_HEADLESS: "true"
+          ARM: ${{ matrix.arm }}
+          DATASET: ${{ github.event.inputs.dataset || 'webvoyager-100' }}
+          DATASET_ID: ${{ needs.prep.outputs.dataset_id }}
+          CONCURRENCY: ${{ github.event.inputs.concurrency || '4' }}
+          LIMIT: ${{ github.event.inputs.limit || '0' }}
+        run: |
+          set -euo pipefail
+          LIMIT_ARG=()
+          if [ "$LIMIT" != "0" ]; then
+            LIMIT_ARG=(--limit "$LIMIT")
+          fi
+          uv run --with "langsmith>=0.14.7" --with langchain-mcp-adapters \
+            --with "langchain>=1" --with langchain-anthropic --with httpx \
+            --with deepagents \
+            python -u bench_local.py \
+              --arm "$ARM" \
+              --dataset "$DATASET" \
+              --dataset-id "$DATASET_ID" \
+              --concurrency "$CONCURRENCY" \
+              "${LIMIT_ARG[@]}" \
+            | tee eval.log
+
+      - name: Summarise
+        if: always()
+        working-directory: browser-mda/benchmarks/webvoyager
+        env:
+          ARM: ${{ matrix.arm }}
+        run: |
+          {
+            echo "## $ARM — WebVoyager (local browser)"
+            echo
+            grep -E "^experiment project" eval.log || true
+            echo
+            echo '| outcome | n |'
+            echo '| --- | --- |'
+            grep -oE "^\[[A-Z]+ *\]" eval.log | sort | uniq -c \
+              | awk '{gsub(/[\[\]]/,"",$2); print "| " $2 " | " $1 " |"}'
+            echo
+            grep -E "^SUCCESS|^feedback posted|^project:" eval.log || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: eval-local-${{ matrix.arm }}-log
+          path: browser-mda/benchmarks/webvoyager/eval.log

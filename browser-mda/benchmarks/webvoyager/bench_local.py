@@ -167,6 +167,10 @@ async def main():
     ap.add_argument("--dataset", default=DATASET)
     ap.add_argument("--dataset-id", default=os.environ.get("DATASET_ID") or None)
     ap.add_argument("--limit", type=int, default=0, help="smoke-test on the first N examples")
+    ap.add_argument("--only", default=None,
+                    help="file of example ids, one per line: resume a suite that was cut short")
+    ap.add_argument("--project", default=None,
+                    help="write into an existing experiment instead of creating one")
     ap.add_argument("--repetitions", type=int, default=1)
     a = ap.parse_args()
 
@@ -174,8 +178,25 @@ async def main():
     ds = (ls.read_dataset(dataset_id=a.dataset_id) if a.dataset_id
           else ls.read_dataset(dataset_name=a.dataset))
     examples = list(ls.list_examples(dataset_id=ds.id))
+    if a.only:
+        wanted = {line.strip() for line in open(a.only) if line.strip()}
+        examples = [e for e in examples if str(e.id) in wanted]
     if a.limit:
         examples = examples[: a.limit]
+
+    if a.project:
+        # Resuming: the rows already there keep their native Cost and Tokens,
+        # so only the gap is paid for again.
+        project = a.project
+        print(f"appending to {project}  ({len(examples)} remaining)", flush=True)
+        ls.read_project(project_name=project)
+        sem = asyncio.Semaphore(a.concurrency)
+        out: list = []
+        results = await asyncio.gather(*[
+            run_one(a.arm, ls, project, ex, sem, out) for ex in examples])
+        await post_feedback(ls, results, out, project)
+        return
+
     project = f"{a.dataset}-{a.arm}-{int(time.time())}"
     # num_examples/num_repetitions give the UI its denominator, so progress
     # shows as "n/100" rather than a bare run count.
@@ -202,6 +223,10 @@ async def main():
         run_one(a.arm, ls, project, ex, sem, out, rep)
         for rep in range(a.repetitions) for ex in examples])
 
+    await post_feedback(ls, results, out, project)
+
+
+async def post_feedback(ls, results, out, project):
     posted = 0
     for run_id, g, steps, secs, scores in results:
         if run_id is None:

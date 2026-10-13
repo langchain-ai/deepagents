@@ -15,7 +15,7 @@ on:
       arms:
         description: 'JSON list, e.g. ["playwright","browser-use","wdio","agent-browser"]'
         type: string
-        default: '["playwright","browser-use","wdio","agent-browser"]'
+        default: '["browser-use","wdio","agent-browser"]'
       dataset:
         description: "LangSmith dataset name"
         type: string
@@ -36,7 +36,7 @@ jobs:
   # same dataset. Mirrors the prep job in browser_mda_eval.yml.
   prep:
     runs-on: ubuntu-latest
-    environment: evals
+    environment: oss
     outputs:
       dataset_id: ${{ steps.seed.outputs.dataset_id }}
     steps:
@@ -60,10 +60,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arm: ${{ fromJSON(github.event.inputs.arms || '["playwright","browser-use","wdio","agent-browser"]') }}
+        arm: ${{ fromJSON(github.event.inputs.arms || '["browser-use","wdio","agent-browser"]') }}
     name: "local (${{ matrix.arm }})"
     runs-on: ubuntu-latest
-    environment: evals
+    environment: oss
     timeout-minutes: 240
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -88,15 +88,18 @@ jobs:
       - name: Run the suite
         working-directory: browser-mda/benchmarks/webvoyager
         env:
-          # The agent model and the Jev judge both go through the LangSmith
-          # gateway on this key; the judge needs TYPESAFE_API_KEY configured as
-          # a workspace secret or it returns 424.
+          # Two different keys, which is the whole reason this uses `oss`
+          # rather than `evals`. LANGSMITH_API_KEY owns the dataset and the
+          # experiments, so results land in a workspace you can actually open;
+          # ANTHROPIC_API_KEY is the gateway service key the model and the Jev
+          # judge authenticate with.
           #
-          # BASE_URL is not optional here. The deployment arms never needed it
+          # BASE_URL is not optional. The deployment arms never needed it
           # because the deployment talks to the gateway itself; these arms run
-          # the model in this process, so without it langchain-anthropic calls
-          # api.anthropic.com with a LangSmith key and every task dies 401.
-          ANTHROPIC_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          # the model in the job, so without it langchain-anthropic calls
+          # api.anthropic.com with a key it does not recognise and every task
+          # dies 401.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           ANTHROPIC_BASE_URL: https://gateway.smith.langchain.com/anthropic
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           # Belt and braces: the arms set their own headless switch, but a

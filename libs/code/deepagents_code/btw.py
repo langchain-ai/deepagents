@@ -13,8 +13,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from deepagents.backends import StateBackend
-from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, TRUNCATION_GUIDANCE
-from deepagents.middleware.filesystem import NUM_CHARS_PER_TOKEN, FilesystemMiddleware
+from deepagents.backends.utils import truncate_if_too_long
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from deepagents.middleware.memory import MemoryState
 from deepagents.middleware.skills import SkillsMiddleware, SkillsState
 from deepagents.middleware.summarization import create_summarization_middleware
@@ -470,10 +470,11 @@ def _bound_result(message: ToolMessage) -> ToolMessage:
     Returns:
         `message`, or a copy with its text cut to the threshold.
     """
-    limit = NUM_CHARS_PER_TOKEN * TOOL_RESULT_TOKEN_LIMIT
-    if not isinstance(message.content, str) or len(message.content) <= limit:
+    if not isinstance(message.content, str):
         return message
-    content = message.content[: limit - len(TRUNCATION_GUIDANCE)] + TRUNCATION_GUIDANCE
+    content = truncate_if_too_long(message.content)
+    if content is message.content:
+        return message
     return message.model_copy(update={"content": content})
 
 

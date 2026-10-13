@@ -1,0 +1,60 @@
+browser-mda-repl/agent.py
+  s_199de864fdc442::t_9c443a503e8c48 33-37
+  s_199de864fdc442::t_d6119876a96d5e 1,3-4,6-7,9-14,17,21,26-28,31-32,38-41
+  s_199de864fdc442::t_1a1c0aad6eadb7 2,5,8,15-16,18-19,22-25,42
+  s_199de864fdc442::t_90c6c5a2d4165e 20,29-30
+browser-mda-repl/pyproject.toml
+  s_199de864fdc442::t_1a1c0aad6eadb7 1-3,5-7,10-13
+  s_199de864fdc442::t_d6119876a96d5e 4,8-9
+browser-mda/MDA_EVALS_FEEDBACK.md
+  s_b035d867bce941::t_0089dee0d5bc76 468-528
+browser-mda-repl/.gitignore
+  s_199de864fdc442::t_1a1c0aad6eadb7 1-20
+browser-mda-mcp/pyproject.toml
+  s_199de864fdc442::t_71c6b4fb1805a6 1-11
+browser-mda/benchmarks/webvoyager/RESULTS_WV100.md
+  s_b035d867bce941::t_72bd158160b187 1-54
+browser-mda-mcp/.gitignore
+  s_199de864fdc442::t_71c6b4fb1805a6 1-20
+browser-mda-mcp/instructions.md
+  s_199de864fdc442::t_c580f847fc8fd7 1-51
+browser-mda-mcp/agent.py
+  s_199de864fdc442::t_bd15e30451106f 6-8
+  s_199de864fdc442::t_71c6b4fb1805a6 1-5,9-16
+browser-mda/HARNESS_COMPARISON.md
+  s_199de864fdc442::t_fdcce6bb6bdb85 74-83
+  s_199de864fdc442::t_4f1aafd91d8cf1 1-73,84-187
+browser-mda-mcp/uv.lock
+  s_199de864fdc442::t_d6f0b02d0cf6b0 1-1754
+browser-mda-repl/uv.lock
+  s_199de864fdc442::t_51eadbea628fda 1-1904
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c375854e06da629b155a943cf9637a503a838982",
+  "prompts": {},
+  "humans": {
+    "h_152f5d9f78d224": {
+      "author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    },
+    "s_b035d867bce941": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "3ca74aeb-4ace-4c83-82ba-a68d0e97cceb",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

@@ -72,10 +72,13 @@ ARMS: dict[str, dict] = {
             "\n\nStart with start_session "
             "Start with start_session using exactly:\n"
             '{"browser": "chrome", "headless": true, "capabilities": '
-            '{"goog:chromeOptions": {"args": ["--no-sandbox", '
-            '"--disable-dev-shm-usage", "--disable-gpu"]}}}\n'
-            "Those args are not optional on a CI runner -- without them Chrome "
-            "exits before the session is usable. Call close_session at the end."
+            '{"goog:chromeOptions": {"binary": "/usr/bin/google-chrome", '
+            '"args": ["--no-sandbox", "--disable-dev-shm-usage", '
+            '"--disable-gpu"]}}}\n'
+            "Neither the binary nor those args is optional on a CI runner: "
+            "left to itself WebdriverIO resolves its own Chrome for Testing, "
+            "which exits before the session is usable. Call close_session at "
+            "the end."
         ),
     },
 }

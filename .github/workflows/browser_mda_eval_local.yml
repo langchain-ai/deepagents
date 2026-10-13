@@ -113,6 +113,8 @@ jobs:
       # job.
       - name: Provision the arm's browser
         working-directory: browser-mda/benchmarks/webvoyager
+        env:
+          BROWSER_USE_CONFIG_PATH: /home/runner/.config/browseruse/config.json
         run: ./provision_browser.sh "${{ matrix.arm }}"
 
       - name: Run the suite
@@ -136,7 +138,7 @@ jobs:
           # runner has no display, so anything that ignored it would fail loudly
           # rather than silently opening a window.
           BROWSER_USE_HEADLESS: "true"
-          BROWSER_USE_CONFIG_FILE: /home/runner/.config/browseruse/config.json
+          BROWSER_USE_CONFIG_PATH: /home/runner/.config/browseruse/config.json
           ARM: ${{ matrix.arm }}
           DATASET: ${{ github.event.inputs.dataset || 'webvoyager-100' }}
           DATASET_ID: ${{ needs.prep.outputs.dataset_id }}

@@ -10,7 +10,7 @@
 set -euo pipefail
 
 ARM="${1:?usage: provision_browser.sh <arm>}"
-CONFIG_DIR="${BROWSER_USE_CONFIG_DIR:-$HOME/.config/browseruse}"
+export BROWSER_USE_CONFIG_PATH="${BROWSER_USE_CONFIG_PATH:-$HOME/.config/browseruse/config.json}"
 
 case "$ARM" in
   playwright)
@@ -26,25 +26,36 @@ case "$ARM" in
     ;;
 
   browser-use)
-    # Drives Playwright's own Chromium, not the system Chrome, and reads its
-    # flags from a config file rather than argv.
+    # Drives Playwright's own Chromium and builds its own BrowserProfile, so
+    # neither the PATH shim nor a hand-written config reaches it: the loader
+    # treats an unfamiliar file as "old format" and silently replaces it with
+    # a fresh default, which is how three env vars all appeared to be ignored.
+    # Let it mint the config, then patch the default profile in place.
     npx -y playwright@latest install --with-deps chromium
-    mkdir -p "$CONFIG_DIR"
-    cat > "$CONFIG_DIR/config.json" <<'JSON'
-{
-  "browser_profile": {
-    "ci": {
-      "id": "ci",
-      "default": true,
-      "headless": true,
-      "chromium_sandbox": false,
-      "args": ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
-    }
-  }
-}
-JSON
-    python3 -c "import json,sys; json.load(open('$CONFIG_DIR/config.json'))"
-    echo "wrote $CONFIG_DIR/config.json"
+    mkdir -p "$(dirname "$BROWSER_USE_CONFIG_PATH")"
+    uv run --with browser-use python - <<'PYEOF'
+import json, os
+from pathlib import Path
+from browser_use.config import load_browser_use_config, get_default_profile
+from browser_use.browser.profile import BrowserProfile
+
+load_browser_use_config()
+path = Path(os.environ["BROWSER_USE_CONFIG_PATH"])
+config = json.loads(path.read_text())
+for entry in config["browser_profile"].values():
+    if entry.get("default"):
+        entry.update(
+            headless=True,
+            chromium_sandbox=False,
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
+        )
+path.write_text(json.dumps(config, indent=2))
+
+profile = BrowserProfile(**get_default_profile(load_browser_use_config()))
+assert profile.chromium_sandbox is False, "chromium_sandbox did not stick"
+assert "--no-sandbox" in (profile.args or []), "args did not stick"
+print(f"browser-use profile ready: headless={profile.headless} args={profile.args}")
+PYEOF
     ;;
 
   wdio)

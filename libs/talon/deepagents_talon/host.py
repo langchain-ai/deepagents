@@ -2149,9 +2149,10 @@ def _scheduled_metadata(job: CronJob) -> dict[str, object]:
     """Return the turn metadata identifying one scheduled job's thread.
 
     Carries `trigger`, which auto-denies tool approvals a scheduled turn has no
-    operator to answer and keeps the run's checkpoints out of the chat archive, and
-    `channel`, which the cron tools scope a job's own edits by. The origin chat's
-    history scope is added separately by `_scheduled_history`, for reading only.
+    operator to answer and keeps the run's checkpoints out of the chat archive;
+    `channel`, which the cron tools scope a job's own edits by; and, when the job
+    has any, `pinned_skills`, whose instructions load into the run. The origin
+    chat's history scope is added separately by `_scheduled_history`, for reading only.
 
     Args:
         job: Cron job whose thread the turn runs on.
@@ -2167,6 +2168,7 @@ def _scheduled_metadata(job: CronJob) -> dict[str, object]:
         "cron_origin_message_id": job.origin.message_id,
         "cron_origin_sender_id": job.origin.sender_id,
         "trigger": "cron",
+        **({"pinned_skills": list(job.skills)} if job.skills else {}),
     }
 
 

@@ -36,7 +36,7 @@ from textual import events
 from textual.containers import VerticalScroll
 from textual.widgets import Markdown, Static, TextArea
 
-from deepagents_code.btw import BtwOperation
+from deepagents_code.btw import BtwLimitError, BtwOperation
 from deepagents_code.client.remote_client import RemoteAgent
 from deepagents_code.tui.modals.btw import BtwScreen, BtwTextArea
 from deepagents_code.tui.widgets.messages import AssistantMessage, UserMessage
@@ -2354,13 +2354,17 @@ async def test_side_tools_read_only_when_the_caller_allows_it(
         None,
         backend=FilesystemBackend(root_dir=tmp_path, virtual_mode=True),
     )
+    if not read_tools:
+        with pytest.raises(BtwLimitError, match="File reads are off"):
+            await operation.answer("thread", {}, "What is in .env?")
+        assert calls.await_count == 1
+        assert "tools" not in calls.call_args.kwargs
+        return
     assert (
-        await operation.answer("thread", {}, "What is in .env?", read_tools=read_tools)
+        await operation.answer("thread", {}, "What is in .env?", read_tools=True)
         == "answer"
     )
-    result = calls.call_args.args[0][-1]
-    assert ("SECRET=value" in result.text) is read_tools
-    assert (result.status == "error") is not read_tools
+    assert "SECRET=value" in calls.call_args.args[0][-1].text
 
 
 async def test_side_tool_schemas_survive_restart_without_native_execution(

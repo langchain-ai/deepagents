@@ -729,7 +729,7 @@ class BtwOperation(AgentMiddleware):
             tools = (
                 _client_tools(schemas)
                 if isinstance(schemas, list)
-                else _client_tools(self._read_tools)
+                else _client_tools(self._read_tools if read_tools else [])
             )
             advertised = {tool["function"]["name"] for tool in tools}
             executable = [
@@ -791,10 +791,15 @@ class BtwOperation(AgentMiddleware):
                     parts.append(response.text)
                 if not isinstance(response, AIMessage) or not response.tool_calls:
                     break
-                if round_index == _MAX_TOOL_ROUNDS:
+                if round_index == _MAX_TOOL_ROUNDS or not executable:
                     if parts:
                         break
-                    msg = "Side tool limit reached. Try a narrower question."
+                    msg = (
+                        "Side tool limit reached. Try a narrower question."
+                        if executable
+                        else "File reads are off for this side question. "
+                        "Ask about the conversation instead."
+                    )
                     raise BtwLimitError(msg)
                 if len(response.tool_calls) > _MAX_TOOL_CALLS:
                     msg = "Too many side tools requested. Try a narrower question."

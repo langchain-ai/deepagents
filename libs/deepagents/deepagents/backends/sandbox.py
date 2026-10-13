@@ -989,7 +989,7 @@ def _build_grep_cmd(
     # like `src/**/*.py` would silently match zero files. Route those to the
     # in-process Python template that resolves the glob relative to the search
     # root. Basename-only globs (no `/`) work correctly with `--include` and
-    # are faster to run through GNU grep.
+    # can use ripgrep when available, with GNU grep as the fallback.
     if glob and "/" in glob:
         path_b64 = base64.b64encode((path or ".").encode("utf-8")).decode("ascii")
         glob_b64 = base64.b64encode(glob.encode("utf-8")).decode("ascii")
@@ -1014,7 +1014,23 @@ def _build_grep_cmd(
     # sandbox-tested change. The in-process `_GREP_PATH_GLOB_TEMPLATE` route does
     # surface its errors (see its docstring); only this GNU-grep route swallows.
     exclude_args = " ".join(f"--exclude-dir={shlex.quote(name)}" for name in excluded)
-    base = f"grep {grep_opts} {exclude_args} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null"
+    grep_cmd = f"grep {grep_opts} {exclude_args} {glob_pattern} -e {pattern_escaped} {search_path}"
+    rg_excludes = " ".join(f"--glob {shlex.quote('!' + name + '/')}" for name in excluded)
+    rg_glob = glob.replace("{", r"\{").replace("}", r"\}") if glob else ""
+    if rg_glob.startswith("!"):
+        rg_glob = "\\" + rg_glob
+    rg_opts = "rg --no-config --hidden --no-ignore --encoding none --color never -HnF0"
+    rg_args = f"{rg_excludes} -e {pattern_escaped} -- {search_path}"
+    rg_cmd = f"{rg_opts} {rg_args}"
+    if glob:
+        rg_cmd = f"{rg_opts} --glob {shlex.quote(rg_glob)} {rg_args}"
+    if (
+        "\n" in pattern
+        or (glob and any(token in glob for token in ("[", "\\", "**")))
+        or any(any(token in name for token in ("[", "\\", "**", "{", "}", "/")) for name in excluded)
+    ):
+        rg_cmd = grep_cmd
+    base = f"{{ if [ -d {search_path} ] && command -v rg >/dev/null 2>&1; then {rg_cmd}; else {grep_cmd}; fi; }} 2>/dev/null"
     if max_count is not None:
         # Read one record beyond the cap so the parser can distinguish "exactly
         # at the cap" (complete) from "capped early" (truncated). `head` closing

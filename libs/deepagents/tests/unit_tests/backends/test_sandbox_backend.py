@@ -2865,3 +2865,73 @@ def test_grep_exclude_dirs_apply_to_path_globs(checkout: Path) -> None:
     sandbox.grep_exclude_dirs = (".git", "node_modules")
 
     assert _grep_paths(sandbox, checkout, "**/*.js") == {"src/app.js"}
+
+
+@pytest.fixture(params=[False, True], ids=["gnu-grep", "ripgrep"])
+def grep_shell(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _ShellSandbox:
+    if not _GNU_GREP or not Path("/bin/sh").is_file():
+        pytest.skip("requires GNU grep and /bin/sh")
+    rg = shutil.which("rg")
+    if request.param and rg is None:
+        pytest.skip("requires ripgrep")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for tool in ("grep", "head", "python3"):
+        executable = shutil.which(tool)
+        assert executable is not None
+        (tools / tool).symlink_to(executable)
+    marker = tmp_path / "rg-used"
+    if request.param:
+        (tools / "rg").write_text(f'#!/bin/sh\nprintf used > "{marker}"\nexec "{rg}" "$@"\n')
+        (tools / "rg").chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools))
+    monkeypatch.setenv("RIPGREP_CONFIG_PATH", str(tmp_path / "missing-config"))
+    yield _ShellSandbox()
+    assert marker.exists() == request.param
+
+
+@pytest.mark.parametrize("glob", [None, "*.py", "{literal}.py", "!literal.py"])
+async def test_grep_remote_tool_parity(grep_shell: _ShellSandbox, tmp_path: Path, glob: str | None) -> None:
+    root = tmp_path / "search"
+    expected = []
+    for rel in ("top:colon.py", "nested/deep.py", ".hidden.py", ".hidden/inside.py", "{literal}.py", "!literal.py", "other.txt"):
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("not a match\nneedle[.*]: final", encoding="utf-8")
+        if glob is None or (glob == "*.py" and rel.endswith(".py")) or glob == rel:
+            expected.append({"path": str(target), "line": 2, "text": "needle[.*]: final"})
+    for rel in (".git/data.py", "nested/.git/data.py", "node_modules/data.py", "nested/node_modules/data.py"):
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("needle[.*]\n", encoding="utf-8")
+    (root / ".gitignore").write_text("*.py\n", encoding="utf-8")
+    (root / "link.py").symlink_to(root / "top:colon.py")
+    (root / "binary.py").write_bytes(b"\0needle[.*]\n")
+    grep_shell.grep_exclude_dirs = (".git", "node_modules")
+    for result in (grep_shell.grep("needle[.*]", str(root), glob), await grep_shell.agrep("needle[.*]", str(root), glob)):
+        assert result.error is None
+        assert sorted(result.matches or [], key=lambda match: match["path"]) == sorted(expected, key=lambda match: match["path"])
+        assert not result.truncated
+    single = grep_shell.grep("needle[.*]", str(root / "other.txt"), "*.py")
+    assert single.matches == []
+    assert grep_shell.grep("absent", str(root)).matches == []
+    assert grep_shell.grep("needle", str(root / "missing")).matches == []
+    assert grep_shell.grep("needle", str(root / "binary.py")).matches == []
+    assert grep_shell.grep("needle", str(root / "link.py")).matches == [{"path": str(root / "link.py"), "line": 2, "text": "needle[.*]: final"}]
+    alternatives = grep_shell.grep("not a match\nfinal", str(root), "[to]*.py")
+    assert alternatives.matches == [
+        {"path": str(root / "top:colon.py"), "line": 1, "text": "not a match"},
+        {"path": str(root / "top:colon.py"), "line": 2, "text": "needle[.*]: final"},
+    ]
+
+
+@pytest.mark.parametrize("count", [2, 3, 4])
+def test_grep_remote_tool_truncation(grep_shell: _ShellSandbox, tmp_path: Path, count: int) -> None:
+    root = tmp_path / "search"
+    root.mkdir()
+    target = root / "matches.txt"
+    target.write_text("needle\n" * count, encoding="utf-8")
+    result = grep_shell.grep("needle", str(root), max_count=3)
+    assert result.error is None
+    assert len(result.matches or []) == min(count, 3)
+    assert result.truncated == (count > 3)

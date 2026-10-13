@@ -20,6 +20,8 @@ sources:
     resource: repo://libs/code/deepagents_code/model_metadata.py
   - id: openwiki-source-c101168dc0286ff6c29ed37f
     resource: repo://libs/code/deepagents_code/model_retry.py
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-42e76fc26f690f7d6dab298d
     resource: repo://libs/code/tests/unit_tests/test_cache_expiry.py
   - id: openwiki-source-563d8f99b354174d66aab140
@@ -44,15 +46,21 @@ sources:
     resource: repo://libs/deepagents/deepagents/profiles/provider/provider_profiles.py
   - id: openwiki-source-82f3138080e1d0012e6ffb72
     resource: repo://libs/deepagents/tests/unit_tests/test_harness_profiles.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
+    at: 2026-10-13T08:11:05.854Z
 ---
 
 # Models, Profiles, and Provider Configuration
 
 This page covers two separate profile systems in the Deep Agents SDK, then the dcode model-selection layer that builds on provider construction. Do not use the word *profile* as if it meant one configuration object: provider profiles, harness profiles, and dcode capability profiles operate at different times and have different security boundaries.
+
+## Version and package boundary
+
+The repository currently packages `deepagents-code` **0.1.84** for Python `>=3.12,<4.0` and pins its SDK contract to `deepagents==0.7.24`. Treat the profile APIs described below as the APIs of that exact SDK version: they are explicitly beta, so upgrading the pinned dependency is a compatibility change that warrants rechecking construction and graph-assembly behavior.
+
+The base dcode install includes the Anthropic, Google GenAI, and OpenAI LangChain integrations. Other model integrations are opt-in extras such as `deepagents-code[fireworks]` or `deepagents-code[openrouter]`; `deepagents-code[all-providers]` aggregates the supported provider extras. Selecting a configured provider whose integration is absent is therefore an installation/configuration failure on the inference host, not a client-side discovery task.
 
 ## SDK provider and harness profiles
 

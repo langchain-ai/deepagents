@@ -10,6 +10,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/__init__.py
   - id: openwiki-source-303a7196a0e1a36cc078621b
     resource: repo://libs/deepagents/deepagents/middleware/_blob_offload.py
+  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
+    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
   - id: openwiki-source-5c9c6a877b43f30407158658
     resource: repo://libs/deepagents/deepagents/middleware/_skill_tools.py
   - id: openwiki-source-8b1aaf77fc0430fd00711a73
@@ -30,10 +32,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-12T08:20:17.385Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-12T08:20:17.385Z
+    at: 2026-10-13T08:11:05.854Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
 ---
 
 # Middleware Catalog
@@ -147,7 +149,7 @@ flowchart LR
 
 This is the normal main-stack assembly; absent optional entries are simply skipped.
 
-Name controls replacement. A custom middleware whose `.name` remains present replaces the corresponding layer in place; otherwise it is inserted after the last core layer and before the tail. Thus replacing `SkillsMiddleware` by name preserves its placement, while adding a second, novel skills layer changes wrapper interactions. Profile `excluded_middleware` is applied during assembly; it rejects an unmatched, ambiguous, private-name, or protected-scaffolding exclusion rather than silently creating a degraded agent. `FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding.
+Name controls replacement. Assembly applies profile exclusions once to the base stack, merges caller middleware, then applies exclusions again before appending the final tool filter. A custom middleware whose `.name` remains present replaces the corresponding surviving layer in place; otherwise it is inserted after the last core layer and before the tail. Thus replacing `SkillsMiddleware` by name preserves its placement, while adding a second, novel skills layer changes wrapper interactions. The second exclusion pass prevents caller middleware from reintroducing a profile-excluded entry. Profile `excluded_middleware` rejects an unmatched, ambiguous, private-name, or protected-scaffolding exclusion rather than silently creating a degraded agent. `FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding.
 
 Skills belongs after compaction and routing or fallback middleware, but before caching, so it sees compacted messages and the actual model. The final `_ToolExclusionMiddleware` removes excluded tool names from the request **and** rejects matching tool calls at execution. It prevents later custom wrappers from restoring profile-excluded tools, but is explicitly a visibility and consistency guard rather than a security boundary; filesystem permissions are the authorization mechanism.
 

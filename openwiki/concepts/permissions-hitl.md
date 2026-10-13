@@ -18,6 +18,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-bf922bb2704cfd50154e92e5
     resource: repo://libs/deepagents/README.md
+  - id: openwiki-source-851e3a9c96663d8db5ca3dec
+    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
   - id: openwiki-source-f1280171b9d75cd28add0ec3
     resource: repo://libs/deepagents/THREAT_MODEL.md
   - id: openwiki-source-cd45145a8c3a51b52eab3c2b
@@ -48,8 +50,8 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-03T08:05:07.881Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
+    at: 2026-10-13T08:11:05.854Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
 ---
 
 # Permissions and Human-in-the-Loop
@@ -74,35 +76,45 @@ Deep Agents follows a **trust-the-LLM** model: containment belongs in installed 
 
 A `FilesystemPermission` has read and/or write operations, absolute glob paths, and `allow`, `deny`, or `interrupt` mode. Paths must start with `/`; `..` is rejected and `~` is unsupported. Rules use declaration-order, first-match semantics, with `allow` when no rule matches.
 
-`FilesystemMiddleware` enforces `deny` for its built-in filesystem tools before backend execution. Listing, globbing, and grep results remove denied entries rather than exposing them. Recursive or potentially recursive `delete` is deliberately more conservative: a deny pattern that could overlap the removed subtree blocks deletion even where a preceding broad allow would otherwise win. Permissions are tool middleware, **not** a backend-wide access-control layer: direct backend calls do not acquire these rules.
+`FilesystemMiddleware` enforces `deny` for its built-in filesystem tools before backend execution. With `FilesystemBackend`, including one behind a `CompositeBackend` route, it evaluates both the requested path and its symlink-resolved target; a denial on either blocks the call, and an unresolvable target produces an error rather than an access decision. Listing, globbing, and grep results remove entries denied by either form rather than exposing them. Permissions are tool middleware, **not** a backend-wide access-control layer: direct backend calls do not acquire these rules.
+
+`delete` distinguishes a confirmed leaf from a directory or a target that may have descendants. A leaf uses ordinary first-match resolution. For a recursive or potentially recursive deletion, however, every deny-write pattern is considered: a pattern that could overlap the removed subtree blocks the operation even where a preceding broad allow would otherwise win. This preserves all-or-nothing deletion while still allowing a nonmatching sibling file glob.
+
+There is an intentional execution boundary: a nonempty permission set is rejected when the backend supports command execution, because tool-level policy for `execute` is not implemented. The narrow exception is a `CompositeBackend` whose permission patterns are all scoped to configured route prefixes; that permits policy on those routed filesystem operations without representing it as a policy for the execution-capable default. Do not combine filesystem permissions with a shell-capable backend and assume that `execute` is constrained.
 
 ### Interrupt is routing, not enforcement
 
 An `interrupt` rule does not deny access. During `create_deep_agent` assembly, filesystem interrupt rules are transformed into `HumanInTheLoopMiddleware` `interrupt_on` entries with per-call `when` predicates. A caller's explicit `interrupt_on` entry wins for the same tool name, so it can deliberately replace the generated filesystem routing; deny enforcement remains in `FilesystemMiddleware` either way.
 
-Exact tools (`read_file`, `write_file`, and `edit_file`) use ordinary first-match permission resolution. Bulk tools (`ls`, `glob`, `grep`, and `delete`) interrupt when their search or deletion scope may intersect an interrupt-pattern anchor. Missing bulk paths, current-directory aliases, absolute `glob` patterns, and relative glob patterns with `..` receive conservative treatment to avoid routing around review. Generated filesystem interrupts allow `approve`, `edit`, `reject`, and `respond`; approved and edited calls still re-enter the tool, where deny rules are checked.
+Exact tools (`read_file`, `write_file`, and `edit_file`) resolve the requested path and, when available, its symlink target. They route only when an `interrupt` decision is present and neither candidate is denied, so a deny wins over review. Bulk tools (`ls`, `glob`, `grep`, and `delete`) compare their potential search or deletion subtree with the literal anchor of each applicable interrupt pattern; this intentionally errs toward review rather than attempting to enumerate all glob matches. A missing bulk path or current-directory alias is treated as the root. For `glob`, an absolute pattern is independently checked because it can ignore `path`, and a relative pattern containing `..` is treated as unlocalizable and routed to review. Invalid paths and malformed non-string arguments do not create a synthetic interrupt.
+
+The graph passes the configured backend to these predicates, so symlink aliases can also route to review. Generated filesystem interrupts allow `approve`, `edit`, `reject`, and `respond`; approved and edited calls still re-enter the tool, where deny rules are checked. `reject` and `respond` do not execute the operation.
 
 ```mermaid
 flowchart TD
-    Call["Filesystem tool call"] --> Gate{"Interrupt route applies"}
+    Call["Filesystem tool call"] --> Route{"Explicit user entry for this tool"}
+    Route -->|Yes| UserRoute["Apply user interrupt_on entry"]
+    Route -->|No| Generated["Evaluate generated filesystem predicate"]
+    Generated --> Gate{"Review is required"}
+    UserRoute --> Gate
     Gate -->|Yes| Pause["Graph interrupt"]
+    Gate -->|No| Check["Filesystem tool denial check"]
     Pause --> Decision{"Human decision"}
     Decision -->|Reject or respond| Halt["Do not run operation"]
-    Decision -->|Approve or edit| Check["Filesystem deny check"]
-    Gate -->|No| Check
+    Decision -->|Approve or edit| Check
     Check -->|Denied| Denied["Permission error"]
     Check -->|Allowed| Run["Backend operation"]
 ```
 
-Caption: HITL routes a call to review before execution; the filesystem middleware remains the denial enforcement point.
+Caption: A user entry overrides generated routing by tool name; whether routed or not, an executed filesystem call reaches tool-level denial enforcement.
 
 ## Subagents: inheritance is explicit and type-dependent
 
-For declarative `SubAgent` specifications, omitted `permissions` inherits the parent list; a supplied list, including `[]`, replaces it completely. The graph constructs each declarative subagent with its own `FilesystemMiddleware` and builds filesystem-derived interrupt routing from that subagent's effective rules. The auto-added general-purpose subagent also uses the parent permissions.
+For declarative `SubAgent` specifications, including experimental `mode="fork"`, omitted `permissions` inherits the parent list; a supplied list, including `[]`, replaces it completely. The graph constructs each declarative subagent with its own `FilesystemMiddleware` and builds filesystem-derived interrupt routing from that subagent's effective rules. The auto-added general-purpose subagent also uses the parent permissions.
 
-Top-level `interrupt_on` is inherited by declarative subagents unless their specification supplies its own map. The effective map merges generated filesystem interrupts first and then user configuration, so the relevant user map takes precedence on name conflicts. In contrast, `CompiledSubAgent` and remote `AsyncSubAgent` graphs do not inherit the parent `interrupt_on`; configure their approval behavior in the compiled or remote graph. Do not infer a common enforcement boundary merely because the parent delegates work.
+Top-level `interrupt_on` is inherited by declarative subagents unless their specification supplies its own map. The effective map merges generated filesystem interrupts first and then user configuration, so the relevant user map takes precedence on name conflicts. `CompiledSubAgent` and remote `AsyncSubAgent` specifications instead pass through as already-built or separately deployed agents: they inherit neither the parent's filesystem permissions nor its top-level `interrupt_on`. Configure filesystem enforcement and approval behavior in the compiled or remote graph itself. Do not infer a common enforcement boundary merely because the parent delegates work.
 
-A default declarative subagent is isolated and receives the delegated task rather than the parent conversation. Experimental `mode="fork"` continues the parent conversation and state, rebuilds prompt-producing middleware, appends the fork's prompt, and cannot define separate skills. This is a context and composition decision, not a privilege reduction; choose tools, permissions, and HITL for each subagent deliberately.
+A default declarative subagent is isolated and receives the delegated task rather than the parent conversation. Experimental `mode="fork"` continues the parent conversation and state, rebuilds prompt-producing middleware, appends the fork's prompt, and cannot define separate skills. It follows the same declarative permission and interrupt defaults above; fork mode is a context and composition decision, not a privilege reduction. Choose tools, permissions, and HITL for each subagent deliberately.
 
 ## Profile exclusion is separate from permissions
 
@@ -156,4 +168,5 @@ Detached background subagents clear operator and authorization context and repor
 - Review every declarative subagent's replacement `permissions` and `interrupt_on`; configure compiled and remote agents independently.
 - Use exact names and the revision from `get_tool_approvals` when changing Talon policy. Expect a new invocation before saved changes apply.
 - Keep Talon approval UIs batch-oriented and validate interrupt IDs and actions before calling an external handler. Do not treat a channel decision as an identity or authorization system.
-- Focus regression coverage on `test_permissions.py` for path, delete, bulk-routing, and inheritance behavior; on Talon's tool-approval tests for policy validation, snapshots, batch fan-out, and unattended rejection; and on host authorization tests for trusted sender and reaction matching.
+- Focus regression coverage on `test_permissions.py` for first-match decisions, confirmed-leaf versus recursive deletion, symlink target enforcement, bulk/glob routing bypasses, and inheritance behavior. Use `test_filesystem_backend.py` to cover the backend's virtual-root and symlink-containment behavior separately; permission middleware does not turn backend path handling into a sandbox.
+- Cover Talon policy validation, snapshots, batch fan-out, unattended rejection, trusted sender handling, and reaction matching in its tool-approval and host authorization tests.

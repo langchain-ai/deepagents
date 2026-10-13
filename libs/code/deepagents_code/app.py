@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import functools
 import json
 import logging
@@ -128,11 +129,13 @@ from deepagents_code.goal_state_notice import (
     goal_notice_size_error,
     goal_state_fingerprint,
     has_goal_or_rubric_state,
+    is_conversation_control_message,
     is_human_message,
     is_internal_message,
     latest_goal_state_message_index,
     latest_goal_state_notice,
     log_malformed_summarization_event as _log_malformed_summarization_event,
+    message_source,
     validated_summarization_cutoff as _validated_summarization_cutoff,
 )
 from deepagents_code.iterm_cursor_guide import restore_iterm_cursor_guide
@@ -144,6 +147,7 @@ from deepagents_code.notifications import (
     PendingNotification,
     UpdateAvailablePayload,
 )
+from deepagents_code.tool_display import is_skill_read
 from deepagents_code.tui.widgets._links import open_url_async
 from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.context_usage import ContextUsageScreen
@@ -238,6 +242,7 @@ _DEFERRED_START_NOTICE = (
 )
 
 _AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
+    "anthropic:claude-haiku-5-5": "Claude Haiku 5.5",
     "anthropic:claude-sonnet-5": "Claude Sonnet 5",
     "google_genai:gemini-3.8-flash": "Gemini 3.8 Flash",
     "openai:gpt-6-luna": "GPT-6 Luna",
@@ -287,6 +292,9 @@ The SDK currently has a package-to-backend circular import that is safe when a
 single thread imports it re-entrantly, but can trip CPython's per-module import
 deadlock detector when two threads cold-import overlapping modules.
 """
+
+_SKILL_NOT_LOADED_BODY = "*The skill's instructions were not loaded for this turn.*"
+"""Resumed skill-row body when the SDK never pinned the invoked skill."""
 
 _TOOL_GROUP_EXCLUSIONS = frozenset({"ask_user", "edit_file", "write_todos"})
 """Tools kept out of the collapsing step summaries.
@@ -756,11 +764,6 @@ def _goal_state_change_notice(
     return build_goal_state_notice(current, prior_blocker=prior_blocker)
 
 
-def _resolve_parent_dir(path: str | Path) -> str:
-    """Return the resolved parent directory for a path."""
-    return str(Path(path).resolve().parent)
-
-
 def _extra_is_ready(extra: str) -> bool | None:
     """Return whether all dependencies for `extra` are installed.
 
@@ -1092,6 +1095,7 @@ if TYPE_CHECKING:
     )
     from deepagents_code.config_manifest import CursorStyle
     from deepagents_code.configuration.types import ProviderStatus
+    from deepagents_code.cost_tracking import CostState
     from deepagents_code.event_bus import EventSource, ExternalEvent
     from deepagents_code.goal_rubric import GoalCreateRequest, GoalCriteriaRequest
     from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
@@ -1478,9 +1482,9 @@ def _load_show_reasoning() -> bool:
     """Resolve whether local output shows provider-visible reasoning.
 
     Returns:
-        The resolved preference, defaulting to `False`.
+        The resolved preference, defaulting to `True`.
     """
-    return _load_bool_display_preference("display.show_reasoning", fallback=False)
+    return _load_bool_display_preference("display.show_reasoning", fallback=True)
 
 
 def _load_show_scrollbar() -> bool:
@@ -3554,7 +3558,17 @@ class DeepAgentsApp(App):
         Named `_lc_thread_id` to avoid collision with Textual's `App._thread_id`.
         """
         self._thread_name = ""
+        self._thread_name_owner: str | None = None
+        """Thread that `_thread_name` belongs to, so reloads of it keep the name."""
         self._thread_name_revision = 0
+        self._thread_name_tasks: dict[str, asyncio.Task[None]] = {}
+        self._pending_thread_name_proposal: tuple[str, str] | None = None
+        self._auto_named_threads: set[str] = set()
+        self._thread_response_completed: dict[str, bool] = {}
+        from deepagents_code.model_config import load_terminal_tab_title
+        from deepagents_code.terminal_title import TerminalTitle
+
+        self._terminal_title = TerminalTitle(load_terminal_tab_title())
 
         self._btw_history: dict[str, list[tuple[str, str]]] = {}
         """Completed side exchanges per thread, retained only for this app instance."""
@@ -4738,19 +4752,15 @@ class DeepAgentsApp(App):
         read against its own open-time snapshot, not this attribute.
         """
 
-        self._skill_allowed_roots: list[Path] = []
-        """Pre-resolved skill root directories for containment checks in
-        `load_skill_content`.
-
-        Built alongside `_discovered_skills`.
-        """
-
         self._skill_trust_denied: set[str] = set()
         """Resolved skill directories the user declined to trust this session.
 
         Prevents re-prompting for the same untrusted location after a deny
         within a single run.
         """
+
+        self._pending_skill_row: SkillMessage | None = None
+        """Latest invoked skill row, waiting for the server's pinned message."""
 
         # Media
         # Lazily imported here to avoid pulling image dependencies into
@@ -4914,6 +4924,10 @@ class DeepAgentsApp(App):
         import gc
 
         gc.freeze()
+        self._terminal_title.start()
+        self._update_terminal_title()
+        self.screen_change_signal.subscribe(self, self._on_thread_name_screen_change)
+        self.app_resume_signal.subscribe(self, self._on_terminal_resume)
 
         chat = self.query_one("#chat", VerticalScroll)
         self._message_measure_width = chat.size.width
@@ -5212,6 +5226,7 @@ class DeepAgentsApp(App):
                 branch = await asyncio.to_thread(read_git_branch_via_subprocess, cwd)
             if self._status_bar:
                 self._status_bar.branch = branch
+            self._update_terminal_title()
         except Exception:
             logger.warning("Git branch resolution failed", exc_info=True)
 
@@ -5224,6 +5239,7 @@ class DeepAgentsApp(App):
             return
         if self._status_bar:
             self._status_bar.branch = branch
+        self._update_terminal_title()
 
     def _cancel_git_branch_refresh_task(self) -> None:
         """Cancel and clear any in-flight background branch refresh task."""
@@ -5254,6 +5270,7 @@ class DeepAgentsApp(App):
         if branch is not None:
             if self._status_bar:
                 self._status_bar.branch = branch
+            self._update_terminal_title()
             self._cancel_git_branch_refresh_task()
             return
 
@@ -5323,6 +5340,8 @@ class DeepAgentsApp(App):
             on_auto_mode_event=self._on_auto_mode_event,
             on_approval_mode_fallback=self._on_approval_mode_fallback,
             show_diff_line_numbers=self._show_diff_line_numbers,
+            request_skill_trust=self._request_skill_trust,
+            on_skill_pinned=self._on_skill_pinned,
         )
         # Wire token display callbacks
         self._ui_adapter._on_tokens_update = self._on_tokens_update
@@ -5865,7 +5884,7 @@ class DeepAgentsApp(App):
             # graph in separate workers. Let prewarm finish first so CPython's
             # per-module import locks cannot form a cycle.
             await self._await_prewarm_imports()
-            skills, roots = await asyncio.to_thread(
+            skills, _roots = await asyncio.to_thread(
                 self._discover_skills_and_roots_with_import_lock,
             )
         except OSError:
@@ -5894,7 +5913,6 @@ class DeepAgentsApp(App):
             return False
 
         self._discovered_skills = skills
-        self._skill_allowed_roots = roots
         if skills:
             skill_commands = build_skill_commands(skills)
             if self._chat_input:
@@ -13823,7 +13841,11 @@ class DeepAgentsApp(App):
             "</result>\n"
             "</user_shell_command>"
         )
-        self._pending_shell_messages.append(HumanMessage(content=content))
+        self._pending_shell_messages.append(
+            HumanMessage(
+                content=content, additional_kwargs={"lc_source": "user_shell_command"}
+            )
+        )
 
     async def _flush_pending_shell_messages(self) -> None:
         """Write buffered `!` command/output into thread state, then clear it.
@@ -17134,7 +17156,10 @@ class DeepAgentsApp(App):
     ) -> None:
         """Open the model selector for choosing a grader model."""
         from deepagents_code.model_config import ModelSpec
-        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+        from deepagents_code.tui.widgets.model_selector import (
+            AUXILIARY_RECOMMENDED_MODELS,
+            ModelSelectorScreen,
+        )
 
         current_provider = None
         current_model = None
@@ -17189,6 +17214,7 @@ class DeepAgentsApp(App):
             ),
             title=title,
             description=description,
+            recommended_models=AUXILIARY_RECOMMENDED_MODELS,
             # Grader models have no persistent config key yet, so there is
             # nothing for Ctrl+S to own here. `None` disables it; the main-model
             # scope would persist `[models].default` and retarget the model the
@@ -17933,28 +17959,20 @@ class DeepAgentsApp(App):
         *,
         command: str | None = None,
     ) -> None:
-        """Load a skill, render its widget, and send its prompt to the agent.
+        """Render a skill row and ask the agent server to pin the skill.
 
-        Looks up the skill from cached metadata (populated at startup), falling
-        back to a fresh filesystem walk on cache miss. Reads the `SKILL.md`
-        body, wraps it in a prompt envelope with any user-provided arguments,
-        and sends the composed message to the agent.
+        The server resolves, trust-checks, and reads the skill, and reports any
+        failure as a turn error. The row's instructions fill in when the pinned
+        message streams back.
 
         Args:
             skill_name: Skill name to invoke.
-            args: Optional user request to append after the skill body.
+            args: Optional user request sent with the skill.
             command: Original slash command text for UI echo, if any.
         """
         from deepagents_code.skills.invocation import build_skill_invocation_envelope
-        from deepagents_code.skills.load import load_skill_content
 
         normalized_name = skill_name.strip().lower()
-
-        async def _mount_error(message: str) -> None:
-            if command is not None:
-                await self._mount_message(UserMessage(command))
-            await self._mount_message(AppMessage(message))
-
         if not normalized_name:
             if command is not None:
                 await self._mount_message(UserMessage(command))
@@ -17963,255 +17981,65 @@ class DeepAgentsApp(App):
                 await self._mount_message(AppMessage("Skill name is required."))
             return
 
-        # Fast path: look up from the cached discovery results
-        cached = next(
-            (s for s in self._discovered_skills if s["name"] == normalized_name),
-            None,
-        )
-        allowed_roots = self._skill_allowed_roots
-
-        # Cache miss — fall back to fresh discovery (offloaded to thread)
-        if cached is None:
-            try:
-                skills, allowed_roots = await asyncio.to_thread(
-                    self._discover_skills_and_roots_with_import_lock,
-                )
-                # Backfill cache so subsequent invocations are fast
-                self._discovered_skills = skills
-                self._skill_allowed_roots = allowed_roots
-                cached = next((s for s in skills if s["name"] == normalized_name), None)
-            except OSError as exc:
-                logger.warning(
-                    "Filesystem error loading skill %r",
-                    normalized_name,
-                    exc_info=True,
-                )
-                await _mount_error(
-                    f"Could not load skill: {normalized_name}. Filesystem error: {exc}",
-                )
-                return
-            except Exception as exc:
-                logger.warning(
-                    "Error searching for skill %r",
-                    normalized_name,
-                    exc_info=True,
-                )
-                await _mount_error(
-                    f"Error loading skill: {normalized_name}. "
-                    f"Unexpected error: {type(exc).__name__}: {exc}",
-                )
-                return
-
-        if cached is None:
-            logger.warning("Skill not found: %r", normalized_name)
-            await _mount_error(f"Skill not found: {normalized_name}")
-            return
-
-        # Load SKILL.md content (filesystem I/O offloaded to thread)
-        skill_path = cached["path"]
-
-        def _load() -> str | None:
-            return load_skill_content(str(skill_path), allowed_roots=allowed_roots)
-
-        try:
-            content = await asyncio.to_thread(_load)
-        except PermissionError as exc:
-            logger.warning(
-                "Containment check failed for skill %r",
-                normalized_name,
-                exc_info=True,
-            )
-            content = await self._prompt_skill_trust_and_retry(
-                normalized_name,
-                skill_path,
-                allowed_roots,
-                fallback_error=str(exc),
-                mount_error=_mount_error,
-            )
-            if content is None:
-                return
-        except OSError as exc:
-            logger.warning(
-                "Filesystem error loading skill %r",
-                normalized_name,
-                exc_info=True,
-            )
-            await _mount_error(
-                f"Could not load skill: {normalized_name}. Filesystem error: {exc}",
-            )
-            return
-        except Exception as exc:
-            logger.warning("Error reading skill %r", normalized_name, exc_info=True)
-            await _mount_error(
-                f"Error loading skill: {normalized_name}. "
-                f"Unexpected error: {type(exc).__name__}: {exc}",
-            )
-            return
-
-        if content is None:
-            await _mount_error(
-                f"Could not read content for skill: {normalized_name}. "
-                "Check that the SKILL.md file exists, is readable, "
-                "and is saved as UTF-8.",
-            )
-            return
-
-        if not content.strip():
-            await _mount_error(
-                f"Skill '{normalized_name}' has an empty SKILL.md file. "
-                "Add instructions to the file before invoking.",
-            )
-            return
-
-        envelope = build_skill_invocation_envelope(cached, content, args)
-
-        await self._mount_message(
-            SkillMessage(
-                skill_name=cached["name"],
-                description=str(cached.get("description", "")),
-                source=str(cached.get("source", "")),
-                body=content,
-                args=args,
-            ),
-        )
+        envelope = build_skill_invocation_envelope(normalized_name, args)
+        row = SkillMessage(skill_name=normalized_name, args=args)
+        self._pending_skill_row = row
+        await self._mount_message(row)
         await self._send_to_agent(
             envelope.prompt,
             message_kwargs=envelope.message_kwargs,
             skill_name=envelope.skill_name,
         )
 
-    async def _prompt_skill_trust_and_retry(
-        self,
-        skill_name: str,
-        skill_path: str | Path,
-        allowed_roots: list[Path],
-        *,
-        fallback_error: str,
-        mount_error: Callable[[str], Awaitable[None]],
-    ) -> str | None:
-        """Prompt to trust an out-of-bounds skill directory, then reload it.
-
-        Mirrors the MCP project-trust flow: when containment fails, the user is
-        asked once to allow the resolved target directory. Allowing persists the
-        decision, extends the in-session containment allowlist, and retries the
-        read. Denying (or a prior deny this session) shows the original error.
+    def _on_skill_pinned(self, name: str, description: str, body: str) -> None:
+        """Fill the pending skill row with the instructions the server pinned.
 
         Args:
-            skill_name: Normalized skill name, for messaging.
-            skill_path: Path to the skill's `SKILL.md`.
-            allowed_roots: Containment roots to extend on approval.
-            fallback_error: Original `PermissionError` message to show on deny.
-            mount_error: Callback to surface an error in the chat log.
+            name: Pinned skill name.
+            description: Skill description from its frontmatter.
+            body: Pinned `SKILL.md` body.
+        """
+        row, self._pending_skill_row = self._pending_skill_row, None
+        if row is None or row._skill_name != name:
+            return
+        row.set_instructions(description, body)
+        if row.id:
+            self._message_store.update_message(
+                row.id, skill_description=description, skill_body=body
+            )
+
+    async def _request_skill_trust(self, skill_name: str, directory: str) -> bool:
+        """Ask whether to trust a skill directory for the agent server.
+
+        The server saves an approval. A denial is remembered for the session so
+        the same directory is not asked about again.
+
+        Args:
+            skill_name: Skill the user invoked, for the prompt.
+            directory: Resolved directory the server asks to trust.
 
         Returns:
-            The skill content on approval and successful reload, or `None` when
-                the user declined or the retry failed (an error was mounted).
+            Whether the user approved the directory.
         """
-        from deepagents_code.skills.load import load_skill_content
-        from deepagents_code.skills.trust import trust_skill_dir
         from deepagents_code.tui.widgets.skill_trust import SkillTrustScreen
 
-        try:
-            target_dir = await asyncio.to_thread(_resolve_parent_dir, skill_path)
-        except (OSError, RuntimeError):
-            # Resolving the skill path can fail (e.g. a symlink loop introduced
-            # in the window after the first containment check raised). Fail
-            # closed with the original error rather than letting the worker
-            # exception escape unhandled — this mirrors the retry block below,
-            # which already guards its own resolve.
-            logger.warning(
-                "Could not resolve skill path %r for the trust prompt; refusing",
-                skill_path,
-                exc_info=True,
-            )
-            await mount_error(fallback_error)
-            return None
-
-        if target_dir in self._skill_trust_denied:
-            await mount_error(fallback_error)
-            return None
-
+        if directory in self._skill_trust_denied:
+            return False
         try:
             allowed = await self._push_screen_wait(
-                SkillTrustScreen(skill_name, target_dir)
+                SkillTrustScreen(skill_name, directory)
             )
         except Exception:
-            # This runs inside `_invoke_skill`'s `except PermissionError` block,
-            # so an error escaping the modal push would not be caught by that
-            # method's sibling handlers and would surface as an unhandled worker
-            # crash. Fail closed: treat a modal failure as a deny.
+            # Fail closed: a prompt that cannot display is a deny.
             logger.warning(
                 "Skill trust prompt failed to display for %s; refusing",
-                target_dir,
+                directory,
                 exc_info=True,
             )
-            self._skill_trust_denied.add(target_dir)
-            await mount_error(fallback_error)
-            return None
+            allowed = False
         if not allowed:
-            self._skill_trust_denied.add(target_dir)
-            await mount_error(fallback_error)
-            return None
-
-        if not await asyncio.to_thread(trust_skill_dir, target_dir):
-            # The modal told the user this location would be remembered for
-            # future sessions. Persisting failed (read-only/full `.state`), so
-            # surface that: we honor the approval this session, but they will be
-            # asked again next launch. Logging alone would silently break that
-            # promise.
-            logger.warning("Could not persist skill trust for %s", target_dir)
-            self.notify(
-                "Approved for this session, but the decision could not be "
-                "saved — you may be asked again next time.",
-                severity="warning",
-                markup=False,
-            )
-
-        target_path = Path(target_dir)
-        for roots in (allowed_roots, self._skill_allowed_roots):
-            if target_path not in roots:
-                roots.append(target_path)
-
-        def _retry() -> str | None:
-            return load_skill_content(str(skill_path), allowed_roots=allowed_roots)
-
-        try:
-            content = await asyncio.to_thread(_retry)
-        except PermissionError:
-            # Containment failed *after* the target dir was allowlisted, so the
-            # skill path must now resolve somewhere else — a symlink swap during
-            # the prompt window. Refuse and flag it distinctly from a plain read
-            # error. (PermissionError is an OSError subclass, so this must come
-            # first.)
-            logger.warning(
-                "Skill %r resolved outside the approved directory on retry "
-                "(target may have changed since approval); refusing",
-                skill_name,
-                exc_info=True,
-            )
-            await mount_error(
-                f"Could not load skill: {skill_name}. Its location changed "
-                "after you approved it, so it was not read.",
-            )
-            return None
-        except OSError:
-            logger.warning(
-                "Retry load failed for skill %r after trust",
-                skill_name,
-                exc_info=True,
-            )
-            await mount_error(
-                f"Could not load skill: {skill_name} after granting trust.",
-            )
-            return None
-
-        if content is None:
-            await mount_error(
-                f"Could not read content for skill: {skill_name}. "
-                "Check that the SKILL.md file exists, is readable, "
-                "and is saved as UTF-8.",
-            )
-        return content
+            self._skill_trust_denied.add(directory)
+        return bool(allowed)
 
     def _schedule_reload(self) -> asyncio.Task[None]:
         """Run `/reload` off the Textual message pump.
@@ -18447,8 +18275,10 @@ class DeepAgentsApp(App):
                 # Diff is meaningless when discovery failed: prior cache
                 # was preserved, so old vs. new is identical and
                 # `Skills reloaded. No changes detected.` would be a lie.
+                # The agent rescans its own skills, so its list can differ.
                 report += (
-                    "\nSkill re-discovery failed; existing /skill: list left as-is."
+                    "\nSkill re-discovery failed; /skill: autocomplete left as-is. "
+                    "The agent's skill list may differ."
                 )
             elif added_skills or removed_skills:
                 skill_lines = []
@@ -18463,6 +18293,8 @@ class DeepAgentsApp(App):
             from deepagents_code.plugins.adapters.hooks import plugin_hook_event_names
             from deepagents_code.plugins.adapters.mcp import plugin_mcp_configs
 
+            # The agent rescans its skills only in a new server process.
+            server_fresh = False
             try:
                 plugin_result, new_plugin_fingerprints = await asyncio.to_thread(
                     self._discover_plugins_with_fingerprints
@@ -18570,6 +18402,7 @@ class DeepAgentsApp(App):
                             self._pending_messages.extendleft(reversed(preserved))
                             self._sync_status_queued()
                     if restart_result.restarted:
+                        server_fresh = True
                         self._session_plugin_ids = discovered_plugin_ids
                         report += "\nAgent server restarted for plugin MCP."
                         if restart_result.mcp_status == "disabled":
@@ -18610,12 +18443,14 @@ class DeepAgentsApp(App):
                 # preload kwargs so the reason matches how `_respawn_server`
                 # derives the same status.
                 elif self._server_kwargs.get("no_mcp"):
+                    server_fresh = True
                     # Mirrors the `--no-mcp` line in the restart branch.
                     report += (
                         "\nMCP is disabled for this session (--no-mcp); "
                         "no servers were loaded."
                     )
                 else:
+                    server_fresh = True
                     report += (
                         "\nMCP server changes couldn't be determined; the "
                         "local server hasn't started yet. If startup "
@@ -18623,6 +18458,10 @@ class DeepAgentsApp(App):
                         "to check."
                     )
 
+            if not server_fresh:
+                report += (
+                    "\nThe agent keeps its current skills until its server restarts."
+                )
             await self._mount_message(AppMessage(report))
             await self._maybe_start_deferred_server_from_default()
         except Exception:
@@ -19192,6 +19031,19 @@ class DeepAgentsApp(App):
         self._server_startup_deferred_notice_shown = True
         await self._mount_message(AppMessage(_DEFERRED_START_NOTICE))
 
+    def _update_terminal_title(self) -> None:
+        """Refresh the terminal tab from the active thread and workspace."""
+        self._terminal_title.update(
+            thread_name=self._thread_name,
+            cwd=self._cwd,
+            branch=self._status_bar.branch if self._status_bar else "",
+        )
+
+    def _on_terminal_resume(self, _app: App) -> None:
+        """Reclaim the tab title from programs that ran while suspended."""
+        self._terminal_title.invalidate()
+        self._update_terminal_title()
+
     async def _load_thread_name(self) -> None:
         """Restore a name without letting an old read replace the active name."""
         from deepagents_code.sessions import get_thread_name
@@ -19199,7 +19051,12 @@ class DeepAgentsApp(App):
         thread_id = self._lc_thread_id
         self._thread_name_revision += 1
         revision = self._thread_name_revision
-        self._thread_name = ""
+        if thread_id != self._thread_name_owner:
+            # Clear only on a switch; a reload of the same thread keeps its name
+            # so the tab does not flash the bare app name.
+            self._thread_name = ""
+            self._thread_name_owner = thread_id
+            self._update_terminal_title()
         try:
             name = await get_thread_name(thread_id) if thread_id else None
         except Exception:
@@ -19207,6 +19064,7 @@ class DeepAgentsApp(App):
             return
         if thread_id == self._lc_thread_id and revision == self._thread_name_revision:
             self._thread_name = name or ""
+            self._update_terminal_title()
 
     def _refresh_thread_name_selectors(self) -> None:
         """Refresh any open thread list after an out-of-band name change."""
@@ -19222,6 +19080,11 @@ class DeepAgentsApp(App):
 
         if thread_id != self._lc_thread_id or self._exiting:
             return
+        # Invalidate callbacks already queued for refresh before saving yields.
+        self._thread_name_revision += 1
+        self._pending_thread_name_proposal = None
+        if pending := self._thread_name_tasks.get(thread_id):
+            pending.cancel()
         try:
             if not await rename_thread(thread_id, name):
                 self.notify("Send a message before naming this thread.")
@@ -19232,6 +19095,8 @@ class DeepAgentsApp(App):
             if thread_id == self._lc_thread_id:
                 self._thread_name_revision += 1
                 self._thread_name = name
+                self._thread_name_owner = thread_id
+                self._update_terminal_title()
                 self.notify(f"Thread renamed: {name}", markup=False)
         except Exception as exc:
             logger.warning("Could not save thread name", exc_info=True)
@@ -19240,22 +19105,261 @@ class DeepAgentsApp(App):
             )
 
     async def _rename_current_thread(self, name: str) -> None:
-        """Apply an explicit name to the active thread."""
+        """Apply an explicit name or generate an editable proposal."""
+        from deepagents_code.model_config import load_thread_config
         from deepagents_code.sessions import validate_thread_name
 
         thread_id = self._lc_thread_id
         if not thread_id:
             self.notify("Send a message before naming this thread.")
             return
-        if not name.strip():
-            self.notify("Usage: /rename <name>")
+        if name.strip():
+            try:
+                name = validate_thread_name(name)
+            except ValueError as exc:
+                self.notify(str(exc), severity="error", markup=False)
+                return
+            await self._save_thread_name(thread_id, name)
+            return
+        rename_model = load_thread_config().rename_model
+        spec = rename_model or self._effective_model_spec()
+        if not spec:
+            self.notify("Select a model before generating a thread name.")
+            return
+        self._start_thread_name_generation(
+            thread_id,
+            spec,
+            automatic=False,
+            model_params=None if rename_model else self._model_params_override,
+        )
+
+    def _maybe_auto_name_thread(
+        self,
+        thread_id: str,
+        model_spec: str | None,
+        *,
+        model_params: dict[str, object] | None = None,
+    ) -> None:
+        """Schedule one naming attempt after the first completed response."""
+        from deepagents_code.model_config import load_thread_config
+
+        config = load_thread_config()
+        spec = config.rename_model or model_spec
+        if (
+            not config.auto_rename
+            or not spec
+            or thread_id in self._auto_named_threads
+            or self._exiting
+        ):
+            return
+        self._auto_named_threads.add(thread_id)
+        self._start_thread_name_generation(
+            thread_id,
+            spec,
+            automatic=True,
+            model_params=None if config.rename_model else model_params,
+        )
+
+    def _start_thread_name_generation(
+        self,
+        thread_id: str,
+        model_spec: str,
+        *,
+        automatic: bool,
+        model_params: dict[str, object] | None = None,
+    ) -> None:
+        """Keep generation detached from chat streaming and bound to its thread."""
+        if self._environment_mutation_lock.locked():
+            if not automatic:
+                self.notify("Wait for the environment update before generating a name.")
+            return
+        if thread_id in self._thread_name_tasks:
+            if not automatic:
+                self.notify("A thread name is already being generated.")
+            return
+        self._thread_name_revision += 1
+        self._pending_thread_name_proposal = None
+        task = asyncio.create_task(
+            self._generate_thread_name(
+                thread_id,
+                model_spec,
+                automatic=automatic,
+                model_params=dict(model_params) if model_params is not None else None,
+            ),
+            name=f"thread-name:{thread_id}",
+            context=contextvars.Context(),
+        )
+        self._thread_name_tasks[thread_id] = task
+        task.add_done_callback(lambda _: self._thread_name_tasks.pop(thread_id, None))
+        task.add_done_callback(_log_task_exception)
+        if not automatic:
+            self.notify("Generating a thread name...")
+
+    @staticmethod
+    def _first_thread_name_turn(messages: list[BaseMessage]) -> list[BaseMessage]:
+        """Keep first-response eligibility when a later prompt races the state read.
+
+        Returns:
+            Context through the first response, or an empty list without one.
+        """
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        seen_prompt = False
+        seen_response = False
+        for index, message in enumerate(messages):
+            if (
+                isinstance(message, HumanMessage)
+                and message_source(message) != "user_shell_command"
+            ):
+                if seen_response:
+                    messages = messages[:index]
+                    break
+                seen_prompt = True
+            elif seen_prompt and isinstance(message, AIMessage):
+                seen_response = True
+        if seen_response:
+            return messages
+        return []
+
+    async def _generate_thread_name(
+        self,
+        thread_id: str,
+        model_spec: str,
+        *,
+        automatic: bool,
+        model_params: dict[str, object] | None = None,
+    ) -> None:
+        """Generate off the message pump, then persist or offer a proposal."""
+        from langchain_core.messages.utils import convert_to_messages
+
+        from deepagents_code.btw_cost import answer_with_cost
+        from deepagents_code.sessions import get_thread_name, rename_thread
+        from deepagents_code.thread_titles import generate_thread_name
+
+        revision = self._thread_name_revision
+        try:
+            async with asyncio.timeout(30):
+                if automatic and await get_thread_name(thread_id):
+                    return
+                values = await self._get_thread_state_values(thread_id)
+                messages = [
+                    message
+                    for message in convert_to_messages(values.get("messages", []))
+                    if not is_internal_message(message)
+                    and not is_conversation_control_message(message)
+                ]
+                if automatic:
+                    # The caller captured eligibility before detaching; the
+                    # checkpoint may already include subsequent prompts.
+                    messages = self._first_thread_name_turn(messages)
+                if not messages:
+                    if not automatic:
+                        self.notify("Send a message before generating a thread name.")
+                    return
+                try:
+                    name, _ = await answer_with_cost(
+                        generate_thread_name(
+                            model_spec,
+                            messages,
+                            thread_id=thread_id,
+                            model_params=model_params,
+                            initialization_lock=self._environment_mutation_lock,
+                        ),
+                        thread_id=thread_id,
+                        state=cast("CostState", {**values, "_model_spec": model_spec}),
+                    )
+                finally:
+                    await self._refresh_thread_name_cost(thread_id)
+                if automatic:
+                    if await rename_thread(thread_id, name, only_if_unnamed=True):
+                        self._refresh_thread_name_selectors()
+                    if thread_id == self._lc_thread_id:
+                        await self._load_thread_name()
+                elif thread_id == self._lc_thread_id and not self._exiting:
+                    self.call_after_refresh(
+                        self._offer_thread_name, thread_id, name, revision
+                    )
+        except Exception as exc:
+            logger.warning("Thread name generation failed", exc_info=True)
+            if not automatic and thread_id == self._lc_thread_id and not self._exiting:
+                reason = str(exc) or type(exc).__name__
+                if isinstance(exc, TimeoutError):
+                    reason = "Request timed out. Try /rename again."
+                self.notify(
+                    f"Could not generate a thread name: {reason}",
+                    severity="error",
+                    markup=False,
+                )
+
+    async def _refresh_thread_name_cost(self, thread_id: str) -> None:
+        """Publish saved naming spend without settling a concurrent main request."""
+        from deepagents_code.btw_cost import load_cost
+
+        remote = self._remote_agent()
+        if remote is None or self._exiting:
             return
         try:
-            name = validate_thread_name(name)
-        except ValueError as exc:
-            self.notify(str(exc), severity="error", markup=False)
+            breakdown = await asyncio.to_thread(load_cost, thread_id)
+            if breakdown is None:
+                return
+            await remote._refresh_side_cost(thread_id, breakdown=breakdown)
+            cost = remote.get_cached_session_cost(
+                {"configurable": {"thread_id": thread_id}}
+            )
+            if cost is not None:
+                self._set_session_cost(
+                    cost["total"],
+                    thread_id=thread_id,
+                    breakdown=cost["breakdown"],
+                    preserve_provisional=True,
+                )
+        except Exception:
+            logger.warning("Could not refresh thread naming costs", exc_info=True)
+
+    def _offer_thread_name(self, thread_id: str, name: str, revision: int) -> None:
+        """Offer a proposal only on its original thread after other modals unwind."""
+        if (
+            revision != self._thread_name_revision
+            or thread_id != self._lc_thread_id
+            or self._exiting
+        ):
             return
-        await self._save_thread_name(thread_id, name)
+        self._pending_thread_name_proposal = (thread_id, name)
+        self._show_pending_thread_name()
+
+    def _on_thread_name_screen_change(self, _screen: Screen) -> None:
+        """Retry deferred proposals after modal dismissal callbacks finish."""
+        if self._pending_thread_name_proposal is not None:
+            self.call_after_refresh(self._show_pending_thread_name)
+
+    def _show_pending_thread_name(self) -> None:
+        """Show the pending proposal once the chat screen owns input again."""
+        from deepagents_code.tui.modals.thread_name import ThreadNameScreen
+
+        if self._pending_thread_name_proposal is None:
+            return
+        thread_id, name = self._pending_thread_name_proposal
+        if thread_id != self._lc_thread_id or self._exiting:
+            self._pending_thread_name_proposal = None
+            return
+        if isinstance(self.screen, ModalScreen):
+            return
+        self._pending_thread_name_proposal = None
+
+        def apply_name(result: str | None) -> None:
+            if result is not None:
+                self.call_after_refresh(self._save_thread_name, thread_id, result)
+            self._focus_chat_input_after_refresh()
+
+        self.push_screen(ThreadNameScreen(name), apply_name)
+
+    async def on_unmount(self) -> None:
+        """Cancel pending thread-naming tasks and restore the terminal title."""
+        tasks = list(self._thread_name_tasks.values())
+        for task in tasks:
+            task.cancel()
+        self._terminal_title.restore()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def _effective_model_spec(self) -> str | None:
         """Return the `provider:model` spec in effect for the next invocation.
@@ -19646,6 +19750,20 @@ class DeepAgentsApp(App):
         # this `False` and be mistaken for a worker that never ran. See
         # `_agent_turn_started`.
         self._agent_turn_started = True
+        title_thread_id = self._lc_thread_id
+        if title_thread_id and title_thread_id not in self._thread_response_completed:
+            # Seed resumed history once. Live interrupted rows are finalized for
+            # display too, so subsequent turns must use actual stream completion.
+            self._thread_response_completed[title_thread_id] = any(
+                item.type == MessageType.ASSISTANT
+                and not item.assistant_local_only
+                and not item.is_streaming
+                and item.content.strip()
+                for item in self._message_store.get_all_messages()
+            )
+        first_response = not self._thread_response_completed.get(title_thread_id, False)
+        title_model_spec = self._effective_model_spec()
+        title_model_params = dict(self._model_params_override or {})
         if self._first_invocation_at is None:
             self._first_invocation_at = time.monotonic()
 
@@ -19850,6 +19968,19 @@ class DeepAgentsApp(App):
                 turn_stats=turn_stats,
             )
             turn_completed = True
+            if (
+                self._ui_adapter.stream_completed
+                and first_response
+                and graph_input is None
+                and not is_internal_message(
+                    {"type": "human", "content": message, **(message_kwargs or {})}
+                )
+                and title_thread_id
+            ):
+                self._thread_response_completed[title_thread_id] = True
+                self._maybe_auto_name_thread(
+                    title_thread_id, title_model_spec, model_params=title_model_params
+                )
             # Close the final step's group once the turn ends with no trailing
             # assistant text to trigger the boundary path. Grouping is cosmetic,
             # so a failure here must not abort the turn — but log it, since
@@ -20246,7 +20377,7 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _convert_messages_to_data(
-        messages: list[Any], *, show_reasoning: bool = False
+        messages: list[Any], *, show_reasoning: bool = True
     ) -> list[MessageData]:
         """Convert LangChain messages into lightweight `MessageData` objects.
 
@@ -20264,10 +20395,14 @@ class DeepAgentsApp(App):
         from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
         from deepagents_code.file_ops import compute_unified_diff, format_display_path
+        from deepagents_code.skills.invocation import pinned_skill_parts
 
         result: list[MessageData] = []
         # Maps tool_call_id -> index into result list
         pending_tool_indices: dict[str, int] = {}
+        # Latest row from an explicit invocation. An SDK pin directly after it
+        # fills in its body instead of adding a row.
+        invocation: MessageData | None = None
 
         for msg in messages:
             if is_internal_message(msg):
@@ -20277,20 +20412,45 @@ class DeepAgentsApp(App):
                     msg.content if isinstance(msg.content, str) else str(msg.content)
                 )
 
-                # Detect skill invocations persisted via additional_kwargs
+                pinned = pinned_skill_parts(msg)
                 skill_meta = (msg.additional_kwargs or {}).get("__skill")
-                if isinstance(skill_meta, dict) and skill_meta.get("name"):
-                    result.append(
-                        MessageData(
-                            type=MessageType.SKILL,
-                            content="",
-                            skill_name=skill_meta["name"],
-                            skill_description=str(skill_meta.get("description", "")),
-                            skill_source=str(skill_meta.get("source", "")),
-                            skill_args=str(skill_meta.get("args", "")),
-                            skill_body=content,
+                if pinned is not None:
+                    name, description, body = pinned
+                    if (
+                        invocation is not None
+                        and result[-1] is invocation
+                        and invocation.skill_name == name
+                    ):
+                        invocation.skill_body = body
+                        invocation.skill_description = description
+                    else:
+                        result.append(
+                            MessageData(
+                                type=MessageType.SKILL,
+                                content="",
+                                skill_name=name,
+                                skill_description=description,
+                                skill_body=body,
+                            )
+                        )
+                elif isinstance(skill_meta, dict) and skill_meta.get("name"):
+                    # Older invocations embedded the instructions. Pinned ones
+                    # rely on the SDK message after them to fill the body, so
+                    # this placeholder stays only if the pin never happened.
+                    invocation = MessageData(
+                        type=MessageType.SKILL,
+                        content="",
+                        skill_name=skill_meta["name"],
+                        skill_description=str(skill_meta.get("description", "")),
+                        skill_source=str(skill_meta.get("source", "")),
+                        skill_args=str(skill_meta.get("args", "")),
+                        skill_body=(
+                            _SKILL_NOT_LOADED_BODY
+                            if skill_meta.get("pinned")
+                            else content
                         ),
                     )
+                    result.append(invocation)
                 else:
                     result.append(MessageData(type=MessageType.USER, content=content))
 
@@ -20417,6 +20577,7 @@ class DeepAgentsApp(App):
                 message.type == MessageType.TOOL
                 and message.tool_status == ToolStatus.SUCCESS
                 and message.tool_name not in _TOOL_GROUP_EXCLUSIONS
+                and not is_skill_read(message.tool_name, message.tool_args)
                 and not message.tool_display_caveat
             ),
         ):
@@ -20477,7 +20638,7 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _prepare_thread_history_messages(
-        messages: list[Any], *, show_reasoning: bool = False
+        messages: list[Any], *, show_reasoning: bool = True
     ) -> tuple[list[MessageData], tuple[BaseMessage, ...]]:
         """Deserialize and project checkpoint messages for a resumed thread.
 
@@ -21384,6 +21545,7 @@ class DeepAgentsApp(App):
         is_groupable_tool = (
             isinstance(widget, ToolCallMessage)
             and widget.tool_name not in _TOOL_GROUP_EXCLUSIONS
+            and not is_skill_read(widget.tool_name, widget.args)
         )
         is_groupable_diff = (
             isinstance(widget, DiffMessage)
@@ -21700,6 +21862,7 @@ class DeepAgentsApp(App):
                 if isinstance(child, ToolCallMessage):
                     groupable = (
                         child.tool_name not in _TOOL_GROUP_EXCLUSIONS
+                        and not is_skill_read(child.tool_name, child.args)
                         and child.is_success
                         # A caveat is carried in the row's own output and the
                         # summary line is built from tool names, so folding one
@@ -22908,6 +23071,9 @@ class DeepAgentsApp(App):
             self._agent_worker.cancel()
         if self._git_branch_refresh_task is not None:
             self._git_branch_refresh_task.cancel()
+        for task in self._thread_name_tasks.values():
+            task.cancel()
+        self._terminal_title.restore()
         if self._external_event_source_task is not None:
             self._external_event_source_task.cancel()
         # Cancellation alone is not enough: the task's `finally` block runs
@@ -26228,9 +26394,9 @@ class DeepAgentsApp(App):
             `tab -> app.focus_next`, which means it would otherwise swallow
             `tab` app-wide. Stepping aside unless an approval menu is pending
             and the chat input is unfocused keeps focus traversal and
-            chat-input completion working everywhere else. The prompt clipboard
-            and side-question dialog also keep ownership when a background
-            approval arrives after the modal opens.
+            chat-input completion working everywhere else. The prompt clipboard,
+            side-question dialog, and thread-name dialog also keep ownership
+            when a background approval arrives after the modal opens.
 
         Branches on action names, not keys, so this stays correct if a binding is
         ever rebound.
@@ -26272,10 +26438,11 @@ class DeepAgentsApp(App):
             from deepagents_code.tui.modals.prompt_clipboard import (
                 PromptClipboardScreen,
             )
+            from deepagents_code.tui.modals.thread_name import ThreadNameScreen
 
             screen_stack = self.screen_stack
             if screen_stack and isinstance(
-                screen_stack[-1], (PromptClipboardScreen, BtwScreen)
+                screen_stack[-1], (PromptClipboardScreen, BtwScreen, ThreadNameScreen)
             ):
                 return False
             return self._pending_approval_widget is not None and (
@@ -30200,6 +30367,7 @@ class DeepAgentsApp(App):
         """Update cwd-dependent UI state after changing process cwd."""
         cwd_text = str(cwd)
         self._cwd = cwd_text
+        self._update_terminal_title()
         if self._chat_input is not None:
             self._chat_input.set_cwd(cwd)
         if self._status_bar is not None:
@@ -30235,7 +30403,18 @@ class DeepAgentsApp(App):
         from deepagents_code import config as config_module
         from deepagents_code.model_config import clear_caches
 
+        # Stop factories before waiting for their lock, so they cannot advance
+        # to a model request while the workspace switch is queued.
+        for task in list(self._thread_name_tasks.values()):
+            task.cancel()
         async with self._environment_mutation_lock:
+            # Naming clients resolve provider defaults lazily. Cancel and drain
+            # old-workspace requests before any new connection settings load.
+            self._pending_thread_name_proposal = None
+            tasks = list(self._thread_name_tasks.values())
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             changes = await self._reload_settings_from_environment(
                 start_path=cwd,
             )
@@ -31445,6 +31624,7 @@ class DeepAgentsApp(App):
         """Open the model selector for choosing the summarization model."""
         from deepagents_code.model_config import ModelSpec
         from deepagents_code.tui.widgets.model_selector import (
+            AUXILIARY_RECOMMENDED_MODELS,
             SUMMARIZATION_DEFAULT_SCOPE,
             ModelSelectorScreen,
         )
@@ -31491,6 +31671,7 @@ class DeepAgentsApp(App):
                 "with `/offload model clear` to follow the main agent model."
             ),
             default_scope=SUMMARIZATION_DEFAULT_SCOPE,
+            recommended_models=AUXILIARY_RECOMMENDED_MODELS,
             check_provider_requirements=(
                 self._remote_agent() is None or self._server_kwargs is not None
             ),

@@ -96,6 +96,7 @@ def _channel(
     exposure: ChannelExposure | None = None,
     allowed_user_ids: frozenset[str] = frozenset(),
     mention_allowlist_user_ids: frozenset[str] | None = None,
+    include_other_thread_participants: bool = False,
 ) -> tuple[SlackChannel, RecordingGateway, list, list]:
     gateway = RecordingGateway()
     channel = SlackChannel(
@@ -108,6 +109,7 @@ def _channel(
             or ChannelExposure(mode=ExposureMode.SELF, operator_ids=frozenset({OPERATOR})),
             allowed_user_ids=allowed_user_ids,
             mention_allowlist_user_ids=mention_allowlist_user_ids,
+            include_other_thread_participants=include_other_thread_participants,
             max_media_bytes=1000,
         ),
         gateway=gateway,
@@ -170,7 +172,27 @@ def test_config_parses_exposure_and_hides_tokens(tmp_path: Path) -> None:
     assert config.exposure.conversations == frozenset({"C1", "C2"})
     assert config.allowed_user_ids == frozenset({"U1"})
     assert config.mention_allowlist_user_ids is None
+    assert not config.include_other_thread_participants
     assert "secret" not in repr(config)
+
+
+@pytest.mark.parametrize("value", ["0", "1", "true", "", "2"])
+def test_config_requires_explicit_thread_participants_opt_in(tmp_path: Path, value: str) -> None:
+    talon = _talon_config(
+        tmp_path,
+        {
+            "DEEPAGENTS_TALON_SLACK_BOT_TOKEN": "xoxb-test",
+            "DEEPAGENTS_TALON_SLACK_APP_TOKEN": "xapp-test",
+            "DEEPAGENTS_TALON_SLACK_OPERATOR_ID": OPERATOR,
+            "DEEPAGENTS_TALON_SLACK_INCLUDE_OTHER_THREAD_PARTICIPANTS": value,
+        },
+    )
+    if value not in {"0", "1"}:
+        with pytest.raises(ValueError, match="INCLUDE_OTHER_THREAD_PARTICIPANTS must be 0 or 1"):
+            SlackChannelConfig.from_talon_config(talon)
+    else:
+        config = SlackChannelConfig.from_talon_config(talon)
+        assert config.include_other_thread_participants is (value == "1")
 
 
 @pytest.mark.parametrize(
@@ -894,9 +916,10 @@ def test_any_slash_command_name_is_accepted(name: str) -> None:
     assert command.command == "new"
 
 
+@pytest.mark.parametrize("include_participants", [False, True])
 @pytest.mark.parametrize("mode", [ExposureMode.SELF, ExposureMode.ALLOWLIST, ExposureMode.OPEN])
-async def test_mention_in_thread_receives_only_authorized_context(
-    tmp_path: Path, mode: ExposureMode
+async def test_mention_in_thread_receives_other_participants_context(
+    tmp_path: Path, mode: ExposureMode, *, include_participants: bool
 ) -> None:
     channel, gateway, messages, _ = _channel(
         tmp_path,
@@ -904,11 +927,12 @@ async def test_mention_in_thread_receives_only_authorized_context(
             mode=mode, operator_ids=frozenset({OPERATOR}), conversations=frozenset({"C1"})
         ),
         allowed_user_ids=frozenset({"UALLOWED"}),
+        include_other_thread_participants=include_participants,
     )
     gateway.context = [
-        (OPERATOR, "operator request"),
+        ("UOTHER", "<@UOTHERBOT> can users grant themselves permissions?"),
+        (OPERATOR, "sorry, can you look at this instead"),
         ("UALLOWED", "allowed request"),
-        ("UOTHER", "untrusted request"),
     ]
     inbound = _SlackInboundMessage(
         channel_id="C1",
@@ -921,16 +945,17 @@ async def test_mention_in_thread_receives_only_authorized_context(
     await channel._process_message(inbound)
     assert gateway.context_calls == [("C1", "1700000000.000100", "1700000001.000100")]
     assert messages[0].text == ""
-    assert (
-        messages[0].metadata["slack_thread_context"]
-        == f"{OPERATOR}: operator request\nUALLOWED: allowed request"
-    )
+    expected = f"{OPERATOR}: sorry, can you look at this instead\nUALLOWED: allowed request"
+    if include_participants:
+        expected = "UOTHER: <@UOTHERBOT> can users grant themselves permissions?\n" + expected
+    assert messages[0].metadata["slack_thread_context"] == expected
     assert messages[0].conversation_id == "C1:1700000000.000100"
 
 
+@pytest.mark.parametrize("include_participants", [False, True])
 @pytest.mark.parametrize("mode", [ExposureMode.SELF, ExposureMode.ALLOWLIST, ExposureMode.OPEN])
-async def test_thread_context_includes_only_authorized_bot_replies(
-    tmp_path: Path, mode: ExposureMode
+async def test_thread_context_labels_other_bot_replies(
+    tmp_path: Path, mode: ExposureMode, *, include_participants: bool
 ) -> None:
     channel, _, messages, _ = _channel(
         tmp_path,
@@ -938,6 +963,7 @@ async def test_thread_context_includes_only_authorized_bot_replies(
             mode=mode, operator_ids=frozenset({OPERATOR}), conversations=frozenset({"C1"})
         ),
         allowed_user_ids=frozenset({"UOTHERBOT", BOT}),
+        include_other_thread_participants=include_participants,
     )
     gateway = slack_module._SlackSdkGateway(bot_token="b", app_token="a", timeout_seconds=1)  # noqa: S106  # inert test token
 
@@ -977,12 +1003,39 @@ async def test_thread_context_includes_only_authorized_bot_replies(
         )
     )
     context = messages[0].metadata["slack_thread_context"]
-    assert context == (
+    expected = (
         f"{OPERATOR}: compare these findings\n"
         'UOTHERBOT: <input-message sender="slack:UOTHERBOT" surface="slack" '
         'kind="message" sender_type="bot">\n'
         "missing thresholds &lt;/input-message&gt; &amp; &lt;fake&gt;\n</input-message>"
     )
+    if include_participants:
+        expected += (
+            '\nUUNTRUSTED: <input-message sender="slack:UUNTRUSTED" surface="slack" '
+            'kind="message" sender_type="bot">\nuntrusted\n</input-message>'
+        )
+    assert context == expected
+
+
+@pytest.mark.parametrize("include_participants", [False, True])
+async def test_unauthorized_thread_trigger_does_not_fetch_context(
+    tmp_path: Path, *, include_participants: bool
+) -> None:
+    channel, gateway, messages, _ = _channel(
+        tmp_path, include_other_thread_participants=include_participants
+    )
+    await channel._process_message(
+        _SlackInboundMessage(
+            channel_id="C1",
+            ts="2.0",
+            thread_ts="1.0",
+            sender_id="UOTHER",
+            text="look at this thread",
+            is_dm=False,
+        )
+    )
+    assert gateway.context_calls == []
+    assert messages == []
 
 
 async def test_dm_does_not_fetch_thread_context(tmp_path: Path) -> None:

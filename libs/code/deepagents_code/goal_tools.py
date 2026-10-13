@@ -19,6 +19,8 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
+    OmitFromSchema,
+    PrivateStateAttr,
     TracePolicy,
     omit_payload,
 )
@@ -113,6 +115,9 @@ class GoalToolState(GoalRubricChannels):
     `ResumeState` cannot drift apart. Adds only the public `rubric` graph input,
     which is intentionally non-private — it is the `RubricMiddleware` input.
     """
+
+    _fork_notice_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Invocation criteria inherited by forks for notices, never grading."""
 
     rubric: NotRequired[str | None]
     """Public `RubricMiddleware` graph input (intentionally non-private).
@@ -400,6 +405,14 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             update["rubric"] = None
         return update or None
 
+    def _boundary_update(self, state: AgentState[Any]) -> dict[str, Any] | None:
+        """Return notice updates and synchronized criteria for future forks."""
+        update = self._notice_update(state) or {}
+        rubric = None if goal_notice_size_error(state) else state.get("rubric")
+        if state.get("_fork_notice_rubric") != rubric:
+            update["_fork_notice_rubric"] = rubric
+        return update or None
+
     @override
     def before_model(
         self,
@@ -416,7 +429,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             Message update containing a current notice, or `None` when unchanged.
         """
         del runtime
-        return self._notice_update(state)
+        return self._boundary_update(state)
 
     @override
     async def abefore_model(
@@ -432,11 +445,13 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             Message update containing a current notice, or `None` when unchanged.
         """
         del runtime
-        return self._notice_update(state)
+        return self._boundary_update(state)
 
     @staticmethod
     def _request_with_goal_notice(
         request: ModelRequest[ContextT],
+        *,
+        notice_values: dict[str, Any] | None = None,
     ) -> ModelRequest[ContextT]:
         """Ensure a current goal-state notice is visible in a model request.
 
@@ -480,7 +495,7 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             values = {**values, "_summarization_event": None}
             request = request.override(state=cast("AgentState[Any]", values))
         notice = _goal_state_notice_for(
-            values,
+            notice_values if notice_values is not None else values,
             request.messages,
             # Force a fresh notice when discarding an event, matching
             # `_notice_update`, so a summarization regenerated on this boundary
@@ -533,3 +548,73 @@ class GoalToolsMiddleware(AgentMiddleware[GoalToolState, ContextT]):
             Model response from the wrapped handler.
         """
         return await handler(self._request_with_goal_notice(request))
+
+
+class ForkGoalToolState(GoalToolState):
+    """Accept the parent's notice snapshot while keeping it out of outputs."""
+
+    _fork_notice_rubric: Annotated[
+        NotRequired[str | None], OmitFromSchema(input=False, output=True)
+    ]
+    _goal_objective: Annotated[
+        NotRequired[str | None], OmitFromSchema(input=False, output=True)
+    ]
+    _goal_status: Annotated[
+        NotRequired[Literal["active", "paused", "blocked", "complete"] | None],
+        OmitFromSchema(input=False, output=True),
+    ]
+    _goal_rubric: Annotated[
+        NotRequired[str | None], OmitFromSchema(input=False, output=True)
+    ]
+    _goal_status_note: Annotated[
+        NotRequired[str | None], OmitFromSchema(input=False, output=True)
+    ]
+    _sticky_rubric: Annotated[
+        NotRequired[str | None], OmitFromSchema(input=False, output=True)
+    ]
+
+
+class ForkGoalToolsMiddleware(GoalToolsMiddleware[ContextT]):
+    """Render inherited criteria without restoring the fork's grading input."""
+
+    state_schema = ForkGoalToolState
+
+    @property
+    def name(self) -> str:
+        """Replace inherited goal tools through public middleware composition."""
+        return "GoalToolsMiddleware"
+
+    @staticmethod
+    def _notice_values(state: AgentState[Any]) -> dict[str, Any]:
+        return {**state, "rubric": state.get("_fork_notice_rubric")}
+
+    def _boundary_update(self, state: AgentState[Any]) -> dict[str, Any] | None:
+        return self._notice_update(cast("AgentState[Any]", self._notice_values(state)))
+
+    @override
+    def wrap_model_call[ResponseT](
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
+    ) -> ModelResponse[ResponseT]:
+        """Return the response with current fork notices and unchanged state."""
+        return handler(
+            self._request_with_goal_notice(
+                request, notice_values=self._notice_values(request.state)
+            )
+        )
+
+    @override
+    async def awrap_model_call[ResponseT](
+        self,
+        request: ModelRequest[ContextT],
+        handler: Callable[
+            [ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]
+        ],
+    ) -> ModelResponse[ResponseT]:
+        """Return the async response without restoring fork grading input."""
+        return await handler(
+            self._request_with_goal_notice(
+                request, notice_values=self._notice_values(request.state)
+            )
+        )

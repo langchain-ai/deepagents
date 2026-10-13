@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
 from deepagents.backends import StateBackend
 from deepagents.middleware.memory import MemoryState
-from deepagents.middleware.skills import SkillsState
+from deepagents.middleware.skills import SkillsMiddleware, SkillsState
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.middleware.unsupported_content import UnsupportedContentMiddleware
 from langchain.agents.middleware.types import (
@@ -37,11 +37,12 @@ from langchain_core.runnables import RunnableBinding
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 
+from deepagents_code._tool_free import tool_free_model, tool_free_settings
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
     from deepagents.middleware.memory import MemoryMiddleware
-    from deepagents.middleware.skills import SkillsMiddleware
     from deepagents.middleware.summarization import SummarizationMiddleware
     from langchain_core.messages import (
         AIMessageChunk,
@@ -60,17 +61,6 @@ _MAX_SNAPSHOTS = 16
 _MAX_RETRY_DELAY = 60
 """Leave generation time within the API's 120-second request deadline."""
 BTW_OPERATION_ATTR = "_dcode_btw"
-_TOOL_OPTIONS = frozenset(
-    {
-        "tools",
-        "tool_choice",
-        "functions",
-        "function_call",
-        "parallel_tool_calls",
-        "mcp_servers",
-    }
-)
-_OPTION_CONTAINERS = ("model_kwargs", "extra_body")
 
 
 class _InstructionState(MemoryState, SkillsState):
@@ -85,20 +75,34 @@ class _BtwState(AgentState):
     _btw_model_retries: Annotated[NotRequired[int | None], PrivateStateAttr]
 
 
-async def _restore_system(
-    system: SystemMessage,
-    model: BaseChatModel,
-    state: Mapping[str, object],
-    middleware: Sequence[MemoryMiddleware | SkillsMiddleware],
-) -> SystemMessage:
-    channels = ("memory_contents", "skills_metadata", "skills_load_errors")
-    local = cast(
+def _instruction_state(state: Mapping[str, object]) -> _InstructionState:
+    """Copy the checkpoint channels that the instruction loaders read.
+
+    Returns:
+        A local state the loaders can update without touching the checkpoint.
+    """
+    channels = (
+        "memory_contents",
+        "skills_metadata",
+        "skills_load_errors",
+        "skills_loaded_by",
+    )
+    return cast(
         "_InstructionState",
         {
             "messages": [],
             **{key: deepcopy(state[key]) for key in channels if key in state},
         },
     )
+
+
+async def _restore_system(
+    system: SystemMessage,
+    model: BaseChatModel,
+    state: Mapping[str, object],
+    middleware: Sequence[MemoryMiddleware | SkillsMiddleware],
+) -> SystemMessage:
+    local = _instruction_state(state)
     runtime = Runtime()
     request = ModelRequest(
         model=model,
@@ -116,52 +120,51 @@ async def _restore_system(
     return request.system_message or system
 
 
-def _tool_free_options(options: Mapping[str, Any]) -> dict[str, Any]:
-    """Copy request defaults, including nested provider payload overrides.
+def _skills_section(
+    loader: SkillsMiddleware, model: BaseChatModel, state: _InstructionState
+) -> str:
+    """Render the skill section that `loader` adds to a system prompt.
 
     Returns:
-        Options with tool configuration removed.
+        The section text, or an empty string when `loader` adds none.
     """
-    return {
-        key: (
-            _tool_free_options(value)
-            if key in _OPTION_CONTAINERS and isinstance(value, Mapping)
-            else deepcopy(value)
-        )
-        for key, value in options.items()
-        if key not in _TOOL_OPTIONS
-    }
+    request = ModelRequest(
+        model=model,
+        system_message=None,
+        state=state,
+        messages=[],
+        tools=[],
+        runtime=Runtime(),
+    )
+    message = loader.modify_request(request).system_message
+    return message.text if message else ""
 
 
-def _tool_free_model(model: BaseChatModel) -> BaseChatModel:
-    """Isolate request defaults while sharing the provider's HTTP clients.
+async def _refresh_skills(
+    system: SystemMessage,
+    model: BaseChatModel,
+    state: Mapping[str, object],
+    middleware: Sequence[MemoryMiddleware | SkillsMiddleware],
+) -> SystemMessage:
+    """Replace stale skill sections in saved instructions.
+
+    A saved prompt can outlive its skill list. `/reload` restarts the server,
+    so the loaders rescan before the next main turn saves a new prompt.
 
     Returns:
-        A model copy with tool-free provider defaults.
+        `system` with each changed skill section replaced.
     """
-    updates: dict[str, object] = {
-        key: _tool_free_options(value)
-        for key in _OPTION_CONTAINERS
-        if isinstance(value := getattr(model, key, None), Mapping)
-    }
-    if hasattr(model, "mcp_servers"):
-        updates["mcp_servers"] = None
-    return model.model_copy(update=updates)
-
-
-def _tool_free_settings(
-    model: object, settings: Mapping[str, object]
-) -> dict[str, Any]:
-    """Flatten bound defaults with request overrides taking precedence.
-
-    Returns:
-        Isolated generation settings without tool configuration.
-    """
-    merged = dict(settings)
-    while isinstance(model, RunnableBinding):
-        merged = {**model.kwargs, **merged}
-        model = model.bound
-    return _tool_free_options(merged)
+    text = system.text
+    local = _instruction_state(state)
+    runtime = Runtime()
+    for loader in middleware:
+        if not isinstance(loader, SkillsMiddleware):
+            continue
+        before = _skills_section(loader, model, local)
+        if update := await loader.abefore_agent(local, runtime, {}):
+            local.update(update)
+            text = text.replace(before, _skills_section(loader, model, local), 1)
+    return SystemMessage(content=text)
 
 
 def _retry_budget(model: object) -> int | None:
@@ -424,7 +427,7 @@ class BtwOperation(AgentMiddleware):
             return Command(
                 update={
                     "_btw_system_prompt": (request.system_message or self._system).text,
-                    "_btw_model_settings": _tool_free_settings(
+                    "_btw_model_settings": tool_free_settings(
                         request.model, request.model_settings
                     ),
                     "_btw_model_retries": _retry_budget(request.model),
@@ -504,7 +507,7 @@ class BtwOperation(AgentMiddleware):
                 cli_max_retries=retries if type(retries) is int else None,
             )
             model = result.model
-        settings = _tool_free_settings(model, settings)
+        settings = tool_free_settings(model, settings)
         while isinstance(model, RunnableBinding):
             model = model.bound
         if not isinstance(model, BaseChatModel):
@@ -513,12 +516,17 @@ class BtwOperation(AgentMiddleware):
         if snapshot is None:
             saved_system = state.get("_btw_system_prompt")
             if isinstance(saved_system, str):
-                system = SystemMessage(content=saved_system)
+                system = await _refresh_skills(
+                    SystemMessage(content=saved_system),
+                    model,
+                    state,
+                    self._instruction_middleware,
+                )
             else:
                 system = await _restore_system(
                     system, model, state, self._instruction_middleware
                 )
-        model = _tool_free_model(model)
+        model = tool_free_model(model)
         if snapshot is None and type(retries := state.get("_btw_model_retries")) is int:
             setattr(model, MODEL_RETRIES_ATTR, retries)
         return model, system, settings

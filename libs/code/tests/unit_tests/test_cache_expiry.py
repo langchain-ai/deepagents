@@ -985,6 +985,7 @@ async def test_send_timing_restores_draft_without_spending(
     mode: str, keys: tuple[str, ...], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_cold_cache_estimate", AsyncMock(return_value=None))
     process = AsyncMock()
     monkeypatch.setattr(app, "_process_message", process)
     monkeypatch.setattr("deepagents_code.app._load_cache_prompt_mode", lambda: mode)

@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -643,6 +644,23 @@ def test_build_grep_cmd_slash_glob_does_not_mask_errors() -> None:
     """
     cmd = _build_grep_cmd("needle", "/test", "src/**/*.py")
     assert "|| true" not in cmd
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
+def test_build_grep_cmd_slash_glob_runs_through_a_shell(tmp_path: Path) -> None:
+    """The template is wrapped in `python3 -c "..."`, so a stray double quote truncates the script."""
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("needle\n")
+
+    for max_count in (None, 5):
+        proc = subprocess.run(  # noqa: S603  # command is built from the project's sandbox template
+            ["/bin/sh", "-c", _build_grep_cmd("needle", str(tmp_path), "src/**/*.py", max_count)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0
+        assert proc.stdout == f"{tmp_path}/src/app.py\x001:needle\n"
 
 
 def test_build_grep_cmd_no_glob_uses_grep() -> None:
@@ -2780,3 +2798,196 @@ class TestCaptureWrapperNotices:
     def test_head_tail_line_budget_matches_surplus_arithmetic(self) -> None:
         """The surplus the wrapper reports is relative to these two constants."""
         assert f"$((__da_lines - {_EXECUTE_CAPTURE_HEAD_LINES} - {_EXECUTE_CAPTURE_TAIL_LINES}))" in self.cmd
+
+
+# -- grep directory exclusion ----------------------------------------------------
+# Runs the real grep / Python-template commands, since exclusion semantics live in
+# GNU grep's `--exclude-dir` and the template's glob walk rather than in parsing.
+
+_GREP: Final = shutil.which("grep")
+_GNU_GREP: Final = (
+    bool(_GREP)
+    and "(GNU grep)"
+    in subprocess.run(  # noqa: S603  # fixed argv, resolved grep binary
+        [_GREP or "grep", "--version"], capture_output=True, text=True, check=False
+    ).stdout
+)
+
+
+class _ShellSandbox(MockSandbox):
+    """Runs commands with the local shell."""
+
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        proc = subprocess.run(  # noqa: S603  # command is built from the project's sandbox templates
+            ["/bin/sh", "-c", command],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return ExecuteResponse(output=proc.stdout + proc.stderr, exit_code=proc.returncode, truncated=False)
+
+
+@pytest.fixture
+def checkout(tmp_path: Path) -> Path:
+    for rel in ("src/app.py", "src/app.js", ".git/packed-refs", "node_modules/pkg/index.js"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text("needle\n")
+    return tmp_path
+
+
+def _grep_paths(sandbox: BaseSandbox, path: Path, glob: str | None = None) -> set[str]:
+    result = sandbox.grep("needle", str(path), glob)
+    assert result.error is None
+    return {str(Path(match["path"]).relative_to(path)) for match in result.matches or []}
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
+@pytest.mark.skipif(not _GNU_GREP, reason="the grep route targets GNU grep")
+def test_grep_skips_git_but_still_searches_an_explicit_git_root(checkout: Path) -> None:
+    sandbox = _ShellSandbox()
+
+    assert _grep_paths(sandbox, checkout) == {"src/app.py", "src/app.js", "node_modules/pkg/index.js"}
+    assert _grep_paths(sandbox, checkout / ".git") == {"packed-refs"}
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
+@pytest.mark.skipif(not _GNU_GREP, reason="the grep route targets GNU grep")
+def test_grep_exclude_dirs_can_be_extended_on_the_grep_route(checkout: Path) -> None:
+    sandbox = _ShellSandbox()
+    sandbox.grep_exclude_dirs = (".git", "node_modules")
+
+    assert _grep_paths(sandbox, checkout, "*.js") == {"src/app.js"}
+
+
+@pytest.mark.skipif(sys.platform == "win32" or not Path("/bin/sh").is_file(), reason="requires /bin/sh")
+def test_grep_exclude_dirs_apply_to_path_globs(checkout: Path) -> None:
+    sandbox = _ShellSandbox()
+    sandbox.grep_exclude_dirs = (".git", "node_modules")
+
+    assert _grep_paths(sandbox, checkout, "**/*.js") == {"src/app.js"}
+
+
+@pytest.fixture(params=[False, True], ids=["gnu-grep", "ripgrep"])
+def grep_shell(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _ShellSandbox:
+    if not _GNU_GREP or not Path("/bin/sh").is_file():
+        pytest.skip("requires GNU grep and /bin/sh")
+    rg = shutil.which("rg")
+    if request.param and rg is None:
+        pytest.skip("requires ripgrep")
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    for tool in ("grep", "head", "python3"):
+        executable = shutil.which(tool)
+        assert executable is not None
+        (tools / tool).symlink_to(executable)
+    marker = tmp_path / "rg-used"
+    if request.param:
+        (tools / "rg").write_text(f'#!/bin/sh\nprintf used > "{marker}"\nexec "{rg}" "$@"\n')
+        (tools / "rg").chmod(0o755)
+    monkeypatch.setenv("PATH", str(tools))
+    monkeypatch.setenv("RIPGREP_CONFIG_PATH", str(tmp_path / "missing-config"))
+    yield _ShellSandbox()
+    assert marker.exists() == request.param
+
+
+@pytest.mark.parametrize("glob", [None, "*.py", "{literal}.py", "!literal.py", "#literal.py"])
+async def test_grep_remote_tool_parity(grep_shell: _ShellSandbox, tmp_path: Path, glob: str | None) -> None:
+    root = tmp_path / "search"
+    expected = []
+    for rel in ("top:colon.py", "nested/deep.py", ".hidden.py", ".hidden/inside.py", "{literal}.py", "!literal.py", "#literal.py", "other.txt"):
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("not a match\nneedle[.*]: final", encoding="utf-8")
+        if glob is None or (glob == "*.py" and rel.endswith(".py")) or glob == rel:
+            expected.append({"path": str(target), "line": 2, "text": "needle[.*]: final"})
+    for rel in (".git/data.py", "nested/.git/data.py", "node_modules/data.py", "nested/node_modules/data.py"):
+        target = root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("needle[.*]\n", encoding="utf-8")
+    (root / ".gitignore").write_text("*.py\n", encoding="utf-8")
+    (root / "link.py").symlink_to(root / "top:colon.py")
+    (root / "binary.py").write_bytes(b"\0needle[.*]\n")
+    grep_shell.grep_exclude_dirs = (".git", "node_modules")
+    for result in (grep_shell.grep("needle[.*]", str(root), glob), await grep_shell.agrep("needle[.*]", str(root), glob)):
+        assert result.error is None
+        assert sorted(result.matches or [], key=lambda match: match["path"]) == sorted(expected, key=lambda match: match["path"])
+        assert not result.truncated
+    single = grep_shell.grep("needle[.*]", str(root / "other.txt"), "*.py")
+    assert single.matches == []
+    assert grep_shell.grep("absent", str(root)).matches == []
+    assert grep_shell.grep("needle", str(root / "missing")).matches == []
+    assert grep_shell.grep("needle", str(root / "binary.py")).matches == []
+    assert grep_shell.grep("needle", str(root / "link.py")).matches == [{"path": str(root / "link.py"), "line": 2, "text": "needle[.*]: final"}]
+    alternatives = grep_shell.grep("not a match\nfinal", str(root), "[to]*.py")
+    assert alternatives.matches == [
+        {"path": str(root / "top:colon.py"), "line": 1, "text": "not a match"},
+        {"path": str(root / "top:colon.py"), "line": 2, "text": "needle[.*]: final"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("glob", "expected"),
+    [
+        ("{a,b}.py", {"{a,b}.py"}),
+        ("#x.py", {"#x.py"}),
+        ("!x.py", {"!x.py"}),
+        ("a.py ", {"a.py "}),
+        ("[a.py", {"[a.py"}),
+        ("[[:alpha:]].py", {"a.py", "b.py"}),
+        ("a.py\\", {"a.py\\"}),
+        (r"\a.py", {"a.py"}),
+        ("**.py", {"a.py", "b.py", "{a,b}.py", "#x.py", "!x.py", "[a.py"}),
+    ],
+)
+async def test_grep_glob_dialect_compatibility(grep_shell: _ShellSandbox, tmp_path: Path, glob: str, expected: set[str]) -> None:
+    root = tmp_path / "search"
+    root.mkdir()
+    for name in ("a.py", "b.py", "{a,b}.py", "#x.py", "!x.py", "a.py ", "a.py\\", "[a.py"):
+        (root / name).write_text("needle\n")
+    assert len(grep_shell.grep("needle", str(root)).matches or []) == 8
+    assert _grep_paths(grep_shell, root, glob) == expected
+    result = await grep_shell.agrep("needle", str(root), glob)
+    assert result.error is None
+    assert {Path(match["path"]).name for match in result.matches or []} == expected
+
+
+@pytest.mark.parametrize(
+    ("excluded", "expected"),
+    [
+        ("{a,b}", {"a/file", "b/file", "[ab]/file", "cache/file", "cache1/file"}),
+        ("[ab]", {"{a,b}/file", "[ab]/file", "cache/file", "cache1/file"}),
+        ("cache**", {"a/file", "b/file", "{a,b}/file", "[ab]/file"}),
+        (r"\a", {"b/file", "{a,b}/file", "[ab]/file", "cache/file", "cache1/file"}),
+    ],
+)
+def test_grep_exclusion_dialect_compatibility(grep_shell: _ShellSandbox, tmp_path: Path, excluded: str, expected: set[str]) -> None:
+    root = tmp_path / "search"
+    for name in ("a", "b", "{a,b}", "[ab]", "cache", "cache1"):
+        (root / name).mkdir(parents=True)
+        (root / name / "file").write_text("needle\n")
+    assert len(grep_shell.grep("needle", str(root)).matches or []) == 6
+    grep_shell.grep_exclude_dirs = (excluded,)
+    assert _grep_paths(grep_shell, root) == expected
+
+
+@pytest.mark.parametrize("pattern", ["needle\nother", "needle\n", "\nneedle"])
+def test_grep_newline_patterns_are_alternatives(grep_shell: _ShellSandbox, tmp_path: Path, pattern: str) -> None:
+    root = tmp_path / "search"
+    root.mkdir()
+    (root / "file").write_text("needle\nother\n")
+    assert len(grep_shell.grep("needle", str(root)).matches or []) == 1
+    result = grep_shell.grep(pattern, str(root))
+    assert result.error is None
+    assert [match["text"] for match in result.matches or []] == ["needle", "other"]
+
+
+@pytest.mark.parametrize("count", [2, 3, 4])
+def test_grep_remote_tool_truncation(grep_shell: _ShellSandbox, tmp_path: Path, count: int) -> None:
+    root = tmp_path / "search"
+    root.mkdir()
+    target = root / "matches.txt"
+    target.write_text("needle\n" * count, encoding="utf-8")
+    result = grep_shell.grep("needle", str(root), max_count=3)
+    assert result.error is None
+    assert len(result.matches or []) == min(count, 3)
+    assert result.truncated == (count > 3)

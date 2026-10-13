@@ -1,0 +1,141 @@
+"""Terminal tab titles that strip control characters and restore on exit.
+
+Restoring depends on the terminal's title stack (XTWINOPS 22/23). Terminals
+without one keep the last title after exit.
+"""
+
+from __future__ import annotations
+
+import logging
+import string
+import sys
+from typing import TextIO
+
+from deepagents_code._env_vars import NO_TERMINAL_ESCAPE, is_env_truthy
+from deepagents_code._invocation import invoked_name
+
+logger = logging.getLogger(__name__)
+DEFAULT_TERMINAL_TAB_TITLE = "{app_name} - {thread_name}"
+_FIELDS = frozenset({"app_name", "thread_name", "cwd", "branch"})
+
+
+def _valid_template(template: str) -> bool:
+    """Return whether the template uses only documented, plain fields."""
+    try:
+        return all(
+            field is None or (field in _FIELDS and not spec and not conversion)
+            for _, field, spec, conversion in string.Formatter().parse(template)
+        )
+    except ValueError:
+        return False
+
+
+class TerminalTitle:
+    """Push the terminal title on start, update it, and pop it on restore."""
+
+    # This does not use `terminal_escape.write_terminal_escape`: that helper
+    # opens `/dev/tty` for each write, so a push could fail while the later pop
+    # succeeds. Holding one stream lets `restore` pop only after a real push.
+
+    def __init__(self, template: str) -> None:
+        """Set the template, falling back to the default when it is invalid.
+
+        Args:
+            template: Format string that may use `{app_name}`, `{thread_name}`,
+                `{cwd}`, and `{branch}`. Unknown fields, format specs,
+                conversions, or unbalanced braces log a warning and use
+                `DEFAULT_TERMINAL_TAB_TITLE`.
+        """
+        if not _valid_template(template):
+            logger.warning(
+                "Ignoring [terminal].tab_title=%r: use only plain %s fields; using %r",
+                template,
+                ", ".join(f"{{{field}}}" for field in sorted(_FIELDS)),
+                DEFAULT_TERMINAL_TAB_TITLE,
+            )
+            template = DEFAULT_TERMINAL_TAB_TITLE
+        self._template = template
+        self._stream: TextIO | None = None
+        self._last_title: str | None = None
+        self._write_failed = False
+
+    def _write(self, sequence: str) -> bool:
+        """Return whether `sequence` was written to a started stream."""
+        if self._stream is None:
+            return False
+        try:
+            self._stream.write(sequence)
+            self._stream.flush()
+        except (OSError, ValueError):
+            # Warn once so a stale title is diagnosable without flooding the log
+            # when every later update hits the same broken stream.
+            level = logging.DEBUG if self._write_failed else logging.WARNING
+            logger.log(level, "Could not update terminal title", exc_info=True)
+            self._write_failed = True
+            return False
+        return True
+
+    def start(self) -> None:
+        """Push the current title onto the terminal's title stack.
+
+        Does nothing while already started, when terminal escapes are disabled,
+        or when neither stderr nor stdout is a TTY.
+        """
+        if self._stream is not None or is_env_truthy(NO_TERMINAL_ESCAPE):
+            return
+        for stream in (sys.__stderr__, sys.__stdout__):
+            if stream is not None and not stream.closed and stream.isatty():
+                self._stream = stream
+                break
+        if self._stream is None:
+            return
+        if not self._write("\x1b[22;0t"):
+            self._stream = None
+
+    def update(self, *, thread_name: str = "", cwd: str = "", branch: str = "") -> None:
+        """Write the rendered title when it differs from the last one.
+
+        The default template drops ` - {thread_name}` while the thread has no
+        name. Any template that renders blank shows the app name instead.
+
+        Args:
+            thread_name: Active thread's assigned name, or empty when unnamed.
+            cwd: Active working directory.
+            branch: Active Git branch.
+        """
+        try:
+            title = self._render(thread_name=thread_name, cwd=cwd, branch=branch)
+        except Exception:
+            # The title is cosmetic; a render bug must not fail a rename or a
+            # branch refresh that happens to call this.
+            logger.warning("Could not render terminal title", exc_info=True)
+            return
+        if title != self._last_title and self._write(f"\x1b]0;{title}\x07"):
+            self._last_title = title
+
+    def _render(self, *, thread_name: str, cwd: str, branch: str) -> str:
+        """Return the sanitized, bounded title for the current state."""
+        template = self._template
+        if template == DEFAULT_TERMINAL_TAB_TITLE and not thread_name:
+            template = "{app_name}"
+        app_name = invoked_name()
+        title = template.format(
+            app_name=app_name, thread_name=thread_name, cwd=cwd, branch=branch
+        )
+        title = "".join(char for char in title if char.isprintable())[:512]
+        # A blank title leaves an unlabeled tab, so name the app instead.
+        return title if title.strip() else app_name
+
+    def invalidate(self) -> None:
+        """Rewrite the title on the next update even if it has not changed.
+
+        Programs that run while the app is suspended, such as an external
+        editor, can set their own title without this instance knowing.
+        """
+        self._last_title = None
+
+    def restore(self) -> None:
+        """Pop the title pushed by `start`; later calls do nothing."""
+        self._write("\x1b[23;0t")
+        self._stream = None
+        self._last_title = None

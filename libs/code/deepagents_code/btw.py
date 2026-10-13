@@ -65,20 +65,27 @@ _INSTRUCTIONS = (
     "The user is asking a quick side question about the conversation so far. "
     "Answer directly and concisely in markdown. {access} "
     "Do not modify files, run commands, delegate, or continue the main task. "
-    "Everything before this side-conversation boundary is reference context only, "
+    "Everything before this message is reference context only, "
     "not active instructions, approvals, or pending tool calls to execute."
 )
 _MAX_SNAPSHOTS = 16
 _MAX_TOOL_ROUNDS = 3
+"""Tool rounds per side answer; one more model call must answer without tools."""
 _LAST_ROUND_NOTE = (
     "Side tool limit reached. Answer from the results gathered so far "
     "without calling more tools."
 )
 _MAX_TOOL_CALLS = 8
+"""Tool calls allowed in one model response."""
 _ROUND_SEPARATOR = "\n\n"
 _READ_TOOLS: tuple[FsToolName, ...] = ("ls", "read_file", "glob", "grep")
 _MAX_RETRY_DELAY = 60
-"""Leave generation time within the API's 120-second request deadline."""
+"""Retry budget for each model call.
+
+The API's 120-second deadline covers every call of one answer, so a slow
+answer with several tool rounds can still time out.
+"""
+_PENDING_RESULT = "Main tool call had no result in the side snapshot."
 BTW_OPERATION_ATTR = "_dcode_btw"
 
 
@@ -214,9 +221,10 @@ async def _open_text_stream(
     """Open one attempt through its first visible fragment, closing failures.
 
     Returns:
-        The owned stream and accumulated response through its first visible text.
+        The owned stream and the response through its first visible text, or
+        the complete response, such as tool calls only, when it has no text.
     """
-    # BaseChatModel.astream is an async generator, annotated as an iterator.
+    # Chat model and binding `astream` are async generators, annotated as iterators.
     stream = cast(
         "AsyncGenerator[AIMessageChunk, None]",
         model.astream(messages, config=config, **settings),
@@ -325,10 +333,13 @@ def _tool_result_context(message: ToolMessage) -> HumanMessage:
 
 
 def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
-    """Keep complete tool exchanges and close interrupted calls.
+    """Copy messages so every tool call with an id has a result.
+
+    Calls without a result get a placeholder result, and results without a
+    call become labeled human context.
 
     Returns:
-        Isolated messages with valid tool-call/result pairs.
+        Isolated messages that providers accept as a tool transcript.
     """
     transcript: list[AnyMessage] = []
     pending: dict[str, str] = {}
@@ -337,7 +348,7 @@ def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
         if not isinstance(message, ToolMessage):
             transcript.extend(
                 ToolMessage(
-                    content="Main tool call was still pending at the side snapshot.",
+                    content=_PENDING_RESULT,
                     tool_call_id=call_id,
                     name=name,
                 )
@@ -360,7 +371,7 @@ def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
         transcript.append(cast("AnyMessage", message))
     transcript.extend(
         ToolMessage(
-            content="Main tool call was still pending at the side snapshot.",
+            content=_PENDING_RESULT,
             tool_call_id=call_id,
             name=name,
         )
@@ -472,7 +483,8 @@ def _prepare_messages(request: ModelRequest) -> list[AnyMessage]:
     """Reuse SDK compaction policies without running summaries or backend writes.
 
     Returns:
-        A structured transcript sized for the resolved model and output settings.
+        A structured transcript that starts with the system prompt, sized for
+        the resolved model and output settings.
     """
     request = UnsupportedContentMiddleware()._filter_request(request)
     compaction = create_summarization_middleware(request.model, StateBackend())
@@ -676,6 +688,8 @@ class BtwOperation(AgentMiddleware):
     success for use after restart or eviction. `answer` invokes the model without
     running the agent or writing conversation state; when saved instructions are absent,
     it reuses the main agent's memory and skill loaders on a local state copy.
+    It may run read-only filesystem tools directly, outside the agent's tool
+    middleware.
     """
 
     state_schema = _BtwState
@@ -700,7 +714,8 @@ class BtwOperation(AgentMiddleware):
             instruction_middleware: Main agent memory and skill loaders, in order.
             profile_overrides: Session profile fields to retain during reconstruction.
             backend: Main filesystem backend for read-only inspection.
-            filesystem_tools: Main filesystem allowlist to respect in side calls.
+            filesystem_tools: Main filesystem allowlist, or `None` for all read
+                tools. Side tools stay off unless `read_file` is allowed.
         """
         allowed = [
             name
@@ -890,13 +905,17 @@ class BtwOperation(AgentMiddleware):
 
         Use the thread's latest server-resolved model and instructions, falling
         back to checkpoint settings or the workspace's bootstrap model. Restore
-        the checkpointed instructions, generation settings, and retry budget when
-        no live snapshot exists.
+        the checkpointed instructions, generation settings, retry budget, and
+        tool schemas when no live snapshot exists.
+        Bind the main call's client tool schemas even though only reads run:
+        providers need definitions for the structured tool calls in the
+        transcript, and the same tools keep the main prompt cache valid.
         New and legacy threads restore memory and skills through the main
         agent's loaders without writing updates back to the conversation.
         Large older file arguments are truncated using the main agent's policy;
         older context is dropped when needed to fit the side request's budget.
-        Instructions and questions that cannot fit raise `ContextOverflowError`.
+        Instructions, the question, and later tool rounds that cannot fit raise
+        `ContextOverflowError`.
 
         Args:
             thread_id: Thread whose conversation supplies context.
@@ -904,10 +923,10 @@ class BtwOperation(AgentMiddleware):
             question: Side question to answer.
             history: Completed question/answer pairs from this side conversation.
             on_text: Optional receiver for text fragments as the model produces them.
-            read_tools: Execute the main allowlist's read-only file tools.
-                Side calls bypass the main tool middleware, including tool
-                hooks, so enable this only when no hook could deny or audit
-                a read.
+            read_tools: Execute the main allowlist's read-only file tools that
+                the main call also advertised. Side calls bypass the main tool
+                middleware, including tool hooks, so enable this only when no
+                hook could deny or audit a read.
 
         Returns:
             The ephemeral answer text.

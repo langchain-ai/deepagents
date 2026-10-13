@@ -547,13 +547,12 @@ class RemoteAgent:
         thread_id = _require_thread_id(config)
         workspace = await self._workspace_for_thread(config)
         await self.aensure_thread(dict(config))
-        payload: dict[str, object] = {
-            "question": question,
-            "workspace": workspace,
-            "read_tools": read_tools,
-        }
+        payload: dict[str, object] = {"question": question, "workspace": workspace}
         if history:
             payload["history"] = list(history)
+        # Older servers reject unknown keys, so send this only when it is on.
+        if read_tools:
+            payload["read_tools"] = True
         try:
             path = f"/dcode/threads/{thread_id}/btw"
             if on_text is None:

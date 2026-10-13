@@ -1,12 +1,14 @@
 """A deep agent that browses, over a sandbox backend.
 
-Two browser providers, one agent. `BROWSER=local` launches Chrome on this
-machine; anything else uses a hosted Browserbase session. The agent's
-filesystem and `execute` tool come from a sandbox backend either way, so the
+Three browser providers, one agent. `BROWSER=local` launches Chrome next to the
+agent, `BROWSER=sandbox` launches it *inside* the agent's sandbox and attaches
+over CDP, and the default uses a hosted Browserbase session. The agent's
+filesystem and `execute` tool come from a sandbox backend in every case, so the
 browser is the only thing that changes.
 
     uv run --with "deepagents[browser]" python agent.py "find the top story on hn"
-    BROWSER=local uv run --with "deepagents[browser]" python agent.py "..."
+    BROWSER=local   uv run --with "deepagents[browser]" python agent.py "..."
+    BROWSER=sandbox uv run --with "deepagents[browser]" python agent.py "..."
 """
 
 import asyncio
@@ -16,6 +18,7 @@ import sys
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents.middleware.browser import Browserbase, BrowserMiddleware, LocalChrome
+from sandbox_chrome import SandboxChrome
 
 INSTRUCTIONS = """You browse with three tools.
 
@@ -38,11 +41,18 @@ guess a value you did not read."""
 
 
 def build():
-    provider = LocalChrome() if os.environ.get("BROWSER") == "local" else Browserbase()
+    backend = LocalShellBackend()
+    choice = os.environ.get("BROWSER")
+    if choice == "local":
+        provider = LocalChrome()  # Chrome next to the agent
+    elif choice == "sandbox":
+        provider = SandboxChrome(backend)  # Chrome inside the agent's sandbox, over CDP
+    else:
+        provider = Browserbase()  # hosted session
     return create_deep_agent(
         model="anthropic:claude-sonnet-5",
         system_prompt=INSTRUCTIONS,
-        backend=LocalShellBackend(),
+        backend=backend,
         middleware=[BrowserMiddleware(provider)],
     )
 

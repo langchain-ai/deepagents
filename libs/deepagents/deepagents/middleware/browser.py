@@ -63,8 +63,12 @@ class BrowserContext:
 
     thread_id: str
     runtime: AnyRuntime
-    """The agent's `ToolRuntime`, so a provider can reach the agent's own
-    sandbox. The sandbox is per-thread, so its CDP endpoint is too."""
+    """The agent's runtime, for provider-specific needs.
+
+    Note it carries no backend: `ToolRuntime` exposes `emit_output_delta`,
+    `execution_info` and `server_info` and nothing else. A provider that wants
+    to launch a browser inside the agent's sandbox takes that backend as a
+    constructor argument -- see `examples/browser-agent/sandbox_chrome.py`."""
 
 
 class BrowserProvider(Protocol):

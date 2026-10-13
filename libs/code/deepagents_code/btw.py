@@ -70,6 +70,7 @@ _LAST_ROUND_NOTE = (
     "without calling more tools."
 )
 _MAX_TOOL_CALLS = 8
+_ROUND_SEPARATOR = "\n\n"
 _READ_TOOLS: tuple[FsToolName, ...] = ("ls", "read_file", "glob", "grep")
 _MAX_RETRY_DELAY = 60
 """Leave generation time within the API's 120-second request deadline."""
@@ -256,6 +257,24 @@ async def _stream_answer(
             if fragment := chunk.text:
                 await on_text(fragment)
     return response
+
+
+def _separated(
+    on_text: Callable[[str], Awaitable[None]], *, after_text: bool
+) -> Callable[[str], Awaitable[None]]:
+    """Start a later round's streamed text on a new paragraph.
+
+    Returns:
+        A receiver that prefixes the first fragment when earlier text was shown.
+    """
+    prefix = _ROUND_SEPARATOR if after_text else ""
+
+    async def emit(fragment: str) -> None:
+        nonlocal prefix
+        await on_text(prefix + fragment)
+        prefix = ""
+
+    return emit
 
 
 def _conversation(state: Mapping[str, object]) -> list[AnyMessage]:
@@ -761,7 +780,12 @@ class BtwOperation(AgentMiddleware):
                     )
                 else:
                     response = await _stream_answer(
-                        bound, prepared, config, settings, on_text, model
+                        bound,
+                        prepared,
+                        config,
+                        settings,
+                        _separated(on_text, after_text=bool(parts)),
+                        model,
                     )
                 if response.text:
                     parts.append(response.text)
@@ -791,7 +815,7 @@ class BtwOperation(AgentMiddleware):
                         runtime=Runtime(),
                     )
                 )
-        text = "".join(parts)
+        text = _ROUND_SEPARATOR.join(parts)
         return (
             text.strip() or "No text answer was returned. Try rephrasing your question."
         )

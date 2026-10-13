@@ -23,8 +23,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
-from langgraph.constants import CONFIG_KEY_CHECKPOINTER
-from langgraph.types import Command, interrupt
+from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
 from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 from langgraph_sdk.schema import Interrupt, Run, Thread
@@ -92,6 +91,20 @@ class AsyncSubAgent(TypedDict):
     """Additional headers to include in requests to the remote server."""
 
 
+_WAITING = "waiting"
+"""Task status for a subagent waiting for a human: its run finished but its thread is interrupted."""
+
+_THREAD_TO_TASK_STATUS = {"interrupted": _WAITING, "busy": "running", "error": "error"}
+"""Task status implied by the thread when the tracked run finished but the thread moved on."""
+
+_TERMINAL_STATUSES = frozenset({"cancelled", "success", "error", "timeout", "interrupted"})
+"""Task statuses that will never change, so live-status fetches can be skipped.
+
+`interrupted` is a run cancelled or replaced on the server. A subagent paused
+by `interrupt()` is `waiting`, which isn't terminal.
+"""
+
+
 class AsyncTask(TypedDict):
     """A tracked async subagent task persisted in agent state."""
 
@@ -108,7 +121,7 @@ class AsyncTask(TypedDict):
     """Run ID for the current execution on the thread."""
 
     status: str
-    """Current task status (e.g., `'running'`, `'success'`, `'error'`, `'cancelled'`).
+    """Current task status (e.g., `'running'`, `'waiting'`, `'success'`, `'error'`, `'cancelled'`).
 
     Typed as `str` rather than a `Literal` because the LangGraph SDK's
     `Run.status` is `str` — using a `Literal` here would require `cast` at every
@@ -176,19 +189,6 @@ class CancelAsyncTaskSchema(BaseModel):
     task_id: str = Field(description="The exact task_id string returned by start_async_task. Pass it verbatim.")
 
 
-class ResumeAsyncTaskSchema(BaseModel):
-    """Input schema for the `resume_async_task` tool."""
-
-    task_id: str = Field(description="The exact task_id string returned by start_async_task. Pass it verbatim.")
-    response: str | dict[str, str] | None = Field(
-        default=None,
-        description=(
-            "Your answer to the subagent's question. With several pending questions, an object mapping each "
-            "interrupt id to its answer. Leave empty for approvals (a human decides) and breakpoints."
-        ),
-    )
-
-
 class ListAsyncTasksSchema(BaseModel):
     """Input schema for the `list_async_tasks` tool."""
 
@@ -209,7 +209,7 @@ Available async agent types:
 3. Use `update_async_task` to send new instructions to a running task.
 4. Multiple async subagents can run concurrently — launch several and let them run in the background.
 5. The subagent runs on a remote server, so it has its own tools and capabilities.
-6. A task with status `waiting` has paused for input or approval. `check_async_task` shows what it asked; answer with `resume_async_task`."""  # noqa: E501
+6. A task with status `waiting` is waiting for a human (an approval or an answer). The user answers it directly; you can't answer or approve it for them. Keep working, and tell the user it's waiting if they ask."""  # noqa: E501
 
 
 def _resolve_headers(spec: AsyncSubAgent) -> dict[str, str]:
@@ -617,13 +617,6 @@ def _build_start_tool(
     )
 
 
-_WAITING = "waiting"
-"""Task status for a subagent that paused for input: its run finished but its thread is interrupted."""
-
-_THREAD_TO_TASK_STATUS = {"interrupted": _WAITING, "busy": "running", "error": "error"}
-"""Task status implied by the thread when the tracked run finished but the thread moved on."""
-
-
 def _task_status(run: Run, thread: Thread | None) -> str:
     """Return a task's status from its latest run, reading the thread to spot pauses.
 
@@ -676,24 +669,10 @@ def _pending_interrupts(thread: Thread | None) -> list[Interrupt]:
     return [item for items in (thread.get("interrupts") or {}).values() for item in items]
 
 
-def _is_approval(value: object) -> bool:
-    """Whether an interrupt is a `HumanInTheLoopMiddleware` approval request."""
-    return isinstance(value, dict) and isinstance(value.get("action_requests"), list) and isinstance(value.get("review_configs"), list)
-
-
-def _resume_guidance(interrupts: list[Interrupt]) -> str:
-    """Tell the model how to answer a paused subagent."""
-    if not interrupts:
-        return "The subagent stopped at a breakpoint. Call `resume_async_task` with this task_id to continue; no response is needed."
-    questions = [item for item in interrupts if not _is_approval(item["value"])]
-    hints = []
-    if len(questions) < len(interrupts):
-        hints.append("Approval requests are decided by a human: call `resume_async_task` and the human is asked; don't decide them yourself.")
-    if len(questions) == 1:
-        hints.append("Answer the question with `resume_async_task(task_id, response)`.")
-    elif questions:
-        hints.append("Answer with `resume_async_task`, passing `response` as an object mapping each question's interrupt id to its answer.")
-    return " ".join(hints)
+_WAITING_NOTE = (
+    "The subagent is waiting for a human. The user answers it directly; you can't answer or approve it. "
+    "Keep working; check again later for its result."
+)
 
 
 def _build_check_result(run: Run, thread_id: str, thread: Thread | None) -> dict[str, Any]:
@@ -714,17 +693,13 @@ def _build_check_result(run: Run, thread_id: str, thread: Thread | None) -> dict
     elif status == _WAITING:
         interrupts = _pending_interrupts(thread)
         result["interrupts"] = [{"id": item["id"], "value": item["value"]} for item in interrupts]
-        result["how_to_resume"] = _resume_guidance(interrupts)
+        result["note"] = _WAITING_NOTE
     return result
 
 
-def _now() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _with_status(task: AsyncTask, status: str, run_id: str, *, checked: bool) -> AsyncTask:
-    """Copy `task` with a new status and run, stamping the check and change times."""
-    now = _now()
+def _with_status(task: AsyncTask, status: str, run_id: str) -> AsyncTask:
+    """Copy a checked `task` with its live status and run, stamping the check and change times."""
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     return AsyncTask(
         task_id=task["task_id"],
         agent_name=task["agent_name"],
@@ -732,7 +707,7 @@ def _with_status(task: AsyncTask, status: str, run_id: str, *, checked: bool) ->
         run_id=run_id,
         status=status,
         created_at=task["created_at"],
-        last_checked_at=now if checked else task["last_checked_at"],
+        last_checked_at=now,
         last_updated_at=now if status != task["status"] or run_id != task["run_id"] else task["last_updated_at"],
     )
 
@@ -744,7 +719,7 @@ def _build_check_command(
     tool_call_id: str | None,
 ) -> Command:
     """Build the `Command` update for a check result."""
-    updated_task = _with_status(task, result["status"], run_id, checked=True)
+    updated_task = _with_status(task, result["status"], run_id)
     return Command(
         update={
             "messages": [ToolMessage(json.dumps(result), tool_call_id=tool_call_id)],
@@ -815,7 +790,7 @@ def _build_check_tool(
         coroutine=acheck_async_task,
         description=(
             "Check the status of an async subagent task. Returns the current status and, if complete, the result. "
-            "If the status is `waiting`, it also returns what the subagent asked and how to answer with `resume_async_task`. "
+            "If the status is `waiting`, it also returns what the subagent is asking the user. "
             "Statuses shown earlier in the conversation are always stale, so call this to get the current status "
             "rather than reporting a status from a previous tool result."
         ),
@@ -825,10 +800,10 @@ def _build_check_tool(
 
 
 def _update_message(tracked: AsyncTask) -> str:
-    """Confirm an update, noting when it replaced a pending question instead of answering it."""
+    """Confirm an update, noting when it replaced a pending human request."""
     msg = f"Updated async subagent. task_id: {tracked['task_id']}"
     if tracked["status"] == _WAITING:
-        msg += ". It was waiting for input; that question was dropped. Use `resume_async_task` to answer a question instead."
+        msg += ". It was waiting for a human; that request was dropped."
     return msg
 
 
@@ -939,183 +914,6 @@ def _build_update_tool(
     )
 
 
-def _labelled_request(subagent: str, request: dict[str, Any]) -> dict[str, Any]:
-    """Copy an approval request, naming the subagent that asked in each action's description."""
-    label = f"Requested by async subagent '{subagent}'"
-    actions = [
-        {**action, "description": f"{label}: {action['description']}" if action.get("description") else label}
-        for action in request["action_requests"]
-    ]
-    return {**request, "action_requests": actions}
-
-
-def _invalid_decisions(request: dict[str, Any], answer: object) -> str | None:
-    """Check a human's answer against an approval request, mirroring `HumanInTheLoopMiddleware`."""
-    decisions = answer.get("decisions") if isinstance(answer, dict) else None
-    actions = request["action_requests"]
-    if not isinstance(decisions, list) or len(decisions) != len(actions):
-        return f"The approval needs {len(actions)} decision(s) under `decisions`; the subagent is still waiting."
-    allowed = {config["action_name"]: config["allowed_decisions"] for config in request["review_configs"]}
-    for action, decision in zip(actions, decisions, strict=True):
-        if not isinstance(decision, dict) or decision.get("type") not in allowed.get(action["name"], []):
-            return f"Decision {decision!r} isn't allowed for `{action['name']}`; the subagent is still waiting."
-    return None
-
-
-def _question_answers(questions: list[Interrupt], response: str | dict[str, str] | None) -> dict[str, Any] | str:
-    """Map the model's response to the pending questions' interrupt IDs, or explain what's missing."""
-    ids = [item["id"] for item in questions]
-    if not ids:
-        return {}
-    if isinstance(response, dict) and set(ids) <= response.keys():
-        return {interrupt_id: response[interrupt_id] for interrupt_id in ids}
-    if len(ids) == 1 and response is not None:
-        return {ids[0]: response}
-    if len(ids) == 1:
-        return "The subagent asked a question; pass your answer as `response`."
-    return f"The subagent asked {len(ids)} questions; pass `response` as an object mapping each interrupt id ({', '.join(ids)}) to its answer."
-
-
-def _human_decisions(subagent: str, approvals: list[Interrupt], runtime: ToolRuntime) -> dict[str, Any] | str:
-    """Ask this agent's human to decide each approval request, pausing this agent until they answer."""
-    if not approvals:
-        return {}
-    if CONFIG_KEY_CHECKPOINTER not in (runtime.config.get("configurable") or {}):
-        return (
-            "The subagent is waiting for human approval, but this agent can't pause to ask (it has no "
-            "checkpointer). Resume the subagent from a UI that shows approvals, or run this agent with a checkpointer."
-        )
-    answers: dict[str, Any] = {}
-    for item in approvals:
-        answer = interrupt(_labelled_request(subagent, item["value"]))
-        if error := _invalid_decisions(item["value"], answer):
-            return error
-        answers[item["id"]] = answer
-    return answers
-
-
-def _resume_input(subagent: str, thread: Thread | None, response: str | dict[str, str] | None, runtime: ToolRuntime) -> dict[str, Any] | str:
-    """Return the `runs.create` arguments that continue a paused subagent, or an error for the model.
-
-    Questions are answered with the model's `response`; approval requests go to
-    this agent's human, so the model can't approve its subagent's actions.
-    A breakpoint (no interrupts) continues with no input.
-    """
-    interrupts = _pending_interrupts(thread)
-    if not interrupts:
-        return {}
-    answers = _question_answers([item for item in interrupts if not _is_approval(item["value"])], response)
-    if isinstance(answers, str):
-        return answers
-    decisions = _human_decisions(subagent, [item for item in interrupts if _is_approval(item["value"])], runtime)
-    if isinstance(decisions, str):
-        return decisions
-    return {"command": {"resume": {**answers, **decisions}}}
-
-
-def _not_waiting_message(task: AsyncTask, status: str) -> str:
-    return f"Task {task['task_id']} is {status}, not waiting for input, so there is nothing to resume. It may have been resumed elsewhere."
-
-
-def _resumed_command(tracked: AsyncTask, run_id: str, tool_call_id: str | None) -> Command:
-    """Build the `Command` recording the resumed run."""
-    return Command(
-        update={
-            "messages": [ToolMessage(f"Resumed async subagent. task_id: {tracked['task_id']}", tool_call_id=tool_call_id)],
-            "async_tasks": {tracked["task_id"]: _with_status(tracked, "running", run_id, checked=False)},
-        }
-    )
-
-
-def _build_resume_tool(  # noqa: C901  # complexity from necessary error handling
-    agent_map: dict[str, AsyncSubAgent],
-    clients: _ClientCache,
-    backend: BackendProtocol | None,
-) -> StructuredTool:
-    """Build the `resume_async_task` tool.
-
-    Starts a new run on the paused subagent's thread that continues from its
-    checkpoint, so the subagent picks up exactly where it called `interrupt()`.
-    The subagent's state is re-read first, so a subagent resumed elsewhere
-    meanwhile isn't resumed twice.
-    """
-
-    def resume_async_task(
-        task_id: str,
-        runtime: ToolRuntime,
-        response: str | dict[str, str] | None = None,
-    ) -> str | Command:
-        tracked = _resolve_tracked_task(task_id, runtime)
-        if isinstance(tracked, str):
-            return tracked
-        try:
-            client = clients.get_sync(tracked["agent_name"])
-            run, thread = _observe(client, tracked)
-        except Exception as e:  # noqa: BLE001  # get_sync() may raise ValueError; SDK raises untyped errors
-            return f"Failed to get run status: {e}"
-        if (status := _task_status(run, thread)) != _WAITING:
-            return _not_waiting_message(tracked, status)
-        # Outside the try below: asking the human raises LangGraph's interrupt, which must propagate.
-        resume = _resume_input(tracked["agent_name"], thread, response, runtime)
-        if isinstance(resume, str):
-            return resume
-        try:
-            new_run = client.runs.create(
-                thread_id=tracked["thread_id"],
-                assistant_id=agent_map[tracked["agent_name"]]["graph_id"],
-                **resume,
-                **_run_options(runtime, backend),
-            )
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-            logger.warning("Failed to resume async subagent '%s': %s", tracked["agent_name"], e)
-            return f"Failed to resume async subagent: {e}"
-        return _resumed_command(tracked, new_run["run_id"], runtime.tool_call_id)
-
-    async def aresume_async_task(
-        task_id: str,
-        runtime: ToolRuntime,
-        response: str | dict[str, str] | None = None,
-    ) -> str | Command:
-        tracked = _resolve_tracked_task(task_id, runtime)
-        if isinstance(tracked, str):
-            return tracked
-        client = clients.get_async(tracked["agent_name"])
-        try:
-            run, thread = await _aobserve(client, tracked)
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-            return f"Failed to get run status: {e}"
-        if (status := _task_status(run, thread)) != _WAITING:
-            return _not_waiting_message(tracked, status)
-        # Outside the try below: asking the human raises LangGraph's interrupt, which must propagate.
-        resume = _resume_input(tracked["agent_name"], thread, response, runtime)
-        if isinstance(resume, str):
-            return resume
-        try:
-            new_run = await client.runs.create(
-                thread_id=tracked["thread_id"],
-                assistant_id=agent_map[tracked["agent_name"]]["graph_id"],
-                **resume,
-                **_run_options(runtime, backend),
-            )
-        except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
-            logger.warning("Failed to resume async subagent '%s': %s", tracked["agent_name"], e)
-            return f"Failed to resume async subagent: {e}"
-        return _resumed_command(tracked, new_run["run_id"], runtime.tool_call_id)
-
-    return StructuredTool.from_function(
-        name="resume_async_task",
-        func=resume_async_task,
-        coroutine=aresume_async_task,
-        description=(
-            "Continue an async subagent whose status is `waiting`, from exactly where it paused. "
-            "Answer its questions with `response` (see `how_to_resume` from `check_async_task`). "
-            "Approval requests are sent to a human, never decided by you; breakpoints need no response."
-        ),
-        infer_schema=False,
-        args_schema=ResumeAsyncTaskSchema,
-    )
-
-
 def _build_cancel_tool(
     clients: _ClientCache,
 ) -> StructuredTool:
@@ -1198,14 +996,6 @@ def _build_cancel_tool(
     )
 
 
-_TERMINAL_STATUSES = frozenset({"cancelled", "success", "error", "timeout", "interrupted"})
-"""Task statuses that will never change, so live-status fetches can be skipped.
-
-`interrupted` is a run cancelled or replaced on the server. A subagent paused
-by `interrupt()` is `waiting`, which isn't terminal.
-"""
-
-
 def _fetch_live_status(clients: _ClientCache, task: AsyncTask) -> tuple[str, str]:
     """Fetch a task's current status and run ID, falling back to the cached values on error."""
     if task["status"] in _TERMINAL_STATUSES:
@@ -1271,7 +1061,7 @@ def _filter_tasks(
 def _build_list_command(filtered: list[AsyncTask], live: list[tuple[str, str]], tool_call_id: str | None) -> Command:
     """Build the `Command` listing tasks with their live statuses and storing them."""
     entries = [_format_task_entry(task, status) for task, (status, _) in zip(filtered, live, strict=True)]
-    updated = {task["task_id"]: _with_status(task, status, run_id, checked=True) for task, (status, run_id) in zip(filtered, live, strict=True)}
+    updated = {task["task_id"]: _with_status(task, status, run_id) for task, (status, run_id) in zip(filtered, live, strict=True)}
     msg = f"{len(entries)} tracked task(s):\n" + "\n".join(entries)
     return Command(
         update={
@@ -1315,7 +1105,7 @@ def _build_list_tasks_tool(clients: _ClientCache) -> StructuredTool:
             "By default shows all tasks. Use `status_filter` to narrow by status "
             "(e.g. 'running', 'waiting', 'success', 'error', 'cancelled'). "
             "Use `check_async_task` to get the full result of a specific completed task, "
-            "or what a `waiting` task asked. "
+            "or what a `waiting` task is asking the user. "
             "Statuses shown earlier in the conversation are always stale, so call this to read current "
             "statuses rather than reporting one from a previous tool result."
         ),
@@ -1335,7 +1125,7 @@ def _build_async_subagent_tools(
         backend: The parent agent's backend, whose sandbox launched subagents may share.
 
     Returns:
-        List of `StructuredTools` for launch, check, update, cancel, list, and resume operations.
+        List of `StructuredTools` for launch, check, update, cancel, and list operations.
     """
     agent_map: dict[str, AsyncSubAgent] = {a["name"]: a for a in agents}
     clients = _ClientCache(agent_map)
@@ -1348,15 +1138,14 @@ def _build_async_subagent_tools(
         _build_update_tool(agent_map, clients, backend),
         _build_cancel_tool(clients),
         _build_list_tasks_tool(clients),
-        _build_resume_tool(agent_map, clients, backend),
     ]
 
 
 class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware for async subagents running on remote Agent Protocol servers.
 
-    This middleware adds tools for launching, monitoring, updating, and
-    resuming background tasks on remote Agent Protocol servers. Unlike the synchronous
+    This middleware adds tools for launching, monitoring, and updating
+    background tasks on remote Agent Protocol servers. Unlike the synchronous
     `SubAgentMiddleware`, async subagents return immediately with a task ID,
     allowing the main agent to continue working while subagents execute.
 

@@ -53,9 +53,23 @@ ARMS: dict[str, dict] = {
     "browser-use": {
         "server": {
             "command": "uv",
-            "args": ["run", "--with", "browser-use", "python", "-m", "browser_use.mcp.server"],
+            # --no-project, and VIRTUAL_ENV stripped. The runner starts this
+            # server from inside the repo while bench_local.py is itself under
+            # a `uv run`, so the child inherited VIRTUAL_ENV, collided with the
+            # repo's project environment, and resolved an interpreter that was
+            # not the one provisioning had configured:
+            #   warning: `VIRTUAL_ENV=...` does not match the project
+            #   environment path `.../deepagents/bro...`
+            # Chrome then died downstream, which is all the agent could report.
+            "args": [
+                "run", "--no-project", "--with", "browser-use",
+                "python", "-m", "browser_use.mcp.server",
+            ],
             "transport": "stdio",
-            "env": {**os.environ, "BROWSER_USE_HEADLESS": "true"},
+            "env": {
+                **{k: v for k, v in os.environ.items() if k != "VIRTUAL_ENV"},
+                "BROWSER_USE_HEADLESS": "true",
+            },
         },
         "extra": (
             "\n\nDo not call retry_with_browser_use_agent: it delegates the whole task "

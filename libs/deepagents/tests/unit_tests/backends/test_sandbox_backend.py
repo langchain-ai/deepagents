@@ -2890,11 +2890,11 @@ def grep_shell(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pyte
     assert marker.exists() == request.param
 
 
-@pytest.mark.parametrize("glob", [None, "*.py", "{literal}.py", "!literal.py"])
+@pytest.mark.parametrize("glob", [None, "*.py", "{literal}.py", "!literal.py", "#literal.py"])
 async def test_grep_remote_tool_parity(grep_shell: _ShellSandbox, tmp_path: Path, glob: str | None) -> None:
     root = tmp_path / "search"
     expected = []
-    for rel in ("top:colon.py", "nested/deep.py", ".hidden.py", ".hidden/inside.py", "{literal}.py", "!literal.py", "other.txt"):
+    for rel in ("top:colon.py", "nested/deep.py", ".hidden.py", ".hidden/inside.py", "{literal}.py", "!literal.py", "#literal.py", "other.txt"):
         target = root / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("not a match\nneedle[.*]: final", encoding="utf-8")

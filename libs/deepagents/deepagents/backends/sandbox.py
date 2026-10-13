@@ -1017,7 +1017,7 @@ def _build_grep_cmd(
     grep_cmd = f"grep {grep_opts} {exclude_args} {glob_pattern} -e {pattern_escaped} {search_path}"
     rg_excludes = " ".join(f"--glob {shlex.quote('!' + name + '/')}" for name in excluded)
     rg_glob = glob.replace("{", r"\{").replace("}", r"\}") if glob else ""
-    if rg_glob.startswith("!"):
+    if rg_glob.startswith(("!", "#")):
         rg_glob = "\\" + rg_glob
     rg_opts = "rg --no-config --hidden --no-ignore --encoding none --color never -HnF0"
     rg_args = f"{rg_excludes} -e {pattern_escaped} -- {search_path}"

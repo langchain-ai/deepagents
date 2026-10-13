@@ -71,17 +71,47 @@ identical browser, identical model, invocation style the only variable.
 ### MCP -- `browser-mda-mcp`
 
 Browserbase's hosted MCP (`stagehand-api`) as the whole browser layer. No
-sandbox, no `execute`, no provisioning. The server exposes exactly six tools:
+sandbox, no `execute`, no provisioning.
 
-```
-start  end  navigate  act  observe  extract
-```
+**The server exposes exactly six tools -- four verbs and two lifecycle calls.**
+It is easy to count four, because the lifecycle pair is invisible in a task
+description and `end` is never called at all (see below). From a live
+`tools/list` against `https://mcp.browserbase.com/mcp`:
 
-Verified live against `https://mcp.browserbase.com/mcp`; the self-hosted
-`@browserbasehq/mcp@3.0.0` is byte-for-byte the same surface. The deprecated
-`@browserbasehq/mcp-server-browserbase@2.4.3` had nine, including
+| tool | parameters | description | AI call? |
+|---|---|---|---|
+| `start` | `sessionId` | Create or reuse a Browserbase session | no |
+| `end` | `sessionId` | Close the current Browserbase session | no |
+| `navigate` | `url`, `sessionId` | Navigate to a URL | no |
+| `act` | `action`, `sessionId` | Perform an action on the page | **yes** |
+| `observe` | `instruction`, `sessionId` | Observe actionable elements on the page | **yes** |
+| `extract` | `instruction`, `sessionId` | Extract data from the page | **yes** |
+
+That is the entire surface -- every tool, every parameter. No snapshot, no
+screenshot, no JavaScript, no tab control. Note how thin the signatures are:
+`sessionId` plus at most one natural-language string. There is no way to ask
+`navigate` for a smaller payload, which is why it returns a median 16,968
+characters whether or not the agent wanted them.
+
+Three of the six route to a model on Browserbase's side, which is both why this
+arm is the most expensive and why its trace understates the work done.
+
+Observed in our runs: `browserbase_act` 111 calls, `browserbase_extract` 61,
+`browserbase_navigate` 50, `browserbase_observe` 34, `browserbase_start` 12 --
+and **`browserbase_end` zero times**. Nothing ever releases a session; combined
+with `keepAlive=true` on the URL, that is the leak that pinned the project at
+its concurrency cap.
+
+The self-hosted `@browserbasehq/mcp@3.0.0` is byte-for-byte the same six. The
+deprecated `@browserbasehq/mcp-server-browserbase@2.4.3` had nine, including
 `browserbase_screenshot`, `browserbase_stagehand_get_url` and
 `browserbase_stagehand_agent`, all dropped in v3.
+
+For scale, the three surfaces we looked at: this server's **six**, Stagehand's
+facade **three** (`snapshot`, `run`, `screenshot`), and Anthropic's
+`browser_toolset_20260801` **thirty** members. Stagehand's adapter executes all
+thirty Anthropic members against four facade primitives, so member count and
+capability are not the same axis.
 
 > The `snapshot` / `run` / `screenshot` trio in the Stagehand docs is a
 > *different thing*: the agent-framework adapter contract shipped in the

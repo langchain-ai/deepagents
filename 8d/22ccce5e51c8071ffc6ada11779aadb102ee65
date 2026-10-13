@@ -1,0 +1,19 @@
+browser-mda/benchmarks/webvoyager/bench_local.py
+  s_199de864fdc442::t_43ba0ea161f728 122-127,140,147
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "8d22ccce5e51c8071ffc6ada11779aadb102ee65",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

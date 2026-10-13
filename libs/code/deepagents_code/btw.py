@@ -948,16 +948,18 @@ class BtwOperation(AgentMiddleware):
             while len(self._snapshots) > _MAX_SNAPSHOTS:
                 evicted, _ = self._snapshots.popitem(last=False)
                 self._tool_snapshots.pop(evicted, None)
-            return Command(
-                update={
-                    "_btw_system_prompt": (request.system_message or self._system).text,
-                    "_btw_model_settings": tool_free_settings(
-                        request.model, request.model_settings
-                    ),
-                    "_btw_model_retries": _retry_budget(request.model),
-                    "_btw_tools": deepcopy(self._tool_snapshots[info.thread_id]),
-                }
-            )
+            update: dict[str, object] = {
+                "_btw_system_prompt": (request.system_message or self._system).text,
+                "_btw_model_settings": tool_free_settings(
+                    request.model, request.model_settings
+                ),
+                "_btw_model_retries": _retry_budget(request.model),
+            }
+            tools = self._tool_snapshots[info.thread_id]
+            # Tool schemas can be large, so checkpoint them only when they change.
+            if (request.state or {}).get("_btw_tools") != tools:
+                update["_btw_tools"] = deepcopy(tools)
+            return Command(update=update)
         return None
 
     def wrap_model_call(

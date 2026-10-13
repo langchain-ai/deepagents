@@ -385,7 +385,7 @@ def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
     """Render tool calls and results as text for a request that defines no tools.
 
     Returns:
-        Isolated messages without tool blocks; other messages are unchanged.
+        Messages without tool blocks; other messages are unchanged.
     """
     transcript: list[AnyMessage] = []
     for message in messages:
@@ -405,25 +405,29 @@ def _tool_free_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
             text = "\n\n".join(part for part in [message.text, *calls] if part)
             transcript.append(AIMessage(content=text))
         elif isinstance(message, AIMessage):
-            transcript.append(_without_server_tools(message.model_copy(deep=True)))
+            transcript.append(_without_server_tools(message))
         else:
-            transcript.append(cast("AnyMessage", message.model_copy(deep=True)))
+            transcript.append(cast("AnyMessage", message))
     return transcript
 
 
 def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
-    """Copy messages so every tool call with an id has a result.
+    """Pair every tool call that has an id with a result.
 
     Calls without a result get a placeholder result, and results without a
     call become labeled human context.
 
     Returns:
-        Isolated messages that providers accept as a tool transcript.
+        Messages that providers accept as a tool transcript.
     """
     transcript: list[AnyMessage] = []
     pending: dict[str, str] = {}
     for original in messages:
-        message = original.model_copy(deep=True)
+        message = (
+            _without_server_tools(original)
+            if isinstance(original, AIMessage)
+            else original
+        )
         if not isinstance(message, ToolMessage):
             transcript.extend(
                 ToolMessage(
@@ -440,7 +444,6 @@ def _structured_transcript(messages: Sequence[BaseMessage]) -> list[AnyMessage]:
                 continue
             pending.pop(message.tool_call_id)
         if isinstance(message, AIMessage):
-            message = _without_server_tools(message)
             # Providers send unparsable calls too, so they need results as well.
             pending.update(
                 {
@@ -645,7 +648,10 @@ def _side_messages(
         Messages for the first side request, before fitting.
     """
     return [
-        *_structured_transcript(_conversation(state)),
+        # Copy once here; later steps copy only the messages they change.
+        *_structured_transcript(
+            [message.model_copy(deep=True) for message in _conversation(state)]
+        ),
         *(
             message
             for prompt, answer in history

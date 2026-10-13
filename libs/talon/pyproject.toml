@@ -26,7 +26,7 @@ dependencies = [
     # transitively via `discord.py`; declared because we import it.
     "aiohttp>=3.14.3,<4.0.0",
     "aiosqlite>=0.22.1,<1.0.0",
-    "deepagents>=0.7.0",
+    "deepagents>=0.7.24",
     "deepagents-code>=0.1.71,<1.0.0",
     "discord.py>=2.4.0,<3.0.0",
     "fastmcp>=4.0.0b4,<5.0.0",

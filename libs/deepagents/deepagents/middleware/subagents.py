@@ -132,8 +132,7 @@ class SubAgent(TypedDict):
     fork's model request or changes tool definitions unless you accept reduced
     shared prompt-cache reuse and potentially higher model costs. This is
     distinct from `SubAgent.system_prompt`, which appends instructions to the
-    inherited prompt. Middleware that only logs or appends instructions need not
-    change the shared prefix.
+    inherited prompt.
 
     To restrict filesystem tools, include a `FilesystemMiddleware(tools=...)`
     instance here to replace the subagent's default filesystem middleware.

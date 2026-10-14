@@ -4086,6 +4086,10 @@ class DeepAgentsApp(App):
         `[ui].show_scrollbar` and re-persisted on toggle. Off by default.
         """
 
+        self._ask_about_selection = _load_bool_display_preference(
+            "display.ask_about_selection", fallback=False
+        )
+
         self._debug_console_click_to_copy = _load_debug_console_click_to_copy()
         r"""Whether the `Ctrl+\` Debug Console copies on click.
 
@@ -24837,7 +24841,11 @@ class DeepAgentsApp(App):
     async def _show_selection_action(self, screen: Screen, x: int, y: int) -> None:
         """Offer a prompt shortcut for selections in the conversation."""
         await screen.query(SelectionAction).remove()
-        if screen is not self.screen or not self._chat_input:
+        if (
+            not self._ask_about_selection
+            or screen is not self.screen
+            or not self._chat_input
+        ):
             return
         if not screen.selections or any(
             not any(parent.id == "chat" for parent in widget.ancestors)

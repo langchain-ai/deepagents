@@ -520,15 +520,16 @@ class RemoteAgent:
         question: str,
         *,
         config: Mapping[str, Any],
-        history: Sequence[tuple[str, str]] = (),
         on_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """Ask without submitting a run or writing conversation state.
 
+        The server answers with the thread's stored side history and stores
+        the completed exchange.
+
         Args:
             question: Side question to answer.
             config: Configuration identifying the main conversation.
-            history: Completed question/answer pairs from this side conversation.
             on_text: Optional receiver for streamed answer text.
 
         Returns:
@@ -544,8 +545,6 @@ class RemoteAgent:
         workspace = await self._workspace_for_thread(config)
         await self.aensure_thread(dict(config))
         payload: dict[str, object] = {"question": question, "workspace": workspace}
-        if history:
-            payload["history"] = list(history)
         try:
             path = f"/dcode/threads/{thread_id}/btw"
             if on_text is None:
@@ -566,6 +565,53 @@ class RemoteAgent:
             breakdown=cast("CostBreakdown | None", cost),
         )
         return text
+
+    async def aget_btw_history(
+        self, *, config: Mapping[str, Any]
+    ) -> list[tuple[str, str]]:
+        """Read the side exchanges the server stored for this thread.
+
+        Args:
+            config: Configuration identifying the main conversation.
+
+        Returns:
+            Ordered question/answer pairs.
+
+        Raises:
+            TypeError: If the response is malformed.
+        """
+        thread_id = _require_thread_id(config)
+        async with asyncio.timeout(10):
+            response = await self._get_graph().client.http.get(
+                f"/dcode/threads/{thread_id}/btw/history"
+            )
+        raw = response.get("history") if isinstance(response, dict) else None
+        if not isinstance(raw, list):
+            msg = "Invalid side-history response from the server."
+            raise TypeError(msg)
+        history: list[tuple[str, str]] = []
+        for pair in raw:
+            match pair:
+                case [str(question), str(answer)]:
+                    history.append((question, answer))
+                case _:
+                    msg = "Invalid side-history response from the server."
+                    raise TypeError(msg)
+        return history
+
+    async def aclear_btw_history(self, *, config: Mapping[str, Any]) -> None:
+        """Erase this thread's side history, including answers in progress.
+
+        Args:
+            config: Configuration identifying the main conversation.
+        """
+        thread_id = _require_thread_id(config)
+        workspace = await self._workspace_for_thread(config)
+        async with asyncio.timeout(10):
+            await self._get_graph().client.http.post(
+                f"/dcode/threads/{thread_id}/btw/clear",
+                json={"workspace": workspace},
+            )
 
     async def _stream_btw(
         self,

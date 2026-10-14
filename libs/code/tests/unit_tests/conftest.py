@@ -74,6 +74,7 @@ def btw_app(monkeypatch: pytest.MonkeyPatch) -> tuple[DeepAgentsApp, MagicMock]:
     )
     remote = MagicMock(spec=RemoteAgent)
     remote.abtw.return_value = "Side answer"
+    remote.aget_btw_history.return_value = []
     remote.get_cached_session_cost.return_value = None
     monkeypatch.setattr(app, "_remote_agent", lambda: remote)
     return app, remote

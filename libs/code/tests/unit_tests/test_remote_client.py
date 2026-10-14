@@ -1818,7 +1818,7 @@ async def test_btw_stream_delivers_fragments_and_closes_transport(
 
     def respond(request: Request) -> Response:
         assert request.headers["accept"] == "text/event-stream"
-        assert json.loads(request.content)["history"] == [["prior", "reply"]]
+        assert json.loads(request.content) == {"question": "why", "workspace": {}}
         return Response(
             200, headers={"content-type": "text/event-stream"}, stream=Body()
         )
@@ -1835,11 +1835,7 @@ async def test_btw_stream_delivers_fragments_and_closes_transport(
         transport=MockTransport(respond), base_url="http://test"
     ) as http:
         agent._graph.client.http = HttpClient(http)
-        task = asyncio.create_task(
-            agent.abtw(
-                "why", config=_config(), history=[("prior", "reply")], on_text=on_text
-            )
-        )
+        task = asyncio.create_task(agent.abtw("why", config=_config(), on_text=on_text))
         try:
             await asyncio.wait_for(received.wait(), 2)
             assert fragments == ["First "]

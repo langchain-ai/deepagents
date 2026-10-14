@@ -37,6 +37,7 @@ from textual.containers import VerticalScroll
 from textual.widgets import Markdown, Static, TextArea
 
 from deepagents_code.btw import BtwOperation
+from deepagents_code.btw_history import append_exchange, load_history
 from deepagents_code.client.remote_client import RemoteAgent
 from deepagents_code.tui.modals.btw import BtwScreen, BtwTextArea
 from deepagents_code.tui.widgets.messages import AssistantMessage, UserMessage
@@ -64,9 +65,12 @@ type BtwServer = tuple[AsyncClient, BtwOperation, MagicMock]
 
 
 @pytest.fixture
-async def btw_server(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[BtwServer]:
+async def btw_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[BtwServer]:
     from deepagents_code import offload_api
 
+    monkeypatch.setenv("DEEPAGENTS_CODE_SERVER_DB_PATH", str(tmp_path / "sessions.db"))
     operation = BtwOperation(FakeMessagesListChatModel(responses=[]), "system", None)
     threads = MagicMock(get_state=AsyncMock(return_value={"values": {}}))
     monkeypatch.setattr("deepagents_code.btw_api.require_thread_workspace", AsyncMock())
@@ -1249,7 +1253,7 @@ async def test_route_rejects_wrong_workspace_before_reading() -> None:
     client_factory.assert_not_called()
 
 
-async def test_follow_up_reaches_model_with_side_history_and_leaves_state_unchanged(
+async def test_follow_up_reaches_model_with_stored_history_and_leaves_state_unchanged(
     btw_server: BtwServer,
     invoke: AsyncMock,
     monkeypatch: pytest.MonkeyPatch,
@@ -1265,12 +1269,18 @@ async def test_follow_up_reaches_model_with_side_history_and_leaves_state_unchan
         response.raise_for_status()
         return response.json()
 
+    async def get(path: str) -> object:
+        response = await client.get(path)
+        response.raise_for_status()
+        return response.json()
+
     graph = MagicMock()
     graph.client.http.post = post
-    graph.client.http.get = AsyncMock(return_value={"cost": None})
+    graph.client.http.get = get
     monkeypatch.setattr(remote, "_get_graph", lambda: graph)
     monkeypatch.setattr(remote, "_workspace_for_thread", AsyncMock(return_value={}))
     monkeypatch.setattr(remote, "aensure_thread", AsyncMock())
+    append_exchange("thread", 0, "Which option?", "Use the cache.")
     assert (
         await remote.abtw(
             "Why that option?",
@@ -1281,10 +1291,17 @@ async def test_follow_up_reaches_model_with_side_history_and_leaves_state_unchan
                     "model_params": {"temperature": 0.2},
                 }
             },
-            history=[("Which option?", "Use the cache.")],
         )
         == "The answer"
     )
+    config: RunnableConfig = {"configurable": {"thread_id": "thread"}}
+    assert await remote.aget_btw_history(config=config) == [
+        ("Which option?", "Use the cache."),
+        ("Why that option?", "The answer"),
+    ]
+    await remote.aclear_btw_history(config=config)
+    assert await remote.aget_btw_history(config=config) == []
+    assert load_history("thread")[0] == []
     messages = invoke.call_args.args[0]
     assert [(message.type, message.text) for message in messages[1:-1]] == [
         ("human", "Main task"),
@@ -1498,7 +1515,6 @@ async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
         remote.abtw.assert_awaited_once_with(
             "why",
             config={"configurable": {"thread_id": app._lc_thread_id}},
-            history=(),
             on_text=ANY,
         )
         scroll = app.screen.query_one("#btw-scroll", VerticalScroll)
@@ -1530,6 +1546,7 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
     btw_app: tuple[DeepAgentsApp, MagicMock],
 ) -> None:
     app, remote = btw_app
+    config = {"configurable": {"thread_id": "btw-test"}}
     remote.abtw.side_effect = [
         "Use a cache.",
         RuntimeError("Try again [/tmp/file]"),
@@ -1542,6 +1559,7 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
         before = app._message_store.get_all_messages()
         await app._handle_command("/btw Which option?")
         await pilot.pause()
+        remote.aget_btw_history.assert_awaited_once_with(config=config)
         editor = app.screen.query_one(TextArea)
         assert editor.has_focus
         assert editor.text == ""
@@ -1568,20 +1586,25 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
             "Use a cache.",
             "It is faster.",
         ]
-        assert [call.kwargs["history"] for call in remote.abtw.await_args_list] == [
-            (),
-            (("Which option?", "Use a cache."),),
-            (("Which option?", "Use a cache."),),
+        assert [call.args for call in remote.abtw.await_args_list] == [
+            ("Which option?",),
+            ("Why?",),
+            ("Why?",),
         ]
         await pilot.press("escape")
         await pilot.pause()
         assert app.query_one("#chat-input", TextArea).has_focus
         assert app._message_store.get_all_messages() == before
         assert not app._pending_messages
+        # The server returns only completed exchanges; failed ones are not stored.
+        remote.aget_btw_history.return_value = [
+            ("Which option?", "Use a cache."),
+            ("Why?", "It is faster."),
+        ]
         await pilot.press(*"/btw", "enter")
         await pilot.pause()
-        # Reopening restores only completed exchanges without another model call.
         assert remote.abtw.await_count == 3
+        assert remote.aget_btw_history.await_count == 2
         assert [widget.raw_text for widget in app.screen.query(UserMessage)] == [
             "Which option?",
             "Why?",
@@ -1592,12 +1615,7 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
         ] == ["Use a cache.", "It is faster."]
         assert not app.screen.query(".btw-error")
         assert app.screen.query_one(BtwTextArea).has_focus
-        await pilot.press(*"Still?", "enter")
-        await pilot.pause()
-        assert remote.abtw.call_args.kwargs["history"] == (
-            ("Which option?", "Use a cache."),
-            ("Why?", "It is faster."),
-        )
+        assert app.screen.query_one(BtwTextArea).placeholder == "Ask a follow-up"
         assert app._message_store.get_all_messages() == before
 
 
@@ -1608,6 +1626,24 @@ async def test_side_history_is_separate_per_thread_and_clear_survives_reopening(
     from deepagents_code.app import TextualSessionState
 
     app, remote = btw_app
+    stored: dict[str, list[tuple[str, str]]] = {}
+
+    def thread(config: dict[str, dict[str, str]]) -> str:
+        return config["configurable"]["thread_id"]
+
+    def ask(question: str, *, config: dict[str, dict[str, str]], **_: object) -> str:
+        stored.setdefault(thread(config), []).append((question, "Side answer"))
+        return "Side answer"
+
+    def history(*, config: dict[str, dict[str, str]]) -> list[tuple[str, str]]:
+        return list(stored.get(thread(config), []))
+
+    def clear(*, config: dict[str, dict[str, str]]) -> None:
+        stored.pop(thread(config), None)
+
+    remote.abtw.side_effect = ask
+    remote.aget_btw_history.side_effect = history
+    remote.aclear_btw_history.side_effect = clear
     app._session_state = TextualSessionState(thread_id="btw-test")
     monkeypatch.setattr(app, "_thread_resume_block", AsyncMock(return_value=None))
     monkeypatch.setattr(
@@ -1629,7 +1665,6 @@ async def test_side_history_is_separate_per_thread_and_clear_survives_reopening(
         await app._resume_thread("other-thread")
         await pilot.press(*"/btw Second", "enter")
         await pilot.pause()
-        assert remote.abtw.call_args.kwargs["history"] == ()
         assert remote.abtw.call_args.kwargs["config"] == {
             "configurable": {"thread_id": "other-thread"}
         }
@@ -1642,75 +1677,31 @@ async def test_side_history_is_separate_per_thread_and_clear_survives_reopening(
         await app._resume_thread("btw-test")
         await pilot.press(*"/btw Third", "enter")
         await pilot.pause()
-        assert remote.abtw.call_args.kwargs["history"] == (("First", "Side answer"),)
         assert [widget.raw_text for widget in app.screen.query(UserMessage)] == [
             "First",
             "Third",
         ]
-        await pilot.press("ctrl+x", "escape")
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        remote.aclear_btw_history.assert_awaited_once_with(
+            config={"configurable": {"thread_id": "btw-test"}}
+        )
+        await pilot.press("escape")
         await pilot.pause()
         await pilot.press(*"/btw", "enter")
         await pilot.pause()
         assert not app.screen.query(UserMessage)
         assert not app.screen.query(AssistantMessage)
-        await pilot.press(*"Fresh", "enter")
-        await pilot.pause()
-        assert remote.abtw.call_args.kwargs["history"] == ()
         await pilot.press("escape")
         await pilot.pause()
 
         await app._resume_thread("other-thread")
         await pilot.press(*"/btw Fourth", "enter")
         await pilot.pause()
-        assert remote.abtw.call_args.kwargs["history"] == (("Second", "Side answer"),)
-
-
-async def test_reopening_after_cancellation_keeps_only_completed_exchanges(
-    btw_app: tuple[DeepAgentsApp, MagicMock],
-) -> None:
-    app, remote = btw_app
-    started = asyncio.Event()
-    cancelled = asyncio.Event()
-
-    async def answer(
-        question: str, *, on_text: Callable[[str], Awaitable[None]], **_kwargs: object
-    ) -> str:
-        if question != "Pending":
-            return "Completed answer"
-        try:
-            await on_text("Partial answer")
-            started.set()
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
-        return "unreachable"
-
-    remote.abtw.side_effect = answer
-    async with app.run_test(size=(110, 36)) as pilot:
-        await pilot.pause()
-        app._connecting = False
-        await pilot.press(*"/btw First", "enter")
-        await pilot.pause()
-        await pilot.press(*"Pending", "enter")
-        await asyncio.wait_for(started.wait(), 2)
-        message = app.screen.query(AssistantMessage).last()
-        await pilot.press("escape")
-        await asyncio.wait_for(cancelled.wait(), 2)
-        await pilot.pause()
-        assert message._stream is None
-        await pilot.press(*"/btw", "enter")
-        await pilot.pause()
         assert [widget.raw_text for widget in app.screen.query(UserMessage)] == [
-            "First"
+            "Second",
+            "Fourth",
         ]
-        assert app.screen.query_one(AssistantMessage).query_one(Markdown)._markdown == (
-            "Completed answer"
-        )
-        await pilot.press(*"Next", "enter")
-        await pilot.pause()
-        assert remote.abtw.call_args.kwargs["history"] == (
-            ("First", "Completed answer"),
-        )
 
 
 @pytest.mark.parametrize("focus_history", [False, True])
@@ -1722,7 +1713,6 @@ async def test_clear_discards_side_history_errors_and_draft(
         "Old answer",
         RuntimeError("Old error"),
         "Fresh answer",
-        "Follow-up answer",
     ]
     async with app.run_test(size=(110, 36)) as pilot:
         await pilot.pause()
@@ -1747,8 +1737,10 @@ async def test_clear_discards_side_history_errors_and_draft(
             await pilot.press("tab")
             assert screen.query_one("#btw-scroll").has_focus
 
+        clears = remote.aclear_btw_history.await_count
         await pilot.press("ctrl+x")
         await pilot.pause()
+        assert remote.aclear_btw_history.await_count == clears + 1
         assert app.screen is screen
         assert not screen.query(UserMessage)
         assert not screen.query(AssistantMessage)
@@ -1764,10 +1756,6 @@ async def test_clear_discards_side_history_errors_and_draft(
         await pilot.press("ctrl+z", *"Fresh", "enter")
         await pilot.pause()
         assert remote.abtw.call_args.args == ("Fresh",)
-        assert remote.abtw.call_args.kwargs["history"] == ()
-        await pilot.press(*"Follow-up", "enter")
-        await pilot.pause()
-        assert remote.abtw.call_args.kwargs["history"] == (("Fresh", "Fresh answer"),)
         assert app._message_store.get_all_messages() == before
         assert not app._pending_messages
 
@@ -1780,6 +1768,7 @@ async def test_clear_cancels_side_answer_and_keeps_main_worker_running(
     started = asyncio.Event()
     cancelled = asyncio.Event()
     release_main = asyncio.Event()
+    order: list[str] = []
 
     async def answer(
         question: str, *, on_text: Callable[[str], Awaitable[None]], **_kwargs: object
@@ -1792,10 +1781,12 @@ async def test_clear_cancels_side_answer_and_keeps_main_worker_running(
             started.set()
             await asyncio.Event().wait()
         finally:
+            order.append("cancelled")
             cancelled.set()
         return "unreachable"
 
     remote.abtw.side_effect = answer
+    remote.aclear_btw_history.side_effect = lambda **_: order.append("cleared")
     async with app.run_test(size=(110, 36)) as pilot:
         await pilot.pause()
         app._connecting = False
@@ -1814,6 +1805,7 @@ async def test_clear_cancels_side_answer_and_keeps_main_worker_running(
             await pilot.press("ctrl+x")
             await asyncio.wait_for(cancelled.wait(), 2)
             await pilot.pause()
+            assert order == ["cancelled", "cleared"]
             assert app.screen is screen
             assert not screen.query(AssistantMessage)
             assert message._stream is None
@@ -1826,7 +1818,6 @@ async def test_clear_cancels_side_answer_and_keeps_main_worker_running(
 
             await pilot.press(*"Fresh", "enter")
             await pilot.pause()
-            assert remote.abtw.call_args.kwargs["history"] == ()
             assert screen.query_one(AssistantMessage).query_one(Markdown)._markdown == (
                 "Fresh answer"
             )
@@ -1835,6 +1826,40 @@ async def test_clear_cancels_side_answer_and_keeps_main_worker_running(
             release_main.set()
             await main.wait()
             app._agent_running = False
+
+
+async def test_failed_history_requests_notify_without_dropping_transcript(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from textual.app import App
+
+    app = App()
+    load = AsyncMock(side_effect=RuntimeError("server down"))
+    clear = AsyncMock(side_effect=RuntimeError("[/tmp] unreachable"))
+    answer = AsyncMock(return_value="Kept answer")
+    async with app.run_test(size=(80, 24)) as pilot:
+        notify = MagicMock()
+        monkeypatch.setattr(app, "notify", notify)
+        app.push_screen(BtwScreen(answer, "Kept", load_history=load, on_clear=clear))
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        load.assert_awaited_once_with()
+        assert "server down" in notify.call_args.args[0]
+        answer.assert_awaited_once_with("Kept")
+        await pilot.press("ctrl+x")
+        await pilot.pause()
+        clear.assert_awaited_once_with()
+        assert "[/tmp] unreachable" in notify.call_args.args[0]
+        assert notify.call_args.kwargs["markup"] is False
+        screen = app.screen
+        assert [widget.raw_text for widget in screen.query(UserMessage)] == ["Kept"]
+        assert screen.query_one(AssistantMessage).query_one(Markdown)._markdown == (
+            "Kept answer"
+        )
+        assert screen.has_class("has-history")
+        editor = screen.query_one(BtwTextArea)
+        assert editor.has_focus
+        assert not editor.disabled
 
 
 async def test_thinking_follows_question_and_prevents_duplicate_submits() -> None:

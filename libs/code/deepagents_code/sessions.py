@@ -1809,7 +1809,7 @@ async def rename_thread(
 
 
 async def delete_thread(thread_id: str) -> bool:
-    """Delete thread checkpoints, side-question costs, and offloaded history.
+    """Delete thread checkpoints, side-question costs and history, and offloads.
 
     Removes the thread's checkpoint/write rows, then makes a best-effort attempt
     to remove the per-thread compaction archive and handoff snapshots under
@@ -1824,6 +1824,7 @@ async def delete_thread(thread_id: str) -> bool:
         BlockingIOError: The thread is reserved by a live client.
     """
     from deepagents_code.btw_cost import delete_cost
+    from deepagents_code.btw_history import delete_history
     from deepagents_code.thread_ownership import (
         _finish_mutation,
         try_acquire,
@@ -1840,6 +1841,7 @@ async def delete_thread(thread_id: str) -> bool:
         deleted = False
         async with _connect() as conn:
             await delete_cost(conn, thread_id)
+            await delete_history(conn, thread_id)
             if await _table_exists(conn, "dcode_thread_names"):
                 await conn.execute(
                     "DELETE FROM dcode_thread_names WHERE thread_id = ?", (thread_id,)

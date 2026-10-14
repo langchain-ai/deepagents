@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 from typing import TYPE_CHECKING, cast, override
 
 from starlette.requests import ClientDisconnect
@@ -12,6 +13,7 @@ from starlette.responses import JSONResponse, Response
 
 from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
 from deepagents_code.btw_cost import answer_with_cost, load_cost
+from deepagents_code.btw_history import append_exchange, clear_history, load_history
 from deepagents_code.workspace import WorkspaceConflictError, require_thread_workspace
 
 if TYPE_CHECKING:
@@ -27,34 +29,24 @@ _MAX_QUESTION_LENGTH = 16_000
 _MAX_HISTORY_LENGTH = 128_000
 
 
-def _parse_history(raw: object) -> list[tuple[str, str]]:
-    """Validate completed text exchanges without accepting message roles.
+async def _remember[T](
+    answer: Awaitable[tuple[str, T]],
+    *,
+    thread_id: str,
+    epoch: int,
+    question: str,
+) -> tuple[str, T]:
+    """Store the exchange only after its answer completes within the request.
 
     Returns:
-        Question/answer pairs for the side conversation.
-
-    Raises:
-        TypeError: If history is not a list.
-        ValueError: If an exchange is malformed or history exceeds the limit.
+        The completed answer and its cost.
     """
-    history: list[tuple[str, str]] = []
-    if not isinstance(raw, list):
-        msg = "History must be a list of question/answer pairs."
-        raise TypeError(msg)
-    for pair in raw:
-        match pair:
-            case [str(question), str(answer)] if question.strip() and answer.strip():
-                history.append((question, answer))
-            case _:
-                msg = "History must contain nonempty question/answer text pairs."
-                raise ValueError(msg)
-    if (
-        sum(len(question) + len(answer) for question, answer in history)
-        > _MAX_HISTORY_LENGTH
-    ):
-        msg = "Side conversation is too long. Press Ctrl+X in /btw to clear it."
-        raise ValueError(msg)
-    return history
+    text, cost = await answer
+    try:
+        await asyncio.to_thread(append_exchange, thread_id, epoch, question, text)
+    except sqlite3.Error:
+        logger.warning("Could not save the side exchange", exc_info=True)
+    return text, cost
 
 
 async def _wait_for_disconnect(request: Request) -> None:
@@ -156,11 +148,7 @@ async def btw(request: Request) -> Response:
 
     try:
         payload = await request.json()
-        if (
-            not isinstance(payload, dict)
-            or not {"question", "workspace"} <= payload.keys()
-            or payload.keys() - {"question", "workspace", "history"}
-        ):
+        if not isinstance(payload, dict) or payload.keys() != {"question", "workspace"}:
             return JSONResponse(
                 {"detail": "Expected question and workspace."}, status_code=422
             )
@@ -173,14 +161,23 @@ async def btw(request: Request) -> Response:
                 {"detail": "Question must contain 1 to 16000 characters."},
                 status_code=422,
             )
-        history = _parse_history(payload.get("history", []))
         thread_id = request.path_params["thread_id"]
         binding = await require_thread_workspace(thread_id, payload["workspace"])
     except (TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)
     except WorkspaceConflictError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=409)
+    question = question.strip()
     try:
+        history, epoch = await asyncio.to_thread(load_history, thread_id)
+        if sum(len(q) + len(a) for q, a in history) > _MAX_HISTORY_LENGTH:
+            return JSONResponse(
+                {
+                    "detail": "Side conversation is too long. "
+                    "Press Ctrl+X in /btw to clear it."
+                },
+                status_code=422,
+            )
         async with asyncio.timeout(120):
             server = await get_server_runtime(binding)
             operation = getattr(server.backend, BTW_OPERATION_ATTR, None)
@@ -194,31 +191,30 @@ async def btw(request: Request) -> Response:
             # responses without saved costs. Keep the checkpoint untouched.
             state = dict(snapshot.get("values") or {})
             state["messages"] = convert_to_messages(state.get("messages", []))
-            if "text/event-stream" in request.headers.get("accept", ""):
-                return _BtwStreamingResponse(
-                    request,
-                    lambda on_text: answer_with_cost(
+
+            def answer(
+                on_text: Callable[[str], Awaitable[None]] | None = None,
+            ) -> Coroutine[object, object, tuple[str, CostBreakdown | None]]:
+                return _remember(
+                    answer_with_cost(
                         operation.answer(
                             thread_id,
                             state,
-                            question.strip(),
+                            question,
                             history=history,
                             on_text=on_text,
                         ),
                         thread_id=thread_id,
                         state=cast("CostState", state),
                     ),
-                )
-            result = await _answer_while_connected(
-                request,
-                answer_with_cost(
-                    operation.answer(
-                        thread_id, state, question.strip(), history=history
-                    ),
                     thread_id=thread_id,
-                    state=cast("CostState", state),
-                ),
-            )
+                    epoch=epoch,
+                    question=question,
+                )
+
+            if "text/event-stream" in request.headers.get("accept", ""):
+                return _BtwStreamingResponse(request, answer)
+            result = await _answer_while_connected(request, answer())
         if result is None:
             return JSONResponse({"detail": "Client disconnected."}, status_code=499)
         text, cost = result
@@ -246,3 +242,33 @@ async def btw_cost(request: Request) -> JSONResponse:
     """
     cost = await asyncio.to_thread(load_cost, request.path_params["thread_id"])
     return JSONResponse({"cost": cost})
+
+
+async def btw_history(request: Request) -> JSONResponse:
+    """Read the stored side exchanges so a client can show them on open.
+
+    Returns:
+        Ordered question/answer pairs for the thread.
+    """
+    history, _ = await asyncio.to_thread(load_history, request.path_params["thread_id"])
+    return JSONResponse({"history": history})
+
+
+async def btw_clear(request: Request) -> JSONResponse:
+    """Empty the side history and discard answers still in progress.
+
+    Returns:
+        The now-empty history, or a safe error response.
+    """
+    thread_id = request.path_params["thread_id"]
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict) or payload.keys() != {"workspace"}:
+            return JSONResponse({"detail": "Expected workspace."}, status_code=422)
+        await require_thread_workspace(thread_id, payload["workspace"])
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+    except WorkspaceConflictError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+    await asyncio.to_thread(clear_history, thread_id)
+    return JSONResponse({"history": []})

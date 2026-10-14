@@ -1,4 +1,4 @@
-"""Side conversation with follow-ups and app-owned history."""
+"""Side conversation with follow-ups and server-owned history."""
 
 from __future__ import annotations
 
@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 _MAX_QUESTION_LENGTH = 16_000
 
 
+def _describe(exc: BaseException) -> str:
+    from deepagents_code.client.remote_client import format_agent_exception
+
+    return format_agent_exception(exc)
+
+
 class BtwTextArea(InlinePromptTextArea):
     """Side-question editor with the shared multiline and paste conventions."""
 
@@ -57,26 +63,26 @@ class BtwScreen(ModalScreen[None]):
         answer: Callable[[str], Awaitable[str]],
         question: str = "",
         *,
-        history: Sequence[tuple[str, str]] = (),
+        load_history: Callable[[], Awaitable[Sequence[tuple[str, str]]]] | None = None,
         stream_answer: Callable[[str, Callable[[str], Awaitable[None]]], Awaitable[str]]
         | None = None,
-        on_clear: Callable[[], None] | None = None,
+        on_clear: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """Capture the answer callback and optional question.
 
         Args:
             answer: Generate a complete side answer.
             question: Initial question, or empty to start with the editor.
-            history: Completed exchanges to restore when reopening the conversation.
+            load_history: Fetch completed exchanges to restore on open.
             stream_answer: Optional generator that delivers fragments to its receiver.
-            on_clear: Discard the caller's side-conversation history on reset.
+            on_clear: Erase the stored side history before the transcript resets.
         """
         super().__init__()
         self._answer = answer
         self._stream_answer = stream_answer
+        self._load_history = load_history
         self._on_clear = on_clear
         self._question = question
-        self._history = tuple(history)
         self._spinner = Spinner()
         self._spinner_timer: Timer | None = None
         self._pending = False
@@ -120,11 +126,32 @@ class BtwScreen(ModalScreen[None]):
         self.watch(
             scroll, "virtual_size", partial(self._follow_rendered_content, scroll)
         )
-        await self._restore_history()
+        self._pending = True
+        self.query_one(BtwTextArea).disabled = True
+        self._open()
+
+    @work(group="btw-history")
+    async def _open(self) -> None:
+        """Restore stored exchanges before accepting or sending a question."""
+        history: Sequence[tuple[str, str]] = ()
+        if self._load_history is not None:
+            try:
+                history = await self._load_history()
+            except Exception as exc:
+                logger.debug("Could not load side history", exc_info=True)
+                self.notify(
+                    f"Could not load earlier /btw exchanges: {_describe(exc)}",
+                    severity="error",
+                    markup=False,
+                )
+        await self._restore_history(history)
+        self._pending = False
+        editor = self.query_one(BtwTextArea)
+        editor.disabled = False
         if self._question:
             await self._start(self._question)
         else:
-            self.query_one(BtwTextArea).focus(scroll_visible=False)
+            editor.focus(scroll_visible=False)
 
     def _follow_rendered_content(
         self, scroll: VerticalScroll, old_size: Size, new_size: Size
@@ -138,14 +165,14 @@ class BtwScreen(ModalScreen[None]):
         if new_size.height > old_size.height and scroll.scroll_y >= old_bottom:
             self._follow_answer()
 
-    async def _restore_history(self) -> None:
-        if not self._history:
+    async def _restore_history(self, history: Sequence[tuple[str, str]]) -> None:
+        if not history:
             return
         self.add_class("has-history")
         self.query_one("#btw-help", Static).update(self._help_text())
         scroll = self.query_one("#btw-scroll", VerticalScroll)
         scroll.display = True
-        for question, text in self._history:
+        for question, text in history:
             answer = AssistantMessage()
             await scroll.mount(
                 UserMessage(question, classes="btw-question", detect_mode=False),
@@ -265,10 +292,8 @@ class BtwScreen(ModalScreen[None]):
         except Exception as exc:
             await answer.stop_stream()
             logger.debug("Side question failed", exc_info=True)
-            from deepagents_code.client.remote_client import format_agent_exception
-
             target = error
-            error.update(format_agent_exception(exc))
+            error.update(_describe(exc))
         self._finish_answer(target, reveal=target is error or not answer.display)
 
     def _finish_answer(self, target: Widget, *, reveal: bool) -> None:
@@ -303,13 +328,31 @@ class BtwScreen(ModalScreen[None]):
             with suppress(WorkerCancelled):
                 await worker.wait()
         if self._on_clear is not None:
-            self._on_clear()
+            try:
+                await self._on_clear()
+            except Exception as exc:
+                logger.debug("Could not clear side history", exc_info=True)
+                self.notify(
+                    f"Could not clear /btw history: {_describe(exc)}",
+                    severity="error",
+                    markup=False,
+                )
+                self._resume_editor()
+                return
         await self._clear_transcript()
         editor = self.query_one(BtwTextArea)
         editor.reset_paste_state()
         editor.load_text("")
         editor.disabled = False
         editor.placeholder = "Ask anything about this conversation"
+        editor.focus()
+
+    def _resume_editor(self) -> None:
+        """Keep the transcript the server still holds, but accept a new question."""
+        self._pending = self._follow_pending = False
+        self.query_one("#btw-loading").display = False
+        editor = self.query_one(BtwTextArea)
+        editor.disabled = False
         editor.focus()
 
     async def _clear_transcript(self) -> None:

@@ -3570,9 +3570,6 @@ class DeepAgentsApp(App):
 
         self._terminal_title = TerminalTitle(load_terminal_tab_title())
 
-        self._btw_history: dict[str, list[tuple[str, str]]] = {}
-        """Completed side exchanges per thread, retained only for this app instance."""
-
         self._resume_thread_intent = resume_thread
         """Raw `-r` intent (`None`, `'__MOST_RECENT__'`, or a thread id).
 
@@ -17512,20 +17509,13 @@ class DeepAgentsApp(App):
             parts = command.strip().split(maxsplit=1)
             question = parts[1].strip() if len(parts) > 1 else ""
             thread_id = self._lc_thread_id
-
-            history = self._btw_history.setdefault(thread_id, [])
+            config = {"configurable": {"thread_id": thread_id}}
 
             async def answer(
                 question: str,
                 on_text: Callable[[str], Awaitable[None]] | None = None,
             ) -> str:
-                config = {"configurable": {"thread_id": thread_id}}
-                text = await remote.abtw(
-                    question,
-                    config=config,
-                    history=tuple(history),
-                    on_text=on_text,
-                )
+                text = await remote.abtw(question, config=config, on_text=on_text)
                 cost = remote.get_cached_session_cost(config)
                 if cost is not None and thread_id == self._lc_thread_id:
                     self._set_session_cost(
@@ -17533,16 +17523,19 @@ class DeepAgentsApp(App):
                         breakdown=cost["breakdown"],
                         preserve_provisional=True,
                     )
-                history.append((question, text))
                 return text
 
             self.push_screen(
                 BtwScreen(
                     answer,
                     question,
-                    history=history,
+                    load_history=functools.partial(
+                        remote.aget_btw_history, config=config
+                    ),
                     stream_answer=answer,
-                    on_clear=history.clear,
+                    on_clear=functools.partial(
+                        remote.aclear_btw_history, config=config
+                    ),
                 ),
                 lambda _result: self._focus_chat_input_after_refresh(),
             )

@@ -71,7 +71,7 @@ DEEPAGENTS_TALON_SANDBOX=langsmith AGENT_MODEL=<provider>:<model-id> uv run deep
 
 Under systemd, put the variable in the service's environment file instead.
 
-Talon uses the `deepagents-code` sandbox providers: `langsmith` works out of the box, and `agentcore`, `daytona`, `modal`, `runloop`, and `vercel` need the matching extra, for example `uv run --with 'deepagents-code[daytona]' deepagents-talon`. Each provider reads its own credentials (such as `LANGSMITH_API_KEY` or `DAYTONA_API_KEY`) in the Talon process; they are not forwarded into the sandbox.
+Talon uses the `deepagents-code` sandbox providers: `langsmith` works out of the box, and `agentcore`, `daytona`, `modal`, `openshell`, `runloop`, and `vercel` need the matching extra, for example `uv run --with 'deepagents-code[daytona]' deepagents-talon`. Talon also ships an `openshell` extra (`deepagents-talon[openshell]`). Each provider reads its own credentials (such as `LANGSMITH_API_KEY` or `DAYTONA_API_KEY`) in the Talon process; they are not forwarded into the sandbox. OpenShell instead uses the gateway the `openshell` CLI has selected, overridable with `OPENSHELL_GATEWAY`, and the workspace in `OPENSHELL_WORKSPACE` (default `default`). For OpenShell, `DEEPAGENTS_TALON_SANDBOX_ID` takes the sandbox name the CLI shows.
 
 | Variable | Purpose |
 | --- | --- |

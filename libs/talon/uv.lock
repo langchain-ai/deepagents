@@ -1070,6 +1070,9 @@ media = [
     { name = "av" },
     { name = "pillow" },
 ]
+openshell = [
+    { name = "langchain-nvidia-openshell" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1079,7 +1082,7 @@ requires-dist = [
     { name = "av", marker = "extra == 'media'", specifier = ">=18.0.0,<19.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-acp", editable = "../acp" },
-    { name = "deepagents-code", extras = ["agentcore", "daytona", "modal", "runloop", "vercel"], marker = "extra == 'all-sandboxes'" },
+    { name = "deepagents-code", extras = ["agentcore", "daytona", "modal", "openshell", "runloop", "vercel"], marker = "extra == 'all-sandboxes'" },
     { name = "deepagents-code", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "meta", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai"], marker = "extra == 'all-providers'" },
     { name = "fastmcp", specifier = ">=4.0.0b4,<5.0.0" },
     { name = "filelock", specifier = ">=3.29.7,<3.30" },
@@ -1106,6 +1109,7 @@ requires-dist = [
     { name = "langchain-mistralai", marker = "extra == 'mistralai'", specifier = ">=1.1.6,<2.0.0" },
     { name = "langchain-modal", marker = "extra == 'modal'", editable = "../partners/modal" },
     { name = "langchain-nvidia-ai-endpoints", marker = "extra == 'nvidia'", specifier = ">=1.5.0,<2.0.0" },
+    { name = "langchain-nvidia-openshell", marker = "extra == 'openshell'", specifier = ">=0.1.1" },
     { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.1.0,<2.0.0" },
     { name = "langchain-openai", specifier = ">=1.7.2,<2.0.0" },
     { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.7.2,<2.0.0" },
@@ -1140,7 +1144,7 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.2.0,<2.0.0" },
     { name = "uuid-utils", specifier = ">=0.17.0,<1.0.0" },
 ]
-provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "meta", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "vercel", "all-sandboxes", "media", "quickjs"]
+provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "meta", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai", "all-providers", "agentcore", "daytona", "modal", "openshell", "runloop", "vercel", "all-sandboxes", "media", "quickjs"]
 
 [package.metadata.requires-dev]
 test = [
@@ -1217,6 +1221,9 @@ mongodb = [
     { name = "langgraph-checkpoint-mongodb" },
     { name = "langgraph-store-mongodb" },
 ]
+openshell = [
+    { name = "deepagents-code", extra = ["openshell"] },
+]
 postgres = [
     { name = "langgraph-checkpoint-postgres" },
     { name = "psycopg", extra = ["binary"] },
@@ -1243,6 +1250,7 @@ requires-dist = [
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-code", editable = "../code" },
     { name = "deepagents-code", extras = ["media"], marker = "extra == 'media'", editable = "../code" },
+    { name = "deepagents-code", extras = ["openshell"], marker = "extra == 'openshell'", editable = "../code" },
     { name = "discord-py", specifier = ">=2.7.1,<3.0.0" },
     { name = "fastmcp", specifier = ">=4.1.0,<5.0.0" },
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
@@ -1276,7 +1284,7 @@ requires-dist = [
     { name = "tzdata", specifier = ">=2026.5" },
     { name = "voyageai", marker = "extra == 'history-voyage'", specifier = ">=0.5.0,<1.0.0" },
 ]
-provides-extras = ["history-local", "history-voyage", "history-openai", "mongodb", "postgres", "media"]
+provides-extras = ["history-local", "history-voyage", "history-openai", "openshell", "mongodb", "postgres", "media"]
 
 [package.metadata.requires-dev]
 test = [
@@ -2312,6 +2320,37 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/82/c0/ae7c590b1415165c603d0fe692eed398f16bb2f9f35f28bfa266437e7335/langchain_mongodb-0.12.0.tar.gz", hash = "sha256:128acf526848035f7900b2b0957f63e5a3118002dc27831bd749b848ddab2bba", size = 322753, upload-time = "2026-08-24T23:13:38.661Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/83/a4/3859562f62ba9ec22130bed7f152e2cf83b0271612d93d97d66ade8e4da3/langchain_mongodb-0.12.0-py3-none-any.whl", hash = "sha256:e8623fb2019fde9d8f0c7fc63000d14abfb399bd1b81a1fb6936862c1399651e", size = 66786, upload-time = "2026-08-24T23:13:37.536Z" },
+]
+
+[[package]]
+name = "langchain-nvidia-ai-endpoints"
+version = "1.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "langchain-core" },
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a7/e8/eae73c346c4a849321ebeff68f42a5a9a6fa8f1d3cf7146975b71e4279aa/langchain_nvidia_ai_endpoints-1.5.0.tar.gz", hash = "sha256:9c76d5507fd6a4905073611b03127b3423b88d2692af8bfce04b20c4ec161ed5", size = 85162, upload-time = "2026-10-14T23:17:44.202Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/98/bf/fd4da17062dd55f38a3f1f7585e72f13424368e4fe77e564b5c73be82834/langchain_nvidia_ai_endpoints-1.5.0-py3-none-any.whl", hash = "sha256:98e7e8e677a522bd9c48c7a606af2a949bf682b6cce4e62449e38bc6f485a4cd", size = 89302, upload-time = "2026-10-14T23:17:43.002Z" },
+]
+
+[[package]]
+name = "langchain-nvidia-openshell"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "deepagents" },
+    { name = "grpcio" },
+    { name = "langchain-nvidia-ai-endpoints" },
+    { name = "openshell" },
+    { name = "python-dotenv" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f1/2f/a40e9a6715a6235a200a049e5e89dd53b3f06273eda485b3d650607c53e6/langchain_nvidia_openshell-0.1.1.tar.gz", hash = "sha256:9a2a828ff2a5e2527f35bcbe22b9de381f2bcb6601fdf8c5e269793701e3516d", size = 16249, upload-time = "2026-10-16T15:35:13.872Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/13/65354df9e8e228e596f034dc2dd5f1157070b6d8739998c7ded75b8deffd/langchain_nvidia_openshell-0.1.1-py3-none-any.whl", hash = "sha256:1297aa653a7e5b058188f01c4cc7dc6c7fb0259a0b727b81fb4d4ebb37606c76", size = 12980, upload-time = "2026-10-16T15:35:12.742Z" },
 ]
 
 [[package]]
@@ -3389,6 +3428,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/02/2e/58d83848dd1a79cb92ed8e63f6ba901ca282c5f09d04af9423ec26c56fd7/openapi_pydantic-0.5.1.tar.gz", hash = "sha256:ff6835af6bde7a459fb93eb93bb92b8749b754fc6e51b2f1590a19dc3005ee0d", size = 60892, upload-time = "2025-01-08T19:29:27.083Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/12/cf/03675d8bd8ecbf4445504d8071adab19f5f993676795708e36402ab38263/openapi_pydantic-0.5.1-py3-none-any.whl", hash = "sha256:a3a09ef4586f5bd760a8df7f43028b60cafb6d9f61de2acba9574766255ab146", size = 96381, upload-time = "2025-01-08T19:29:25.275Z" },
+]
+
+[[package]]
+name = "openshell"
+version = "0.1.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cloudpickle" },
+    { name = "googleapis-common-protos" },
+    { name = "grpcio" },
+    { name = "httpx" },
+    { name = "protobuf" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/09/7f/0f2132b67d3d6e606d8d7a1bce67abe6dd3f4e631ccf1a20608f1c132309/openshell-0.1.4-py3-none-any.whl", hash = "sha256:2a25991a4c050e9d40d947b9df537d5c5370cf9a569b7a4e8c92cea882f5ddcb", size = 138757, upload-time = "2026-10-13T20:49:52.401Z" },
 ]
 
 [[package]]

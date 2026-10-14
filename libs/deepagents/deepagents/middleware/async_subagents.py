@@ -66,11 +66,6 @@ class AsyncSubAgent(TypedDict):
         When tracing is on, launches and updates of subagents on this deployment
         (no `url`) send the parent's LangSmith trace headers, so a receiver can
         nest the subagent's run under the parent's trace. This may change.
-
-        Launches and updates also send the parent's thread and assistant IDs in
-        the run's `configurable["deepagents_parent"]`, so the app deploying the
-        subagent can find what it keeps for the parent's thread, such as its
-        sandbox. Verify it before trusting it: the caller controls `configurable`.
     """
 
     name: str

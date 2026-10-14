@@ -2,6 +2,18 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.85](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.84...deepagents-code==0.1.85) (2026-10-14)
+
+
+### Bug Fixes
+
+* **code:** suppress ownership warnings for root installs ([#6907](https://github.com/langchain-ai/deepagents/issues/6907)) ([f6c579c](https://github.com/langchain-ai/deepagents/commit/f6c579c932e2e283f0399dde5686fdcba44e8742))
+
+
+### Performance Improvements
+
+* **code:** avoid restyling transcript history on message insertion ([#6951](https://github.com/langchain-ai/deepagents/issues/6951)) ([462ead2](https://github.com/langchain-ai/deepagents/commit/462ead206995c1c78ff8da703b35d0a429fc89d9))
+
 ## [0.1.84](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.83...deepagents-code==0.1.84) (2026-10-12)
 
 ### Features

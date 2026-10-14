@@ -30,7 +30,7 @@ from quickjs_rs import Runtime, ThreadWorker
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._repl import (
-    _MAX_TASK_CALLS_PER_THREAD,
+    _DEFAULT_MAX_SUBAGENT_CONCURRENCY,
     _clear_exception_references,
     _Registry,
     _ThreadREPL,
@@ -992,7 +992,7 @@ class _QueuedFanout:
     """
 
     #: One more than the semaphore can admit at once, so some dispatches queue.
-    TOTAL_TASKS = _MAX_TASK_CALLS_PER_THREAD + 2
+    TOTAL_TASKS = _DEFAULT_MAX_SUBAGENT_CONCURRENCY + 2
 
     def __init__(self) -> None:
         self.saturated = asyncio.Event()
@@ -1003,7 +1003,7 @@ class _QueuedFanout:
 
     async def work(self, state: dict[str, Any], config: Any) -> dict[str, Any]:
         self.started += 1
-        if self.started == _MAX_TASK_CALLS_PER_THREAD:
+        if self.started == _DEFAULT_MAX_SUBAGENT_CONCURRENCY:
             self.saturated.set()
         await self.released.wait()
         return {"messages": [AIMessage(content="done")]}
@@ -1510,14 +1510,28 @@ async def test_async_task_global_rejects_state_without_messages(
     assert "messages" in outcome.error_message
 
 
+@pytest.mark.parametrize("limit", [None, 2, 40])
+@pytest.mark.parametrize("reset", [False, True])
 async def test_async_task_global_limits_concurrency_per_repl(
-    repl: _ThreadREPL,
+    limit: int | None, *, reset: bool
 ) -> None:
+    middleware = (
+        CodeInterpreterMiddleware()
+        if limit is None
+        else CodeInterpreterMiddleware(max_subagent_concurrency=limit)
+    )
+    expected_limit = 32 if limit is None else limit
+    repl = middleware._registry.get("concurrency")
+    if reset:
+        middleware._registry.reset_repl("concurrency")
+        repl = middleware._registry.get("concurrency")
+
     class _CountingRunner:
         def __init__(self) -> None:
             self.active = 0
             self.max_active = 0
             self.lock = threading.Lock()
+            self.release = asyncio.Event()
 
         async def ainvoke(
             self,
@@ -1531,7 +1545,10 @@ async def test_async_task_global_limits_concurrency_per_repl(
             with self.lock:
                 self.active += 1
                 self.max_active = max(self.max_active, self.active)
-            await asyncio.sleep(0.01)
+            if self.active == expected_limit:
+                self.release.set()
+            await self.release.wait()
+            await asyncio.sleep(0)
             with self.lock:
                 self.active -= 1
             return description
@@ -1551,21 +1568,23 @@ async def test_async_task_global_limits_concurrency_per_repl(
         afunc=_counting_async,
     )
 
-    outcome = await repl.eval_async(
-        "const calls = [];"
-        "for (let i = 0; i < 64; i++) {"
-        "  calls.push(task({"
-        "description: String(i), subagentType: 'worker', label: 'c' + i"
-        "}));"
-        "}"
-        "(await Promise.all(calls)).length",
-        outer_runtime=_subagent_runtime(runnable),
-    )
+    try:
+        outcome = await repl.eval_async(
+            "const calls = [];"
+            "for (let i = 0; i < 64; i++) {"
+            "  calls.push(task({"
+            "description: String(i), subagentType: 'worker', label: 'c' + i"
+            "}));"
+            "}"
+            "(await Promise.all(calls)).length",
+            outer_runtime=_subagent_runtime(runnable),
+        )
+    finally:
+        await middleware._registry.aevict("concurrency")
 
     assert outcome.error_type is None
     assert outcome.result == "64"
-    assert runner.max_active <= 32
-    assert runner.max_active > 1
+    assert runner.max_active == expected_limit
 
 
 async def test_async_promise_chain(repl: _ThreadREPL) -> None:
@@ -1629,3 +1648,17 @@ def test_sync_path_still_works(repl: _ThreadREPL) -> None:
     """After the v0.2 split, the sync path continues to use `ctx.eval`."""
     repl.eval_sync("let n = 7")
     assert repl.eval_sync("n * 6").result == "42"
+
+
+@pytest.mark.parametrize("limit", [0, -1, True, False, 1.5, float("inf"), None, "40"])
+def test_invalid_max_subagent_concurrency(limit: Any) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        CodeInterpreterMiddleware(max_subagent_concurrency=limit)
+
+
+def test_subagent_prompt_uses_configured_concurrency() -> None:
+    from langchain_quickjs._prompt import render_subagent_system_prompt
+
+    prompt = render_subagent_system_prompt(max_subagent_concurrency=100)
+    assert "cap of 100 concurrent subagent calls" in prompt
+    assert "recommendation, not a required limit" in prompt

@@ -28,14 +28,16 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-837c84a3f3120bc778033547
     resource: repo://libs/deepagents/deepagents/middleware/unsupported_content.py
+  - id: openwiki-source-13e0ea89aadd1a5e309ac7e3
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
   - id: openwiki-source-c71ac20477155a66b7a8c60a
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-13T08:11:05.854Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
+    at: 2026-10-14T08:05:41.101Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
 ---
 
 # Middleware Catalog
@@ -106,9 +108,13 @@ sequenceDiagram
 
 This sequence shows that visibility is determined for one request and execution is checked again at the tool boundary.
 
-A `SkillToolResolver` may map one include name to several runtime-specific tools. The middleware records only gated tools from the latest model call in private `_skill_tools_disclosed`, mapping tool name to include name, and re-resolves that include name at execution. An undisclosed call, a malformed old record, or a tool the resolver no longer returns remains an invalid tool instead of executing a hidden or stale capability. Resolver output should consequently be stable for a request and inexpensive or cached.
+A `SkillToolResolver` may map one include name to several runtime-specific tools. It must return a sequence of `BaseTool` instances; the middleware keeps the first occurrence of each name and rejects a non-sequence or non-tool entry. A `tools` sequence is normalized the same way, but a bare tool, provider-native tool dictionary, or duplicate name is rejected at construction. Synchronous execution rejects an awaitable resolver result; asynchronous execution awaits it. Resolver output should consequently be stable for a request and inexpensive or cached.
 
-Existing request tools named by an include are already callable. If such a tool is marked `extras={"defer_loading": True}`, reading or pinning the skill reveals its schema but does not gate execution. For ordinary models, disclosure augments request tool bindings. Specific Anthropic models and exact `ChatOpenAI` Responses models support provider-native, mid-conversation additions after the tool-result batch; schemas rejected by Anthropic are withheld so the recorded gate remains consistent with what the model saw.
+The middleware records only **gated** tools from the latest model call in private `_skill_tools_disclosed`, mapping tool name to include name, and writes this record on every call, including `{}`. At tool time it re-resolves the recorded include name and attaches the result only if the requested name is still returned. An undisclosed call, a malformed or legacy record, or a tool the resolver no longer returns remains an invalid tool instead of executing a hidden or stale capability. `disclosed_skill_tool_names(state)` exposes the gated names for another middleware that needs the same gate; deferred request tools are deliberately excluded.
+
+Existing request tools named by an include are already callable. If such a tool is marked `extras={"defer_loading": True}`, reading or pinning the skill reveals its schema but does not gate execution. For models without inline additions, disclosure removes that marker on the request copy and appends gated tools to its bindings. A `ChatAnthropic` or `BaseChatOpenAI` model whose profile declares `mid_conversation_tools` receives provider-native blocks instead: Anthropic `tool_addition` blocks and OpenAI Responses `additional_tools` blocks. These additions are inserted after the complete anchoring tool-result batch and queued user or empty-assistant messages, never in front of a user turn; the same visible anchor produces the same inserted bytes, preserving a cached prefix. Already-bound non-deferred tools add nothing, and a request tool with the same name takes precedence over a resolver result.
+
+Anthropic rejects a root `oneOf`, `anyOf`, or `allOf` in an input schema. Before either binding or inline serialization, the middleware withholds such disclosed tools (including deferred ones), logs a warning, and removes them from the gate record. This prevents the entire provider request from failing and keeps authorization aligned with the schemas actually sent. OpenAI disclosure does not apply that Anthropic-specific filter.
 
 ## Subagents, state boundaries, and skill sources
 
@@ -155,6 +161,6 @@ Skills belongs after compaction and routing or fallback middleware, but before c
 
 ## Focused regression coverage
 
-When changing this stack, test the ordering rather than only individual methods: name replacement versus new insertion; protected and final profile filtering; placement of skills after fallback or routing and before caching; default, declarative, and forked skill sourcing; and general-purpose inheritance. Skill-tool coverage should exercise read and pin anchors, same-turn rejection, compaction withdrawal, resolver re-resolution, deferred tools, and provider-specific inline disclosure.
+When changing this stack, test the ordering rather than only individual methods: name replacement versus new insertion; protected and final profile filtering; placement of skills after fallback or routing and before caching; default, declarative, and forked skill sourcing; and general-purpose inheritance. Skill-tool coverage should exercise successful and failed reads, pin anchors, same-turn rejection, compaction withdrawal, malformed disclosure records, resolver re-resolution and validation, deferred tools, name collisions, and Anthropic schema rejection. `test_skill_tools_payload.py` uses real Anthropic and OpenAI model integrations with stubbed HTTP transports to assert the provider payload itself: addition placement, prefix stability, fallback behavior, and inline-versus-bound disclosure. `test_skill_tools_support.py` provides the on-disk skill, scripted-call, resolver, and provider fixtures used by those tests.
 
 For delegation, test the state boundary and result adapter as well as the tool schema: isolated versus forked message construction, recursion refusal, private-state stripping, structured-output serialization, and compiled-runnable requirements. Async coverage should use mocked SDK clients to verify task creation and persisted IDs, invalid types and duplicate specs, status and result handling, update replacement of the run ID, cancellation, terminal-status behavior, and both isolated and forked launch payloads. These tests protect the invariant that the model's advertised tools, the selected model, and tool-time execution agree.

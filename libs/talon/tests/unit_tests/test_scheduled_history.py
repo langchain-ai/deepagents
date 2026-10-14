@@ -22,6 +22,41 @@ if TYPE_CHECKING:
 CRON_THREAD = "job:talon-cron"
 
 
+async def test_scheduled_runs_start_with_fresh_checkpointed_history(tmp_path, monkeypatch):
+    messages = []
+
+    def factory(**kwargs: object):
+        async def reply(state):
+            messages.append([message.text for message in state["messages"]])
+            return {"messages": [AIMessage("noted")]}
+
+        graph = StateGraph(MessagesState)
+        graph.add_node("reply", reply)
+        graph.add_edge(START, "reply")
+        graph.add_edge("reply", END)
+        return graph.compile(checkpointer=kwargs["checkpointer"])
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", factory)
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "cron")
+    job = store.create_job(
+        prompt="review",
+        schedule=CronSchedule.parse("every 1m"),
+        origin=CronOrigin(conversation_id="chat", channel="test"),
+    )
+    async with make_saver(tmp_path / "history.sqlite") as saver:
+        for _ in range(2):
+            host = TalonHost(
+                config=_config(tmp_path), agent=make_runtime(saver, tmp_path), channels=[]
+            )
+            await host.start()
+            try:
+                for _ in range(2):
+                    assert await host.run_scheduled_job(job) == "noted"
+            finally:
+                await host.stop()
+    assert messages == [["review"]] * 4
+
+
 async def test_scheduled_turn_reads_origin_chat_without_archiving_or_deleting(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -12,7 +12,6 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deepagents.middleware.async_subagents import (
-    _WORKER_KEY,
     _current_run_id,
     _failure_text,
     _final_text,
@@ -26,7 +25,7 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
     """Wake the agent that started this run with `start_async_task`, when the run ends.
 
     `create_deep_agent` attaches it to every deep agent. It does nothing unless the
-    run carries the parent reference, and skips background and nested runs.
+    run carries the parent reference, and skips nested runs.
     """
 
     def __init__(self) -> None:
@@ -101,8 +100,5 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
 
 
 def _is_own_task_run(config: Mapping[str, Any]) -> bool:
-    """Whether this is the outermost graph of a task run (not a nested graph) and not a background subagent's run."""
-    configurable = config.get("configurable") or {}
-    if configurable.get(_WORKER_KEY) or (config.get("metadata") or {}).get(_WORKER_KEY):
-        return False
-    return "|" not in str(configurable.get("checkpoint_ns") or "")
+    """Whether this is the outermost graph of a task run, not a graph nested in it."""
+    return "|" not in str((config.get("configurable") or {}).get("checkpoint_ns") or "")

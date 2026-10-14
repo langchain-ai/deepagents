@@ -124,6 +124,28 @@ class SubAgent(TypedDict):
     middleware: NotRequired[list[AgentMiddleware]]
     """Additional middleware for custom behavior, logging, or rate limiting.
 
+    Under `mode="fork"`, inherits the parent's custom middleware list. Entries
+    in this list replace inherited entries with the same `.name`; entries with
+    other names are added.
+
+    Avoid middleware that rewrites the inherited system-prompt prefix in the
+    fork's model request or changes tool definitions unless you accept reduced
+    shared prompt-cache reuse and potentially higher model costs. This is
+    distinct from `SubAgent.system_prompt`, which appends instructions to the
+    inherited prompt. A `wrap_model_call` hook receives that prompt through
+    `request.system_message`. For example, this prepends text before the inherited
+    prefix in the fork's request, preventing reuse of that prefix:
+
+    ```python
+    from langchain_core.messages import SystemMessage
+
+    rewritten = SystemMessage(content=[
+        {"type": "text", "text": "You are a security auditor.\\n"},
+        *request.system_message.content_blocks,
+    ])
+    return handler(request.override(system_message=rewritten))
+    ```
+
     To restrict filesystem tools, include a `FilesystemMiddleware(tools=...)`
     instance here to replace the subagent's default filesystem middleware.
     """
@@ -192,18 +214,6 @@ class SubAgent(TypedDict):
 
     Under `mode="fork"` this is appended to the inherited prompt rather than
     replacing it.
-    """
-
-    background: NotRequired[bool]
-    """Run this subagent in the background with `start_async_task` instead of `task`.
-
-    Each task runs on the main agent's own deployment, on its own thread, and
-    the main agent can keep working meanwhile. Needs the main agent to run on
-    an Agent Server. Background subagents can't use `mode="fork"`.
-
-    Anyone who can start runs on the main agent can also run its background
-    subagents directly, so don't give one looser `interrupt_on` or
-    `permissions` than the main agent.
     """
 
     mode: NotRequired[Literal["isolated", "fork"]]
@@ -295,9 +305,6 @@ class CompiledSubAgent(TypedDict):
     a 'messages' key. This is required for the subagent to communicate
     results back to the main agent.
     """
-
-    background: NotRequired[bool]
-    """Run this subagent in the background with `start_async_task` instead of `task` (see `SubAgent.background`)."""
 
     mode: NotRequired[Literal["isolated", "fork"]]
     """Use `fork` to inherit the parent's conversation without changing the runnable prompt.

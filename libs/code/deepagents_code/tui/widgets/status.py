@@ -1192,8 +1192,8 @@ class StatusBar(Vertical):
         )
         minutes, seconds = divmod(remaining, 60)
         countdown = (
-            "uncertain"
-            if remaining == 0 and self.cache_retention_confidence == "may_be_cold"
+            "expired"
+            if datetime.now(UTC) >= self.cache_expires_at
             else f"{minutes}:{seconds:02d}"
         )
         return f"{written} / {countdown}" if written else countdown

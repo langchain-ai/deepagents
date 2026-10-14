@@ -59,6 +59,12 @@ class AsyncSubAgent(TypedDict):
         transport is available only through an async parent-agent entrypoint,
         such as `ainvoke`. The synchronous `invoke` path requires a URL for a
         reachable Agent Protocol server.
+
+    !!! warning "Beta"
+
+        When tracing is on, launches and updates of subagents on this deployment
+        (no `url`) send the parent's LangSmith trace headers, so a receiver can
+        nest the subagent's run under the parent's trace. This may change.
     """
 
     name: str

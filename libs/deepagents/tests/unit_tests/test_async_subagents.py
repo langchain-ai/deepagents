@@ -369,7 +369,7 @@ async def test_nonfork_tools_do_not_reload_media_after_approval(tmp_path: Path, 
         downloads.assert_not_called()
         return "pong"
 
-    def create_thread() -> dict[str, str]:
+    def create_thread(**_kwargs: Any) -> dict[str, str]:
         downloads.assert_not_called()
         return {"thread_id": "child"}
 
@@ -1355,6 +1355,11 @@ class TestParentReference:
     def test_launch_sends_parent_thread_and_assistant(self, mock_get_client: MagicMock) -> None:
         client = _launch(mock_get_client)
         assert _sent_reference(client) == {"thread_id": "thread_parent", "assistant_id": "assistant_parent"}
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_launch_tags_the_task_thread_with_its_parent(self, mock_get_client: MagicMock) -> None:
+        client = _launch(mock_get_client)
+        assert client.threads.create.call_args.kwargs["metadata"] == {"parent_thread_id": "thread_parent"}
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_update_resends_parent_reference(self, mock_get_client: MagicMock) -> None:

@@ -288,6 +288,12 @@ def _parent_reference(config: RunnableConfig) -> _ParentReference:
     return reference
 
 
+def _thread_metadata(runtime: ToolRuntime) -> dict[str, str]:
+    """Metadata for a task's thread, so apps can find a parent's subagent threads with `threads.search`."""
+    reference = _parent_reference(runtime.config)
+    return {"parent_thread_id": reference["thread_id"]} if "thread_id" in reference else {}
+
+
 def _run_options(runtime: ToolRuntime) -> dict[str, Any]:
     """Keyword arguments for `runs.create` that link a launched run to this agent."""
     options: dict[str, Any] = {"headers": _trace_headers()}
@@ -414,7 +420,7 @@ def _build_start_tool(
         messages = _start_task_messages(spec, runtime, description)
         try:
             client = clients.get_sync(subagent_type)
-            thread = client.threads.create()
+            thread = client.threads.create(metadata=_thread_metadata(runtime))
             run = client.runs.create(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
@@ -456,7 +462,7 @@ def _build_start_tool(
         messages = await _astart_task_messages(spec, runtime, description)
         try:
             client = clients.get_async(subagent_type)
-            thread = await client.threads.create()
+            thread = await client.threads.create(metadata=_thread_metadata(runtime))
             run = await client.runs.create(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],

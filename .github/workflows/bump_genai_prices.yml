@@ -175,9 +175,7 @@ jobs:
           # out-of-sync lockfile. A plain `uv lock` re-resolves only what the
           # manifest change requires: the pin stays at $latest (already the
           # newest the range permits) and only the specifier line moves.
-          uv lock --directory libs/code --python 3.12
-          uv lock --directory libs/evals --python 3.12
-          uv lock --directory libs/talon --python 3.12
+          python .github/scripts/checks/refresh_lockfiles.py libs/code/pyproject.toml > "$RUNNER_TEMP/price-bump-lockfiles"
 
           # Staleness is the pin moving or the floor lagging the pin, not
           # files changing: `uv lock` can touch unrelated lines (a lock
@@ -277,9 +275,8 @@ jobs:
             exit 1
           fi
 
-          lockfile="libs/code/uv.lock"
           manifest="libs/code/pyproject.toml"
-          lockfiles=("$lockfile" "libs/evals/uv.lock" "libs/talon/uv.lock")
+          mapfile -t lockfiles < "$RUNNER_TEMP/price-bump-lockfiles"
           remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
           # Query the REST endpoint directly instead of `gh pr list`, whose
@@ -329,7 +326,7 @@ jobs:
             diff_rc=$?
             set -e
             if [ "$diff_rc" -gt 1 ]; then
-              echo "::error::git diff failed comparing $lockfile and $manifest against $BRANCH (exit=$diff_rc)"
+              echo "::error::git diff failed comparing affected lockfiles and $manifest against $BRANCH (exit=$diff_rc)"
               exit 1
             fi
             if [ "$diff_rc" -eq 0 ]; then

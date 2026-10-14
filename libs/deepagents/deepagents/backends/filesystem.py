@@ -1248,6 +1248,9 @@ class FilesystemBackend(BackendProtocol):
             return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
         try:
+            # Fold once: `needle` is loop-invariant, only the per-line
+            # `haystack` is recomputed inside the walk.
+            needle = pattern.casefold() if ignore_case else pattern
             for fp in root.rglob("*"):
                 if time.monotonic() > deadline:
                     _log_timeout()
@@ -1287,7 +1290,6 @@ class FilesystemBackend(BackendProtocol):
                             if line_num % 2048 == 0 and time.monotonic() > deadline:
                                 _log_timeout()
                                 return results, True, None
-                            needle = pattern.casefold() if ignore_case else pattern
                             haystack = raw_line.casefold() if ignore_case else raw_line
                             if needle not in haystack:
                                 continue

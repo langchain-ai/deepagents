@@ -229,17 +229,20 @@ Receivers that adopt the trace check for it (Managed Deep Agents does), so keep 
 """
 
 
-def _trace_headers() -> dict[str, str]:
+def _trace_headers(spec: AsyncSubAgent) -> dict[str, str]:
     """Build LangSmith headers pointing at the current span, or `{}` when tracing is off.
 
-    The baggage carries the project and the `_NEST_UNDER_PARENT` flag, not the
-    caller's run metadata (such as its `thread_id`), so a receiver can't copy that
-    onto the subagent's runs.
+    Only sent to subagents on this deployment (no `url`), so the parent's trace
+    details don't reach another server. The baggage carries the project and the
+    `_NEST_UNDER_PARENT` flag, not the caller's run metadata (such as its
+    `thread_id`), so a receiver can't copy that onto the subagent's runs. Any
+    `baggage` in the spec's headers is kept, since other tools use it too.
     """
     run_tree = get_current_run_tree()
-    if run_tree is None or not run_tree.trace_id:
+    if spec.get("url") or run_tree is None or not run_tree.trace_id:
         return {}
-    baggage = [f"langsmith-metadata={urllib.parse.quote(json.dumps({_NEST_UNDER_PARENT: True}))}"]
+    baggage = [value for key, value in (spec.get("headers") or {}).items() if key.lower() == "baggage" and value]
+    baggage.append(f"langsmith-metadata={urllib.parse.quote(json.dumps({_NEST_UNDER_PARENT: True}))}")
     if run_tree.session_name:
         baggage.append(f"langsmith-project={urllib.parse.quote(run_tree.session_name)}")
     return {"langsmith-trace": run_tree.dotted_order, "baggage": ",".join(baggage)}
@@ -368,7 +371,7 @@ def _build_start_tool(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": messages},
-                headers=_trace_headers(),
+                headers=_trace_headers(spec),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -410,7 +413,7 @@ def _build_start_tool(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": messages},
-                headers=_trace_headers(),
+                headers=_trace_headers(spec),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -607,7 +610,7 @@ def _build_update_tool(
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
                 multitask_strategy="interrupt",
-                headers=_trace_headers(),
+                headers=_trace_headers(spec),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
@@ -647,7 +650,7 @@ def _build_update_tool(
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
                 multitask_strategy="interrupt",
-                headers=_trace_headers(),
+                headers=_trace_headers(spec),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)

@@ -20,6 +20,7 @@ from enum import StrEnum
 from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING, cast
+from uuid import uuid4
 
 from deepagents_talon import commands as chat_commands
 from deepagents_talon.authorization import (
@@ -1168,11 +1169,9 @@ class TalonHost:
                 the job stopped the run, so the scheduler records it as failed
                 and delivers nothing.
         """
-        conversation_id = f"{job.id}{_CRON_THREAD_SUFFIX}"
-        # Held across the whole run, as the per-job lock it replaces was, so two fires
-        # cannot share one graph thread. A scheduled run's delegations are inline, so it
-        # now holds this for as long as its subagents take.
-        async with self._conversation_lock(conversation_id):
+        conversation_root = f"{job.id}{_CRON_THREAD_SUFFIX}"
+        conversation_id = f"{conversation_root}:{uuid4().hex}"
+        async with self._conversation_lock(conversation_root):
             # A separate task so revoking a paired sender can stop this run alone,
             # without cancelling the scheduler that awaits it.
             run = asyncio.create_task(self._bounded_scheduled_run(job, conversation_id))
@@ -1201,9 +1200,6 @@ class TalonHost:
                     metadata={**_scheduled_metadata(job), **await self._scheduled_history(job)},
                 )
         except TimeoutError:
-            # The graph was cancelled mid-node, so this thread can end on an assistant
-            # message whose tool calls have no results, which fails every later fire.
-            # Nothing outside this run reaches the recovery that repairs it.
             log_event(
                 logger,
                 "cron.run_timeout",

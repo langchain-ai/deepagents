@@ -1015,30 +1015,22 @@ def _cron_job(tmp_path: Path, *, prompt: str = "scan the market", channel: str |
 async def test_scheduled_run_timeout_repairs_the_job_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A run that never returns is bounded, and its thread is left usable.
-
-    The scheduler awaits `run_scheduled_job` directly rather than through `_tasks`, so
-    nothing else reaches the recovery that patches dangling tool calls. Without it the
-    thread ends on an assistant message whose tool calls have no results, and every
-    later fire of the job fails against the provider.
-    """
+    """A timed-out run is repaired without reusing its thread on the next fire."""
     monkeypatch.setattr("deepagents_talon.host._SCHEDULED_RUN_TIMEOUT_SECONDS", 0.05)
     channel = RecordingChannel()
     agent = BlockingAgent()
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
     job = _cron_job(tmp_path, prompt="block")
-    cron_id = f"{job.id}:talon-cron"
     await host.start()
     try:
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(host.run_scheduled_job(job), 2)
 
-        assert agent.recoveries == [cron_id]
+        assert agent.recoveries == [agent.requests[0].conversation_id]
 
-        # The job is still usable: the next fire runs rather than inheriting a wedged
-        # thread, and it is not blocked behind the abandoned run.
         agent.released.set()
         assert await asyncio.wait_for(host.run_scheduled_job(job), 2) == "reply:block"
+        assert agent.requests[0].conversation_id != agent.requests[1].conversation_id
     finally:
         await host.stop()
 
@@ -1062,6 +1054,7 @@ async def test_two_runs_of_one_job_never_overlap(tmp_path: Path) -> None:
         assert await asyncio.wait_for(first, 2) == "reply:block"
         assert await asyncio.wait_for(second, 2) == "reply:block"
         assert len(agent.requests) == 2
+        assert agent.requests[0].conversation_id != agent.requests[1].conversation_id
     finally:
         await host.stop()
 
@@ -1888,7 +1881,7 @@ async def test_scheduled_job_runs_while_interactive_turn_remains_active(tmp_path
     assert [request.text for request in agent.requests] == ["block", "scheduled prompt"]
     assert agent.recoveries == []
     assert agent.requests[0].conversation_id == "test:chat"
-    assert agent.requests[1].conversation_id == f"{job.id}:talon-cron"
+    assert agent.requests[1].conversation_id.startswith(f"{job.id}:talon-cron:")
     assert not host._tasks["test:chat"].done()
     agent.released.set()
     await host.stop()

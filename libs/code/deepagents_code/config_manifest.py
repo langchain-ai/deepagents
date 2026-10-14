@@ -2690,7 +2690,7 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         key="models.openai_prompt_cache_key",
         group="Tools",
         summary=(
-            "Attach a per-thread prompt_cache_key to OpenAI-provider model calls "
+            "Attach a prefix-derived prompt_cache_key to OpenAI-provider model calls "
             "for reliable prompt-cache routing; disable for endpoints that reject "
             "unknown request fields."
         ),

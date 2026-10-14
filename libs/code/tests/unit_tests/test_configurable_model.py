@@ -4,7 +4,7 @@ import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from langchain.agents.middleware.types import (
@@ -13,7 +13,8 @@ from langchain.agents.middleware.types import (
     ModelResponse,
 )
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.tools import tool
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code.configurable_model import (
@@ -778,7 +779,7 @@ class TestAnthropicSettingsStripped:
 
 
 class TestFireworksSessionSettings:
-    """Fireworks model calls receive session settings from the thread ID."""
+    """Fireworks shares prefix cache keys while keeping thread-scoped affinity."""
 
     def _fireworks_model(self) -> MagicMock:
         model = _make_model("accounts/fireworks/models/kimi-k2p7-code")
@@ -897,13 +898,179 @@ class TestFireworksSessionSettings:
         )
 
         assert captured[0].model_settings == {
-            "prompt_cache_key": "thread-123",
+            "prompt_cache_key": ANY,
             "extra_headers": {"x-session-affinity": "thread-123"},
         }
 
+    def test_threads_share_cache_key_but_not_affinity(self) -> None:
+        """Identical prefixes share a cache key without merging session affinity."""
+        captured: list[ModelRequest] = []
+        for thread_id in ("thread-123", "thread-456"):
+            request = _make_request(
+                self._fireworks_model(),
+                context=CLIContext(thread_id=thread_id),
+                system_prompt="Shared system prompt",
+            )
+            _mw.wrap_model_call(
+                request, lambda request: (captured.append(request), _make_response())[1]
+            )
+
+        first, second = (request.model_settings for request in captured)
+        assert first["prompt_cache_key"] == second["prompt_cache_key"]
+        assert first["prompt_cache_key"].startswith("dcode-")
+        assert first["extra_headers"] == {"x-session-affinity": "thread-123"}
+        assert second["extra_headers"] == {"x-session-affinity": "thread-456"}
+
+    @pytest.mark.parametrize("source", ["model_settings", "model_kwargs"])
+    def test_supplied_cache_key_preserved(self, source: str) -> None:
+        """Explicit Fireworks cache keys win while missing affinity is added."""
+        model = self._fireworks_model()
+        settings = {"prompt_cache_key": "custom-cache"}
+        if source == "model_kwargs":
+            model.model_kwargs = settings
+            settings = {}
+        request = _make_request(
+            model, context=CLIContext(thread_id="thread-123"), model_settings=settings
+        )
+        captured: list[ModelRequest] = []
+        _mw.wrap_model_call(
+            request, lambda request: (captured.append(request), _make_response())[1]
+        )
+
+        expected = {**settings, "extra_headers": {"x-session-affinity": "thread-123"}}
+        assert captured[0].model_settings == expected
+        if source == "model_kwargs":
+            assert model.model_kwargs["prompt_cache_key"] == "custom-cache"
+
 
 class TestOpenAIPromptCacheKey:
-    """OpenAI model calls receive a `prompt_cache_key` from the thread ID."""
+    """OpenAI model calls receive a cache key derived from their static prefix."""
+
+    @pytest.mark.parametrize("asynchronous", [False, True])
+    async def test_identical_prefixes_share_key(self, asynchronous: bool) -> None:
+        """Threads and dynamic conversation messages do not partition the cache."""
+        captured: list[ModelRequest] = []
+        for thread_id in ("thread-123", "thread-456"):
+            request = _make_request(
+                _make_model("gpt-5.6"),
+                context=CLIContext(thread_id=thread_id),
+                system_prompt="Shared system prompt",
+            ).override(
+                messages=[HumanMessage(content=thread_id)],
+                tools=[{"name": "lookup", "parameters": {"type": "object"}}],
+            )
+            if asynchronous:
+                handler = AsyncMock(
+                    side_effect=lambda request: (
+                        captured.append(request),
+                        _make_response(),
+                    )[1]
+                )
+                await _mw.awrap_model_call(request, handler)
+            else:
+                _mw.wrap_model_call(
+                    request,
+                    lambda request: (captured.append(request), _make_response())[1],
+                )
+
+        first, second = (
+            request.model_settings["prompt_cache_key"] for request in captured
+        )
+        assert first == second
+        assert first.startswith("dcode-")
+        assert len(first) <= 64
+
+    @pytest.mark.parametrize("changed", ["model", "system", "tools", "schema"])
+    def test_changed_prefix_changes_key(self, changed: str) -> None:
+        """Changes to models, system content, tool names, or schemas change the key."""
+        captured: list[ModelRequest] = []
+        for modified in (False, True):
+            model_name = "other-model" if modified and changed == "model" else "gpt-5.6"
+            system = (
+                "Different prompt"
+                if modified and changed == "system"
+                else "Shared prompt"
+            )
+            tool_name = "other_tool" if modified and changed == "tools" else "lookup"
+            value_type = "integer" if modified and changed == "schema" else "string"
+            request = _make_request(
+                _make_model(model_name),
+                context=CLIContext(thread_id="thread-123"),
+            ).override(
+                system_message=SystemMessage(
+                    content=[{"type": "text", "text": system}]
+                ),
+                tools=[
+                    {
+                        "name": tool_name,
+                        "description": "Look up a value",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"value": {"type": value_type}},
+                        },
+                    }
+                ],
+            )
+            _mw.wrap_model_call(
+                request, lambda request: (captured.append(request), _make_response())[1]
+            )
+
+        assert (
+            captured[0].model_settings["prompt_cache_key"]
+            != captured[1].model_settings["prompt_cache_key"]
+        )
+
+    def test_tool_order_and_schema_mapping_order_do_not_change_key(self) -> None:
+        """Tool objects and dictionaries are canonicalized independently of ordering."""
+
+        @tool
+        def lookup(value: str) -> str:
+            """Look up a value."""
+            return value
+
+        schema = {"name": "other", "parameters": {"type": "object", "properties": {}}}
+        reversed_schema = dict(reversed(list(schema.items())))
+        captured: list[ModelRequest] = []
+        for tools in ([lookup, schema], [reversed_schema, lookup]):
+            request = _make_request(
+                _make_model("gpt-5.6"), context=CLIContext(thread_id="thread-123")
+            ).override(tools=tools)
+            _mw.wrap_model_call(
+                request, lambda request: (captured.append(request), _make_response())[1]
+            )
+
+        assert (
+            captured[0].model_settings["prompt_cache_key"]
+            == captured[1].model_settings["prompt_cache_key"]
+        )
+
+    @pytest.mark.parametrize(
+        "source", ["model_settings", "model_kwargs", "model_params"]
+    )
+    def test_supplied_cache_key_preserved(self, source: str) -> None:
+        """A supplied cache key takes precedence over automatic prefix routing."""
+        model = _make_model("gpt-5.6")
+        supplied = {"prompt_cache_key": "custom-cache"}
+        if source == "model_kwargs":
+            model.model_kwargs = supplied
+        request = _make_request(
+            model,
+            context=CLIContext(
+                thread_id="thread-123",
+                model_params=supplied if source == "model_params" else {},
+            ),
+            model_settings=supplied if source == "model_settings" else {},
+        )
+        captured: list[ModelRequest] = []
+        _mw.wrap_model_call(
+            request, lambda request: (captured.append(request), _make_response())[1]
+        )
+
+        assert captured[0].model_settings == (
+            {} if source == "model_kwargs" else supplied
+        )
+        if source == "model_kwargs":
+            assert model.model_kwargs["prompt_cache_key"] == "custom-cache"
 
     def test_non_mapping_model_kwargs_still_injects(self) -> None:
         """A non-mapping `model_kwargs` is treated as no key present."""
@@ -919,7 +1086,7 @@ class TestOpenAIPromptCacheKey:
             request, lambda r: (captured.append(r), _make_response())[1]
         )
 
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+        assert captured[0].model_settings == {"prompt_cache_key": ANY}
 
     @pytest.mark.parametrize(
         "base_url",
@@ -950,7 +1117,7 @@ class TestOpenAIPromptCacheKey:
             request, lambda r: (captured.append(r), _make_response())[1]
         )
 
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+        assert captured[0].model_settings == {"prompt_cache_key": ANY}
 
     def test_default_config_injects_end_to_end(
         self, monkeypatch: pytest.MonkeyPatch
@@ -976,7 +1143,7 @@ class TestOpenAIPromptCacheKey:
             request, lambda r: (captured.append(r), _make_response())[1]
         )
 
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+        assert captured[0].model_settings == {"prompt_cache_key": ANY}
 
     def test_opt_out_skips_prompt_cache_key(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1084,7 +1251,7 @@ class TestOpenAIPromptCacheKey:
             request, lambda r: (captured.append(r), _make_response())[1]
         )
 
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+        assert captured[0].model_settings == {"prompt_cache_key": ANY}
 
     def test_blocking_error_propagates_not_fail_open(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1135,7 +1302,7 @@ class TestOpenAIPromptCacheKey:
             )
 
         assert captured[0].model is override
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
+        assert captured[0].model_settings == {"prompt_cache_key": ANY}
 
     def test_caller_model_settings_not_mutated(self) -> None:
         """Injection copies the caller's dict instead of mutating in place."""
@@ -1273,6 +1440,35 @@ class TestModelIdentityPatch:
         "Your context window is 200,000 tokens.\n\n"
         "### Skills Directory\n\nYour skills are stored at: `/tmp/skills`\n"
     )
+
+    def test_cache_key_uses_swapped_model_and_patched_system(self) -> None:
+        """A runtime swap shares the key of a direct request with the final prefix."""
+        request = _make_request(
+            _make_model("claude-opus-4-6"),
+            context=CLIContext(model="openai:gpt-5.6", thread_id="thread-123"),
+            system_prompt=self._OLD_PROMPT,
+        )
+        replacement = _make_model("gpt-5.6")
+        captured: list[ModelRequest] = []
+        with patch(_PATCH_CREATE, return_value=_make_model_result(replacement)):
+            _mw.wrap_model_call(
+                request, lambda request: (captured.append(request), _make_response())[1]
+            )
+        swapped = captured[0]
+        assert swapped.system_prompt != request.system_prompt
+        direct = _make_request(
+            replacement,
+            context=CLIContext(thread_id="thread-456"),
+            system_prompt=swapped.system_prompt,
+        )
+        _mw.wrap_model_call(
+            direct, lambda request: (captured.append(request), _make_response())[1]
+        )
+
+        assert (
+            swapped.model_settings["prompt_cache_key"]
+            == captured[1].model_settings["prompt_cache_key"]
+        )
 
 
 class TestRuntimeModelRetryBudget:

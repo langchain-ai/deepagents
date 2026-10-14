@@ -8,6 +8,8 @@ the graph.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -27,6 +29,7 @@ from langchain.agents.middleware.types import (
     omit_payload,
 )
 from langchain_core.messages import AIMessage
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
@@ -218,19 +221,9 @@ def _has_header(headers: Mapping[object, object], target: str) -> bool:
 
 
 def _with_fireworks_session_settings(
-    model_settings: dict[str, Any], thread_id: str
+    request: ModelRequest, model_settings: dict[str, Any], thread_id: str
 ) -> dict[str, Any] | None:
-    """Return model settings with Fireworks session settings added if needed.
-
-    Existing settings are preserved and never overwritten. Missing
-    `x-session-affinity` headers are populated directly so Fireworks can route
-    the conversation to the prompt-cache session for the active thread.
-
-    Returns:
-        A new `model_settings` dict with the missing session settings added, or
-            `None` when nothing needed adding or `extra_headers` is present but
-            not a mapping (leaving the request untouched).
-    """
+    """Return settings with prefix-based caching and thread affinity, or `None`."""
     raw_headers = model_settings.get("extra_headers")
     if raw_headers is None:
         headers: dict[object, object] = {}
@@ -245,8 +238,10 @@ def _with_fireworks_session_settings(
 
     updated: dict[str, Any] = {}
     has_session_affinity = _has_header(headers, _FIREWORKS_SESSION_AFFINITY_HEADER)
-    if "prompt_cache_key" not in model_settings and not has_session_affinity:
-        updated["prompt_cache_key"] = thread_id
+    if not has_session_affinity:
+        cache_settings = _with_openai_prompt_cache_key(request, model_settings)
+        if cache_settings is not None:
+            updated["prompt_cache_key"] = cache_settings["prompt_cache_key"]
 
     if not has_session_affinity:
         headers[_FIREWORKS_SESSION_AFFINITY_HEADER] = thread_id
@@ -257,26 +252,26 @@ def _with_fireworks_session_settings(
     return {**model_settings, **updated}
 
 
+def _prompt_cache_key(request: ModelRequest) -> str:
+    """Return a cache-routing digest of the model, system content, and tool schemas."""
+    tools = sorted(
+        json.dumps(convert_to_openai_tool(tool), sort_keys=True, separators=(",", ":"))
+        for tool in request.tools
+    )
+    prefix = {
+        "model": get_model_identifier(request.model),
+        "system": request.system_message.content if request.system_message else None,
+        "tools": tools,
+    }
+    serialized = json.dumps(prefix, sort_keys=True, separators=(",", ":"))
+    return f"dcode-{hashlib.sha256(serialized.encode('utf-8')).hexdigest()[:16]}"
+
+
 def _with_openai_prompt_cache_key(
-    model: object, model_settings: dict[str, Any], thread_id: str
+    request: ModelRequest, model_settings: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """Return model settings with an OpenAI `prompt_cache_key` added if needed.
-
-    Adds `thread_id` as a top-level `prompt_cache_key` when the model and the
-    current invocation settings do not already carry one. Callers decide
-    eligibility (provider check + `models.openai_prompt_cache_key` opt-out)
-    before invoking this helper.
-
-    A user-supplied `prompt_cache_key` is always preserved, whether it was
-    configured on the model (`model_kwargs`) or supplied for this invocation
-    (`model_settings`).
-
-    Returns:
-        A new `model_settings` dict with `prompt_cache_key` added, or `None` when
-            a key is already present on the model or in the settings (nothing to
-            add).
-    """
-    model_kwargs = getattr(model, "model_kwargs", None)
+    """Return settings with a prefix-derived key, or `None` when one is supplied."""
+    model_kwargs = getattr(request.model, "model_kwargs", None)
     if model_kwargs is not None and not isinstance(model_kwargs, Mapping):
         # A non-mapping `model_kwargs` cannot carry a user-supplied key, so it is
         # treated as "no key present" and injection proceeds. Trace the anomaly
@@ -290,7 +285,7 @@ def _with_openai_prompt_cache_key(
         isinstance(model_kwargs, Mapping) and "prompt_cache_key" in model_kwargs
     ):
         return None
-    return {**model_settings, "prompt_cache_key": thread_id}
+    return {**model_settings, "prompt_cache_key": _prompt_cache_key(request)}
 
 
 def _resolve_openai_prompt_cache_key_enabled() -> bool:
@@ -383,27 +378,7 @@ def _build_overrides(
     *,
     openai_prompt_cache_key: bool,
 ) -> ModelRequest:
-    """Build the overridden request from a (possibly resolved) model result.
-
-    Holds the post-construction logic shared by the sync and async override
-    paths: applying the model swap, merging `model_params`, stripping
-    Anthropic-only settings on a cross-provider swap, and patching the
-    `### Model Identity` system-prompt section. The only thing that differs
-    between the two callers is how `model_result` is produced (a direct
-    `create_model` call vs. an `asyncio.to_thread` offload).
-
-    Args:
-        request: The incoming model request from the middleware chain.
-        ctx: Runtime CLI context carrying the requested overrides.
-        model_result: The resolved model result from `create_model`, or `None`
-            when no model swap was requested.
-        openai_prompt_cache_key: Whether OpenAI `prompt_cache_key` injection is
-            enabled (the resolved `models.openai_prompt_cache_key` opt-out).
-
-    Returns:
-        The original request when no overrides apply, otherwise a new request
-            with overrides applied via `request.override()`.
-    """
+    """Return a request with runtime overrides and a prefix-derived cache key."""
     overrides: dict[str, Any] = {}
 
     new_model = model_result.model if model_result is not None else None
@@ -414,46 +389,6 @@ def _build_overrides(
     model_params = ctx.model_params
     if model_params:
         overrides["model_settings"] = {**request.model_settings, **model_params}
-
-    # Inject the provider's prompt-cache routing hint from the active thread.
-    # Only one provider path applies per call; both share the fetch/guard/log
-    # tail below. `overrides.get` is side-effect-free, so resolving `settings`
-    # before the provider check is equivalent to doing it inside each branch.
-    effective_model = new_model if new_model is not None else request.model
-    if ctx.thread_id:
-        settings = overrides.get("model_settings", request.model_settings)
-        if _is_fireworks_model(effective_model):
-            # Fireworks has no opt-out gate. The classifier is provider-only
-            # (like the OpenAI one), so this does not *verify* a fixed endpoint;
-            # it rests on the assumption that `ChatFireworks` in practice targets
-            # Fireworks' hosted API, where unknown-field rejection is not the
-            # concern it is for the broadened, proxy-reachable OpenAI path below.
-            updated_settings = _with_fireworks_session_settings(settings, ctx.thread_id)
-            injected = "Fireworks session settings"
-        elif _is_openai_model(effective_model):
-            if openai_prompt_cache_key:
-                updated_settings = _with_openai_prompt_cache_key(
-                    effective_model, settings, ctx.thread_id
-                )
-                injected = "OpenAI prompt_cache_key"
-            else:
-                # Opt-out fired: leave the request untouched but log it so a user
-                # verifying `models.openai_prompt_cache_key=false` sees a positive
-                # signal rather than having to infer it from an absent log line.
-                updated_settings = None
-                injected = ""
-                logger.debug("Skipped OpenAI prompt_cache_key (opt-out)")
-        else:
-            updated_settings = None
-            injected = ""
-        if updated_settings is not None:
-            overrides["model_settings"] = updated_settings
-            # The thread ID is a sensitive session identifier, so it is kept out
-            # of the log line; the line firing at all confirms injection ran.
-            logger.debug("Injected %s", injected)
-
-    if not overrides:
-        return request
 
     # When switching away from Anthropic, strip provider-specific settings
     # that would cause errors on other providers (e.g. cache_control passed
@@ -500,7 +435,31 @@ def _build_overrides(
                 model_result.model_name,
             )
 
-    return request.override(**overrides)
+    updated_request = request.override(**overrides) if overrides else request
+    if ctx.thread_id:
+        settings = updated_request.model_settings
+        if _is_fireworks_model(updated_request.model):
+            updated_settings = _with_fireworks_session_settings(
+                updated_request, settings, ctx.thread_id
+            )
+            injected = "Fireworks session settings"
+        elif _is_openai_model(updated_request.model):
+            if openai_prompt_cache_key:
+                updated_settings = _with_openai_prompt_cache_key(
+                    updated_request, settings
+                )
+                injected = "OpenAI prompt_cache_key"
+            else:
+                updated_settings = None
+                injected = ""
+                logger.debug("Skipped OpenAI prompt_cache_key (opt-out)")
+        else:
+            updated_settings = None
+            injected = ""
+        if updated_settings is not None:
+            updated_request = updated_request.override(model_settings=updated_settings)
+            logger.debug("Injected %s", injected)
+    return updated_request
 
 
 def _model_creation_kwargs(
@@ -910,7 +869,7 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             persist_model_state: Whether completed calls should write private
                 resume metadata. Subagent instances disable this because they do
                 not own the parent thread's resume state.
-            openai_prompt_cache_key: Whether to inject a per-thread OpenAI
+            openai_prompt_cache_key: Whether to inject a prefix-derived OpenAI
                 `prompt_cache_key`. Left as `None` (the default) it is resolved
                 once here from `models.openai_prompt_cache_key` and cached, so no
                 per-call read happens. The one-time `config.toml` read assumes

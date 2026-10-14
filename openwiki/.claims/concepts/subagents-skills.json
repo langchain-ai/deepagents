@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:56f4e955680e9a392e1d917b82dc0910e29f6d81213086d0b67f238e847fceeb",
+  "pageVersion": "sha256:71f479fc1f7baa2a6d94ebaf8beb99b1400df901b3bce864209dd3b6535c6a46",
   "claims": [
     {
       "id": "claim_3f6e4d8c4f6f470a94669778d16a96b1",
@@ -8,7 +8,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:d4c3f3cf3af6e88c13893404d5f605a8b61316d7ac4ed507e63f975a6bb12199"
+          "version": "repo-file-v1:sha256:b0a5e4bd56c07a35db2f4ee62666f28db99d1d78e60f3c5f8c52553c642ce2fc"
         }
       ]
     },
@@ -18,7 +18,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:d4c3f3cf3af6e88c13893404d5f605a8b61316d7ac4ed507e63f975a6bb12199"
+          "version": "repo-file-v1:sha256:b0a5e4bd56c07a35db2f4ee62666f28db99d1d78e60f3c5f8c52553c642ce2fc"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
@@ -32,7 +32,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:d4c3f3cf3af6e88c13893404d5f605a8b61316d7ac4ed507e63f975a6bb12199"
+          "version": "repo-file-v1:sha256:b0a5e4bd56c07a35db2f4ee62666f28db99d1d78e60f3c5f8c52553c642ce2fc"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
@@ -76,15 +76,15 @@
     },
     {
       "id": "claim_56fc24f37964489e8c7ae557a4f27efa",
-      "statement": "Top-level skills are applied to the main graph and its auto-generated general-purpose worker; named isolated declarative subagents receive skills only from their own `skills` spec, while forked subagents replay the parent's skill behavior and cannot specify separate sources.",
+      "statement": "Top-level skills are applied to the main graph and its auto-generated general-purpose worker, while named isolated declarative subagents receive skills only from their own `skills` spec or an exact-name `SkillsMiddleware`; a fork's `skills` field is forbidden, but its own exact-name middleware can replace the inherited skills slot.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py",
-          "version": "repo-file-v1:sha256:d4c3f3cf3af6e88c13893404d5f605a8b61316d7ac4ed507e63f975a6bb12199"
+          "version": "repo-file-v1:sha256:b0a5e4bd56c07a35db2f4ee62666f28db99d1d78e60f3c5f8c52553c642ce2fc"
         },
         {
-          "resource": "repo://libs/deepagents/deepagents/middleware/subagents.py",
-          "version": "repo-file-v1:sha256:0eb0b232e0707f1f679cd20d8cd9357b6e91bfef4dd89b09789f13b2d62e9156"
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py",
+          "version": "repo-file-v1:sha256:f360fd9dcae597dc05022579a9fb5a29e90f7fdc11f26c489eb3fa54a8ad289a"
         }
       ]
     },
@@ -124,7 +124,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
-          "version": "repo-file-v1:sha256:d49d6bfba4568e4a45b693f2c1905ef45140e6df7f860b9d3ee98b341ad0445e"
+          "version": "repo-file-v1:sha256:2d99b6159b5181f59ae6f97e5d65f5d8776851658aad70417334fdc1fcec08b9"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
@@ -148,7 +148,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
-          "version": "repo-file-v1:sha256:d49d6bfba4568e4a45b693f2c1905ef45140e6df7f860b9d3ee98b341ad0445e"
+          "version": "repo-file-v1:sha256:2d99b6159b5181f59ae6f97e5d65f5d8776851658aad70417334fdc1fcec08b9"
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/skills.py",
@@ -162,7 +162,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py",
-          "version": "repo-file-v1:sha256:d49d6bfba4568e4a45b693f2c1905ef45140e6df7f860b9d3ee98b341ad0445e"
+          "version": "repo-file-v1:sha256:2d99b6159b5181f59ae6f97e5d65f5d8776851658aad70417334fdc1fcec08b9"
         }
       ]
     },
@@ -251,10 +251,92 @@
           "version": "repo-file-v1:sha256:d3f1a591331366de951799f4d22c119d9f36c6e51e87c2238465d61dcaced871"
         }
       ]
+    },
+    {
+      "id": "claim_2d319b7cf331475fbf9468039e3d7c9a",
+      "statement": "`create_deep_agent` reserves a `SkillsMiddleware` slot immediately before prompt-caching middleware. Profile and novel user middleware run before that slot, while middleware named `SkillsMiddleware` replaces the slot in place; the generated general-purpose worker inherits only main middleware that overrides one of its default-stack names.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py",
+          "version": "repo-file-v1:sha256:b0a5e4bd56c07a35db2f4ee62666f28db99d1d78e60f3c5f8c52553c642ce2fc"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_graph.py",
+          "version": "repo-file-v1:sha256:f360fd9dcae597dc05022579a9fb5a29e90f7fdc11f26c489eb3fa54a8ad289a"
+        }
+      ]
+    },
+    {
+      "id": "claim_3fd811cc92f14c7f9a7bcbcb209644e2",
+      "statement": "Talon forwards metadata-selected `pinned_skills` only for requests whose trigger is `cron`; the SDK middleware then performs its normal next-model-call pinning, while a non-cron turn ignores the same metadata.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L1616-L1623",
+          "version": "repo-lines-v1:sha256:dea191f025a51f63330b2722bfa408ee76738c9a0ce75a8e9a76443ab243a8b0:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNDhkYzYxOTU5OTkzNjViYTIzZWUxN2E2NTdhYzEwZmNlYmU2YTAxZGJmMjU5ZDc3Zjk0N2ZiNGUxMTg1MzhlMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODhjY2FmZTdlZmRhN2QxMGYwOTJiZDQyMTY1NTdkMDg0OWE2M2ZlOTg5MDgwNTYwNDZmYzI4ZDE5YmU5YmRiMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOGNjNGE3ZDFjYzc5NmFiYTNlNDY3MjMzMjdmNTE3ZTlmODExOTgyZDI1MGYwNzAyOTg2ZTRiNTc2NGFkOTU4OSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2JlMjZiOTU5ZGRkMDYwYzFkZWQyY2UyMTlhMDY3MGZiNTNhZjMxZjQzNDA4NjM0YWRjNDY5MTVmOTBmNDkzYiJ9"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L962-L1033",
+          "version": "repo-lines-v1:sha256:0a2d255163ecb9eef2e38d702529406800fabe4cf8e5e6056c4d2bda8e5be850:eyJzZWxlY3RlZExpbmVDb3VudCI6NzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQxOGI1NjFjNjcwMjg1MjU5YjQzYzNiMTVlZDc2MzQxN2NiMjhhYjU0YmVlZWRiYzQyZTI0YTEyMGVhMDFmYzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyOWM1MjQ0MzRjMDA5YWFmMGQ3ZmU5ZTJmZmU3MjJiMTcwY2Y4ZWIxYzhjMTU3NWU0ZTNiZDUxZTkyNmM3MWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM5NWMyOTE1YWUwM2I1MDk1ZTM5YWE5ZTRlNzBhOGZlNmM4OGU2ODBlNTBmYzZjZThiMTg2MTgzOTMwZWQ1ODUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFlZTRmOWYxNDBiYmRlNGRkYmNmMTI1NWFlZDAwYmFkZGQzNzM1NDEzNjk2NjA0NTIwOTk5YzAxMmZiODMzN2EifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_cron_pinned_skills.py#L33-L56",
+          "version": "repo-lines-v1:sha256:4de6ef3aacaeaa1d06d8ae91bacc78d5afbaf90b18d7ecde4a48920c01c68dcb:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJiMzc1YzNlZTRhNjM1ZmQwY2I3NDc5NjY1NTI2MzczZjU2NGFkZTdjYjIzMDdjNTk5NzNhMmY3OGEyZjc4YWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlMWJhZDI4NjRhYTU3YmQ0NzgwNzJkMDU0ZGY1MGVkNGY0ZjExOWFjODZlMzBjMzFkMzIyZGVhZjVkMDU2ZjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk5NDk3NTBhNzhkODc4YTFkMjI5NWQ3MGFlNDQ3OWUzOTc2MmVkMTE5NGZmYzg0Zjg3NWFjNTRjYjE3ZGVlOWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_42b8e2ae9ff04aa991815324097b227e",
+      "statement": "Talon fingerprints host-readable skill files per conversation and sets `skills_metadata` to `None` when the fingerprint changes, causing the skills index to reload; sandbox mode limits host fingerprinting to the assistant's skills directory.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L1023-L1053",
+          "version": "repo-lines-v1:sha256:3855b084f5d350e05a85e3ed623e3ec0544fbd3a3d59c24ba7aa472be165ec7b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxMGE2MmFmYTUyYmJjOTFmNDg0ZjU3MmEzZGE2ZjVmNDAwYjFkYTQxOWUyNGE5NTUwZDk5OGQ0ZjUwNjdmMTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyMTI1YjM5YmJjYjBlMWUxZmViNDE3MTI5YzhjNmIyMmM4MmZkYjlkOTJkN2I1NjkyOGI4ZWIwM2NmZmNmZWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk3ZTFlMWNmMDlmZGMxOWRmZDBmYTlkMWQyNTE2Y2ExNTY3MDM4YWQ0MmE3ZjhkMTZlMWU0NGMyM2MyMWIwOTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkYTAxYTZlYTk2YzM1OGU3MGFjMTI2ZjEyMGQwMTQ0NTlmOTVkOTM2NzlhMDZhNjFiMmJmZThmMmJjMDViMzMifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/runtime.py#L407-L409",
+          "version": "repo-lines-v1:sha256:fe909d3217cd20d7e9b57f45969c042bbdbb350eae77575ac822d86029c4d399:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNjc2ZmJjYjg4MDZkNmRjODc5MWIwNzg3MGQ1OGNhZWRkNTExZDgxYjg2NzczZjUwZjlmMWJmYjdmZGQxZDdhYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZmQ0ZmFkMGU2Y2IyZmVkMWVkNDYxODQxYWE4MzhlNWY4OTBlNWEzYjA3NTdlNjFhNjZhYzk1M2ZjZjUyNzZjOSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmQ3OTVjNTE3N2FkMTE5M2RjNTQ2NGRlM2Q1M2I3MDM4YjkxYjVkNmQ1YjIwNTIwMTAzZjM4ZGQ1ZGZlNGU1YyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODIwNzM2NDc1MDhkZjkyMDUwNzM0YjQ0YzcyODM0NzVjNjY5OGRhNDBmNDMzMTkxMWRhNmM2MzZjZjFlZTgwMSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_9f1e4df2970b46418de8beb99022d014",
+      "statement": "For inline-capable providers, skill-tool definitions are inserted after the full triggering tool-result batch and preserve a byte-stable request prefix on subsequent calls while their anchors remain in history.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_skill_tools.py#L309-L345",
+          "version": "repo-lines-v1:sha256:0316694826b4d9cd81c169265a4e92b32187bcca79443f78a263353943926c56:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ2OWE4NzE2M2EwOWU3Y2RlZWFiZjRjYmY2ZDg3M2Y1NDI1YjkzNTE4YTZkMjUzZmQ1N2Y0YmI0ZjkxYjM4YzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhMTFjMDU2N2QwYTVmOWU5YjEzNWY2NWNkMjUzNzJkZmQ2Mjg3NzVmN2MxZWQyNTNmOGJhZDQyZGQyZDY2NjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM3ZDkxZWQ1NWRmODQ2YWYzODFjZGMzMGU1M2RiODdjMjMyNzRkNGIzNjc3OWRlMGRlY2UyOWNkOTFlNzU5NjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBkYjQxN2NlZWU4M2Y0NDY3NTFiZTRlYWFkNWQ2NDAwMjQ1MzBhYjgxYjdkMzM0MDZmZGUxYjhjYjY5ZjAzODUifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py#L111-L143",
+          "version": "repo-lines-v1:sha256:b0684330c9c1772f1d5207b81c0a064430ebca228a2138b755dc88be5c7f3e41:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZhZWUyMjM2MDBmNzZhN2U3YzAzMTQ0Y2QyNGQwNWM5YmVmOGQxZGJjNDgzMWM2MjJhMTg2ZDVmMmM2ZGY2NDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJlZWJkODRkNzlkNWI0OTYzODk2YjE0ZDkxYjczMWIyMjI1MDMwMTkwZThmZTNmMWQ0NWI5NDcwNTMzOWE3MDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OGIwNjNkOWI0N2U2NTM3OTYyNTU3MmNjZTE5NzY2OWQ1NzY3ZTEyYzE4YmUwNzU2NTJiOGNkOTgxY2U4ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ5N2NmYzRlMmM0ZTdhMzYxOGVmYzY4YTg3NjM2ZWMwMmEyMTdlMTZjZjBhZmExMDk4ZjczNDg4MjMzNjE3MDAifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py#L164-L225",
+          "version": "repo-lines-v1:sha256:72c864f5b6fe3e2e98a0ed11e9ce6f2bfb0bb07a8b6cd47d3c5d44aca5ac6cb8:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2ODQyNTdjZWJjMDI0YzI0ZjgzZGVhMWFkMTdlOWE4YmMzNWJmZDM0Nzg1Yzc0YWQ4MjA4NTVkY2Q5NWRjZTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjOWQ2ZTQ0YzFmYTg3NmMyZTNhNjI3OGMzYjgxMTI0YTRkODQ5OWViZTMzNGEzZWFjOTc0OGU0NTVhNmVlNmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5ZjkzMDgzYzE5NzEyMWI5ODI3MDBiYThhZmFiZDE3MjJjZjFkM2U3NDA0NTA5ZTgwZWZhMjcyNDdmNjJmMDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljMDcxOTIyOGNlNGI4Y2U1ZjcxMTg3YmMxZjYyNDI0MmU2YjczZDRhZWI1ZDBmN2QyOGFlYjliMGRiNTBjMTYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0bf3e88400cf4dc9929d250a204e0653",
+      "statement": "A `SkillToolResolver` is invoked for each relevant model request and again at tool execution; it may return multiple tools for an include name, and an async resolver requires an async invocation path.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py#L1337-L1364",
+          "version": "repo-lines-v1:sha256:44f0f2c47ca6a48691b010e5e976f0af8de47b6512a132157bcef855a658da5b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY1YjVlYzcxYzc1NTFhNDY3ZWFiZGY2MDU0ZTQ1ODIyMGNlMDcxMzQwNDEyMjAwYjI4NzNmYjAxNWRhMDQyMDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJkZjFlZThiODNiNmU3ZDg5YzJjYjk5NTMzOTc0NjViNDg4Zjc2ZjNhZWI1ZjE4NzVjMzllMWM5MzkxZTVjNWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMzNjBjMjY1NDc2YTQ0OWVhYjM2NDJmY2JmMmMyNTdlZjU3N2MxNGUyY2Y2ZTVjM2IwYmJlYzAxMWJkODIyNzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg4M2FmZDhiMDI3OTE3ODFlYWU2ODg0OGQ0ZmJkMDUxZTJhZjVkNDAwNTYwMDk3OTFkNzJkZjk0ZjQzZDdkMzcifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py#L1366-L1413",
+          "version": "repo-lines-v1:sha256:7929dda7a0f7cc2be5ac8b9fc56a3dab061897dc4d7fb26540d3713b66c13b13:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY4MTdlZDc1NDZlZjhjNzJkMGI0Y2MyNDA0NGYyOWNhNjlkNGVlOGMzMzdhN2Y2YzA5ZTliZjAxMTM4M2FjMzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTJkNDA3MGEzYzI3NTQxNTVkOTc5OWY2NmIxMDUwNzhjOWEzYjllZjAxMDJlNzI4MDE5NGUzMWYzZTc4NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmZjc3YTYyZmYxZDg0YWY2ZTY0YWQ3MTI1MjlkM2NhMTdmOWRjMzNjYWZkYWNkYWIxYWY0MzdlNGViMTUxNTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRlN2EwODU1ZDgwZjY1NWQ3NDcwY2ZmOGIyYjQ2YTY2Y2UxMmU4MmIwODY4OTU0Y2E2MjIxODIyMzY4YzRkMDcifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/skills.py#L176-L203",
+          "version": "repo-lines-v1:sha256:396333c02141884b1b68a46fdfb116484590261fa48e938ee9ff9317b6a23946:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRiMTRmZWY4ZDZmNDMyMjcwZWE3MDU2ZTRiZmQxOTIzOGI0YzgzMjZiMGI0OWFkMjZhOTkwNTc4YjcxYmVjOTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2NjY1ODNhOGE1NzQ0ZjhkYWRlNDVjM2VlMWM3MmRlNDlhOGIzYTUwMmRiYTBiOWZkNDllOTU0MzRhNjQ2ZjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVjMGU3ZGQxMTc2ZGQ1N2I0NzkyOGM0NTgxZDUzNTc5ZGFhOTgyNzU4OWE5OThkOTJhNWRhMWI3ZDllMGRmZGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNjMzcyNjYzMzQ2YzdjOTkwNGZlYmVkZjBiYjZmMjVhMmU5M2Y4Y2FkZTA2Y2JmMmExZTNmOTEwMTZhNmUxNzUifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-12T08:20:17.385Z"
+    "at": "2026-10-14T08:05:41.101Z"
   }
 }

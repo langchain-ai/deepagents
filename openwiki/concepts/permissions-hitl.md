@@ -26,8 +26,6 @@ sources:
     resource: repo://libs/talon/deepagents_talon/background.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-cebe4ea270e21dce4de9b074
-    resource: repo://libs/talon/deepagents_talon/interfaces.py
   - id: openwiki-source-82cac27adeecff8a900a40fa
     resource: repo://libs/talon/deepagents_talon/mcp.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
@@ -48,10 +46,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
   - id: openwiki-source-d4964daa078854bf4438d764
     resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-09T08:07:51.383Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-09T08:07:51.383Z
+    at: 2026-10-14T08:05:41.101Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
 ---
 
 # Permissions and Human-in-the-Loop
@@ -76,7 +74,9 @@ Deep Agents follows a **trust-the-LLM** model: containment belongs in installed 
 
 A `FilesystemPermission` has read and/or write operations, absolute glob paths, and `allow`, `deny`, or `interrupt` mode. Paths must start with `/`; `..` is rejected and `~` is unsupported. Rules use declaration-order, first-match semantics, with `allow` when no rule matches.
 
-`FilesystemMiddleware` enforces `deny` for its built-in filesystem tools before backend execution. Listing, globbing, and grep results remove denied entries rather than exposing them. Recursive or potentially recursive `delete` is deliberately more conservative: a deny pattern that could overlap the removed subtree blocks deletion even where a preceding broad allow would otherwise win. Permissions are tool middleware, **not** a backend-wide access-control layer: direct backend calls do not acquire these rules.
+`FilesystemMiddleware` enforces `deny` for its built-in filesystem tools before backend execution. With `FilesystemBackend`, including one behind a `CompositeBackend` route, it evaluates both the requested path and its symlink-resolved target; a denial on either blocks the call, and an unresolvable target produces an error rather than an access decision. Listing, globbing, and grep results remove entries denied by either form rather than exposing them. Permissions are tool middleware, **not** a backend-wide access-control layer: direct backend calls do not acquire these rules.
+
+`delete` distinguishes a confirmed leaf from a directory or a target that may have descendants. A leaf uses ordinary first-match resolution. For a recursive or potentially recursive deletion, however, every deny-write pattern is considered: a pattern that could overlap the removed subtree blocks the operation even where a preceding broad allow would otherwise win. This preserves all-or-nothing deletion while still allowing a nonmatching sibling file glob.
 
 There is an intentional execution boundary: a nonempty permission set is rejected when the backend supports command execution, because tool-level policy for `execute` is not implemented. The narrow exception is a `CompositeBackend` whose permission patterns are all scoped to configured route prefixes; that permits policy on those routed filesystem operations without representing it as a policy for the execution-capable default. Do not combine filesystem permissions with a shell-capable backend and assume that `execute` is constrained.
 
@@ -84,21 +84,27 @@ There is an intentional execution boundary: a nonempty permission set is rejecte
 
 An `interrupt` rule does not deny access. During `create_deep_agent` assembly, filesystem interrupt rules are transformed into `HumanInTheLoopMiddleware` `interrupt_on` entries with per-call `when` predicates. A caller's explicit `interrupt_on` entry wins for the same tool name, so it can deliberately replace the generated filesystem routing; deny enforcement remains in `FilesystemMiddleware` either way.
 
-Exact tools (`read_file`, `write_file`, and `edit_file`) use ordinary first-match permission resolution. Bulk tools (`ls`, `glob`, `grep`, and `delete`) interrupt when their search or deletion scope may intersect an interrupt-pattern anchor. Missing bulk paths, current-directory aliases, absolute `glob` patterns, and relative glob patterns with `..` receive conservative treatment to avoid routing around review. Generated filesystem interrupts allow `approve`, `edit`, `reject`, and `respond`; approved and edited calls still re-enter the tool, where deny rules are checked.
+Exact tools (`read_file`, `write_file`, and `edit_file`) resolve the requested path and, when available, its symlink target. They route only when an `interrupt` decision is present and neither candidate is denied, so a deny wins over review. Bulk tools (`ls`, `glob`, `grep`, and `delete`) compare their potential search or deletion subtree with the literal anchor of each applicable interrupt pattern; this intentionally errs toward review rather than attempting to enumerate all glob matches. A missing bulk path or current-directory alias is treated as the root. For `glob`, an absolute pattern is independently checked because it can ignore `path`, and a relative pattern containing `..` is treated as unlocalizable and routed to review. Invalid paths and malformed non-string arguments do not create a synthetic interrupt.
+
+The graph passes the configured backend to these predicates, so symlink aliases can also route to review. Generated filesystem interrupts allow `approve`, `edit`, `reject`, and `respond`; approved and edited calls still re-enter the tool, where deny rules are checked. `reject` and `respond` do not execute the operation.
 
 ```mermaid
 flowchart TD
-    Call["Filesystem tool call"] --> Gate{"Interrupt route applies"}
+    Call["Filesystem tool call"] --> Route{"Explicit user entry for this tool"}
+    Route -->|Yes| UserRoute["Apply user interrupt_on entry"]
+    Route -->|No| Generated["Evaluate generated filesystem predicate"]
+    Generated --> Gate{"Review is required"}
+    UserRoute --> Gate
     Gate -->|Yes| Pause["Graph interrupt"]
+    Gate -->|No| Check["Filesystem tool denial check"]
     Pause --> Decision{"Human decision"}
     Decision -->|Reject or respond| Halt["Do not run operation"]
-    Decision -->|Approve or edit| Check["Filesystem deny check"]
-    Gate -->|No| Check
+    Decision -->|Approve or edit| Check
     Check -->|Denied| Denied["Permission error"]
     Check -->|Allowed| Run["Backend operation"]
 ```
 
-Caption: HITL routes a call to review before execution; the filesystem middleware remains the denial enforcement point.
+Caption: A user entry overrides generated routing by tool name; whether routed or not, an executed filesystem call reaches tool-level denial enforcement.
 
 ## Subagents: inheritance is explicit and type-dependent
 
@@ -147,11 +153,23 @@ The host holds one pending approval future per agent conversation and removes it
 
 Operator authority for policy changes is also separate from the approval handler. The host derives it from trusted channel exposure rather than inbound request metadata, and the runtime requires active invocation context. It clears this authority for cron and background delivery.
 
+## Invocation context is scoped and cleaned up
+
+At the start of each `DeepAgentRuntime.invoke`, Talon selects the invocation graph and immutable approval snapshot, derives the approval-operator flag from trusted request metadata, and installs request-scoped context for pending background results, cron origin, scheduled-turn status, OAuth authorization, and progress messages. The invocation's `finally` block resets every one of those context variables, including the graph and snapshot. A later request therefore cannot inherit an earlier request's approval policy, operator authority, authorization callback, scheduled status, or delivery state—even if the earlier graph call raises or is cancelled.
+
+This scoping is important but narrow: it prevents accidental cross-turn context leakage inside the runtime; it does not turn metadata supplied outside the host into trusted authority. The host is responsible for deriving `tool_approval_operator` from trusted channel exposure and for clearing authorization records after a turn.
+
 ## Unattended and delegated work fails closed
 
-For cron, background-result delivery, or requests without an approval handler, Talon rejects protected ordinary actions rather than waiting for an unavailable person; this holds even if a handler is injected for an unattended request. The host withholds interactive approval and OAuth paths for scheduled and background-result work.
+For cron, background-result delivery, or requests without an approval handler, Talon rejects protected ordinary actions rather than waiting for an unavailable person; this holds even if a handler is injected for an unattended request. The host withholds interactive approval and OAuth paths for scheduled and background-result work. The runtime independently clears operator authority when metadata identifies cron or background delivery.
 
 Detached background subagents clear operator and authorization context and report an interrupted protected action as not run. Cron-only inline delegation instead runs in its already unattended caller, disallows nested delegation, and cannot inherit an interactive approval or authorization handler. This fail-closed behavior applies to calls that the active policy routes through approval; it is not a blanket claim that every tool or integration is protected.
+
+### Scheduled turns have explicit bounds
+
+A scheduled job runs under a per-job conversation lock, so two fires of the same job do not overlap. Each fire receives a fresh cron thread ID and is bounded to 1,800 seconds. On timeout, the host asks the runtime to repair the interrupted thread and re-raises the timeout; the next fire uses a new thread rather than resuming the timed-out one. This limit protects the sequential scheduler from one indefinitely running job, but it is a liveness bound rather than a permission control.
+
+Within a scheduled turn, delegation is inline rather than detached: it waits for the result, marks the subagent context to prevent nested delegation, and has its own bounded concurrency slots and per-delegation deadline. Parallel delegations from one assistant message can run concurrently up to that slot limit; additional work queues rather than escaping into the background job table. Do not expect a later background-delivery turn to provide an approval or OAuth interaction for this work.
 
 ## Operating and testing safely
 
@@ -160,4 +178,6 @@ Detached background subagents clear operator and authorization context and repor
 - Review every declarative subagent's replacement `permissions` and `interrupt_on`; configure compiled and remote agents independently.
 - Use exact names and the revision from `get_tool_approvals` when changing Talon policy. Expect a new invocation before saved changes apply.
 - Keep Talon approval UIs batch-oriented and validate interrupt IDs and actions before calling an external handler. Do not treat a channel decision as an identity or authorization system.
-- Focus regression coverage on `test_permissions.py` for path, delete, bulk-routing, and inheritance behavior; on Talon's tool-approval tests for policy validation, snapshots, batch fan-out, and unattended rejection; and on host authorization tests for trusted sender and reaction matching.
+- Focus regression coverage on `test_permissions.py` for first-match decisions, confirmed-leaf versus recursive deletion, symlink target enforcement, bulk/glob routing bypasses, and inheritance behavior. Use `test_filesystem_backend.py` to cover the backend's virtual-root and symlink-containment behavior separately; permission middleware does not turn backend path handling into a sandbox.
+- Cover Talon policy validation, snapshots, batch fan-out, unattended rejection, trusted sender handling, reaction matching, and request-context reset in its tool-approval and host authorization tests.
+- In `test_host.py`, exercise scheduled timeout repair and same-job serialization. In `test_background.py`, cover inline scheduled delegation, its nested-delegation guard, fan-out, slot queueing, and deadline behavior.

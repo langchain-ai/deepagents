@@ -9,6 +9,7 @@ import pytest
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import ExecuteResponse, FileDownloadResponse, FileUploadResponse
 from deepagents.backends.sandbox import BaseSandbox
+from deepagents.middleware.filesystem import FilesystemMiddleware
 
 from deepagents_code.integrations import sandbox_factory
 from deepagents_talon.config import TalonConfig
@@ -121,6 +122,18 @@ def test_backend_keeps_approvals_out_of_host_routes(tmp_path: Path) -> None:
     assert f"{tmp_path}/tools.json" in fake.files
     assert backend.execute("uname").output == "sandboxed"
     assert fake.commands[-1] == "uname"
+
+
+def test_backend_keeps_media_blobs_on_the_host(tmp_path: Path) -> None:
+    fake = _FakeSandbox()
+    backend = sandbox_backend(fake, tmp_path)
+    # The prefix the SDK writes offloaded media under for this backend.
+    blob = f"{FilesystemMiddleware(backend=backend)._blobs_prefix}/digest"
+
+    backend.upload_files([(blob, b"pixels")])
+
+    assert (tmp_path / "artifacts" / "blobs" / "digest").read_bytes() == b"pixels"
+    assert blob not in fake.files
 
 
 async def test_open_sandbox_yields_none_when_unset(tmp_path: Path) -> None:

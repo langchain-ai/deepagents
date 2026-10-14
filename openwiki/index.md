@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Maintainer Quickstart](quickstart.md) - Routing map for changes across the independently released Deep Agents SDK, dcode, ACP, Talon, evals, and partner packages. Start at the behavior owner, preserve its boundary, and run focused package validation.
+- [Deep Agents Maintainer Quickstart](quickstart.md) - A concise routing map for maintaining independently released Deep Agents packages. Use it to identify the behavior owner, the next architecture or integration guide, and the focused validation path.
 
 # Directories
 

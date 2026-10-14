@@ -8,6 +8,7 @@ from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.tools import BaseTool
 from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends import StateBackend, StoreBackend
@@ -1680,3 +1681,145 @@ class TestGlobResultPermissionFiltering:
         parsed = _parse_glob_output(resp, "/w")
 
         assert _apply_permissions_to_glob_results(rules, parsed.matches) == ["/w/app.py"]
+
+
+def _symlink(link, target, *, is_dir: bool = False) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=is_dir)
+    except (NotImplementedError, OSError):
+        pytest.skip("platform does not support symlinks")
+
+
+class TestResolvedPathPermissions:
+    """Rules apply to the symlink-resolved target, not just the requested path."""
+
+    def _backend(self, tmp_path):
+        # /secrets/key.txt, /work/notes.txt, /work/link -> /secrets, /work/alias.txt -> /secrets/key.txt
+        (tmp_path / "secrets").mkdir()
+        (tmp_path / "work").mkdir()
+        (tmp_path / "secrets" / "key.txt").write_text("TOPSECRET")
+        (tmp_path / "work" / "notes.txt").write_text("notes")
+        _symlink(tmp_path / "work" / "link", tmp_path / "secrets", is_dir=True)
+        _symlink(tmp_path / "work" / "alias.txt", tmp_path / "secrets" / "key.txt")
+        return FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    @staticmethod
+    def _tool(backend, name) -> BaseTool:
+        return next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == name)
+
+    _DENY_READ = (FilesystemPermission(operations=["read"], paths=["/secrets/**"], mode="deny"),)
+    _DENY_WRITE = (FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),)
+
+    @pytest.mark.parametrize("file_path", ["/work/link/key.txt", "/work/alias.txt"])
+    def test_read_through_symlink_denied(self, tmp_path, file_path):
+        backend = self._backend(tmp_path)
+        result = _invoke_with_permissions(self._tool(backend, "read_file"), {"file_path": file_path}, list(self._DENY_READ), backend=backend)
+        assert "resolves to /secrets/key.txt" in str(result)
+        assert "TOPSECRET" not in str(result)
+
+    async def test_read_through_symlink_denied_async(self, tmp_path):
+        backend = self._backend(tmp_path)
+        result = await _ainvoke_with_permissions(
+            self._tool(backend, "read_file"), {"file_path": "/work/link/key.txt"}, list(self._DENY_READ), backend=backend
+        )
+        assert "permission denied for read" in str(result)
+
+    def test_write_and_edit_through_symlink_denied(self, tmp_path):
+        backend = self._backend(tmp_path)
+        rules = list(self._DENY_WRITE)
+        write = _invoke_with_permissions(
+            self._tool(backend, "write_file"), {"file_path": "/work/link/new.txt", "content": "x"}, rules, backend=backend
+        )
+        assert "permission denied for write" in str(write)
+        assert not (tmp_path / "secrets" / "new.txt").exists()
+
+        edit = _invoke_with_permissions(
+            self._tool(backend, "edit_file"),
+            {"file_path": "/work/alias.txt", "old_string": "TOP", "new_string": "NOT"},
+            rules,
+            backend=backend,
+        )
+        assert "permission denied for write" in str(edit)
+        assert (tmp_path / "secrets" / "key.txt").read_text() == "TOPSECRET"
+
+    def test_delete_through_symlink_denied(self, tmp_path):
+        backend = self._backend(tmp_path)
+        result = _invoke_with_permissions(self._tool(backend, "delete"), {"file_path": "/work/alias.txt"}, list(self._DENY_WRITE), backend=backend)
+        assert "permission denied for write" in str(result)
+        assert (tmp_path / "secrets" / "key.txt").exists()
+
+    @pytest.mark.parametrize(
+        ("name", "args"),
+        [
+            ("ls", {"path": "/work/link"}),
+            ("glob", {"pattern": "*", "path": "/work/link"}),
+            ("grep", {"pattern": "TOPSECRET", "path": "/work/link"}),
+        ],
+    )
+    def test_search_scoped_to_symlink_finds_nothing(self, tmp_path, name, args):
+        backend = self._backend(tmp_path)
+        result = _invoke_with_permissions(self._tool(backend, name), args, list(self._DENY_READ), backend=backend)
+        assert "key.txt" not in str(result)
+        assert "TOPSECRET" not in str(result)
+
+    def test_results_resolving_to_denied_target_filtered(self, tmp_path):
+        backend = self._backend(tmp_path)
+        listing = str(_invoke_with_permissions(self._tool(backend, "ls"), {"path": "/work"}, list(self._DENY_READ), backend=backend))
+        assert "/work/notes.txt" in listing
+        assert "/work/alias.txt" not in listing
+        assert "/work/link" not in listing
+
+    def test_symlink_into_allowed_directory_allowed(self, tmp_path):
+        backend = self._backend(tmp_path)
+        rules = [FilesystemPermission(operations=["read"], paths=["/other/**"], mode="deny")]
+        result = _invoke_with_permissions(self._tool(backend, "read_file"), {"file_path": "/work/link/key.txt"}, rules, backend=backend)
+        assert "TOPSECRET" in str(result)
+
+    def test_allow_list_applies_to_resolved_target(self, tmp_path):
+        backend = self._backend(tmp_path)
+        rules = [
+            FilesystemPermission(operations=["read"], paths=["/work/**"], mode="allow"),
+            FilesystemPermission(operations=["read"], paths=["/**"], mode="deny"),
+        ]
+        result = _invoke_with_permissions(self._tool(backend, "read_file"), {"file_path": "/work/link/key.txt"}, rules, backend=backend)
+        assert "permission denied for read" in str(result)
+
+    def test_composite_route_resolves_through_routed_backend(self, tmp_path):
+        disk = self._backend(tmp_path)
+        backend = CompositeBackend(default=StateBackend(), routes={"/disk/": disk})
+        rules = [FilesystemPermission(operations=["read"], paths=["/disk/secrets/**"], mode="deny")]
+        result = _invoke_with_permissions(self._tool(backend, "read_file"), {"file_path": "/disk/work/link/key.txt"}, rules, backend=backend)
+        assert "resolves to /disk/secrets/key.txt" in str(result)
+
+    @pytest.mark.parametrize(
+        ("tool_name", "op", "arg", "scope", "value"),
+        [
+            ("write_file", "write", "file_path", "exact", "/work/link/new.txt"),
+            ("ls", "read", "path", "bulk", "/work/link"),
+        ],
+    )
+    def test_interrupt_fires_through_symlink(self, tmp_path, tool_name, op, arg, scope, value):
+        backend = self._backend(tmp_path)
+        rule = FilesystemPermission(operations=[op], paths=["/secrets/**"], mode="interrupt")
+        assert _make_fs_when_predicate([rule], op, arg, scope)(_FakeReq({arg: value})) is False
+        assert _make_fs_when_predicate([rule], op, arg, scope, backend=backend)(_FakeReq({arg: value})) is True
+        assert _build_interrupt_on_from_permissions([rule], backend)[tool_name]["when"](_FakeReq({arg: value})) is True
+
+    def test_interrupt_suppressed_when_resolved_target_denied(self, tmp_path):
+        backend = self._backend(tmp_path)
+        rules = [
+            FilesystemPermission(operations=["write"], paths=["/secrets/**"], mode="deny"),
+            FilesystemPermission(operations=["write"], paths=["/work/**"], mode="interrupt"),
+        ]
+        when = _make_fs_when_predicate(rules, "write", "file_path", "exact", backend=backend)
+        assert when(_FakeReq({"file_path": "/work/link/new.txt"})) is False
+
+    def test_escape_outside_root_refused(self, tmp_path):
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        root = tmp_path / "root"
+        root.mkdir()
+        _symlink(root / "escape", outside, is_dir=True)
+        backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+        result = _invoke_with_permissions(self._tool(backend, "read_file"), {"file_path": "/escape/x"}, list(self._DENY_READ), backend=backend)
+        assert "cannot resolve /escape/x" in str(result)

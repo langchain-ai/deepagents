@@ -603,8 +603,6 @@ if [ "$(id -u)" -eq 0 ]; then
   fi
 
   if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
-    log_warn "Could not determine non-root target user. Files under ${HOME} may remain owned by root."
-    log_warn "  Re-run as the target user, or repair only the exact installed paths reported above."
     fix_file_owner() { :; }
     fix_tree_owner() { :; }
   else
@@ -2581,7 +2579,7 @@ while IFS= read -r uv_cache_dir; do
 done <<EOF
 ${UV_TOOL_CACHE_NEW}
 EOF
-if [ "$(id -u)" -eq 0 ]; then
+if [ "$(id -u)" -eq 0 ] && [ -n "$TARGET_USER" ] && [ "$TARGET_USER" != "root" ]; then
   while IFS= read -r uv_cache_dir; do
     [ -n "$uv_cache_dir" ] || continue
     [ -d "$uv_cache_dir" ] || continue

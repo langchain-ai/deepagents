@@ -21,6 +21,7 @@ import logging
 import os
 import shlex
 from abc import ABC, abstractmethod
+from pathlib import PurePosixPath
 from typing import Any, Final, Literal
 
 from deepagents.backends.protocol import (
@@ -384,6 +385,7 @@ import glob, os, base64, sys
 search_path = base64.b64decode('{path_b64}').decode('utf-8')
 glob_pat = base64.b64decode('{glob_b64}').decode('utf-8')
 pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
+excluded = set(base64.b64decode('{exclude_b64}').decode('utf-8').split(chr(0))) - {{''}}
 max_count = {max_count}
 match_count = 0
 
@@ -409,6 +411,8 @@ if os.path.isdir(search_path):
     # root/match form that grep -r emits on the --include route.
     targets = []
     for rel in rel_files:
+        if excluded.intersection(rel.replace(chr(92), '/').split('/')[:-1]):
+            continue
         real_open = os.path.realpath(rel)
         if real_open != real_root and not real_open.startswith(real_root + os.sep):
             continue
@@ -430,8 +434,8 @@ for open_path, display_path in targets:
                     sys.stdout.write(display_path + chr(0) + str(i) + ':' + line.rstrip(chr(10)) + chr(10))
                     match_count += 1
                     # Emit one record past the cap (match_count > max_count, not
-                    # >=) so the parser can tell "exactly at the cap" (complete)
-                    # from "capped early" (truncated). Mirrors the head -n
+                    # >=) so the parser can tell 'exactly at the cap' (complete)
+                    # from 'capped early' (truncated). Mirrors the head -n
                     # max_count+1 route in _build_grep_cmd.
                     if max_count is not None and match_count > max_count:
                         sys.exit(0)
@@ -956,8 +960,36 @@ def _check_preflight_result(result: ExecuteResponse, file_path: str) -> WriteRes
     return None
 
 
-def _build_grep_cmd(pattern: str, path: str | None, glob: str | None, max_count: int | None = None) -> str:
+def _grep_excluded_dirs(path: str | None, exclude_dirs: tuple[str, ...]) -> tuple[str, ...]:
+    """The directory names to skip, minus the search root's own name.
+
+    GNU `grep --exclude-dir` also skips a matching command-line directory, so an
+    explicit search of a `.git` directory would otherwise return nothing.
+    """
+    root_name = PurePosixPath(path or ".").name
+    return tuple(name for name in exclude_dirs if name != root_name)
+
+
+def _build_grep_cmd(
+    pattern: str,
+    path: str | None,
+    glob: str | None,
+    max_count: int | None = None,
+    *,
+    exclude_dirs: tuple[str, ...] = (),
+) -> str:
+    """Prefer rg while preserving GNU grep's wildcard and newline-pattern semantics.
+
+    Ripgrep uses gitignore globs: braces expand alternatives, leading !/# negate
+    or comment, and trailing spaces are stripped. Escape literal braces and
+    prefixes; conservatively retain GNU grep for classes, escapes, **, and
+    trailing whitespace rather than translating those dialects. Exclusions
+    containing such syntax also retain GNU semantics. Newline patterns are
+    alternatives in GNU grep but rejected by rg; explicit files retain GNU
+    include filtering and binary-file handling.
+    """
     search_path = shlex.quote(path or ".")
+    excluded = _grep_excluded_dirs(path, exclude_dirs)
     # `-Z` separates the filename from line data with NUL, so filenames may
     # contain `:` without making the output ambiguous.
     grep_opts = "-rHnFZ"
@@ -967,15 +999,17 @@ def _build_grep_cmd(pattern: str, path: str | None, glob: str | None, max_count:
     # like `src/**/*.py` would silently match zero files. Route those to the
     # in-process Python template that resolves the glob relative to the search
     # root. Basename-only globs (no `/`) work correctly with `--include` and
-    # are faster to run through GNU grep.
+    # can use ripgrep when available, with GNU grep as the fallback.
     if glob and "/" in glob:
         path_b64 = base64.b64encode((path or ".").encode("utf-8")).decode("ascii")
         glob_b64 = base64.b64encode(glob.encode("utf-8")).decode("ascii")
         pattern_b64 = base64.b64encode(pattern.encode("utf-8")).decode("ascii")
+        exclude_b64 = base64.b64encode("\0".join(excluded).encode("utf-8")).decode("ascii")
         return _GREP_PATH_GLOB_TEMPLATE.format(
             path_b64=path_b64,
             glob_b64=glob_b64,
             pattern_b64=pattern_b64,
+            exclude_b64=exclude_b64,
             max_count=None if max_count is None else int(max_count),
         )
 
@@ -989,7 +1023,24 @@ def _build_grep_cmd(pattern: str, path: str | None, glob: str | None, max_count:
     # would defeat the `head` early-stop below. A portable fix belongs in its own
     # sandbox-tested change. The in-process `_GREP_PATH_GLOB_TEMPLATE` route does
     # surface its errors (see its docstring); only this GNU-grep route swallows.
-    base = f"grep {grep_opts} {glob_pattern} -e {pattern_escaped} {search_path} 2>/dev/null"
+    exclude_args = " ".join(f"--exclude-dir={shlex.quote(name)}" for name in excluded)
+    grep_cmd = f"grep {grep_opts} {exclude_args} {glob_pattern} -e {pattern_escaped} {search_path}"
+    rg_excludes = " ".join(f"--glob {shlex.quote('!' + name + '/')}" for name in excluded)
+    rg_glob = glob.replace("{", r"\{").replace("}", r"\}") if glob else ""
+    if rg_glob.startswith(("!", "#")):
+        rg_glob = "\\" + rg_glob
+    rg_opts = "rg --no-config --hidden --no-ignore --encoding none --color never -HnF0"
+    rg_args = f"{rg_excludes} -e {pattern_escaped} -- {search_path}"
+    rg_cmd = f"{rg_opts} {rg_args}"
+    if glob:
+        rg_cmd = f"{rg_opts} --glob {shlex.quote(rg_glob)} {rg_args}"
+    if (
+        "\n" in pattern
+        or (glob and (glob != glob.rstrip() or any(token in glob for token in ("[", "\\", "**"))))
+        or any(any(token in name for token in ("[", "\\", "**", "{", "}", "/")) for name in excluded)
+    ):
+        rg_cmd = grep_cmd
+    base = f"{{ if [ -d {search_path} ] && command -v rg >/dev/null 2>&1; then {rg_cmd}; else {grep_cmd}; fi; }} 2>/dev/null"
     if max_count is not None:
         # Read one record beyond the cap so the parser can distinguish "exactly
         # at the cap" (complete) from "capped early" (truncated). `head` closing
@@ -1555,6 +1606,16 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
     and the `id` property.
     """
 
+    grep_exclude_dirs: tuple[str, ...] = (".git",)
+    """Directory names `grep` skips at any depth while searching.
+
+    `.git` is skipped by default: it holds compressed object packs that cannot
+    hold a useful literal match yet make up most of a repository's bytes, so
+    searching a checkout reads it in full. Subclasses can extend the tuple (for
+    example with `node_modules`) or set it to `()` to search everything. A
+    search rooted at one of these directories still searches it.
+    """
+
     enable_capture_offload: bool = False
     """Whether `FilesystemMiddleware` may use capture-at-source offload for `execute`.
 
@@ -2026,7 +2087,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         Returns:
             `GrepResult` with a list of `GrepMatch` dicts, or `error` on failure.
         """
-        result = self.execute(_build_grep_cmd(pattern, path, glob, max_count))
+        result = self.execute(_build_grep_cmd(pattern, path, glob, max_count, exclude_dirs=self.grep_exclude_dirs))
         return _parse_grep_output(result, path, max_count)
 
     async def agrep(
@@ -2040,7 +2101,7 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         """Async version of `grep`, delegating to `aexecute` with timeout guard."""
         try:
             result = await asyncio.wait_for(
-                self.aexecute(_build_grep_cmd(pattern, path, glob, max_count)),
+                self.aexecute(_build_grep_cmd(pattern, path, glob, max_count, exclude_dirs=self.grep_exclude_dirs)),
                 timeout=ASYNC_GREP_TIMEOUT,
             )
         except TimeoutError:

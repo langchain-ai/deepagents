@@ -8,17 +8,23 @@ that leaves the process.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 import httpx
 import langchain_anthropic.chat_models as anthropic_chat_models
+import langchain_aws.chat_models.anthropic as aws_anthropic_chat_models
 from langchain.tools import ToolRuntime  # noqa: TC002  # `@tool` resolves the injected `runtime` annotation at runtime
 from langchain_anthropic import ChatAnthropic
+from langchain_aws import ChatAnthropicBedrock, ChatAnthropicMantle, ChatOpenAIMantle
 from langchain_core.messages import AIMessage, ToolCall
 from langchain_core.tools import BaseTool, StructuredTool, tool
 from langchain_openai import ChatOpenAI
+from langchain_openai.chat_models.codex import _ChatOpenAICodex
+from langchain_openai.chatgpt_oauth import _ChatGPTToken
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
@@ -31,6 +37,7 @@ if TYPE_CHECKING:
     import pytest
     from langchain_core.language_models import BaseChatModel
     from langchain_core.runnables import RunnableConfig
+    from langchain_openai.chat_models.base import BaseChatOpenAI
     from langgraph.graph.state import CompiledStateGraph
     from langgraph.runtime import Runtime
 
@@ -175,7 +182,7 @@ Turn = str | list[ToolCall] | httpx.Response
 class ProviderStub:
     """Answer provider HTTP requests from a script and record each request."""
 
-    render: Callable[[int, str | list[ToolCall]], dict[str, Any]]
+    render: Callable[[int, str | list[ToolCall]], dict[str, Any] | httpx.Response]
     turns: list[Turn]
     requests: list[httpx.Request] = field(default_factory=list)
 
@@ -186,7 +193,8 @@ class ProviderStub:
         turn = self.turns[index]
         if isinstance(turn, httpx.Response):
             return turn
-        return httpx.Response(200, json=self.render(index, turn))
+        rendered = self.render(index, turn)
+        return rendered if isinstance(rendered, httpx.Response) else httpx.Response(200, json=rendered)
 
     @property
     def bodies(self) -> list[dict[str, Any]]:
@@ -256,6 +264,20 @@ def openai_response(index: int, turn: str | list[ToolCall]) -> dict[str, Any]:
     }
 
 
+def openai_response_stream(index: int, turn: str | list[ToolCall]) -> httpx.Response:
+    """Render a scripted turn as an OpenAI Responses API event stream."""
+    response = openai_response(index, turn)
+    events: list[dict[str, Any]] = [{"type": "response.created", "response": {**response, "status": "in_progress", "output": []}}]
+    for output_index, item in enumerate(response["output"]):
+        events.append({"type": "response.output_item.added", "output_index": output_index, "item": item})
+        if item["type"] == "message":
+            delta = {"output_index": output_index, "content_index": 0, "item_id": item["id"], "delta": item["content"][0]["text"]}
+            events.append({"type": "response.output_text.delta", **delta})
+    events.append({"type": "response.completed", "response": response})
+    body = "".join(f"event: {event['type']}\ndata: {json.dumps({**event, 'sequence_number': n})}\n\n" for n, event in enumerate(events))
+    return httpx.Response(200, content=body.encode(), headers={"content-type": "text/event-stream"})
+
+
 def openai_chat_completion(index: int, turn: str | list[ToolCall]) -> dict[str, Any]:
     """Render a scripted turn as an OpenAI Chat Completions response."""
     tool_calls = None
@@ -288,17 +310,100 @@ def stub_anthropic(
     return ChatAnthropic(model=model, api_key="test-key", max_retries=0, **model_kwargs), stub
 
 
+def stub_anthropic_on_bedrock(
+    monkeypatch: pytest.MonkeyPatch,
+    turns: list[Turn],
+    model_class: type[ChatAnthropicBedrock | ChatAnthropicMantle],
+    model: str,
+    **model_kwargs: Any,
+) -> tuple[ChatAnthropic, ProviderStub]:
+    """Return a real langchain-aws `ChatAnthropic` subclass whose HTTP transport answers from `turns`."""
+    stub = ProviderStub(anthropic_message, list(turns))
+    transport = httpx.MockTransport(stub)
+    for name in ("AnthropicBedrock", "AnthropicBedrockMantle"):
+        client_class = getattr(aws_anthropic_chat_models, name)
+        monkeypatch.setattr(aws_anthropic_chat_models, name, functools.partial(client_class, http_client=httpx.Client(transport=transport)))
+    for name in ("AsyncAnthropicBedrock", "AsyncAnthropicBedrockMantle"):
+        client_class = getattr(aws_anthropic_chat_models, name)
+        monkeypatch.setattr(aws_anthropic_chat_models, name, functools.partial(client_class, http_client=httpx.AsyncClient(transport=transport)))
+    chat_model = model_class(
+        model=model,
+        region_name="us-east-1",
+        aws_access_key_id="AKIDTEST",
+        aws_secret_access_key="test-secret",  # noqa: S106  # fake credential for the stubbed transport
+        max_retries=0,
+        **model_kwargs,
+    )
+    return chat_model, stub
+
+
 def stub_openai(
-    turns: list[Turn], model: str = "gpt-6-astra", *, use_responses_api: bool = True, **model_kwargs: Any
-) -> tuple[ChatOpenAI, ProviderStub]:
-    """Return a real `ChatOpenAI` whose HTTP transport answers from `turns`."""
+    turns: list[Turn],
+    model: str = "gpt-6-astra",
+    *,
+    use_responses_api: bool = True,
+    model_class: type[BaseChatOpenAI] = ChatOpenAI,
+    **model_kwargs: Any,
+) -> tuple[BaseChatOpenAI, ProviderStub]:
+    """Return a real `ChatOpenAI`, or `model_class`, whose HTTP transport answers from `turns`."""
     stub = ProviderStub(openai_response if use_responses_api else openai_chat_completion, list(turns))
     transport = httpx.MockTransport(stub)
-    chat_model = ChatOpenAI(
+    chat_model = model_class(
         model=model,
         api_key="test-key",
         max_retries=0,
         use_responses_api=use_responses_api,
+        http_client=httpx.Client(transport=transport),
+        http_async_client=httpx.AsyncClient(transport=transport),
+        **model_kwargs,
+    )
+    return chat_model, stub
+
+
+def stub_openai_mantle(turns: list[Turn], model: str = "openai.gpt-5.6-luna", **model_kwargs: Any) -> tuple[ChatOpenAIMantle, ProviderStub]:
+    """Return a real langchain-aws `ChatOpenAIMantle` whose HTTP transport answers from `turns`."""
+    stub = ProviderStub(openai_response, list(turns))
+    transport = httpx.MockTransport(stub)
+    chat_model = ChatOpenAIMantle(
+        model=model,
+        region_name="us-east-1",
+        bedrock_api_key="test-key",
+        max_retries=0,
+        http_client=httpx.Client(transport=transport),
+        http_async_client=httpx.AsyncClient(transport=transport),
+        **model_kwargs,
+    )
+    return chat_model, stub
+
+
+class _FakeChatGPTTokens:
+    """A `_ChatGPTOAuthTokenProvider` that always holds a fresh token."""
+
+    def get_token(self) -> _ChatGPTToken:
+        return _ChatGPTToken(
+            access_token="test-token",  # noqa: S106  # fake credential for the stubbed transport
+            refresh_token="test-refresh",  # noqa: S106  # fake credential for the stubbed transport
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+    async def aget_token(self) -> _ChatGPTToken:
+        return self.get_token()
+
+    def get_access_token(self) -> str:
+        return self.get_token().access_token
+
+    async def aget_access_token(self) -> str:
+        return self.get_access_token()
+
+
+def stub_openai_codex(turns: list[Turn], model: str = "gpt-5.6", **model_kwargs: Any) -> tuple[_ChatOpenAICodex, ProviderStub]:
+    """Return a real Codex chat model, which only streams, whose HTTP transport answers from `turns`."""
+    stub = ProviderStub(openai_response_stream, list(turns))
+    transport = httpx.MockTransport(stub)
+    chat_model = _ChatOpenAICodex(
+        model=model,
+        token_provider=_FakeChatGPTTokens(),
+        max_retries=0,
         http_client=httpx.Client(transport=transport),
         http_async_client=httpx.AsyncClient(transport=transport),
         **model_kwargs,

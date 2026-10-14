@@ -20,6 +20,8 @@ sources:
     resource: repo://libs/code/deepagents_code/model_metadata.py
   - id: openwiki-source-c101168dc0286ff6c29ed37f
     resource: repo://libs/code/deepagents_code/model_retry.py
+  - id: openwiki-source-7ba50bd13eb62341a2061ef9
+    resource: repo://libs/code/pyproject.toml
   - id: openwiki-source-42e76fc26f690f7d6dab298d
     resource: repo://libs/code/tests/unit_tests/test_cache_expiry.py
   - id: openwiki-source-563d8f99b354174d66aab140
@@ -42,36 +44,50 @@ sources:
     resource: repo://libs/deepagents/deepagents/profiles/harness/harness_profiles.py
   - id: openwiki-source-1098130d42873f13aba9f5c2
     resource: repo://libs/deepagents/deepagents/profiles/provider/provider_profiles.py
+  - id: openwiki-source-478a579b56d29c6928ec2320
+    resource: repo://libs/deepagents/pyproject.toml
   - id: openwiki-source-82f3138080e1d0012e6ffb72
     resource: repo://libs/deepagents/tests/unit_tests/test_harness_profiles.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-08T08:07:53.482Z" }
+  - id: openwiki-source-38c26264bf4a1dadb3401e80
+    resource: repo://libs/deepagents/tests/unit_tests/test_models.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-08T08:07:53.482Z
+    at: 2026-10-14T08:05:41.101Z
 ---
 
 # Models, Profiles, and Provider Configuration
 
 This page covers two separate profile systems in the Deep Agents SDK, then the dcode model-selection layer that builds on provider construction. Do not use the word *profile* as if it meant one configuration object: provider profiles, harness profiles, and dcode capability profiles operate at different times and have different security boundaries.
 
+## Version and package boundary
+
+The `deepagents-code` distribution is **0.1.84**, requires Python `>=3.12,<4.0`, and declares an exact published SDK dependency, `deepagents==0.7.24`. This is dcode's compatibility contract; do not turn the exact pin into a floor or infer support for the source-tree SDK merely because both packages live in this repository. The SDK package currently declares **0.7.25** and Python `>=3.11,<4.0`, so its source can contain behavior that is not evidence of the API shipped with dcode's `0.7.24` dependency.
+
+For monorepo development, dcode's `[tool.uv.sources]` maps `deepagents` to the editable sibling `../deepagents` directory. That wiring intentionally lets development exercise the checked-out SDK, but it makes a dcode SDK-pin bump and its compatibility checks a deliberate consumer change. The profile APIs are beta in the SDK: verify construction and graph-assembly behavior against the exact SDK artifact being released, not just against a newer editable checkout.
+
+The base dcode install includes the Anthropic, Google GenAI, and OpenAI LangChain integrations. Other model integrations are opt-in extras such as `deepagents-code[fireworks]` or `deepagents-code[openrouter]`; `deepagents-code[all-providers]` aggregates the supported provider extras. Selecting a configured provider whose integration is absent is therefore an installation/configuration failure on the inference host, not a client-side discovery task.
+
 ## SDK provider and harness profiles
 
 `deepagents.profiles` is a beta API with two orthogonal registries, both keyed by either `provider` or `provider:model` (only the first colon is structural, so a provider-native model identifier may itself contain colons).
 
-- A `ProviderProfile` affects **construction**. `resolve_model()` leaves an existing `BaseChatModel` untouched, but resolves a string with `init_chat_model(model, **apply_provider_profile(model))`. A profile can supply static init kwargs, a runtime kwargs factory, and a `pre_init` hook; use it for integration defaults, environment-derived options, or preflight checks.
+- A `ProviderProfile` affects **SDK construction of a string model**. `resolve_model()` returns an existing `BaseChatModel` unchanged; for a string it calls `apply_provider_profile(model)` and spreads the resulting kwargs into `init_chat_model`. Thus a provider profile does not retrofit a caller-built model, and it must be registered before that string is resolved. It can supply static init kwargs, a runtime kwargs factory, and a `pre_init` hook; use it for integration defaults, environment-derived options, or preflight checks.
 - A `HarnessProfile` affects the **assembled agent after its model exists**. It can replace or append prompt material, rewrite tool descriptions, hide model-visible tools, add or exclude middleware, and alter the auto-added `general-purpose` subagent. These are behavioral calibrations, not an authorization mechanism.
 
 ```mermaid
 flowchart TD
     Spec["Model string or model instance"] --> Resolve["resolve_model"]
-    Resolve --> Provider["ProviderProfile during construction"]
+    Resolve --> Kind{"String model"}
+    Kind -->|Yes| Provider["ProviderProfile during construction"]
     Provider --> Chat["BaseChatModel"]
+    Kind -->|No| Chat
     Chat --> Select["HarnessProfile selection"]
     Select --> Assemble["create_deep_agent assembles prompts tools and middleware"]
     Assemble --> Agent["Compiled agent"]
 ```
 
-Caption: Provider profiles shape creation; harness profiles shape the agent graph that uses the resulting model.
+Caption: Provider profiles shape string-model creation only; harness profiles shape the agent graph that uses either resulting or caller-built models.
 
 Lookup loads built-ins and plugins lazily on first registry access. Built-ins are explicitly imported so packaging metadata cannot silently disable SDK defaults. Third parties register zero-argument entry-point hooks in `deepagents.provider_profiles` or `deepagents.harness_profiles`; their failures are warned and skipped, whereas a broken built-in aborts bootstrap. Bootstrap is coordinated across threads and runs once, preventing duplicate chained hooks or partially observed registries.
 
@@ -206,8 +222,9 @@ Cache policy is conservative. It applies only to documented Anthropic and OpenAI
 - `test_configurable_model.py` checks request-time overrides, failure fallback and strict behavior, checkpoint timing, cache-activity attribution, and the no-persistence subagent path.
 - `test_model_retry.py` covers transient classification, exception-group traversal, `Retry-After`, total-delay guards, model-specific budgets, lifecycle events, and streamed-output supersession.
 - `test_cache_expiry.py` exercises the client handoff and warning behavior around cache expiry without treating a cache warning as permission to change model state.
+- The SDK's `test_models.py` verifies that `resolve_model()` passes a pre-built `BaseChatModel` through unchanged and that registered provider-profile defaults are forwarded when a string is resolved. `test_harness_profiles.py` covers the serializable harness-profile subset and rejects runtime-only middleware configuration.
 
-When adding a provider, keep the boundaries intact: expose only presentation-safe catalog fields; resolve credentials and constructor kwargs on the inference host; declare how SDK retries are disabled or report that ownership cannot be guaranteed; and add cache identity fields only when they are documented to change the reusable prefix. When adding a client feature, use server metadata validation rather than recreating provider discovery locally.
+When adding a provider, keep the boundaries intact: expose only presentation-safe catalog fields; resolve credentials and constructor kwargs on the inference host; declare how SDK retries are disabled or report that ownership cannot be guaranteed; and add cache identity fields only when they are documented to change the reusable prefix. For an SDK profile extension, register it before resolving a string model and test its `init_chat_model` kwargs separately from harness graph behavior; passing a pre-built model intentionally bypasses provider-profile construction. When adding a client feature, use server metadata validation rather than recreating provider discovery locally.
 
 ## Related pages
 

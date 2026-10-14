@@ -26,7 +26,7 @@ dependencies = [
     # transitively via `discord.py`; declared because we import it.
     "aiohttp>=3.14.3,<4.0.0",
     "aiosqlite>=0.22.1,<1.0.0",
-    "deepagents>=0.7.0",
+    "deepagents>=0.7.24",
     "deepagents-code>=0.1.71,<1.0.0",
     "discord.py>=2.4.0,<3.0.0",
     "fastmcp>=4.0.0b4,<5.0.0",
@@ -35,14 +35,14 @@ dependencies = [
     # objects and implements `httpx2.Auth`. Arrives transitively via `mcp`;
     # declared here because we import it directly.
     "httpx2>=2.12.0,<3.0.0",
-    "langchain>=1.4.4,<2.0.0",
-    "langchain-core>=1.6.9,<2.0.0",
-    "langgraph>=1.2.14,<2.0.0",
-    "langgraph-checkpoint>=4.2.0,<5.0.0",
-    "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
+    "langchain>=1.4.5,<2.0.0",
+    "langchain-core>=1.6.10,<2.0.0",
+    "langgraph>=1.2.15,<2.0.0",
+    "langgraph-checkpoint>=4.3.0,<5.0.0",
+    "langgraph-checkpoint-sqlite>=3.1.2,<4.0.0",
     "langgraph-prebuilt>=1.1.0,<2.0.0",
-    "langgraph-sdk>=0.4.6,<1.0.0",
-    "langsmith>=0.14.7",
+    "langgraph-sdk>=0.4.7,<1.0.0",
+    "langsmith>=0.14.8",
     "mcp>=2.0.0,<3.0.0",
     "pydantic>=2.13.4,<3.0.0",
     "pyyaml>=6.0.3",
@@ -61,7 +61,7 @@ history-voyage = [
     # `voyageai.Client`/`AsyncClient` directly.
     "voyageai>=0.5.0,<1.0.0",
 ]
-history-openai = ["langchain-openai>=1.7.0,<2.0.0"]
+history-openai = ["langchain-openai>=1.7.1,<2.0.0"]
 mongodb = [
     "langgraph-checkpoint-mongodb>=0.5.1,<0.6.0",
     "langgraph-store-mongodb>=0.4.0,<0.5.0",
@@ -71,7 +71,7 @@ postgres = [
     # `store.VECTOR_MIGRATIONS`, `migration.condition`, `migration._replace` and the
     # `dict_row` cursor factory, none of which are public API. A rename inside 3.x
     # would not fail loudly - it would leave the migration rewrite a silent no-op.
-    "langgraph-checkpoint-postgres>=3.1.2,<3.2.0",
+    "langgraph-checkpoint-postgres>=3.1.3,<3.2.0",
     "psycopg[binary]>=3.3.5,<4.0.0",
 ]
 media = [

@@ -1,8 +1,11 @@
 ---
 type: delegation and progressive-disclosure concept
 title: Subagents and Skills
-description: Deep Agents delegates local and remote work across explicit state, tracing, and lifecycle boundaries. The Code skill adapter discovers and pins trusted instruction bundles while the underlying skills middleware gates selected tools on visible disclosure.
+description: Deep Agents separates synchronous and remote delegation across explicit state and lifecycle boundaries. Skills expose instructions progressively and disclose selected tools only after a visible read or pin, with provider-aware payload placement and recorded tool-time gating.
 tags: [deepagents, subagents, delegation, skills, middleware, tool-gating, agent-protocol]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-14T08:05:41.101Z
 sources:
   - id: openwiki-source-dc1e984fa4e6a51458e9ff9d
     resource: repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py
@@ -20,12 +23,17 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-13e0ea89aadd1a5e309ac7e3
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
+  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
+    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
     resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-12T08:20:17.385Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-12T08:20:17.385Z" }
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-85b5cce2a96e09663cd92f4c
+    resource: repo://libs/talon/tests/unit_tests/test_cron_pinned_skills.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
 ---
 
 # Subagents and Skills
@@ -36,7 +44,9 @@ A skill is neither a subagent nor an authorization policy. Its text guides the m
 
 ## Assembly and local delegation
 
-The factory separates declarative `SubAgent` specifications and caller-owned `CompiledSubAgent` runnables from `AsyncSubAgent` specifications, which are recognized by `graph_id`. It compiles declarative local workers, uses compiled workers as supplied, installs the local and remote middleware independently, and normally adds `general-purpose` unless the harness profile disables it or a supplied local spec replaces that name.
+The factory classifies every `subagents=` entry before assembling the parent graph: a mapping containing `graph_id` becomes an `AsyncSubAgent`; one containing `runnable` is a caller-owned `CompiledSubAgent`; all others are declarative synchronous `SubAgent` specifications. Declarative specifications are compiled after the factory resolves their model, profile, permissions, tools, prompt, and middleware; compiled runnables remain caller-owned. The synchronous `SubAgentMiddleware` and remote `AsyncSubAgentMiddleware` are installed independently, so async-only configuration does not create `task`.
+
+Unless the active harness profile sets `general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)`, the factory prepends a synchronous `general-purpose` worker whenever no inline specification already uses that name. Disabling that default removes `task` only when no other synchronous worker exists; it does not affect async tools. A profile can also customize the generated worker's description and prompt. The generated worker uses the parent model, rewritten user tools, parent permissions, and the resolved parent interrupt policy, including filesystem-derived approval rules.
 
 ```mermaid
 flowchart TD
@@ -69,7 +79,7 @@ One successful local invocation becomes one `ToolMessage` tied to the original c
 
 Experimental `mode="fork"` is for context-dependent continuation rather than a narrow handoff. It removes the pending parent tool-call message, applies a pending summarization event to reconstruct effective history, and appends a preamble plus delegated description. A declarative fork retains the internal state needed for its recreated middleware to rebuild inherited prompt behavior; an opaque compiled fork receives only safe public state.
 
-A declarative fork cannot declare `skills`: it replays the parent's skills and prompt-producing middleware, with its own system prompt used as an addendum. It does receive a guarded mirror of `task`, but the fork-state marker makes any nested `task` or `atask` call return a refusal. Use isolated mode when explicit input and output isolation matters; use a fork only when the effective conversation is required.
+A declarative fork cannot set its `skills` field: by default it starts from the parent skill sources and mirrors the parent middleware so it can rebuild the parent's prompt behavior, with its own system prompt used as an addendum. This is not an immutable lock on the middleware slot: a same-named `SkillsMiddleware` in the fork specification replaces the inherited one in place, and can therefore provide different sources. A differently named subclass is a separate, novel middleware rather than the slot replacement. It does receive a guarded mirror of `task`, but the fork-state marker makes any nested `task` or `atask` call return a refusal. Use isolated mode when explicit input and output isolation matters; use a fork only when the effective conversation is required.
 
 ## Remote asynchronous delegation
 
@@ -97,6 +107,12 @@ Unknown types or task IDs and SDK failures return tool errors without a task-sta
 ## Skills: SDK index and Code adapter
 
 The SDK `SkillsMiddleware` indexes metadata from backend-resident `SKILL.md` files, overlays same-named skills in source order, stores the result in `skills_metadata`, and injects a progressive-disclosure prompt directing the model to read full instructions only when relevant. An empty metadata list is cached; setting `skills_metadata` to `None` requests a reload. Source load failures are retained in `skills_load_errors`; the rendered prompt bounds and escapes them as untrusted diagnostics. `system_prompt=None` suppresses the fragment but not metadata loading.
+
+### Assembly: the `SkillsMiddleware` slot
+
+`create_deep_agent` reserves an ordering slot immediately before prompt caching. Profile middleware and novel caller middleware are placed before it, so skills see the compacted messages and the model selected by fallback or routing middleware; the skill fragment is then stable for prompt caching. A caller middleware whose `.name` is exactly `"SkillsMiddleware"` replaces the default in that slot. If `skills=` is omitted, the factory obtains the default sources from the first such main-agent middleware, which also causes the generated `general-purpose` worker to receive that slot. The generated worker otherwise carries over only caller middleware that overrides one of its own default-stack names, not arbitrary main-only middleware.
+
+Top-level `skills=` applies to the main graph and its generated `general-purpose` worker, not to named isolated declarative workers. An isolated declarative worker receives a `SkillsMiddleware` only from its own `skills` field or from an exact-name middleware in its own `middleware` list. For every declarative worker, profile and spec middleware land before the skills slot; when multiple exact-name skill middleware entries are supplied, the last one wins. Forks additionally inherit the parent custom middleware before applying their own replacements, which explains why an exact-name fork middleware can supersede inherited skills even though the fork's `skills` field itself is invalid.
 
 `PluginSkillsMiddleware` subclasses that middleware for Deep Agents Code. Ordinary sources use the SDK's one-level loader. Plugin-namespaced sources are recursively walked: any directory containing `SKILL.md` is a leaf, and intermediate directories qualify the name, for example `plugin:foo:bar:review`. The usual ordered, last-one-wins merge then applies to those qualified names. Metadata records the process that performed the scan: a retained thread is rescanned after a server restart or `/reload`, whereas ordinary turns reuse this process's metadata unless an explicitly selected pin is absent.
 
@@ -129,22 +145,47 @@ If a selected `SKILL.md` resolves outside all allowed roots, the run interrupts 
 
 ## Skill-selected tools: disclosure is a gate
 
-`metadata.include_tools` names tools that `SkillsMiddleware(tools=...)` can resolve from a static list or a `SkillToolResolver`. These tools are deliberately absent from the ordinary tool node. A successful read of a known `SKILL.md`, or a pinned-skill message, triggers resolution before a later model call; the middleware records genuinely gated tool names and their include names in private `_skill_tools_disclosed`.
+`metadata.include_tools` names tools that `SkillsMiddleware(tools=...)` can resolve from a static list or a `SkillToolResolver`. These tools are deliberately absent from the ordinary tool node. A successful result for `read_file` on a known skill's `SKILL.md`—including a partial read—or a pinned-skill `HumanMessage` is a trigger. Before the subsequent model call, the middleware resolves the named includes and writes genuinely gated `{tool name: include name}` entries to private `_skill_tools_disclosed`; it writes an empty record when nothing is disclosed, so an old checkpoint cannot authorize a later call.
 
-At execution time, an ordinary registered runtime tool takes precedence. Otherwise the name must be present in the latest disclosure record and its recorded include name must still resolve to a same-named tool. Calls before disclosure, in the triggering turn, after compaction removes their only trigger, or with stale resolver output remain invalid-tool calls. If compaction leaves another trigger, disclosure is re-anchored to it. This is an availability boundary only: a disclosed tool still passes through permissions and HITL middleware.
+The resolver is an extension boundary, not a one-time lookup: it is called after eligible reads for every model request and again immediately before a gated tool runs. A resolver can map one include name to several tools and can be asynchronous only on an async agent entry point. It should be stable and cheap (or appropriately context-scoped cached), because unstable output can change the prompt prefix and a tool returned at disclosure but absent at execution is refused.
 
-Provider delivery is request-format specific. Supported Anthropic models receive inline `tool_addition` blocks and supported OpenAI Responses models receive anchored `additional_tools` developer items; other models receive tools bound on the next request. The disclosure record follows what the model was actually shown. Anthropic definitions with root `oneOf`, `anyOf`, or `allOf` are withheld because that provider rejects them.
+At execution time, an ordinary registered runtime tool takes precedence. Otherwise the name must be in the latest disclosure record and its recorded include name must still resolve to a same-named tool. Calls before disclosure, in the triggering turn, after compaction removes their only trigger, or with stale resolver output remain invalid-tool calls. If compaction leaves another trigger, disclosure is re-anchored to the earliest remaining one. This is an availability boundary only: a disclosed tool still passes through permissions and HITL middleware.
+
+Provider delivery preserves the conversation prefix rather than moving a newly discovered definition to its beginning. For a model whose profile advertises mid-conversation tools, Anthropic receives inline `tool_addition` blocks and OpenAI Responses receives developer `additional_tools` items. They are inserted after the complete tool-result batch that contains the read, and after queued user messages or empty assistant replies as necessary; repeated calls reproduce the same insertion and bytes while the anchor remains visible. Other models bind the disclosed tools for the next request. The disclosure record follows what the model was actually shown. Anthropic definitions with root `oneOf`, `anyOf`, or `allOf` are withheld because that provider rejects them.
+
+```mermaid
+sequenceDiagram
+    participant Model
+    participant Files as Filesystem tools
+    participant Skills as Skills middleware
+    participant Provider
+    Model->>Files: read_file SKILL.md
+    Files-->>Skills: successful ToolMessage
+    Skills->>Skills: resolve include_tools and record gate
+    Skills->>Provider: next request with anchored tool definition
+    Provider-->>Model: tool is visible
+    Model->>Skills: call disclosed tool
+    Skills->>Skills: re-resolve recorded include name
+    Skills-->>Model: run tool or invalid-tool error
+```
+
+*Successful reads and pins disclose tools for a later request; the recorded disclosure and a fresh resolver result jointly control execution.*
+
+### Scheduled Talon turns
+
+Talon passes `pinned_skills` from request metadata only when `trigger == "cron"`; ordinary channel turns cannot inject pins through metadata. The names are placed in the graph payload before the model call, where `SkillsMiddleware` converts them into the normal pinned snapshots. Talon also fingerprints host-readable `SKILL.md` paths by path, modification time, and size per conversation: a new process or a changed fingerprint writes `skills_metadata=None` to make the SDK reload its cached index. In sandbox mode, only the assistant's `skills` directory is fingerprinted as host-readable.
 
 ## Operations and focused tests
 
 Choose an isolated declarative worker for bounded work with deliberately scoped inputs and configuration. Choose a fork only for context-dependent continuation and accept its experimental, nonrecursive contract. Use a compiled worker when another graph owns the child implementation, and an async worker for remote work that needs explicit status management.
 
-Focused local tests cover routing, input validation, state filtering, fork reconstruction and refusal, structured-result forwarding, and tracing. Async tests cover the five tools, duplicate/mode validation, headers, task reduction, launch/check/update/cancel/list behavior, cached-status fallback, and async-only ASGI transport. Code skill tests exercise sync and async trust interrupts, denial and persistence failures, pin snapshots, failed-pin cleanup, reload-driven rescans, root-base resolution, duplicate pins, and checking every requested name. SDK skill tests cover disclosure timing, resolver behavior, compaction, approval integration, and provider payloads.
+Focused graph tests cover classification, default-worker profile controls, and the `SkillsMiddleware` ordering/replacement slot on the main, generated, isolated, and forked stacks. Local tests cover routing, input validation, state filtering, fork reconstruction and refusal, structured-result forwarding, and tracing. Async tests cover the five tools, duplicate/mode validation, headers, task reduction, launch/check/update/cancel/list behavior, cached-status fallback, and async-only ASGI transport. Code skill tests exercise sync and async trust interrupts, denial and persistence failures, pin snapshots, failed-pin cleanup, reload-driven rescans, root-base resolution, duplicate pins, and checking every requested name. SDK payload tests stub real Anthropic and OpenAI transports to assert provider bytes: placement after reads and complete result batches, stable cached prefixes, compaction re-anchoring, fallback-model formatting, schema rejection, and the matching execution gate. Talon tests assert that cron metadata pins an instruction body while the same metadata on a non-scheduled turn does not.
 
 ## Related
 
+- [Middleware catalog](/openwiki/concepts/middleware-catalog.md)
+- [Talon scheduling](/openwiki/concepts/talon-scheduling.md)
 - [Middleware stack](/openwiki/architecture/middleware-stack.md)
-- [Runtime behavior](/openwiki/architecture/runtime-behavior.md)
 - [Permissions and HITL](/openwiki/concepts/permissions-hitl.md)
 - [Testing guide](/openwiki/testing/testing-guide.md)
 - [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md)

@@ -124,9 +124,11 @@ class SubAgent(TypedDict):
     middleware: NotRequired[list[AgentMiddleware]]
     """Additional middleware for custom behavior, logging, or rate limiting.
 
-    Under `mode="fork"`, inherits the parent's custom middleware. Entries here
-    replace inherited entries with the same `.name`; entries with other names
-    are added. Avoid middleware that changes the inherited portion of the
+    Under `mode="fork"`, inherits the parent's custom middleware list. Entries
+    in this list replace inherited entries with the same `.name`; entries with
+    other names are added.
+
+    Avoid middleware that changes the inherited portion of the
     parent's system prompt or the tool definitions unless you accept losing
     shared prompt-cache reuse and the potentially higher model costs. This is
     distinct from `system_prompt`, which appends instructions to the inherited prompt.

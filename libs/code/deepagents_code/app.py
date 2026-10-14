@@ -173,6 +173,7 @@ from deepagents_code.tui.widgets.messages import (
     ToolGroupSummary,
     UserMessage,
 )
+from deepagents_code.tui.widgets.selection_action import SelectionAction
 from deepagents_code.tui.widgets.startup_tip import StartupTip, show_startup_tip
 from deepagents_code.tui.widgets.status import StatusBar
 from deepagents_code.tui.widgets.subagent_panel import SubagentPanel
@@ -24806,7 +24807,7 @@ class DeepAgentsApp(App):
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
-    def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
+    def on_mouse_up(self, event: MouseUp) -> None:  # Textual event handler signature
         """Copy selection to clipboard after click-chain selection updates.
 
         The scan is pinned to the active screen captured here, not resolved
@@ -24828,6 +24829,41 @@ class DeepAgentsApp(App):
             self,
             screen=self.screen,
         )
+        if not isinstance(self.screen, ModalScreen):
+            self.call_after_refresh(
+                self._show_selection_action, self.screen, event.screen_x, event.screen_y
+            )
+
+    async def _show_selection_action(self, screen: Screen, x: int, y: int) -> None:
+        """Offer a prompt shortcut for selections in the conversation."""
+        await screen.query(SelectionAction).remove()
+        if screen is not self.screen or not self._chat_input:
+            return
+        if not screen.selections or any(
+            not any(parent.id == "chat" for parent in widget.ancestors)
+            for widget in screen.selections
+        ):
+            return
+        text = screen.get_selected_text()
+        if not text or not text.strip():
+            return
+        action = SelectionAction(text)
+        action.styles.offset = (
+            max(0, min(x, screen.size.width - 18)),
+            max(0, y - 1),
+        )
+        await screen.mount(action)
+
+    def on_selection_action_ask(self, event: SelectionAction.Ask) -> None:
+        """Bring selected text into the draft without submitting it."""
+        if self._chat_input and not isinstance(self.screen, ModalScreen):
+            self._chat_input.insert_at_cursor(event.text + "\n\n")
+            self.screen.clear_selection()
+            self.call_after_refresh(self._chat_input.focus_input)
+
+    def on_key(self) -> None:
+        """Dismiss the selection shortcut when keyboard interaction resumes."""
+        self.screen.query(SelectionAction).remove()
 
     # =========================================================================
     # Model Switching

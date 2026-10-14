@@ -27,6 +27,7 @@ _TIPS: dict[str, int] = {
     "Use /offload to summarize older messages and free up the context window": 2,
     "Use /context to see context window usage and remaining space": 1,
     "Use /copy to copy the latest message": 3,
+    'Select conversation text and click "Ask about this" to add it to your prompt': 2,
     "Press Ctrl+R to search and reuse previously submitted prompts": 2,
     "Use /cost to see a breakdown of estimated spend": 1,
     "Use /tools to list the tools available to the agent": 1,

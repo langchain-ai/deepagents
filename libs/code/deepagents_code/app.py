@@ -24871,9 +24871,11 @@ class DeepAgentsApp(App):
         ):
             return
         if self._chat_input and not isinstance(self.screen, ModalScreen):
-            self._chat_input.insert_at_cursor(event.text + "\n\n")
+            quote = "\n".join("> " + line for line in event.text.split("\n"))
+            separator = "\n\n" if self._chat_input.value else ""
+            self._chat_input.focus_input()
+            self._chat_input.insert_at_cursor(separator + quote + "\n\n")
             self.screen.clear_selection()
-            self.call_after_refresh(self._chat_input.focus_input)
 
     def on_key(self) -> None:
         """Dismiss the selection shortcut when keyboard interaction resumes."""

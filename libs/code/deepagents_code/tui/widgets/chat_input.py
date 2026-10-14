@@ -3847,7 +3847,10 @@ class ChatInput(Vertical):
         """
         if not self._text_area:
             return False
-        self._text_area.insert(text)
+        self._text_area.insert(text, maintain_selection_offset=False)
+        self._text_area.call_after_refresh(
+            self._text_area.scroll_cursor_visible, animate=False
+        )
         return True
 
     @property

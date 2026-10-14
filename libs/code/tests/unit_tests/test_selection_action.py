@@ -33,7 +33,8 @@ async def test_selection_action_preserves_draft_and_focus(tmp_path: Path) -> Non
         assert selected.strip()
         await pilot.click(action)
         await pilot.pause()
-        assert area.text == "Explain: " + selected + "\n\n"
+        assert area.text == "Explain: \n\n> " + selected + "\n\n"
+        assert area.cursor_location == (4, 0)
         assert area.has_focus
         assert not app.query(SelectionAction)
         assert not app.screen.selections
@@ -114,3 +115,23 @@ async def test_selection_action_preserves_pending_prompt(
         await pilot.pause()
         assert prompt.value == "y"
         assert area.text == "existing draft"
+
+
+async def test_multiline_quote_keeps_cursor_visible() -> None:
+    """A long quote preserves line breaks and reveals the following blank line."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        assert app._chat_input is not None
+        area = app._chat_input._text_area
+        assert area is not None
+        text = "\n".join(["quoted line"] * 30)
+        action = SelectionAction(text)
+        action.styles.offset = (0, 0)
+        await app.screen.mount(action)
+        await pilot.pause()
+        await pilot.click(action)
+        await pilot.pause()
+        assert area.text == "\n".join(["> quoted line"] * 30) + "\n\n"
+        assert area.cursor_location == (31, 0)
+        assert area.has_focus
+        assert area.scroll_y > 0

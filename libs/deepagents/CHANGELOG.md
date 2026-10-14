@@ -2,6 +2,21 @@
 
 # Deep Agents Changelog
 
+## [0.7.25](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.24...deepagents==0.7.25) (2026-10-13)
+
+### Features
+
+- Read inline skill tool support from model profiles. ([#6879](https://github.com/langchain-ai/deepagents/pull/6879))
+
+### Bug Fixes
+
+- Filesystem permission rules and `interrupt_on` approvals now check both the requested and symlink-resolved paths; previously, `FilesystemBackend` followed symlinks after the check, potentially allowing access to denied paths. Review your rules and approvals for symlink targets. ([#6818](https://github.com/langchain-ai/deepagents/pull/6818))
+- Fixed path-glob `grep` in sandboxes. ([#6910](https://github.com/langchain-ai/deepagents/pull/6910))
+
+### Performance Improvements
+
+- Sandbox searches now prefer ripgrep, and sandbox `grep` skips `.git`. ([#6919](https://github.com/langchain-ai/deepagents/pull/6919), [#6910](https://github.com/langchain-ai/deepagents/pull/6910))
+
 ## [0.7.24](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.23...deepagents==0.7.24) (2026-10-12)
 
 ### Features

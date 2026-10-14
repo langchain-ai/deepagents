@@ -50,12 +50,8 @@ Use a **plain tool** when:
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
-    ParentReference,
     TaskEvent,
-    parent_reference,
-    parent_trace_context,
     task_notification,
-    with_parent_trace,
 )
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
@@ -101,7 +97,6 @@ __all__ = [
     "GraderResponse",
     "GraderVerdict",
     "MemoryMiddleware",
-    "ParentReference",
     "RubricEvaluation",
     "RubricMiddleware",
     "RubricResult",
@@ -117,8 +112,5 @@ __all__ = [
     "TaskEvent",
     "UnsupportedContentMiddleware",
     "create_summarization_tool_middleware",
-    "parent_reference",
-    "parent_trace_context",
     "task_notification",
-    "with_parent_trace",
 ]

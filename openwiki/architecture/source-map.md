@@ -1,173 +1,165 @@
 ---
 type: architecture source map
 title: Source Map and Ownership Boundaries
-description: Change-routing map for Deep Agents graph assembly and filesystem approvals, ACP session approvals and local context, and Talon media and sandbox behavior.
-tags: [deepagents, source-map, architecture, middleware, acp, talon, sandbox]
+description: Practical change-routing map for Deep Agents graph assembly and sandbox backend semantics, plus Talon's host, runtime, media, approval, and sandbox boundaries.
+tags: [deepagents, source-map, architecture, middleware, talon, sandbox, testing]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-13T08:11:05.854Z
+    at: 2026-10-14T08:05:41.101Z
 sources:
-  - id: openwiki-source-ffc41789c892ca61e2829a4c
-    resource: repo://libs/acp/deepagents_acp/server.py
-  - id: openwiki-source-c6d9f9d7206b6a3e9d7394fe
-    resource: repo://libs/acp/examples/local_context.py
-  - id: openwiki-source-f188d13aef04b643ced86520
-    resource: repo://libs/acp/tests/unit_tests/test_execute_permissions.py
-  - id: openwiki-source-986e87e057d803bd0fa17738
-    resource: repo://libs/acp/tests/unit_tests/test_local_context.py
+  - id: openwiki-source-d4463137befa776cd47750d4
+    resource: repo://libs/deepagents/deepagents/backends/sandbox.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
-    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
+  - id: openwiki-source-5132c2eb08d294721cb871ff
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
-  - id: openwiki-source-851e3a9c96663d8db5ca3dec
-    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
+  - id: openwiki-source-6801a88de6305bc8cbdd259f
+    resource: repo://libs/talon/deepagents_talon/host.py
   - id: openwiki-source-ccdb88feadbc25be2fc7b63b
     resource: repo://libs/talon/deepagents_talon/media.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-580d91c607e0a09e0659e565
     resource: repo://libs/talon/deepagents_talon/sandbox.py
+  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
+    resource: repo://libs/talon/tests/test_host.py
   - id: openwiki-source-e0db085f967450f48196d999
     resource: repo://libs/talon/tests/test_media.py
-  - id: openwiki-source-e264ca9ac3bacf697861a60e
-    resource: repo://libs/talon/tests/unit_tests/test_media_blobs.py
+  - id: openwiki-source-4d6726e17c8a0c78539a7d33
+    resource: repo://libs/talon/tests/test_runtime.py
   - id: openwiki-source-57a0613315e23277d358df76
     resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
 ---
 
 # Source Map and Ownership Boundaries
 
-Use this map to start a change at the component that owns its behavior and its focused regression suite. It covers the boundaries that are easiest to accidentally change through an integration: SDK graph assembly and filesystem approval predicates, ACP's protocol-specific session behavior, and Talon's channel-media and sandbox adaptation. For the full stack see [architecture overview](./overview.md), [middleware stack](./middleware-stack.md), [ACP integration](../integrations/acp.md), [Talon integration](../integrations/talon.md), and the [testing guide](../testing/testing-guide.md).
+Use this page to begin a change at the owner of the behavior, then run the narrow regression suite that exercises its contract. The principal boundary is deliberate: Deep Agents owns reusable graph construction and backend behavior; Talon owns conversion between channel events and an agent request, long-running conversation lifecycle, and its runtime-specific graph wiring. See the [architecture overview](./overview.md), [middleware catalog](../concepts/middleware-catalog.md), [Talon scheduling](../concepts/talon-scheduling.md), [quickstart](../quickstart.md), and [testing guide](../testing/testing-guide.md) for broader orientation.
 
 ## Route a change
 
 | Change intent | Owner and primary seam | Focused tests |
 | --- | --- | --- |
-| Change the Deep Agents middleware stack, default backend, profile exclusions, subagent wiring, or graph state | `libs/deepagents/deepagents/graph.py` — `create_deep_agent` | `libs/deepagents/tests/unit_tests/test_graph.py` |
-| Change how filesystem `interrupt` permissions decide whether a tool call needs review | `libs/deepagents/deepagents/middleware/_fs_interrupt.py` | `libs/deepagents/tests/unit_tests/test_permissions.py` |
-| Change ACP session construction, replay, stream projection, or permission prompts | `libs/acp/deepagents_acp/server.py` — `AgentServerACP` | `libs/acp/tests/test_agent.py` and `libs/acp/tests/unit_tests/test_execute_permissions.py` |
-| Change the ACP local-context example or its compaction behavior | `libs/acp/examples/local_context.py` — `LocalContextMiddleware` | `libs/acp/tests/unit_tests/test_local_context.py` |
-| Change channel attachment normalization, model image content, Markdown media output, or outbound path validation | `libs/talon/deepagents_talon/media.py` | `libs/talon/tests/test_media.py` and `libs/talon/tests/unit_tests/test_media_blobs.py` |
-| Change sandbox startup, cleanup, host-versus-sandbox routing, or sandbox configuration | `libs/talon/deepagents_talon/sandbox.py`, with configuration in `config.py` | `libs/talon/tests/unit_tests/test_sandbox.py` |
+| Change default graph state, middleware ordering, profiles, built-in tools, subagent construction, or graph compilation | `libs/deepagents/deepagents/graph.py` — `create_deep_agent` | `libs/deepagents/tests/unit_tests/test_graph.py` |
+| Change normalized filesystem approval matching | `libs/deepagents/deepagents/middleware/_fs_interrupt.py` | `libs/deepagents/tests/unit_tests/test_permissions.py` |
+| Change a generic remote sandbox's derived filesystem operations, transfer strategy, parsing, truncation, or shell command construction | `libs/deepagents/deepagents/backends/sandbox.py` — `BaseSandbox` | `libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py` |
+| Change Talon's channel lifecycle, commands, conversation replacement/cancellation, media delivery, or host-side approval and authorization interaction | `libs/talon/deepagents_talon/host.py` — `TalonHost` | `libs/talon/tests/test_host.py` |
+| Change Talon's Deep Agents graph composition, runtime tool reload, checkpoint use, retries, approval-resume loop, model selection, or local backend environment | `libs/talon/deepagents_talon/runtime.py` — `DeepAgentRuntime` | `libs/talon/tests/test_runtime.py` and `libs/talon/tests/unit_tests/test_tool_approval_runtime.py` |
+| Change Talon sandbox startup or the host-versus-sandbox filesystem route set | `libs/talon/deepagents_talon/sandbox.py`, with settings in `config.py` | `libs/talon/tests/unit_tests/test_sandbox.py` |
+| Change attachment normalization or safe Markdown-media extraction | `libs/talon/deepagents_talon/media.py` | `libs/talon/tests/test_media.py`, `libs/talon/tests/test_host.py`, and `libs/talon/tests/unit_tests/test_media_blobs.py` |
 
 ```mermaid
 flowchart TD
-  Input["Change request"] --> SDK["Deep Agents graph and filesystem rules"]
-  SDK --> ACP["ACP session adapter"]
-  SDK --> Talon["Talon runtime host"]
-  ACP --> ACPTests["ACP focused tests"]
-  Talon --> Media["Media adapter"]
-  Talon --> Sandbox["Sandbox adapter"]
-  Media --> TalonTests["Talon focused tests"]
-  Sandbox --> TalonTests
+  Change["Change request"] --> SDK["Deep Agents SDK"]
+  SDK --> Graph["graph.py graph assembly"]
+  SDK --> BaseSandbox["backends/sandbox.py backend contract"]
+  Change --> Talon["Talon runtime boundary"]
+  Talon --> Host["host.py channel lifecycle"]
+  Talon --> Runtime["runtime.py graph invocation"]
+  Talon --> TalonSandbox["sandbox.py provider routing"]
+  Host --> HostTests["test_host.py"]
+  Runtime --> RuntimeTests["test_runtime.py"]
+  BaseSandbox --> SandboxTests["test_sandbox_backend.py"]
 ```
 
-This routing diagram distinguishes reusable SDK policy from the ACP and Talon adapters that project it into separate runtimes.
+This map separates reusable SDK behavior from Talon's channel-facing orchestration and deployment adapter.
 
-## SDK: graph construction and filesystem approval are separate owners
+## Deep Agents: graph assembly is policy; a sandbox backend is transport
 
-`create_deep_agent` is the SDK construction seam. It resolves an explicit model or the deprecated default, chooses the harness profile, applies profile tool-description overrides, defaults the backend to `StateBackend`, constructs subagent specifications, and passes the completed middleware list to LangChain `create_agent`. The returned runnable is configured for Deep Agents metadata and uses `DeepAgentState` by default; its `messages` channel uses `DeltaChannel` with periodic snapshots to avoid quadratic checkpoint growth.
+### `graph.py`: assemble the agent once, preserve stack invariants
 
-Middleware order is intentionally not a frontend concern. A caller middleware with the same `.name` replaces the existing entry in place. A novel entry is inserted after the captured core stack and before profile, skills, prompt-cache, and memory tail behavior. Profile middleware exclusion is applied before and after caller merging; excluded tools are filtered last, so a caller middleware cannot put a profile-excluded tool back into the usable set. `FilesystemMiddleware` and `SubAgentMiddleware` are required scaffolding: profile exclusion rejects their removal rather than assembling a partially working agent.
+`create_deep_agent` is the construction seam. It resolves the supplied model and its harness profile, defaults the backend to `StateBackend`, builds synchronous and asynchronous subagent wiring, and gives LangChain `create_agent` the final tools, prompt, state schema, checkpointer, store, and middleware list. `DeepAgentState.messages` uses a `DeltaChannel` with snapshots, so checkpoint growth is linear rather than repeatedly storing the whole message list.
+
+The stack is a behavioral contract, not merely a list. The core begins with filesystem, synchronous subagent when present, summarization, tool-call patching, and optional async-subagent middleware. Profile behavior, skills, prompt caching, memory, generated or caller-specified human review, unsupported-content handling, and final tool exclusion form the tail. A custom middleware sharing a name replaces that position; a novel one is inserted after core middleware and before the tail. Exclusions are applied again after the merge, and tool exclusion is appended last.
+
+`FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding. The former supplies built-in filesystem behavior and applies permissions; the latter supplies the `task` tool. A harness profile cannot exclude either and leave a silently degraded graph. For permission work, keep the two layers distinct: filesystem middleware executes and enforces access, while graph assembly derives `HumanInTheLoopMiddleware` predicates from `interrupt` rules. Caller-supplied `interrupt_on` wins for the same tool name.
 
 ```mermaid
 flowchart TD
-  Config["model profile backend and options"] --> Assemble["create_deep_agent"]
-  Assemble --> Core["filesystem subagent summary and patch stack"]
-  Core --> Merge["replace same name or insert caller middleware"]
-  Merge --> Filter["apply exclusions and final tool filter"]
+  Inputs["model profile backend and options"] --> Assemble["create_deep_agent"]
+  Assemble --> Core["filesystem subagent summary patch and async stack"]
+  Core --> Tail["profile skills cache memory review and content tail"]
+  Tail --> Merge["replace matching name or insert custom entry"]
+  Merge --> Exclude["apply middleware exclusion"]
+  Exclude --> Filter["append final tool exclusion"]
   Filter --> Agent["LangChain create_agent"]
-  Agent --> Graph["LangGraph runnable and checkpoints"]
+  Agent --> Graph["compiled graph with DeltaChannel messages"]
 ```
 
-This construction flow shows the ordering at which custom middleware and profile policy take effect.
+This ordering shows why a custom middleware cannot restore a profile-excluded tool and why required middleware must remain in the assembled graph.
 
-Filesystem permissions have two layers. `FilesystemMiddleware` enforces allow and deny access during tool execution. Graph assembly separately turns `interrupt` permission rules into `HumanInTheLoopMiddleware` configurations. User-supplied `interrupt_on` takes precedence for a tool name. This separation is important: an approval predicate does not replace the filesystem middleware's post-edit/pre-execution permission enforcement.
+### `backends/sandbox.py`: derive file operations from the provider primitive
 
-`_fs_interrupt.py` owns the conservative predicate geometry. Exact-path tools (`read_file`, `write_file`, and `edit_file`) interrupt only when their normalized path matches an interrupt rule and is not denied. Bulk tools (`ls`, `glob`, `grep`, and recursive `delete`) interrupt when their search scope could overlap an interrupt rule. A pathless bulk call, current-directory aliases, absolute `glob` patterns, and relative patterns containing `..` are handled conservatively so they cannot bypass review; when a backend can resolve paths, the predicate also considers a symlink-resolved target. The generated review configuration allows approve, edit, reject, and respond; edited calls still enter the filesystem permission check.
+`BaseSandbox` is the reusable implementation for a provider that can execute a command and upload/download bytes. It is not a containment or authorization boundary: callers with its `execute()` capability already have the shell authority the provider exposes. Provider subclasses own only `execute`, `upload_files`, `download_files`, and `id`; the base class derives listing, search, glob, read, write, edit, and deletion behavior.
 
-**Change safely:** change stack placement or profile behavior with `test_graph.py`; change path normalization, exact/bulk coverage, or permission bypass protections with `test_permissions.py`. Do not move the approval logic into ACP or Talon: both consume the graph's interrupts.
+The transfer mechanism is intentionally operation-specific. Listing, grep, glob, and paginated read run structured commands inside the sandbox; write first creates parents and then uploads UTF-8 bytes. Small edits run a server-side replacement script, while larger old/new payloads are uploaded to randomized temporary files and replaced server-side so the source file does not cross the boundary. Empty old strings fail before dispatch. Parsed malformed server output becomes an operation error rather than an uncaught decoding exception.
 
-## ACP: session-scoped protocol projection
+Execution-output offload is opt-in per sandbox implementation. When `enable_capture_offload` is true, `execute_with_offload` wraps the command to retain large output at a sandbox path and return only a preview while preserving the child exit code; otherwise it returns unwrapped output and lets filesystem middleware use its normal handling. Async grep and glob add outer timeouts, and their result contracts distinguish a hard error from an incomplete result.
 
-`AgentServerACP` is an ACP bridge around either a compiled graph or a factory taking `AgentSessionContext(cwd, mode, model)`. It owns ACP-only session maps: cwd and MCP servers, selected mode and model, cancellation and plan state, reusable approvals, and the currently built graph. Mode or model changes reset a factory-produced graph for that session. `new_session` records cwd and initializes options; the LangGraph config uses the ACP session ID as `thread_id` and persists ACP metadata including cwd, mode, and model.
+**Change safely:** add a regression in `test_sandbox_backend.py` when changing a command template, serialized output, result parser, pagination, quote/base64 handling, or sync/async parity. Do not add Talon policy here; this class is shared backend behavior.
 
-Durable `session/load` is optional. If enabled, it requires a graph with a checkpointer, confirms the checkpoint identifies an ACP session and was created for the requested cwd, restores selectable options, and replays accumulated messages and tool calls before responding. This makes the server—not the ACP client—the owner of the mapping between ACP session semantics and checkpoint metadata.
+## Talon: host owns channel turns; runtime owns graph invocation
 
-During `prompt`, the bridge converts ACP text, image, audio, and resource blocks to LangChain content and streams the graph in `messages` and `updates` modes. It forwards assistant text/reasoning only from the top-level graph namespace, while tool calls are tracked for ACP updates. Cancellation returns `stop_reason="cancelled"`. A non-HITL, free-form LangGraph interrupt is rejected: ACP's permission UI can express fixed approval decisions, not an arbitrary interrupt payload.
+`TalonHost` is the long-running coordinator. It starts the runtime before channels and scheduler, binds channel callbacks, and unwinds already-started components in reverse order if startup fails. Shutdown cancels host work and attempts every component stop even if one fails. `receive_message` derives a provider-qualified conversation root, serializes history and per-conversation work, handles host commands and pending approval/authorization replies before the model, and otherwise replaces the active turn with a new task.
 
-### Exact command approvals
-
-The reusable `approve_always` decision is deliberately narrower for `execute` than for other tools. ACP creates a key from the complete JSON-serializable execute argument object (canonicalized with sorted keys) and an `AgentSessionContext` containing cwd, mode, and model. It then allows only that exact key in that session. A changed command string, added or changed execute argument, changed cwd/mode/model, a different session ID, invalid/non-serializable arguments, cancellation, or a permission-request error cannot inherit or grant reusable command approval. Invalid execute requests do not even expose the always-allow option. Non-`execute` tools retain a tool-name-level always-allow set.
+A replacement increments the conversation generation, cancels the old task, and asks the runtime to repair interrupted checkpoint state. A cancellation that fails to complete within the bound blocks that conversation rather than running overlapping turns. If recovery itself fails after the task stops, the successor is still started with degraded-recovery metadata. `/new` persists a reset counter that produces a new agent thread; scheduled jobs instead use an isolated per-job thread and a run timeout.
 
 ```mermaid
 sequenceDiagram
-  participant Graph as LangGraph agent
-  participant Server as AgentServerACP
-  participant Client as ACP client
-  Graph->>Server: HITL action request
-  Server->>Server: derive exact execute key
-  alt prior exact key in same context
-    Server->>Graph: approve decision
-  else needs review
-    Server->>Client: request permission
-    Client->>Server: approve reject or always allow
-    Server->>Server: store exact key only for valid always allow
-    Server->>Graph: resume decision
-  end
+  participant Channel as Channel adapter
+  participant Host as TalonHost
+  participant Runtime as DeepAgentRuntime
+  participant Graph as Deep Agents graph
+  Channel->>Host: inbound message
+  Host->>Host: lock conversation and handle commands
+  Host->>Host: cancel and repair prior turn when needed
+  Host->>Runtime: AgentRequest with thread and metadata
+  Runtime->>Graph: invoke or resume graph
+  Graph-->>Runtime: text or approval interrupt
+  Runtime-->>Host: AgentResult or approval request
+  Host-->>Channel: progress and final reply
 ```
 
-This sequence shows why command reuse must remain scoped to both complete arguments and current session context.
+This sequence identifies the boundary: the host decides which channel interaction can become a request or approval response; the runtime decides how that request drives the graph.
 
-### Local context is an example middleware, not server state
+`DeepAgentRuntime.start` resolves subagents, loads the approval snapshot, and creates its graph. Its graph factory supplies Talon tools, approval tools and `interrupt_on`, runtime middleware, a checkpointer, the selected model, skills, memory, and the configured backend to `create_deep_agent`. It replaces the default filesystem middleware to enable binary offload for non-state backends, and records the live tool attachment catalog after compilation. Tool, MCP, subagent, smart-model, or approval configuration changes rebuild the graph under a lock; active invocations retain their context-local graph.
 
-`libs/acp/examples/local_context.py` supplies `LocalContextMiddleware` as an example of custom graph middleware. It runs its detection script through the selected backend, stores the initial snapshot in private per-thread state, and adds that baseline to the model system prompt. On a new summarization cutoff it runs again. If the content changed, it adds one escaped, tagged internal `HumanMessage` that supersedes earlier local facts; it records the cutoff even on a failed or empty refresh so the same event does not cause a retry loop. Fingerprints prevent duplicate snapshots. The script therefore works against a local shell or a remote sandbox without ACP server changes.
+For a turn, the runtime refreshes tools, snapshots approval policy, binds request-scoped context variables, invokes with the conversation as LangGraph `thread_id`, and retries only recognized transient errors. It adds pending background results and can retry empty responses with continuation prompts before requesting a forced summary. Interrupts must have unique resumable IDs. The runtime batches their action requests, asks the host-provided handler, and resumes every action with the resulting decisions; cron turns, background delivery, and channels without a handler are automatically rejected rather than waiting for an unavailable person.
 
-Messages tagged with `additional_kwargs["lc_source"] == "local_context"` stay internal to ACP presentation: `AgentServerACP` suppresses them from both live assistant content updates and session replay. Preserve that tag if changing the example; changing only the example test without the server projection test could leak environment-derived context to a protocol client.
+### Channel media and host-facing security
 
-**Change safely:** run `test_execute_permissions.py` for approval-key changes and `test_local_context.py` for refresh/compaction behavior. Use `test_agent.py` for end-to-end ACP stream, replay, and interrupt projection behavior.
+The host prepares inbound text before invocation, including supported attachment description and optional Slack thread context, and separately stores validated multimodal image content in request metadata. `DeepAgentRuntime` consumes that `model_content` when present. Its replacement filesystem middleware can offload binary content to blobs for non-state backends, preventing checkpoint state from retaining a base64 image payload. On egress, the host extracts Markdown media references and accepts only media that passes the configured outbound-root containment check.
 
-## Talon: media adaptation and sandbox lifecycle
+Talon's default local backend is also runtime-owned. It creates a `CompositeBackend` over `LocalShellBackend`, initializes an owner-only artifacts directory, and gives child processes an allowlisted, scrubbed environment with a fixed safe `PATH`; model credentials, tracing variables, loader-injection variables, and secret-marked names do not pass through.
 
-Talon is an experimental runtime. The model-backed CLI path opens a configured sandbox for the host lifetime, opens checkpoint/history resources, and gives `DeepAgentRuntime` the sandbox composite backend and its working directory. Without a configured model it uses the echo runtime instead. The Talon runtime invokes the SDK graph; media conversion and sandbox routing are Talon-specific preparation around that graph.
+Host-side approvals are interaction state, not graph policy. The host records the pending request with provider, channel conversation, agent conversation, prompt message, and originating sender. Text or reaction responses must match that context and sender before resolving the future. MCP authorization callbacks are similarly bound to the originating channel, conversation, sender, endpoint, and expiry, keeping unsolicited or cross-channel callback URLs out of the model.
 
-### Media: bounded input and safe outbound references
+## Talon sandbox mode: fail closed and route only assistant-local state home
 
-`media.py` normalizes channel metadata into text and optional model content. Readable, supported document attachments are inlined only up to `MAX_TEXT_DOCUMENT_BYTES`; oversized, unreadable, or unsupported attachments become bounded fallback text. Video and unknown binary media are represented as fallback text, and voice/audio is left to the transcription path rather than inlined here.
+Talon's sandbox adapter opens an optional provider session for the host lifetime. With no sandbox setting it yields no session. With one, startup runs the synchronous provider factory off the event loop and raises `SandboxStartupError` rather than silently falling back to host execution; a sandbox created after cancellation is still closed. An attached sandbox ID is not owned for deletion, while a Talon-created sandbox is closed on context exit.
 
-Only inbound images produce multimodal model content. An image must have an accepted reported/guessed/sniffed image MIME type, be readable, and be at most `MAX_INBOUND_IMAGE_BYTES`; accepted data becomes a standard base64 image block after a text block. `DeepAgentRuntime` forwards the request's validated `model_content` to the graph. Filesystem middleware can offload that image data to blobs, so the stored checkpoint does not retain the base64 payload while the model request still receives the image.
-
-For outbound delivery, `extract_markdown_media` removes Markdown image references but masks fenced and inline code first, preventing code examples from becoming attachments. `outbound_channel_media` only emits image or video payloads. When the caller supplies an outbound root, references must be local relative paths: URL schemes, home expansion, absolute paths, Windows drive paths, `..`, missing files, non-regular files, and symlink escapes are rejected after canonical resolution.
-
-### Sandbox: fail closed and keep a minimal host route set
-
-`TalonConfig.sandbox` reads `DEEPAGENTS_TALON_SANDBOX` plus optional ID, snapshot, and setup script. `open_sandbox` yields `None` when sandboxing is absent; otherwise it starts the provider in a worker thread and raises `SandboxStartupError` on failure rather than falling back to host execution. A Talon-created sandbox is closed on exit; an attached sandbox ID is not deleted. The handoff object closes a sandbox that completes startup after its awaiting coroutine has been cancelled, avoiding a cancellation leak.
-
-The resulting `CompositeBackend` sends ordinary filesystem and every `execute` call to the sandbox. It routes only the assistant-local `skills/`, `memory/`, and `/blobs/` namespaces to virtual host-backed filesystems. In particular, `tools.json` is not a host route, while blobs remain on the host under `artifacts/blobs` so offloaded media survives sandbox recreation. Sandbox mode also filters Talon memory candidates to the routed assistant `memory/` directory and tells the agent which sandbox working directory to use.
+The composite backend makes the sandbox the default for normal files and every `execute` call. Only the assistant's `skills/`, `memory/`, and blob namespace are host-routed. That exception set is intentional: skills and memory remain assistant-local, and blobs under host artifacts survive sandbox recreation. Approval storage such as `tools.json` is not host-routed, so it remains in the sandbox default path. Sandbox mode also limits memory candidates to the routed assistant memory directory and adds the remote working directory to the system prompt.
 
 ```mermaid
 flowchart TD
-  Config["TalonConfig sandbox settings"] --> Open["open_sandbox"]
-  Open --> Backend["CompositeBackend"]
-  Backend --> Remote["sandbox default and execute"]
-  Backend --> Skills["host skills route"]
-  Backend --> Memory["host memory route"]
-  Backend --> Blobs["host blobs route"]
-  Blobs --> Persist["media survives sandbox recreation"]
+  Settings["Talon sandbox settings"] --> Open["open_sandbox"]
+  Open --> Composite["CompositeBackend"]
+  Composite --> Default["sandbox files and execute"]
+  Composite --> Skills["host skills route"]
+  Composite --> Memory["host memory route"]
+  Composite --> Blobs["host artifact blobs route"]
+  Blobs --> Durable["survive sandbox recreation"]
 ```
 
-This routing diagram captures the intentional exception set: persistent assistant content and blobs stay host-backed, while general tool access remains sandboxed.
-
-**Change safely:** use `test_media.py` for input/output parsing and containment, `test_media_blobs.py` for graph-to-blob persistence, and `test_sandbox.py` for provider settings, routing, startup cleanup, cancellation, and fail-closed behavior.
+This route set is the safe extension point: add an explicit route only when host persistence is required and its path containment is established.
 
 ## Focused change checklist
 
-- **Graph assembly or profile exclusions:** edit `graph.py`; cover ordering, required scaffolding, and final tool exclusion in `test_graph.py`.
-- **Filesystem interrupt matching:** edit `_fs_interrupt.py`; add exact, bulk, pathless, pattern, and symlink cases to `test_permissions.py` as applicable.
-- **ACP approval reuse:** edit `server.py` and prove changed command text, arguments, session context, and session ID cannot reuse approval in `test_execute_permissions.py`.
-- **ACP context refresh:** edit the example and preserve its internal message tag; run `test_local_context.py` and the relevant ACP server projection coverage.
-- **Talon media:** edit `media.py`; test payload limits, MIME handling, code masking, root containment, and symlink behavior.
-- **Talon sandbox:** edit `sandbox.py` (and `config.py` or runtime wiring when needed); test failure and cancellation cleanup as well as route ownership.
+- **Graph ordering, harness profile, subagents, or final tool list:** edit `graph.py`; cover placement, protected middleware, exclusions, and state behavior in `test_graph.py`.
+- **Derived sandbox filesystem behavior:** edit `backends/sandbox.py`; cover both sync and async paths, structured parse failures, bounds, and transfer mechanism in `test_sandbox_backend.py`.
+- **Channel turn sequencing, cancellation, commands, authorization, approval routing, or delivery:** edit `host.py`; use the relevant `test_host.py` cases, especially replacement/cancellation and sender/message-bound approvals.
+- **Graph rebuild, context variables, retries, approval resumption, model selection, or backend child environment:** edit `runtime.py`; use `test_runtime.py` and the approval-runtime tests.
+- **Media crossing the channel/runtime boundary:** change `media.py`, `host.py`, or runtime wiring according to ownership; cover inbound model content, blob offload, outbound root containment, and code masking.
+- **Provider lifecycle or host route exceptions:** edit Talon's `sandbox.py` and configuration together; prove fail-closed startup, cancellation cleanup, and `skills`, `memory`, `tools.json`, and blob routing in `test_sandbox.py`.

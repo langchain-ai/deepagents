@@ -16,9 +16,9 @@ from deepagents.middleware.async_subagents import (
     _current_run_id,
     _failure_text,
     _final_text,
+    _launching_agent,
     _notify_parent,
     _task_event,
-    parent_reference,
 )
 
 
@@ -88,7 +88,7 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
     async def _areport(self, status: Literal["success", "error", "waiting"], **details: object) -> None:
         """Notify once per run, for this graph's own run that an async subagent tool started."""
         config = get_config()
-        if not parent_reference(config) or not _is_own_task_run(config):
+        if not _launching_agent(config) or not _is_own_task_run(config):
             return
         run_key = _current_run_id(config)
         if run_key is None or run_key in self._reported:

@@ -14,11 +14,10 @@ import html
 import json
 import logging
 import urllib.parse
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
+from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, NotRequired, TypedDict, TypeVar, cast
+from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
 
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -44,10 +43,7 @@ from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
 from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 from langgraph_sdk.schema import Interrupt, Run, Thread
-from langsmith import tracing_context
 from langsmith.run_helpers import get_current_run_tree
-from langsmith.run_trees import RunTree
-from langsmith.utils import tracing_is_enabled
 from pydantic import BaseModel, Field
 
 from deepagents.middleware._blob_offload import _BLOB_PAYLOADS_KEY, _ahydrate_tool_messages, _hydrate_tool_messages
@@ -80,11 +76,6 @@ class AsyncSubAgent(TypedDict):
         transport is available only through an async parent-agent entrypoint,
         such as `ainvoke`. The synchronous `invoke` path requires a URL for a
         reachable Agent Protocol server.
-
-    The subagent's run nests under the parent's trace in LangSmith only if its
-    graph is wrapped with `with_parent_trace` (or its factory uses
-    `parent_trace_context`). Its graph factory can read the launching agent's
-    thread with `parent_reference`, for example to work in the parent's sandbox.
 
     To run a subagent defined right here in the background instead, give a
     regular subagent spec `background: True` (see `SubAgent.background`).
@@ -272,7 +263,10 @@ def _resolve_headers(spec: AsyncSubAgent) -> dict[str, str]:
 
 
 _NEST_UNDER_PARENT = "ls_nest_under_parent"
-"""Baggage metadata key (JSON `true`) marking trace headers as a parent to nest under."""
+"""Baggage metadata key (JSON `true`) marking trace headers as a parent to nest under.
+
+Receivers that adopt the trace check for it (Managed Deep Agents does), so keep the name stable.
+"""
 
 
 def _trace_headers() -> dict[str, str]:
@@ -291,109 +285,15 @@ def _trace_headers() -> dict[str, str]:
     return {"langsmith-trace": run_tree.dotted_order, "baggage": ",".join(baggage)}
 
 
-@contextmanager
-def parent_trace_context(config: RunnableConfig) -> Iterator[None]:
-    """Nest this run's trace under the async subagent call that launched it.
-
-    !!! warning "Experimental"
-
-        This helper may change without notice.
-
-    Use it in a subagent's graph factory to adopt the trace `start_async_task`
-    sent. It does nothing unless tracing is on and the headers came from
-    deepagents. For a plain graph, `with_parent_trace` does this for you.
-
-    Only use it for graphs whose callers you trust: the trace headers come from
-    the request, so a caller could choose where these runs are recorded.
-
-    Args:
-        config: The run config the Agent Server passes to the graph factory.
-
-    Example:
-        ```python
-        from contextlib import asynccontextmanager
-
-        from deepagents import create_deep_agent
-        from deepagents.middleware import parent_trace_context
-
-
-        @asynccontextmanager
-        async def researcher(config):
-            with parent_trace_context(config):
-                yield create_deep_agent(model=..., tools=[...])
-        ```
-    """
-    parent = _launching_parent(config.get("configurable") or {})
-    if parent is None or not tracing_is_enabled():
-        yield
-        return
-    with tracing_context(parent=parent):
-        yield
-
-
-GraphT = TypeVar("GraphT")
-
-
-def with_parent_trace(graph: GraphT) -> Callable[[RunnableConfig], AbstractAsyncContextManager[GraphT]]:
-    """Wrap an async subagent's graph so its runs nest under the launching call's trace.
-
-    !!! warning "Experimental"
-
-        This helper may change without notice.
-
-    Returns a graph factory that runs `graph` inside `parent_trace_context`.
-    Register the result in `langgraph.json` in place of the graph itself. Only
-    wrap graphs whose callers you trust (see `parent_trace_context`).
-
-    Args:
-        graph: The compiled graph the async subagent's `graph_id` points to.
-
-    Returns:
-        A graph factory for the Agent Server.
-
-    Example:
-        ```python
-        from deepagents import create_deep_agent
-        from deepagents.middleware import with_parent_trace
-
-        research_agent = with_parent_trace(create_deep_agent(model=..., tools=[...]))
-        ```
-    """
-
-    @asynccontextmanager
-    async def factory(config: RunnableConfig) -> AsyncIterator[GraphT]:
-        with parent_trace_context(config):
-            yield graph
-
-    return factory
-
-
-def _launching_parent(configurable: Mapping[str, Any]) -> RunTree | None:
-    """Rebuild the launching span from the trace headers the Agent Server kept, if marked."""
-    trace = configurable.get("langsmith-trace")
-    metadata = configurable.get("langsmith-metadata")
-    if not isinstance(trace, str) or not trace or not isinstance(metadata, dict) or metadata.get(_NEST_UNDER_PARENT) is not True:
-        return None
-    project = configurable.get("langsmith-project")
-    baggage = f"langsmith-project={urllib.parse.quote(project)}" if isinstance(project, str) else ""
-    try:
-        return RunTree.from_headers({"langsmith-trace": trace, "baggage": baggage})
-    except ValueError:
-        logger.warning("Ignoring malformed langsmith-trace; the subagent's run keeps its own trace")
-        return None
-
-
 _PARENT_KEY = "deepagents_parent"
-"""`configurable` key carrying the launching agent's `ParentReference` to an async subagent's run."""
+"""`configurable` key carrying the launching agent's `_ParentReference` to an async subagent's run.
+
+Apps read it directly (Managed Deep Agents does), so keep the key and shape stable.
+"""
 
 
-class ParentReference(TypedDict):
-    """What an async subagent's run knows about the agent that launched it.
-
-    !!! warning "Experimental"
-
-        This shape may change without notice.
-    """
+class _ParentReference(TypedDict):
+    """What an async subagent's run knows about the agent that launched it."""
 
     thread_id: NotRequired[str]
     """The parent's thread, where notifications for the parent go."""
@@ -402,14 +302,20 @@ class ParentReference(TypedDict):
     """The parent's assistant, which handles runs queued on its thread."""
 
 
-def _parent_reference(config: RunnableConfig) -> ParentReference:
+def _parent_reference(config: RunnableConfig) -> _ParentReference:
     """Describe the running agent so the async subagent it launches can find it."""
-    reference: ParentReference = {}
+    reference: _ParentReference = {}
     if thread_id := (config.get("configurable") or {}).get("thread_id"):
         reference["thread_id"] = str(thread_id)
     if assistant_id := (config.get("metadata") or {}).get("assistant_id") or (config.get("configurable") or {}).get("assistant_id"):
         reference["assistant_id"] = str(assistant_id)
     return reference
+
+
+def _thread_metadata(runtime: ToolRuntime) -> dict[str, str]:
+    """Metadata for a task's thread, so apps can find a parent's subagent threads with `threads.search`."""
+    reference = _parent_reference(runtime.config)
+    return {"parent_thread_id": reference["thread_id"]} if "thread_id" in reference else {}
 
 
 def _run_options(runtime: ToolRuntime, configurable: Mapping[str, Any] | None = None) -> dict[str, Any]:
@@ -424,25 +330,10 @@ def _run_options(runtime: ToolRuntime, configurable: Mapping[str, Any] | None = 
     return options
 
 
-def parent_reference(config: RunnableConfig) -> ParentReference | None:
-    """Return the reference to the agent that launched this async subagent run.
-
-    !!! warning "Experimental"
-
-        This helper may change without notice.
-
-    Use it in an async subagent's graph factory to find the agent that launched
-    it, for example to work in that agent's sandbox: look up the sandbox your
-    app keeps for the parent's thread and reconnect to it.
-
-    Args:
-        config: The run config the Agent Server passes to the graph factory.
-
-    Returns:
-        The parent reference, or `None` when the run wasn't launched by an async subagent tool.
-    """
+def _launching_agent(config: RunnableConfig) -> _ParentReference | None:
+    """The reference this run was launched with, or `None` if no async subagent tool launched it."""
     reference = (config.get("configurable") or {}).get(_PARENT_KEY)
-    return cast("ParentReference", reference) if isinstance(reference, dict) else None
+    return cast("_ParentReference", reference) if isinstance(reference, dict) else None
 
 
 _WORKER_KEY = "deepagents_worker"
@@ -454,9 +345,12 @@ the thread (such as the user answering the subagent) still runs the subagent.
 """
 
 
-def _thread_options(spec: AsyncSubAgent) -> dict[str, Any]:
-    """`threads.create` arguments for a task: a background subagent's thread records its name."""
-    return {"metadata": {_WORKER_KEY: spec["name"]}} if _is_worker(spec) else {}
+def _thread_options(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
+    """`threads.create` arguments for a task: its parent, and a background subagent's name."""
+    metadata = _thread_metadata(runtime)
+    if _is_worker(spec):
+        metadata[_WORKER_KEY] = spec["name"]
+    return {"metadata": metadata}
 
 
 def _launch_target(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
@@ -684,7 +578,7 @@ async def _notify_parent(config: RunnableConfig, event: TaskEvent) -> None:
     the user answers its approval. Schedules one delayed check for a parent that
     was just finishing. Never raises.
     """
-    parent = parent_reference(config) or {}
+    parent = _launching_agent(config) or {}
     if "thread_id" not in parent or "assistant_id" not in parent:
         return
     if await _awake_parent(parent["thread_id"], parent["assistant_id"], event) != "later" or "run_id" not in event:
@@ -812,7 +706,7 @@ def _build_start_tool(
         messages = _start_task_messages(spec, runtime, description)
         try:
             client = clients.get_sync(subagent_type)
-            thread = client.threads.create(**_thread_options(spec))
+            thread = client.threads.create(**_thread_options(spec, runtime))
             run = client.runs.create(
                 thread_id=thread["thread_id"],
                 input={"messages": messages},
@@ -853,7 +747,7 @@ def _build_start_tool(
         messages = await _astart_task_messages(spec, runtime, description)
         try:
             client = clients.get_async(subagent_type)
-            thread = await client.threads.create(**_thread_options(spec))
+            thread = await client.threads.create(**_thread_options(spec, runtime))
             run = await client.runs.create(
                 thread_id=thread["thread_id"],
                 input={"messages": messages},

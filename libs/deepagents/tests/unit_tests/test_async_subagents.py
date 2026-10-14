@@ -21,7 +21,6 @@ from langgraph.errors import GraphInterrupt
 from langgraph.types import Command, Interrupt
 from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 from langsmith import tracing_context
-from langsmith.run_helpers import get_tracing_context
 from langsmith.run_trees import RunTree
 
 from deepagents import create_deep_agent
@@ -35,10 +34,7 @@ from deepagents.middleware.async_subagents import (
     _build_async_subagent_tools,
     _resolve_headers,
     _tasks_reducer,
-    parent_reference,
-    parent_trace_context,
     task_notification,
-    with_parent_trace,
 )
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -378,7 +374,7 @@ async def test_nonfork_tools_do_not_reload_media_after_approval(tmp_path: Path, 
         downloads.assert_not_called()
         return "pong"
 
-    def create_thread() -> dict[str, str]:
+    def create_thread(**_kwargs: Any) -> dict[str, str]:
         downloads.assert_not_called()
         return {"thread_id": "child"}
 
@@ -1332,76 +1328,6 @@ class TestStaleStatusGuidanceInToolDescriptions:
         assert "stale" in self._descriptions()["list_async_tasks"].lower()
 
 
-PARENT_TRACE = "20260101T000000000000Z01a111d6-47b6-7562-b56e-a4ebf257985d"
-
-
-def _child_config(**configurable: Any) -> dict[str, Any]:
-    """The run config the Agent Server builds from `_trace_headers()` output."""
-    base: dict[str, Any] = {
-        "langsmith-trace": PARENT_TRACE,
-        "langsmith-metadata": {"ls_nest_under_parent": True},
-        "langsmith-project": "parent project",
-    }
-    base.update(configurable)
-    return {"configurable": base}
-
-
-class TestParentTraceContext:
-    def test_adopts_marked_parent_when_tracing(self) -> None:
-        with tracing_context(enabled=True), parent_trace_context(_child_config()):
-            parent = get_tracing_context()["parent"]
-        assert parent is not None
-        assert parent.dotted_order == PARENT_TRACE
-        assert parent.session_name == "parent project"
-
-    def test_does_not_turn_tracing_on(self) -> None:
-        """Being inside a trace would enable tracing, so a server with it off stays off."""
-        with tracing_context(enabled=False), parent_trace_context(_child_config()):
-            assert get_tracing_context()["parent"] is None
-
-    @pytest.mark.parametrize("metadata", [{}, {"ls_nest_under_parent": "true"}, None])
-    def test_ignores_unmarked_parent(self, metadata: dict[str, Any] | None) -> None:
-        """Headers sent for other reasons (or a non-boolean flag) keep the run's own trace."""
-        with tracing_context(enabled=True), parent_trace_context(_child_config(**{"langsmith-metadata": metadata})):
-            assert get_tracing_context()["parent"] is None
-
-    def test_malformed_trace_does_not_raise(self) -> None:
-        with tracing_context(enabled=True), parent_trace_context(_child_config(**{"langsmith-trace": "nope"})):
-            assert get_tracing_context()["parent"] is None
-
-    def test_caller_metadata_and_tags_not_applied(self) -> None:
-        config = _child_config(**{"langsmith-metadata": {"ls_nest_under_parent": True, "thread_id": "t-parent"}, "langsmith-tags": ["a"]})
-        with tracing_context(enabled=True), parent_trace_context(config):
-            context = get_tracing_context()
-        assert context["parent"].metadata == {}
-        assert not context["tags"]
-
-    def test_no_op_without_config(self) -> None:
-        with tracing_context(enabled=True), parent_trace_context({}):
-            assert get_tracing_context()["parent"] is None
-
-
-class TestWithParentTrace:
-    async def test_factory_yields_graph_inside_parent_trace(self) -> None:
-        graph = object()
-        factory = with_parent_trace(graph)
-        with tracing_context(enabled=True):
-            async with factory(_child_config()) as built:
-                parent = get_tracing_context()["parent"]
-            after = get_tracing_context()["parent"]
-        assert built is graph
-        assert parent is not None
-        assert parent.dotted_order == PARENT_TRACE
-        assert after is None
-
-    async def test_unmarked_parent_yields_graph_unchanged(self) -> None:
-        graph = object()
-        with tracing_context(enabled=True):
-            async with with_parent_trace(graph)(_child_config(**{"langsmith-metadata": {}})) as built:
-                assert get_tracing_context()["parent"] is None
-        assert built is graph
-
-
 def _parent_runtime(tool_call_id: str = "tc_parent") -> ToolRuntime:
     """A runtime for a parent agent running on the Agent Server."""
     return ToolRuntime(
@@ -1436,6 +1362,11 @@ class TestParentReference:
         assert _sent_reference(client) == {"thread_id": "thread_parent", "assistant_id": "assistant_parent"}
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_launch_tags_the_task_thread_with_its_parent(self, mock_get_client: MagicMock) -> None:
+        client = _launch(mock_get_client)
+        assert client.threads.create.call_args.kwargs["metadata"] == {"parent_thread_id": "thread_parent"}
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_update_resends_parent_reference(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.create.return_value = {"run_id": "run_new"}
@@ -1445,10 +1376,6 @@ class TestParentReference:
         runtime.config = _parent_runtime().config
         update.func(task_id="thread_abc", message="more", runtime=runtime)
         assert _sent_reference(mock_client)["thread_id"] == "thread_parent"
-
-    def test_parent_reference_reads_config(self) -> None:
-        assert parent_reference({"configurable": {"deepagents_parent": {"thread_id": "t"}}}) == {"thread_id": "t"}
-        assert parent_reference({"configurable": {}}) is None
 
 
 @patch("deepagents.middleware.async_subagents.get_sync_client")
@@ -1624,7 +1551,7 @@ class TestBackgroundSubagents:
 
         await launch.coroutine(description="dig in", subagent_type="helper", runtime=_parent_runtime())
 
-        create_thread.assert_called_once_with(metadata={"deepagents_worker": "helper"})
+        create_thread.assert_called_once_with(metadata={"parent_thread_id": "thread_parent", "deepagents_worker": "helper"})
 
     @patch("deepagents.middleware.async_subagents.get_client")
     async def test_task_off_agent_server_is_an_error(self, mock_get_client: MagicMock) -> None:

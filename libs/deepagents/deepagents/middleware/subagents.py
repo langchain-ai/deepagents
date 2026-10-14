@@ -124,7 +124,9 @@ class SubAgent(TypedDict):
     middleware: NotRequired[list[AgentMiddleware]]
     """Additional middleware for custom behavior, logging, or rate limiting.
 
-    See `mode` for fork-mode inheritance behavior.
+    With `create_deep_agent` and `mode="fork"`, inherits the parent's custom
+    middleware. Entries here replace inherited entries with the same `.name`.
+
     To restrict filesystem tools, include a `FilesystemMiddleware(tools=...)`
     instance here to replace the subagent's default filesystem middleware.
     """
@@ -204,10 +206,8 @@ class SubAgent(TypedDict):
     diverge from the parent's. `tools` isn't restricted the same way -- a fork's
     own tools work normally; the tradeoff is cache misses.
 
-    With `create_deep_agent`, a fork inherits the parent's custom `middleware`;
-    entries in the subagent's `middleware` override inherited entries with the same name.
-    Spec middleware that changes the prompt or adds or changes tool definitions can
-    break the shared cache prefix with the parent.
+    Middleware that changes the system prompt or tool definitions can prevent
+    the fork from sharing the parent's prompt-cache prefix.
     """
 
 

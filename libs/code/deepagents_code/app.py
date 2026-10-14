@@ -4123,7 +4123,7 @@ class DeepAgentsApp(App):
         """
 
         self._ask_about_selection = _load_bool_display_preference(
-            "display.ask_about_selection", fallback=False
+            "display.ask_about_selection", fallback=True
         )
 
         self._debug_console_click_to_copy = _load_debug_console_click_to_copy()

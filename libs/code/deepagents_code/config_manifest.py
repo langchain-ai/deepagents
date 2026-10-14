@@ -2394,9 +2394,9 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
     ConfigOption(
         key="display.ask_about_selection",
         group="Display",
-        summary='Show "Ask about this" for selected chat text (off by default).',
+        summary='Show "Ask about this" for selected chat text (on by default).',
         kind=OptionKind.BOOL,
-        default=False,
+        default=True,
         toml_keys=("ui", "ask_about_selection"),
     ),
     ConfigOption(

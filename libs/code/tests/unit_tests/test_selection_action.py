@@ -52,15 +52,18 @@ async def test_selection_action_dismisses_without_selection(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize(
-    "config",
+    ("config", "enabled"),
     [
-        "",
-        "[ui]\nask_about_selection = false\n",
-        '[ui]\nask_about_selection = "invalid"\n',
+        ("", True),
+        ("[ui]\nask_about_selection = true\n", True),
+        ("[ui]\nask_about_selection = false\n", False),
+        ('[ui]\nask_about_selection = "invalid"\n', True),
     ],
 )
-async def test_selection_action_is_opt_in(tmp_path: Path, config: str) -> None:
-    """Unset, disabled, and malformed settings retain normal selection copying."""
+async def test_selection_action_config(
+    tmp_path: Path, config: str, *, enabled: bool
+) -> None:
+    """The action defaults on and honors an explicit config opt-out."""
     (tmp_path / "config.toml").write_text(config)
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -72,4 +75,4 @@ async def test_selection_action_is_opt_in(tmp_path: Path, config: str) -> None:
         await pilot.mouse_up(message, offset=(8, 0))
         await pilot.pause()
         assert app.screen.get_selected_text()
-        assert not app.query(SelectionAction)
+        assert bool(app.query(SelectionAction)) is enabled

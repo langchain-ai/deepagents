@@ -128,10 +128,12 @@ class SubAgent(TypedDict):
     in this list replace inherited entries with the same `.name`; entries with
     other names are added.
 
-    Avoid middleware that changes the inherited portion of the
-    parent's system prompt or the tool definitions unless you accept losing
-    shared prompt-cache reuse and the potentially higher model costs. This is
-    distinct from `system_prompt`, which appends instructions to the inherited prompt.
+    Avoid middleware that rewrites the inherited system-prompt prefix in the
+    fork's model request or changes tool definitions unless you accept reduced
+    shared prompt-cache reuse and potentially higher model costs. This is
+    distinct from `SubAgent.system_prompt`, which appends instructions to the
+    inherited prompt. Middleware that only logs or appends instructions need not
+    change the shared prefix.
 
     To restrict filesystem tools, include a `FilesystemMiddleware(tools=...)`
     instance here to replace the subagent's default filesystem middleware.

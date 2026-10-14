@@ -13,26 +13,21 @@ import asyncio
 import json
 import logging
 import urllib.parse
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, NotRequired, TypedDict, TypeVar
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT, TracePolicy, omit_payload
 from langchain.tools import ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.messages import AnyMessage, ToolMessage
-from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
 from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 from langgraph_sdk.schema import Run
-from langsmith import tracing_context
 from langsmith.run_helpers import get_current_run_tree
-from langsmith.run_trees import RunTree
-from langsmith.utils import tracing_is_enabled
 from pydantic import BaseModel, Field
 
 from deepagents.middleware._blob_offload import _BLOB_PAYLOADS_KEY, _ahydrate_tool_messages, _hydrate_tool_messages
@@ -64,10 +59,6 @@ class AsyncSubAgent(TypedDict):
         transport is available only through an async parent-agent entrypoint,
         such as `ainvoke`. The synchronous `invoke` path requires a URL for a
         reachable Agent Protocol server.
-
-    The subagent's run nests under the parent's trace in LangSmith only if its
-    graph is wrapped with `with_parent_trace` (or its factory uses
-    `parent_trace_context`).
     """
 
     name: str
@@ -232,7 +223,10 @@ def _resolve_headers(spec: AsyncSubAgent) -> dict[str, str]:
 
 
 _NEST_UNDER_PARENT = "ls_nest_under_parent"
-"""Baggage metadata key (JSON `true`) marking trace headers as a parent to nest under."""
+"""Baggage metadata key (JSON `true`) marking trace headers as a parent to nest under.
+
+Receivers that adopt the trace check for it (Managed Deep Agents does), so keep the name stable.
+"""
 
 
 def _trace_headers() -> dict[str, str]:
@@ -249,98 +243,6 @@ def _trace_headers() -> dict[str, str]:
     if run_tree.session_name:
         baggage.append(f"langsmith-project={urllib.parse.quote(run_tree.session_name)}")
     return {"langsmith-trace": run_tree.dotted_order, "baggage": ",".join(baggage)}
-
-
-@contextmanager
-def parent_trace_context(config: RunnableConfig) -> Iterator[None]:
-    """Nest this run's trace under the async subagent call that launched it.
-
-    !!! warning "Experimental"
-
-        This helper may change without notice.
-
-    Use it in a subagent's graph factory to adopt the trace `start_async_task`
-    sent. It does nothing unless tracing is on and the headers came from
-    deepagents. For a plain graph, `with_parent_trace` does this for you.
-
-    Only use it for graphs whose callers you trust: the trace headers come from
-    the request, so a caller could choose where these runs are recorded.
-
-    Args:
-        config: The run config the Agent Server passes to the graph factory.
-
-    Example:
-        ```python
-        from contextlib import asynccontextmanager
-
-        from deepagents import create_deep_agent
-        from deepagents.middleware import parent_trace_context
-
-
-        @asynccontextmanager
-        async def researcher(config):
-            with parent_trace_context(config):
-                yield create_deep_agent(model=..., tools=[...])
-        ```
-    """
-    parent = _launching_parent(config.get("configurable") or {})
-    if parent is None or not tracing_is_enabled():
-        yield
-        return
-    with tracing_context(parent=parent):
-        yield
-
-
-GraphT = TypeVar("GraphT")
-
-
-def with_parent_trace(graph: GraphT) -> Callable[[RunnableConfig], AbstractAsyncContextManager[GraphT]]:
-    """Wrap an async subagent's graph so its runs nest under the launching call's trace.
-
-    !!! warning "Experimental"
-
-        This helper may change without notice.
-
-    Returns a graph factory that runs `graph` inside `parent_trace_context`.
-    Register the result in `langgraph.json` in place of the graph itself. Only
-    wrap graphs whose callers you trust (see `parent_trace_context`).
-
-    Args:
-        graph: The compiled graph the async subagent's `graph_id` points to.
-
-    Returns:
-        A graph factory for the Agent Server.
-
-    Example:
-        ```python
-        from deepagents import create_deep_agent
-        from deepagents.middleware import with_parent_trace
-
-        research_agent = with_parent_trace(create_deep_agent(model=..., tools=[...]))
-        ```
-    """
-
-    @asynccontextmanager
-    async def factory(config: RunnableConfig) -> AsyncIterator[GraphT]:
-        with parent_trace_context(config):
-            yield graph
-
-    return factory
-
-
-def _launching_parent(configurable: Mapping[str, Any]) -> RunTree | None:
-    """Rebuild the launching span from the trace headers the Agent Server kept, if marked."""
-    trace = configurable.get("langsmith-trace")
-    metadata = configurable.get("langsmith-metadata")
-    if not isinstance(trace, str) or not trace or not isinstance(metadata, dict) or metadata.get(_NEST_UNDER_PARENT) is not True:
-        return None
-    project = configurable.get("langsmith-project")
-    baggage = f"langsmith-project={urllib.parse.quote(project)}" if isinstance(project, str) else ""
-    try:
-        return RunTree.from_headers({"langsmith-trace": trace, "baggage": baggage})
-    except ValueError:
-        logger.warning("Ignoring malformed langsmith-trace; the subagent's run keeps its own trace")
-        return None
 
 
 class _ClientCache:

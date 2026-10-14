@@ -25,7 +25,7 @@ from langsmith.run_trees import RunTree
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend
-from deepagents.middleware import CompletionCallbackMiddleware
+from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
 from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
@@ -1871,14 +1871,14 @@ class TestTaskNotifications:
         assert _woken_event(server)["error"] == "The subagent failed (RuntimeError)."
 
     @pytest.mark.parametrize("lead_status", ["busy", "interrupted"])
-    async def test_lead_not_idle_is_left_alone_and_retried(self, lead_status: str) -> None:
+    async def test_lead_not_idle_is_left_alone_with_one_delayed_check(self, lead_status: str) -> None:
         server = _FakeServer({"lead_thread": {"status": lead_status, "values": {}, "interrupts": {}}})
 
         await _run_helper({"messages": [AIMessage(content="helper done")]}, server)
 
         assert server.wakes() == []
-        (retry,) = server.checks()
-        assert (retry["after_seconds"], retry["retries"], retry["run_id"]) == (60, 0, "helper_run")
+        (check,) = server.checks()
+        assert (check["after_seconds"], check["run_id"]) == (30, "helper_run")
 
     async def test_lead_whose_last_run_failed_is_woken(self) -> None:
         server = _FakeServer({"lead_thread": {"status": "error", "values": {}, "interrupts": {}}})
@@ -1939,16 +1939,8 @@ def _lead_record(status: str = "running", run_id: str = "run_xyz") -> dict[str, 
     return {"status": "idle", "values": {"messages": [], "async_tasks": {"thread_abc": task}}, "interrupts": {}}
 
 
-def _check(*, pushes: bool | None, **extra: Any) -> dict[str, Any]:
-    return {
-        "task_id": "thread_abc",
-        "run_id": "run_xyz",
-        "attempt": 0,
-        "pushes": pushes,
-        "parent_thread_id": "lead_thread",
-        "assistant_id": "lead_assistant",
-        **extra,
-    }
+def _check() -> dict[str, Any]:
+    return {"task_id": "thread_abc", "run_id": "run_xyz", "parent_thread_id": "lead_thread", "assistant_id": "lead_assistant"}
 
 
 def _child(content: str = "remote done", **values: Any) -> dict[str, Any]:
@@ -1966,107 +1958,61 @@ async def _run_check(server: _FakeServer, check: dict[str, Any]) -> Any:  # noqa
         return await middleware.abefore_agent({"messages": []}, MagicMock())
 
 
-def _checks(server: _FakeServer) -> list[dict[str, Any]]:
-    """The scheduled checks, without the fields every check carries."""
-    return [{k: v for k, v in check.items() if k not in {"task_id", "parent_thread_id", "assistant_id"}} for check in server.checks()]
-
-
 class TestTaskChecks:
-    @pytest.mark.parametrize(
-        ("spec", "pushes", "delay"),
-        [
-            (_make_spec("remote", url=None), None, 60),
-            (_make_spec("remote", url="https://elsewhere"), False, 60),
-            ({"name": "remote", "description": "d", "runnable": MagicMock()}, True, 600),
-        ],
-    )
     @patch("deepagents.middleware.async_subagents.get_client")
-    async def test_launch_schedules_a_stateless_check(self, mock_get_client: MagicMock, spec: Any, pushes: bool | None, delay: int) -> None:  # noqa: ANN401, FBT001  # parametrized
+    async def test_launch_schedules_no_check(self, mock_get_client: MagicMock) -> None:
         server = _FakeServer()
         mock_get_client.return_value = server
-        launch = _get_tool(_build_async_subagent_tools([spec]), "start_async_task")
+        launch = _get_tool(_build_async_subagent_tools([_make_spec("remote", url=None)]), "start_async_task")
 
         await launch.coroutine(description="dig in", subagent_type="remote", runtime=_parent_runtime())
 
-        check_run = server.created[-1]
-        assert (check_run["thread_id"], check_run["assistant_id"], check_run["after_seconds"]) == (None, "assistant_parent", delay)
-        assert check_run["config"]["configurable"]["deepagents_task_check"]["pushes"] == pushes
+        assert server.checks() == []
 
-    async def test_running_task_is_checked_again_with_backoff(self) -> None:
-        server = _FakeServer({"lead_thread": _lead_record()})
-
-        assert await _run_check(server, _check(pushes=False)) == {"jump_to": "end"}
-
-        assert _checks(server) == [{"after_seconds": 120, "run_id": "run_xyz", "attempt": 1, "pushes": False}]
-        assert server.wakes() == []
-
-    async def test_child_that_reports_itself_is_checked_rarely(self) -> None:
-        server = _FakeServer({"lead_thread": _lead_record(), "thread_abc": {**_child(deepagents_callback=True), "status": "busy"}})
-
-        await _run_check(server, _check(pushes=None))
-
-        assert _checks(server)[0]["after_seconds"] == 600
-
-    async def test_ended_task_that_cannot_report_wakes_the_idle_lead(self) -> None:
+    async def test_ended_task_wakes_the_idle_lead(self) -> None:
         server = _FakeServer({"lead_thread": _lead_record(), "thread_abc": _child()}, {"run_id": "run_xyz", "status": "success"})
 
-        assert await _run_check(server, _check(pushes=False)) == {"jump_to": "end"}
+        assert await _run_check(server, _check()) == {"jump_to": "end"}
 
         assert (_woken_event(server)["status"], _woken_event(server)["result"]) == ("success", "remote done")
         assert server.checks() == []
 
-    async def test_lead_waiting_on_a_human_is_not_disturbed(self) -> None:
-        record = {**_lead_record(), "status": "interrupted"}
+    @pytest.mark.parametrize("lead_status", ["busy", "interrupted"])
+    async def test_lead_busy_or_waiting_on_a_human_is_left_alone(self, lead_status: str) -> None:
+        record = {**_lead_record(), "status": lead_status}
         server = _FakeServer({"lead_thread": record, "thread_abc": _child()}, {"run_id": "run_xyz", "status": "success"})
 
-        await _run_check(server, _check(pushes=False))
+        await _run_check(server, _check())
 
-        assert server.wakes() == []
-        assert _checks(server)[0]["retries"] == 0
+        assert server.created == []
 
-    async def test_ended_task_that_reports_itself_gets_a_moment_first(self) -> None:
-        server = _FakeServer({"lead_thread": _lead_record(), "thread_abc": _child()}, {"run_id": "run_xyz", "status": "success"})
+    async def test_running_task_is_not_checked_again(self) -> None:
+        server = _FakeServer({"lead_thread": _lead_record()})
 
-        await _run_check(server, _check(pushes=True))
+        await _run_check(server, _check())
 
-        assert server.wakes() == []
-        assert _checks(server) == [{"after_seconds": 30, "run_id": "run_xyz", "attempt": 0, "pushes": True, "confirm": True}]
+        assert server.created == []
 
-    async def test_delivery_retries_back_off(self) -> None:
-        record = {**_lead_record(), "status": "busy"}
-        server = _FakeServer({"lead_thread": record, "thread_abc": _child()}, {"run_id": "run_xyz", "status": "success"})
-
-        await _run_check(server, _check(pushes=False, retries=3))
-
-        assert (_checks(server)[0]["retries"], _checks(server)[0]["after_seconds"]) == (4, 960)
-
-    async def test_confirming_check_wakes_the_lead_if_nothing_arrived(self) -> None:
-        server = _FakeServer({"lead_thread": _lead_record()}, {"run_id": "run_xyz", "status": "timeout"})
-
-        await _run_check(server, _check(pushes=True, confirm=True))
-
-        assert _woken_event(server)["status"] == "timeout"
-
-    async def test_recorded_outcome_or_newer_run_stops_checks(self) -> None:
+    async def test_recorded_outcome_or_newer_run_needs_nothing(self) -> None:
         recorded = _FakeServer({"lead_thread": _lead_record(status="success")}, {"run_id": "run_xyz", "status": "success"})
         newer = _FakeServer({"lead_thread": _lead_record(run_id="run_newer")}, {"run_id": "run_xyz", "status": "success"})
 
-        await _run_check(recorded, _check(pushes=False))
-        await _run_check(newer, _check(pushes=False))
+        await _run_check(recorded, _check())
+        await _run_check(newer, _check())
 
         assert recorded.created == newer.created == []
 
     async def test_failure_found_by_a_check_is_generic(self) -> None:
         server = _FakeServer({"lead_thread": _lead_record()}, {"run_id": "run_xyz", "status": "error", "error": "secret stack trace"})
 
-        await _run_check(server, _check(pushes=False))
+        await _run_check(server, _check())
 
         assert _woken_event(server)["error"] == "The subagent failed."
 
     async def test_long_results_and_payloads_are_cut(self) -> None:
         server = _FakeServer({"lead_thread": _lead_record(), "thread_abc": _child("x" * 100_000)}, {"run_id": "run_xyz", "status": "success"})
 
-        await _run_check(server, _check(pushes=False))
+        await _run_check(server, _check())
 
         message = server.wakes()[0]["input"]["messages"][0]
         assert len(message["deepagents_notification"]["result"]) < 100_000
@@ -2089,24 +2035,22 @@ class TestTaskChecks:
     def test_sync_check_run_does_nothing(self) -> None:
         middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote", url=None)])
 
-        with patch(
-            "deepagents.middleware.async_subagents.get_config", return_value={"configurable": {"deepagents_task_check": _check(pushes=False)}}
-        ):
+        with patch("deepagents.middleware.async_subagents.get_config", return_value={"configurable": {"deepagents_task_check": _check()}}):
             assert middleware.before_agent({"messages": []}, MagicMock()) == {"jump_to": "end"}
 
 
-def _callback_config(parent: dict[str, Any] | None = _PARENT) -> dict[str, Any]:
-    configurable: dict[str, Any] = {"thread_id": "child_thread"}
+def _callback_config(parent: dict[str, Any] | None = _PARENT, **configurable_extra: Any) -> dict[str, Any]:
+    configurable: dict[str, Any] = {"thread_id": "child_thread", "checkpoint_ns": "model:1", **configurable_extra}
     if parent is not None:
         configurable["deepagents_parent"] = parent
     return {"configurable": configurable, "metadata": {"run_id": "child_run", "graph_id": "researcher"}}
 
 
-async def _call_callback(hook: str, *args: Any, server: _FakeServer, parent: dict[str, Any] | None = _PARENT) -> Any:  # noqa: ANN401
-    """Call one of `CompletionCallbackMiddleware`'s hooks; returns its result or the error it raised."""
-    middleware = CompletionCallbackMiddleware()
+async def _call_callback(hook: str, *args: Any, server: _FakeServer, parent: dict[str, Any] | None = _PARENT, **configurable: Any) -> Any:  # noqa: ANN401
+    """Call one of `_ParentNotifierMiddleware`'s hooks; returns its result or the error it raised."""
+    middleware = _ParentNotifierMiddleware()
     with (
-        patch("deepagents.middleware.completion_callback.get_config", return_value=_callback_config(parent)),
+        patch("deepagents.middleware._parent_notifier.get_config", return_value=_callback_config(parent, **configurable)),
         patch("deepagents.middleware.async_subagents.get_client", return_value=server),
     ):
         try:
@@ -2115,14 +2059,7 @@ async def _call_callback(hook: str, *args: Any, server: _FakeServer, parent: dic
             return e
 
 
-class TestCompletionCallbackMiddleware:
-    async def test_marks_the_thread_as_reporting(self) -> None:
-        marked = await _call_callback("abefore_agent", {"messages": []}, MagicMock(), server=_FakeServer())
-        unmarked = await _call_callback("abefore_agent", {"messages": []}, MagicMock(), server=_FakeServer(), parent=None)
-
-        assert marked == {"deepagents_callback": True}
-        assert unmarked is None
-
+class TestParentNotifier:
     async def test_finished_run_wakes_the_parent(self) -> None:
         server = _FakeServer()
 
@@ -2165,3 +2102,129 @@ class TestCompletionCallbackMiddleware:
         await _call_callback("aafter_agent", {"messages": [AIMessage(content="found it")]}, MagicMock(), server=server, parent=None)
 
         assert server.created == []
+
+
+def _lead_state(status: str = "running", **extra: Any) -> dict[str, Any]:
+    """The lead's state with one tracked task on the `remote` subagent."""
+    return {**_lead_record(status)["values"], **extra}
+
+
+async def _pull(hook: str, state: dict[str, Any], server: _FakeServer) -> Any:  # noqa: ANN401
+    """Call one of the middleware's pull hooks with the lead's state."""
+    middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote", url=None)])
+    with (
+        patch("deepagents.middleware.async_subagents.get_config", return_value={"configurable": {"thread_id": "lead_thread"}}),
+        patch("deepagents.middleware.async_subagents.get_client", return_value=server),
+    ):
+        return await getattr(middleware, hook)(state, MagicMock())
+
+
+def _ended(content: str = "remote done") -> _FakeServer:
+    return _FakeServer({"thread_abc": _child(content)}, {"run_id": "run_xyz", "status": "success"})
+
+
+def _pulled_events(update: dict[str, Any]) -> list[dict[str, Any]]:
+    return [message["deepagents_notification"] for message in update.get("messages", [])]
+
+
+class TestParentPull:
+    async def test_news_is_added_before_the_model_call(self) -> None:
+        update = await _pull("abefore_model", _lead_state(), _ended())
+
+        assert [(e["status"], e["result"]) for e in _pulled_events(update)] == [("success", "remote done")]
+        assert "NOT USER INPUT" in update["messages"][0]["content"]
+        assert update["async_tasks"]["thread_abc"]["status"] == "success"
+
+    async def test_run_start_checks_and_resets_the_extra_turn(self) -> None:
+        update = await _pull("abefore_agent", _lead_state(async_tasks_extra_turn=True), _ended())
+
+        assert [e["status"] for e in _pulled_events(update)] == ["success"]
+        assert update["async_tasks_extra_turn"] is False
+
+    async def test_notification_that_started_the_run_is_not_added_again(self) -> None:
+        event = {"task_id": "thread_abc", "subagent": "remote", "status": "success", "run_id": "run_xyz"}
+        messages = [HumanMessage(content="note", additional_kwargs={"deepagents_notification": event})]
+
+        update = await _pull("abefore_agent", _lead_state(messages=messages), _ended())
+
+        assert "messages" not in update
+        assert update["async_tasks"]["thread_abc"]["status"] == "success"
+
+    async def test_news_after_the_final_answer_gets_one_more_turn(self) -> None:
+        answered = _lead_state(messages=[AIMessage(content="all done")])
+
+        update = await _pull("aafter_model", answered, _ended())
+        again = await _pull("aafter_model", {**answered, "async_tasks_extra_turn": True}, _ended())
+
+        assert (update["jump_to"], update["async_tasks_extra_turn"]) == ("model", True)
+        assert [e["status"] for e in _pulled_events(update)] == ["success"]
+        assert again is None
+
+    async def test_no_check_while_the_model_is_still_calling_tools(self) -> None:
+        calling = _lead_state(messages=[AIMessage(content="", tool_calls=[{"name": "ls", "args": {}, "id": "c1"}])])
+
+        assert await _pull("aafter_model", calling, _ended()) is None
+
+    async def test_waiting_is_reported_once_and_its_resume_quietly(self) -> None:
+        paused = _FakeServer(
+            {"thread_abc": {"status": "interrupted", "values": {}, "interrupts": {"t": [{"id": "int_q", "value": "Which repo?"}]}}},
+            {"run_id": "run_xyz", "status": "success"},
+        )
+        resumed = _FakeServer({"thread_abc": {"status": "busy", "values": {}, "interrupts": {}}}, {"run_id": "run_resumed", "status": "running"})
+
+        reported = await _pull("abefore_model", _lead_state(), paused)
+        still = await _pull("abefore_model", _lead_state("waiting"), paused)
+        quiet = await _pull("abefore_model", _lead_state("waiting"), resumed)
+
+        assert [e["status"] for e in _pulled_events(reported)] == ["waiting"]
+        assert still is None
+        assert "messages" not in quiet
+        assert (quiet["async_tasks"]["thread_abc"]["status"], quiet["async_tasks"]["thread_abc"]["run_id"]) == ("running", "run_resumed")
+
+    async def test_finished_tasks_are_not_checked(self) -> None:
+        server = _ended()
+        server.runs.get = MagicMock(side_effect=AssertionError("checked a finished task"))
+
+        update = await _pull("abefore_model", _lead_state("success"), server)
+
+        assert update is None
+
+    async def test_task_that_cannot_be_checked_is_skipped(self) -> None:
+        server = _ended()
+        server.runs.get = MagicMock(side_effect=RuntimeError("down"))
+
+        update = await _pull("abefore_model", _lead_state(), server)
+
+        assert update is None
+
+    async def test_background_subagent_run_does_not_notify(self) -> None:
+        server = _FakeServer()
+
+        await _call_callback("aafter_agent", {"messages": [AIMessage(content="found it")]}, MagicMock(), server=server, deepagents_worker="helper")
+
+        assert server.created == []
+
+    async def test_only_the_outermost_deep_agent_wakes_its_parent(self) -> None:
+        server = _FakeServer()
+        inner = create_deep_agent(model=GenericFakeChatModel(messages=iter([AIMessage(content="inner done")])))
+        delegate = {"name": "task", "args": {"description": "dig", "subagent_type": "inner"}, "id": "call_1"}
+        outer = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="", tool_calls=[delegate]), AIMessage(content="outer done")])),
+            subagents=[{"name": "inner", "description": "Digs.", "runnable": inner}],
+        )
+        config = {"configurable": {"thread_id": "child_thread", "deepagents_parent": _PARENT}, "metadata": {"run_id": "child_run"}}
+
+        with patch("deepagents.middleware.async_subagents.get_client", return_value=server):
+            await outer.ainvoke({"messages": [HumanMessage(content="dig in")]}, config)
+
+        assert _woken_event(server)["result"] == "outer done"
+
+    async def test_deep_agent_started_as_a_task_wakes_its_parent_without_setup(self) -> None:
+        server = _FakeServer()
+        agent = create_deep_agent(model=GenericFakeChatModel(messages=iter([AIMessage(content="found it")])))
+        config = {"configurable": {"thread_id": "child_thread", "deepagents_parent": _PARENT}, "metadata": {"run_id": "child_run"}}
+
+        with patch("deepagents.middleware.async_subagents.get_client", return_value=server):
+            await agent.ainvoke({"messages": [HumanMessage(content="dig in")]}, config)
+
+        assert (_woken_event(server)["status"], _woken_event(server)["result"]) == ("success", "found it")

@@ -57,7 +57,6 @@ from deepagents.middleware.async_subagents import (
     task_notification,
     with_parent_trace,
 )
-from deepagents.middleware.completion_callback import CompletionCallbackMiddleware
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import (
@@ -94,7 +93,6 @@ __all__ = [
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
     "CompiledSubAgent",
-    "CompletionCallbackMiddleware",
     "CriterionEval",
     "CriterionFail",
     "CriterionPass",

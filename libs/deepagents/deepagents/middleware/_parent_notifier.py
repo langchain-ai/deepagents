@@ -1,7 +1,7 @@
-"""Middleware that lets a separately deployed async subagent wake the agent that started it."""
+"""Lets a deep agent started as an async subagent wake the agent that started it."""
 
-from collections.abc import Awaitable, Callable
-from typing import Any, Literal, NotRequired
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, Literal
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT
 from langchain.tools.tool_node import ToolCallRequest
@@ -12,7 +12,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command
 
 from deepagents.middleware.async_subagents import (
-    _CALLBACK_STATE_KEY,
+    _WORKER_KEY,
     _current_run_id,
     _failure_text,
     _final_text,
@@ -22,56 +22,22 @@ from deepagents.middleware.async_subagents import (
 )
 
 
-class CompletionCallbackState(AgentState):
-    """State marking that this thread's runs report their outcome to the agent that started them."""
+class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]):
+    """Wake the agent that started this run with `start_async_task`, when the run ends.
 
-    deepagents_callback: NotRequired[bool]
-
-
-class CompletionCallbackMiddleware(AgentMiddleware[CompletionCallbackState, ContextT, ResponseT]):
-    """Wake the agent that started this graph as an async subagent when a run ends.
-
-    !!! warning "Experimental"
-
-        This middleware may change without notice.
-
-    Add it to a separately deployed graph that agents start with
-    `start_async_task`. When a run finishes, fails in a model call, or pauses
-    with `interrupt()` inside a tool, it notifies the starting agent if that
-    agent is on the same deployment; anything else is found by the starting
-    agent's scheduled checks. Put it first in `middleware` so it only sees
-    model errors once retries have given up.
-
-    Args:
-        name: Name used for this subagent in notifications. Defaults to the
-            graph ID of the run.
-
-    Example:
-        ```python
-        from deepagents import create_deep_agent
-        from deepagents.middleware import CompletionCallbackMiddleware
-
-        researcher = create_deep_agent(model=..., middleware=[CompletionCallbackMiddleware()])
-        ```
+    `create_deep_agent` attaches it to every deep agent. It does nothing unless the
+    run carries the parent reference, and skips background and nested runs.
     """
 
-    state_schema = CompletionCallbackState
-
-    def __init__(self, *, name: str | None = None) -> None:
-        """Initialize the `CompletionCallbackMiddleware`."""
+    def __init__(self) -> None:
         super().__init__()
-        self._name = name
         self._reported: dict[str, None] = {}
 
-    def before_agent(self, state: CompletionCallbackState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
-        """Mark this thread as reporting its outcome, so the starting agent checks it less often."""
-        return {_CALLBACK_STATE_KEY: True} if parent_reference(get_config()) else None
+    def after_agent(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
+        """Pass through: reporting needs the async path, which the Agent Server uses."""
+        return None
 
-    async def abefore_agent(self, state: CompletionCallbackState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:
-        """(async) Mark this thread as reporting its outcome, so the starting agent checks it less often."""
-        return self.before_agent(state, runtime)
-
-    async def aafter_agent(self, state: CompletionCallbackState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
+    async def aafter_agent(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """Report a finished run with its final answer."""
         await self._areport("success", result=_final_text(state))
         return None
@@ -120,9 +86,9 @@ class CompletionCallbackMiddleware(AgentMiddleware[CompletionCallbackState, Cont
             raise
 
     async def _areport(self, status: Literal["success", "error", "waiting"], **details: object) -> None:
-        """Queue the notification once per run, when an async subagent tool started it."""
+        """Notify once per run, for this graph's own run that an async subagent tool started."""
         config = get_config()
-        if not parent_reference(config):
+        if not parent_reference(config) or not _is_own_task_run(config):
             return
         run_key = _current_run_id(config)
         if run_key is None or run_key in self._reported:
@@ -130,5 +96,13 @@ class CompletionCallbackMiddleware(AgentMiddleware[CompletionCallbackState, Cont
         self._reported[run_key] = None
         if len(self._reported) > 1000:  # noqa: PLR2004  # bounded memory in long-lived processes
             del self._reported[next(iter(self._reported))]
-        name = self._name or str((config.get("metadata") or {}).get("graph_id") or "subagent")
+        name = str((config.get("metadata") or {}).get("graph_id") or "subagent")
         await _notify_parent(config, _task_event(config, name, status, **details))
+
+
+def _is_own_task_run(config: Mapping[str, Any]) -> bool:
+    """Whether this is the outermost graph of a task run (not a nested graph) and not a background subagent's run."""
+    configurable = config.get("configurable") or {}
+    if configurable.get(_WORKER_KEY) or (config.get("metadata") or {}).get(_WORKER_KEY):
+        return False
+    return "|" not in str(configurable.get("checkpoint_ns") or "")

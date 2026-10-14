@@ -26,6 +26,7 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
+    PrivateStateAttr,
     ResponseT,
     TracePolicy,
     hook_config,
@@ -204,6 +205,8 @@ class AsyncSubAgentState(AgentState):
     """State extension for async subagent task tracking."""
 
     async_tasks: Annotated[NotRequired[dict[str, AsyncTask]], _tasks_reducer]
+    async_tasks_extra_turn: Annotated[NotRequired[bool], PrivateStateAttr]
+    """Whether this run already took its one extra model turn for news found after its final answer."""
 
 
 class StartAsyncTaskSchema(BaseModel):
@@ -484,9 +487,6 @@ def _is_worker(spec: Mapping[str, Any]) -> bool:
 _NOTIFICATION_KEY = "deepagents_notification"
 """Message field (`additional_kwargs` key) marking a task notification and carrying its `TaskEvent`."""
 
-_CALLBACK_STATE_KEY = "deepagents_callback"
-"""State key a subagent's thread sets when its runs report their own outcome to the parent."""
-
 _MAX_RESULT_CHARS = NUM_CHARS_PER_TOKEN * 20_000
 """Results longer than this are cut in notifications, matching the limit for large tool results."""
 
@@ -611,85 +611,39 @@ def _final_text(result: Mapping[str, Any]) -> str:
 
 
 _CHECK_KEY = "deepagents_task_check"
-"""`configurable` key marking a stateless run of the parent's graph as a scheduled check on one task run."""
+"""`configurable` key marking a stateless run of the parent's graph as a delayed check on one task run."""
 
-_FIRST_CHECK_SECONDS = 60
-_MAX_CHECK_SECONDS = 300
-_PUSHED_CHECK_SECONDS = 600
-_CONFIRM_SECONDS = 30
-_FIRST_RETRY_SECONDS = 60
-_MAX_RETRY_SECONDS = 1800
+_RACE_CHECK_SECONDS = 30
+"""How long after a subagent ends the delayed check runs, when the parent couldn't be woken then."""
 
 
 class _TaskCheck(TypedDict):
     task_id: str
     run_id: str
-    attempt: int
-    pushes: bool | None
-    """Whether the subagent reports its own outcome: known for background subagents (yes) and other deployments (no)."""
     parent_thread_id: str
     assistant_id: str
-    confirm: NotRequired[bool]
-    """A last check giving an ended subagent's own notification time to arrive first."""
-    retries: NotRequired[int]
-    """Set once the task ended but the parent wasn't idle: how often delivery was retried."""
 
 
-def _check_delay(check: _TaskCheck) -> int:
-    """Check rarely when the subagent reports its own outcome, often (backing off) when it can't."""
-    if "retries" in check:
-        return min(_FIRST_RETRY_SECONDS * 2 ** check["retries"], _MAX_RETRY_SECONDS)
-    if check.get("confirm"):
-        return _CONFIRM_SECONDS
-    if check["pushes"]:
-        return _PUSHED_CHECK_SECONDS
-    return min(_FIRST_CHECK_SECONDS * 2 ** check["attempt"], _MAX_CHECK_SECONDS)
+async def _aschedule_check(check: _TaskCheck) -> None:
+    """Queue one delayed check on a task run, as a stateless run of the parent's graph.
 
-
-def _first_check(spec: AsyncSubAgent, config: RunnableConfig, task_id: str, run_id: str) -> _TaskCheck | None:
-    """The first check on a task run this agent just launched, or `None` without an Agent Server."""
-    me = _parent_reference(config)
-    if "thread_id" not in me or "assistant_id" not in me:
-        return None
-    pushes: bool | None = None
-    if _is_worker(spec):
-        pushes = True
-    elif spec.get("url"):
-        pushes = False
-    return {
-        "task_id": task_id,
-        "run_id": run_id,
-        "attempt": 0,
-        "pushes": pushes,
-        "parent_thread_id": me["thread_id"],
-        "assistant_id": me["assistant_id"],
-    }
-
-
-async def _aschedule_check(check: _TaskCheck | None) -> None:
-    """Queue a check on a task run as a delayed stateless run of the parent's graph.
-
-    Stateless runs never touch the parent's thread, and the Agent Server deletes
-    their temporary thread when they finish. It holds the delayed run, so checks
-    survive restarts. Without an Agent Server (`None`) nothing is queued and the
-    task is checked by hand as before. Failures are logged, never raised.
+    It covers a subagent that ends just as the parent finishes its run. It never
+    touches the parent's thread or calls the model, and survives restarts.
     """
-    if check is None:
-        return
     try:
         await get_client().runs.create(
             None,
             check["assistant_id"],
             input={"messages": []},
             config={"configurable": {_CHECK_KEY: check}},
-            after_seconds=_check_delay(check),
+            after_seconds=_RACE_CHECK_SECONDS,
         )
-    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors; the task can still be checked by hand
+    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors; the parent still finds out when it next checks
         logger.warning("Failed to schedule a check on task %s", check["task_id"], exc_info=True)
 
 
 _Delivery = Literal["delivered", "later", "unreachable"]
-"""Whether a notification reached the parent, should be retried, or can't reach it from this deployment."""
+"""Whether a notification started a parent run, the parent will find out on its own, or the parent isn't on this deployment."""
 
 
 _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
@@ -709,7 +663,7 @@ async def _awake_parent(parent_thread_id: str, assistant_id: str, event: TaskEve
         await client.runs.create(
             thread_id=parent_thread_id,
             assistant_id=assistant_id,
-            input={"messages": [{"role": "user", "content": _notification_text(event), _NOTIFICATION_KEY: dict(event)}]},
+            input={"messages": [_notification_message(event)]},
             multitask_strategy="reject",
         )
     except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
@@ -724,28 +678,20 @@ async def _awake_parent(parent_thread_id: str, assistant_id: str, event: TaskEve
 
 
 async def _notify_parent(config: RunnableConfig, event: TaskEvent) -> None:
-    """Wake the agent that started this task, or have its checker deliver the news later.
+    """Wake the parent if it's idle; otherwise it finds out on its own.
 
-    Only runs that carry the parent's thread and assistant (sent by the async
-    subagent tools) notify. Failures are logged, never raised: they must not
-    fail the subagent's own run.
+    A busy parent sees the news before its next model call, a paused one after
+    the user answers its approval. Schedules one delayed check for a parent that
+    was just finishing. Never raises.
     """
     parent = parent_reference(config) or {}
     if "thread_id" not in parent or "assistant_id" not in parent:
         return
-    # Retry only on the parent's own deployment; a parent elsewhere finds out through its own checks.
     if await _awake_parent(parent["thread_id"], parent["assistant_id"], event) != "later" or "run_id" not in event:
         return
-    check: _TaskCheck = {
-        "task_id": event["task_id"],
-        "run_id": event["run_id"],
-        "attempt": 0,
-        "pushes": True,
-        "parent_thread_id": parent["thread_id"],
-        "assistant_id": parent["assistant_id"],
-        "retries": 0,
-    }
-    await _aschedule_check(check)
+    await _aschedule_check(
+        {"task_id": event["task_id"], "run_id": event["run_id"], "parent_thread_id": parent["thread_id"], "assistant_id": parent["assistant_id"]}
+    )
 
 
 class _ClientCache:
@@ -917,7 +863,6 @@ def _build_start_tool(
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
             return f"Failed to launch async subagent '{subagent_type}': {e}"
         task_id = thread["thread_id"]
-        await _aschedule_check(_first_check(spec, runtime.config, task_id, run["run_id"]))
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
             "task_id": task_id,
@@ -1204,7 +1149,6 @@ def _build_update_tool(
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
             return f"Failed to update async subagent: {e}"
-        await _aschedule_check(_first_check(spec, runtime.config, tracked["task_id"], run["run_id"]))
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         task: AsyncTask = {
             "task_id": tracked["task_id"],
@@ -1477,16 +1421,6 @@ def _build_async_subagent_tools(
     ]
 
 
-async def _achild_pushes(client: LangGraphClient, task: AsyncTask) -> bool:
-    """Whether a separately deployed subagent reports its own outcome (it uses `CompletionCallbackMiddleware`)."""
-    try:
-        thread = await client.threads.get(thread_id=task["thread_id"])
-    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors; assume it doesn't and check often
-        return False
-    values = thread.get("values")
-    return isinstance(values, dict) and values.get(_CALLBACK_STATE_KEY) is True
-
-
 async def _aparent_task(check: _TaskCheck) -> AsyncTask | None:
     """Read the parent's record of the checked task from its thread, without starting a run there."""
     try:
@@ -1509,6 +1443,31 @@ def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) 
     return _event(task["task_id"], task["agent_name"], status, run.get("run_id", task["run_id"]), **details)
 
 
+_UNFINISHED_STATUSES = frozenset({"running", "pending", _WAITING})
+"""Tracked task statuses that can still change, so the parent checks them for news."""
+
+
+def _notification_message(event: TaskEvent) -> dict[str, Any]:
+    """A task event as the message the parent's model sees, marked so apps can recognize it."""
+    return {"role": "user", "content": _notification_text(event), _NOTIFICATION_KEY: dict(event)}
+
+
+def _observed(task: AsyncTask, status: str, run_id: str) -> AsyncTask:
+    """`task` updated to what a check found."""
+    now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    changed = status != task["status"] or run_id != task["run_id"]
+    return AsyncTask(
+        task_id=task["task_id"],
+        agent_name=task["agent_name"],
+        thread_id=task["thread_id"],
+        run_id=run_id,
+        status=status,
+        created_at=task["created_at"],
+        last_checked_at=now,
+        last_updated_at=now if changed else task["last_updated_at"],
+    )
+
+
 class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware for async subagents running on Agent Protocol servers or on this agent's own graph.
 
@@ -1523,6 +1482,11 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     Task IDs are persisted in the agent state under `async_tasks` so they
     survive context compaction/offloading and can be accessed programmatically.
+
+    The agent checks its unfinished tasks at the start of each run, before
+    model calls, and once after its final answer, and adds what finished,
+    failed or is waiting for the user to its conversation. A subagent that ends
+    while the agent is idle wakes it.
 
     Args:
         async_subagents: List of async subagent specifications.
@@ -1615,7 +1579,71 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         name = self._requested_worker()
         if name is not None:
             return await self._arun_worker(name, state)
-        return self._record_notification(state)
+        recorded = self._record_notification(state) or {}
+        tasks = {**(state.get("async_tasks") or {}), **recorded.get("async_tasks", {})}
+        news = await self._apull(tasks)
+        return {
+            **recorded,
+            **news,
+            "async_tasks": {**recorded.get("async_tasks", {}), **news.get("async_tasks", {})},
+            "async_tasks_extra_turn": False,
+        }
+
+    def before_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
+        """Pass through: checking tasks needs the async path, which the Agent Server uses."""
+        return None
+
+    async def abefore_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
+        """(async) Add news from this agent's tasks before the model call."""
+        return await self._apull(state.get("async_tasks") or {}) or None
+
+    def after_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
+        """Pass through: checking tasks needs the async path, which the Agent Server uses."""
+        return None
+
+    @hook_config(can_jump_to=["model"])
+    async def aafter_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
+        """(async) After the final answer, check tasks once more; on news, give the model one more turn."""
+        messages = state.get("messages") or []
+        if state.get("async_tasks_extra_turn") or not messages or getattr(messages[-1], "tool_calls", None):
+            return None
+        news = await self._apull(state.get("async_tasks") or {})
+        if not news.get("messages"):
+            return news or None
+        return {**news, "async_tasks_extra_turn": True, "jump_to": "model"}
+
+    async def _apull(self, tasks: Mapping[str, AsyncTask]) -> dict[str, Any]:
+        """Check unfinished tasks; return their updated records and a notification per new outcome.
+
+        Outcomes the agent already saw (through a check, a list, or an earlier
+        notification) aren't reported again. A task that can't be checked is
+        skipped until the next check.
+        """
+        unfinished = [task for task in tasks.values() if task["status"] in _UNFINISHED_STATUSES]
+        observed = await asyncio.gather(*(self._aobserve_task(task) for task in unfinished))
+        records: dict[str, AsyncTask] = {}
+        messages: list[dict[str, Any]] = []
+        for task, found in zip(unfinished, observed, strict=True):
+            if found is None:
+                continue
+            run, thread = found
+            status = _task_status(run, thread)
+            if status == task["status"] and run["run_id"] == task["run_id"]:
+                continue
+            records[task["task_id"]] = _observed(task, status, run["run_id"])
+            if status != task["status"] and (event := _check_event(task, run, thread, status)):
+                messages.append(_notification_message(event))
+        update: dict[str, Any] = {"async_tasks": records} if records else {}
+        if messages:
+            update["messages"] = messages
+        return update
+
+    async def _aobserve_task(self, task: AsyncTask) -> tuple[Run, Thread | None] | None:
+        try:
+            return await _aobserve(self._clients.get_async(task["agent_name"]), task)
+        except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors; checked again next time
+            logger.warning("Failed to check task %s", task["task_id"], exc_info=True)
+            return None
 
     async def _arun_worker(self, name: str, state: Mapping[str, Any]) -> dict[str, Any]:
         """Run a background subagent as this run, then wake the agent that started it."""
@@ -1640,48 +1668,21 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         task = (state.get("async_tasks") or {}).get(event["task_id"]) if event else None
         if event is None or task is None or event.get("run_id", task["run_id"]) != task["run_id"]:
             return None
-        now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
-        changed = event["status"] != task["status"]
-        recorded = AsyncTask(
-            task_id=task["task_id"],
-            agent_name=task["agent_name"],
-            thread_id=task["thread_id"],
-            run_id=task["run_id"],
-            status=event["status"],
-            created_at=task["created_at"],
-            last_checked_at=now,
-            last_updated_at=now if changed else task["last_updated_at"],
-        )
-        return {"async_tasks": {task["task_id"]: recorded}}
+        return {"async_tasks": {task["task_id"]: _observed(task, event["status"], task["run_id"])}}
 
     async def _acheck_task(self, check: _TaskCheck) -> dict[str, Any]:
-        """Check one task run; wake the parent if it ended without telling it.
-
-        Runs as a stateless run of this graph, so other middleware's before-agent
-        hooks (memory or skills loading, for example) run first and a hook that
-        stops the run also skips the check. It only reads the parent's thread.
-        """
+        """Wake the parent once if the task ended and the parent hasn't recorded it; a busy or paused parent is left alone."""
         task = await _aparent_task(check)
-        # A newer launch has its own checks; a recorded outcome was already delivered.
+        # A newer launch, or an outcome the parent already recorded, needs nothing.
         if task is None or task["run_id"] != check["run_id"] or task["status"] not in {"running", "pending"}:
             return {"jump_to": "end"}
-        client = self._clients.get_async(task["agent_name"])
         try:
-            run, thread = await _aobserve(client, task)
-        except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors; check again later
+            run, thread = await _aobserve(self._clients.get_async(task["agent_name"]), task)
+        except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors; the parent finds out when it next checks
             logger.warning("Failed to check task %s", task["task_id"], exc_info=True)
-            run, thread = cast("Run", {"run_id": task["run_id"], "status": "running"}), None
-        status = _task_status(run, thread)
-        pushes = check["pushes"] if check["pushes"] is not None else await _achild_pushes(client, task)
-        if status in {"running", "pending"}:
-            await _aschedule_check({**check, "attempt": check["attempt"] + 1, "pushes": pushes})
-        elif pushes and not (check.get("confirm") or "retries" in check):
-            # Give the subagent's own notification a moment to arrive first.
-            await _aschedule_check({**check, "pushes": pushes, "confirm": True})
-        elif (event := _check_event(task, run, thread, status)) and await _awake_parent(
-            check["parent_thread_id"], check["assistant_id"], event
-        ) == "later":
-            await _aschedule_check({**check, "retries": check["retries"] + 1 if "retries" in check else 0})
+            return {"jump_to": "end"}
+        if event := _check_event(task, run, thread, _task_status(run, thread)):
+            await _awake_parent(check["parent_thread_id"], check["assistant_id"], event)
         return {"jump_to": "end"}
 
     @staticmethod

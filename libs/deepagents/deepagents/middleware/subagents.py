@@ -126,6 +126,10 @@ class SubAgent(TypedDict):
 
     To restrict filesystem tools, include a `FilesystemMiddleware(tools=...)`
     instance here to replace the subagent's default filesystem middleware.
+
+    Under `mode="fork"`, inherits the parent's custom middleware. An entry
+    with the same `name` replaces the inherited instance. Middleware that
+    changes the prompt or tool definitions can break the shared cache prefix.
     """
 
     interrupt_on: NotRequired[dict[str, bool | InterruptOnConfig]]

@@ -132,7 +132,19 @@ class SubAgent(TypedDict):
     fork's model request or changes tool definitions unless you accept reduced
     shared prompt-cache reuse and potentially higher model costs. This is
     distinct from `SubAgent.system_prompt`, which appends instructions to the
-    inherited prompt.
+    inherited prompt. A `wrap_model_call` hook receives that prompt through
+    `request.system_message`. For example, this prepends text before the inherited
+    prefix in the fork's request, preventing reuse of that prefix:
+
+    ```python
+    from langchain_core.messages import SystemMessage
+
+    rewritten = SystemMessage(content=[
+        {"type": "text", "text": "You are a security auditor.\\n"},
+        *request.system_message.content_blocks,
+    ])
+    return handler(request.override(system_message=rewritten))
+    ```
 
     To restrict filesystem tools, include a `FilesystemMiddleware(tools=...)`
     instance here to replace the subagent's default filesystem middleware.

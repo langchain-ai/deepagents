@@ -21,7 +21,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import bsdiff4
 import pytest
 from langchain.agents import create_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
@@ -42,6 +41,17 @@ from langchain_quickjs._snapshot import (
 if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
     from langchain_core.outputs import ChatResult
+
+
+try:
+    import bsdiff4
+except ImportError:  # optional on CPython 3.14 (#6878)
+    bsdiff4 = None  # type: ignore[no-redef]
+
+HAS_BSDIFF4 = bsdiff4 is not None
+needs_bsdiff4 = pytest.mark.skipif(
+    not HAS_BSDIFF4, reason="requires the optional bsdiff4 dependency"
+)
 
 
 def _assert_slot_update(update: dict[str, Any] | None) -> str:
@@ -242,6 +252,10 @@ def _build_chain(snapshots: list[bytes]) -> list[tuple[str, bytes]]:
     for snap in snapshots:
         if not prior:
             records.append(("snap", snap))
+        elif bsdiff4 is None:
+            # Without the encoder every write anchors (#6878); the chain
+            # still replays.
+            records.append(("snap", snap))
         else:
             records.append(("patch", bsdiff4.diff(prior, snap)))
         prior = snap
@@ -339,6 +353,7 @@ def test_snapshot_update_first_write_is_anchor() -> None:
         mw._registry.close()
 
 
+@needs_bsdiff4
 def test_snapshot_update_subsequent_write_is_patch() -> None:
     """With a prior snapshot, ``_snapshot_update`` emits a small patch record."""
     mw = CodeInterpreterMiddleware()
@@ -369,6 +384,7 @@ def test_snapshot_update_falls_back_to_anchor_when_patch_not_smaller() -> None:
         mw._registry.close()
 
 
+@needs_bsdiff4
 def test_after_agent_emits_patch_against_prior_state() -> None:
     """End-to-end: a second turn with prior state emits a ``patch`` record."""
     mw = CodeInterpreterMiddleware()
@@ -480,6 +496,7 @@ def _snapshot_writes_bytes(saver: Any) -> int:
     return total
 
 
+@needs_bsdiff4
 def test_delta_channel_bounds_checkpoint_blob_growth() -> None:
     """Through a real compiled graph the snapshot channel persists only deltas.
 

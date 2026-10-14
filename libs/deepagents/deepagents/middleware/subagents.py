@@ -125,7 +125,9 @@ class SubAgent(TypedDict):
     """Additional middleware for custom behavior, logging, or rate limiting.
 
     Under `mode="fork"`, inherits the parent's custom middleware. Entries here
-    replace inherited entries with the same `.name`.
+    replace inherited entries with the same `.name`; entries with other names
+    are added. Additions that change the system prompt or tool definitions break
+    the shared prompt-cache prefix with the parent.
 
     To restrict filesystem tools, include a `FilesystemMiddleware(tools=...)`
     instance here to replace the subagent's default filesystem middleware.
@@ -205,9 +207,6 @@ class SubAgent(TypedDict):
     it rebuilds the same system prompt. It cannot define `skills`, which would
     diverge from the parent's. `tools` isn't restricted the same way -- a fork's
     own tools work normally; the tradeoff is cache misses.
-
-    Middleware that changes the system prompt or tool definitions can prevent
-    the fork from sharing the parent's prompt-cache prefix.
     """
 
 

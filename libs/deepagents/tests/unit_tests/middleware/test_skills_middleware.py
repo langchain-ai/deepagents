@@ -42,6 +42,7 @@ from deepagents.middleware.skills import (
     _format_skill_annotations,
     _list_skills,
     _parse_skill_metadata,
+    _pinned_skill_body,
     _skill_metadata_from_response,
     _validate_metadata,
     _validate_skill_name,
@@ -798,6 +799,31 @@ def test_list_skills_from_backend_utf8_bom(tmp_path: Path) -> None:
     skills = _list_skills(backend, skills_dir.as_posix())
 
     assert sorted(s["name"] for s in skills) == ["bom-skill", "plain-skill"]
+
+
+def test_pinned_skill_body_strips_bom() -> None:
+    """Test that a pinned BOM-encoded SKILL.md carries no BOM and no frontmatter (#6811)."""
+    skill: SkillMetadata = {
+        "name": "bom-skill",
+        "description": "BOM skill",
+        "path": "/skills/bom-skill/SKILL.md",
+        "metadata": {},
+        "license": None,
+        "compatibility": None,
+        "allowed_tools": [],
+    }
+    response = FileDownloadResponse(
+        path="/skills/bom-skill/SKILL.md",
+        content=make_skill_content("bom-skill", "BOM skill").encode("utf-8-sig"),
+        error=None,
+    )
+
+    body = _pinned_skill_body(skill, response)
+
+    assert body is not None
+    assert "\ufeff" not in body
+    assert "---" not in body.splitlines()[0]
+    assert "BOM skill" in body or "Bom-Skill" in body
 
 
 def test_list_skills_from_backend_invalid_frontmatter(tmp_path: Path) -> None:

@@ -660,7 +660,10 @@ def _skill_metadata_from_response(
         return None
 
     try:
-        content = response.content.decode("utf-8")
+        # utf-8-sig transparently strips a BOM when present and behaves
+        # exactly like utf-8 otherwise, so BOM-encoded skills parse (#6811)
+        # while non-UTF-8 files are still rejected below.
+        content = response.content.decode("utf-8-sig")
     except UnicodeDecodeError as e:
         logger.warning("Error decoding %s: %s", skill_md_path, e)
         return None
@@ -838,7 +841,8 @@ def _pinned_skill_body(skill: SkillMetadata, response: FileDownloadResponse) -> 
         logger.debug("Not pinning skill '%s': %s is too large (%d bytes)", skill["name"], skill["path"], len(response.content))
         return None
     try:
-        content = response.content.decode("utf-8")
+        # utf-8-sig so a BOM-encoded skill pins its body, not the BOM (#6811).
+        content = response.content.decode("utf-8-sig")
     except UnicodeDecodeError:
         logger.debug("Not pinning skill '%s': unreadable %s (not UTF-8)", skill["name"], skill["path"])
         return None

@@ -780,6 +780,26 @@ def test_list_skills_from_backend_missing_skill_md(tmp_path: Path) -> None:
     ]
 
 
+def test_list_skills_from_backend_utf8_bom(tmp_path: Path) -> None:
+    """Test that a SKILL.md saved with a UTF-8 BOM loads like a plain one (#6811)."""
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    skills_dir = tmp_path / "skills"
+    plain_skill_path = (skills_dir / "plain-skill" / "SKILL.md").as_posix()
+    bom_skill_path = (skills_dir / "bom-skill" / "SKILL.md").as_posix()
+
+    backend.upload_files(
+        [
+            (plain_skill_path, make_skill_content("plain-skill", "Plain skill").encode("utf-8")),
+            (bom_skill_path, make_skill_content("bom-skill", "BOM skill").encode("utf-8-sig")),
+        ]
+    )
+
+    skills = _list_skills(backend, skills_dir.as_posix())
+
+    assert sorted(s["name"] for s in skills) == ["bom-skill", "plain-skill"]
+
+
 def test_list_skills_from_backend_invalid_frontmatter(tmp_path: Path) -> None:
     """Test that skills with invalid YAML frontmatter are skipped."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)

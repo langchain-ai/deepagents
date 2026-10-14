@@ -52,8 +52,6 @@ from deepagents.middleware.async_subagents import (
     AsyncSubAgentMiddleware,
     ParentReference,
     parent_reference,
-    parent_trace_context,
-    with_parent_trace,
 )
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
@@ -115,6 +113,4 @@ __all__ = [
     "UnsupportedContentMiddleware",
     "create_summarization_tool_middleware",
     "parent_reference",
-    "parent_trace_context",
-    "with_parent_trace",
 ]

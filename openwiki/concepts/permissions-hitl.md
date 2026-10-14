@@ -26,8 +26,6 @@ sources:
     resource: repo://libs/talon/deepagents_talon/background.py
   - id: openwiki-source-6801a88de6305bc8cbdd259f
     resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-cebe4ea270e21dce4de9b074
-    resource: repo://libs/talon/deepagents_talon/interfaces.py
   - id: openwiki-source-82cac27adeecff8a900a40fa
     resource: repo://libs/talon/deepagents_talon/mcp.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
@@ -50,8 +48,8 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-13T08:11:05.854Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
+    at: 2026-10-14T08:05:41.101Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
 ---
 
 # Permissions and Human-in-the-Loop
@@ -155,11 +153,23 @@ The host holds one pending approval future per agent conversation and removes it
 
 Operator authority for policy changes is also separate from the approval handler. The host derives it from trusted channel exposure rather than inbound request metadata, and the runtime requires active invocation context. It clears this authority for cron and background delivery.
 
+## Invocation context is scoped and cleaned up
+
+At the start of each `DeepAgentRuntime.invoke`, Talon selects the invocation graph and immutable approval snapshot, derives the approval-operator flag from trusted request metadata, and installs request-scoped context for pending background results, cron origin, scheduled-turn status, OAuth authorization, and progress messages. The invocation's `finally` block resets every one of those context variables, including the graph and snapshot. A later request therefore cannot inherit an earlier request's approval policy, operator authority, authorization callback, scheduled status, or delivery state—even if the earlier graph call raises or is cancelled.
+
+This scoping is important but narrow: it prevents accidental cross-turn context leakage inside the runtime; it does not turn metadata supplied outside the host into trusted authority. The host is responsible for deriving `tool_approval_operator` from trusted channel exposure and for clearing authorization records after a turn.
+
 ## Unattended and delegated work fails closed
 
-For cron, background-result delivery, or requests without an approval handler, Talon rejects protected ordinary actions rather than waiting for an unavailable person; this holds even if a handler is injected for an unattended request. The host withholds interactive approval and OAuth paths for scheduled and background-result work.
+For cron, background-result delivery, or requests without an approval handler, Talon rejects protected ordinary actions rather than waiting for an unavailable person; this holds even if a handler is injected for an unattended request. The host withholds interactive approval and OAuth paths for scheduled and background-result work. The runtime independently clears operator authority when metadata identifies cron or background delivery.
 
 Detached background subagents clear operator and authorization context and report an interrupted protected action as not run. Cron-only inline delegation instead runs in its already unattended caller, disallows nested delegation, and cannot inherit an interactive approval or authorization handler. This fail-closed behavior applies to calls that the active policy routes through approval; it is not a blanket claim that every tool or integration is protected.
+
+### Scheduled turns have explicit bounds
+
+A scheduled job runs under a per-job conversation lock, so two fires of the same job do not overlap. Each fire receives a fresh cron thread ID and is bounded to 1,800 seconds. On timeout, the host asks the runtime to repair the interrupted thread and re-raises the timeout; the next fire uses a new thread rather than resuming the timed-out one. This limit protects the sequential scheduler from one indefinitely running job, but it is a liveness bound rather than a permission control.
+
+Within a scheduled turn, delegation is inline rather than detached: it waits for the result, marks the subagent context to prevent nested delegation, and has its own bounded concurrency slots and per-delegation deadline. Parallel delegations from one assistant message can run concurrently up to that slot limit; additional work queues rather than escaping into the background job table. Do not expect a later background-delivery turn to provide an approval or OAuth interaction for this work.
 
 ## Operating and testing safely
 
@@ -169,4 +179,5 @@ Detached background subagents clear operator and authorization context and repor
 - Use exact names and the revision from `get_tool_approvals` when changing Talon policy. Expect a new invocation before saved changes apply.
 - Keep Talon approval UIs batch-oriented and validate interrupt IDs and actions before calling an external handler. Do not treat a channel decision as an identity or authorization system.
 - Focus regression coverage on `test_permissions.py` for first-match decisions, confirmed-leaf versus recursive deletion, symlink target enforcement, bulk/glob routing bypasses, and inheritance behavior. Use `test_filesystem_backend.py` to cover the backend's virtual-root and symlink-containment behavior separately; permission middleware does not turn backend path handling into a sandbox.
-- Cover Talon policy validation, snapshots, batch fan-out, unattended rejection, trusted sender handling, and reaction matching in its tool-approval and host authorization tests.
+- Cover Talon policy validation, snapshots, batch fan-out, unattended rejection, trusted sender handling, reaction matching, and request-context reset in its tool-approval and host authorization tests.
+- In `test_host.py`, exercise scheduled timeout repair and same-job serialization. In `test_background.py`, cover inline scheduled delegation, its nested-delegation guard, fan-out, slot queueing, and deadline behavior.

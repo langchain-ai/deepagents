@@ -1094,6 +1094,24 @@ def test_ripgrep_timeout_returns_partial_results_when_output_captured(tmp_path: 
     assert result.matches and any(m["path"].endswith("a.txt") and m["text"] == "hello" for m in result.matches)
 
 
+def test_ripgrep_crlf_match_text_has_no_carriage_return(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Match text from CRLF files must not retain the carriage return (#6827)."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    (tmp_path / "sample.txt").write_bytes(b"before\r\nneedle\r\nafter\r\n")
+    frame = json.dumps({"type": "match", "data": {"path": {"text": "sample.txt"}, "lines": {"text": "needle\r\n"}, "line_number": 2}})
+
+    def crlf_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=[frame + "\n"])
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", crlf_popen)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("needle", path=str(tmp_path))
+
+    assert result.error is None
+    assert result.matches and any(m["path"].endswith("sample.txt") and m["text"] == "needle" for m in result.matches)
+
+
 def test_glob_times_out_and_flags_truncated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`glob` returns whatever it gathered with `truncated=True` once its wall-clock budget elapses."""
     (tmp_path / "a.py").write_text("x")

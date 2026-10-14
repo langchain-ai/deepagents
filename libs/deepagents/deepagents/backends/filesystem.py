@@ -1127,7 +1127,7 @@ class FilesystemBackend(BackendProtocol):
         ln = pdata.get("line_number")
         if ln is None:
             return None
-        lt = pdata.get("lines", {}).get("text", "").rstrip("\n")
+        lt = pdata.get("lines", {}).get("text", "").rstrip("\r\n")
         return virt, int(ln), lt
 
     @staticmethod

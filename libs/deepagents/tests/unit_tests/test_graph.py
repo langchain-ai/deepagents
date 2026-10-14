@@ -441,6 +441,23 @@ class TestGeneralPurposeSubagentProfileWiring:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
+    def test_general_purpose_can_run_in_the_background(self) -> None:
+        original = dict(_HARNESS_PROFILES)
+        try:
+            register_harness_profile(
+                "testprov",
+                HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(background=True)),
+            )
+            fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
+            with patch("deepagents.graph.resolve_model", return_value=fake_model):
+                agent = create_deep_agent(model="testprov:some-model")
+            tools = agent.nodes["tools"].bound._tools_by_name
+            assert "task" not in tools
+            assert "general-purpose" in tools["start_async_task"].description
+        finally:
+            _HARNESS_PROFILES.clear()
+            _HARNESS_PROFILES.update(original)
+
     def test_explicit_sync_subagent_still_keeps_task_tool_when_default_disabled(self) -> None:
         original = dict(_HARNESS_PROFILES)
         try:

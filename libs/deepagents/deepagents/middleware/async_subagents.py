@@ -13,17 +13,29 @@ import asyncio
 import json
 import logging
 import urllib.parse
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT, TracePolicy, omit_payload
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    ContextT,
+    ModelRequest,
+    ModelResponse,
+    ResponseT,
+    TracePolicy,
+    hook_config,
+    omit_payload,
+)
 from langchain.tools import ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.messages import AnyMessage, ToolMessage
-from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
+from langgraph.config import get_config
+from langgraph.runtime import Runtime
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
 from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
@@ -60,6 +72,9 @@ class AsyncSubAgent(TypedDict):
         transport is available only through an async parent-agent entrypoint,
         such as `ainvoke`. The synchronous `invoke` path requires a URL for a
         reachable Agent Protocol server.
+
+    To run a subagent defined right here in the background instead, give a
+    regular subagent spec `background: True` (see `SubAgent.background`).
     """
 
     name: str
@@ -83,6 +98,9 @@ class AsyncSubAgent(TypedDict):
 
     headers: NotRequired[dict[str, str]]
     """Additional headers to include in requests to the remote server."""
+
+    runnable: NotRequired[Runnable]
+    """A background subagent compiled by `create_deep_agent`, which runs on the main agent's own graph."""
 
     mode: NotRequired[Literal["isolated", "fork"]]
     """When using `mode="fork"`, configure the remote agent to match the parent's model,
@@ -211,7 +229,7 @@ class ListAsyncTasksSchema(BaseModel):
     )
 
 
-ASYNC_TASK_TOOL_DESCRIPTION = """Start an async subagent on a remote server. The subagent runs in the background and returns a task ID immediately.
+ASYNC_TASK_TOOL_DESCRIPTION = """Start an async subagent. The subagent runs in the background and returns a task ID immediately.
 
 Available async agent types:
 {available_agents}
@@ -221,7 +239,7 @@ Available async agent types:
 2. Use `check_async_task` only when the user asks for a status update or result.
 3. Use `update_async_task` to send new instructions to a running task.
 4. Multiple async subagents can run concurrently — launch several and let them run in the background.
-5. The subagent runs on a remote server, so it has its own tools and capabilities.
+5. The subagent runs separately, on its own thread, with its own tools and capabilities.
 6. A task with status `waiting` is waiting for a human (an approval or an answer). The user answers it directly; you can't answer or approve it for them. Keep working, and tell the user it's waiting if they ask."""  # noqa: E501
 
 
@@ -294,12 +312,58 @@ def _thread_metadata(runtime: ToolRuntime) -> dict[str, str]:
     return {"parent_thread_id": reference["thread_id"]} if "thread_id" in reference else {}
 
 
-def _run_options(runtime: ToolRuntime) -> dict[str, Any]:
-    """Keyword arguments for `runs.create` that link a launched run to this agent."""
+def _run_options(runtime: ToolRuntime, configurable: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Keyword arguments for `runs.create` that link a launched run to this agent.
+
+    `configurable` adds entries to the run's config next to the parent reference.
+    """
     options: dict[str, Any] = {"headers": _trace_headers()}
-    if reference := _parent_reference(runtime.config):
-        options["config"] = {"configurable": {_PARENT_KEY: reference}}
+    reference = _parent_reference(runtime.config)
+    if reference or configurable:
+        options["config"] = {"configurable": {**({_PARENT_KEY: reference} if reference else {}), **(configurable or {})}}
     return options
+
+
+_WORKER_KEY = "deepagents_worker"
+"""Key naming the background subagent a run of the main agent's graph should be.
+
+Set in the run's `configurable` and in the task thread's metadata, which the
+Agent Server copies into every run's `metadata`, so a run started elsewhere on
+the thread (such as the user answering the subagent) still runs the subagent.
+"""
+
+
+def _thread_options(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
+    """`threads.create` arguments for a task: its parent, and a background subagent's name."""
+    metadata = _thread_metadata(runtime)
+    if _is_worker(spec):
+        metadata[_WORKER_KEY] = spec["name"]
+    return {"metadata": metadata}
+
+
+def _launch_target(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
+    """`runs.create` arguments choosing the graph a task runs on and linking it to this agent.
+
+    Raises:
+        ValueError: If a background subagent's task can't find this agent's assistant (not on an Agent Server).
+    """
+    if not _is_worker(spec):
+        return {"assistant_id": spec["graph_id"], **_run_options(runtime)}
+    options = _run_options(runtime, {_WORKER_KEY: spec["name"]})
+    assistant_id = options["config"]["configurable"].get(_PARENT_KEY, {}).get("assistant_id")
+    if assistant_id is None:
+        msg = "it runs on this agent's own deployment, which needs an Agent Server"
+        raise ValueError(msg)
+    return {**options, "assistant_id": assistant_id}
+
+
+_NOT_SHARED_WITH_WORKERS = frozenset({"async_tasks", "jump_to", "structured_response"})
+"""Main-graph state a background subagent neither receives nor returns: task tracking and per-run control keys."""
+
+
+def _is_worker(spec: Mapping[str, Any]) -> bool:
+    """Whether a spec handed to the middleware is a compiled background subagent."""
+    return "runnable" in spec
 
 
 class _ClientCache:
@@ -420,12 +484,11 @@ def _build_start_tool(
         messages = _start_task_messages(spec, runtime, description)
         try:
             client = clients.get_sync(subagent_type)
-            thread = client.threads.create(metadata=_thread_metadata(runtime))
+            thread = client.threads.create(**_thread_options(spec, runtime))
             run = client.runs.create(
                 thread_id=thread["thread_id"],
-                assistant_id=spec["graph_id"],
                 input={"messages": messages},
-                **_run_options(runtime),
+                **_launch_target(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -462,12 +525,11 @@ def _build_start_tool(
         messages = await _astart_task_messages(spec, runtime, description)
         try:
             client = clients.get_async(subagent_type)
-            thread = await client.threads.create(metadata=_thread_metadata(runtime))
+            thread = await client.threads.create(**_thread_options(spec, runtime))
             run = await client.runs.create(
                 thread_id=thread["thread_id"],
-                assistant_id=spec["graph_id"],
                 input={"messages": messages},
-                **_run_options(runtime),
+                **_launch_target(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -713,10 +775,9 @@ def _build_update_tool(
             client = clients.get_sync(tracked["agent_name"])
             run = client.runs.create(
                 thread_id=tracked["thread_id"],
-                assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
                 multitask_strategy="interrupt",
-                **_run_options(runtime),
+                **_launch_target(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
@@ -753,10 +814,9 @@ def _build_update_tool(
             client = clients.get_async(tracked["agent_name"])
             run = await client.runs.create(
                 thread_id=tracked["thread_id"],
-                assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
                 multitask_strategy="interrupt",
-                **_run_options(runtime),
+                **_launch_target(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
@@ -1034,7 +1094,7 @@ def _build_async_subagent_tools(
 
 
 class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
-    """Middleware for async subagents running on remote Agent Protocol servers.
+    """Middleware for async subagents running on Agent Protocol servers or on this agent's own graph.
 
     This middleware adds tools for launching, monitoring, and updating
     background tasks on remote Agent Protocol servers. Unlike the synchronous
@@ -1052,7 +1112,9 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         async_subagents: List of async subagent specifications.
 
             Each must include `name`, `description`, and `graph_id`. `url` is
-            optional — omit it to use ASGI transport for local servers.
+            optional — omit it to use ASGI transport for local servers. A
+            spec with a compiled `runnable` (as `create_deep_agent` builds for
+            `background` subagents) runs on this agent's own graph.
         system_prompt: Instructions appended to the main agent's system prompt
             about how to use the async subagent tools.
 
@@ -1105,12 +1167,58 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             warn_beta(name="forked subagents", obj_type="feature")
 
         self.tools = _build_async_subagent_tools(async_subagents)
+        self._workers: dict[str, Runnable] = {a["name"]: a["runnable"] for a in async_subagents if _is_worker(a)}
+        self.state_keys: frozenset[str] = frozenset({"messages"})
+        """State keys of the main graph a background subagent's result may update; `create_deep_agent` sets them."""
 
         if system_prompt:
             agents_desc = "\n".join(_describe_async_subagent(a) for a in async_subagents)
             self.system_prompt: str | None = system_prompt + "\n\nAvailable async subagent types:\n\n" + agents_desc
         else:
             self.system_prompt = system_prompt
+
+    @hook_config(can_jump_to=["end"])
+    def before_agent(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
+        """Run a background subagent instead of this agent when a task asked for one."""
+        worker = self._requested_worker()
+        if worker is None:
+            return None
+        result = worker.invoke(self._worker_input(state))
+        return self._worker_update(result)
+
+    @hook_config(can_jump_to=["end"])
+    async def abefore_agent(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
+        """(async) Run a background subagent instead of this agent when a task asked for one."""
+        worker = self._requested_worker()
+        if worker is None:
+            return None
+        result = await worker.ainvoke(self._worker_input(state))
+        return self._worker_update(result)
+
+    @staticmethod
+    def _worker_input(state: Mapping[str, Any]) -> dict[str, Any]:
+        """The task thread's state (files, todos, summaries, ...) the helper continues from."""
+        return {key: value for key, value in state.items() if key not in _NOT_SHARED_WITH_WORKERS}
+
+    def _worker_update(self, result: Mapping[str, Any]) -> dict[str, Any]:
+        """Keep the helper's state on the task thread so its next run picks up where this one ended."""
+        update = {key: value for key, value in result.items() if key in self.state_keys and key not in _NOT_SHARED_WITH_WORKERS}
+        return {**update, "jump_to": "end"}
+
+    def _requested_worker(self) -> Runnable | None:
+        """Return the background subagent this run should execute as, or `None` for a normal run.
+
+        Raises:
+            ValueError: If the run names a subagent this agent doesn't run in the background.
+        """
+        config = get_config()
+        name = (config.get("configurable") or {}).get(_WORKER_KEY) or (config.get("metadata") or {}).get(_WORKER_KEY)
+        if name is None:
+            return None
+        if name not in self._workers:
+            msg = f"This agent has no background subagent named {name!r}"
+            raise ValueError(msg)
+        return self._workers[name]
 
     def wrap_model_call(
         self,

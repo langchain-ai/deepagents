@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from textual.containers import Container
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.tui.widgets.selection_action import SelectionAction
@@ -76,3 +76,41 @@ async def test_selection_action_config(
         await pilot.pause()
         assert app.screen.get_selected_text()
         assert bool(app.query(SelectionAction)) is enabled
+
+
+@pytest.mark.parametrize(
+    "pending",
+    [
+        "_pending_approval_widget",
+        "_pending_ask_user_widget",
+        "_pending_goal_review_widget",
+    ],
+)
+async def test_selection_action_preserves_pending_prompt(
+    monkeypatch: pytest.MonkeyPatch, pending: str
+) -> None:
+    """Clicking the action leaves a pending prompt focused and the draft unchanged."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        assert app._chat_input is not None
+        area = app._chat_input._text_area
+        assert area is not None
+        area.load_text("existing draft")
+        prompt = Input()
+        message = Static("selected text")
+        await app.query_one("#messages", Container).mount(message, prompt)
+        monkeypatch.setattr(app, pending, prompt)
+        prompt.focus()
+        await pilot.pause()
+        await pilot.mouse_down(message, offset=(0, 0))
+        await pilot.hover(message, offset=(8, 0))
+        await pilot.mouse_up(message, offset=(8, 0))
+        await pilot.pause()
+        await pilot.click(app.query_one(SelectionAction))
+        await pilot.pause()
+        assert prompt.has_focus
+        assert area.text == "existing draft"
+        await pilot.press("y")
+        await pilot.pause()
+        assert prompt.value == "y"
+        assert area.text == "existing draft"

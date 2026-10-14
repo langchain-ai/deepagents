@@ -24975,7 +24975,13 @@ class DeepAgentsApp(App):
         await screen.mount(action)
 
     def on_selection_action_ask(self, event: SelectionAction.Ask) -> None:
-        """Bring selected text into the draft without submitting it."""
+        """Bring selected text into the draft without interrupting inline prompts."""
+        if (
+            self._pending_approval_widget
+            or self._pending_ask_user_widget
+            or self._pending_goal_review_widget
+        ):
+            return
         if self._chat_input and not isinstance(self.screen, ModalScreen):
             self._chat_input.insert_at_cursor(event.text + "\n\n")
             self.screen.clear_selection()

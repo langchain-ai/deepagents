@@ -4545,6 +4545,7 @@ class DeepAgentsApp(App):
         )
         """Minimum estimated cold-versus-warm cost delta that opens the modal."""
 
+        self._idle_compaction_seen: dict[str, datetime] = {}
         self._cache_expiring_seen: dict[str, datetime] = {}
         self._cache_expiring_worker: Worker[None] | None = None
 
@@ -9716,22 +9717,55 @@ class DeepAgentsApp(App):
         except Exception:
             logger.debug("Cache-expiring notification failed", exc_info=True)
 
-    def _check_cache_expiry(self) -> None:
-        """Offer a handoff once per expired cache window, only when idle.
+    def _check_idle_compaction(self) -> None:
+        """Reserve one offload per warm cache window, without yielding to input."""
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import get_config_resolver
 
-        Polled every second from `on_mount`. Acts only when
-        `warnings.cache_prompt` is `expiry` and no cold-cache opt-out applies.
-        """
+        option = get_option("history.idle_compaction_tokens")
+        threshold = get_config_resolver().get(option).value if option else 0
         expires_at = self._status_bar.cache_expires_at if self._status_bar else None
         thread_id = self._lc_thread_id
         if (
-            expires_at is None
+            not isinstance(threshold, int)
+            or threshold <= 0
+            or self._tokens_approximate
+            or self._context_tokens < threshold
             or not thread_id
-            or datetime.now(UTC) < expires_at
-            or self._cache_expiry_seen.get(thread_id) == expires_at
-            or not self._agent
+            or expires_at is None
+            or self._idle_compaction_seen.get(thread_id) == expires_at
+            or not 0
+            < (expires_at - datetime.now(UTC)).total_seconds()
+            <= _CACHE_EXPIRING_LEAD_SECONDS
+            or not self._cache_maintenance_idle()
+            or self._remote_agent() is None
+        ):
+            return
+        self._idle_compaction_seen[thread_id] = expires_at
+        self._set_agent_running(True)
+        try:
+            self._offload_worker = self.run_worker(
+                self._run_offload_task(idle_window=(thread_id, expires_at)),
+                group="offload",
+                exit_on_error=False,
+            )
+        except Exception:
+            self._set_agent_running(False)
+            logger.exception("Failed to schedule idle compaction")
+
+    def _cache_maintenance_idle(self, *, reserved: bool = False) -> bool:
+        """Require a quiescent UI before automatic cache maintenance.
+
+        Args:
+            reserved: Ignore the automatic offload's own busy reservation.
+
+        Returns:
+            Whether no UI activity competes with cache maintenance.
+        """
+        return not (
+            not self._agent
             or not self._session_state
-            or self._agent_running
+            or (self._agent_running and not reserved)
             or self._agent_reconciling
             or self._goal_state_mutating
             or self._shell_running
@@ -9747,6 +9781,24 @@ class DeepAgentsApp(App):
             or self._reloading
             or self._exiting
             or isinstance(self.screen, ModalScreen)
+            or self._cache_reconciliation_pending
+        )
+
+    def _check_cache_expiry(self) -> None:
+        """Offer a handoff once per expired cache window, only when idle.
+
+        Polled every second from `on_mount`. Acts only when
+        `warnings.cache_prompt` is `expiry` and no cold-cache opt-out applies.
+        """
+        self._check_idle_compaction()
+        expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+        thread_id = self._lc_thread_id
+        if (
+            expires_at is None
+            or not thread_id
+            or datetime.now(UTC) < expires_at
+            or self._cache_expiry_seen.get(thread_id) == expires_at
+            or not self._cache_maintenance_idle()
         ):
             return
         if (
@@ -18752,12 +18804,29 @@ class DeepAgentsApp(App):
                 ErrorMessage(f"Offload failed: {format_agent_exception(exc)}")
             )
 
-    async def _run_offload_task(self) -> None:
+    async def _run_offload_task(
+        self, *, idle_window: tuple[str, datetime] | None = None
+    ) -> None:
         """Run a synchronously reserved `/offload` outside the App message pump."""
         self._offload_task_started = True
         try:
+            if idle_window is not None:
+                if (
+                    self._lc_thread_id != idle_window[0]
+                    or not self._status_bar
+                    or self._status_bar.cache_expires_at != idle_window[1]
+                    or datetime.now(UTC) >= idle_window[1]
+                    or not self._cache_maintenance_idle(reserved=True)
+                ):
+                    return
+                self.notify(
+                    "Compacting idle context before cache expiry. Set "
+                    "history.idle_compaction_tokens = 0 to disable.",
+                    markup=False,
+                )
             await self._handle_offload(reserved=True)
         finally:
+            self._set_agent_running(False)
             self._offload_task_started = False
             self._offload_worker = None
             await self._maybe_drain_deferred()

@@ -21,6 +21,7 @@ _TIP_SHIFT_TAB_WITHOUT_YOLO = "Press Shift+Tab to toggle Manual and Auto modes"
 """Tip used when orgs/users disable YOLO entry via the approval switcher."""
 
 _TIPS: dict[str, int] = {
+    "Set history.idle_compaction_tokens = 0 to disable idle compaction": 1,
     "Use @@ to reference a recent conversation": 2,
     "Try /threads to resume a previous conversation": 2,
     "Ask /btw side questions and follow-ups while the agent keeps working": 2,

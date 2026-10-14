@@ -2943,6 +2943,7 @@ _SANDBOX_DISPLAY_NAMES: dict[str, str] = {
     "daytona": "Daytona",
     "langsmith": "LangSmith",
     "modal": "Modal",
+    "openshell": "OpenShell",
     "runloop": "Runloop",
 }
 """Human-readable display names for sandbox providers."""

@@ -1495,7 +1495,7 @@ class AssistantMessage(_StreamedTextParts, Vertical):
 
     /* Markdown blocks carry a bottom margin for inter-block spacing; drop it
        on the final block so the message has no trailing blank row. */
-    AssistantMessage Markdown > *:last-child {
+    AssistantMessage Markdown > MarkdownBlock:last-child {
         margin-bottom: 0;
     }
     """

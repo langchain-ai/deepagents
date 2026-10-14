@@ -12,18 +12,19 @@ of scrolling with a trackpad.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, Mock
 
+import pytest
 from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Container
-from textual.widgets import Static
+from textual.widgets import Markdown, Static
 
 from deepagents_code.app import DeepAgentsApp, _ChatScroll
-from deepagents_code.tui.widgets.messages import UserMessage
-
-if TYPE_CHECKING:
-    import pytest
+from deepagents_code.tui.widgets.auto_mode_notice import AutoModeNoticeScreen
+from deepagents_code.tui.widgets.chat_input import ChatInput
+from deepagents_code.tui.widgets.messages import AssistantMessage, UserMessage
+from deepagents_code.tui.widgets.yolo_mode_notice import YoloModeNoticeScreen
 
 
 class _ScrollProbeApp(App[None]):
@@ -238,3 +239,47 @@ class TestScrollDrivenHydration:
             assert end_after == app._message_store.total_count
             # Bind the store counter to a real widget: the tail row is mounted.
             assert messages.query(last_id)
+
+
+@pytest.mark.parametrize("notice", [None, AutoModeNoticeScreen, YoloModeNoticeScreen])
+async def test_submit_does_not_restyle_old_transcript_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    notice: type[AutoModeNoticeScreen | YoloModeNoticeScreen] | None,
+) -> None:
+    """Appending a prompt must not perform CSS work on the entire transcript."""
+    app = DeepAgentsApp()
+    monkeypatch.setattr(app, "_post_paint_init", AsyncMock())
+    send = AsyncMock()
+    monkeypatch.setattr(app, "_send_to_agent", send)
+    async with app.run_test(size=(100, 30)) as pilot:
+        if notice is not None:
+            screen = notice()
+            await app.push_screen(screen)
+            await pilot.pause()
+            await pilot.press("escape")
+            await pilot.pause()
+
+        await _mount_user_messages(app, 153)
+        assistant = AssistantMessage("First paragraph.\n\nLast paragraph.")
+        await app._mount_message(assistant)
+        await assistant.write_initial_content()
+        await pilot.pause()
+        blocks = assistant.query_one(Markdown).children
+        assert blocks[0].styles.margin.bottom == 1
+        assert blocks[-1].styles.margin.bottom == 0
+
+        chat_input = app.query_one(ChatInput)
+        chat_input.value = "new prompt"
+        chat_input.focus_input()
+        await pilot.pause()
+        old_rows = set(app.query_one("#messages").children)
+        apply = Mock(wraps=app.stylesheet.apply)
+        monkeypatch.setattr(app.stylesheet, "apply", apply)
+        await pilot.press("enter")
+        await pilot.pause()
+
+        send.assert_awaited_once_with("new prompt")
+        assert app._active_user_message is not None
+        assert app._active_user_message.region.height > 0
+        restyled = [call.args[0] for call in apply.call_args_list]
+        assert not old_rows.intersection(restyled)

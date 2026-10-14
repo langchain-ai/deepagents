@@ -206,6 +206,8 @@ class SubAgent(TypedDict):
 
     With `create_deep_agent`, a fork inherits the parent's custom `middleware`;
     entries in the subagent's `middleware` override inherited entries with the same name.
+    Spec middleware that changes the prompt or adds or changes tool definitions can
+    break the shared cache prefix with the parent.
     """
 
 

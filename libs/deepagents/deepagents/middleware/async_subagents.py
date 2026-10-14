@@ -22,6 +22,7 @@ from langchain.agents.middleware.types import AgentMiddleware, AgentState, Conte
 from langchain.tools import ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.messages import AnyMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
@@ -254,6 +255,41 @@ def _trace_headers(spec: AsyncSubAgent) -> dict[str, str]:
     return {"langsmith-trace": run_tree.dotted_order, "baggage": ",".join(baggage)}
 
 
+_PARENT_KEY = "deepagents_parent"
+"""`configurable` key carrying the launching agent's `_ParentReference` to an async subagent's run.
+
+Apps read it directly (Managed Deep Agents does), so keep the key and shape stable.
+"""
+
+
+class _ParentReference(TypedDict):
+    """What an async subagent's run knows about the agent that launched it."""
+
+    thread_id: NotRequired[str]
+    """The parent's thread, where notifications for the parent go."""
+
+    assistant_id: NotRequired[str]
+    """The parent's assistant, which handles runs queued on its thread."""
+
+
+def _parent_reference(config: RunnableConfig) -> _ParentReference:
+    """Describe the running agent so the async subagent it launches can find it."""
+    reference: _ParentReference = {}
+    if thread_id := (config.get("configurable") or {}).get("thread_id"):
+        reference["thread_id"] = str(thread_id)
+    if assistant_id := (config.get("metadata") or {}).get("assistant_id") or (config.get("configurable") or {}).get("assistant_id"):
+        reference["assistant_id"] = str(assistant_id)
+    return reference
+
+
+def _run_options(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
+    """Keyword arguments for `runs.create` that link a launched run to this agent."""
+    options: dict[str, Any] = {"headers": _trace_headers(spec)}
+    if reference := _parent_reference(runtime.config):
+        options["config"] = {"configurable": {_PARENT_KEY: reference}}
+    return options
+
+
 class _ClientCache:
     """Lazily-created, cached Agent Protocol clients keyed by (url, headers)."""
 
@@ -377,7 +413,7 @@ def _build_start_tool(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": messages},
-                headers=_trace_headers(spec),
+                **_run_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -419,7 +455,7 @@ def _build_start_tool(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
                 input={"messages": messages},
-                headers=_trace_headers(spec),
+                **_run_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to launch async subagent '%s': %s", subagent_type, e)
@@ -616,7 +652,7 @@ def _build_update_tool(
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
                 multitask_strategy="interrupt",
-                headers=_trace_headers(spec),
+                **_run_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)
@@ -656,7 +692,7 @@ def _build_update_tool(
                 assistant_id=spec["graph_id"],
                 input={"messages": [{"role": "user", "content": message}]},
                 multitask_strategy="interrupt",
-                headers=_trace_headers(spec),
+                **_run_options(spec, runtime),
             )
         except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
             logger.warning("Failed to update async subagent '%s': %s", tracked["agent_name"], e)

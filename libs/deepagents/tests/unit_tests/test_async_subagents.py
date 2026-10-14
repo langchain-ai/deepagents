@@ -1350,3 +1350,61 @@ class TestStaleStatusGuidanceInToolDescriptions:
 
     def test_list_async_tasks_warns_statuses_are_stale(self) -> None:
         assert "stale" in self._descriptions()["list_async_tasks"].lower()
+
+
+def _parent_runtime(tool_call_id: str = "tc_parent") -> ToolRuntime:
+    """A runtime for a parent agent running on the Agent Server."""
+    return ToolRuntime(
+        state={},
+        context=None,
+        tool_call_id=tool_call_id,
+        store=None,
+        stream_writer=lambda _: None,
+        config={"configurable": {"thread_id": "thread_parent"}, "metadata": {"assistant_id": "assistant_parent"}},
+    )
+
+
+def _launch(mock_get_client: MagicMock) -> MagicMock:
+    """Launch a subagent from the parent's runtime and return the mocked client."""
+    mock_client = MagicMock()
+    mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
+    mock_client.runs.create.return_value = {"run_id": "run_xyz"}
+    mock_get_client.return_value = mock_client
+    launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha")]), "start_async_task")
+    launch.func(description="analyze data", subagent_type="alpha", runtime=_parent_runtime())
+    return mock_client
+
+
+def _sent_reference(mock_client: MagicMock) -> dict[str, Any]:
+    return mock_client.runs.create.call_args.kwargs["config"]["configurable"]["deepagents_parent"]
+
+
+class TestParentReference:
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_launch_sends_parent_thread_and_assistant(self, mock_get_client: MagicMock) -> None:
+        client = _launch(mock_get_client)
+        assert _sent_reference(client) == {"thread_id": "thread_parent", "assistant_id": "assistant_parent"}
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_update_resends_parent_reference(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.create.return_value = {"run_id": "run_new"}
+        mock_get_client.return_value = mock_client
+        update = _get_tool(_build_async_subagent_tools([_make_spec()]), "update_async_task")
+        runtime = _make_runtime_with_task()
+        runtime.config = _parent_runtime().config
+        update.func(task_id="thread_abc", message="more", runtime=runtime)
+        assert _sent_reference(mock_client)["thread_id"] == "thread_parent"
+
+
+@patch("deepagents.middleware.async_subagents.get_sync_client")
+def test_launch_reads_assistant_from_configurable_when_metadata_lacks_it(mock_get_client: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
+    mock_client.runs.create.return_value = {"run_id": "run_xyz"}
+    mock_get_client.return_value = mock_client
+    runtime = _parent_runtime()
+    runtime.config = {"configurable": {"thread_id": "thread_parent", "assistant_id": "assistant_parent"}}
+    launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha")]), "start_async_task")
+    launch.func(description="analyze data", subagent_type="alpha", runtime=runtime)
+    assert _sent_reference(mock_client)["assistant_id"] == "assistant_parent"

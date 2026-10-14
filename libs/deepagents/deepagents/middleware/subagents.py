@@ -124,8 +124,8 @@ class SubAgent(TypedDict):
     middleware: NotRequired[list[AgentMiddleware]]
     """Additional middleware for custom behavior, logging, or rate limiting.
 
-    With `create_deep_agent` and `mode="fork"`, inherits the parent's custom
-    middleware. Entries here replace inherited entries with the same `.name`.
+    Under `mode="fork"`, inherits the parent's custom middleware. Entries here
+    replace inherited entries with the same `.name`.
 
     To restrict filesystem tools, include a `FilesystemMiddleware(tools=...)`
     instance here to replace the subagent's default filesystem middleware.

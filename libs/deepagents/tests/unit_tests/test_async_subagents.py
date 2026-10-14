@@ -2,6 +2,7 @@
 
 import base64
 import json
+import urllib.parse
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, TypeVar
@@ -17,6 +18,8 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
+from langsmith import tracing_context
+from langsmith.run_trees import RunTree
 
 from deepagents.backends import CompositeBackend, FilesystemBackend
 from deepagents.middleware.async_subagents import (
@@ -283,6 +286,7 @@ class TestLaunchTool:
             thread_id="thread_abc",
             assistant_id="my_graph",
             input={"messages": [{"role": "user", "content": "analyze data"}]},
+            headers={},
         )
 
 
@@ -757,6 +761,7 @@ class TestUpdateTool:
             assistant_id="my_graph",
             input={"messages": [{"role": "user", "content": "Focus on security issues only"}]},
             multitask_strategy="interrupt",
+            headers={},
         )
 
 
@@ -931,6 +936,118 @@ class TestListTasksTool:
         rt = _make_runtime()
         result = await list_tool.coroutine(runtime=rt)
         assert "No async subagent tasks tracked" in result
+
+
+def _parent_run(**overrides: Any) -> RunTree:
+    """A traced parent run, as the `start_async_task` tool call would have."""
+    fields: dict[str, Any] = {
+        "name": "start_async_task",
+        "run_type": "tool",
+        "session_name": "parent project",
+        "extra": {"metadata": {"thread_id": "thread_parent"}},
+    }
+    fields.update(overrides)
+    return RunTree(**fields)
+
+
+def _baggage(headers: dict[str, str]) -> dict[str, Any]:
+    """Decode a baggage header the way the Agent Server does."""
+    decoded: dict[str, Any] = {}
+    for item in headers["baggage"].split(","):
+        key, value = item.split("=", 1)
+        value = urllib.parse.unquote(value)
+        decoded[key] = json.loads(value) if key in {"langsmith-metadata", "langsmith-replicas"} else value
+    return decoded
+
+
+class TestTraceHeaders:
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_launch_nests_child_run_under_current_trace(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.threads.create = MagicMock(side_effect=_async_return({"thread_id": "thread_abc"}))
+        mock_client.runs.create = MagicMock(side_effect=_async_return({"run_id": "run_xyz"}))
+        mock_get_client.return_value = mock_client
+        parent = _parent_run()
+
+        launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha", url=None)]), "start_async_task")
+        with tracing_context(parent=parent, enabled=True):
+            await launch.coroutine(description="analyze data", subagent_type="alpha", runtime=_make_runtime())
+
+        headers = mock_client.runs.create.call_args.kwargs["headers"]
+        assert headers["langsmith-trace"] == parent.dotted_order
+        assert _baggage(headers) == {
+            "langsmith-metadata": {"ls_nest_under_parent": True},
+            "langsmith-project": "parent project",
+        }
+
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_update_nests_child_run_under_current_trace(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.runs.create = MagicMock(side_effect=_async_return({"run_id": "run_new"}))
+        mock_get_client.return_value = mock_client
+        parent = _parent_run(name="update_async_task")
+
+        update = _get_tool(_build_async_subagent_tools([_make_spec(url=None)]), "update_async_task")
+        with tracing_context(parent=parent, enabled=True):
+            await update.coroutine(task_id="thread_abc", message="New instructions", runtime=_make_runtime_with_task())
+
+        headers = mock_client.runs.create.call_args.kwargs["headers"]
+        assert headers["langsmith-trace"] == parent.dotted_order
+        assert _baggage(headers)["langsmith-project"] == "parent project"
+
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_parent_metadata_is_not_propagated(self, mock_get_client: MagicMock) -> None:
+        """Only the nesting marker is sent, so the parent's `thread_id` doesn't tag the child's trace."""
+        mock_client = MagicMock()
+        mock_client.threads.create = MagicMock(side_effect=_async_return({"thread_id": "thread_abc"}))
+        mock_client.runs.create = MagicMock(side_effect=_async_return({"run_id": "run_xyz"}))
+        mock_get_client.return_value = mock_client
+
+        launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha", url=None)]), "start_async_task")
+        with tracing_context(parent=_parent_run(), enabled=True):
+            await launch.coroutine(description="analyze data", subagent_type="alpha", runtime=_make_runtime())
+
+        assert _baggage(mock_client.runs.create.call_args.kwargs["headers"])["langsmith-metadata"] == {"ls_nest_under_parent": True}
+
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_no_headers_without_tracing(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.threads.create = MagicMock(side_effect=_async_return({"thread_id": "thread_abc"}))
+        mock_client.runs.create = MagicMock(side_effect=_async_return({"run_id": "run_xyz"}))
+        mock_get_client.return_value = mock_client
+
+        launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha", url=None)]), "start_async_task")
+        await launch.coroutine(description="analyze data", subagent_type="alpha", runtime=_make_runtime())
+
+        assert mock_client.runs.create.call_args.kwargs["headers"] == {}
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_no_headers_for_a_subagent_on_another_server(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
+        mock_client.runs.create.return_value = {"run_id": "run_xyz"}
+        mock_get_client.return_value = mock_client
+
+        launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha", url="https://other.example")]), "start_async_task")
+        with tracing_context(parent=_parent_run(), enabled=True):
+            launch.func(description="analyze data", subagent_type="alpha", runtime=_make_runtime())
+
+        assert mock_client.runs.create.call_args.kwargs["headers"] == {}
+
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_existing_baggage_is_kept(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.threads.create = MagicMock(side_effect=_async_return({"thread_id": "thread_abc"}))
+        mock_client.runs.create = MagicMock(side_effect=_async_return({"run_id": "run_xyz"}))
+        mock_get_client.return_value = mock_client
+        spec = _make_spec("alpha", url=None, headers={"Baggage": "team=search"})
+
+        launch = _get_tool(_build_async_subagent_tools([spec]), "start_async_task")
+        with tracing_context(parent=_parent_run(), enabled=True):
+            await launch.coroutine(description="analyze data", subagent_type="alpha", runtime=_make_runtime())
+
+        baggage = _baggage(mock_client.runs.create.call_args.kwargs["headers"])
+        assert (baggage["team"], baggage["langsmith-project"]) == ("search", "parent project")
 
 
 _T = TypeVar("_T")

@@ -80,9 +80,11 @@ scope (see "Reuse what earlier evals left in scope" below).
 
 #### Fan out with bounded concurrency
 
-Dispatch independent work in parallel with `Promise.all`, but in explicit
-batches around 10 so you do not launch hundreds of subagents at once. The bridge
-enforces a hard per-REPL cap of 32 concurrent subagent calls.
+Dispatch independent work in parallel with `Promise.all`. Batches around 10 are
+a conservative recommendation, not a required limit; use larger batches when
+appropriate for the workload and its admission controls. The bridge enforces
+a per-REPL cap of 32 concurrent subagent calls; excess
+calls wait for capacity.
 
 ```javascript
 const files = ["/src/a.ts", "/src/b.ts", "/src/c.ts"]; // found while exploring

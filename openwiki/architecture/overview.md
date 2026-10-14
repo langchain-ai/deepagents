@@ -5,7 +5,7 @@ description: Architecture and release map for the Deep Agents Python monorepo, c
 tags: [architecture, deepagents, langgraph, sdk, talon, integrations]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-13T08:11:05.854Z
+    at: 2026-10-14T08:05:41.101Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -53,7 +53,7 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
 ---
 
 # Repository Architecture Overview
@@ -70,16 +70,16 @@ This repository is a monorepo of independently versioned Python packages, not on
 
 | Package | Current version and Python baseline | Architectural role |
 | --- | --- | --- |
-| `deepagents` | `0.7.24`; `>=3.11,<4.0` | Core SDK: `create_deep_agent`, middleware, and pluggable backends. |
+| `deepagents` | `0.7.25`; `>=3.11,<4.0` | Core SDK: `create_deep_agent`, middleware, and pluggable backends. |
 | `deepagents-acp` | `0.0.13`; `>=3.11` | Agent Client Protocol bridge for serving graphs to editor clients. |
 | `deepagents-code` (`dcode`) | `0.1.84`; `>=3.12,<4.0` | Reference terminal coding-agent product, including interactive and headless clients. |
 | `deepagents-talon` | `0.0.9`; `>=3.12` | Experimental local host for channels, turns, and cron scheduling. |
 | `deepagents-evals` | `0.0.1`; `>=3.12,<3.14` | End-to-end behavioral evaluation and Harbor benchmark suite. |
-| `langchain-quickjs` | `0.3.8`; `>=3.11,<4.0` | Optional JavaScript REPL middleware partner integration. |
+| `langchain-quickjs` | `0.3.9`; `>=3.11,<4.0` | Optional JavaScript REPL middleware partner integration. |
 
-Release Please manages separate release lines for the SDK, ACP, dcode, Talon, and the five partner packages: Daytona, Modal, Runloop, Vercel, and QuickJS. The release manifest records `deepagents-acp` `0.0.13` and `deepagents-code` `0.1.84`; it does not include `deepagents-evals`. The configuration makes separate draft release pull requests and skips automated GitHub releases. Thus, package metadata or a directory under `libs/` does not by itself imply participation in the automated release line.
+Release Please manages separate release lines for the SDK, ACP, dcode, Talon, and the five partner packages: Daytona, Modal, Runloop, Vercel, and QuickJS. The manifest records the SDK at `0.7.25`, ACP at `0.0.13`, dcode at `0.1.84`, Talon at `0.0.9`, and QuickJS at `0.3.9`; it does not include `deepagents-evals`. The configuration makes separate draft release pull requests and skips automated GitHub releases. Thus, package metadata or a directory under `libs/` does not by itself imply participation in the automated release line.
 
-Published dependencies point toward the SDK: ACP depends on `deepagents`; dcode pins `deepagents==0.7.24` and has a local ACP source override; Talon requires `deepagents>=0.7.24` and `deepagents-code>=0.1.71,<1.0.0`; evals requires the SDK and dcode; and QuickJS requires the 0.7.x SDK plus LangChain and LangGraph. Partners are selected by a consuming product or host, rather than being necessary to create every SDK graph. In monorepo development, dcode resolves the SDK, ACP, and all five partner packages through editable local sources; evals likewise uses local source wiring for its SDK, dcode, and QuickJS dependencies.
+Published dependencies point toward the SDK: ACP depends on `deepagents`; dcode pins `deepagents==0.7.24` and depends on ACP; Talon requires `deepagents>=0.7.24` and `deepagents-code>=0.1.71,<1.0.0`; evals requires the SDK and dcode; and QuickJS requires the 0.7.x SDK plus LangChain and LangGraph. This means dcode's currently published SDK pin is one patch behind the SDK's release-manifest version. Partners are selected by a consuming product or host, rather than being necessary to create every SDK graph. In monorepo development, dcode resolves the SDK, ACP, and all five partner packages through editable local sources; evals likewise uses local source wiring for its SDK, dcode, and QuickJS dependencies.
 
 ```mermaid
 flowchart TD
@@ -133,8 +133,6 @@ Persistence is intentionally split. A LangGraph checkpointer is passed through S
 ### dcode and ACP
 
 `deepagents-code` is a reference terminal coding-agent product on the SDK. Its terminal client and agent server run in separate processes: the client owns presentation, input, and approval interaction; the server owns graph execution and streams events back. Headless mode uses the same server runtime.
-
-dcode configuration is layered across user, project, session, and runtime scopes through a process-wide generation. An in-app write or `/reload` advances that generation. A parse failure preserves the last usable tier, and the application deliberately does not watch configuration files for edits.
 
 `AgentServerACP` accepts either a compiled graph or a graph factory given an `AgentSessionContext` containing working directory, mode, and optional model. With `load_sessions=True`, it advertises and implements session loading, verifying persisted checkpoint metadata and working-directory identity before replaying a session. Dcode's ACP specialization wraps each session graph to set trusted Auto-mode approval state and prompt metadata during streaming. Keep generic protocol translation in ACP and terminal policy in dcode.
 

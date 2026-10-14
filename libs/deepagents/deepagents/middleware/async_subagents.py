@@ -16,7 +16,7 @@ import urllib.parse
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from datetime import UTC, datetime
-from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
+from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT, TracePolicy, omit_payload
 from langchain.tools import ToolRuntime
@@ -60,9 +60,6 @@ class AsyncSubAgent(TypedDict):
         transport is available only through an async parent-agent entrypoint,
         such as `ainvoke`. The synchronous `invoke` path requires a URL for a
         reachable Agent Protocol server.
-
-    Its graph factory can read the launching agent's thread with
-    `parent_reference`, for example to work in the parent's sandbox.
     """
 
     name: str
@@ -250,16 +247,14 @@ def _trace_headers() -> dict[str, str]:
 
 
 _PARENT_KEY = "deepagents_parent"
-"""`configurable` key carrying the launching agent's `ParentReference` to an async subagent's run."""
+"""`configurable` key carrying the launching agent's `_ParentReference` to an async subagent's run.
+
+Apps read it directly (Managed Deep Agents does), so keep the key and shape stable.
+"""
 
 
-class ParentReference(TypedDict):
-    """What an async subagent's run knows about the agent that launched it.
-
-    !!! warning "Experimental"
-
-        This shape may change without notice.
-    """
+class _ParentReference(TypedDict):
+    """What an async subagent's run knows about the agent that launched it."""
 
     thread_id: NotRequired[str]
     """The parent's thread, where notifications for the parent go."""
@@ -268,9 +263,9 @@ class ParentReference(TypedDict):
     """The parent's assistant, which handles runs queued on its thread."""
 
 
-def _parent_reference(config: RunnableConfig) -> ParentReference:
+def _parent_reference(config: RunnableConfig) -> _ParentReference:
     """Describe the running agent so the async subagent it launches can find it."""
-    reference: ParentReference = {}
+    reference: _ParentReference = {}
     if thread_id := (config.get("configurable") or {}).get("thread_id"):
         reference["thread_id"] = str(thread_id)
     if assistant_id := (config.get("metadata") or {}).get("assistant_id") or (config.get("configurable") or {}).get("assistant_id"):
@@ -284,27 +279,6 @@ def _run_options(runtime: ToolRuntime) -> dict[str, Any]:
     if reference := _parent_reference(runtime.config):
         options["config"] = {"configurable": {_PARENT_KEY: reference}}
     return options
-
-
-def parent_reference(config: RunnableConfig) -> ParentReference | None:
-    """Return the reference to the agent that launched this async subagent run.
-
-    !!! warning "Experimental"
-
-        This helper may change without notice.
-
-    Use it in an async subagent's graph factory to find the agent that launched
-    it, for example to work in that agent's sandbox: look up the sandbox your
-    app keeps for the parent's thread and reconnect to it.
-
-    Args:
-        config: The run config the Agent Server passes to the graph factory.
-
-    Returns:
-        The parent reference, or `None` when the run wasn't launched by an async subagent tool.
-    """
-    reference = (config.get("configurable") or {}).get(_PARENT_KEY)
-    return cast("ParentReference", reference) if isinstance(reference, dict) else None
 
 
 class _ClientCache:

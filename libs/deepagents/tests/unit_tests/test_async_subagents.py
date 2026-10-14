@@ -30,7 +30,6 @@ from deepagents.middleware.async_subagents import (
     _build_async_subagent_tools,
     _resolve_headers,
     _tasks_reducer,
-    parent_reference,
 )
 from deepagents.middleware.filesystem import FilesystemMiddleware
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -1368,10 +1367,6 @@ class TestParentReference:
         runtime.config = _parent_runtime().config
         update.func(task_id="thread_abc", message="more", runtime=runtime)
         assert _sent_reference(mock_client)["thread_id"] == "thread_parent"
-
-    def test_parent_reference_reads_config(self) -> None:
-        assert parent_reference({"configurable": {"deepagents_parent": {"thread_id": "t"}}}) == {"thread_id": "t"}
-        assert parent_reference({"configurable": {}}) is None
 
 
 @patch("deepagents.middleware.async_subagents.get_sync_client")

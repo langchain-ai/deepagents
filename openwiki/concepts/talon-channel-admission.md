@@ -1,7 +1,7 @@
 ---
 type: channel admission and runtime routing
-title: Talon Channels and Admission
-description: How Talon channel adapters admit messages, pair senders, normalize media, and pass trusted conversation identity to the host. Covers host-owned dispatch, privileged reply binding, delivery, and lifecycle boundaries.
+title: Talon Channel Admission
+description: How Talon channel adapters admit messages and reactions, bind trusted conversation identity to host-owned turns, and constrain cancellation, authorization, and delivery. Covers pairing, media boundaries, and request-scoped privileged responses.
 tags: [talon, channels, admission-control, pairing, conversation-identity, media, security]
 sources:
   - id: openwiki-source-6a038e6e1a11f450bcafce54
@@ -42,10 +42,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_pairing.py
   - id: openwiki-source-8f71a0fa13257ebf54bc782f
     resource: repo://libs/talon/tests/unit_tests/test_slack_oauth_context.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-09T08:07:51.383Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-09T08:07:51.383Z
+    at: 2026-10-14T08:05:41.101Z
 ---
 
 Talon channel adapters are the boundary between provider events and the host-owned agent runtime. An adapter normalizes provider-local identities, applies its exposure and pairing policy, and calls a handler installed by `TalonHost`. The host—not an adapter—then owns commands, agent conversation identity, invocation replacement, authorization and approval state, and delivery.
@@ -80,14 +80,14 @@ sequenceDiagram
         Adapter->>History: read bounded preceding replies
         History-->>Adapter: filtered context or unavailable marker
         Adapter->>Host: ChannelMessage plus context
-        Host->>Host: commands and bound controls
+        Host->>Host: command, bound control, or replace active turn
         Host->>Runtime: invoke host-owned conversation
         Runtime-->>Host: result or control request
         Host-->>Adapter: deliver to origin conversation
     else admitted message
         Policy-->>Adapter: admit
         Adapter->>Host: ChannelMessage
-        Host->>Host: commands and bound controls
+        Host->>Host: command, bound control, or replace active turn
         Host->>Runtime: invoke host-owned conversation
         Runtime-->>Host: result or control request
         Host-->>Adapter: deliver to origin conversation
@@ -98,7 +98,7 @@ sequenceDiagram
     end
 ```
 
-*Adapters decide whether provider events enter Talon. Slack fetches only after message admission; the host owns conversation and runtime actions after the callback.*
+*Adapters decide whether provider events enter Talon. Slack fetches only after message admission; the host owns conversation, cancellation, and runtime actions after the callback.*
 
 ## Exposure and identity gates
 
@@ -133,6 +133,8 @@ Host-mediated revocation removes the pairing record, cancels active work in the 
 ## Host conversation and dispatch boundary
 
 For an admitted message other than `/help`, the host combines its trusted provider key and adapter conversation ID into a conversation root. The root identifies the LangGraph thread and persisted reset key. A reset generation makes the current agent conversation ID. The host serializes work by root, replaces an active turn when a newer message arrives, and uses the generation to reject stale results. Adapter metadata is request context: the host, not metadata, sets the runtime conversation and selected model.
+
+Replacement and `/stop` cancel the active task, increment its generation, and ask the runtime to repair an interrupted conversation. Cancellation has a 30-second bound. If the task or recovery does not finish in time, the host blocks further work for that agent conversation rather than starting a potentially overlapping turn; a recovery error is reported as degraded interruption rather than treated as a clean handoff. A discarded stale result is not delivered, and any background-subagent results it had consumed are requeued for a later turn.
 
 A root can use a distinct history scope. Slack non-DM threads keep a thread-specific agent identity such as `channel:root_timestamp`, use the parent `C...` or `G...` channel for `history_chat`, and still reply to the thread. Slack DMs keep their own scope.
 
@@ -170,3 +172,4 @@ MCP authorization callbacks are intercepted before model invocation. The host ac
 ## Focused verification
 
 `libs/talon/tests/unit_tests/test_pairing.py` covers pairing code lifetime, persistence failure, admission, control authority, revocation, and CLI behavior. `libs/talon/tests/unit_tests/test_pairing_slack.py` covers Slack's rejected-channel-sender DM flow, missing-DM behavior, response suppression, paired access across chats, and command admission. `libs/talon/tests/channels/test_slack.py` covers explicit other-participant context opt-in, bot-history labeling, pagination and character bounds, admission-before-retrieval, and unavailable-context behavior. `libs/talon/tests/unit_tests/test_slack_oauth_context.py` and Slack host integration tests cover callback exclusion before truncation, thread identity, parent-channel history scope, and context wrapping. `libs/talon/tests/unit_tests/test_messaging.py` verifies progress-message ordering, explicit-message de-duplication, request isolation, delivery failure handling, and expiry after finalization or cancellation.
+ter finalization or cancellation.

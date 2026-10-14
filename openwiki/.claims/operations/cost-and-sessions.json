@@ -1,22 +1,22 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:23e0ee09743c020c95108aa746c84063d65457d392314d8af9cdecb999dd2d3e",
+  "pageVersion": "sha256:03b4569494f3582941375463a5fc409157fff7d86acea2e65cdb207f4d9e7099",
   "claims": [
     {
       "id": "claim_c627c2402b31442da711a9d57f722fba",
       "statement": "The entire-thread breakdown formatter refuses to render unless it receives a version-one breakdown whose `historical_complete` flag is true, so incomplete legacy detail cannot be presented as a complete token table.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/tui/modals/_cost_breakdown.py#L7-L20",
-          "version": "repo-lines-v1:sha256:257d626a476e04f104bb73f90cfd80737a46063b4392588580260913b0dae0ef:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhMzY1YmU5NmY0YjFhMDZkMzQ4NTgzYjliZTk3YjdhM2YyMDU4NDllMDk1OWQzODYyMzgxOTQ2MzkyYTg4MDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlYWFhYzdiOTVkNzAzNWMyYTEyY2RjNzMyZTc4YzA3MGQwMDQ4ZDA5Y2I1YzgyNmIxZjdkNmVlZWIxZjY1ZTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZlN2E0MWQwYjlkMjY4YWRjODE5MTE0Nzg5MjEyZjM1NjYxZTE5NWRlODk1NTA1NjBhNWI1NjEyZGNjYjc5MzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE1YzJiOTQzZmNkYmJiZWVkNzJmMjExOWRmZTJlZmFlNTg0NTA5OTE2NmVkYjgyNTgyMTYzYjc2ZjEyZGIzYzYifQ"
+          "resource": "repo://libs/code/deepagents_code/tui/modals/_cost_breakdown.py#L13-L26",
+          "version": "repo-lines-v1:sha256:b43ced409106cd8e11bd33ac7ed5e30853543c5c74efabd64551f4d1cc7ed126:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVhMzY1YmU5NmY0YjFhMDZkMzQ4NTgzYjliZTk3YjdhM2YyMDU4NDllMDk1OWQzODYyMzgxOTQ2MzkyYTg4MDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlYWFhYzdiOTVkNzAzNWMyYTEyY2RjNzMyZTc4YzA3MGQwMDQ4ZDA5Y2I1YzgyNmIxZjdkNmVlZWIxZjY1ZTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjMyYTc5Nzg3ZDQyMmEyNjMyNzk1OWY1OWJjNjRlM2E5MzkxYTVkY2NkODY1YzcyYWVhMzNlNDU5MmRkMTcyOWYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE1YzJiOTQzZmNkYmJiZWVkNzJmMjExOWRmZTJlZmFlNTg0NTA5OTE2NmVkYjgyNTgyMTYzYjc2ZjEyZGIzYzYifQ"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_app.py#L1422-L1453",
+          "resource": "repo://libs/code/tests/unit_tests/test_app.py#L1423-L1454",
           "version": "repo-lines-v1:sha256:60340c67f7b559b384ad534aa6bb819950ce3fc11a7bee9692dbc14618701521:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg2ZGZkYjY1YmMwMzMwODBhYTZlYTc1NjFkYzQzZTU2MjFmMjE4MzgzZjZhMTJiOGM2ZWM0MjFkODVlNzIxZGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjOTU2ZWMzOGIzMzFmMDY4ZDA0ZWFkZDQzYTFmMjNhZWJmN2IyYjU3Y2QyYzA4OGVkNWNiMWY4MDIyY2ZmMTUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUxOTYzMjQ4OWViZjI4NTk2ZmI3YWMyNWJlODA5ZDE3MzVhYTMyMzYxYjQ5ZWFkZThmMGIzMjRhZjc3ZDE1MzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVmNjM4ODdkMTA2Y2Y4MGVhODRkZDNmNmU2ZTk0OWFjMjFlNzA5NjQwYWIxZmQwZjBkY2E1OTU1NzQ0NTBmN2UifQ"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py#L931-L993",
-          "version": "repo-lines-v1:sha256:699b3ae5ca36b4325c1ae5eadbe7e285bd3f5550bebc81081f3b98985081f745:eyJzZWxlY3RlZExpbmVDb3VudCI6NjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliMjRlOTA5ZjU5ODRjNGRlYWJlY2UwMGRhYzYzMzUxNmI1ODMwMWUwNTMyNThlMmM2ZjYyYjQyNTNiYWI3YTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1YTY3ZmYzM2RiZDEyODM1YTRmZjIyYmU0MjU5MDI2ZmYxYmM3ODc3NjkwZGY4MDE4Mjk2MGViZDg5YTVkZjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk0OWJjMDZlNGEzMWRmMDk2ODM0YWE2ZDY1YmYwZTMxZTI3YjYzZDI1MTEwNThlZTY1OTdlNmZlZWQ4OTU3NWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlkNTM4OTQ0ZjFjMTRjMjg1ZTQ0MTA3M2Y3YzIxNjVjZGM3NWQzZGFjNzk4NTFmMTRkZGNjNTVlY2U2MjJkMDkifQ"
+          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py#L992-L1051",
+          "version": "repo-lines-v1:sha256:33d3ab57b492411b250b36dcd3144de40d51fc71ceec987669eeccb379f9b890:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliMjRlOTA5ZjU5ODRjNGRlYWJlY2UwMGRhYzYzMzUxNmI1ODMwMWUwNTMyNThlMmM2ZjYyYjQyNTNiYWI3YTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5MjdkMmVjYjQ0NTk1ODVkMTU2MDYzMzUxYzZiZDQ4ZWRjZDhiZWJkZDEwYjNmNTRhMWQ4NDBhYjJmNzgzNzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk0OWJjMDZlNGEzMWRmMDk2ODM0YWE2ZDY1YmYwZTMxZTI3YjYzZDI1MTEwNThlZTY1OTdlNmZlZWQ4OTU3NWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMyNmNkOGZhZmVjZTRhYjQwNDg1ZDNhY2UzM2NhMjViMjQwYzg4ZDdiMTIzMTRjZmVlZmJhN2ZmZDA5MDRjYzEifQ"
         }
       ]
     },
@@ -25,34 +25,38 @@
       "statement": "For a valid breakdown, the plain-text table marks incomplete categories as partial or unavailable, identifies directionless cost not attributable to input or output, and warns when some requests were unpriceable.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/tui/modals/_cost_breakdown.py#L22-L123",
-          "version": "repo-lines-v1:sha256:b4dc883597bd180e65a391938b8c5fefa39f5bd7ba3cae534eee07582211d3e5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAyLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhZDNjM2Q0NGNiNDIxN2RjMjI3MmM3ZTg0NGMzMGRmZWYwYjNmZGJhZDJiOWY0OGFiMmQ1NjIyNDNkMGQ0MjUwIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiIzNDk4Yzg3YTY5OWJmNzExNTc1NTk2ZmVjOGNkNmFjMTUwZjc2NDI0YjMzY2U3MzE0YTBlMDZlMTUxNzgwNWVlIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyNmYwMDJiZGIxNjEwZTUxZTYyN2E3MzMxMDhkZDc3ZTZmNzg5M2ZhZTM2ODAzOWUyNjUxNzRiZTBkOGU2OGY5IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MCwiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlM2IwYzQ0Mjk4ZmMxYzE0OWFmYmY0Yzg5OTZmYjkyNDI3YWU0MWU0NjQ5YjkzNGNhNDk1OTkxYjc4NTJiODU1In0"
+          "resource": "repo://libs/code/deepagents_code/tui/modals/_cost_breakdown.py#L28-L122",
+          "version": "repo-lines-v1:sha256:923d27a1458ee05bf966b00fd028caf9a5a0e3cfa3ae1eb64ae538840520fc97:eyJzZWxlY3RlZExpbmVDb3VudCI6OTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkM2MzZDQ0Y2I0MjE3ZGMyMjcyYzdlODQ0YzMwZGZlZjBiM2ZkYmFkMmI5ZjQ4YWIyZDU2MjI0M2QwZDQyNTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjI2ZjAwMmJkYjE2MTBlNTFlNjI3YTczMzEwOGRkNzdlNmY3ODkzZmFlMzY4MDM5ZTI2NTE3NGJlMGQ4ZTY4ZjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py#L780-L825",
-          "version": "repo-lines-v1:sha256:858a6d4a2138db648936471f9daf126be4b091792c29fe6b7fe5c6bae4d750db:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmNjgzNTJiYjFhMGQxZjcyZDgwOWIwNzA0ODg4OGFlZDljMzNhNzdlZmMwZGMyYWVjMmE1OGZiMjhlMmU1NWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OGIwNjNkOWI0N2U2NTM3OTYyNTU3MmNjZTE5NzY2OWQ1NzY3ZTEyYzE4YmUwNzU2NTJiOGNkOTgxY2U4ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUyNjkzNGU0MGI1NGFiMDE4OWQ5ZTZkOWZmNDdkZTg3OTM2ZGIzYTNhNjY2MWJiNzE2ZDIxNjBkZDAwMjkyOGQifQ"
+          "resource": "repo://libs/code/tests/unit_tests/test_cost_breakdown.py#L7-L35",
+          "version": "repo-lines-v1:sha256:3993a01781f036f231b712d5ca856bdb1ca6d593119ec1efd4ae224241083445:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiMGQ4ZDIwNjljNjFkOWM2NGRhYTE5ODY0ZGQzMzM1OTJmZGI4MTM3OTg1NWE0NzliNTk0MTUyOTI5ZWE2NjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2YTlmMmRlMGY5MDUwYzI5Yzg5YmZmOTEyMWIxNmJkYjExNGIwNTU4MTgxYjc5MzEzMzViNjBjOTdhMzg5OGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRiYWNkMjg1YThlMzJlZThmYjAxNGIyYjFiZTU1MmI5MWEwNzU1YzU3MGJmMWYzZjhiNTk4NGMwZTUyMzYwNzEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py#L865-L912",
-          "version": "repo-lines-v1:sha256:35ee6a6c8a9a1dfe96d5646ad3e4a906fbbbaf3466311bb9a3b1be5dda42677f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFjNmJiMzBjMjAyOTgzMDBlYzg3Mjg0NDE2OGE3YjZhNGUyYmJiM2M5M2UzOGMxMzQyNzc0NzhhNjMyNTMyMmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgzODE1MGJlOTk4MDU5NWE5MDIxYmRiNzg3ZjcwZjZkMjlmODAzNWZjYjgzMjVkOGJhZTc0ZDI0NmRmYjU1OTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc1OWU3ZTg5MzQzZGJjNTBkYmMxYzBhNjc0ZDk3MDU2YzQyYWQ5MmIwYmJiYTI1NGRmYTc1NDliMTJkOGJhZTAifQ"
+          "resource": "repo://libs/code/tests/unit_tests/test_js_cost_tracking.py#L872-L884",
+          "version": "repo-lines-v1:sha256:d549eabddb00a1ce1d5722f6e0fe126e7c201eb66450c7dcb8e21b2c09696261:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ODBhZDM1MWI1NWViYWZlYjlmYzMwYTJiZTRmOTRkN2FlYTlhOTcyYTc4MjU3OThjNDVhN2VlMzlhYTVjMjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkOTc0ODAyNjQ5NWRiMGY3NjFhZDNjNWM5YjBjMWRjZmEzMjc2MzI0N2E0OWM5ZjdmMGQ4YTA1YTE2NTQzZDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdlZGU5NjZiZTYxZGUwMTNiYjNkODQxZjhlODA3YTNiYjdkNjU4NjhiOTM0ZWQxYzVhZDE3NmY1ZWRhNGE4NjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ3ZjE4YTk1MjQ3MjRjZGYyMmQ5NDgwM2JjNmY0MWEyNDgwNmIxOWZhNDExYWFiZDk0M2UxNmY3OGI4NWQyZjUifQ"
         }
       ]
     },
     {
       "id": "claim_91660bf1109b44a4a0d0e466808eb490",
-      "statement": "`CostBreakdownScreen` is a read-only live modal: it rejects duplicate stacking, refreshes its provider every half second while retaining the previous view on provider failure, and uses sanitized non-markup text for display and clipboard copy.",
+      "statement": "`open_cost_breakdown` refuses duplicate modal stacking, while `CostBreakdownScreen` polls every half second, retains its prior table after a provider error or empty result, sanitizes control characters before rendering or copying, and reports clipboard failures without closing the modal.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/tui/modals/cost_breakdown.py#L29-L37",
+          "resource": "repo://libs/code/deepagents_code/tui/modals/cost_breakdown.py#L28-L36",
           "version": "repo-lines-v1:sha256:ab2b04c22f2dda593cbc0a4da9054ff91c524f23a050cfd9d6fb173c081b856e:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDk4MzMwZmI3MDMwMjBhYzFjZmQxOTU2OWViOGIwMWMzNzFiZDdkNWE0ZTAzMzRkZTk0ZTM5ODA0MjQzOGQyMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTYyMmI1ODQ3MWYyNWE1YTJhYzRiNjgwMjA2OGVhYzEzMDhhZmE4NDgyNzA0MmJmODczMmIzMzhmYzNlZDY3NSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNjIwMDk3ZTRhYTUwMDY4YmExNTdmOWEyNzM5ZmFkODY5OTVlMWUwY2RjY2RhZGM1ODk3YzIwMzRjNzRkM2VmYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWU5MTE2ZmI3ZTgwZWNhMDdiOGMyMDg2YmIyNjYxY2NjMWQ2YjFmYjE1NTc4YTcxYzg5YzBhOTMxMjUyYmE4NCJ9"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/tui/modals/cost_breakdown.py#L67-L130",
-          "version": "repo-lines-v1:sha256:66daf193b532639a344988a0808899380aa3592f38fee4e1c94ddee46cdb8906:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyMWNkZTgzNjcxYTY4ZmNlYTE0Nzc2ZDQyMjU0YzE5MWUzMGNmODQ0NDhkY2ZhZDA3YWEzMjAxMGQyMDJhOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkMzkzYmZlYmE3NDliMDVhYjEzODkxNzMxMmRjZjY3NzdiMjY4ZDIzNmE5YjQ0Yjc2OGFkODAyMTY1ZmY3MTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg5MmMyMmFjMDUwMzgzZmRiYzI1ZDQyM2Y1N2QxMzdlOGU2MzI4ZWZkZDVlNmQ0N2IzYjM2ZDkyYjNmNGJmZDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoyLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVmNDE0YWE2OTBiMDgyZWI3NjhkZjUzZTY4MTAzNDc0MjI0NTc5NWY3MmI3ZWJmZDc2MzJmMTFjNTAzNzMxYzkifQ"
+          "resource": "repo://libs/code/deepagents_code/tui/modals/cost_breakdown.py#L66-L129",
+          "version": "repo-lines-v1:sha256:b359f493238eb3c6b93ef78f48a8f0f9e6344eab7f0625bcd750ec678f5cedb6:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyMWNkZTgzNjcxYTY4ZmNlYTE0Nzc2ZDQyMjU0YzE5MWUzMGNmODQ0NDhkY2ZhZDA3YWEzMjAxMGQyMDJhOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVkZmQwZjJmOGY2ZTBmZDg4ODg1OGQxNGFmNTVkMjEzNDk4M2Q3ZDA3ZWVlYjQ1NWJjYTNhMmNjMDVhOTY4NWYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg5MmMyMmFjMDUwMzgzZmRiYzI1ZDQyM2Y1N2QxMzdlOGU2MzI4ZWZkZDVlNmQ0N2IzYjM2ZDkyYjNmNGJmZDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         },
         {
-          "resource": "repo://libs/code/tests/unit_tests/test_app.py#L1374-L1419",
-          "version": "repo-lines-v1:sha256:4d25b924bacb1a4797782b904800678098d69ffc2b8a28d22b0ca85dd1db2e7b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwNTA3ZjNlYWQyOGIzMjAyY2YxYjBmNGFhZDkxNGYxYzgxNTQ0ZDdhYTU0MWFlMDRhZmFmODNlMjY1YTEwODkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1MmUyODg3ODVmNjM0NWNkYTUxZTQwN2RmMzdkZjdlYjllMDYzZDExZjA3MDI2MGIxMDYwNjY0OTY4NmJlYjciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFmYzFiOTI1YTU5ZmVkN2Y0ZWFkZDUyZjNkZTFkMTYxMDQyMTFkZjRjYmU1Y2JhMTNlMTAzZWJjODgxYTkzM2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRjZTgyMmFjYjQ4NmI5ZDZjYTY2ZWE1YjkxNzk2ZTdhODA2NmE0N2YwY2QwNzNhMTViOTI5OWQxZjhlYTFiNDAifQ"
+          "resource": "repo://libs/code/tests/unit_tests/test_app.py#L1376-L1421",
+          "version": "repo-lines-v1:sha256:368c0da6e0dd9ba8d1d9151a98694f2047e2814086daa78092bee01138a4eb71:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmNWRkMWY5OTM4M2I4OWZhOTA0ZjMyZDkzNmE5OWRmOTI0Mjg3NDkxNzMzNGE4NzYwMTMxOWY3NzZmNTUyYTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyZjc2NTAxZmJlMjAyYmY2MzAzMzllYjYxZjQ4YjNjMWY5ZGYxMzRlOTM0M2UzN2YzZjU3YzQ4OTQ3YTIxYjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc3YWMwM2ZiNjY5NWVmMDMyYTNjNTY2MWFhOTVhZjU3MGJjMThkYzNmOWRiYzJkZTJmYzIxMmJmNDA3MzMwNjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMzYWQyYmMzYTQyZmVhMWE3MzNkNDQ1ZGQzMjgzODNhZTJhOWZlYTY3NWE4ZDVlOWU2NmJmOTk1MGUyNzIyMWMifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_debug_console.py#L384-L412",
+          "version": "repo-lines-v1:sha256:f7388ba45d2d733f3ed77f7a57bef8f0f3b6486f9fb1964778bc6e376d619e73:eyJzZWxlY3RlZExpbmVDb3VudCI6MjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc0MjhhOWYxNTIxYTA2NmZkODFhZjIwYTExNTQwZTVjNDNmMTJlNWJmYTY2MGYwNzQ0NTlmMWJmMTFjNjAzMjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzOGQ2YjQ3YjFiNjVjZjIyNDkzZGI2Zjg2MmZmZTYzMDIzOThkZGRkNzVjNWE5YWU0NTBhYjhmN2EwNzUxOTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg5ZjI1MTc0YjI1OTE4YjhiZTQxOTEyMDM1YWQ4NDRhZjc0YWMwYjA0NDYxYTI3ZTY2YTFkYzU5Nzc4NjVkZjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY5ZGIzMDFkODJjYzk3MmNjNTEwNzMzZDdiZWEzNTk4YWM3ZGU0MGViNzgzYjA4YzJiZTlmOGY4OTQyNWRhYzEifQ"
         }
       ]
     },
@@ -417,10 +421,36 @@
           "version": "repo-lines-v1:sha256:403947072e21bc9745f1c79db0e777cd2d71851da41f5f98334e95bcd9125067:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4NjM0YTljMjhhZWU1YzY2NjZlNjY2YzhhNzc5NzhkMjUwNjJjZDY0NmJmMDJjOWQwOTQ4MTQyM2RmYzUwOGEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4NmVjNWI2YzZhMjhjNzA3NjgxMDZlM2I5ZmM4MzJhODkwYzMwNTBhMzdlYzkyYTc4ODEwZjJjNzRjNzc5NWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU4ODg1YmQ5OTg5OTdmOWJlYzE2MzQyMzU2Mjc3NDEwZDkwZWRiZmJhNGI0MDA3ZTBlYzYwYTBjOWRhZTU3OWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_d3bfae402e89474997ba5fe4e3e306e4",
+      "statement": "The footer and Debug Console use the same formatted cost-breakdown provider: the footer opens it from the cost span, while the Debug Console hides its detail button when the provider is empty or fails and otherwise opens the shared live modal.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/app.py#L26468-L26513",
+          "version": "repo-lines-v1:sha256:b4f17f14693b2ddc6723f2503bb0533288255b3ea9ca9bd694402769aa2b0a7f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2NWYyZTE0NjU2Y2IyM2EwZGQ3NzVlNjE5ZTQ5MzYzMTYyNjhjZTU3NzM0ZWZiOTMxNzFlNWUwMWI5OTYwZjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY0MDA2OTIwZTFmZWZlYzQwOTYzZWIxZGQzYjA5ZTI4OTJiNjI4YjI3NjQ0YTY3NDM4MWMyODlkMzM2Njg1MWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFkOTdhY2IwYmQ3YTkwODhmZTU1NzdmNzc2Mzk2N2E1M2Y0ZGQ4NmUxNDgwMzA4MDg0ODZlOTFhYmUyY2VhNjUifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/debug_console.py#L1149-L1179",
+          "version": "repo-lines-v1:sha256:ed26dc27e2de1a3f6c48533fbc3fc9a499ecef6acab4d5642f5538fb3f63e0c2:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmNDQ4ZTIxYzg2YjAzYjE1OTBiNWEzYjM0NjZjMjViNGExYmEwYmE0Nzk0MTgwY2Y4YzU3OWRmZjQ4ZjQ5MzciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRhNGRjMjQ0MGZjZDQ3N2JkMmQwOTMzMTQyYWQzYTAwZjBiNzRkZjg3NzQ4ZWUxMWE5OWIyYjM3OTJjNGQ0YWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1Y2NmMWMyNzhmNTljNmU2NzdhODM0ZjlkNzBmMTczYzRlZTU0ZmY1ZWNmYjY4ZGVlNzJiNzVhZDQ0NzY2MDEifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/debug_console.py#L922-L928",
+          "version": "repo-lines-v1:sha256:b62d3686c197789d8a82ee89119c8b88d3b8e89b749fcdf3b4c84e5c6d8dfacb:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2I5NmU0OTRlMTU4MDNjMzVlZGM4NzNlYTI5NmNmMGRhMGE4MDFjMDMzNjk3ZTk0ODVmZjkyMjExM2Y1NDBmMSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTEwMzQ4MWM1N2QwZjBkYzBmNzZjZDJjYzhiMzYwNGM0ZTgyOTZkYTQxMjJhZGQxOWU4MTc0NWRjN2UzMzFhNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDgyY2NhYzdkZDgwZTU1NjJmNDNhN2UxMzExMGQ1ZTE1NWEyYzAyY2Q3YWQ2ZmY4YjI4NTZiZThmNTBlZjllMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzQ2Yzg0NTZkZTg1ZmI3YjNhNTAzOGIzNzE1ZTViZDE0YmQxZTQ5ZTdhMmY1ODczYWM5NWFlZWFhYWI1NzhkMSJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/debug_console.py#L967-L982",
+          "version": "repo-lines-v1:sha256:45ffba651a30d52070d7de413aee71b19d2739fccbfbd3dd83f2d1e09e1fe046:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1MzY5OTViYTg2OGY3MjIzODI3OGEwOTg4NTNlZjBlYWZjOGRkNjk3NmE5Y2ViZjlkNzRhYTVjNDcwOTg2MTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI3MGJhMjhhNjBlMmYzN2E1MGQ3MTRmNGMyZGM4NzQwMzg4N2Y1NTcxYzI2NzVlMDIxMGQ5MTIxZWI0OGRjNjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkMWE3OGExYjI4Y2QyMzA3ZmI2NjM0ZjQ3ZWQ0NjVhNzc1ZDk5NzBjOGNjYTdlMzZhYTcwNmJkODcxNThjOGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg5M2I5MmVkYzI3Njk4MmViNmM4OTBiYTNkMWEzNjg1YzMwYzBkZmZhMjZmYmEwNDdmNjE1YmZkNGQxNGRmMWMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/tui/widgets/status.py#L483-L491",
+          "version": "repo-lines-v1:sha256:d267d1c614fe8a87c293a1608a4aec8bf1be63785aab77525e56dd25f368d81e:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTJhZGQ3ZWQ3MjU2NGM2ZDMwMmU5YzkyMDM5MzhmNGMwYjg2MDlmM2E2ZjY3ZTBlNjdiNThhNTg5ZTMzZDYxYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMGE0YjA4OTA0ZDI5NTI1YjQxODIzZWViMWE4MjczYjMxYmFkMWQ4OWY0NzNjYzA4ZDhlNGViNjA0MzJmODczZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDZkM2FmOTA0ODhhYzgxMzQ0NzJiNDI5NGMzMzNlY2M4Yzc0YmUyYmE1ZGRjMDZjMzA0N2JjOTNiNTliZTUxYiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzMxZTdjMmE4MDkyNTBkZDYwMDZmNDUyZmU4ODE0MWE1MzA4OTc3ZDNlOTQxZTMwOGQxOTFiMmJhMmFjZWU5MSJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-09T08:07:51.383Z"
+    "at": "2026-10-14T08:05:41.101Z"
   }
 }

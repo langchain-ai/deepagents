@@ -1,5 +1,6 @@
 """Tests for async subagent middleware functionality."""
 
+import asyncio
 import base64
 import json
 import urllib.parse
@@ -2023,11 +2024,11 @@ class TestTaskChecks:
         event = {"task_id": "thread_abc", "subagent": "remote", "status": "success", "run_id": "run_xyz"}
         messages = [HumanMessage(content="note", additional_kwargs={"deepagents_notification": event})]
         state = {**_lead_record()["values"], "messages": messages}
-        stale = {**_lead_record(run_id="run_newer")["values"], "messages": messages}
+        recorded = {**_lead_record("success", run_id="run_newer")["values"], "messages": messages}
 
         with patch("deepagents.middleware.async_subagents.get_config", return_value={"configurable": {"thread_id": "lead_thread"}}):
             update = middleware.before_agent(state, MagicMock())
-            ignored = middleware.before_agent(stale, MagicMock())
+            ignored = middleware.before_agent(recorded, MagicMock())
 
         assert update["async_tasks"]["thread_abc"]["status"] == "success"
         assert ignored is None
@@ -2164,6 +2165,33 @@ class TestParentPull:
         calling = _lead_state(messages=[AIMessage(content="", tool_calls=[{"name": "ls", "args": {}, "id": "c1"}])])
 
         assert await _pull("aafter_model", calling, _ended()) is None
+
+    @pytest.mark.parametrize("seen", ["waiting", "running"], ids=["pause seen", "pause not seen"])
+    async def test_answered_pause_is_reported_once(self, seen: str) -> None:
+        event = {"task_id": "thread_abc", "subagent": "remote", "status": "success", "run_id": "run_resumed", "result": "remote done"}
+        woken = _lead_state(seen, messages=[HumanMessage(content="note", additional_kwargs={"deepagents_notification": event})])
+        finishing = _FakeServer({"thread_abc": {"status": "busy", "values": {}, "interrupts": {}}}, {"run_id": "run_resumed", "status": "running"})
+        finished = _FakeServer({"thread_abc": _child("remote done")}, {"run_id": "run_resumed", "status": "success"})
+
+        started = await _pull("abefore_agent", woken, finishing)
+        answered = {**woken, "async_tasks": started["async_tasks"], "messages": [*woken["messages"], AIMessage(content="all done")]}
+        after = await _pull("aafter_model", answered, finished)
+
+        assert "messages" not in started
+        assert after is None
+
+    async def test_unresponsive_subagent_server_does_not_hold_up_the_model(self) -> None:
+        hung = _FakeServer()
+
+        async def never_answers(**_kwargs: Any) -> dict[str, Any]:
+            await asyncio.Event().wait()
+            return {}
+
+        hung.runs.get = never_answers
+        with patch("deepagents.middleware.async_subagents._PULL_TIMEOUT_SECONDS", 0.01):
+            update = await asyncio.wait_for(_pull("abefore_model", _lead_state(), hung), 1)
+
+        assert update is None
 
     async def test_waiting_is_reported_once_and_its_resume_quietly(self) -> None:
         paused = _FakeServer(

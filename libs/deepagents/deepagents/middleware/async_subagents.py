@@ -1443,6 +1443,9 @@ def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) 
     return _event(task["task_id"], task["agent_name"], status, run.get("run_id", task["run_id"]), **details)
 
 
+_PULL_TIMEOUT_SECONDS = 5
+"""How long the parent waits on one task's status before skipping it until the next check."""
+
 _UNFINISHED_STATUSES = frozenset({"running", "pending", _WAITING})
 """Tracked task statuses that can still change, so the parent checks them for news."""
 
@@ -1640,8 +1643,8 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     async def _aobserve_task(self, task: AsyncTask) -> tuple[Run, Thread | None] | None:
         try:
-            return await _aobserve(self._clients.get_async(task["agent_name"]), task)
-        except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors; checked again next time
+            return await asyncio.wait_for(_aobserve(self._clients.get_async(task["agent_name"]), task), _PULL_TIMEOUT_SECONDS)
+        except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors, or it timed out; checked again next time
             logger.warning("Failed to check task %s", task["task_id"], exc_info=True)
             return None
 
@@ -1666,9 +1669,13 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         messages = state.get("messages") or []
         event = task_notification(messages[-1]) if messages else None
         task = (state.get("async_tasks") or {}).get(event["task_id"]) if event else None
-        if event is None or task is None or event.get("run_id", task["run_id"]) != task["run_id"]:
+        if event is None or task is None:
             return None
-        return {"async_tasks": {task["task_id"]: _observed(task, event["status"], task["run_id"])}}
+        run_id = event.get("run_id", task["run_id"])
+        # Answering a pause starts a new run; an update cancels the old run before it can report.
+        if run_id != task["run_id"] and task["status"] not in _UNFINISHED_STATUSES:
+            return None
+        return {"async_tasks": {task["task_id"]: _observed(task, event["status"], run_id)}}
 
     async def _acheck_task(self, check: _TaskCheck) -> dict[str, Any]:
         """Wake the parent once if the task ended and the parent hasn't recorded it; a busy or paused parent is left alone."""

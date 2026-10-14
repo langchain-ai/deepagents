@@ -590,3 +590,15 @@ async def test_als_empty_directory_returns_empty_entries(tmp_path: Path) -> None
 
     assert result.error is None
     assert result.entries == []
+
+
+async def test_agrep_ignore_case(tmp_path: Path) -> None:
+    """`agrep(ignore_case=True)` finds every capitalization (#6889)."""
+    (tmp_path / "doc.txt").write_text("break costs\nBreak Costs\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    sensitive = await be.agrep("BREAK COSTS", path=str(tmp_path))
+    assert [m["text"] for m in sensitive.matches] == []
+
+    insensitive = await be.agrep("BREAK COSTS", path=str(tmp_path), ignore_case=True)
+    assert sorted(m["text"] for m in insensitive.matches) == ["Break Costs", "break costs"]

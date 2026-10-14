@@ -846,6 +846,43 @@ def test_grep_ripgrep_glob_virtual_mode(tmp_path: Path, monkeypatch: pytest.Monk
     assert not any("notes" in p for p in matched_paths), f"glob should have excluded notes.md but matched {matched_paths}"
 
 
+def test_grep_ignore_case_python_fallback(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ignore_case=True` finds every capitalization via the Python fallback (#6889)."""
+    monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
+    (tmp_path / "doc.txt").write_text("break costs\nBreak Costs\nBREAK COSTS\nunrelated\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    sensitive = be.grep("BREAK COSTS", path=str(tmp_path))
+    assert [m["text"] for m in sensitive.matches] == ["BREAK COSTS"]
+
+    insensitive = be.grep("BREAK COSTS", path=str(tmp_path), ignore_case=True)
+    assert sorted(m["text"] for m in insensitive.matches) == ["BREAK COSTS", "Break Costs", "break costs"]
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_grep_ignore_case_passes_dash_i_to_ripgrep(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ignore_case` toggles ripgrep `-i`, leaving the default command untouched (#6889)."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    (tmp_path / "a.txt").write_text("Hello\n")
+    frame = json.dumps({"type": "match", "data": {"path": {"text": "a.txt"}, "lines": {"text": "Hello\n"}, "line_number": 1}})
+    cmds: list[list[str]] = []
+
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _FakePopen:
+        cmds.append(cmd)
+        return _FakePopen(stdout_lines=[frame + "\n"])
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", fake_popen)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    default = be.grep("hello", path=str(tmp_path))
+    assert "-i" not in cmds[0]
+    assert [m["text"] for m in default.matches] == ["Hello"]
+
+    insensitive = be.grep("hello", path=str(tmp_path), ignore_case=True)
+    assert "-i" in cmds[1]
+    assert [m["text"] for m in insensitive.matches] == ["Hello"]
+
+
 def test_grep_on_single_file_path(tmp_path: Path) -> None:
     """Regression test: grep with `path` pointing at a single file must not crash.
 
@@ -2067,7 +2104,7 @@ class TestFilesystemGrepContext:
         monkeypatch.setattr(
             backend,
             "_ripgrep_search",
-            lambda *_args: ({"/sample.txt": [(2, "needle")]}, False),
+            lambda *_args, **_kwargs: ({"/sample.txt": [(2, "needle")]}, False),
         )
 
         result = backend.grep("needle", path="/", context_lines=1)
@@ -2093,7 +2130,7 @@ class TestFilesystemGrepContext:
         monkeypatch.setattr(
             backend,
             "_ripgrep_search",
-            lambda *_args: ({"/sample.txt": [(1, "before\rneedle\rafter\r")]}, False),
+            lambda *_args, **_kwargs: ({"/sample.txt": [(1, "before\rneedle\rafter\r")]}, False),
         )
 
         result = backend.grep("needle", path="/", context_lines=1)
@@ -2119,7 +2156,7 @@ class TestFilesystemGrepContext:
         monkeypatch.setattr(
             backend,
             "_ripgrep_search",
-            lambda *_args: ({"/sample.txt": [(2, "needle returned")]}, True),
+            lambda *_args, **_kwargs: ({"/sample.txt": [(2, "needle returned")]}, True),
         )
 
         result = backend.grep("needle", path="/", context_lines=2)

@@ -641,6 +641,7 @@ class FilesystemBackend(BackendProtocol):
         *,
         max_count: int | None = None,
         context_lines: int = 0,
+        ignore_case: bool = False,
     ) -> GrepResult:
         """Search for a literal text pattern in files.
 
@@ -654,6 +655,9 @@ class FilesystemBackend(BackendProtocol):
                 `None` returns every match; an int stops the search once the cap
                 is reached and flags the result with `truncated=True`.
             context_lines: Number of lines to include before and after each match.
+            ignore_case: When `True`, match case-insensitively (ripgrep `-i`;
+                casefold comparison in the Python fallback). Defaults to
+                `False`, preserving exact matching.
 
                 This is a backend-level API. It is deliberately not exposed
                 through the agent-facing `grep` tool (`GrepSchema`), so matches
@@ -698,12 +702,12 @@ class FilesystemBackend(BackendProtocol):
             return GrepResult(error=f"Error searching path '{search_path}': {e}", matches=[])
 
         # Try ripgrep first (with -F flag for literal search)
-        results, truncated = self._ripgrep_search(pattern, base_full, glob, max_count)
+        results, truncated = self._ripgrep_search(pattern, base_full, glob, max_count, ignore_case=ignore_case)
         context_newline = "\n"
         partial_error: str | None = None
         if results is None:
             # Python fallback does literal substring matching on the raw pattern.
-            results, truncated, partial_error = self._python_search(pattern, base_full, glob, max_count=max_count)
+            results, truncated, partial_error = self._python_search(pattern, base_full, glob, max_count=max_count, ignore_case=ignore_case)
             context_newline = None
 
         matches: list[GrepMatch] = []
@@ -869,6 +873,7 @@ class FilesystemBackend(BackendProtocol):
         *,
         max_count: int | None = None,
         context_lines: int = 0,
+        ignore_case: bool = False,
     ) -> GrepResult:
         """Async version of `grep`, with optional surrounding context lines.
 
@@ -884,7 +889,7 @@ class FilesystemBackend(BackendProtocol):
         if context_lines < 0:
             msg = "context_lines must be non-negative"
             raise ValueError(msg)
-        if context_lines == 0:
+        if context_lines == 0 and not ignore_case:
             return await super().agrep(pattern, path, glob, max_count=max_count)
         try:
             return await asyncio.wait_for(
@@ -895,6 +900,7 @@ class FilesystemBackend(BackendProtocol):
                     glob,
                     max_count=max_count,
                     context_lines=context_lines,
+                    ignore_case=ignore_case,
                 ),
                 timeout=ASYNC_GREP_TIMEOUT,
             )
@@ -916,6 +922,8 @@ class FilesystemBackend(BackendProtocol):
         base_full: Path,
         include_glob: str | None,
         max_count: int | None = None,
+        *,
+        ignore_case: bool = False,
     ) -> tuple[dict[str, list[tuple[int, str]]] | None, bool]:
         """Search using ripgrep with fixed-string (literal) mode.
 
@@ -933,6 +941,8 @@ class FilesystemBackend(BackendProtocol):
             include_glob: Optional glob pattern to filter files.
             max_count: Optional total cap on collected matches across all files.
                 `None` disables the cap.
+            ignore_case: When `True`, pass `-i` to ripgrep for
+                case-insensitive literal matching.
 
         Returns:
             A `(results, truncated)` tuple. `results` maps file paths to a list
@@ -950,6 +960,8 @@ class FilesystemBackend(BackendProtocol):
             return None, False
 
         cmd = [rg_path, "--json", "-F"]  # -F enables fixed-string (literal) mode
+        if ignore_case:
+            cmd.append("-i")
         if max_count is not None:
             # Per-file guard set to `max_count + 1`, not `max_count`. `rg -m` is
             # per file, so it can't bound the total on its own — the streaming
@@ -1172,6 +1184,7 @@ class FilesystemBackend(BackendProtocol):
         *,
         max_count: int | None = None,
         timeout: int = DEFAULT_GREP_TIMEOUT,
+        ignore_case: bool = False,
     ) -> tuple[dict[str, list[tuple[int, str]]], bool, str | None]:
         """Fallback search using Python when ripgrep is unavailable.
 
@@ -1186,6 +1199,8 @@ class FilesystemBackend(BackendProtocol):
                 `None` disables the cap; when set, the walk stops once the cap
                 is reached and the result is flagged `truncated=True`.
             timeout: Maximum wall-clock seconds before the search is aborted.
+            ignore_case: When `True`, compare with `casefold` for
+                case-insensitive literal matching.
 
         Returns:
             A `(results, truncated, error)` tuple. `results` contains every
@@ -1272,7 +1287,9 @@ class FilesystemBackend(BackendProtocol):
                             if line_num % 2048 == 0 and time.monotonic() > deadline:
                                 _log_timeout()
                                 return results, True, None
-                            if pattern not in raw_line:
+                            needle = pattern.casefold() if ignore_case else pattern
+                            haystack = raw_line.casefold() if ignore_case else raw_line
+                            if needle not in haystack:
                                 continue
                             if max_count is not None and total >= max_count:
                                 # Already collected `max_count` and found another

@@ -1,6 +1,6 @@
-# Six browsing harnesses, one benchmark
+# Nine browsing harnesses, one benchmark
 
-Six browsing agents solve the same WebVoyager tasks. They differ only in
+Nine browsing agents solve the same WebVoyager tasks. They differ only in
 **how the agent reaches a browser** -- same dataset, same judge, same grading
 thresholds. This is the write-up of what that difference bought.
 
@@ -118,6 +118,47 @@ capability are not the same axis.
 > Stagehand repo (Deep Agents, CrewAI, Mastra, Vercel AI SDK, Eve). It is not
 > the MCP server's surface, and MCP is only one possible transport for it.
 
+## The nine arms
+
+Five are Managed Deep Agents driving a remote or sandboxed browser; four run
+the agent, its tool server and its browser in one process tree. Every arm uses
+the same dataset, the same `claude-sonnet-5-5`, the same Jev judge and the same
+thresholds.
+
+| arm | tool surface | browser | where it runs |
+|---|---|---|---|
+| CLI | `execute` (shell) → `browse` CLI | Chrome in a LangSmith sandbox | deployment |
+| REPL | `eval` (JS) → Stagehand v4 | Browserbase | deployment |
+| MCP | 6 hosted MCP tools | Browserbase | deployment |
+| facade | `snapshot`/`run`/`screenshot` | Browserbase | deployment |
+| facade-repl | the same three, inside QuickJS | Browserbase | deployment |
+| playwright MCP | 25 tools over stdio MCP | its own Chromium | CI runner |
+| browser-use | 16 tools over stdio MCP | **Browserbase**, one session per task | CI runner |
+| agent-browser | `execute` (shell) → `agent-browser` CLI | Chrome on the runner | CI runner |
+| ~~wdio~~ | 17 tools over stdio MCP | — | **blocked** |
+
+`wdio` is recorded rather than deleted: `provider: external` wants a W3C
+WebDriver endpoint on localhost, Browserbase speaks CDP, and no URL satisfies
+both. Its remote options are the named providers (browserstack, saucelabs,
+testingbot), which need their own accounts.
+
+Two things had to be true before the local arms produced anything meaningful,
+and neither was obvious:
+
+**A broken browser scores INCORRECT, not ERROR.** An agent whose Chrome never
+starts reports politely that it could not browse, and the judge marks that
+wrong. Two arms returned a clean-looking 0/100 with green CI before this was
+caught, so the provisioning step now asserts a headless launch before any task
+runs.
+
+**browser-use needed a hosted browser, not a better local one.** Six attempts
+at installing Chrome on a runner failed; pointing it at a Browserbase session
+per task worked first time. `keepAlive` is mandatory -- without it the session
+ends on the first disconnect, which happens during MCP tool discovery, and the
+real connection gets `HTTP 410` -- and sessions must be released explicitly,
+because `keepAlive` means nothing else will.
+
+
 ## Results -- `webvoyager-100`, 100 tasks
 
 `benchmarks/webvoyager/RESULTS_WV100.md` reports the same run with a different
@@ -132,12 +173,14 @@ shows, this one for the decomposition.
 
 | arm | graded | CORRECT | BLOCKED | INCORRECT | **rate** | med steps | med tokens | med $ | **total $** | med secs |
 |---|---|---|---|---|---|---|---|---|---|---|
-| CLI | 99 | 80 | 15 | 4 | 80.8% | 8 | 49,270 | $0.0511 | $11.65 | 63 |
-| REPL | 99 | 74 | 21 | 4 | 74.7% | 10 | 34,492 | $0.0146 | $4.45 | 51 |
+| facade-repl | 100 | **86** | 7 | 7 | **86.0%** | 11 | 40,825 | $0.0185 | $2.98 | 30 |
+| **facade** | 100 | 85 | 10 | 5 | 85.0% | 10 | 31,157 | $0.0171 | **$2.46** | 22 |
 | MCP | 100 | 83 | 13 | 4 | 83.0% | 13 | 101,206 | $0.0770 | $17.87 | 30 |
-| **facade** | 100 | 85 | 10 | 5 | 85.0% | 10 | **31,157** | $0.0171 | **$2.46** | **22** |
-| facade-repl | 100 | **86** | **7** | 7 | **86.0%** | 11 | 40,825 | $0.0185 | $2.98 | 30 |
-| playwright MCP | 98 | 81 | 15 | 2 | 82.7% | 42 | 205,474 | $0.4337 | $66.16 | 92 |
+| browser-use | 97 | 79 | 13 | 5 | 81.4% | 13 | 57,579 | $0.1202 | **$73.15** | 45 |
+| CLI | 99 | 80 | 15 | 4 | 80.8% | 8 | 49,270 | $0.0511 | $11.65 | 63 |
+| playwright MCP | 94 | 73 | 17 | 4 | 77.7% | 26 | 104,321 | $0.2205 | $25.54 | 55 |
+| agent-browser | 84 | 64 | 17 | 3 | 76.2% | 10 | 35,195 | $0.0203 | $2.89 | **18** |
+| REPL | 99 | 74 | 21 | 4 | 74.7% | 10 | 34,492 | $0.0146 | $4.45 | 51 |
 
 **The facade arm is 7.3x cheaper than hosted MCP at higher accuracy** -- $2.46
 against $17.87, a third of the tokens, a quarter of the wall clock.
@@ -151,12 +194,17 @@ against $17.87, a third of the tokens, a quarter of the wall clock.
 comparison by some distance, and it is also the only arm where that is a
 liability.
 
-It costs **$66.16 against the facade's $2.46 -- 27x -- for four fewer correct
-answers.** 205,474 median tokens to the facade's 31,157; 42 median steps to 10.
+It costs **$25.54 against the facade's $2.46 -- 10x -- for twelve fewer correct
+answers.** 104,321 median tokens to the facade's 31,157; 26 median steps to 10.
 
-Nothing is wrong with the tools. Accuracy is competitive at 81, with only **2
-INCORRECT** in 98 graded rows: this arm almost never answers wrongly, it gets
-walled. The cost is structural. Twenty-five fine-grained verbs mean a model
+An earlier revision of this section reported $66.16 and 82.7%. That run was
+measured on `claude-sonnet-5` while every other arm ran `claude-sonnet-5-5`,
+which is a mistake worth recording: the same arm, same dataset and same judge
+moved from $66.16 to $25.54 and from 82.7% to 77.7% on the model change alone.
+Any table mixing the two is meaningless.
+
+Nothing is wrong with the tools. Only **4 INCORRECT** in 94 graded rows: this
+arm almost never answers wrongly, it gets walled. The cost is structural. Twenty-five fine-grained verbs mean a model
 turn per action, and `browser_snapshot` returns a full page representation
 where the facade's `run` returns whatever the snippet chose.
 
@@ -223,6 +271,36 @@ two suites at concurrency 6 held 36 live sessions instead of saturating 75.
 **The general lesson: a blocked rate that climbs through a run is an
 infrastructure signal, not a site signal.** Check the first half against the
 second before reporting any number.
+
+## What the whole set says
+
+**Cost spans 30x and accuracy spans 11 points, and they are barely related.**
+The cheapest arm (facade, $2.46) is also the second most accurate; the most
+expensive (browser-use, $73.15) lands mid-table; the richest tool surface
+(playwright MCP, 25 tools) is seventh of eight.
+
+What separates them is how much a tool returns and how many turns it costs to
+get it:
+
+* `browserbase_navigate` returns a median 16,968 characters whether or not the
+  agent wanted them; the facade's `run` returns whatever the snippet chose.
+* Playwright's 25 fine-grained verbs mean a model turn per action -- 26 median
+  steps against the facade's 10.
+* The two cheapest arms, facade ($2.46) and agent-browser ($2.89), have nothing
+  in common except that the agent decides what comes back: one writes
+  JavaScript, the other writes shell.
+
+**Most accuracy differences are bot-walling, not browsing skill.** Across the
+set, INCORRECT counts cluster between 3 and 7 regardless of arm, while BLOCKED
+ranges from 7 to 21. Arms do not mostly answer wrongly; they mostly get walled,
+and which site walls which run is close to arbitrary -- of 49 blocked rows in
+the first three arms, none overlapped across all three.
+
+**Caveats worth carrying.** agent-browser is n=84 and playwright n=94 because
+both CI jobs were SIGTERMed at the 240-minute cap before finishing; their rates
+rest on a smaller base. Wall clock is not comparable between deployment arms
+and CI arms. And three arms spend a second model on Browserbase's side that
+never enters our traces, so their token counts understate the real work.
 
 ## Why CLI and REPL are so much cheaper
 

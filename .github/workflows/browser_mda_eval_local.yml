@@ -64,7 +64,11 @@ jobs:
     name: "local (${{ matrix.arm }})"
     runs-on: ubuntu-latest
     environment: oss
-    timeout-minutes: 240
+    # 100 tasks at concurrency 4 with a 600s per-task cap. Two arms hit the
+    # old 240 and were SIGTERMed at ~90 rows, losing their feedback batch --
+    # recoverable only because backfill_local.py can grade from the answers
+    # already in LangSmith.
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 

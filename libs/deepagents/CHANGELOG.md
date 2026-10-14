@@ -4,21 +4,18 @@
 
 ## [0.7.25](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.24...deepagents==0.7.25) (2026-10-13)
 
-
 ### Features
 
-* **sdk:** read inline skill tool support from model profiles ([#6879](https://github.com/langchain-ai/deepagents/issues/6879)) ([f5d9c31](https://github.com/langchain-ai/deepagents/commit/f5d9c31163dda54898bdb4f73a2580c9430a16d5))
-
+- Read inline skill tool support from model profiles. ([#6879](https://github.com/langchain-ai/deepagents/pull/6879))
 
 ### Bug Fixes
 
-* **sdk:** check filesystem permissions against the symlink-resolved path ([#6818](https://github.com/langchain-ai/deepagents/issues/6818)) ([7a69743](https://github.com/langchain-ai/deepagents/commit/7a6974309ac78f0b2ea636afc70bd8a0268bed7f))
-
+- Filesystem permission rules and `interrupt_on` approvals now check both the requested and symlink-resolved paths; previously, `FilesystemBackend` followed symlinks after the check, potentially allowing access to denied paths. Review your rules and approvals for symlink targets. ([#6818](https://github.com/langchain-ai/deepagents/pull/6818))
+- Fixed path-glob `grep` in sandboxes. ([#6910](https://github.com/langchain-ai/deepagents/pull/6910))
 
 ### Performance Improvements
 
-* **sdk:** prefer ripgrep for sandbox searches ([#6919](https://github.com/langchain-ai/deepagents/issues/6919)) ([7a655f7](https://github.com/langchain-ai/deepagents/commit/7a655f77382484a6e6ca27e8724b08064af670c8))
-* **sdk:** skip `.git` in sandbox `grep` and fix path-glob `grep` ([#6910](https://github.com/langchain-ai/deepagents/issues/6910)) ([f8ecffa](https://github.com/langchain-ai/deepagents/commit/f8ecffad6523775a323a807bc57097a98aa27e01))
+- Sandbox searches now prefer ripgrep, and sandbox `grep` skips `.git`. ([#6919](https://github.com/langchain-ai/deepagents/pull/6919), [#6910](https://github.com/langchain-ai/deepagents/pull/6910))
 
 ## [0.7.24](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.23...deepagents==0.7.24) (2026-10-12)
 

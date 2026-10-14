@@ -26,15 +26,36 @@ from __future__ import annotations
 
 import hmac
 import logging
+from functools import cache
 from hashlib import sha256
 from typing import TYPE_CHECKING
 
-import bsdiff4
+if TYPE_CHECKING:
+    from types import ModuleType
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
+
+
+@cache
+def _bsdiff4() -> ModuleType | None:
+    """The optional ``bsdiff4`` module, or ``None`` when not installed.
+
+    ``bsdiff4`` publishes no CPython 3.14 wheels, so it is an optional
+    dependency: without it snapshots fall back to full anchors (#6878).
+    """
+    try:
+        import bsdiff4 as module  # noqa: PLC0415
+    except ImportError:
+        logger.warning(
+            "bsdiff4 is not installed; QuickJS snapshots fall back to full anchors"
+        )
+        return None
+    else:
+        return module
+
 
 SNAP = "snap"
 PATCH = "patch"
@@ -140,6 +161,7 @@ def replay_snapshot_chain(
     """
     base = state if isinstance(state, (bytes, bytearray)) else b""
     base = bytes(base)
+    bsdiff4 = _bsdiff4()
     for write in writes:
         record = coerce_record(write)
         if record is None:
@@ -148,6 +170,12 @@ def replay_snapshot_chain(
         if kind == SNAP:
             base = blob
         elif kind == PATCH:
+            if bsdiff4 is None:
+                msg = (
+                    "Cannot replay a bsdiff4 patch without the optional "
+                    "bsdiff4 dependency installed."
+                )
+                raise RuntimeError(msg)
             base = bsdiff4.patch(base, blob)
         elif kind == CLEAR:
             base = b""
@@ -169,6 +197,12 @@ def encode_snapshot(payload: bytes, prior: bytes) -> SnapshotRecord:
       * ``("patch", diff)`` otherwise.
     """
     if not prior:
+        return (SNAP, payload)
+    bsdiff4 = _bsdiff4()
+    if bsdiff4 is None:
+        # No delta encoder available: anchor the full snapshot. Correct,
+        # just larger — this is what lets the package install and run
+        # without bsdiff4 (#6878).
         return (SNAP, payload)
     try:
         patch = bsdiff4.diff(prior, payload)

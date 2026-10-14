@@ -28,9 +28,11 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import Field
 
+import langchain_quickjs._snapshot as snapshot_module
 from langchain_quickjs import CodeInterpreterMiddleware
 from langchain_quickjs._snapshot import (
     coerce_record,
+    encode_snapshot,
     normalize_signing_key,
     replay_snapshot_chain,
     sign_snapshot,
@@ -47,6 +49,25 @@ def _assert_slot_update(update: dict[str, Any] | None) -> str:
     slot_id = update.get("_quickjs_slot_id")
     assert isinstance(slot_id, str)
     return slot_id
+
+
+def test_encode_snapshot_without_bsdiff4_stores_full_anchor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without bsdiff4 (e.g. CPython 3.14, #6878) deltas degrade to anchors."""
+    monkeypatch.setattr(snapshot_module, "_bsdiff4", lambda: None)
+    assert encode_snapshot(b"payload", b"prior-payload") == ("snap", b"payload")
+    assert encode_snapshot(b"payload", b"") == ("snap", b"payload")
+
+
+def test_replay_snapshot_chain_without_bsdiff4(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Snap/clear replay needs no encoder; patch replay errors loudly (#6878)."""
+    monkeypatch.setattr(snapshot_module, "_bsdiff4", lambda: None)
+    assert replay_snapshot_chain(b"", [("snap", b"abc"), ("clear", b"")]) == b""
+    with pytest.raises(RuntimeError, match="bsdiff4"):
+        replay_snapshot_chain(b"", [("patch", b"\x00")])
 
 
 def test_after_agent_snapshot_roundtrip_with_before_agent() -> None:

@@ -28,7 +28,9 @@ dependencies = [
     "langchain>=1.4.5,<2.0.0",
     "langchain-core>=1.6.10,<2.0.0",
     "langgraph>=1.2.15,<2.0.0",
-    "bsdiff4>=1.2.6,<2.0.0",
+    # Optional: no CPython 3.14 wheels published (see #6878); without it
+    # snapshots fall back to full anchors.
+    'bsdiff4>=1.2.6,<2.0.0; python_version < "3.14"',
 ]
 
 [tool.hatch.build.targets.wheel]

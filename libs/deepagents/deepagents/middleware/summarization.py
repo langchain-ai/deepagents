@@ -119,6 +119,7 @@ DEEPAGENTS_DEFAULT_SUMMARY_PROMPT = DEFAULT_SUMMARY_PROMPT.replace(
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from langchain.agents.middleware.summarization import Summarizer
     from langchain.agents.middleware.types import ModelRequest, ModelResponse
     from langchain.chat_models import BaseChatModel
     from langchain_core.tools import BaseTool
@@ -555,6 +556,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
         trim_tokens_to_summarize: int | None = _DEFAULT_TRIM_TOKEN_LIMIT,
         truncate_args_settings: TruncateArgsSettings | None = None,
+        summarizer: Summarizer | None = None,
         **deprecated_kwargs: Any,
     ) -> None:
         """Initialize summarization middleware with backend support.
@@ -603,6 +605,42 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
                     # Truncate when 50% of context window reached, ignoring messages in last 10% of window
                     {"trigger": ("fraction", 0.5), "keep": ("fraction", 0.1), "max_length": 2000, "truncation_text": "...(truncated)"}
 
+            summarizer: Optional replacement for the summarization model call.
+
+                Used for both automatic summarization and the
+                `compact_conversation` tool. `model` is still used for its profile
+                and token counting, but is not called to write summaries.
+
+                Pass a model name or a `BaseChatModel` instance to summarize with
+                a different chat model; it is prompted with `summary_prompt`. Pass
+                a `Runnable` or function to generate the summary text another way;
+                it receives the messages to summarize and `summary_prompt` is not
+                used. See LangChain's `SummarizationMiddleware` for details.
+
+                !!! example
+
+                    ```python
+                    from deepagents import create_deep_agent
+                    from deepagents.backends import StateBackend
+                    from deepagents.middleware.summarization import SummarizationMiddleware
+
+                    backend = StateBackend()
+
+                    # Manage gpt-6-sol's context window, summarize with gpt-6-luna
+                    summarization = SummarizationMiddleware(
+                        model="openai:gpt-6-sol",
+                        backend=backend,
+                        trigger=("fraction", 0.85),
+                        keep=("fraction", 0.10),
+                        summarizer="openai:gpt-6-luna",
+                    )
+                    agent = create_deep_agent(
+                        model="openai:gpt-6-sol",
+                        backend=backend,
+                        middleware=[summarization],  # replaces the default
+                    )
+                    ```
+
         Raises:
             TypeError: If the removed `history_path_prefix` argument is provided.
 
@@ -631,6 +669,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
             token_counter=token_counter,
             summary_prompt=summary_prompt,
             trim_tokens_to_summarize=trim_tokens_to_summarize,
+            summarizer=summarizer,
             **deprecated_kwargs,
         )
 
@@ -1776,6 +1815,7 @@ def create_summarization_middleware(
     summary_prompt: str = DEEPAGENTS_DEFAULT_SUMMARY_PROMPT,
     trim_tokens_to_summarize: int | None = None,
     token_counter: TokenCounter = count_tokens_approximately,
+    summarizer: Summarizer | None = None,
 ) -> _DeepAgentsSummarizationMiddleware:
     """Create a Deep Agents `SummarizationMiddleware` with model-aware defaults.
 
@@ -1831,6 +1871,8 @@ def create_summarization_middleware(
             This factory defaults to `None`, unlike constructing
             `SummarizationMiddleware` directly, which defaults to 4000.
         token_counter: Function to count tokens in messages.
+        summarizer: Optional replacement for the summarization model call. See
+            `SummarizationMiddleware`.
 
     Returns:
         Configured `SummarizationMiddleware` instance.
@@ -1854,6 +1896,7 @@ def create_summarization_middleware(
         summary_prompt=summary_prompt,
         trim_tokens_to_summarize=trim_tokens_to_summarize,
         truncate_args_settings=defaults["truncate_args_settings"],
+        summarizer=summarizer,
     )
 
 

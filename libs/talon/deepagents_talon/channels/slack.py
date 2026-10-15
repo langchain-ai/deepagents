@@ -139,6 +139,8 @@ class SlackChannelConfig:
         request_timeout_seconds: Timeout for connecting and for file downloads.
         pairing: Optional sender pairing policy that admits approved DM senders
             and issues codes to unknown ones.
+        include_other_thread_participants: Include history from non-allowlisted
+            senders, accepting their potential influence on privileged tools.
     """
 
     bot_token: str = field(repr=False)
@@ -151,6 +153,7 @@ class SlackChannelConfig:
     max_media_bytes: int = DEFAULT_MAX_MEDIA_BYTES
     request_timeout_seconds: float = DEFAULT_REQUEST_TIMEOUT_SECONDS
     pairing: SenderPairing | None = None
+    include_other_thread_participants: bool = field(default=False, kw_only=True)
 
     @classmethod
     def from_talon_config(cls, config: TalonConfig) -> SlackChannelConfig:
@@ -166,6 +169,12 @@ class SlackChannelConfig:
             ValueError: If a token is missing or exposure configuration is invalid.
         """
         env = config.env
+        include_participants = env.get(
+            "DEEPAGENTS_TALON_SLACK_INCLUDE_OTHER_THREAD_PARTICIPANTS", "0"
+        )
+        if include_participants not in {"0", "1"}:
+            msg = "DEEPAGENTS_TALON_SLACK_INCLUDE_OTHER_THREAD_PARTICIPANTS must be 0 or 1"
+            raise ValueError(msg)
         bot_token = env.get("DEEPAGENTS_TALON_SLACK_BOT_TOKEN")
         if not bot_token:
             msg = "Slack bot token is required (DEEPAGENTS_TALON_SLACK_BOT_TOKEN)"
@@ -194,6 +203,7 @@ class SlackChannelConfig:
             ),
             outbound_media_dir=outbound_media_root_from_env(env),
             exposure=exposure,
+            include_other_thread_participants=include_participants == "1",
             allowed_user_ids=frozenset(
                 split_csv(env.get("DEEPAGENTS_TALON_SLACK_ALLOWLIST_USERS", "")),
             ),
@@ -966,7 +976,8 @@ class SlackChannel:
                 context = "\n".join(
                     f"{sender}: {text}"
                     for sender, text in replies
-                    if sender in senders and not _contains_oauth_callback(text)
+                    if (self.config.include_other_thread_participants or sender in senders)
+                    and not _contains_oauth_callback(text)
                 )
             except (SlackApiError, OSError, TimeoutError, ValueError):
                 logger.warning("Could not read Slack thread context", exc_info=True)

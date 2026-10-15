@@ -62,6 +62,8 @@ with bounded recovery guidance. Version 5 counts HTML-escaped embedded text in
 that budget, so version 4 notices with escape-heavy text are superseded.
 """
 _MALFORMED_EVENT_LOG_LIMIT: Final = 200
+PINNED_SKILL_MESSAGE_SOURCE: Final = "pinned_skill"
+"""`lc_source` the SDK sets on the message carrying pinned skill instructions."""
 _GOAL_MESSAGE_SCHEMA_KEY: Final = "goal_message_schema_version"
 _GOAL_MESSAGE_KIND_KEY: Final = "goal_message_kind"
 _GOAL_INTERNAL_SOURCES = frozenset(
@@ -241,6 +243,18 @@ def is_internal_message(message: object) -> bool:
     if message_source(message) in _USER_HIDDEN_SOURCES:
         return True
     return message_text(message).startswith(SYSTEM_MESSAGE_PREFIX)
+
+
+def is_pinned_skill_message(message: object) -> bool:
+    """Return whether a message carries SDK-pinned skill instructions.
+
+    The SDK appends this message after the user prompt that requested the pin,
+    so lookups for the latest user turn must skip it.
+    """
+    return (
+        is_human_message(message)
+        and message_source(message) == PINNED_SKILL_MESSAGE_SOURCE
+    )
 
 
 def _goal_message_metadata(

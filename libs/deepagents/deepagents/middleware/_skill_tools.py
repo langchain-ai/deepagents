@@ -29,17 +29,17 @@ from deepagents.backends.utils import validate_path
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
-    from langchain_openai import ChatOpenAI
+    from langchain_openai.chat_models.base import BaseChatOpenAI
     from langgraph.runtime import Runtime
 
     from deepagents.middleware.skills import SkillMetadata, SkillToolResolver
 
 try:
-    from langchain_openai import ChatOpenAI as _ChatOpenAI
+    from langchain_openai.chat_models.base import BaseChatOpenAI as _BaseChatOpenAI
 except ImportError:
-    _CHAT_OPENAI_TYPE: type[ChatOpenAI] | None = None
+    _BASE_CHAT_OPENAI_TYPE: type[BaseChatOpenAI] | None = None
 else:
-    _CHAT_OPENAI_TYPE = _ChatOpenAI
+    _BASE_CHAT_OPENAI_TYPE = _BaseChatOpenAI
 
 logger = logging.getLogger(__name__)
 
@@ -51,17 +51,6 @@ _SKILL_TOOLS_DISCLOSED_KEY = "_skill_tools_disclosed"
 
 _DEFER_LOADING = "defer_loading"
 """Tool `extras` key (and provider field) that withholds a tool's schema until searched for."""
-
-_ANTHROPIC_INLINE_TOOL_MODELS = ("claude-opus-5", "claude-fable-5", "claude-mythos-5", "claude-opus-4-8")
-"""Model ID prefixes that accept an inline `tool_definition` mid-conversation.
-
-Every prefix must also pass `langchain_anthropic`'s mid-conversation system
-message check; otherwise the converter hoists the disclosure into `system` and
-strips its blocks with only a warning.
-"""
-
-_OPENAI_INLINE_TOOL_MODELS = ("gpt-6-", "gpt-5.6-")
-"""Model ID prefixes whose Responses API accepts an `additional_tools` input item."""
 
 _ANTHROPIC_ROOT_COMBINATORS = ("oneOf", "anyOf", "allOf")
 """Root `input_schema` keys the Anthropic API rejects, failing the whole request."""
@@ -197,7 +186,7 @@ class _Disclosure:
 
 
 _SkillRead = tuple[int, "SkillMetadata"]
-"""A successful read of a skill's `SKILL.md`: the tool result's message index, and the skill."""
+"""A read of a skill's `SKILL.md`: the index of the tool result or pinned skill message, and the skill."""
 
 
 def _unclaimed_include_names(reads: Sequence[_SkillRead], request_tools: Sequence[BaseTool | dict[str, Any]]) -> list[str]:
@@ -280,10 +269,12 @@ def _normalized_path(path: object) -> str | None:
 
 
 def _find_skill_reads(messages: Sequence[AnyMessage], skills: Sequence[SkillMetadata]) -> list[_SkillRead]:
-    """Return `(index, skill)` for every successful `read_file` result of a `SKILL.md` naming tools.
+    """Return `(index, skill)` for every read of a `SKILL.md` naming tools.
 
-    Any `offset` or `limit` counts, and so does a result whose content was later
-    truncated or clipped, since only the call and the result's status are read.
+    A read is a successful `read_file` result or a message pinning the
+    skill. Any `offset` or `limit` counts, and so does a result whose content was
+    later truncated or clipped, since only the call and the result's status are
+    read.
     """
     skills_by_path = {
         path: skill
@@ -301,9 +292,15 @@ def _find_skill_reads(messages: Sequence[AnyMessage], skills: Sequence[SkillMeta
     }
     reads: list[_SkillRead] = []
     for index, message in enumerate(messages):
-        if not isinstance(message, ToolMessage) or message.status == "error":
+        # A tool result's path is on the `read_file` call it answers; a pinned skill message carries its own.
+        if isinstance(message, ToolMessage) and message.status != "error":
+            path = read_paths.get(message.tool_call_id)
+        elif isinstance(message, HumanMessage) and message.additional_kwargs.get("lc_source") == "pinned_skill":
+            marker = message.additional_kwargs.get("skill")
+            path = marker.get("path") if isinstance(marker, dict) else None
+        else:
             continue
-        skill = skills_by_path.get(_normalized_path(read_paths.get(message.tool_call_id)) or "")
+        skill = skills_by_path.get(_normalized_path(path) or "")
         if skill is not None:
             reads.append((index, skill))
     return reads
@@ -383,24 +380,15 @@ def _discard_rejected_schemas(disclosure: _Disclosure, model: object) -> None:
 
 
 def _inline_block_builder(model: object) -> Callable[[BaseTool], _ToolDisclosure] | None:
-    """Return how `model` is given a tool mid-conversation, or `None` if it can't be.
-
-    The one place that decides support, so a model-profile capability can replace
-    the allowlists later.
-    """
+    """Return how `model` is given a tool mid-conversation, or `None` if it can't be."""
     chat_model = _unwrap_bound(model)
-    if isinstance(chat_model, ChatAnthropic) and chat_model.model.startswith(_ANTHROPIC_INLINE_TOOL_MODELS):
-        return _anthropic_tool_addition
-    # Exact type, not subclasses: a subclass may lift system messages elsewhere
-    # (e.g. into `instructions`) and reject a non-text block there.
-    if (
-        _CHAT_OPENAI_TYPE is not None
-        and type(chat_model) is _CHAT_OPENAI_TYPE
-        and chat_model.use_responses_api is True
-        and chat_model.model_name.startswith(_OPENAI_INLINE_TOOL_MODELS)
-    ):
-        return _openai_additional_tools
-    return None
+    if isinstance(chat_model, ChatAnthropic):
+        build = _anthropic_tool_addition
+    elif _BASE_CHAT_OPENAI_TYPE is not None and isinstance(chat_model, _BASE_CHAT_OPENAI_TYPE):
+        build = _openai_additional_tools
+    else:
+        return None
+    return build if (chat_model.profile or {}).get("mid_conversation_tools") else None
 
 
 def _unwrap_bound(model: object) -> object:

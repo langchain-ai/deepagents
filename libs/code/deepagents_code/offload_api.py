@@ -30,6 +30,11 @@ from deepagents_code.hooks.server_middleware import (
     HookTransportInterruptError,
     operation_hook_responses,
 )
+from deepagents_code.model_api import (
+    model_catalog,
+    model_metadata,
+    startup_model_metadata,
+)
 from deepagents_code.offload import _handoff_archive_prefix
 from deepagents_code.offload_middleware import (
     OffloadStateUpdate,
@@ -398,6 +403,13 @@ def _extensions(request: Request) -> JSONResponse:
 _client: Any = None
 
 
+def _ownership_headers(context: Mapping[str, Any]) -> dict[str, str]:
+    from deepagents_code.thread_ownership import OWNER_KEY
+
+    token = context.get(OWNER_KEY)
+    return {OWNER_KEY: token} if isinstance(token, str) else {}
+
+
 def _thread_client() -> Any:  # noqa: ANN401  # untyped LangGraph SDK client
     """Return the process-wide in-process LangGraph SDK client."""
     global _client  # noqa: PLW0603  # module-level singleton by design
@@ -733,7 +745,7 @@ def _checkpoint_model_context(
     A bare spec cannot carry an endpoint, but it can still name a provider the
     server holds credentials for, which would send conversation history
     somewhere the thread's owner never chose. A mid-session
-    `/summarization-model` override therefore does not apply to `/offload`.
+    `/offload model` override therefore does not apply to `/offload`.
 
     Args:
         context: Validated request context.
@@ -839,6 +851,8 @@ async def _commit_state_update(
     checkpoint_id: str,
     update: dict[str, Any],
     prepared: PreparedOperationCost,
+    *,
+    headers: dict[str, str] | None = None,
 ) -> None:
     """Persist the summary reservation and settle its claimed model cost.
 
@@ -847,7 +861,9 @@ async def _commit_state_update(
             advanced and its outcome cannot be determined.
     """
     try:
-        await client.threads.update_state(thread_id, update)
+        await client.threads.update_state(
+            thread_id, update, **({"headers": headers} if headers else {})
+        )
     except BaseException as exc:
         outcome = await _write_landed(client, thread_id, checkpoint_id)
         if outcome != "unchanged":
@@ -926,6 +942,8 @@ async def _commit_deferred_archive(
     execution: OffloadExecution,
     update: dict[str, Any],
     prepared: PreparedOperationCost,
+    *,
+    headers: dict[str, str] | None = None,
 ) -> None:
     """Reserve summary state, then append and link its archive transactionally.
 
@@ -935,10 +953,14 @@ async def _commit_deferred_archive(
     """
     archive = execution.archive
     if archive is None:
-        await _commit_state_update(client, thread_id, checkpoint_id, update, prepared)
+        await _commit_state_update(
+            client, thread_id, checkpoint_id, update, prepared, headers=headers
+        )
         return
     async with _archive_lock(archive.session_id):
-        await _commit_state_update(client, thread_id, checkpoint_id, update, prepared)
+        await _commit_state_update(
+            client, thread_id, checkpoint_id, update, prepared, headers=headers
+        )
         try:
             append = await archive.write()
         except Exception:
@@ -952,7 +974,9 @@ async def _commit_deferred_archive(
         event = archive.update(append.path)["_summarization_event"]
         try:
             await client.threads.update_state(
-                thread_id, {"_summarization_event": event}
+                thread_id,
+                {"_summarization_event": event},
+                **({"headers": headers} if headers else {}),
             )
         except BaseException as exc:
             landed = await _archive_path_landed(client, thread_id, append.path)
@@ -981,6 +1005,8 @@ async def _commit_handoff(
     checkpoint_id: str,
     execution: OffloadExecution,
     prepared: PreparedOperationCost,
+    *,
+    headers: dict[str, str] | None = None,
 ) -> None:
     """Save the summarizer's cost and transcript without compacting the source.
 
@@ -989,7 +1015,7 @@ async def _commit_handoff(
     """
     if prepared.update:
         await _commit_state_update(
-            client, thread_id, checkpoint_id, prepared.update, prepared
+            client, thread_id, checkpoint_id, prepared.update, prepared, headers=headers
         )
     else:
         prepared.rollback()
@@ -1109,6 +1135,7 @@ async def _execute_offload(
             {
                 "configurable": {
                     "thread_id": thread_id,
+                    **_ownership_headers(context),
                     "checkpoint_id": checkpoint_id,
                     "checkpoint_ns": namespace,
                     "run_id": operation_id,
@@ -1151,7 +1178,14 @@ async def _execute_offload(
         prepared = prepare_operation_cost(state, thread_id)
         if handoff:
             return await _settle(
-                _commit_handoff(client, thread_id, checkpoint_id, execution, prepared),
+                _commit_handoff(
+                    client,
+                    thread_id,
+                    checkpoint_id,
+                    execution,
+                    prepared,
+                    headers=_ownership_headers(context),
+                ),
                 execution,
             )
         update: dict[str, Any] = {**execution.update, **prepared.update}
@@ -1186,6 +1220,7 @@ async def _execute_offload(
                 execution,
                 update,
                 prepared,
+                headers=_ownership_headers(context),
             ),
             execution,
         )
@@ -1347,6 +1382,17 @@ async def cancel_offload(request: Request) -> JSONResponse:
 app = Starlette(
     lifespan=_lifespan,
     routes=[
+        Route("/dcode/model", startup_model_metadata, methods=["GET"]),
+        Route(
+            "/dcode/threads/{thread_id:str}/models",
+            model_catalog,
+            methods=["POST"],
+        ),
+        Route(
+            "/dcode/threads/{thread_id:str}/model",
+            model_metadata,
+            methods=["POST"],
+        ),
         Route("/dcode/threads/{thread_id:str}/btw", btw, methods=["POST"]),
         Route("/dcode/threads/{thread_id:str}/cost", btw_cost, methods=["GET"]),
         Route(

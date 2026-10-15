@@ -1,164 +1,213 @@
 ---
 type: runtime architecture
-title: Talon Runtime and Host Behavior
-description: Control flow and isolation rules for Talon's agent turns, host delivery lifecycle, approvals and OAuth routing, background work, scheduled execution, history, retries, and shutdown.
-tags: [talon, runtime, lifecycle, approvals, authorization, scheduling, persistence]
+title: Runtime Behavior, State, and Delegation
+description: Runtime contracts for Deep Agents graph construction, path-sensitive filesystem approval, checkpointed state, binary blob hydration, and synchronous and remote delegation. Explains the ownership boundaries that must survive graph and middleware changes.
+tags: [deepagents, runtime, state, middleware, checkpoints, subagents, delegation, permissions, human-in-the-loop]
+sources:
+  - id: openwiki-source-822ae989625ba99d4c7cc08b
+    resource: repo://libs/deepagents/deepagents/_messages_reducer.py
+  - id: openwiki-source-0fc0e47059e4d07e23e50be2
+    resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-303a7196a0e1a36cc078621b
+    resource: repo://libs/deepagents/deepagents/middleware/_blob_offload.py
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-13b8cea81b8a29f0950cc836
+    resource: repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py
+  - id: openwiki-source-f763e99e439a1356866a7aa4
+    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
+  - id: openwiki-source-69c260914d2dd18b60ad5900
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
+  - id: openwiki-source-dc64f28a66d10932b86fcd61
+    resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-03T08:05:07.881Z
-sources:
-  - id: openwiki-source-995d5d95882808a64071f617
-    resource: repo://libs/talon/deepagents_talon/archive_saver.py
-  - id: openwiki-source-8763dd662d69eb266f3bcaf0
-    resource: repo://libs/talon/deepagents_talon/authorization.py
-  - id: openwiki-source-cd45145a8c3a51b52eab3c2b
-    resource: repo://libs/talon/deepagents_talon/background.py
-  - id: openwiki-source-0ad7ce4799b63dc215741642
-    resource: repo://libs/talon/deepagents_talon/channels/base.py
-  - id: openwiki-source-81698d033a5726401d48b135
-    resource: repo://libs/talon/deepagents_talon/config.py
-  - id: openwiki-source-4b1e381713dec742c675816b
-    resource: repo://libs/talon/deepagents_talon/context_doctor.py
-  - id: openwiki-source-f55101eb12af3c6ae9b9d823
-    resource: repo://libs/talon/deepagents_talon/cron/jobs.py
-  - id: openwiki-source-363e56d368aecc6ab73d3e2f
-    resource: repo://libs/talon/deepagents_talon/cron/scheduler.py
-  - id: openwiki-source-ef047a301ffca1d2f8ab2c87
-    resource: repo://libs/talon/deepagents_talon/cron/tools.py
-  - id: openwiki-source-6801a88de6305bc8cbdd259f
-    resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-5b9a69640ff3d94216c614ce
-    resource: repo://libs/talon/deepagents_talon/messaging.py
-  - id: openwiki-source-f04ce33d1db21a61b1e6e8b3
-    resource: repo://libs/talon/deepagents_talon/model_selection.py
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-267468fe937003d4716fe6c2
-    resource: repo://libs/talon/deepagents_talon/tool_approvals.py
-  - id: openwiki-source-058eda257c62daed009e3f78
-    resource: repo://libs/talon/tests/cron/test_jobs.py
-  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
-    resource: repo://libs/talon/tests/test_host.py
-  - id: openwiki-source-4d6726e17c8a0c78539a7d33
-    resource: repo://libs/talon/tests/test_runtime.py
-  - id: openwiki-source-1e472b2d67bd29dc25c17e85
-    resource: repo://libs/talon/tests/unit_tests/test_context_doctor.py
-  - id: openwiki-source-d723914ebb96abaf33d45325
-    resource: repo://libs/talon/tests/unit_tests/test_cron_concurrency.py
-  - id: openwiki-source-1698129adea358c8813da5a5
-    resource: repo://libs/talon/tests/unit_tests/test_messaging.py
-  - id: openwiki-source-817808ec0e85107297729a56
-    resource: repo://libs/talon/tests/unit_tests/test_model_selection.py
-  - id: openwiki-source-f2859f71853cf2cbdb40aaa3
-    resource: repo://libs/talon/tests/unit_tests/test_scheduled_history.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-03T08:05:07.881Z" }
+    at: 2026-10-15T08:05:41.400Z
 ---
 
-# Talon Runtime and Host Behavior
+# Runtime Behavior, State, and Delegation
 
-> **Experimental boundary:** Talon is experimental and subject to change or removal. It is **not** a production or multi-tenant security boundary. Its host-side admission, authority, and delivery checks reduce accidental capability transfer, but operators must still deploy it only in an environment appropriate for the tools, credentials, models, and channels configured.
+`create_deep_agent()` is the runtime assembly boundary. It calls LangChain `create_agent()` with caller tools, the selected backend's middleware, the assembled Deep Agents stack, and optional `context_schema`, `checkpointer`, `store`, `cache`, and state schema. The resulting graph has recursion limit `9_999` and Deep Agents integration/version metadata. Deep Agents forwards persistence objects; it does not select or operate a durable checkpointer for the application.
 
-`DeepAgentRuntime` owns graph construction, checkpoints, turn-local context, and agent execution. `TalonHost` owns managed startup and shutdown, channel dispatch, per-conversation serialization and replacement, host-confirmed delivery, background follow-ups, and scheduled dispatch. This division keeps a running turn on its captured graph, approval policy, and model even as later configuration changes take effect. See [State Persistence](/openwiki/concepts/state-persistence.md), [Talon channel admission](/openwiki/concepts/talon-channel-admission.md), [Talon scheduling](/openwiki/concepts/talon-scheduling.md), [Talon integration](/openwiki/integrations/talon.md), and [Security](/openwiki/operations/security.md).
+A caller chooses continuation by invoking the graph with the same LangGraph `thread_id`. Configure a checkpointer before depending on multi-turn continuation or a human-approval pause. See [State Persistence](/openwiki/concepts/state-persistence.md), [Permissions and Human-in-the-Loop](/openwiki/concepts/permissions-hitl.md), and [Filesystem Tools](/openwiki/concepts/tools-filesystem.md).
 
-## Host lifecycle and interactive turns
+## Assembly and enforcement order
 
-The host creates the per-assistant state home, starts the runtime, binds each channel's message handler (and reaction handler where available), starts channels, and then starts the scheduler. Partial startup is unwound in reverse order. Stop cancels the background dispatcher and in-flight work, stops channels and the scheduler, then stops the runtime; failure in an individual component is logged without preventing the remaining cleanup.
+The main graph begins with `FilesystemMiddleware`; `SubAgentMiddleware` follows when synchronous subagents are available. Summarization and `PatchToolCallsMiddleware` follow, and `AsyncSubAgentMiddleware` is added when remote specs are configured. User middleware is inserted after that base stack and before the profile/skills/prompt-cache/memory tail, unless it replaces a named built-in in place. The filesystem-derived or explicit `HumanInTheLoopMiddleware`, `UnsupportedContentMiddleware`, and finally tool exclusion are tail layers. `_ToolExclusionMiddleware` is deliberately appended after custom middleware: a custom model wrapper cannot restore a tool that the profile excluded.
 
-For each inbound message, the host derives a provider-qualified conversation root and history scope, then takes the history and conversation locks. `/help` is answered before locking. Inside the locks, host commands, pending tool-approval replies, and pending OAuth authorization responses are handled before ordinary model input can replace a turn. Channel adapters enforce their exposure/admission policy before calling the host; open exposure requires explicit acknowledgement because arbitrary senders could otherwise trigger the agent.
-
-```mermaid
-sequenceDiagram
-    participant Channel
-    participant Host as TalonHost
-    participant Runtime as DeepAgentRuntime
-    participant Graph
-    Channel->>Host: inbound message
-    Host->>Host: intercept command or pending response
-    Host->>Host: cancel and repair replaced turn
-    Host->>Runtime: invoke request
-    Runtime->>Runtime: capture graph policy and model
-    Runtime->>Graph: invoke or resume
-    Graph-->>Runtime: final text or interrupt
-    Runtime-->>Host: agent result
-    Host->>Channel: deliver reply
-    Host->>Runtime: record confirmed delivery
-```
-
-This sequence distinguishes completed model work from a reply the host has confirmed as delivered.
-
-Interactive model turns are serialized by conversation root. A normal incoming message supersedes an active turn: the host increments the generation, cancels the old task, repairs its graph thread, and starts the replacement. If bounded cancellation/recovery does not settle, the conversation is blocked until restart rather than allowing concurrent use of one graph thread. Before delivery the host reacquires the lock and checks the captured generation and thread identity, which prevents stale replies and progress from being emitted.
-
-## Runtime assembly, persistence, and reload isolation
-
-`DeepAgentRuntime.start()` resolves subagents, materializes the tool-approval snapshot, and compiles the graph. Graph assembly supplies the resolved model and subagents, built-in and runtime tools, approval-management tools and their `interrupt_on` policy, backend, prompt, skills, memory, middleware, task/background middleware, and checkpointer. The default is `InMemorySaver`, so same-process requests sharing a conversation `thread_id` share graph state.
-
-`ConversationSaver` is the archival checkpointer option. It serializes checkpoint/archive writes, writes the checkpoint before committed archive revisions, and waits for both writes to settle if cancelled. Final assistant text is different state: it becomes semantic history only after the host receives a successful channel-delivery result.
-
-`TalonConfig` validates a stable assistant ID and places its state below a per-assistant home. It creates the home and state subdirectories with mode `0700`; this home contains channel, cron, manifest, media, model-selection, and checkpoint state. Checkpoint and history backends are independently configured, so changing one does not migrate the other.
-
-The default shell backend uses a fixed safe `PATH`, an allowlisted and scrubbed child environment that excludes loader-hijack and credential-like keys, and an artifacts directory created and enforced with mode `0700`. This hardens the default local execution environment; it does not replace approval controls or make Talon a security boundary.
-
-Before an invocation, runtime tools may refresh. MCP and subagent reloads build and validate a replacement graph before assigning it under `_tools_lock`; a failure leaves the earlier graph usable. While holding the lock, `invoke()` captures the graph and approval snapshot in context variables, then releases the lock before graph work. Thus a running request is isolated from a later reload or approval-file change; inspection reports saved changes as inactive for work that retains prior capabilities.
-
-Cancellation recovery reads the latest checkpoint, repairs dangling assistant tool calls with `PatchToolCallsMiddleware`, and appends an interruption marker. At shutdown the runtime first cancels background workers. If workers outlive their cancellation wait, it refuses to close graph/checkpoint resources they could still write and raises for the host to contain as a component-stop failure.
-
-## Invocation behavior, retries, and progress
-
-Each graph call uses the request conversation ID as LangGraph `thread_id` and the configured recursion limit. Whole graph payload invocations retry only classified transient connection, timeout, status, parsing, context-limit, or message-marker failures, with capped exponential backoff. Cancellation and unclassified or terminal errors propagate. Separately, an empty final text causes a bounded set of continuation nudges and finally a forced-summary prompt.
-
-The graph includes `ProgressMessages` and the `send_message` tool. Before a main-agent tool call, visible nonblank narration is forwarded to the request-local progress handler unless the model explicitly calls `send_message`; subagent narration is not forwarded. `send_message` rejects blank content and has no destination outside a host-bound request. It catches transport exceptions and returns a generic status to model context rather than transport details.
-
-The host binds progress delivery to the originating chat and makes it inactive once the turn is superseded, complete, or terminally authorized. Progress uses `send_with_retry`, as do final replies, commands, and scheduled deliveries. That helper converts transport exceptions to failed `SendResult` values and retries retryable or recognized network failures twice with exponential delay, so a send failure does not crash the host loop.
-
-## Approval and OAuth authorization routing
-
-Tool approval policy is a bounded, non-symlink regular JSON document with validated exact tool names and byte-revision compare-and-swap updates. An `ApprovalSnapshot` freezes a request's policy and compiles interrupts only for enabled names, so an edit applies on a later invocation. The runtime batches interrupts, audits action names/counts rather than arguments, resumes aligned decisions, and limits approval rounds.
-
-An attended channel request receives host approval and authorization handlers. Cron, background-delivery, and detached worker execution do not: the runtime clears approval-operator authority for unattended work, and protected interrupts without an eligible handler are rejected rather than held for a human.
-
-OAuth/MCP authorization is also host-mediated and outside model context. A request-local handler receives typed events for an authorization URL, callback request, device code, completion, or failure. The host binds a flow to the MCP server/invocation expiry **and** the provider, channel conversation, and sender that initiated it. It delivers browser or device instructions directly, accepts a pasted callback only from that bound sender/location before expiry, and otherwise intercepts the message with a safe reminder or rejection rather than passing it to the agent. A terminal completion notice can intentionally suppress the redundant model reply. The host clears pending flows when the turn finishes or is cancelled.
-
-## Background subagents and result follow-up
-
-For ordinary channel turns, `task` and `start_async_task` create bounded, in-memory jobs associated with the owner thread. Jobs use separate task thread IDs, cannot delegate recursively, clear approval-operator and authorization-handler context, produce bounded/sanitized output, and have a one-hour timeout. Completed output is injected as data into an owner follow-up turn; it is not sent directly to the channel.
-
-The host scans for results once per second and starts an unattended follow-up only when the owner is still current, idle, and unlocked. It spaces repeated attempts with capped exponential delay. Runtime acknowledgement occurs only after the main agent completes the consuming turn, but result IDs travel in `AgentResult` because only the host knows whether the user saw that turn's reply. If a consuming turn is superseded or cancelled before delivery, the host requeues those IDs; intentionally suppressed output remains acknowledged. Failed consumption increments a bounded delivery count, after which the result is dropped rather than retried forever.
-
-## Scheduled execution and history scope
-
-Cron jobs persist their origin, prompt, parsed minute-granularity schedule, repeat/run state, optional expiry, delivery target, and claim state in an assistant-scoped JSON store. The store serializes complete mutations among live instances in one process, but it does not coordinate multiple processes or external writers; one process must own a file. Job-management tools are scoped to the current `CronOrigin`, preventing one conversation from administering another's jobs.
-
-The scheduler sweeps finished records, claims a due occurrence by advancing `next_run_at` before execution, and logs tick failures while continuing. A run beyond the `until` grace expires instead of being delivered late. After a successful agent run, it records `ok`; `[SILENT]` suppresses delivery, while a later channel-delivery failure overwrites the outcome as `error`. Finished records are retained only for error or unresolved-claim retention before later pruning.
+The default synchronous `general-purpose` subagent is added unless the active harness profile disables it or a spec of that name was supplied. Consequently, async-only subagents do not imply the synchronous `task` tool, and a graph without synchronous specs and with the default disabled has no `task` tool. Async specs are recognized and routed separately into `AsyncSubAgentMiddleware`.
 
 ```mermaid
 flowchart TD
-    Scan["Ticker scans jobs"] --> Sweep["Sweep finished records"]
-    Sweep --> Claim["Claim due occurrence"]
-    Claim -->|"not due or expired"| Continue["Continue tick"]
-    Claim --> Run["Run scheduled graph thread"]
-    Run -->|"timeout or failure"| Failure["Record error"]
-    Run -->|"text or silent"| Outcome["Record agent outcome"]
-    Outcome -->|"silent"| Continue
-    Outcome -->|"text"| Deliver["Deliver to origin"]
-    Deliver -->|"delivery failed"| Failure
-    Deliver -->|"delivered"| Continue
-    Failure --> Continue
+    Build["create_deep_agent"] --> Files["Filesystem middleware"]
+    Files --> Sync["Synchronous task middleware when available"]
+    Sync --> Repair["Summarization and tool call repair"]
+    Repair --> Remote["Async task middleware when configured"]
+    Remote --> Custom["Caller middleware"]
+    Custom --> Tail["Profile skills prompt cache memory"]
+    Tail --> Approval["Human approval middleware when configured"]
+    Approval --> Content["Unsupported content middleware"]
+    Content --> Exclusion["Final tool exclusion"]
+    Exclusion --> Graph["Compiled LangGraph agent"]
 ```
 
-This flow shows that the occurrence is claimed before agent work. The scheduler persists a successful agent outcome before attempting non-silent transport, and changes it to an error if that transport fails.
+Caption: `create_deep_agent()` builds the main middleware stack in this order; replacement and profile filtering can alter individual layers, while tool exclusion remains the final model-facing tool boundary.
 
-A scheduled run uses a dedicated `<job-id>:talon-cron` thread and holds its conversation lock for the entire run. Its host timeout repairs the interrupted thread before reporting timeout. It receives neither approval nor authorization handler. Delegations run inline—rather than leaving detachable work for a later chat turn—with no recursion, a separate queued concurrency limit, bounded timeout, sanitized failure result, and output clamp.
+### Path-sensitive filesystem approval
 
-A scheduled request receives trusted origin-history scope only when persistent history is enabled and an origin channel is reachable. It may read that scope, but its cron-thread archive session is read-only: it is not indexed as a conversation entry and cannot delete conversations. After successful non-silent delivery, the host records the reply under the origin history chat. `deliver_to` can choose the origin thread or parent/top-level channel for channel adapters that support threads; it does not alter history scope.
+Filesystem permissions are enforced by `FilesystemMiddleware` for built-in filesystem tools, not by direct backend access. A rule applies to `read` and/or `write` operations over absolute glob paths; rules are evaluated in declaration order and an unmatched ordinary operation is allowed. `deny` remains a tool-level enforcement decision. An `interrupt` rule instead contributes a path-sensitive `when` predicate to the `HumanInTheLoopMiddleware` configuration assembled by `create_deep_agent()`.
 
-## Model selection and diagnostics
+The assembly helper registers only filesystem tools whose operation has an interrupt rule: `ls`, `read_file`, `glob`, and `grep` for reads; `write_file`, `edit_file`, and `delete` for writes. Its generated entries permit the standard human decisions `approve`, `edit`, `reject`, and `respond`. Explicit `interrupt_on` entries are merged afterward and therefore replace a generated entry with the same tool name. That replacement changes approval routing, not filesystem denial enforcement.
 
-`/model` persists a non-default selection under a global key and attaches it to later interactive requests across chats; only an operator can switch or reset it. The setting survives `/new` and restart, while a running `_Turn` keeps its captured selection. The runtime discovers catalog models only from credentialed providers plus the startup default, exact-validates selection, builds/caches selected models lazily, and falls back to the default for a turn if a saved selection becomes unavailable.
+Exact-path tools (`read_file`, `write_file`, and `edit_file`) pause only when the requested path resolves to an interrupt decision. The predicate validates the path and, when a backend is available, evaluates both the requested path and its symlink-resolved target. A deny decision suppresses the pause because the tool will return a permission error instead.
 
-The selected main model is bound in turn-local `ACTIVE_MODEL` context and substituted by middleware rather than recompiling the graph. Summarization uses the selected main model's context budget; delegated subagents retain the startup model/summarizer. `context_doctor` is an optional read-only capability: `/context-doctor` reads the active checkpoint under a ten-second host bound and returns bounded token estimates without invoking a model or changing state.
+Bulk tools use a different safety rule: `ls`, `glob`, `grep`, and recursive `delete` can affect or disclose descendants, so their predicate pauses when the requested subtree overlaps the literal anchor of an interrupt glob. A missing bulk path and current-directory aliases are treated as root and pause whenever that operation has an interrupt rule. `glob` also gates an absolute `pattern`, which can ignore its nominal `path`; a relative pattern containing `..` is conservatively interrupting. These rules prevent a benign-looking search root from bypassing review of a protected subtree. After approval, interrupt-mode results are retained; only `deny` results are filtered.
 
-## Focused change checks
+```mermaid
+flowchart TD
+    Call["Filesystem tool call"] --> Scope{"Exact or bulk path scope"}
+    Scope --> Exact["Validate requested and resolved path"]
+    Scope --> Bulk["Check search or delete scope against interrupt anchors"]
+    Exact --> Route{"Interrupt predicate true"}
+    Bulk --> Route
+    Route -->|Yes| Pause["HumanInTheLoopMiddleware interrupt"]
+    Pause --> Decision{"Human decision"}
+    Decision -->|Approve or edit| Enforce["Filesystem tool permission check"]
+    Decision -->|Reject or respond| Skip["Do not execute call"]
+    Route -->|No| Enforce
+    Enforce -->|Denied| Denied["Permission error"]
+    Enforce -->|Allowed| Backend["Backend operation"]
+```
 
-When changing this area, preserve candidate-before-replacement graph construction and capture graph, approval snapshot, selected model, request-local handlers, and host generation per turn. Do not transfer attended authority into cron, detached workers, or background delivery. Repair a cancelled thread before reuse, treat host-confirmed delivery as the semantic-history boundary, and requeue background results only when unintended loss prevented delivery.
+Caption: interrupt rules route only calls whose path or bulk scope can reach an interrupt pattern; the filesystem tool still enforces denial when execution is attempted.
 
-Focused tests cover graph refresh isolation, shell hardening, approval and interruption recovery, model persistence/selection, host replacement and requeueing, scheduled history/delivery targeting and scheduler resilience. Cron tests cover minute-based parsing, daylight-saving wall-clock behavior, pre-execution claims, origin scoping, and concurrent store writers. Messaging tests specifically verify narration ordering, no duplicate automatic narration for explicit `send_message`, request-local routing during concurrent invokes, generic failure responses, and expiration of a progress handler after the turn ends.
+Permissions do not constrain arbitrary direct backend calls. They also cannot represent policy for a shell-capable default backend: a nonempty permission set is rejected when that backend supports command execution, except when every pattern is scoped to a route of a `CompositeBackend`. Treat this as a containment boundary, not a reason to assume `execute` is permission-filtered.
+
+## Checkpointed state and recovery
+
+`DeepAgentState.messages` is a `DeltaChannel` using the local message reducer and a snapshot frequency of 50. It stores/replays deltas between snapshots rather than repeatedly storing the full transcript, reducing message checkpoint growth from O(N²) to O(N). A custom `state_schema` must preserve that channel.
+
+The reducer accepts raw message-like values, coerces them to messages, and uses stable IDs as its merge identity: new IDs append and an existing ID replaces its prior record. `RemoveMessage` removes an ID, and the last `REMOVE_ALL_MESSAGES` sentinel discards the replay base and earlier writes in that batch. It also treats a missing replay base as empty. IDs must be assigned before checkpoint serialization rather than generated during replay, or the replay would not be deterministic.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant Runtime
+    participant Delta as DeltaChannel
+    participant Saver as Checkpointer
+    Client->>Runtime: invoke with thread ID
+    Runtime->>Delta: write message delta
+    Delta->>Saver: persist snapshot or delta
+    Client->>Runtime: invoke same thread ID
+    Runtime->>Saver: load prior state
+    Saver->>Delta: replay stored writes
+    Delta-->>Runtime: reconstructed messages
+```
+
+Caption: a configured checkpointer, keyed by the caller's thread ID, owns continuation storage while `DeltaChannel` reconstructs the message history.
+
+`PatchToolCallsMiddleware` handles a different resume hazard before the agent loop begins. It detects AI tool calls, including invalid calls, with no matching `ToolMessage`; it appends a correlated error result that distinguishes malformed/truncated arguments from a call that may have been cancelled or interrupted. It replaces message state atomically with `REMOVE_ALL_MESSAGES` followed by the repaired history, so the resumed model does not receive a dangling call.
+
+### Compaction and recoverable history
+
+The default `create_deep_agent()` stack uses Deep Agents summarization. Automatic compaction is tracked as `_summarization_event` rather than rewriting `messages`: the event identifies a cutoff, a summary `HumanMessage`, and an optional backend history path. The effective model context is the summary plus the retained tail, but the raw message log remains available for replay, evaluation, and delegation. Evicted history is appended under `/conversation_history/{session_id}.md`; failure to offload is represented by a `None` path rather than preventing a summary. The middleware can also truncate old large `write_file` and `edit_file` arguments and retries with summarization after a provider `ContextOverflowError`.
+
+`SummarizationToolMiddleware` optionally exposes `compact_conversation`. It shares the automatic middleware's event/session state, but never runs by itself: the model or an external action must call the tool. To avoid premature loss of working context, it requires the effective conversation to reach roughly half the configured automatic trigger, then determines a cutoff, creates a summary, and attempts offload. A backend-offload failure still produces a compaction event; a summary-generation failure returns a correlated error `ToolMessage` and leaves the conversation unmodified.
+
+```mermaid
+sequenceDiagram
+    participant Model
+    participant Compact as compact_conversation
+    participant Summary as Summarization middleware
+    participant Storage as Backend
+    Model->>Compact: tool call
+    Compact->>Summary: apply existing event and test threshold
+    alt eligible with a cutoff
+        Compact->>Summary: summarize selected history
+        Compact->>Storage: append evicted history
+        Compact-->>Model: event and confirmation ToolMessage
+    else not eligible or no cutoff
+        Compact-->>Model: nothing to compact ToolMessage
+    else summary failure
+        Compact-->>Model: error ToolMessage with no state compaction
+    end
+```
+
+Caption: manual compaction operates on the effective summarized context while preserving the raw message channel; it reports failures as tool results instead of partially replacing state.
+
+### Private and middleware state
+
+State schemas supplied by the caller and assembled middleware are scanned for `PrivateStateAttr`. Those names are installed on every final `SubAgentMiddleware`, including a caller replacement. Ordinary inline delegation removes private keys before child invocation and again before merging child updates. It also excludes messages, todos, structured output, skill bookkeeping, rubric state, and other delegation-inappropriate channels. Unchanged inherited values are not merged back, preventing conflicts or double application when multiple tasks return concurrently.
+
+The protection depends on resolving annotations at runtime. If a schema refers to a type imported only under `TYPE_CHECKING`, discovery logs a warning and none of that schema's private fields can be protected. Treat this as a security and correctness configuration failure, not a harmless typing limitation.
+
+## Binary payload offload and hydration
+
+Binary base64 content in message blocks can be stored outside graph state under `{artifacts_root}/blobs/<sha256>`. The checkpointed block retains its non-payload fields and a `deepagents_blob` SHA-256 reference. Upload is best effort: an upload exception or per-file error leaves that payload inline instead of losing it.
+
+Before portable content is sent to a remote fork, blob references are hydrated from a request-scoped cache or the backend. Downloaded content is accepted only when its SHA-256 matches the reference; unavailable, failed, or tampered downloads become a textual notice rather than unverified bytes. The transient `_blob_payloads` cache is private, untracked state, so it does not become part of the checkpoint contract.
+
+## Synchronous `task` delegation
+
+The `task` tool selects an inline child, invokes it through `invoke` or `ainvoke`, and returns a `Command` containing a `ToolMessage` correlated to the parent tool-call ID. A child `structured_response` is JSON-serialized; otherwise the result is the last non-empty `AIMessage` text, avoiding an empty terminal message. A compiled child must return state with `messages`, or delegation raises `ValueError`.
+
+An isolated child receives a new `HumanMessage` containing the task description plus eligible non-private state. A declarative child is compiled by Deep Agents with the parent state schema. By contrast, a `CompiledSubAgent` is opaque: it does not inherit that schema and must be independently compiled with compatible channels.
+
+Declarative children have their own filesystem middleware and effective permission/HITL configuration. Omitted `permissions` inherits the parent rules, while a supplied subagent list replaces them. Its explicit `interrupt_on` similarly replaces the inherited parent map, after filesystem-derived entries are merged for that child's effective permissions. The auto-added general-purpose child uses the parent rules. Compiled children and remote async children are separate graphs: they inherit neither the parent filesystem permissions nor its approval configuration.
+
+Forks are experimental and intentionally narrower:
+
+- A declarative fork receives the parent effective conversation, including an applied summarization event, its permitted inherited state, and a task message. It sets an internal fork marker so its visible `task` tool refuses recursive delegation at call time.
+- Fork-specific state excludes prior structured response, pinned skills, rubric state, summarization session/event bookkeeping, and prior skill disclosure. A declarative fork can rebuild compatible private channels; a compiled fork strips private keys because its channels are unknown.
+- A fork cannot specify its own `skills`, because doing so would diverge from the inherited prompt context. Its own tool configuration remains allowed.
+
+Parent configuration and callbacks propagate through the LangGraph runtime; Deep Agents adds an `ls_agent_type="subagent"` tracing marker without manually duplicating ambient callback/tags configuration.
+
+## Remote asynchronous delegation
+
+`AsyncSubAgentMiddleware` exposes five tools: `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`. It uses LangGraph SDK clients against Agent Protocol servers. A launch creates a remote thread and run, immediately returns a task ID (the remote thread ID), and records the agent name, thread/run IDs, timestamps, and status under `async_tasks`. Its reducer merges entries by task ID, allowing state to retain task tracking across graph transitions and context reduction.
+
+Launches attach `parent_thread_id` to the child thread metadata when the parent has a configured thread. They also pass a `deepagents_parent` configurable reference containing the parent thread and, when available, assistant ID into the child run. For an in-process deployment, tracing can additionally send parent trace headers that ask the receiver to nest the remote run; these headers are not sent to another server. This is discoverability and trace linkage, not shared state or authorization.
+
+A check observes the tracked run and, after a successful run, reads the thread. A thread interrupted for human input becomes the nonterminal `waiting` task status and returns the pending interrupts; a normal success returns the last thread message. If that successful tracked run is followed by a busy or error thread, observation reads the latest run instead, covering a resume initiated by another client. An update starts a new run on the same remote thread with `multitask_strategy="interrupt"`, replaces the tracked run ID, and keeps the task ID; updating a waiting task explicitly replaces its pending human request. Cancellation calls the SDK for a non-waiting run, but merely records `cancelled` for a waiting task because no active run exists. A later check preserves `cancelled` rather than reclassifying its still-paused thread as `waiting`.
+
+List filters using cached state first, then observes every selected nonterminal task and writes the refreshed status/run ID back to `async_tasks`. Terminal entries are not queried. If live observation fails, list logs the failure and returns the cached status; launch, check, update, and cancellation errors similarly return tool-error text rather than corrupting the stored task record.
+
+```mermaid
+sequenceDiagram
+    participant Parent
+    participant AsyncTools as Async middleware
+    participant SDK as LangGraph SDK
+    participant Child as Remote thread
+    Parent->>AsyncTools: start_async_task
+    AsyncTools->>SDK: create thread with parent metadata
+    SDK->>Child: create remote thread
+    AsyncTools->>SDK: create run with task input
+    AsyncTools-->>Parent: task ID and async_tasks entry
+    Parent->>AsyncTools: check or list task
+    AsyncTools->>SDK: observe tracked run and thread
+    SDK-->>AsyncTools: status and thread values
+    AsyncTools-->>Parent: refreshed task state or cached fallback
+    Parent->>AsyncTools: update task
+    AsyncTools->>SDK: replacement run on same thread
+```
+
+Caption: remote task identity is the remote thread ID; runs may be replaced while the locally checkpointed task record is refreshed independently.
+
+Async isolated launches send only the task description. An experimental async fork snapshots the parent's effective history, clears nonportable tool artifacts and local eviction metadata, hydrates portable blobs, then serializes messages for the remote graph. It inherits conversation at launch only: remote tools, prompt, checkpointing, credentials, filesystem permissions, and approval configuration remain the remote graph's responsibility.
+
+A remote specification may provide headers; the SDK defaults `x-auth-scheme` to `langsmith` unless supplied. Omitting `url` chooses local ASGI transport, which is valid only from an async parent entrypoint such as `ainvoke`; synchronous `invoke` requires a reachable URL.
+
+## Change and test checklist
+
+- Preserve the assembly order: filesystem enforcement must exist before generated HITL routing is added, and `_ToolExclusionMiddleware` must remain last after custom middleware.
+- Test exact and bulk filesystem interrupts independently, including missing paths, current-directory aliases, absolute and escaping glob patterns, symlink resolution, and an earlier deny decision.
+- Preserve the `DeltaChannel` on `messages`, its reducer semantics, and the `REMOVE_ALL_MESSAGES` repair path when changing state or resume behavior.
+- Test private-state stripping in both directions and parallel inline tasks; runtime-resolvable annotations are required for the protection to apply.
+- Keep `ToolMessage` results correlated with the originating call. Verify structured and empty-terminal child result cases and the compiled-child `messages` failure.
+- Treat blob references as integrity-checked backend data. Test upload failure, cold-cache hydration, missing blob degradation, and remote-fork hydration.
+- Treat compiled and remote children as ownership boundaries. Test their approval, schema, storage, credentials, and lifecycle independently of the parent.
+- Exercise remote launch/check/update/cancel/list behavior, including stale cached status and the local-ASGI async-only restriction.

@@ -1,5 +1,6 @@
 """Tests for model_config module."""
 
+import importlib.util
 import io
 import logging
 import sys
@@ -1302,6 +1303,49 @@ class TestThreadConfigCoalesced:
         assert cfg.relative_time is True
         assert cfg.sort_order == "updated_at"
         assert cfg.scope == "cwd"
+        assert cfg.auto_rename is True
+
+
+@pytest.mark.parametrize(
+    ("content", "auto_rename", "rename_model"),
+    [
+        ("", True, ""),
+        ("[threads]\nauto_rename = false\n", False, ""),
+        (
+            '[threads]\nauto_rename = true\nrename_model = "provider:model"\n',
+            True,
+            "provider:model",
+        ),
+        ('[threads]\nauto_rename = "yes"\nrename_model = 2\n', True, ""),
+    ],
+)
+def test_thread_naming_config(
+    tmp_path: Path, content: str, auto_rename: bool, rename_model: str
+) -> None:
+    from deepagents_code.model_config import load_thread_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(content)
+    config = load_thread_config(path)
+    assert config.auto_rename is auto_rename
+    assert config.rename_model == rename_model
+    assert config.columns["thread_name"] is True
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("", "{app_name} - {thread_name}"),
+        ('[terminal]\ntab_title = "{app_name}"\n', "{app_name}"),
+        ("[terminal]\ntab_title = false\n", "{app_name} - {thread_name}"),
+    ],
+)
+def test_terminal_tab_title_config(tmp_path: Path, content: str, expected: str) -> None:
+    from deepagents_code.model_config import load_terminal_tab_title
+
+    path = tmp_path / "config.toml"
+    path.write_text(content)
+    assert load_terminal_tab_title(path) == expected
 
 
 class TestResolveEnvVar:
@@ -1875,6 +1919,59 @@ class TestModelPersistenceBetweenSessions:
 
 class TestGetAvailableModels:
     """Tests for get_available_models() function."""
+
+    @pytest.mark.parametrize("override", [None, {"max_output_tokens": 123}])
+    def test_discovery_follows_workspace_environment(
+        self, monkeypatch: pytest.MonkeyPatch, override: dict[str, int] | None
+    ) -> None:
+        """Model lists and profiles stay with their daemon, including overrides."""
+        from deepagents_code.config import use_environment
+
+        monkeypatch.setattr(ModelConfig, "load", lambda: ModelConfig())
+        monkeypatch.setattr(
+            model_config,
+            "_get_provider_profile_modules",
+            lambda: [("ollama", "langchain_ollama.data._profiles")],
+        )
+        monkeypatch.setattr(model_config, "_load_provider_profiles", lambda _: {})
+        monkeypatch.setattr(importlib.util, "find_spec", lambda _: object())
+        models = {
+            "http://localhost:11434": ["first"],
+            "http://localhost:11435": ["second"],
+        }
+        monkeypatch.setattr(model_config, "_get_ollama_installed_models", models.get)
+        monkeypatch.setattr(
+            model_config,
+            "_fetch_ollama_installed_model_profiles",
+            lambda endpoint, names: {
+                name: {"max_input_tokens": 1000 if "11434" in endpoint else 2000}
+                for name in names
+            },
+        )
+
+        for port, enabled in [
+            (11434, True),
+            (11435, True),
+            (11435, False),
+            (11434, True),
+        ]:
+            with use_environment(
+                {
+                    "OLLAMA_HOST": f"http://localhost:{port}",
+                    "DEEPAGENTS_CODE_OLLAMA_DISCOVERY": "1" if enabled else "0",
+                }
+            ):
+                expected = models[f"http://localhost:{port}"] if enabled else []
+                assert get_available_models().get("ollama", []) == expected
+                profiles = get_model_profiles(cli_override=override)
+                assert set(profiles) == {f"ollama:{name}" for name in expected}
+                for name in expected:
+                    profile = profiles[f"ollama:{name}"]["profile"]
+                    assert profile["max_input_tokens"] == (
+                        1000 if port == 11434 else 2000
+                    )
+                    if override:
+                        assert profile["max_output_tokens"] == 123
 
 
 class TestGetAvailableModelsMergesConfig:
@@ -4426,6 +4523,55 @@ class TestLoadMcpServerTrustLists:
 
 class TestGetModelProfiles:
     """Tests for get_model_profiles() function."""
+
+    def test_anthropic_fallback_fills_only_missing_profile_fields(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        profiles_path = tmp_path / "data" / "_profiles.py"
+        profiles_path.parent.mkdir()
+        profiles_path.write_text(
+            "_PROFILES = {'claude-haiku-5-5': {'structured_output': False, "
+            "'reasoning_effort_default': 'high'}}"
+        )
+        spec = importlib.util.spec_from_file_location(
+            "langchain_anthropic", tmp_path / "__init__.py"
+        )
+        monkeypatch.setattr(importlib.util, "find_spec", lambda _: spec)
+        clear_caches()
+
+        profiles = model_config._load_provider_profiles(
+            "langchain_anthropic.data._profiles"
+        )
+
+        assert profiles["claude-haiku-5-5"]["structured_output"] is False
+        assert profiles["claude-haiku-5-5"]["reasoning_effort_default"] == "high"
+        assert profiles["claude-haiku-5-5"]["reasoning_effort_levels"] == [
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        ]
+        clear_caches()
+
+    def test_haiku_discovery_and_effort_without_upstream_profile(self) -> None:
+        from deepagents_code.reasoning_effort import (
+            default_effort_for_model,
+            supported_efforts_for_model,
+        )
+
+        clear_caches()
+        assert "claude-haiku-5-5" in get_available_models()["anthropic"]
+        spec = "anthropic:claude-haiku-5-5"
+        assert get_model_profiles()[spec]["profile"]["max_input_tokens"] == 1_000_000
+        assert default_effort_for_model(spec) == "medium"
+        assert supported_efforts_for_model(spec) == (
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+            "max",
+        )
 
 
 class TestCodexProviderMirror:

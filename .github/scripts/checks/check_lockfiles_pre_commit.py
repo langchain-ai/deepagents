@@ -5,7 +5,9 @@ from __future__ import annotations
 import shlex
 import subprocess
 import sys
-from pathlib import Path
+import tomllib
+from collections.abc import Collection, Mapping
+from pathlib import Path, PurePosixPath
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 LIBS_ROOT = REPO_ROOT / "libs"
@@ -29,6 +31,52 @@ def python_version(package: Path) -> str:
     if package == LIBS_ROOT / "acp":
         return "3.14"
     return "3.12"
+
+
+def _path_source_dirs(manifest_dir: Path, manifest: Mapping[str, object]) -> set[str]:
+    """Return repo-relative dirs `manifest` consumes via `[tool.uv.sources]` paths."""
+    tool = manifest.get("tool")
+    uv = tool.get("uv") if isinstance(tool, Mapping) else None
+    sources = uv.get("sources") if isinstance(uv, Mapping) else None
+    if not isinstance(sources, Mapping):
+        return set()
+
+    dirs: set[str] = set()
+    for spec in sources.values():
+        if not isinstance(spec, Mapping):
+            continue
+        raw = spec.get("path")
+        if not isinstance(raw, str):
+            continue
+        resolved = (manifest_dir / raw).resolve()
+        try:
+            dirs.add(resolved.relative_to(REPO_ROOT).as_posix())
+        except ValueError:
+            continue
+    return dirs
+
+
+def stale_lock_dirs(changed_manifests: Collection[str]) -> list[str]:
+    """Return changed package directories and their transitive local consumers."""
+    consumes: dict[str, set[str]] = {}
+    for package in package_dirs():
+        manifest_file = package / "pyproject.toml"
+        if not manifest_file.is_file():
+            continue
+        repo_path = package.relative_to(REPO_ROOT).as_posix()
+        manifest = tomllib.loads(manifest_file.read_text(encoding="utf-8"))
+        consumes[repo_path] = _path_source_dirs(package, manifest)
+
+    stale = {PurePosixPath(path).parent.as_posix() for path in changed_manifests}
+    while True:
+        dependents = {
+            package
+            for package, sources in consumes.items()
+            if sources & stale and package not in stale
+        }
+        if not dependents:
+            return sorted(stale)
+        stale |= dependents
 
 
 def _label(package: Path) -> str:

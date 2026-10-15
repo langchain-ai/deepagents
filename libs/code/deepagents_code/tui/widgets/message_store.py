@@ -53,6 +53,8 @@ _UPDATABLE_FIELDS: frozenset[str] = frozenset(
         "tool_display_caveat",
         "tool_group_expanded",
         "skill_expanded",
+        "skill_description",
+        "skill_body",
         "rubric_expanded",
         "reasoning_expanded",
         "user_expanded",

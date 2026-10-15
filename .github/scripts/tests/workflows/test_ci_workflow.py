@@ -11,6 +11,8 @@ the strict step's bypass runs against a stubbed `gh` in
 
 from __future__ import annotations
 
+import json
+import os
 import re
 import subprocess
 import sys
@@ -186,6 +188,47 @@ SELECTION_CASES = [
         None,
     ),
 ]
+
+
+@pytest.mark.parametrize("curated", ["true", "false"])
+@pytest.mark.parametrize("result", ["success", "failure", "cancelled", "skipped", ""])
+def test_lockfiles_gate_merges_even_with_inherited_ci(
+    tmp_path: Path, curated: str, result: str
+) -> None:
+    workflow = _load_workflow(CI_WORKFLOW)
+    job = workflow["jobs"]["check-lockfiles"]
+    assert "if" not in job
+    assert job["uses"] == "./.github/workflows/check_lockfiles.yml"
+    assert "check-lockfiles" in workflow["jobs"]["ci_success"]["needs"]
+    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+    assert step["env"]["LOCKFILES_RESULT"] == "${{ needs.check-lockfiles.result }}"
+    gate = tmp_path / ".ci-gate-base/.github/scripts/checks/ci_gate.py"
+    gate.parent.mkdir(parents=True)
+    gate.write_text((ROOT / ".github/scripts/checks/ci_gate.py").read_text())
+    completed = subprocess.run(
+        ["bash", "-c", step["run"]],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "EVENT_NAME": "pull_request",
+            "LOCKFILES_RESULT": result,
+            "CURATED_APPLY_ONLY": curated,
+            "CURATED_APPLY_PARENT_CONCLUSION": "success",
+            "TALON_CHANGED": "false",
+            "NEEDS": json.dumps({"check-lockfiles": {"result": result}}),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == (0 if result == "success" else 1)
+
+
+def test_lockfile_workflow_checks_every_package() -> None:
+    workflow = _load_workflow(WORKFLOWS / "check_lockfiles.yml")
+    assert set(workflow["on"]) == {"workflow_call"}
+    step = _find_step(workflow, job="check-lockfiles", name="🔍 Check all lockfiles")
+    assert step["run"] == "python3 .github/scripts/checks/check_lockfiles_pre_commit.py"
 
 
 def test_ci_success_builds_named_results_from_needs_object() -> None:

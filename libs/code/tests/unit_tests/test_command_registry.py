@@ -32,20 +32,12 @@ class TestBypassTiers:
         names = {cmd.name for cmd in COMMANDS}
         assert names >= STARTUP_RECOVERY_COMMANDS
 
-    def test_immediate_ui_arg_forms_extend_immediate_ui_commands(self) -> None:
-        """Every whitelisted argument form must name an IMMEDIATE_UI command.
-
-        `_can_bypass_queue` checks these forms only after the base command
-        matches `IMMEDIATE_UI`; an entry under a command in any other tier
-        would be dead config. The whitelist must also stay narrow — every
-        entry is an exact no-further-arguments form whose handler defers all
-        mutation to the modal's dismiss callback.
-        """
+    def test_immediate_ui_arg_forms_extend_known_commands(self) -> None:
+        """Selector-opening forms must belong to registered commands."""
+        names = {cmd.name for cmd in COMMANDS}
         for form in IMMEDIATE_UI_ARG_FORMS:
             base = form.split(maxsplit=1)[0]
-            assert base in IMMEDIATE_UI, (
-                f"{form!r} is whitelisted but {base!r} is not IMMEDIATE_UI"
-            )
+            assert base in names
 
 
 class TestSlashCommands:

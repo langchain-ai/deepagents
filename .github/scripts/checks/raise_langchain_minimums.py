@@ -29,12 +29,12 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+import tomllib
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-import tomllib
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.specifiers import Specifier, SpecifierSet
 from packaging.utils import canonicalize_name
@@ -57,7 +57,10 @@ from check_dep_freshness import (  # noqa: E402
     extract_minimum,
     local_dependency_names,
 )
-from check_lockfiles_pre_commit import package_dirs, python_version  # noqa: E402
+from check_lockfiles_pre_commit import (  # noqa: E402
+    python_version,
+    stale_lock_dirs,
+)
 from check_release_deps import (  # noqa: E402
     PyPIRequestError,
     _write_output,
@@ -540,61 +543,6 @@ def _plan_manifest(
     )
 
 
-def _path_source_dirs(manifest_dir: Path, manifest: Mapping[str, object]) -> set[str]:
-    """Return repo-relative dirs `manifest` consumes via `[tool.uv.sources]` paths."""
-    tool = manifest.get("tool")
-    uv = tool.get("uv") if isinstance(tool, Mapping) else None
-    sources = uv.get("sources") if isinstance(uv, Mapping) else None
-    if not isinstance(sources, Mapping):
-        return set()
-
-    dirs: set[str] = set()
-    for spec in sources.values():
-        if not isinstance(spec, Mapping):
-            continue
-        raw = spec.get("path")
-        if not isinstance(raw, str):
-            continue
-        resolved = (manifest_dir / raw).resolve()
-        try:
-            dirs.add(resolved.relative_to(REPO_ROOT).as_posix())
-        except ValueError:
-            continue
-    return dirs
-
-
-def stale_lock_dirs(changed_manifests: Collection[str]) -> list[str]:
-    """Return every package dir whose `uv.lock` the changed manifests invalidate.
-
-    A lockfile embeds the requirement specifiers of each package it resolves
-    from a local `[tool.uv.sources]` path, so raising a floor in
-    `libs/deepagents` staleness-marks the lockfile of every package that path-
-    depends on it — `libs/evals/uv.lock` and friends — not only its own. This
-    closes over those path edges transitively. `check_lockfiles.yml` inspects
-    only the packages a PR diff touches, so a lockfile omitted here would go
-    stale on `main` and fail later for an unrelated contributor.
-    """
-    consumes: dict[str, set[str]] = {}
-    for package in package_dirs():
-        manifest_file = package / "pyproject.toml"
-        if not manifest_file.is_file():
-            continue
-        repo_path = package.relative_to(REPO_ROOT).as_posix()
-        manifest = tomllib.loads(manifest_file.read_text(encoding="utf-8"))
-        consumes[repo_path] = _path_source_dirs(package, manifest)
-
-    stale = {PurePosixPath(path).parent.as_posix() for path in changed_manifests}
-    while True:
-        dependents = {
-            package
-            for package, sources in consumes.items()
-            if sources & stale and package not in stale
-        }
-        if not dependents:
-            return sorted(stale)
-        stale |= dependents
-
-
 def lock_dirs_for(
     changed_manifests: Collection[str], *, skip_dependents: bool
 ) -> list[str]:
@@ -606,14 +554,33 @@ def lock_dirs_for(
     return stale_lock_dirs(changed_manifests)
 
 
-def edits_markdown(edits: Sequence[RequirementEdit], *, heading: str) -> str:
-    """Render applied edits as a Markdown table for the PR body/summary."""
-    lines = [heading, "", "| Manifest | Dependency | Change |", "|---|---|---|"]
-    lines.extend(
-        f"| `{edit.manifest_path}` | `{edit.dependency_name}` | "
-        f"`{edit.old_requirement}` → `{edit.new_requirement}` |"
-        for edit in edits
+def _edit_markdown(edit: RequirementEdit) -> str:
+    """Render the affected package and any extras or marker on its dependency."""
+    project = tomllib.loads(
+        (REPO_ROOT / edit.manifest_path).read_text(encoding="utf-8")
     )
+    target = f"`{project['project']['name']}`"
+    requirement = Requirement(edit.old_requirement)
+    if requirement.extras:
+        target += f" (extras: `{','.join(sorted(requirement.extras))}`)"
+    if requirement.marker:
+        target += f"; `{requirement.marker}`"
+    return target.replace("|", r"\|")
+
+
+def edits_markdown(edits: Sequence[RequirementEdit], *, heading: str) -> str:
+    """Render package targets grouped by dependency and changed lower bounds."""
+    grouped: dict[tuple[str, str, str], list[str]] = {}
+    for edit in edits:
+        old = _raiseable_specifier(Requirement(edit.old_requirement).specifier)
+        new = _raiseable_specifier(Requirement(edit.new_requirement).specifier)
+        key = (edit.dependency_name, str(old), str(new))
+        grouped.setdefault(key, []).append(_edit_markdown(edit))
+    lines = [heading, "", "| Dependency | Minimum | Targets |", "|---|---|---|"]
+    for (dependency, old, new), targets in sorted(grouped.items()):
+        lines.append(
+            f"| `{dependency}` | `{old}` → `{new}` | {', '.join(sorted(targets))} |"
+        )
     return "\n".join(lines)
 
 
@@ -787,7 +754,10 @@ def _run(
     for plan in plans:
         (REPO_ROOT / plan.manifest_path).write_text(plan.new_text, encoding="utf-8")
 
-    summary = edits_markdown(all_edits, heading=f"Raised {len(all_edits)} minimum(s):")
+    noun = "minimum" if len(all_edits) == 1 else "minimums"
+    summary = edits_markdown(
+        all_edits, heading=f"Raised {len(all_edits)} dependency {noun}:"
+    )
     if fetch_failures or plan_failures:
         summary += "\n\n" + failures_markdown(fetch_failures, plan_failures)
     print(summary)

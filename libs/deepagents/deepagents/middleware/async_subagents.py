@@ -387,9 +387,9 @@ class TaskEvent(TypedDict):
     A notification message carries it in `additional_kwargs["deepagents_notification"]`,
     so apps can tell these messages from the user's.
 
-    !!! warning "Experimental"
+    !!! warning "Beta"
 
-        This shape may change without notice.
+        This shape may change.
     """
 
     task_id: str
@@ -1398,10 +1398,14 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     Task IDs are persisted in the agent state under `async_tasks` so they
     survive context compaction/offloading and can be accessed programmatically.
 
-    The agent checks its unfinished tasks at the start of each run, before
-    model calls, and once after its final answer, and adds what finished,
-    failed or is waiting for the user to its conversation. A subagent that ends
-    while the agent is idle wakes it.
+    !!! warning "Beta"
+
+        On an Agent Server, the agent is told when its async subagent tasks
+        finish, fail or wait for the user: before each model call while it
+        runs, and through a new run when a deep agent subagent on this
+        deployment ends while it's idle. This needs the async path (`ainvoke`,
+        which the Agent Server uses); with `invoke`, only the tools work. This
+        may change.
 
     Args:
         async_subagents: List of async subagent specifications.

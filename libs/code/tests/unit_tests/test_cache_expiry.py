@@ -226,6 +226,30 @@ async def test_cache_expiring_toast_without_hooks(
         assert app.query_one("Toast").region.height > 0
 
 
+async def test_expiry_banner_survives_activity_and_clears_on_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        banner = app.query_one("#cache-expired-banner")
+        assert not banner.display
+        _prepare(app, monkeypatch)
+        app._agent_running = True
+        app._cold_cache_suppressed_for_session = True
+        app._check_cache_expiry()
+        await pilot.pause()
+        assert banner.display
+        assert banner.region.y <= 1
+        assert app._status_bar is not None
+        app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+        app._check_cache_expiry()
+        assert not banner.display
+        app._status_bar.cache_expires_at = None
+        app._check_cache_expiry()
+        assert not banner.display
+
+
 @pytest.mark.parametrize("size", [(80, 20), (60, 16)])
 @pytest.mark.parametrize("allow_send", [False, True])
 async def test_short_terminal_keeps_handoff_actions_visible(

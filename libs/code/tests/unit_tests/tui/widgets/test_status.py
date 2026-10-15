@@ -335,8 +335,8 @@ class TestCacheTimingDisplay:
     @pytest.mark.parametrize(
         ("confidence", "before", "after"),
         [
-            ("may_be_cold", "/ 0:30", "/ uncertain"),
-            ("expired", "/ 0:30", "/ 0:00"),
+            ("may_be_cold", "/ 0:30", "/ expired"),
+            ("expired", "/ 0:30", "/ expired"),
         ],
     )
     async def test_retention_bound_passes(

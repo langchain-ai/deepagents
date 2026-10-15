@@ -17,8 +17,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.errors import GraphInterrupt
-from langgraph.types import Command, Interrupt
+from langgraph.types import Command, interrupt
 from langgraph_sdk.client import LangGraphClient, SyncLangGraphClient
 from langsmith import tracing_context
 from langsmith.run_trees import RunTree
@@ -1861,16 +1860,26 @@ class TestParentNotifier:
         assert isinstance(raised, RuntimeError)
         assert "The subagent failed (RuntimeError)." in _woken_text(server)
 
-    async def test_pause_inside_a_tool_wakes_the_parent(self) -> None:
+    async def test_pause_does_not_wake_the_parent(self) -> None:
+        """The user answers a paused subagent on its own thread; the parent sees `waiting` when it next checks."""
         server = _FakeServer()
 
-        async def pausing(_request: Any) -> Any:  # noqa: ANN401
-            raise GraphInterrupt([Interrupt(value="Which repo?", id="int_q")])
+        @tool
+        def ask() -> str:
+            """Ask the user which repo to use."""
+            return str(interrupt("Which repo?"))
 
-        raised = await _call_callback("awrap_tool_call", MagicMock(), pausing, server=server)
+        call = {"name": "ask", "args": {}, "id": "call_1"}
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="", tool_calls=[call])])), tools=[ask], checkpointer=InMemorySaver()
+        )
+        config = {"configurable": {"thread_id": "child_thread", "deepagents_parent": _PARENT}, "metadata": {"run_id": "child_run"}}
 
-        assert isinstance(raised, GraphInterrupt)
-        assert _woken_event(server)["status"] == "waiting"
+        with patch("deepagents.middleware.async_subagents.get_client", return_value=server):
+            result = await agent.ainvoke({"messages": [HumanMessage(content="dig in")]}, config)
+
+        assert result["__interrupt__"]
+        assert server.created == []
 
     async def test_run_started_elsewhere_on_the_task_thread_still_wakes_the_parent(self) -> None:
         """Answering a paused subagent starts a run without deepagents' config; the thread's metadata has the parent."""

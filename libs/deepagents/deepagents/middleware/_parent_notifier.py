@@ -13,12 +13,9 @@ from langchain.agents.middleware.types import (
     TracePolicy,
     omit_payload,
 )
-from langchain.tools.tool_node import ToolCallRequest
-from langchain_core.messages import ToolMessage
 from langgraph.config import get_config
 from langgraph.errors import GraphInterrupt
 from langgraph.runtime import Runtime
-from langgraph.types import Command
 
 from deepagents.middleware.async_subagents import (
     _current_run_id,
@@ -61,14 +58,6 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
         """Pass through: reporting needs the async path, which the Agent Server uses."""
         return handler(request)
 
-    def wrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
-    ) -> ToolMessage | Command[Any]:
-        """Pass through: reporting needs the async path, which the Agent Server uses."""
-        return handler(request)
-
     async def awrap_model_call(
         self,
         request: ModelRequest[ContextT],
@@ -83,20 +72,7 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
             await self._areport("error", error=_failure_text(e))
             raise
 
-    async def awrap_tool_call(
-        self,
-        request: ToolCallRequest,
-        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
-    ) -> ToolMessage | Command[Any]:
-        """Report a run that pauses with `interrupt()` inside a tool."""
-        try:
-            return await handler(request)
-        except GraphInterrupt as paused:
-            interrupts = [{"id": item.id, "value": item.value} for item in (paused.args[0] if paused.args else ())]
-            await self._areport("waiting", interrupts=interrupts)
-            raise
-
-    async def _areport(self, status: Literal["success", "error", "waiting"], **details: object) -> None:
+    async def _areport(self, status: Literal["success", "error"], **details: object) -> None:
         """Notify once per run, for this graph's own run that an async subagent tool started."""
         config = get_config()
         if not _launching_agent(config) or not _is_own_task_run(config):

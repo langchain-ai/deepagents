@@ -1413,6 +1413,11 @@ class TestParentReference:
         assert client.threads.create.call_args.kwargs["metadata"] == {"parent_thread_id": "thread_parent"}
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_launch_tags_the_task_thread_with_its_parent(self, mock_get_client: MagicMock) -> None:
+        client = _launch(mock_get_client)
+        assert client.threads.create.call_args.kwargs["metadata"] == {"parent_thread_id": "thread_parent"}
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_update_resends_parent_reference(self, mock_get_client: MagicMock) -> None:
         mock_client = MagicMock()
         mock_client.runs.create.return_value = {"run_id": "run_new"}

@@ -16,11 +16,12 @@ from deepagents_code.media_utils import ImageData, VideoData
 
 logger = logging.getLogger(__name__)
 
-PATH_CHAR_CLASS = r"A-Za-z0-9._~/\\:-"
+PATH_CHAR_CLASS = r"\w.~/\\:-"
 """Characters allowed in file paths.
 
-Includes alphanumeric, period, underscore, tilde (home), forward/back slashes
-(path separators), colon (Windows drive letters), and hyphen.
+Includes letters and digits in any script, underscore, period, tilde (home),
+forward/back slashes (path separators), colon (Windows drive letters), and
+hyphen.
 """
 
 FILE_MENTION_PATTERN = re.compile(r"@(?P<path>(?:\\.|[" + PATH_CHAR_CLASS + r"])+)")

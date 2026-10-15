@@ -634,10 +634,17 @@ def _run_git_ls_files(
         # S603: git_path validated via shutil.which(); ls-files args are
         # caller-supplied literals.
         result = subprocess.run(  # noqa: S603
-            [git_path, "ls-files", *extra_args],
+            # `-z` NUL-terminates entries and disables quoting; otherwise the
+            # default `core.quotePath` turns non-ASCII names into octal escapes.
+            [git_path, "ls-files", "-z", *extra_args],
             cwd=root,
             capture_output=True,
             text=True,
+            # Git writes paths as raw bytes regardless of the locale (a legacy
+            # code page on Windows); `replace` keeps one non-UTF-8 name from
+            # failing the whole listing.
+            encoding="utf-8",
+            errors="replace",
             timeout=5,
             check=False,
             # Git localizes stderr; use C so the non-repo marker stays stable.
@@ -661,7 +668,7 @@ def _run_git_ls_files(
                 stderr,
             )
         return False, []
-    return True, [f for f in result.stdout.strip().split("\n") if f]
+    return True, [f for f in result.stdout.split("\0") if f]
 
 
 def _get_project_files(root: Path) -> list[str]:

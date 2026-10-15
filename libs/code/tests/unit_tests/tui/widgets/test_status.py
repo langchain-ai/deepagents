@@ -13,6 +13,7 @@ from textual.content import Content
 from textual.geometry import Offset
 from textual.widgets import Static
 
+from deepagents_code import theme
 from deepagents_code._env_vars import HIDE_CWD
 from deepagents_code.config import ASCII_GLYPHS, reset_glyphs_cache
 from deepagents_code.tui.widgets.status import (
@@ -368,6 +369,15 @@ class TestCacheTimingDisplay:
                 assert after in str(display.render())
                 assert "bust" not in str(display.render())
                 assert bar._cache_timer is None
+                cache_display = pilot.app.query_one("#cache-display", MetricsLine)
+                error = theme.get_theme_colors(bar).error
+                assert cache_display.segments[0].spans[-1].style == error
+
+                bar.set_cache_timing(now + timedelta(seconds=30), ttl_seconds=300)
+                await pilot.pause()
+                assert cache_display.segments[0].spans[-1].end < len(
+                    cache_display.segments[0].plain
+                )
 
     async def test_clear_stops_countdown(self) -> None:
         async with StatusBarApp().run_test() as pilot:

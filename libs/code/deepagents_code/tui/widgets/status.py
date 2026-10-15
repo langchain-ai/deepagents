@@ -1241,6 +1241,11 @@ class StatusBar(Vertical):
             if segment.plain
         )
         cache = self._cache_segment()
+        if (
+            self.cache_expires_at is not None
+            and datetime.now(UTC) >= self.cache_expires_at
+        ):
+            cache = cache.stylize(theme.get_theme_colors(self).error)
         cache_display.segments = (cache,) if cache.plain else ()
         context_display.segments = context_segments
 

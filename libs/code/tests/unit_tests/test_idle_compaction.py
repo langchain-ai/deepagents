@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionState
+from deepagents_code.config_manifest import get_option
 
 
 @pytest.mark.parametrize(
@@ -19,6 +20,10 @@ async def test_idle_compaction_guards(
     offload = AsyncMock()
     monkeypatch.setattr(app, "_offload_impl", offload)
     monkeypatch.setattr(app, "_remote_agent", lambda: MagicMock())
+    monkeypatch.setattr(
+        "deepagents_code.configuration.resolver.get_config_resolver",
+        lambda: MagicMock(get=MagicMock(return_value=MagicMock(value=100_000))),
+    )
     async with app.run_test() as pilot:
         await pilot.pause()
         monkeypatch.setattr(app, "_agent", MagicMock())
@@ -37,9 +42,13 @@ async def test_idle_compaction_guards(
         elif blocker == "expired":
             app._status_bar.cache_expires_at = datetime.now(UTC) - timedelta(seconds=1)
         elif blocker == "disabled":
+            option = get_option("history.idle_compaction_tokens")
+            assert option is not None
             monkeypatch.setattr(
                 "deepagents_code.configuration.resolver.get_config_resolver",
-                lambda: MagicMock(get=MagicMock(return_value=MagicMock(value=0))),
+                lambda: MagicMock(
+                    get=MagicMock(return_value=MagicMock(value=option.default))
+                ),
             )
         app._check_idle_compaction()
         app._check_idle_compaction()
@@ -122,6 +131,10 @@ async def test_cancellation_releases_idle_reservation(
 
     monkeypatch.setattr(app, "_offload_impl", offload)
     monkeypatch.setattr(app, "_remote_agent", lambda: MagicMock())
+    monkeypatch.setattr(
+        "deepagents_code.configuration.resolver.get_config_resolver",
+        lambda: MagicMock(get=MagicMock(return_value=MagicMock(value=100_000))),
+    )
     async with app.run_test() as pilot:
         await pilot.pause()
         monkeypatch.setattr(app, "_agent", MagicMock())

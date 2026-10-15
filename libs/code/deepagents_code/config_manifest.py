@@ -2921,11 +2921,12 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         group="History",
         summary=(
             "Automatically offload idle context at this token count during the "
-            "last 60 seconds of prompt-cache retention (0 disables). Uses the "
+            "last 60 seconds of prompt-cache retention (disabled by default; "
+            "0 disables). Uses the "
             "offload model and may incur summarization costs."
         ),
         kind=OptionKind.NON_NEGATIVE_INT,
-        default=100_000,
+        default=0,
         toml_keys=("history", "idle_compaction_tokens"),
     ),
     # --- Warnings ------------------------------------------------------

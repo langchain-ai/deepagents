@@ -93,20 +93,21 @@ A server keeps the first workspace's tracing configuration for its lifetime. Wor
 
 ## Idle context compaction
 
-The interactive client automatically uses the existing `/offload` operation for
-contexts of at least 100,000 tokens during the final 60 seconds of a known
+Idle compaction is disabled by default. When enabled, the interactive client
+automatically uses the existing `/offload` operation for contexts at or above
+the configured token threshold during the final 60 seconds of a known
 prompt-cache retention window. This keeps the same thread and archives older
 messages; it does not create a handoff thread. The configured offload model is
 used, so summarization can incur costs and cache reuse is not guaranteed.
 
-Configure the threshold through the normal layered config:
+Opt in with a token threshold through the normal layered config:
 
 ```toml
 [history]
 idle_compaction_tokens = 100000
 ```
 
-Set `idle_compaction_tokens = 0` to opt out. File edits take effect after
+Set `idle_compaction_tokens = 0` to disable it again. File edits take effect after
 `/reload`. This setting is independent of cold-cache warning preferences.
 Compaction skips busy sessions, queued input, active typing, modals, lifecycle
 transitions, and approximate token counts. It attempts at most once per thread

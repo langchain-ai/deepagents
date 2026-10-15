@@ -4878,6 +4878,7 @@ class DeepAgentsApp(App):
         header = _StaticHeader(id="app-header")
         header.display = self._header_should_display()
         yield header
+        yield Static("Prompt cache expired", id="cache-expired-banner")
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
         # `_ChatScroll` keeps clicks on messages from stealing input focus.
@@ -9717,6 +9718,17 @@ class DeepAgentsApp(App):
         except Exception:
             logger.debug("Cache-expiring notification failed", exc_info=True)
 
+    def _refresh_cache_expiry_banner(self) -> None:
+        """Show cache expiry independently of handoff preferences and activity."""
+        if not self.screen_stack:
+            return
+        banners = self.screen_stack[0].query("#cache-expired-banner")
+        if banners:
+            expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+            banners.first().display = (
+                expires_at is not None and datetime.now(UTC) >= expires_at
+            )
+
     def _check_idle_compaction(self) -> None:
         """Reserve one offload per warm cache window, without yielding to input."""
         from deepagents_code.config_manifest import get_option
@@ -9790,6 +9802,7 @@ class DeepAgentsApp(App):
         Polled every second from `on_mount`. Acts only when
         `warnings.cache_prompt` is `expiry` and no cold-cache opt-out applies.
         """
+        self._refresh_cache_expiry_banner()
         self._check_idle_compaction()
         expires_at = self._status_bar.cache_expires_at if self._status_bar else None
         thread_id = self._lc_thread_id
@@ -18818,6 +18831,7 @@ class DeepAgentsApp(App):
                     or datetime.now(UTC) >= idle_window[1]
                     or not self._cache_maintenance_idle(reserved=True)
                 ):
+                    self._set_agent_running(False)
                     return
                 self.notify(
                     "Compacting idle context before cache expiry. Set "
@@ -18826,7 +18840,6 @@ class DeepAgentsApp(App):
                 )
             await self._handle_offload(reserved=True)
         finally:
-            self._set_agent_running(False)
             self._offload_task_started = False
             self._offload_worker = None
             await self._maybe_drain_deferred()

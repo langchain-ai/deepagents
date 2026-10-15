@@ -3,9 +3,6 @@ type: delegation and progressive-disclosure concept
 title: Subagents and Skills
 description: Deep Agents separates synchronous and remote delegation across explicit state and lifecycle boundaries. Skills expose instructions progressively and disclose selected tools only after a visible read or pin, with provider-aware payload placement and recorded tool-time gating.
 tags: [deepagents, subagents, delegation, skills, middleware, tool-gating, agent-protocol]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-14T08:05:41.101Z
 sources:
   - id: openwiki-source-dc1e984fa4e6a51458e9ff9d
     resource: repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py
@@ -25,6 +22,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-13e0ea89aadd1a5e309ac7e3
     resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
@@ -33,7 +32,10 @@ sources:
     resource: repo://libs/talon/deepagents_talon/runtime.py
   - id: openwiki-source-85b5cce2a96e09663cd92f4c
     resource: repo://libs/talon/tests/unit_tests/test_cron_pinned_skills.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-15T08:05:41.400Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
 ---
 
 # Subagents and Skills
@@ -90,19 +92,32 @@ sequenceDiagram
     participant Parent
     participant AsyncTools as Async task tools
     participant Remote as Agent Protocol server
+    participant Human as Remote user
     Parent->>AsyncTools: start_async_task
-    AsyncTools->>Remote: create thread and run
+    AsyncTools->>Remote: create linked thread and run
     AsyncTools-->>Parent: task ID and async_tasks update
     Parent->>AsyncTools: check update cancel or list
-    AsyncTools->>Remote: read run create replacement cancel or refresh
+    AsyncTools->>Remote: read run and thread status
+    alt Remote run paused for human
+        Remote-->>AsyncTools: waiting and pending interrupts
+        Human->>Remote: answer or approve on child thread
+    else Update or cancellation
+        AsyncTools->>Remote: replacement run or cancel
+    end
     AsyncTools-->>Parent: ToolMessage and task state update
 ```
 
-*Remote work is tracked in parent state while execution and resources remain on the Agent Protocol server.*
+*The parent tracks a remote task, while its child thread owns execution and any human interaction.*
 
-`async_tasks` is a merge-reduced map keyed by the thread ID. Each record contains the task/thread ID, agent name, current run ID, cached status, and creation/check/update timestamps. `check_async_task` reads the tracked run and, when it succeeds, fetches the thread values to return its final message. `update_async_task` starts an interrupting replacement run on the same thread, retains the task ID, and replaces the run ID. `cancel_async_task` records cancellation only after remote cancellation succeeds. `list_async_tasks` filters on cached status before refreshing nonterminal entries; a status-fetch failure preserves the cached status.
+### Parent linkage, ownership, and task lifecycle
 
-Unknown types or task IDs and SDK failures return tool errors without a task-state mutation. Clients are cached by URL and resolved headers; `x-auth-scheme: langsmith` is added unless supplied. Environment credentials support managed deployments, and `headers` is the self-hosted extension point. URL-less local ASGI transport is async-only, so it requires an entry point such as `ainvoke`; synchronous use requires a reachable URL.
+`start_async_task` creates a remote thread with `parent_thread_id` metadata when the parent has a thread ID. It also puts the available parent thread and assistant identifiers under `configurable.deepagents_parent` on each launch or replacement run. This is linkage for an Agent Protocol application—not shared execution: the remote graph owns its prompt, tools, credentials, approvals, checkpointer and durable thread state. In particular, parent `permissions` and `interrupt_on` are **not** inherited by an `AsyncSubAgent`; configure approvals and credential access on the remote deployment. For URL-less local ASGI launches and updates, trace headers can nest the child run under the current LangSmith trace without forwarding the parent's run metadata to the child.
+
+`async_tasks` is a merge-reduced parent-state map keyed by remote thread ID. Each record contains the task/thread ID, agent name, current run ID, cached status, and creation/check/update timestamps; preserving parent state with a checkpointer preserves this tracking map, while the Agent Protocol server persists and serves the actual thread. Launch records `running`. `check_async_task` reads the tracked run and, after a successful run, reads the thread to return its final message. If that success has left the thread `interrupted`, the task becomes `waiting`, not terminal: its result includes the pending interrupts and says that the user must answer or approve on the subagent's own thread. The parent cannot satisfy that approval.
+
+A resumed child may have a newer run than the recorded one. When a tracked successful run finds its thread `busy` or `error`, observation lists the newest remote run and updates the stored `run_id`, allowing status recovery after another client resumes the child. `update_async_task` creates an interrupting replacement run on the same thread, retains the task ID, marks it `running`, and—when it was waiting—drops the outstanding human request. `cancel_async_task` cancels an active remote run before recording `cancelled`; a waiting task has no active run, so it is simply marked cancelled and later checks do not regress it to `waiting`. `list_async_tasks` filters by cached status before refreshing nonterminal tasks; `waiting` is refreshable, whereas `cancelled`, `success`, `error`, `timeout`, and `interrupted` are not. A live-status failure leaves the cached status intact.
+
+Unknown types or task IDs and SDK failures return tool errors without a task-state mutation. Clients are cached by URL and resolved headers; `x-auth-scheme: langsmith` is added unless supplied. Managed deployments obtain credentials through the SDK environment variables, while `headers` is the self-hosted authentication extension point. URL-less local ASGI transport is async-only, so it requires an entry point such as `ainvoke`; synchronous use requires a reachable URL.
 
 ## Skills: SDK index and Code adapter
 

@@ -3,9 +3,6 @@ type: operations guide
 title: Development, Dependencies, and Releases
 description: Package-scoped uv development, lockfile maintenance, automated LangChain-family dependency-floor updates, and release-please-managed publishing for the Deep Agents monorepo.
 tags: [development, dependencies, uv, lockfiles, releases, release-please]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-14T08:05:41.101Z
 sources:
   - id: openwiki-source-9d81aa681a56a98960013750
     resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py

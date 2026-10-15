@@ -19,6 +19,16 @@ Screen {
     visibility: hidden;
 }
 
+#cache-expired-banner {
+    display: none;
+    height: 1;
+    width: 100%;
+    background: $error;
+    color: $text;
+    text-align: center;
+    text-style: bold;
+}
+
 /* Main content goes on base layer by default */
 
 .message-timestamp-footer {

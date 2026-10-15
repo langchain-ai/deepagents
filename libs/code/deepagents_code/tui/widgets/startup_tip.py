@@ -30,6 +30,7 @@ _TIPS: dict[str, int] = {
     "Use /copy to copy the latest message": 3,
     "Press Ctrl+R to search and reuse previously submitted prompts": 2,
     "Use /cost to see a breakdown of estimated spend": 1,
+    "A red header banner means your prompt cache has expired": 1,
     "Use /tools to list the tools available to the agent": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,

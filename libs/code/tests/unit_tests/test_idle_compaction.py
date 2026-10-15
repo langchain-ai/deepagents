@@ -71,6 +71,45 @@ async def test_new_input_before_worker_skips_compaction(
         drain.assert_awaited()
 
 
+@pytest.mark.parametrize("idle", [False, True])
+async def test_new_turn_during_spinner_cleanup_stays_busy(
+    monkeypatch: pytest.MonkeyPatch, *, idle: bool
+) -> None:
+    app = DeepAgentsApp()
+    cleaning = asyncio.Event()
+    finish_cleanup = asyncio.Event()
+
+    async def clear_spinner(status: str | None) -> None:
+        assert status is None
+        cleaning.set()
+        await finish_cleanup.wait()
+
+    monkeypatch.setattr(app, "_offload_impl", AsyncMock())
+    monkeypatch.setattr(app, "_set_spinner", clear_spinner)
+    monkeypatch.setattr(app, "_cache_maintenance_idle", lambda **_: True)
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app._lc_thread_id = "idle"
+        assert app._status_bar is not None
+        expiry = datetime.now(UTC) + timedelta(seconds=45)
+        app._status_bar.cache_expires_at = expiry
+        app._set_agent_running(True)
+        task = asyncio.create_task(
+            app._run_offload_task(idle_window=("idle", expiry) if idle else None)
+        )
+        try:
+            await asyncio.wait_for(cleaning.wait(), timeout=2)
+            assert not app._agent_running
+            app._set_agent_running(True)
+            finish_cleanup.set()
+            await asyncio.wait_for(task, timeout=2)
+            assert app._agent_running
+        finally:
+            finish_cleanup.set()
+            await task
+            app._set_agent_running(False)
+
+
 async def test_cancellation_releases_idle_reservation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

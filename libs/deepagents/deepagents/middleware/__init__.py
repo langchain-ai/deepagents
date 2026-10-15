@@ -51,7 +51,6 @@ from deepagents.middleware.async_subagents import (
     AsyncSubAgent,
     AsyncSubAgentMiddleware,
     TaskEvent,
-    task_notification,
 )
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
@@ -112,5 +111,4 @@ __all__ = [
     "TaskEvent",
     "UnsupportedContentMiddleware",
     "create_summarization_tool_middleware",
-    "task_notification",
 ]

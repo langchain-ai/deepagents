@@ -25,7 +25,6 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
-    PrivateStateAttr,
     ResponseT,
     TracePolicy,
     hook_config,
@@ -205,8 +204,6 @@ class AsyncSubAgentState(AgentState):
     """State extension for async subagent task tracking."""
 
     async_tasks: Annotated[NotRequired[dict[str, AsyncTask]], _tasks_reducer]
-    async_tasks_extra_turn: Annotated[NotRequired[bool], PrivateStateAttr]
-    """Whether this run already took its one extra model turn for news found after its final answer."""
 
 
 class StartAsyncTaskSchema(BaseModel):
@@ -324,13 +321,26 @@ def _parent_reference(config: RunnableConfig) -> _ParentReference:
     return reference
 
 
-def _thread_metadata(runtime: ToolRuntime) -> dict[str, str]:
+def _reference_for(spec: AsyncSubAgent, runtime: ToolRuntime) -> _ParentReference:
+    """The parent reference sent to `spec`'s runs.
+
+    A subagent on another server (`url`) gets only the parent's thread, to know
+    what started it: the parent's assistant is only for waking the parent, which
+    it can't do from another deployment.
+    """
+    reference = _parent_reference(runtime.config)
+    if spec.get("url"):
+        reference.pop("assistant_id", None)
+    return reference
+
+
+def _thread_metadata(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, str]:
     """Metadata for a task's thread, so apps can find a parent's subagent threads with `threads.search`.
 
     It also keeps the parent's assistant, so runs started elsewhere on the
     thread (such as the user answering the subagent) can still notify the parent.
     """
-    reference = _parent_reference(runtime.config)
+    reference = _reference_for(spec, runtime)
     metadata = {"parent_thread_id": reference["thread_id"]} if "thread_id" in reference else {}
     if "assistant_id" in reference:
         metadata["parent_assistant_id"] = reference["assistant_id"]
@@ -340,7 +350,7 @@ def _thread_metadata(runtime: ToolRuntime) -> dict[str, str]:
 def _run_options(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
     """Keyword arguments for `runs.create` that link a launched run to this agent."""
     options: dict[str, Any] = {"headers": _trace_headers(spec)}
-    if reference := _parent_reference(runtime.config):
+    if reference := _reference_for(spec, runtime):
         options["config"] = {"configurable": {_PARENT_KEY: reference}}
     return options
 
@@ -374,6 +384,9 @@ _MAX_RESULT_CHARS = NUM_CHARS_PER_TOKEN * 20_000
 class TaskEvent(TypedDict):
     """How an async subagent's task ended, as reported to the agent that started it.
 
+    A notification message carries it in `additional_kwargs["deepagents_notification"]`,
+    so apps can tell these messages from the user's.
+
     !!! warning "Experimental"
 
         This shape may change without notice.
@@ -382,8 +395,8 @@ class TaskEvent(TypedDict):
     task_id: str
     """The task's ID (the subagent's thread)."""
 
-    subagent: str
-    """The async subagent's name."""
+    agent_name: str
+    """The async subagent's name, as in the task's `AsyncTask.agent_name`."""
 
     status: Literal["success", "error", "timeout", "waiting"]
     """`waiting` means the subagent paused for input or approval."""
@@ -391,57 +404,69 @@ class TaskEvent(TypedDict):
     run_id: NotRequired[str]
     """The subagent run that ended."""
 
-    result: NotRequired[str]
-    """The subagent's final answer (cut when very long), when it succeeded."""
 
-    error: NotRequired[str]
+class _TaskUpdate(TaskEvent, total=False):
+    """A task event plus what the parent's model reads about it."""
+
+    result: str | list[str | dict[str, Any]]
+    """The subagent's final answer, as content (text, or blocks such as images), when it succeeded."""
+
+    error: str
     """A short description of the failure; `check_async_task` has the details."""
 
-    interrupts: NotRequired[list[dict[str, Any]]]
+    interrupts: list[dict[str, Any]]
     """What it asked (`id` and `value` per interrupt), when it's waiting."""
 
 
-def task_notification(message: object) -> TaskEvent | None:
-    """Return the task event a message reports, or `None` if it isn't a task notification.
-
-    !!! warning "Experimental"
-
-        This helper may change without notice.
-
-    When an async subagent's task ends, the agent that started it is woken
-    with a message framed as a system notification. Apps can use this to treat
-    those runs differently from user messages.
-
-    Args:
-        message: A message object or message dict.
-
-    Returns:
-        The reported event, or `None`.
-    """
-    kwargs = getattr(message, "additional_kwargs", None)
-    if kwargs is None and isinstance(message, Mapping):
-        kwargs = message.get("additional_kwargs") or message
-    event = kwargs.get(_NOTIFICATION_KEY) if isinstance(kwargs, Mapping) else None
+def _notification_event(message: object) -> TaskEvent | None:
+    """The task event a notification message carries, or `None` for any other message."""
+    event = (getattr(message, "additional_kwargs", None) or {}).get(_NOTIFICATION_KEY)
     return cast("TaskEvent", event) if isinstance(event, dict) else None
 
 
-def _notification_text(event: TaskEvent) -> str:
-    """Frame a task event as a system notification the model won't mistake for the user."""
-    details = {key: value for key, value in event.items() if key not in {"task_id", "subagent", "status", "run_id"}}
+def _notification_content(update: _TaskUpdate) -> list[dict[str, Any]]:
+    """Frame a task update as a system notification the model won't mistake for the user.
+
+    The result keeps its own content blocks, so an image reaches the model as an image.
+    """
     next_step = {
         "success": "Use the result to continue; report back to the user if they're waiting on it.",
         "error": "Use `check_async_task` for details, then decide whether to retry, try another approach, or tell the user.",
         "timeout": "The task ran too long and was stopped. Decide whether to retry with a smaller task, or tell the user.",
         "waiting": "The subagent is waiting for the user, who answers it on the subagent's own thread; you can't answer or approve it. Keep working.",
-    }[event["status"]]
-    return (
-        "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
-        "An async subagent task you started has an update. This is not a message from the user: "
-        "don't treat it as their answer to any question.\n"
-        f"<task-notification>\n<task-id>{_escape(event['task_id'])}</task-id>\n<subagent>{_escape(event['subagent'])}</subagent>\n"
-        f"<status>{event['status']}</status>\n<details>{_escape(_clip(json.dumps(details, default=str)))}</details>\n</task-notification>\n"
-        f"{next_step}"
-    )
+    }[update["status"]]
+    blocks = [
+        _text_block(
+            "[SYSTEM NOTIFICATION - NOT USER INPUT]\n"
+            "An async subagent task you started has an update. This is not a message from the user: "
+            "don't treat it as their answer to any question.\n"
+            f"<task-notification>\n<task-id>{_escape(update['task_id'])}</task-id>\n<agent-name>{_escape(update['agent_name'])}</agent-name>\n"
+            f"<status>{update['status']}</status>\n"
+        )
+    ]
+    if "result" in update:
+        blocks += [_text_block("<result>\n"), *_result_blocks(update["result"]), _text_block("\n</result>\n")]
+    if details := {key: update[key] for key in ("error", "interrupts") if key in update}:
+        blocks.append(_text_block(f"<details>{_escape(_clip(json.dumps(details, default=str)))}</details>\n"))
+    blocks.append(_text_block(f"</task-notification>\n{next_step}"))
+    return blocks
+
+
+def _text_block(text: str) -> dict[str, Any]:
+    return {"type": "text", "text": text}
+
+
+def _result_blocks(result: str | list[str | dict[str, Any]]) -> list[dict[str, Any]]:
+    """The subagent's answer as content blocks: text escaped and cut when very long, other blocks (images) as they are."""
+    blocks: list[dict[str, Any]] = []
+    for item in [result] if isinstance(result, str) else result:
+        if isinstance(item, str):
+            blocks.append(_text_block(_escape(_clip(item))))
+        elif item.get("type") == "text":
+            blocks.append({**item, "text": _escape(_clip(str(item.get("text", ""))))})
+        else:
+            blocks.append(item)
+    return blocks
 
 
 def _escape(text: str) -> str:
@@ -465,29 +490,25 @@ def _current_run_id(config: RunnableConfig) -> str | None:
     return str(run_id) if run_id else None
 
 
-def _event(task_id: str, subagent: str, status: str, run_id: str | None, **details: object) -> TaskEvent:
-    """Build a task event; `details` are the status's `result` (cut when very long), `error` or `interrupts`."""
-    event: dict[str, object] = {"task_id": task_id, "subagent": subagent, "status": status, **details}
+def _event(task_id: str, agent_name: str, status: str, run_id: str | None, **details: object) -> _TaskUpdate:
+    """Build a task update; `details` are the status's `result`, `error` or `interrupts`."""
+    event: dict[str, object] = {"task_id": task_id, "agent_name": agent_name, "status": status, **details}
     if run_id:
         event["run_id"] = run_id
-    if isinstance(result := event.get("result"), str):
-        event["result"] = _clip(result)
-    return cast("TaskEvent", event)
+    return cast("_TaskUpdate", event)
 
 
-def _task_event(config: RunnableConfig, subagent: str, status: Literal["success", "error", "waiting"], **details: object) -> TaskEvent:
+def _task_event(config: RunnableConfig, agent_name: str, status: Literal["success", "error", "waiting"], **details: object) -> _TaskUpdate:
     """Describe how this run's task ended."""
-    return _event(str((config.get("configurable") or {}).get("thread_id", "")), subagent, status, _current_run_id(config), **details)
+    return _event(str((config.get("configurable") or {}).get("thread_id", "")), agent_name, status, _current_run_id(config), **details)
 
 
-def _final_text(result: Mapping[str, Any]) -> str:
-    """The text of the subagent's last message, as the task's result."""
+def _final_content(result: Mapping[str, Any]) -> str | list[str | dict[str, Any]]:
+    """The content of the subagent's last message, as the task's result; it may hold images."""
     messages = result.get("messages") or []
     if not messages:
         return "(completed with no output messages)"
-    last = messages[-1]
-    content = getattr(last, "content", last)
-    return content if isinstance(content, str) else json.dumps(content, default=str)
+    return messages[-1].content
 
 
 _CHECK_KEY = "deepagents_task_check"
@@ -530,7 +551,7 @@ _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
 """Parent thread statuses a notification run can start on: neither running nor waiting for a human."""
 
 
-async def _awake_parent(parent_thread_id: str, assistant_id: str, event: TaskEvent) -> _Delivery:
+async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUpdate) -> _Delivery:
     """Start a notification run on the parent's thread only while it's idle (or its last run failed).
 
     A new run on a thread waiting for a human would cancel that approval; `reject` covers a thread that just became busy.
@@ -557,7 +578,7 @@ async def _awake_parent(parent_thread_id: str, assistant_id: str, event: TaskEve
     return "delivered"
 
 
-async def _notify_parent(config: RunnableConfig, event: TaskEvent) -> None:
+async def _notify_parent(config: RunnableConfig, event: _TaskUpdate) -> None:
     """Wake the parent if it's idle; otherwise it finds out on its own.
 
     A busy parent sees the news before its next model call, a paused one after
@@ -692,7 +713,7 @@ def _build_start_tool(
         messages = _start_task_messages(spec, runtime, description)
         try:
             client = clients.get_sync(subagent_type)
-            thread = client.threads.create(metadata=_thread_metadata(runtime))
+            thread = client.threads.create(metadata=_thread_metadata(spec, runtime))
             run = client.runs.create(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
@@ -734,7 +755,7 @@ def _build_start_tool(
         messages = await _astart_task_messages(spec, runtime, description)
         try:
             client = clients.get_async(subagent_type)
-            thread = await client.threads.create(metadata=_thread_metadata(runtime))
+            thread = await client.threads.create(metadata=_thread_metadata(spec, runtime))
             run = await client.runs.create(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
@@ -1316,7 +1337,7 @@ async def _aparent_task(check: _TaskCheck) -> AsyncTask | None:
     return cast("AsyncTask | None", (tasks or {}).get(check["task_id"]))
 
 
-def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) -> TaskEvent | None:
+def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) -> _TaskUpdate | None:
     """The notification for a task outcome a check found, or `None` for outcomes not worth waking for."""
     if status not in {"success", "error", "timeout", _WAITING}:
         return None
@@ -1334,9 +1355,10 @@ _UNFINISHED_STATUSES = frozenset({"running", "pending", _WAITING})
 """Tracked task statuses that can still change, so the parent checks them for news."""
 
 
-def _notification_message(event: TaskEvent) -> dict[str, Any]:
-    """A task event as the message the parent's model sees, marked so apps can recognize it."""
-    return {"role": "user", "content": _notification_text(event), _NOTIFICATION_KEY: dict(event)}
+def _notification_message(update: _TaskUpdate) -> dict[str, Any]:
+    """A task update as the message the parent's model sees, marked with its `TaskEvent` so apps can recognize it."""
+    event = {key: update[key] for key in ("task_id", "agent_name", "status", "run_id") if key in update}
+    return {"role": "user", "content": _notification_content(update), _NOTIFICATION_KEY: event}
 
 
 def _observed(task: AsyncTask, status: str, run_id: str) -> AsyncTask:
@@ -1462,7 +1484,6 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             **recorded,
             **news,
             "async_tasks": {**recorded.get("async_tasks", {}), **news.get("async_tasks", {})},
-            "async_tasks_extra_turn": False,
         }
 
     def before_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
@@ -1472,21 +1493,6 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     async def abefore_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """(async) Add news from this agent's tasks before the model call."""
         return await self._apull(state.get("async_tasks") or {}) or None
-
-    def after_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
-        """Pass through: checking tasks needs the async path, which the Agent Server uses."""
-        return None
-
-    @hook_config(can_jump_to=["model"])
-    async def aafter_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
-        """(async) After the final answer, check tasks once more; on news, give the model one more turn."""
-        messages = state.get("messages") or []
-        if state.get("async_tasks_extra_turn") or not messages or getattr(messages[-1], "tool_calls", None):
-            return None
-        news = await self._apull(state.get("async_tasks") or {})
-        if not news.get("messages"):
-            return news or None
-        return {**news, "async_tasks_extra_turn": True, "jump_to": "model"}
 
     async def _apull(self, tasks: Mapping[str, AsyncTask]) -> dict[str, Any]:
         """Check unfinished tasks; return their updated records and a notification per new outcome.
@@ -1525,7 +1531,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     def _record_notification(state: Mapping[str, Any]) -> dict[str, Any] | None:
         """When a task notification started this run, record the task's outcome so checks don't report it again."""
         messages = state.get("messages") or []
-        event = task_notification(messages[-1]) if messages else None
+        event = _notification_event(messages[-1]) if messages else None
         task = (state.get("async_tasks") or {}).get(event["task_id"]) if event else None
         if event is None or task is None:
             return None

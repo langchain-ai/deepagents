@@ -3,7 +3,16 @@
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal
 
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT
+from langchain.agents.middleware.types import (
+    AgentMiddleware,
+    AgentState,
+    ContextT,
+    ModelRequest,
+    ModelResponse,
+    ResponseT,
+    TracePolicy,
+    omit_payload,
+)
 from langchain.tools.tool_node import ToolCallRequest
 from langchain_core.messages import ToolMessage
 from langgraph.config import get_config
@@ -14,7 +23,7 @@ from langgraph.types import Command
 from deepagents.middleware.async_subagents import (
     _current_run_id,
     _failure_text,
-    _final_text,
+    _final_content,
     _launching_agent,
     _notify_parent,
     _task_event,
@@ -28,6 +37,9 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
     run carries the parent reference, and skips nested runs.
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     def __init__(self) -> None:
         super().__init__()
         self._reported: dict[str, None] = {}
@@ -38,7 +50,7 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
 
     async def aafter_agent(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """Report a finished run with its final answer."""
-        await self._areport("success", result=_final_text(state))
+        await self._areport("success", result=_final_content(state))
         return None
 
     def wrap_model_call(

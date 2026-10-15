@@ -2,8 +2,14 @@
 type: model resolution and runtime profiles
 title: Models, Profiles, and Provider Configuration
 description: Describes server-owned model discovery and safe client presentation data, model construction and request-time switching, retry ownership, and prompt-cache identity state. Explains the boundaries between capability profiles, credentials, constructor settings, and persisted session metadata.
-tags: [models, model-catalog, runtime-selection, retries, prompt-cache, capability-profiles, dcode]
+tags: [models, sdk-profiles, model-catalog, runtime-selection, auto-mode, retries, prompt-cache, dcode]
 sources:
+  - id: openwiki-source-ac769408e1d61a20b9874382
+    resource: repo://libs/code/deepagents_code/_version.py
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-18abc7e59899514f067032b2
+    resource: repo://libs/code/deepagents_code/auto_mode.py
   - id: openwiki-source-c0415071c1e2979d2795bd05
     resource: repo://libs/code/deepagents_code/cold_cache.py
   - id: openwiki-source-7f6b98925b5f1ba065df3a04
@@ -22,6 +28,10 @@ sources:
     resource: repo://libs/code/deepagents_code/model_retry.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
+  - id: openwiki-source-7246ad9a05cb1ad11e4569a6
+    resource: repo://libs/code/tests/unit_tests/test_agent.py
+  - id: openwiki-source-30d7e9e18e8d7c616fbbb0bf
+    resource: repo://libs/code/tests/unit_tests/test_auto_mode.py
   - id: openwiki-source-42e76fc26f690f7d6dab298d
     resource: repo://libs/code/tests/unit_tests/test_cache_expiry.py
   - id: openwiki-source-563d8f99b354174d66aab140
@@ -50,10 +60,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_harness_profiles.py
   - id: openwiki-source-38c26264bf4a1dadb3401e80
     resource: repo://libs/deepagents/tests/unit_tests/test_models.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-14T08:05:41.101Z
+    at: 2026-10-15T08:05:41.400Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
 ---
 
 # Models, Profiles, and Provider Configuration
@@ -62,9 +72,9 @@ This page covers two separate profile systems in the Deep Agents SDK, then the d
 
 ## Version and package boundary
 
-The `deepagents-code` distribution is **0.1.84**, requires Python `>=3.12,<4.0`, and declares an exact published SDK dependency, `deepagents==0.7.24`. This is dcode's compatibility contract; do not turn the exact pin into a floor or infer support for the source-tree SDK merely because both packages live in this repository. The SDK package currently declares **0.7.25** and Python `>=3.11,<4.0`, so its source can contain behavior that is not evidence of the API shipped with dcode's `0.7.24` dependency.
+The `deepagents-code` distribution is **0.1.85**, requires Python `>=3.12,<4.0`, and declares the exact published SDK dependency `deepagents==0.7.25`. The checked-out `deepagents` package is also **0.7.25** and supports Python `>=3.11,<4.0`. Thus the current dcode release and sibling SDK source agree on the version, but the exact pin—not a minimum version—is dcode's consumer compatibility contract.
 
-For monorepo development, dcode's `[tool.uv.sources]` maps `deepagents` to the editable sibling `../deepagents` directory. That wiring intentionally lets development exercise the checked-out SDK, but it makes a dcode SDK-pin bump and its compatibility checks a deliberate consumer change. The profile APIs are beta in the SDK: verify construction and graph-assembly behavior against the exact SDK artifact being released, not just against a newer editable checkout.
+For monorepo development, dcode's `[tool.uv.sources]` maps `deepagents` to the editable sibling `../deepagents` directory. That wiring intentionally lets development exercise the checkout; it does not widen the released dependency contract. A future source-tree SDK change can precede a dcode pin bump, so treat that bump and its compatibility tests as a deliberate consumer change. The profile APIs are beta in the SDK: verify construction and graph-assembly behavior against the exact SDK artifact being released.
 
 The base dcode install includes the Anthropic, Google GenAI, and OpenAI LangChain integrations. Other model integrations are opt-in extras such as `deepagents-code[fireworks]` or `deepagents-code[openrouter]`; `deepagents-code[all-providers]` aggregates the supported provider extras. Selecting a configured provider whose integration is absent is therefore an installation/configuration failure on the inference host, not a client-side discovery task.
 
@@ -168,6 +178,33 @@ The middleware can add a thread-specific cache routing hint without overwriting 
 
 After a successful main-agent call, private checkpoint state records the resolved spec and runtime-only override parameters for resume. It separately records request start time, cache endpoint identity, and the effective cache-identity parameter projection. This separation is an invariant: writing merged configured defaults into `_model_params` would turn current configuration into stale session overrides on resume. Subagents can disable this persistence and cannot overwrite the parent thread's cache state.
 
+## Auto approval classifier model
+
+The Auto approval classifier is a **separate authorization-review model selection**, not any of the three profile systems. Its model judges tool-call batches in `AutoModeHITLMiddleware`; it does not change the main agent's model construction, its `HarnessProfile`, or the capability metadata used by the model picker.
+
+At agent construction, an explicit `auto_classifier_model` wins; otherwise the configured `models.auto_classifier` value is resolved. Configuration resolution gives managed policy priority over environment and `config.toml`. When startup has learned the main provider, an otherwise unset classifier can use that provider's built-in default; a selected classifier spec is checked against `models.allowed` before Auto middleware is installed. A blank or malformed configured value is reported and resolves to inheritance rather than being passed to `create_model()` as an accidental default model.
+
+```mermaid
+flowchart TD
+    Choice["Auto classifier selection"] --> Explicit{"Explicit classifier spec"}
+    Explicit -->|Yes| Policy["Check models.allowed"]
+    Explicit -->|No| Config["Managed policy then environment then config.toml"]
+    Config --> Selected{"Configured spec"}
+    Selected -->|Yes| Policy
+    Selected -->|No| Provider["Choose provider default or inherit main model"]
+    Policy --> Middleware["AutoModeHITLMiddleware"]
+    Provider --> Middleware
+    Middleware --> Runtime{"Runtime classifier_model context"}
+    Runtime -->|Separate spec| Build["Lazy create_model in worker thread"]
+    Runtime -->|Inherit marker or no spec| Main["Use request main model"]
+    Build --> Review["Review tool-call batch"]
+    Main --> Review
+```
+
+Caption: Auto classifier selection is independent of SDK and dcode profile resolution; a per-run context can replace the construction-time choice.
+
+The runtime context has the final say. A nonblank `classifier_model` selects a separate spec, while `INHERIT_CLASSIFIER_MODEL` deliberately returns review to the request's main model; a blank runtime value is ignored. A distinct string spec is constructed lazily through the normal dcode `create_model()` path in a worker thread, so policy, credential, provider-profile, retry, and package checks apply. The middleware shares an in-flight build per spec, keeps a small LRU cache of successful classifier models, and evicts an entry after an invocation failure so a repaired credential can take effect. A configured classifier that cannot be built fails closed for that batch rather than silently inheriting the main model; the configuration fault is recorded so subsequent handling can escalate instead of repeatedly authorizing with a fallback.
+
 ## Retry ownership and visible attempts
 
 Dcode owns retries at the model-node boundary, rather than retrying the complete agent turn. Completed tool calls are therefore not replayed after a transient model failure. `create_model()` stamps the resolved provider-specific retry budget on the concrete model; the retry middleware reads that budget for each request, so a runtime model change carries the new provider's budget. Known provider SDK retry loops are disabled at construction where their retry parameter is known, preventing nested retries from multiplying attempts.
@@ -220,6 +257,7 @@ Cache policy is conservative. It applies only to documented Anthropic and OpenAI
 - `test_model_config.py` covers exact allowlist parsing and policy diagnostics, prefixed-variable precedence (including empty-shadow behavior), stored-credential and endpoint pairing, split-source diagnostics that do not log values, provider readiness, and gateway/custom-provider boundaries.
 - `test_model_catalog.py` verifies that a remote picker uses catalog data rather than local provider configuration, preserves server policy, retains readiness for setup flows, and rejects incoherent readiness payloads.
 - `test_configurable_model.py` checks request-time overrides, failure fallback and strict behavior, checkpoint timing, cache-activity attribution, and the no-persistence subagent path.
+- `test_auto_mode.py`, `test_config_manifest.py`, and `test_agent.py` cover classifier context precedence, blank/malformed configuration reporting, lazy construction behavior, fail-closed unavailable classifiers, and allowlist rejection before Auto middleware installation.
 - `test_model_retry.py` covers transient classification, exception-group traversal, `Retry-After`, total-delay guards, model-specific budgets, lifecycle events, and streamed-output supersession.
 - `test_cache_expiry.py` exercises the client handoff and warning behavior around cache expiry without treating a cache warning as permission to change model state.
 - The SDK's `test_models.py` verifies that `resolve_model()` passes a pre-built `BaseChatModel` through unchanged and that registered provider-profile defaults are forwarded when a string is resolved. `test_harness_profiles.py` covers the serializable harness-profile subset and rejects runtime-only middleware configuration.

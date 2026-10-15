@@ -1,63 +1,50 @@
 ---
 type: testing guide
 title: Testing Guide
-description: Focused package-scoped test routing for SDK sandbox and skill-provider payloads, dcode cost presentation, Talon cron and host behavior, and CI or dependency-floor workflow contracts. Explains when tests use real protocol implementations with a stubbed transport versus ordinary fakes.
-tags: [testing, pytest, deepagents, dcode, talon, sandbox, ci]
-sources:
-  - id: openwiki-source-1bc32c2b33ab6e58128b0319
-    resource: repo://.github/scripts/tests/checks/test_raise_langchain_minimums.py
-  - id: openwiki-source-75ab344a500d6a7392581a42
-    resource: repo://.github/scripts/tests/workflows/test_ci_workflow.py
-  - id: openwiki-source-5ec08fb431e595bde89de502
-    resource: repo://.github/scripts/tests/workflows/test_inherited_ci_diagnostics.py
-  - id: openwiki-source-8037e2358a2c4f9b2c722a11
-    resource: repo://AGENTS.md
-  - id: openwiki-source-f8c8eb69e25f569e0f8a5adb
-    resource: repo://libs/code/deepagents_code/tui/modals/cost_breakdown.py
-  - id: openwiki-source-006b62af9993da1b48c11de8
-    resource: repo://libs/code/Makefile
-  - id: openwiki-source-11d6c59d85493653aee76558
-    resource: repo://libs/code/tests/unit_tests/test_app.py
-  - id: openwiki-source-a44dd48d815d149c53537ce9
-    resource: repo://libs/code/tests/unit_tests/test_cost_breakdown.py
-  - id: openwiki-source-0f308f1610986e2f3ed6d53c
-    resource: repo://libs/deepagents/Makefile
-  - id: openwiki-source-5132c2eb08d294721cb871ff
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py
-  - id: openwiki-source-13e0ea89aadd1a5e309ac7e3
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
-  - id: openwiki-source-fb60ee46c55b974b8341651c
-    resource: repo://libs/DEVELOPMENT.md
-  - id: openwiki-source-058eda257c62daed009e3f78
-    resource: repo://libs/talon/tests/cron/test_jobs.py
-  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
-    resource: repo://libs/talon/tests/test_host.py
-  - id: openwiki-source-85b5cce2a96e09663cd92f4c
-    resource: repo://libs/talon/tests/unit_tests/test_cron_pinned_skills.py
+description: Package-scoped, deterministic test routing for Deep Agents async subagent and context-compaction contracts, dcode Textual approval behavior, and dependency and lockfile automation. Use the narrowest test that observes the public boundary and its failure behavior.
+tags: [testing, pytest, deepagents, dcode, talon, automation, lockfiles]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-14T08:05:41.101Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
+    at: 2026-10-15T08:05:41.400Z
+sources:
+  - id: openwiki-source-9d81aa681a56a98960013750
+    resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
+  - id: openwiki-source-3cf9b023d0ac578794148a01
+    resource: repo://.github/scripts/checks/refresh_lockfiles.py
+  - id: openwiki-source-4c41a6c51a9e496667b5b5ae
+    resource: repo://.github/scripts/tests/checks/test_refresh_lockfiles.py
+  - id: openwiki-source-f820645728a7602f14195650
+    resource: repo://libs/code/deepagents_code/tui/widgets/auto_mode_notice.py
+  - id: openwiki-source-11d6c59d85493653aee76558
+    resource: repo://libs/code/tests/unit_tests/test_app.py
+  - id: openwiki-source-69c260914d2dd18b60ad5900
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
+  - id: openwiki-source-530f1194888c9c15f9c71332
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_factory.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
 ---
 
 # Testing Guide
 
-Start at the package that owns the observable boundary and run the smallest deterministic test that reaches it. Packages in `libs/` are independently versioned units with their own `pyproject.toml`, Makefile, and README, so synchronize and test from that package rather than from a repository-level environment. See [Development](../operations/development.md), the [source map](../architecture/source-map.md), [Subagents and Skills](../concepts/subagents-skills.md), and [Talon scheduling](../concepts/talon-scheduling.md).
+Start at the package that owns the observable boundary and run the smallest deterministic test that reaches it. Packages in `libs/` are independently versioned units with their own `pyproject.toml`, Makefile, and README, so synchronize and test from that package rather than from a repository-level environment. See [Development](../operations/development.md), the [source map](../architecture/source-map.md), [Subagents and Skills](../concepts/subagents-skills.md), and [context management](../concepts/context-management.md).
 
 ## Baseline test discipline and commands
 
-Network-free tests belong in `tests/unit_tests/`; tests for actual network contracts belong in `tests/integration_tests/`. Pytest's asyncio mode is automatic, unaccepted warnings fail the suite, and regressions should assert a user-visible result, persisted state, or emitted provider payload rather than an incidental internal call sequence.
+Network-free tests belong in `tests/unit_tests/`; tests for actual network contracts belong in `tests/integration_tests/`. Pytest's asyncio mode is automatic, unaccepted warnings fail the suite, and a regression should assert a user-visible result, persisted state, or emitted provider payload—not an incidental internal call sequence.
 
 ```bash
 cd libs/deepagents
 uv sync --all-groups
-make test TEST_FILE=tests/unit_tests/backends/test_sandbox_backend.py
-make test TEST_FILE=tests/unit_tests/middleware/test_skill_tools_payload.py
+make test TEST_FILE=tests/unit_tests/test_async_subagents.py
+make test TEST_FILE=tests/unit_tests/test_end_to_end.py
+make test TEST_FILE=tests/unit_tests/middleware/test_summarization_factory.py
+make test TEST_FILE=tests/unit_tests/middleware/test_compact_tool.py
 make lint
 
 cd ../code
 uv sync --group test
-make test TEST_FILE=tests/unit_tests/test_cost_breakdown.py
 make test TEST_FILE=tests/unit_tests/test_app.py
 make lint
 
@@ -65,85 +52,96 @@ cd ../talon
 uv sync --group test
 make test TEST_FILE=tests/cron/test_jobs.py
 make test TEST_FILE=tests/test_host.py
-make test TEST_FILE=tests/unit_tests/test_cron_pinned_skills.py
 make lint
 ```
 
 The SDK and dcode `make test` targets run pytest in parallel with non-Unix sockets disabled, Unix sockets allowed, benchmarks disabled, and coverage enabled; their separate integration targets use a 30-second timeout. Talon's target runs its WhatsApp bridge tests before Python tests, disables sockets except Unix sockets, and applies a 10-second timeout. Use `TEST_FILE` for a file and `PYTEST_EXTRA` for focused pytest options.
 
-For dcode snapshot changes, use `make update-snapshots`, not an ad hoc pytest invocation. It is a separate socket-restricted smoke-snapshot target with `--update-snapshots`. `make lint` also verifies the command catalog and process working-directory policy.
+For SDK or dcode smoke snapshot changes, use `make update-snapshots`, not an ad hoc pytest invocation. It is a separate socket-restricted smoke-snapshot target with `--update-snapshots`. dcode's `make lint` also verifies the command catalog and process working-directory policy.
 
 ## Select the regression
 
 | Changed boundary | Start here | Prove at the boundary |
 | --- | --- | --- |
-| SDK-derived remote sandbox file operation, parser, command quoting, transfer path, capture offload, or sync/async parity | `libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py` | Use `MockSandbox`, a concrete `BaseSandbox` implementation with in-memory uploads/downloads. Assert the returned result and generated server-side command or file transfer, including malformed responses and backend failures. |
-| SDK skill-selected tool disclosure or provider request placement | `libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py` | Use the real provider model adapter but stub only its HTTP transport. Inspect the serialized Anthropic or OpenAI request bytes, as well as the resulting tool gate. |
-| dcode token/cost formatting or cost modal presentation | `libs/code/tests/unit_tests/test_cost_breakdown.py` | Call `format_cost_breakdown_table` with an empty or deliberately partial breakdown; assert copyable Markdown preserves tiny costs, completeness notices, unavailable fields, and suppression when historical detail is incomplete. |
-| dcode Textual startup, resume, modal, or queue sequencing | `libs/code/tests/unit_tests/test_app.py` | Mount `DeepAgentsApp` with `run_test()`, events, and controlled fakes; use the real Textual message path when responsiveness is the contract. |
-| Talon cron record lifecycle, scope, schedule parsing, persistence, or pinned-skill record | `libs/talon/tests/cron/test_jobs.py` | Use a temporary `CronJobStore`; assert persisted job state and access boundaries, not wall-clock sleeps or a live channel. |
-| Talon host component lifecycle, incoming-turn replacement, authorization, approvals, media, or scheduled delivery | `libs/talon/tests/test_host.py` | Compose `TalonHost` with recording channels, schedulers, and agents. Drive `receive_message()` and observe requests and replies. |
-| Talon scheduled-only skill injection | `libs/talon/tests/unit_tests/test_cron_pinned_skills.py` | Use a recording fake chat model and an on-disk temporary `SKILL.md`; compare a `trigger: "cron"` request with an ordinary request carrying the same metadata. |
-| Dependency-minimum selection, manifest rewrite, scope narrowing, lock closure, or updater workflow | `.github/scripts/tests/checks/test_raise_langchain_minimums.py` | Build a temporary manifest/repository and stub package-index inputs; exercise the transformation and failure polarity without PyPI or GitHub. |
-| CI gate, lockfile, ripgrep-install, trusted-base, or inherited-CI diagnostic workflow behavior | `.github/scripts/tests/workflows/test_ci_workflow.py` and `.github/scripts/tests/workflows/test_inherited_ci_diagnostics.py` | Parse workflow YAML for declarative contracts, but execute safety-critical shell or JavaScript snippets against stubbed commands/APIs. |
+| Async remote-subagent tool catalog, task lifecycle, headers, status, interruption, or forked context | `libs/deepagents/tests/unit_tests/test_async_subagents.py` | Stub the LangGraph SDK client or HTTP transport and assert the returned `Command`, tracked task state, and serialized child input. Cover sync and async paths where both exist. |
+| An agent-level start/check/update/cancel conversation | `libs/deepagents/tests/unit_tests/test_end_to_end.py` | Script a fake model through real `create_deep_agent` middleware and assert its tool messages and final `async_tasks` state. |
+| Summary defaults, custom summarizer, media-aware prompt, or public factory signature | `libs/deepagents/tests/unit_tests/middleware/test_summarization_factory.py` | Construct a fake model with or without profile limits, then assert factory-selected policy and observable summary behavior. |
+| `compact_conversation` tool result, state event, offload, or failure semantics | `libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py` | Drive its tool runtime with a fake backend/model and inspect the `Command`, summary event, and tool message—not private helper call order. |
+| Async tool prompt wording or exposed JSON schema | `libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_sync_and_async_subagents_tools.json` | Update the smoke snapshot only after intentionally changing the generated tool contract; do not use it as the sole lifecycle test. |
+| dcode Textual startup, resume, modal, queue sequencing, or approval-mode notice | `libs/code/tests/unit_tests/test_app.py` | Mount `DeepAgentsApp` with `run_test()`, drive real key events, and assert the visible screen, notification, and safe mode transition. |
+| SDK-derived remote sandbox file operation or capture offload | `libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py` | Use `MockSandbox`; assert results, errors, commands, and file transfer without a sandbox provider. |
+| SDK skill-selected tool disclosure or provider request placement | `libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py` | Use the real provider adapter with only HTTP transport stubbed and inspect the serialized request. |
+| Talon cron lifecycle or conversation scope | `libs/talon/tests/cron/test_jobs.py` | Use a temporary `CronJobStore`; assert durable state and access boundaries, not wall-clock sleeps or a live channel. |
+| Talon host lifecycle or replacement of a blocked turn | `libs/talon/tests/test_host.py` | Compose recording agent, channel, and scheduler fakes; drive input and observe requests and replies. |
+| Dependency-floor selection or manifest rewrite | `.github/scripts/tests/checks/test_raise_langchain_minimums.py` | Build a temporary manifest/repository and stub package-index inputs. |
+| Lockfile refresh dependency closure or command failure | `.github/scripts/tests/checks/test_refresh_lockfiles.py` | Build a temporary path-dependency graph and stub `subprocess.run`; assert the exact affected lock targets and fail-fast behavior. |
 
 ```mermaid
 flowchart TD
     Change["Changed observable behavior"] --> Owner["Enter owning package"]
-    Owner --> Remote{"Does correctness depend on a remote protocol"}
-    Remote -->|"No"| Fake["Use focused fake or temporary state"]
-    Remote -->|"Provider payload"| Adapter["Use real adapter with stubbed transport"]
-    Remote -->|"Live service contract"| Integration["Use integration target"]
-    Fake --> Assert["Assert output state or failure behavior"]
-    Adapter --> Bytes["Assert serialized request bytes and result"]
+    Owner --> Boundary{"Which boundary changed"}
+    Boundary -->|"Async task lifecycle"| Async["Stub SDK client or HTTP transport"]
+    Boundary -->|"Summary or compact tool"| Compact["Use fake model and backend"]
+    Boundary -->|"Textual approval UI"| Tui["Mount app and drive keys"]
+    Boundary -->|"Dependency or lock automation"| Automation["Use temporary repository and stub process"]
+    Boundary -->|"Live remote contract"| Integration["Use integration target"]
+    Async --> Assert["Assert output state and failure behavior"]
+    Compact --> Assert
+    Tui --> Assert
+    Automation --> Assert
     Integration --> Assert
     Assert --> Lint["Run package lint"]
-    Bytes --> Lint
 ```
 
-*Choose the double at the external meaning boundary. A real provider class plus a fake transport tests serialization without making a provider-network call.*
+*This selection flow distinguishes deterministic unit seams from an intentionally live integration contract.*
 
-## SDK sandbox backend: test the derived protocol contract
+## Async subagents: test state transitions and context ownership
 
-`BaseSandbox` turns a provider's `execute`, upload, and download primitives into filesystem operations. Its focused tests intentionally use `MockSandbox`, not a real sandbox provider: that fake records commands and maintains a byte store, allowing tests to validate host-to-sandbox protocol behavior deterministically. Use it for read pagination and parse errors, `ls`/`grep`/`glob` formats, base64-safe command interpolation, upload-based writes, and the distinction between inline and temporary-file edits.
+`AsyncSubAgentMiddleware` exposes five tools: start, check, update, cancel, and list. The focused suite protects the task record carried in `async_tasks`, including the `thread_id`, active `run_id`, status, and timestamps. Test a launch through the client boundary: it creates a child thread and run, returns a `Command` that records a running task, and emits the corresponding tool response. A check refreshes a nonterminal remote status and returns output for success; list similarly refreshes live tasks, whereas already terminal tasks do not need another SDK status lookup.
 
-When changing execution output capture, test both synchronous and asynchronous entry points. A backend execution failure or a child command failure must remain visible rather than becoming a successful offloaded response. When changing large writes or edits, assert that the payload is transferred through `upload_files` and does not appear in a command that could exceed process argument limits. These are SDK transport semantics, not Talon sandbox-routing tests; route Talon host-versus-sandbox policy changes to its own sandbox tests.
+An update retains the task identity but starts a replacement run with the remote interrupt strategy. Cancellation changes the tracked state to `cancelled` and calls the remote cancel endpoint for the active run; unknown tasks and client errors are returned as tool-visible errors. The agent-level end-to-end test is the companion regression when the concern is that a scripted model can start and then cancel a real middleware task in one graph execution.
 
-## SDK skills: use real adapters, fake only the wire
+Forking is a different contract from ordinary isolated delegation. The launch-context tests use `httpx.MockTransport` and verify that an isolated child receives only the requested description, while a fork receives the appropriate parent-history snapshot plus the request. They also cover a summary event, mutable parent inputs, media rehydration after approval, and sync/async invocations. Preserve that boundary: the parent keeps its offloaded blob references, while a forked child receives usable media and offloads it into its own backend state.
 
-Skill tool disclosure is provider-format-sensitive, so a generic fake model is not sufficient for the payload suite. The tests construct actual `ChatAnthropic`, `ChatOpenAI`, Azure, Codex, and Bedrock-family adapters and replace only their HTTP transport with a recording stub. This exercises the code that turns message history and tool definitions into the bytes each provider receives without credentials or network access.
+A remote child may finish its run while its thread is interrupted for a question or approval. The check tool reports that condition as `waiting` with the interrupt payload rather than claiming a final result. If some other actor resumes the child, a later check follows the current run; cancellation while waiting remains cancelled and does not make an unnecessary remote cancel call. The generated-tool smoke snapshot complements these behavioral tests by pinning the model-facing instructions and schemas, including stale-status guidance and the accepted status filter values.
 
-A successful skill-file read can disclose selected tools for a later model request. For inline-capable providers, assert placement rather than merely tool presence: Anthropic receives a `tool_addition` system block and OpenAI Responses receives a developer `additional_tools` item after the complete tool-result batch. The already-sent prefix, top-level tools, and system prompt stay stable on later requests. Tests also cover compaction re-anchoring, fallback formatting for the model actually called, and providers that cannot use inline tools.
+## Summarization factories and the compact-tool contract
 
-Keep the execution gate in the same regression when changing disclosure. The persisted `_skill_tools_disclosed` record represents what the model was shown, while a fresh resolver lookup determines whether that tool remains executable. Root-level schema combinators are withheld from Anthropic because its API rejects them, whereas the OpenAI payload may carry them. Run both sync and async parametrizations; the suite deliberately covers `invoke` and `ainvoke`.
+Use the factory suite when changing configuration selection. With a model profile that reports `max_input_tokens`, `create_summarization_middleware` chooses fractional trigger and retention defaults. Without a profile, it uses fixed token/message fallbacks. Its optional summary prompt, trimming threshold, token counter, and summarizer are keyword-only controls; a string model name is rejected because the factory requires a chat-model object. A supplied callable or model summarizer owns the summary generation, while thresholds still derive from the main model.
 
-## dcode: presentation and real Textual lifecycle
+Use the compact-tool suite when changing execution semantics. `SummarizationToolMiddleware` exposes one `compact_conversation` tool. On a useful compaction it returns a `Command` containing a summary event with the cumulative cutoff, summary message, and optional backend history path; the user-facing tool message reports what was summarized. A prior event changes the stored cutoff arithmetic, and applying a valid event presents the summary followed by the retained message suffix. Malformed events fall back safely to raw messages.
 
-The cost-breakdown unit tests deliberately test the formatter directly because its contract is copyable Markdown, not provider accounting. They verify that very small amounts use a readable scientific representation, incomplete category values are marked `partial`, directionless/unattributed total cost is explained, and unpriceable requests are disclosed. A zero-cost breakdown can show unavailable category details, but a missing breakdown—or one whose historical detail is incomplete—renders no table.
+The failure distinction matters: a backend that simply declines to offload can still yield a summary with no path, but an offload exception or summary-generation failure returns an error tool message and must not install a summarization event. Cover sync and async paths. The default summary prompt explicitly preserves media references so the agent can later read them; test rendered prompt text rather than duplicating its template implementation.
 
-The interactive modal owns presentation behavior around that string: it avoids duplicate cost screens, refreshes while open, sanitizes control characters before rendering or copying, supports `c` to copy and Escape to close, and leaves a failed refresh non-fatal. For changes to app sequencing rather than table formatting, retain the app-level approach: `run_test()` plus explicit events and pilot actions, not sleeps. Resume tests require history hydration to be idempotent across repeated `ServerReady` events, preserve the resuming indication until history restoration finishes, and prevent initial submission if resumed-model adoption fails. Modal-command tests submit through the real `ChatInput.Submitted` message pump so Escape and queue blocking are observed end to end.
+## dcode: test approval notices through the Textual message loop
 
-## Talon: cron records, scheduled skill scope, and host orchestration
+For Textual changes, use `DeepAgentsApp.run_test()` and `pilot` input rather than sleeps or direct implementation calls. The first successful switch to Auto is a deliberate two-step UI contract: while the first-run notice is visible, the active mode remains Manual; Enter confirms, records the local acknowledgement, and then activates Auto. Escape cancels without recording the acknowledgement or changing the existing mode. Subsequent enables skip the notice after it has been recorded.
 
-Cron tests use a temporary store because they protect durable scheduling semantics. A claimed one-shot is disabled before it runs; a recurring job advances before execution and disables after reaching its repeat cap. The store persists with owner-only directory and file modes. Management is scoped to the current conversation, while channel threads that share a parent channel can share jobs; unrelated channels, providers, or scopes cannot list, edit, or remove another job.
+The notice itself must make the security boundary clear: Auto may approve routine gated actions, but it is not a sandbox and the agent still acts on the local machine. When a separate classifier model reviews actions, the displayed body names it and distinguishes it from the code-writing model. At startup, a sandbox makes Auto unavailable and dcode downgrades to Manual; the app surfaces an explanatory warning rather than silently losing the remembered setting.
 
-Schedule tests should inject `now` and use fixed time zones. This covers supported schedule grammar, local-time behavior across daylight-saving changes, one-shot disabling, late interval phase retention, corrupted-store recovery, and cache coherence after external writes. For pinned skills, assert deduplication and persistence on create/edit and clearing with `skills=[]`; do not require installed skill files at record-creation time.
+Keep neighboring app contracts in the same test file: resumed history hydration is idempotent over repeated server-ready events, retains the resuming state until restoration completes, orders restored history before startup output, and blocks initial submission when resumed-model adoption fails. Modal-command tests submit through the real `ChatInput.Submitted` path so Escape responsiveness and queue blocking are observable end to end.
 
-Scheduled skill payloads have an additional runtime boundary. The cron-pinned-skills test creates a real temporary `SKILL.md` and runs `DeepAgentRuntime` with a recording fake model. The skill body reaches the request only when metadata includes both `pinned_skills` and `trigger: "cron"`; the same pinned list on an ordinary turn must not inject instructions. This is the right test for trigger gating, not a provider payload test.
+## Other focused package boundaries
 
-Host tests use recording channels, scheduler, and agent fakes to exercise orchestration without real chat services. They verify component start/stop, replacement of a blocked conversation by a later message with interruption recovery, channel-bound authorization callbacks, tool-approval routing, outbound media handling, and scheduled-result delivery. Preserve this division: a host test checks which channel input becomes an `AgentRequest` and which result becomes a reply; runtime and SDK tests own graph and provider serialization behavior.
+Sandbox backend tests use a concrete in-memory `MockSandbox` to check derived read, search, write, and edit operations without a provider. Capture-offload regressions cover sync and async entry points and preserve backend or child-command failure rather than converting it to successful output.
 
-## CI and dependency-floor workflows: execute the dangerous fragments
+Skill payload tests use real Anthropic, OpenAI, Azure, Codex, and Bedrock-family adapters while stubbing only HTTP transport. They therefore assert the provider request rather than a generic fake model. For inline-capable providers, keep the placement assertion: tool definitions are disclosed after the triggering tool-result batch, without rewriting prior request prefixes, top-level tools, or system content.
 
-The dependency updater is a constrained manifest transformation, not a live package-index test. Its tests inject available versions and temporary manifests to ensure a new floor stays within upper and compatible-release bounds, that literal quoted requirements are rewritten without corrupting neighbors or comments, and that extras, markers, and compatible-release precision survive. A changed producer manifest requires locks for its transitive local path dependents unless the explicit skip option is used. Narrowed runs canonicalize requested names and fail rather than reporting success for an unknown or unraiseable request.
+Talon cron tests protect durable scheduling and conversation scope: one-shot jobs advance and disable before execution; recurring jobs advance before execution and stop at their repeat cap; unrelated origins cannot manage another conversation's jobs, while threads sharing a parent channel can. Host tests use recording components to verify lifecycle and that a later message replaces a blocked turn, recovers the conversation, and delivers only the successor reply. Cron-pinned skills reach the model prompt only on a turn marked `trigger: "cron"`.
 
-CI workflow tests distinguish static wiring from executable behavior. They parse YAML to verify job relationships, lockfile gating, workflow expressions, dispatch options, and trusted-base checkouts. They run ripgrep installation shell bodies against stubbed `sudo`, `timeout`, `dpkg`, `apt-get`, and `rg` commands, which proves that ordinary PR timeouts soften only timeout outcomes while release-sensitive paths stay strict except for the exact bypass label. The inherited-CI diagnostics test similarly executes the JavaScript diagnostic with a stubbed GitHub API: diagnostics escape untrusted job names and preserve failure visibility, but are `continue-on-error`, read-only, and cannot replace the final gate.
+## Dependency and lockfile automation
+
+The dependency-floor updater is a constrained manifest transformation, not a live package-index test. Its tests require compatible selection to remain within upper and compatible-release bounds, quoted literal rewriting to preserve extras and markers, transitive stale-lock discovery, and failure—not green success—for unknown or unraiseable narrowed requests.
+
+Lockfile-refresh tests focus on the graph boundary after a manifest change. Starting with a changed package, refresh discovers every transitive local path consumer, prints the affected `uv.lock` paths in deterministic order, and invokes `uv lock --directory` with the package's required Python version. If one refresh command fails, it propagates the failure and stops rather than attempting later lockfiles. This is distinct from the pre-commit lock checker, which verifies applicable existing locks with `uv lock --check`.
+
+CI workflow tests follow the same principle: parse YAML for declarative wiring but execute safety-critical shell or JavaScript bodies against stubbed commands/APIs. This preserves strict release behavior, timeout-softened ordinary PR behavior, and inherited-CI diagnostics that are escaped, read-only, `continue-on-error`, and not a replacement for the final gate.
 
 ## Completion checklist
 
-1. Work in the package that owns the behavior and synchronize its declared groups.
-2. Run the closest focused file with `TEST_FILE`; add a regression that observes the public boundary and its failure path.
-3. Use temporary files, stores, channels, or ordinary fakes for local behavior; use real provider adapters only when their serialized payload is under test, with a stubbed transport.
-4. Use an integration target only when a real network contract is the behavior being changed.
-5. Cover both sync and async entry points when the public SDK exposes both.
-6. Run the owning package's `make lint`; run workflow tests when YAML, a gate script, or automation transformation changes.
+1. Work in the owning package and synchronize its declared groups.
+2. Run the closest focused file with `TEST_FILE`; add a regression that observes the public boundary and failure path.
+3. Use temporary files, stores, clients, transports, or ordinary fakes for local behavior; use a real provider adapter only when serialized provider payload is under test.
+4. Cover sync and async entry points when the public boundary exposes both.
+5. Update a smoke snapshot only for an intended generated-contract change, alongside behavioral coverage.
+6. Run the owning package's `make lint`; run workflow or automation tests when their scripts change.

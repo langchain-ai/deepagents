@@ -48,6 +48,7 @@ from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.async_tools import AsyncToolMiddleware, BackgroundTool, split_background_tools
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -276,7 +277,7 @@ Derived from `_REQUIRED_MIDDLEWARE` and used for quick membership testing.
 
 def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly logic with many conditional branches
     model: str | BaseChatModel | None = None,
-    tools: Sequence[BaseTool | Callable | dict[str, Any]] | None = None,
+    tools: Sequence[BaseTool | Callable | dict[str, Any] | BackgroundTool] | None = None,
     *,
     system_prompt: str | SystemMessage | None = None,
     middleware: Sequence[AgentMiddleware[StateT_co, ContextT]] = (),
@@ -348,6 +349,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             `excluded_tools`. To remove one entirely, pass your own
             [`FilesystemMiddleware`][deepagents.middleware.filesystem.FilesystemMiddleware]
             with `tools=[...]`.
+
+            Tools created with
+            [`background_tool`][deepagents.middleware.async_tools.background_tool]
+            run as separate graphs on an Agent Server instead of inline; they
+            are routed into
+            [`AsyncToolMiddleware`][deepagents.middleware.async_tools.AsyncToolMiddleware],
+            which exposes them as non-blocking tools. Subagents do not inherit
+            background tools.
         system_prompt: Caller-authored system instructions (`USER`) placed
             first in the system prompt sent to the model.
 
@@ -383,6 +392,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             - [`SummarizationMiddleware`][langchain.agents.middleware.SummarizationMiddleware]
             - [`PatchToolCallsMiddleware`][deepagents.middleware.patch_tool_calls.PatchToolCallsMiddleware]
             - [`AsyncSubAgentMiddleware`][deepagents.middleware.async_subagents.AsyncSubAgentMiddleware] (if async `subagents` are provided)
+            - [`AsyncToolMiddleware`][deepagents.middleware.async_tools.AsyncToolMiddleware] (if `tools` contains background tools)
 
             *User middleware is inserted here.*
 
@@ -649,6 +659,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # Copy of `tools` with any harness-specific description rewrites.
     # (Tool exclusion is handled by _ToolExclusionMiddleware which filters
     # all tools (user-supplied and middleware-injected) in one place.)
+    tools, background_tools = split_background_tools(tools)
     _tools = _apply_tool_description_overrides(
         tools,
         _profile.tool_description_overrides,
@@ -922,6 +933,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         # Async here means that we run these subagents in a non-blocking manner.
         # Currently this supports agents deployed via LangSmith deployments.
         deepagent_middleware.append(AsyncSubAgentMiddleware(async_subagents=async_subagents))
+    if background_tools:
+        deepagent_middleware.append(AsyncToolMiddleware(tools=background_tools))
 
     # Names of the core stack, captured before the tail is appended so new user
     # middleware can splice in ahead of the profile/prompt-caching/memory tail.

@@ -1,0 +1,9 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "./agent.py:agent",
+    "research_report": "./agent.py:research_report",
+    "run_benchmark": "./agent.py:run_benchmark"
+  },
+  "env": ".env"
+}

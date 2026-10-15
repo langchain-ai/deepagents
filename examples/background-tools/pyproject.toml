@@ -1,0 +1,17 @@
+[project]
+name = "background-tools-example"
+version = "0.1.0"
+description = "Deep Agent with background tools that run as separate graphs on an Agent Server"
+requires-python = ">=3.11"
+dependencies = [
+    "deepagents>=0.6.12",
+    "langchain>=1.3.0",
+    "langchain-anthropic>=1.5.4,<2.0.0",
+    "langgraph>=1.2.8",
+    "langgraph-sdk>=0.4.2",
+    "langgraph-cli[inmem]>=0.4.30",
+    "python-dotenv>=1.2.2",
+]
+
+[tool.uv.sources]
+deepagents = { path = "../../libs/deepagents", editable = true }

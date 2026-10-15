@@ -6,6 +6,7 @@ from deepagents.graph import (
     create_deep_agent,
 )
 from deepagents.middleware.async_subagents import AsyncSubAgent, AsyncSubAgentMiddleware
+from deepagents.middleware.async_tools import AsyncToolMiddleware, BackgroundTool, background_tool
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission, FsToolName
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import RubricMiddleware
@@ -28,6 +29,8 @@ from deepagents.profiles.provider.provider_profiles import (
 __all__ = [
     "AsyncSubAgent",
     "AsyncSubAgentMiddleware",
+    "AsyncToolMiddleware",
+    "BackgroundTool",
     "CompiledSubAgent",
     "DeepAgentState",
     "FilesystemMiddleware",
@@ -42,6 +45,7 @@ __all__ = [
     "SubAgent",
     "SubAgentMiddleware",
     "__version__",
+    "background_tool",
     "create_deep_agent",
     "register_harness_profile",
     "register_provider_profile",

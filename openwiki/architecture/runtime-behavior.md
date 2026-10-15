@@ -10,32 +10,22 @@ sources:
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-303a7196a0e1a36cc078621b
     resource: repo://libs/deepagents/deepagents/middleware/_blob_offload.py
-  - id: openwiki-source-0fb4155c19dd248acd3ffe4f
-    resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
-  - id: openwiki-source-421bc4b065189ae1165ca326
-    resource: repo://libs/deepagents/deepagents/middleware/_state.py
   - id: openwiki-source-e51c4102234507d1529a2440
     resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-13b8cea81b8a29f0950cc836
     resource: repo://libs/deepagents/deepagents/middleware/patch_tool_calls.py
-  - id: openwiki-source-114a1c7a58992fa867a94ef0
-    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-58bc0b41ad72708cee0fee6e
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_blob_offload.py
+  - id: openwiki-source-f763e99e439a1356866a7aa4
+    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
+  - id: openwiki-source-69c260914d2dd18b60ad5900
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_compact_tool.py
   - id: openwiki-source-6ce85b02eabe462f99e0c912
     resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-dc64f28a66d10932b86fcd61
     resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
-  - id: openwiki-source-851e3a9c96663d8db5ca3dec
-    resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
-  - id: openwiki-source-ca8183c87e6002c442ee2d62
-    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-13T08:11:05.854Z
+    at: 2026-10-15T08:05:41.400Z
 ---
 
 # Runtime Behavior, State, and Delegation
@@ -121,6 +111,33 @@ Caption: a configured checkpointer, keyed by the caller's thread ID, owns contin
 
 `PatchToolCallsMiddleware` handles a different resume hazard before the agent loop begins. It detects AI tool calls, including invalid calls, with no matching `ToolMessage`; it appends a correlated error result that distinguishes malformed/truncated arguments from a call that may have been cancelled or interrupted. It replaces message state atomically with `REMOVE_ALL_MESSAGES` followed by the repaired history, so the resumed model does not receive a dangling call.
 
+### Compaction and recoverable history
+
+The default `create_deep_agent()` stack uses Deep Agents summarization. Automatic compaction is tracked as `_summarization_event` rather than rewriting `messages`: the event identifies a cutoff, a summary `HumanMessage`, and an optional backend history path. The effective model context is the summary plus the retained tail, but the raw message log remains available for replay, evaluation, and delegation. Evicted history is appended under `/conversation_history/{session_id}.md`; failure to offload is represented by a `None` path rather than preventing a summary. The middleware can also truncate old large `write_file` and `edit_file` arguments and retries with summarization after a provider `ContextOverflowError`.
+
+`SummarizationToolMiddleware` optionally exposes `compact_conversation`. It shares the automatic middleware's event/session state, but never runs by itself: the model or an external action must call the tool. To avoid premature loss of working context, it requires the effective conversation to reach roughly half the configured automatic trigger, then determines a cutoff, creates a summary, and attempts offload. A backend-offload failure still produces a compaction event; a summary-generation failure returns a correlated error `ToolMessage` and leaves the conversation unmodified.
+
+```mermaid
+sequenceDiagram
+    participant Model
+    participant Compact as compact_conversation
+    participant Summary as Summarization middleware
+    participant Storage as Backend
+    Model->>Compact: tool call
+    Compact->>Summary: apply existing event and test threshold
+    alt eligible with a cutoff
+        Compact->>Summary: summarize selected history
+        Compact->>Storage: append evicted history
+        Compact-->>Model: event and confirmation ToolMessage
+    else not eligible or no cutoff
+        Compact-->>Model: nothing to compact ToolMessage
+    else summary failure
+        Compact-->>Model: error ToolMessage with no state compaction
+    end
+```
+
+Caption: manual compaction operates on the effective summarized context while preserving the raw message channel; it reports failures as tool results instead of partially replacing state.
+
 ### Private and middleware state
 
 State schemas supplied by the caller and assembled middleware are scanned for `PrivateStateAttr`. Those names are installed on every final `SubAgentMiddleware`, including a caller replacement. Ordinary inline delegation removes private keys before child invocation and again before merging child updates. It also excludes messages, todos, structured output, skill bookkeeping, rubric state, and other delegation-inappropriate channels. Unchanged inherited values are not merged back, preventing conflicts or double application when multiple tasks return concurrently.
@@ -153,7 +170,32 @@ Parent configuration and callbacks propagate through the LangGraph runtime; Deep
 
 `AsyncSubAgentMiddleware` exposes five tools: `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`. It uses LangGraph SDK clients against Agent Protocol servers. A launch creates a remote thread and run, immediately returns a task ID (the remote thread ID), and records the agent name, thread/run IDs, timestamps, and status under `async_tasks`. Its reducer merges entries by task ID, allowing state to retain task tracking across graph transitions and context reduction.
 
-A check fetches the current remote run and, on success, fetches thread values to report the final message content. An update starts a new run on the same remote thread with `multitask_strategy="interrupt"`, replaces the tracked run ID, and keeps the task ID. Cancellation calls the SDK for the tracked run. List fetches live status for nonterminal entries but falls back to cached status if that lookup fails; it filters on cached state before the live lookup. Errors launching, checking, updating, or cancelling return tool-error text rather than corrupting the stored task record.
+Launches attach `parent_thread_id` to the child thread metadata when the parent has a configured thread. They also pass a `deepagents_parent` configurable reference containing the parent thread and, when available, assistant ID into the child run. For an in-process deployment, tracing can additionally send parent trace headers that ask the receiver to nest the remote run; these headers are not sent to another server. This is discoverability and trace linkage, not shared state or authorization.
+
+A check observes the tracked run and, after a successful run, reads the thread. A thread interrupted for human input becomes the nonterminal `waiting` task status and returns the pending interrupts; a normal success returns the last thread message. If that successful tracked run is followed by a busy or error thread, observation reads the latest run instead, covering a resume initiated by another client. An update starts a new run on the same remote thread with `multitask_strategy="interrupt"`, replaces the tracked run ID, and keeps the task ID; updating a waiting task explicitly replaces its pending human request. Cancellation calls the SDK for a non-waiting run, but merely records `cancelled` for a waiting task because no active run exists. A later check preserves `cancelled` rather than reclassifying its still-paused thread as `waiting`.
+
+List filters using cached state first, then observes every selected nonterminal task and writes the refreshed status/run ID back to `async_tasks`. Terminal entries are not queried. If live observation fails, list logs the failure and returns the cached status; launch, check, update, and cancellation errors similarly return tool-error text rather than corrupting the stored task record.
+
+```mermaid
+sequenceDiagram
+    participant Parent
+    participant AsyncTools as Async middleware
+    participant SDK as LangGraph SDK
+    participant Child as Remote thread
+    Parent->>AsyncTools: start_async_task
+    AsyncTools->>SDK: create thread with parent metadata
+    SDK->>Child: create remote thread
+    AsyncTools->>SDK: create run with task input
+    AsyncTools-->>Parent: task ID and async_tasks entry
+    Parent->>AsyncTools: check or list task
+    AsyncTools->>SDK: observe tracked run and thread
+    SDK-->>AsyncTools: status and thread values
+    AsyncTools-->>Parent: refreshed task state or cached fallback
+    Parent->>AsyncTools: update task
+    AsyncTools->>SDK: replacement run on same thread
+```
+
+Caption: remote task identity is the remote thread ID; runs may be replaced while the locally checkpointed task record is refreshed independently.
 
 Async isolated launches send only the task description. An experimental async fork snapshots the parent's effective history, clears nonportable tool artifacts and local eviction metadata, hydrates portable blobs, then serializes messages for the remote graph. It inherits conversation at launch only: remote tools, prompt, checkpointing, credentials, filesystem permissions, and approval configuration remain the remote graph's responsibility.
 

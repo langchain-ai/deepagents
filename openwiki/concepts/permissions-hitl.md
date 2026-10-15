@@ -1,9 +1,19 @@
 ---
 type: approval-and-intervention concept
 title: Permissions and Human-in-the-Loop
-description: Explains Deep Agents filesystem permission enforcement, conversion of interrupt rules into human review, and inheritance boundaries for subagents. Distinguishes tool exclusion, permissions, Talon approval routing, and runtime containment.
+description: Explains Deep Agents filesystem permission enforcement and HITL routing, including local and remote subagent boundaries. Distinguishes SDK controls from dcode Manual, Auto, and YOLO approval behavior and Talon channel approvals.
 tags: [permissions, human-in-the-loop, subagents, talon, security]
 sources:
+  - id: openwiki-source-05106e66a949150d557266a2
+    resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-fdf5afeb1dd1d11652374e88
+    resource: repo://libs/code/deepagents_code/app.py
+  - id: openwiki-source-a9143c1c174362216a1cfa2c
+    resource: repo://libs/code/deepagents_code/approval_mode.py
+  - id: openwiki-source-18abc7e59899514f067032b2
+    resource: repo://libs/code/deepagents_code/auto_mode.py
+  - id: openwiki-source-1e08095c051ecc153fadc178
+    resource: repo://libs/code/deepagents_code/tui/widgets/yolo_mode_notice.py
   - id: openwiki-source-b93533cac55718d75277d1cf
     resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
@@ -12,6 +22,8 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
   - id: openwiki-source-8b1aaf77fc0430fd00711a73
     resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
@@ -48,8 +60,8 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-14T08:05:41.101Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
+    at: 2026-10-15T08:05:41.400Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
 ---
 
 # Permissions and Human-in-the-Loop
@@ -66,9 +78,40 @@ Tool visibility, tool-level permission enforcement, a graph interrupt, a human d
 | Deny selected built-in filesystem operations | `FilesystemPermission(mode="deny")` | A human prompt or OS isolation |
 | Pause selected SDK tool calls | `HumanInTheLoopMiddleware` / `interrupt_on` | A deny rule or durable authorization |
 | Require a Talon decision for an exact tool name | `ToolApprovalStore` policy and Talon runtime | Tool availability, wildcard matching, or sandboxing |
+| Select dcode interactive review behavior | Manual, classifier-backed Auto, or YOLO mode | A sandbox or an OS permission boundary |
 | Restrict what code can do after a tool runs | A constrained tool/backend or sandbox | Protection supplied by a prompt or approval dialog |
 
 Deep Agents follows a **trust-the-LLM** model: containment belongs in installed tools, backends, or sandboxes. HITL is opt-in and protects only calls routed through it. `StateBackend` has no shell execution; using `LocalShellBackend` is an explicit higher-power choice.
+
+## dcode approval modes: session policy, not containment
+
+The interactive dcode client has three approval modes. **Manual** pauses gated actions for a person. **Auto** applies deterministic checks and then a classifier to eligible gated actions, using human review when the policy requires it or falls back. **YOLO** bypasses dcode's approval review for calls not denied by another hook; it is deliberately unrestricted, not an assertion that filesystem, shell, network, MCP, or host effects are sandboxed.
+
+The server, rather than an untrusted client mode value alone, resolves a live per-thread mode. The client writes a `mode` record under the `("deepagents_code", "approval_mode")` namespace keyed by the SHA-256 of the thread ID. Typed Auto and YOLO need a valid, thread-bound Store key and record. A malformed context, invalid key/value, missing Store, or failed read resolves to Manual; legacy `auto_approve=True` remains a compatibility route to YOLO. This makes loss of control state conservative rather than silently autonomous.
+
+```mermaid
+flowchart TD
+    Proposed["Gated tool call"] --> Resolve["Resolve validated live mode"]
+    Resolve -->|"Manual or unavailable"| Human["Human approval interrupt"]
+    Resolve -->|YOLO| Hooks["Apply other hook decisions"]
+    Resolve -->|Auto| Policy["Deterministic policy and classifier"]
+    Policy -->|Allow| Hooks
+    Policy -->|Deny| Deny["Synthetic denial does not execute"]
+    Policy -->|Uncertain or fallback| Human
+    Human -->|Approve| Hooks
+    Human -->|Reject| Deny
+    Hooks --> Execute["Run allowed call"]
+```
+
+Caption: dcode selects review routing after a gated call is proposed; neither Auto nor YOLO replaces containment or an independent hook denial.
+
+`AutoModeHITLMiddleware` replaces the stock HITL middleware by name and uses the same interrupt map as Manual, augmented with protected temporary-artifact operations. It validates positive finite classifier budgets, can use a separate lazily constructed classifier model, and keeps its decision plan and bounded classifier conversation in private state. The classifier must return exactly one indexed, schema-valid decision for every reviewed call before dcode binds results to tool-call IDs. Failures are not converted to allow: unavailable classifier batches receive error tool messages without execution, while invalid control/decision state routes to Manual approval. A broken configured classifier is latched so later batches escalate to human review rather than repeating silent denials; a successful review clears the latch.
+
+### Auto and YOLO acknowledgement lifecycle
+
+Auto is only selectable when eligible; for example, the interactive switcher omits it for a remote sandbox. Its first enablement shows an educational confirmation. Confirming records a versioned install-local notice, while Escape leaves the mode unchanged and leaves the notice unsaved for a later prompt. The notice explicitly says Auto can approve routine gated actions and is not a sandbox.
+
+Entering YOLO from the switcher requires an explicit acknowledgement of the current warning policy version. The modal's Enter enables and records acknowledgement; `m` selects Manual and Escape preserves the previous mode, neither persisting it. The acknowledgement is stored in private `approval.json` state with a process lock and cross-process file lock, atomic replacement, and restrictive directory/file permissions where supported. Corrupt or unreadable state is treated as absent, so it re-prompts rather than authorizing YOLO. Muting the recurring YOLO toast is cosmetic: it does not bypass acknowledgement, the `startup.yolo_switcher` setting, or the active status indicator.
 
 ## Filesystem permissions: enforce at the tool boundary
 
@@ -113,6 +156,12 @@ For declarative `SubAgent` specifications, including experimental `mode="fork"`,
 Top-level `interrupt_on` is inherited by declarative subagents unless their specification supplies its own map. The effective map merges generated filesystem interrupts first and then user configuration, so the relevant user map takes precedence on name conflicts. `CompiledSubAgent` and remote `AsyncSubAgent` specifications instead pass through as already-built or separately deployed agents: they inherit neither the parent's filesystem permissions nor its top-level `interrupt_on`. Configure filesystem enforcement and approval behavior in the compiled or remote graph itself. Do not infer a common enforcement boundary merely because the parent delegates work.
 
 A default declarative subagent is isolated and receives the delegated task rather than the parent conversation. Experimental `mode="fork"` continues the parent conversation and state, rebuilds prompt-producing middleware, appends the fork's prompt, and cannot define separate skills. It follows the same declarative permission and interrupt defaults above; fork mode is a context and composition decision, not a privilege reduction. Choose tools, permissions, and HITL for each subagent deliberately.
+
+### Remote async children are autonomous approval domains
+
+An `AsyncSubAgent` is different from a local declarative child: the parent launches a run on an Agent Protocol server, receives a task ID immediately, and tracks the remote thread/run in `async_tasks`. That child uses its own graph, system prompt, tools, runtime, permissions, and HITL configuration. `mode="fork"` only snapshots portable parent conversation content at launch; it does not synchronize settings or turn the remote runtime into an extension of the parent's policy boundary.
+
+A remote task whose run finishes at `interrupt()` is reported as `waiting` by inspecting the remote thread. The parent can see the interrupt details through task status, but the task protocol explicitly requires that the user answer or approve the child directly; the parent agent cannot approve it. Updating a waiting task starts a new remote run with `multitask_strategy="interrupt"`, which drops its pending human request. Treat this as remote lifecycle control, not authority to resume a child approval.
 
 ## Profile exclusion is separate from permissions
 
@@ -173,7 +222,9 @@ Within a scheduled turn, delegation is inline rather than detached: it waits for
 
 ## Operating and testing safely
 
-- Treat tool visibility, permission denial, interrupt routing, channel approval, operator authority, and sandbox/backend containment as independent layers.
+- Treat tool visibility, permission denial, interrupt routing, dcode mode selection, channel approval, operator authority, and sandbox/backend containment as independent layers.
+- For dcode, regard failure to persist or resolve a typed Auto/YOLO mode as a safety event: it should leave the session in Manual rather than be worked around by client-side state. Test mode-key binding, corrupt Store records, classifier schema coverage, unavailable-classifier denial, and Manual escalation.
+- Require deliberate local configuration for every declarative child, and deploy filesystem/HITL policy independently on every remote async child. A parent task ID is observability and lifecycle control, not approval authority.
 - Give interrupt rules literal leading anchors where possible. Broad patterns such as `/**/secrets` intentionally over-interrupt bulk tools.
 - Review every declarative subagent's replacement `permissions` and `interrupt_on`; configure compiled and remote agents independently.
 - Use exact names and the revision from `get_tool_approvals` when changing Talon policy. Expect a new invocation before saved changes apply.

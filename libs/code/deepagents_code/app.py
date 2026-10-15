@@ -4882,6 +4882,7 @@ class DeepAgentsApp(App):
         header = _StaticHeader(id="app-header")
         header.display = self._header_should_display()
         yield header
+        yield Static("Prompt cache expired", id="cache-expired-banner")
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
         # `_ChatScroll` keeps clicks on messages from stealing input focus.
@@ -9721,12 +9722,24 @@ class DeepAgentsApp(App):
         except Exception:
             logger.debug("Cache-expiring notification failed", exc_info=True)
 
+    def _refresh_cache_expiry_banner(self) -> None:
+        """Show cache expiry independently of handoff preferences and activity."""
+        if not self.screen_stack:
+            return
+        banners = self.screen_stack[0].query("#cache-expired-banner")
+        if banners:
+            expires_at = self._status_bar.cache_expires_at if self._status_bar else None
+            banners.first().display = (
+                expires_at is not None and datetime.now(UTC) >= expires_at
+            )
+
     def _check_cache_expiry(self) -> None:
         """Offer a handoff once per expired cache window, only when idle.
 
         Polled every second from `on_mount`. Acts only when
         `warnings.cache_prompt` is `expiry` and no cold-cache opt-out applies.
         """
+        self._refresh_cache_expiry_banner()
         expires_at = self._status_bar.cache_expires_at if self._status_bar else None
         thread_id = self._lc_thread_id
         if (

@@ -1662,6 +1662,23 @@ class TestTaskNotifications:
         assert image in blocks
         assert "Here is the chart" in _woken_text(server)
 
+    async def test_assistant_only_blocks_are_dropped(self) -> None:
+        """Thinking, reasoning and tool calls are only valid in assistant turns; a notification is a user message."""
+        server = _FakeServer()
+        content = [
+            {"type": "thinking", "thinking": "let me see", "signature": "sig"},
+            {"type": "reasoning", "reasoning": "step by step"},
+            {"type": "tool_use", "id": "t1", "name": "ls", "input": {}},
+            {"type": "text", "text": "the answer", "citations": []},
+        ]
+
+        await _call_callback("aafter_agent", {"messages": [AIMessage(content=content)]}, MagicMock(), server=server)
+
+        types = [block["type"] for block in _woken_message(server)["content"]]
+        assert set(types) == {"text"}
+        assert "the answer" in _woken_text(server)
+        assert all(set(block) == {"type", "text"} for block in _woken_message(server)["content"])
+
     async def test_forged_text_in_a_result_block_is_still_escaped(self) -> None:
         """Content blocks don't separate subagent text from the notice for the model, so it's escaped."""
         server = _FakeServer()

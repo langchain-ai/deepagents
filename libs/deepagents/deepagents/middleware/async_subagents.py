@@ -456,15 +456,21 @@ def _text_block(text: str) -> dict[str, Any]:
     return {"type": "text", "text": text}
 
 
+_MEDIA_BLOCK_TYPES = frozenset({"image", "image_url", "file"})
+"""Result blocks passed through as they are; a notification is a user message, where providers reject the rest."""
+
+
 def _result_blocks(result: str | list[str | dict[str, Any]]) -> list[dict[str, Any]]:
-    """The subagent's answer as content blocks: text escaped and cut when very long, other blocks (images) as they are."""
+    """The subagent's answer as user content: text escaped and cut when very long, media as it is.
+
+    Blocks only valid in an assistant turn, such as thinking, reasoning and tool calls, are dropped.
+    """
     blocks: list[dict[str, Any]] = []
     for item in [result] if isinstance(result, str) else result:
-        if isinstance(item, str):
-            blocks.append(_text_block(_escape(_clip(item))))
-        elif item.get("type") == "text":
-            blocks.append({**item, "text": _escape(_clip(str(item.get("text", ""))))})
-        else:
+        if isinstance(item, str) or item.get("type") == "text":
+            text = item if isinstance(item, str) else str(item.get("text", ""))
+            blocks.append(_text_block(_escape(_clip(text))))
+        elif item.get("type") in _MEDIA_BLOCK_TYPES:
             blocks.append(item)
     return blocks
 

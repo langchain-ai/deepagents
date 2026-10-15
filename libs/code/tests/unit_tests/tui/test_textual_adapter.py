@@ -3416,109 +3416,122 @@ class TestCacheReconciliation:
         self, boundary: str
     ) -> None:
         from contextlib import nullcontext
-        from datetime import UTC, datetime
+        from datetime import UTC, datetime, timedelta
 
         from deepagents_code.app import DeepAgentsApp
         from deepagents_code.tui.widgets.status import StatusBar
 
         app = DeepAgentsApp()
-        app._status_bar = StatusBar()
-        app._status_bar.set_cache_timing(datetime.now(UTC), ttl_seconds=300)
-        expiry = app._status_bar.cache_expires_at
-        start = {
-            "type": "model_attempt",
-            "phase": "start",
-            "call_id": "call-1",
-            "attempt": 0,
-            "cache_activity": {
-                "requested_at": datetime.now(UTC).isoformat(),
-                "model_spec": "anthropic:claude-sonnet-4-6",
-                "endpoint": "default",
-                "params": None,
-            },
-        }
-
-        class Agent(_FakeAgent):
-            completed = False
-
-            async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple]:
-                if self.completed:
-                    return
-                self.completed = True
-                yield ((), "custom", start)
-                assert app._cache_reconciliation_pending
-                if boundary == "error":
-                    msg = "failed"
-                    raise RuntimeError(msg)
-                if boundary == "cancel":
-                    raise asyncio.CancelledError
-                if boundary == "complete":
-                    yield ((), "custom", {**start, "phase": "complete"})
-                elif boundary == "retry":
-                    yield (
-                        (),
-                        "custom",
-                        {
-                            "type": "model_retry",
-                            "call_id": "call-1",
-                            "failed_attempt": 0,
-                            "output_may_have_started": False,
-                            "attempt": 1,
-                            "max_retries": 1,
-                        },
-                    )
-                elif boundary == "approval":
-                    yield _hitl_interrupt_chunk(
-                        {
-                            "action_requests": [
-                                {"name": "execute", "args": {"command": "echo hi"}}
-                            ],
-                            "review_configs": [
-                                {
-                                    "action_name": "execute",
-                                    "allowed_decisions": ["approve"],
-                                }
-                            ],
-                        }
-                    )
-                else:
-                    yield ((), "updates", {"model": {"messages": []}})
-                assert not app._cache_reconciliation_pending
-                assert app._status_bar is not None
-                assert app._status_bar.cache_expires_at == expiry
-                if boundary == "retry":
-                    yield ((), "custom", {**start, "attempt": 1})
-                    yield ((), "custom", {**start, "phase": "complete"})
-                    assert app._cache_reconciliation_pending
-
-        async def approval(*_: Any, **__: Any) -> asyncio.Future:
-            await asyncio.sleep(0)
-            assert not app._cache_reconciliation_pending
-            future = asyncio.Future()
-            future.set_result({"type": "approve"})
-            return future
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=approval,
-            on_cache_reconciliation=app._on_cache_reconciliation,
-        )
-        with (
-            pytest.raises(RuntimeError, match="failed")
-            if boundary == "error"
-            else nullcontext()
-        ):
-            await execute_task_textual(
-                user_input="hi",
-                agent=Agent([]),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._status_bar = StatusBar()
+            app._status_bar.set_cache_timing(
+                datetime.now(UTC) - timedelta(minutes=6), ttl_seconds=300
             )
-        assert not app._cache_reconciliation_pending
-        assert app._status_bar.cache_expires_at == expiry
-        assert app._last_cache_use is None
+            app._agent_running = True
+            app._cold_cache_suppressed_for_session = True
+            banner = app.query_one("#cache-expired-banner")
+            app._check_cache_expiry()
+            assert banner.display
+            expiry = app._status_bar.cache_expires_at
+            start = {
+                "type": "model_attempt",
+                "phase": "start",
+                "call_id": "call-1",
+                "attempt": 0,
+                "cache_activity": {
+                    "requested_at": datetime.now(UTC).isoformat(),
+                    "model_spec": "anthropic:claude-sonnet-4-6",
+                    "endpoint": "default",
+                    "params": None,
+                },
+            }
+
+            class Agent(_FakeAgent):
+                completed = False
+
+                async def astream(self, *_: Any, **__: Any) -> AsyncIterator[tuple]:
+                    if self.completed:
+                        return
+                    self.completed = True
+                    yield ((), "custom", start)
+                    assert app._cache_reconciliation_pending
+                    assert not banner.display
+                    if boundary == "error":
+                        msg = "failed"
+                        raise RuntimeError(msg)
+                    if boundary == "cancel":
+                        raise asyncio.CancelledError
+                    if boundary == "complete":
+                        yield ((), "custom", {**start, "phase": "complete"})
+                    elif boundary == "retry":
+                        yield (
+                            (),
+                            "custom",
+                            {
+                                "type": "model_retry",
+                                "call_id": "call-1",
+                                "failed_attempt": 0,
+                                "output_may_have_started": False,
+                                "attempt": 1,
+                                "max_retries": 1,
+                            },
+                        )
+                    elif boundary == "approval":
+                        yield _hitl_interrupt_chunk(
+                            {
+                                "action_requests": [
+                                    {"name": "execute", "args": {"command": "echo hi"}}
+                                ],
+                                "review_configs": [
+                                    {
+                                        "action_name": "execute",
+                                        "allowed_decisions": ["approve"],
+                                    }
+                                ],
+                            }
+                        )
+                    else:
+                        yield ((), "updates", {"model": {"messages": []}})
+                    assert not app._cache_reconciliation_pending
+                    assert banner.display
+                    assert app._status_bar is not None
+                    assert app._status_bar.cache_expires_at == expiry
+                    if boundary == "retry":
+                        yield ((), "custom", {**start, "attempt": 1})
+                        yield ((), "custom", {**start, "phase": "complete"})
+                        assert app._cache_reconciliation_pending
+
+            async def approval(*_: Any, **__: Any) -> asyncio.Future:
+                await asyncio.sleep(0)
+                assert not app._cache_reconciliation_pending
+                future = asyncio.Future()
+                future.set_result({"type": "approve"})
+                return future
+
+            adapter = TextualUIAdapter(
+                mount_message=_mock_mount,
+                update_status=_noop_status,
+                request_approval=approval,
+                on_cache_reconciliation=app._on_cache_reconciliation,
+            )
+            with (
+                pytest.raises(RuntimeError, match="failed")
+                if boundary == "error"
+                else nullcontext()
+            ):
+                await execute_task_textual(
+                    user_input="hi",
+                    agent=Agent([]),
+                    assistant_id="assistant",
+                    session_state=_session_state(auto_approve=False),
+                    adapter=adapter,
+                )
+            assert not app._cache_reconciliation_pending
+            assert app._status_bar.cache_expires_at == expiry
+            assert app._last_cache_use is None
+
+            assert banner.display
 
 
 class TestExecuteTaskTextualUserVisibleOutputStarted:

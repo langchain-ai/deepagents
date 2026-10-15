@@ -4,18 +4,15 @@
 
 ## [0.7.26](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.25...deepagents==0.7.26) (2026-10-15)
 
-
 ### Features
 
-* **sdk:** expose `summarizer` on summarization middleware ([#6900](https://github.com/langchain-ai/deepagents/issues/6900)) ([4b955e8](https://github.com/langchain-ai/deepagents/commit/4b955e844f09ccb0f546644ae705e9fc3b9928b0))
-* **sdk:** nest async subagent runs under the parent's trace ([#6823](https://github.com/langchain-ai/deepagents/issues/6823)) ([3cd9463](https://github.com/langchain-ai/deepagents/commit/3cd94633d3fe5d434fbf492d64f6f53a3e6dcafe))
-* **sdk:** report async subagents that are waiting for a human ([#6842](https://github.com/langchain-ai/deepagents/issues/6842)) ([825acb3](https://github.com/langchain-ai/deepagents/commit/825acb3ca03bd103e4df6013b122eca8475d1982))
-* **sdk:** tell async subagents which agent launched them ([#6836](https://github.com/langchain-ai/deepagents/issues/6836)) ([168ac6b](https://github.com/langchain-ai/deepagents/commit/168ac6b7054edec7eb4c1923059cbaec67a7f5c1))
-
+- Async subagents now report when they’re waiting for a human. ([#6842](https://github.com/langchain-ai/deepagents/pull/6842))
+- Async subagent runs now appear under their parent’s trace and identify the agent that launched them. ([#6823](https://github.com/langchain-ai/deepagents/pull/6823), [#6836](https://github.com/langchain-ai/deepagents/pull/6836))
+- Summarization middleware now exposes its `summarizer`. ([#6900](https://github.com/langchain-ai/deepagents/pull/6900))
 
 ### Bug Fixes
 
-* **sdk:** preserve resolved tool-result paths ([#6968](https://github.com/langchain-ai/deepagents/issues/6968)) ([29d646f](https://github.com/langchain-ai/deepagents/commit/29d646fd2d832a44c476964333eddecb0ec1c0cd))
+- Preserve resolved tool-result paths. ([#6968](https://github.com/langchain-ai/deepagents/pull/6968))
 
 ## [0.7.25](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.24...deepagents==0.7.25) (2026-10-13)
 

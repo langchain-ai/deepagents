@@ -1192,8 +1192,8 @@ class StatusBar(Vertical):
         )
         minutes, seconds = divmod(remaining, 60)
         countdown = (
-            "uncertain"
-            if remaining == 0 and self.cache_retention_confidence == "may_be_cold"
+            "expired"
+            if datetime.now(UTC) >= self.cache_expires_at
             else f"{minutes}:{seconds:02d}"
         )
         return f"{written} / {countdown}" if written else countdown
@@ -1241,6 +1241,11 @@ class StatusBar(Vertical):
             if segment.plain
         )
         cache = self._cache_segment()
+        if (
+            self.cache_expires_at is not None
+            and datetime.now(UTC) >= self.cache_expires_at
+        ):
+            cache = cache.stylize(theme.get_theme_colors(self).error)
         cache_display.segments = (cache,) if cache.plain else ()
         context_display.segments = context_segments
 

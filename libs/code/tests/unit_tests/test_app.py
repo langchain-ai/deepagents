@@ -6236,7 +6236,7 @@ class TestCacheTiming:
                 display = app.query_one("#cache-display")
                 rendered = str(display.render())
                 assert display.visible
-                assert ("3:00" if age_minutes == 2 else "0:00") in rendered
+                assert ("3:00" if age_minutes == 2 else "expired") in rendered
                 assert ("wrote" in rendered) is observed_write
                 assert "0 read" not in rendered
                 assert "0 write" not in rendered

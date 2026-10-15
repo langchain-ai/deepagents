@@ -547,6 +547,10 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             the `task` tool, so subagents see the same custom fields as the
             parent.
 
+            Those subagents can also write the fields back to the parent. If
+            parallel `task` calls may change the same field, give it a
+            reducer; otherwise the step fails with `InvalidUpdateError`.
+
             [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent]
             runnables do not inherit this schema because they are already
             compiled — compile those runnables with a compatible state

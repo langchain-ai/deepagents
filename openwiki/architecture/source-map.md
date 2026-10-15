@@ -1,165 +1,138 @@
 ---
 type: architecture source map
 title: Source Map and Ownership Boundaries
-description: Practical change-routing map for Deep Agents graph assembly and sandbox backend semantics, plus Talon's host, runtime, media, approval, and sandbox boundaries.
-tags: [deepagents, source-map, architecture, middleware, talon, sandbox, testing]
+description: Practical change-routing map for Deep Agents graph assembly, synchronous and asynchronous delegation, and conversation summarization. Distinguishes reusable SDK seams from Talon's runtime-specific integration.
+tags: [deepagents, source-map, architecture, middleware, subagents, summarization, testing]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-14T08:05:41.101Z
+    at: 2026-10-15T08:05:41.400Z
 sources:
-  - id: openwiki-source-d4463137befa776cd47750d4
-    resource: repo://libs/deepagents/deepagents/backends/sandbox.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
-  - id: openwiki-source-5132c2eb08d294721cb871ff
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-114a1c7a58992fa867a94ef0
+    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-f763e99e439a1356866a7aa4
+    resource: repo://libs/deepagents/deepagents/middleware/summarization.py
+  - id: openwiki-source-530f1194888c9c15f9c71332
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_summarization_factory.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
-  - id: openwiki-source-6801a88de6305bc8cbdd259f
-    resource: repo://libs/talon/deepagents_talon/host.py
-  - id: openwiki-source-ccdb88feadbc25be2fc7b63b
-    resource: repo://libs/talon/deepagents_talon/media.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-580d91c607e0a09e0659e565
-    resource: repo://libs/talon/deepagents_talon/sandbox.py
-  - id: openwiki-source-a69daa62c9a3eb9a49f09bf9
-    resource: repo://libs/talon/tests/test_host.py
-  - id: openwiki-source-e0db085f967450f48196d999
-    resource: repo://libs/talon/tests/test_media.py
-  - id: openwiki-source-4d6726e17c8a0c78539a7d33
-    resource: repo://libs/talon/tests/test_runtime.py
-  - id: openwiki-source-57a0613315e23277d358df76
-    resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
 ---
 
 # Source Map and Ownership Boundaries
 
-Use this page to begin a change at the owner of the behavior, then run the narrow regression suite that exercises its contract. The principal boundary is deliberate: Deep Agents owns reusable graph construction and backend behavior; Talon owns conversion between channel events and an agent request, long-running conversation lifecycle, and its runtime-specific graph wiring. See the [architecture overview](./overview.md), [middleware catalog](../concepts/middleware-catalog.md), [Talon scheduling](../concepts/talon-scheduling.md), [quickstart](../quickstart.md), and [testing guide](../testing/testing-guide.md) for broader orientation.
+Use this page to route a behavioral change to the component that owns it, then run the smallest focused SDK test. The key boundary is intentional: Deep Agents owns reusable graph construction and middleware behavior; Talon owns its product runtime composition and invokes those SDK seams rather than redefining them. See the [architecture overview](./overview.md), [SDK construction and execution](./sdk-construction-execution.md), [middleware catalog](../concepts/middleware-catalog.md), [quickstart](../quickstart.md), and [testing guide](../testing/testing-guide.md) for broader guidance.
 
 ## Route a change
 
-| Change intent | Owner and primary seam | Focused tests |
+| Change intent | Owner and primary seam | Focused test starting point |
 | --- | --- | --- |
-| Change default graph state, middleware ordering, profiles, built-in tools, subagent construction, or graph compilation | `libs/deepagents/deepagents/graph.py` — `create_deep_agent` | `libs/deepagents/tests/unit_tests/test_graph.py` |
-| Change normalized filesystem approval matching | `libs/deepagents/deepagents/middleware/_fs_interrupt.py` | `libs/deepagents/tests/unit_tests/test_permissions.py` |
-| Change a generic remote sandbox's derived filesystem operations, transfer strategy, parsing, truncation, or shell command construction | `libs/deepagents/deepagents/backends/sandbox.py` — `BaseSandbox` | `libs/deepagents/tests/unit_tests/backends/test_sandbox_backend.py` |
-| Change Talon's channel lifecycle, commands, conversation replacement/cancellation, media delivery, or host-side approval and authorization interaction | `libs/talon/deepagents_talon/host.py` — `TalonHost` | `libs/talon/tests/test_host.py` |
-| Change Talon's Deep Agents graph composition, runtime tool reload, checkpoint use, retries, approval-resume loop, model selection, or local backend environment | `libs/talon/deepagents_talon/runtime.py` — `DeepAgentRuntime` | `libs/talon/tests/test_runtime.py` and `libs/talon/tests/unit_tests/test_tool_approval_runtime.py` |
-| Change Talon sandbox startup or the host-versus-sandbox filesystem route set | `libs/talon/deepagents_talon/sandbox.py`, with settings in `config.py` | `libs/talon/tests/unit_tests/test_sandbox.py` |
-| Change attachment normalization or safe Markdown-media extraction | `libs/talon/deepagents_talon/media.py` | `libs/talon/tests/test_media.py`, `libs/talon/tests/test_host.py`, and `libs/talon/tests/unit_tests/test_media_blobs.py` |
+| Change graph state, model/profile resolution, backend defaults, middleware ordering, generated general-purpose subagent, permissions-to-approval wiring, or final graph compilation | Deep Agents: `libs/deepagents/deepagents/graph.py` — `create_deep_agent` | `libs/deepagents/tests/unit_tests/test_graph.py` |
+| Change blocking `task` validation, child compilation, child input/output state boundary, fork behavior, or returned result selection | Deep Agents: `libs/deepagents/deepagents/middleware/subagents.py` — `SubAgentMiddleware` and `_build_task_tool` | SDK subagent tests under `libs/deepagents/tests/unit_tests/middleware/` plus graph coverage when assembly changes |
+| Change Agent Protocol client use, remote task launch/check/update/cancel/list semantics, async task state, tracing headers, or remote fork payloads | Deep Agents: `libs/deepagents/deepagents/middleware/async_subagents.py` — `AsyncSubAgentMiddleware` | `libs/deepagents/tests/unit_tests/test_async_subagents.py` |
+| Change compaction thresholds, summary generation, history/media offload, overflow recovery, or the factory's defaults and knobs | Deep Agents: `libs/deepagents/deepagents/middleware/summarization.py` — `create_summarization_middleware` and `SummarizationMiddleware` | `libs/deepagents/tests/unit_tests/middleware/test_summarization_factory.py`; add behavior-specific summarization tests for lifecycle changes |
+| Change Talon-only tools, approval store integration, model selection, progress delivery, Talon backend choice, or its middleware replacements | Talon: `libs/talon/deepagents_talon/runtime.py` — `DeepAgentRuntime._create_graph` | Talon runtime tests; do not move product policy into the SDK middleware above |
 
 ```mermaid
 flowchart TD
-  Change["Change request"] --> SDK["Deep Agents SDK"]
-  SDK --> Graph["graph.py graph assembly"]
-  SDK --> BaseSandbox["backends/sandbox.py backend contract"]
-  Change --> Talon["Talon runtime boundary"]
-  Talon --> Host["host.py channel lifecycle"]
-  Talon --> Runtime["runtime.py graph invocation"]
-  Talon --> TalonSandbox["sandbox.py provider routing"]
-  Host --> HostTests["test_host.py"]
-  Runtime --> RuntimeTests["test_runtime.py"]
-  BaseSandbox --> SandboxTests["test_sandbox_backend.py"]
+  Change["Change request"] --> Scope{"Reusable SDK behavior"}
+  Scope -->|"yes"| Graph["graph.py assembly"]
+  Scope -->|"sync task"| Sync["subagents.py task bridge"]
+  Scope -->|"remote task"| Async["async_subagents.py Agent Protocol bridge"]
+  Scope -->|"context compaction"| Summary["summarization.py"]
+  Scope -->|"no Talon integration"| Talon["Talon runtime.py"]
+  Graph --> GraphTest["test_graph.py"]
+  Async --> AsyncTest["test_async_subagents.py"]
+  Summary --> SummaryTest["test_summarization_factory.py"]
 ```
 
-This map separates reusable SDK behavior from Talon's channel-facing orchestration and deployment adapter.
+This map routes by the behavior being changed, not by the product that happens to call it.
 
-## Deep Agents: graph assembly is policy; a sandbox backend is transport
+## Graph assembly: the SDK composition seam
 
-### `graph.py`: assemble the agent once, preserve stack invariants
+`create_deep_agent` is the public construction boundary. It resolves a model and harness profile, supplies `StateBackend()` when the caller omits a backend, classifies supplied subagent specifications, builds the final middleware stack, and delegates compilation to LangChain `create_agent`. It passes through the supplied prompt, tools, response format, context schema, checkpointer, store, debug, name, and cache. The result is configured with Deep Agents metadata and a recursion limit.
 
-`create_deep_agent` is the construction seam. It resolves the supplied model and its harness profile, defaults the backend to `StateBackend`, builds synchronous and asynchronous subagent wiring, and gives LangChain `create_agent` the final tools, prompt, state schema, checkpointer, store, and middleware list. `DeepAgentState.messages` uses a `DeltaChannel` with snapshots, so checkpoint growth is linear rather than repeatedly storing the whole message list.
+`DeepAgentState.messages` uses a `DeltaChannel` and the SDK reducer rather than repeatedly checkpointing the complete message list. The reducer handles replay without a seeded messages value, replaces or removes messages by ID, and supports the all-messages reset sentinel. A custom state schema must retain the `DeepAgentState` message-channel contract.
 
-The stack is a behavioral contract, not merely a list. The core begins with filesystem, synchronous subagent when present, summarization, tool-call patching, and optional async-subagent middleware. Profile behavior, skills, prompt caching, memory, generated or caller-specified human review, unsupported-content handling, and final tool exclusion form the tail. A custom middleware sharing a name replaces that position; a novel one is inserted after core middleware and before the tail. Exclusions are applied again after the merge, and tool exclusion is appended last.
+The assembly order is a compatibility boundary. Its core is filesystem middleware, synchronous subagent middleware when inline workers exist, summarization, patched tool calls, and asynchronous-subagent middleware when remote workers exist. Profile layers, optional skills and memory, caching, optional human review, unsupported-content handling, and final tool exclusion form the tail. A same-named caller middleware replaces the existing slot; a new one is placed after the core and before the tail. Middleware filtering runs again after that merge, while tool exclusion is appended last.
 
-`FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding. The former supplies built-in filesystem behavior and applies permissions; the latter supplies the `task` tool. A harness profile cannot exclude either and leave a silently degraded graph. For permission work, keep the two layers distinct: filesystem middleware executes and enforces access, while graph assembly derives `HumanInTheLoopMiddleware` predicates from `interrupt` rules. Caller-supplied `interrupt_on` wins for the same tool name.
+`FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding: filesystem middleware supplies built-in file behavior and permissions, while synchronous subagent middleware supplies `task`. A harness profile that attempts to exclude either fails at construction rather than producing an agent without a core capability. This does not make every subagent mandatory: when no inline worker exists because the general-purpose worker is disabled and no synchronous spec is supplied, `task` is absent; remote async tools remain independently available.
 
 ```mermaid
 flowchart TD
-  Inputs["model profile backend and options"] --> Assemble["create_deep_agent"]
-  Assemble --> Core["filesystem subagent summary patch and async stack"]
-  Core --> Tail["profile skills cache memory review and content tail"]
-  Tail --> Merge["replace matching name or insert custom entry"]
-  Merge --> Exclude["apply middleware exclusion"]
-  Exclude --> Filter["append final tool exclusion"]
-  Filter --> Agent["LangChain create_agent"]
-  Agent --> Graph["compiled graph with DeltaChannel messages"]
+  Inputs["Model options and subagent specs"] --> Build["create_deep_agent"]
+  Build --> Classify["Classify inline and remote subagents"]
+  Classify --> Core["Build core middleware stack"]
+  Core --> Tail["Add profile and optional tail middleware"]
+  Tail --> Merge["Merge caller middleware by name"]
+  Merge --> Filter["Apply profile exclusions"]
+  Filter --> Tools["Append final tool exclusion"]
+  Tools --> Compile["LangChain create_agent"]
+  Compile --> Agent["Configured graph"]
 ```
 
-This ordering shows why a custom middleware cannot restore a profile-excluded tool and why required middleware must remain in the assembled graph.
+This flow shows where ordering changes belong and why a caller middleware cannot restore a profile-excluded tool.
 
-### `backends/sandbox.py`: derive file operations from the provider primitive
+## Synchronous delegation: `subagents.py`
 
-`BaseSandbox` is the reusable implementation for a provider that can execute a command and upload/download bytes. It is not a containment or authorization boundary: callers with its `execute()` capability already have the shell authority the provider exposes. Provider subclasses own only `execute`, `upload_files`, `download_files`, and `id`; the base class derives listing, search, glob, read, write, edit, and deletion behavior.
+`SubAgentMiddleware` owns the blocking `task` tool. Its input pool consists of declarative `SubAgent` specifications and caller-owned `CompiledSubAgent` runnables. The middleware rejects duplicate names and unsupported modes before building the tool. A declarative child is compiled with its resolved model, tools, middleware, and optional response format; a compiled child is not reconstructed or given a new schema by the SDK.
 
-The transfer mechanism is intentionally operation-specific. Listing, grep, glob, and paginated read run structured commands inside the sandbox; write first creates parents and then uploads UTF-8 bytes. Small edits run a server-side replacement script, while larger old/new payloads are uploaded to randomized temporary files and replaced server-side so the source file does not cross the boundary. Empty old strings fail before dispatch. Parsed malformed server output becomes an operation error rather than an uncaught decoding exception.
+An isolated task receives permitted parent state plus one human message containing the delegated description. A fork instead receives the parent’s effective conversation—applying the current summarization event—followed by the task. Declarative forks retain the state needed to rebuild the parent’s prompt but receive a private marker that refuses recursive `task` calls. Compiled forks get a narrower state because the SDK cannot assume their graph schema. These are state-ownership rules, not merely prompt conventions.
 
-Execution-output offload is opt-in per sandbox implementation. When `enable_capture_offload` is true, `execute_with_offload` wraps the command to retain large output at a sandbox path and return only a preview while preserving the child exit code; otherwise it returns unwrapped output and lets filesystem middleware use its normal handling. Async grep and glob add outer timeouts, and their result contracts distinguish a hard error from an incomplete result.
+When a child finishes, the bridge requires a `messages` result. It removes messages, defined excluded keys, middleware-private fields, and unchanged inherited values from the parent update; then it returns exactly one tool message to the parent. That message contains a serialized structured response when one exists, otherwise the last non-empty AI message. Changes to what crosses this boundary belong here and should consider parallel task calls and custom state reducers.
 
-**Change safely:** add a regression in `test_sandbox_backend.py` when changing a command template, serialized output, result parser, pagination, quote/base64 handling, or sync/async parity. Do not add Talon policy here; this class is shared backend behavior.
+## Remote delegation: `async_subagents.py`
 
-## Talon: host owns channel turns; runtime owns graph invocation
+`AsyncSubAgentMiddleware` is a separate, non-blocking delegation path for Agent Protocol servers. Each spec identifies a remote graph by `graph_id` and may provide a URL and headers. Construction requires at least one uniquely named spec and accepts only `isolated` or experimental `fork` modes. The middleware publishes five tools: `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`.
 
-`TalonHost` is the long-running coordinator. It starts the runtime before channels and scheduler, binds channel callbacks, and unwinds already-started components in reverse order if startup fails. Shutdown cancels host work and attempts every component stop even if one fails. `receive_message` derives a provider-qualified conversation root, serializes history and per-conversation work, handles host commands and pending approval/authorization replies before the model, and otherwise replaces the active turn with a new task.
+Launch creates a remote thread and run, then writes a local `async_tasks` record keyed by that thread ID with the agent name, current run ID, status, and timestamps. Thus parent graph state owns tracking, while the remote server owns execution, its thread, tools, policy, and approval interactions. A check reads the remote run and, after success, its thread: an interrupted thread is represented locally as `waiting`; successful output is the remote thread’s final message. Lists filter local cached records before refreshing nonterminal records, and retain cached status when a refresh fails.
 
-A replacement increments the conversation generation, cancels the old task, and asks the runtime to repair interrupted checkpoint state. A cancellation that fails to complete within the bound blocks that conversation rather than running overlapping turns. If recovery itself fails after the task stops, the successor is still started with degraded-recovery metadata. `/new` persists a reset counter that produces a new agent thread; scheduled jobs instead use an isolated per-job thread and a run timeout.
+Updates create a new run on the same remote thread with an interrupting multitask strategy and replace only the tracked run ID. Cancellation calls the server except for a `waiting` task, where no active run exists and the local record is simply marked cancelled. An isolated launch sends only the description. A fork snapshots effective compacted parent history, strips artifacts, rehydrates offloaded tool content, and serializes that snapshot plus the new task. Omitting `url` uses local ASGI transport and therefore requires an async parent invocation; synchronous launch needs a reachable URL.
 
 ```mermaid
 sequenceDiagram
-  participant Channel as Channel adapter
-  participant Host as TalonHost
-  participant Runtime as DeepAgentRuntime
-  participant Graph as Deep Agents graph
-  Channel->>Host: inbound message
-  Host->>Host: lock conversation and handle commands
-  Host->>Host: cancel and repair prior turn when needed
-  Host->>Runtime: AgentRequest with thread and metadata
-  Runtime->>Graph: invoke or resume graph
-  Graph-->>Runtime: text or approval interrupt
-  Runtime-->>Host: AgentResult or approval request
-  Host-->>Channel: progress and final reply
+  participant Parent as Parent graph
+  participant Tools as Async task tools
+  participant Remote as Remote Agent Protocol graph
+  Parent->>Tools: start_async_task
+  Tools->>Remote: create thread and run
+  Tools-->>Parent: task record and task ID
+  Parent->>Tools: check or list task
+  Tools->>Remote: read run and thread
+  Tools-->>Parent: refreshed local task state
+  Parent->>Tools: update or cancel task
+  Tools->>Remote: interrupting run or cancellation
 ```
 
-This sequence identifies the boundary: the host decides which channel interaction can become a request or approval response; the runtime decides how that request drives the graph.
+This sequence separates durable parent tracking from remote execution ownership.
 
-`DeepAgentRuntime.start` resolves subagents, loads the approval snapshot, and creates its graph. Its graph factory supplies Talon tools, approval tools and `interrupt_on`, runtime middleware, a checkpointer, the selected model, skills, memory, and the configured backend to `create_deep_agent`. It replaces the default filesystem middleware to enable binary offload for non-state backends, and records the live tool attachment catalog after compilation. Tool, MCP, subagent, smart-model, or approval configuration changes rebuild the graph under a lock; active invocations retain their context-local graph.
+## Summarization: compact requests while retaining a recoverable history
 
-For a turn, the runtime refreshes tools, snapshots approval policy, binds request-scoped context variables, invokes with the conversation as LangGraph `thread_id`, and retries only recognized transient errors. It adds pending background results and can retry empty responses with continuation prompts before requesting a forced summary. Interrupts must have unique resumable IDs. The runtime batches their action requests, asks the host-provided handler, and resumes every action with the resulting decisions; cron turns, background delivery, and channels without a handler are automatically rejected rather than waiting for an unavailable person.
+`SummarizationMiddleware` is the SDK layer for automatic compaction and backend-backed recovery. It keeps raw message state and records a private summarization event that reconstructs the effective model request as the summary plus the retained tail. Its per-invocation session ID is persisted so later turns append evicted history to the same backend history file; separate invocations, including subagents, receive different IDs.
 
-### Channel media and host-facing security
+Before compaction, the middleware can truncate older large tool-call arguments. It summarizes when its configured thresholds are reached and also retries through compaction after a recognized context-overflow error. Evicted history is offloaded while the summary is generated; an offload failure does not prevent summarization, but leaves no recoverable history path and emits a warning. Inline media is offloaded to references before history persistence; media that cannot be preserved becomes an explicit placeholder rather than silently disappearing.
 
-The host prepares inbound text before invocation, including supported attachment description and optional Slack thread context, and separately stores validated multimodal image content in request metadata. `DeepAgentRuntime` consumes that `model_content` when present. Its replacement filesystem middleware can offload binary content to blobs for non-state backends, preventing checkpoint state from retaining a base64 image payload. On egress, the host extracts Markdown media references and accepts only media that passes the configured outbound-root containment check.
+`create_summarization_middleware` is the default construction seam used by graph assembly. It requires a resolved `BaseChatModel`, computes fraction-based trigger and retention defaults when the model exposes `max_input_tokens`, and otherwise uses conservative fixed token and message defaults. Its optional summary prompt, trim budget, token counter, and replacement summarizer are keyword-only and pass through to the middleware. Use this factory for default-policy changes; use the middleware implementation for compaction lifecycle and storage semantics.
 
-Talon's default local backend is also runtime-owned. It creates a `CompositeBackend` over `LocalShellBackend`, initializes an owner-only artifacts directory, and gives child processes an allowlisted, scrubbed environment with a fixed safe `PATH`; model credentials, tracing variables, loader-injection variables, and secret-marked names do not pass through.
+## Talon is a caller, not an SDK ownership shortcut
 
-Host-side approvals are interaction state, not graph policy. The host records the pending request with provider, channel conversation, agent conversation, prompt message, and originating sender. Text or reaction responses must match that context and sender before resolving the future. MCP authorization callbacks are similarly bound to the originating channel, conversation, sender, endpoint, and expiry, keeping unsolicited or cross-channel callback URLs out of the model.
+`DeepAgentRuntime._create_graph` is the Talon integration seam. It prepares Talon runtime tools, approvals, model selection, progress middleware, a checkpointer, and its backend, then calls `create_deep_agent`. It deliberately replaces the default filesystem and summarization slots for Talon-specific behavior and conditionally adds its own summarization-tool middleware. Change that composition in `runtime.py` only when the behavior is Talon-specific. Change the reusable `task`, remote task, default summarization, or graph-assembly contract in the corresponding Deep Agents owner first.
 
-## Talon sandbox mode: fail closed and route only assistant-local state home
+## Focused verification
 
-Talon's sandbox adapter opens an optional provider session for the host lifetime. With no sandbox setting it yields no session. With one, startup runs the synchronous provider factory off the event loop and raises `SandboxStartupError` rather than silently falling back to host execution; a sandbox created after cancellation is still closed. An attached sandbox ID is not owned for deletion, while a Talon-created sandbox is closed on context exit.
+From `libs/deepagents`, the package test target accepts a focused file through `TEST_FILE`:
 
-The composite backend makes the sandbox the default for normal files and every `execute` call. Only the assistant's `skills/`, `memory/`, and blob namespace are host-routed. That exception set is intentional: skills and memory remain assistant-local, and blobs under host artifacts survive sandbox recreation. Approval storage such as `tools.json` is not host-routed, so it remains in the sandbox default path. Sandbox mode also limits memory candidates to the routed assistant memory directory and adds the remote working directory to the system prompt.
-
-```mermaid
-flowchart TD
-  Settings["Talon sandbox settings"] --> Open["open_sandbox"]
-  Open --> Composite["CompositeBackend"]
-  Composite --> Default["sandbox files and execute"]
-  Composite --> Skills["host skills route"]
-  Composite --> Memory["host memory route"]
-  Composite --> Blobs["host artifact blobs route"]
-  Blobs --> Durable["survive sandbox recreation"]
+```bash
+make test TEST_FILE=tests/unit_tests/test_graph.py
+make test TEST_FILE=tests/unit_tests/test_async_subagents.py
+make test TEST_FILE=tests/unit_tests/middleware/test_summarization_factory.py
 ```
 
-This route set is the safe extension point: add an explicit route only when host persistence is required and its path containment is established.
-
-## Focused change checklist
-
-- **Graph ordering, harness profile, subagents, or final tool list:** edit `graph.py`; cover placement, protected middleware, exclusions, and state behavior in `test_graph.py`.
-- **Derived sandbox filesystem behavior:** edit `backends/sandbox.py`; cover both sync and async paths, structured parse failures, bounds, and transfer mechanism in `test_sandbox_backend.py`.
-- **Channel turn sequencing, cancellation, commands, authorization, approval routing, or delivery:** edit `host.py`; use the relevant `test_host.py` cases, especially replacement/cancellation and sender/message-bound approvals.
-- **Graph rebuild, context variables, retries, approval resumption, model selection, or backend child environment:** edit `runtime.py`; use `test_runtime.py` and the approval-runtime tests.
-- **Media crossing the channel/runtime boundary:** change `media.py`, `host.py`, or runtime wiring according to ownership; cover inbound model content, blob offload, outbound root containment, and code masking.
-- **Provider lifecycle or host route exceptions:** edit Talon's `sandbox.py` and configuration together; prove fail-closed startup, cancellation cleanup, and `skills`, `memory`, `tools.json`, and blob routing in `test_sandbox.py`.
+For a graph edit, prove assembly order, protected/excluded middleware, subagent classification, and resulting compilation inputs. For an async task edit, test both synchronous and asynchronous tool implementations with a mocked SDK transport, persisted task updates, status transitions, remote failures, and fork serialization as applicable. For a factory edit, cover both model-profile branches, prompt formatting, pass-through knobs, model validation, and custom summarizer behavior. A behavior change below the summarization factory also needs a lifecycle-level test near the implementation; the factory test alone intentionally covers construction policy.

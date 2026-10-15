@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:3521d933ff2be927efb177885a22ba9e6ab4ea12bf8bb4820155540c5bf9b700",
+  "pageVersion": "sha256:579d7c198dd9b3114774b3e04c364a07d9aaec0e39e9b5f41c62dfa5f9285ee5",
   "claims": [
     {
       "id": "claim_7da573d3acfd4e42a24d96f63c118dc3",
@@ -130,11 +130,11 @@
     },
     {
       "id": "claim_335a73d14c804368bc93f95f68707cc2",
-      "statement": "The release manifest versions `deepagents` at 0.7.25, `deepagents-acp` at 0.0.13, `deepagents-code` at 0.1.84, and `deepagents-talon` at 0.0.9.",
+      "statement": "The release manifest versions `deepagents` at 0.7.25, `deepagents-acp` at 0.0.13, `deepagents-code` at 0.1.85, and `deepagents-talon` at 0.0.9.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json#L1-L10",
-          "version": "repo-lines-v1:sha256:8313f07928e67811ca8e45735003f9c0eea0ac31cb16b15f591561a7199bccca:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJkMWQzNmNiYWRjZTAwMzA2MTRlZTNkMzliNTY4NmRlMTk0OWUxMWMzYmM0NWI0ZTVlMWMyNTY5NWI3OTZlNGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+          "version": "repo-lines-v1:sha256:47d6c8c0cb047c0ff2fa47d0c3905199a67dc935ce972c1e076523a54f3fe92d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJkMWQzNmNiYWRjZTAwMzA2MTRlZTNkMzliNTY4NmRlMTk0OWUxMWMzYmM0NWI0ZTVlMWMyNTY5NWI3OTZlNGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
         }
       ]
     },
@@ -151,10 +151,56 @@
           "version": "repo-lines-v1:sha256:0952ce0f926e46b95cf4e1d3875222090398f364f47d7ba2ffac617907e1c0d8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTA4NmJjNzE2ZTQ1ZjVjN2NkMjMwMTFkZTgyNjgyNWU2ZjM5NmI5NDBlOTMyNDdjMzYxZjJmOWQ5YWNjOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlNjI5YWM1NjQ1YjZiMmYwZDEyNjYwYzhiNTA0MjgxZGMzYjg2M2I5YjYyNTRiYTY2YjdmZmQ5MTg2MWRkNzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI0NjNkZTM4NmUwNzkxYWRkNTJlM2Y2ZTNhMDlmMmJmNjQ4ZmU0MzEzMThlMTkxNWI3ZTVkZTk5ZjdhNTg0NTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiZGQ2ODEwMjRlZDhkZjcyOTU4N2JkZDdiMTZmYzI3YWVjMDk2NGJlZTE0Nzc3NDg3ZTg2NGQ0ZTg3ZjkwOWQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_10c749cd8b864c45b0ec2de2e8df6953",
+      "statement": "The lockfile refresh helper re-locks changed package manifests and their transitive editable local consumers using each package's required Python version, while the lockfile check runs `uv lock --check` for applicable packages.",
+      "evidence": [
+        {
+          "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py#L105-L145",
+          "version": "repo-lines-v1:sha256:6c1c10958d418c1986c40fcaff9b146dcadbda001b068e5e0626880d0fc88da1:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjYWQ5ZjU1ZWFjZjQzNTQ3NTVkMDA4MjlmNWI4YWM2MjQwZTllN2JiZWUyN2NiYmQzODkwZmNlMjMzODljMDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmMjc5OTRiZDE0NWMzMmY5MjYxOTg4YjYwMjMwYWE3YmQxYzIxMWRlMmEzM2NmZTNlOGU0MTY4ZDEwZGQ3ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhODJlYmU5ZWQ0MDdjM2E2YmE0YjAwMzQyOTJiYWE1MmMxMWNlNWFlMjg2MTA3NDAyZGU0NzkyZWVlY2FjZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA1NzIyYjhjNGYyODMxYTA4YTZmZjE2OGQxNjUxMTRiNmZkYmFjZjk4NDIxNTM2NjI3NzY5M2JkY2IzYmQwMjAifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py#L29-L33",
+          "version": "repo-lines-v1:sha256:337043566260dd889946bc6673a7584494c2852393f37880a960d606cc1d7a41:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjljYWIyMzdjYWJkZDcxZTA4MGVlNDBmODQyNmVhZjM0NjYzNjM4ZDhhNTEzN2JhZDZhMzQzYzJiMTgxZjI0OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNmYxZmMxYzU5MTg1MDZiYTMyN2QxMWM3N2JkMTUzNDI4NTMxODQzNjc3N2JlMTcyOThjOGI3MDYwYmE2NjhhMiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZjI2MzY0OWQ0NWI2YmZiZDY2ZjBmMGU1YmUxNzViOWM3ODkwZTE5YTQ4ZjRkMWVjZmMyNzNiNzg0M2ZmZWZkMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmY5MjA1N2FjNmFkYjVjMzcxYTYyZWUzNDY3NTcwMmViMjAwMGU0Nzc1NzgyNDM5MzBiNDZmY2Y2ZDU3ZDE0MSJ9"
+        },
+        {
+          "resource": "repo://.github/scripts/checks/check_lockfiles_pre_commit.py#L59-L79",
+          "version": "repo-lines-v1:sha256:55484a5085e1ce8df2fd57daacd278ae13f31b5a1ae46e193b4076deb7f061cd:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczMDQzOTg5YTMxOTUzZjhhYzg2ZTQ4YWI0NGM5ODlkNjY3MDA5MGY2YjUyNDc1ZTlhNjUwZmMwMGViMTFlM2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIxYmUyNWQwYzRlNzNkMWJhZDRkZDUxYzA3YzA3MWM2YzI4OTBlMTgyYTA2ZTZiZjljOTIyMzRhODQ0ZmVlOWIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYxMjU2ZjIxZDBlZGNkNjMzN2E5MDQzZTY4NjM0ZTU1ZGE4YjRiYmE2MmNlODk2MmMyMzVhNTAxYTQ4NGQ0NDgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImIzNzk2MGZmZTdiMmZlYWY5NDZhMGVhYjUzNDA1MGZhZGIzZjk5MGFmNGZlM2Y4ODk1ZTA3ZWNiYWJlNTg0MWYifQ"
+        },
+        {
+          "resource": "repo://.github/scripts/checks/refresh_lockfiles.py#L8-L27",
+          "version": "repo-lines-v1:sha256:79f7ddabadc0a86393d40ac48566f13200f17f625785816bbba12bd7dd1e6766:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2N2MzMThkMDVkZGEwNmEwNGQxZmYxYzE5NWQyZjFkZmEzZjFkYTRiMGRlNWFmNzdkN2E4M2Q4MjY4ZTViMTciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcxYWZhODk3NGQ5ZTExNzUzMTI1N2Y4NzVlM2EwYjc1NmQ4NzNkYzM4ODU3MTcwNGI3MGIzMTA3NDkzNDcxOTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIxNDRiNDA3OTU1ZGNkZTI0YzIyZTFkZTU2MTliZGZlMzlkNzFlNjFhNTdlNDlhMDRlMDQ0NWQxMjVhNTI4NzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNkNDEzNDBjYzIzOWExNTljZTliNjAyMmU5ZjYzMjI4MzJlMmVhZDc2Y2FlOWU0NzU0ZDIxMGViOGZiNmQ1ZTgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3b77b526c7854d01b053f18f96dbdd90",
+      "statement": "dcode's first-enable Auto UI coverage verifies that the confirmation modal appears before mode activation, identifies the separate classifier model, and persists the notice only after confirmation; the notice-body unit test guards Markdown escaping of the configured model label.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_app.py#L22079-L22137",
+          "version": "repo-lines-v1:sha256:00601dbc10179cf7712daad58ad8356e9c35309a3934f5394bb8f2bcfd2e0dcc:eyJzZWxlY3RlZExpbmVDb3VudCI6NTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFiNTU3NjE4MjMwOThjYWJlMmNiMDcyOTgyZTA4NTNhMWM1Njg2ZjI2Nzk2YTUyNWMxOTNiMDA2NTc0ZmM1ZTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM4MDMyM2Y1MGEyNDc5NDIyNTA2YTE3MTRhYWE1YTYwOTgxNWMyNTI3OTZkYmU4OGM3NzA1ODMyYTNkYThiYzciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc2ZWZkMDM4ZGExYTkyNDU2NzJiMTAzOTNiNTNkZWZjZDNjNDUzMmExY2M5ODUyNTI2YjdhNTkxZjAxNGQ5NjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjM4MzE2NmMxMDEzYTU5NjBkMzVlZjk3YjUyY2FlZGI4NGM1ZjEyN2I4OWJlOGFhOTRhYjU1MjViYzExNmZmNjgifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/tui/widgets/test_auto_mode_notice.py#L1-L22",
+          "version": "repo-lines-v1:sha256:da69b2524d3de61209b44b07c988ea2455c25b52746abdeb32785e6cdc3ea918:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMxNzA0ODIxOWFmNmRmNTQ1ZDNkMzY5YzZjMWJjYzM0MGZjZTU5MzQwYzVhYjM5ZThhZjI5OTgwODg5MzJhNDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MTMyNDk0NjFiYTM2YmE4MTI3ZWYzZDE0YmFmZWJkOTc2OTkxMmU2ZTVhN2U2NWU0N2EwNTAyYWFmMDM5OTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_7f08da1b075e416ca56b5055d763415a",
+      "statement": "The dcode editable-install dependency-floor tests cover both skipping released installs and warning without exiting when an editable environment is below a declared dependency floor.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_dep_floor_check.py#L66-L115",
+          "version": "repo-lines-v1:sha256:e22d066086b562e42b13c569000d90cd0b93c2ebcd2d6a04cf568bb05a87b520:eyJzZWxlY3RlZExpbmVDb3VudCI6NTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk4Njg3ZjQ1MmVmN2ZjZTY3YzM2YTRjYjc5YzYyYTVlNzk4YjE2NDlhNzY1MWU0M2ExMTc3NmNlMjQ5ZTIxYzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIxZDlkNzU0ZTgyZTViNjQyYzM2ZmJkNWQxMTlmMTZiMTc1MmZkMDVmZjk0NTVlOGY0ODk2OWVkMzdmMzdlOWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc5MjNmYTY5MmJjYmNhY2ZjMGVkOTIyYWU4OTQ5ZGI1ZmFiYjkwZGZlNzdhMjJkYzI0YTkzZjBmYTM0MDllYTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImE3ZTc4ZWI1NGE1YTk4MjVmNDcwODMyMzE3NGVmZmY1ZTg2ZTkwNWIwZTdkYTM4MGEzNTdhNDFhYWMxNjBlMjMifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-14T08:05:41.101Z"
+    "at": "2026-10-15T08:05:41.400Z"
   }
 }

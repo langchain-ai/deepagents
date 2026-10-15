@@ -174,13 +174,13 @@ shows, this one for the decomposition.
 | arm | graded | CORRECT | BLOCKED | INCORRECT | **rate** | med steps | med tokens | med $ | **total $** | med secs |
 |---|---|---|---|---|---|---|---|---|---|---|
 | facade-repl | 100 | **86** | 7 | 7 | **86.0%** | 11 | 40,825 | $0.0185 | $2.98 | 30 |
-| **facade** | 100 | 85 | 10 | 5 | 85.0% | 10 | 31,157 | $0.0171 | **$2.46** | 22 |
-| MCP | 100 | 83 | 13 | 4 | 83.0% | 13 | 101,206 | $0.0770 | $17.87 | 30 |
-| browser-use | 97 | 79 | 13 | 5 | 81.4% | 13 | 57,579 | $0.1202 | **$73.15** | 45 |
-| CLI | 99 | 80 | 15 | 4 | 80.8% | 8 | 49,270 | $0.0511 | $11.65 | 63 |
-| playwright MCP | 94 | 73 | 17 | 4 | 77.7% | 26 | 104,321 | $0.2205 | $25.54 | 55 |
-| agent-browser | 84 | 64 | 17 | 3 | 76.2% | 10 | 35,195 | $0.0203 | $2.89 | **18** |
-| REPL | 99 | 74 | 21 | 4 | 74.7% | 10 | 34,492 | $0.0146 | $4.45 | 51 |
+| **facade** | 100 | 85 | 10 | 5 | 85.0% | 10 | 31,157 | $0.0171 | $2.46 | 22 |
+| MCP | 100 | 83 | 13 | 4 | 83.0% | 13 | 99,282 | $0.0768 | $15.98 | 29 |
+| browser-use | 100 | 82 | 13 | 5 | 82.0% | 14 | 57,579 | $0.1202 | **$58.81** | 46 |
+| CLI | 99 | 80 | 15 | 4 | 80.8% | 8 | 47,552 | $0.0492 | $8.23 | 63 |
+| agent-browser | 100 | 77 | 18 | 5 | 77.0% | 10 | 34,495 | $0.0206 | $3.09 | **17** |
+| playwright MCP | 100 | 75 | 21 | 4 | 75.0% | 26 | 103,728 | $0.2188 | $23.80 | 53 |
+| REPL | 99 | 74 | 21 | 4 | 74.7% | 10 | 34,417 | $0.0142 | **$2.42** | 35 |
 
 **The facade arm is 7.3x cheaper than hosted MCP at higher accuracy** -- $2.46
 against $17.87, a third of the tokens, a quarter of the wall clock.
@@ -194,8 +194,8 @@ against $17.87, a third of the tokens, a quarter of the wall clock.
 comparison by some distance, and it is also the only arm where that is a
 liability.
 
-It costs **$25.54 against the facade's $2.46 -- 10x -- for twelve fewer correct
-answers.** 104,321 median tokens to the facade's 31,157; 26 median steps to 10.
+It costs **$23.80 against the facade's $2.46 -- 10x -- for ten fewer correct
+answers.** 103,728 median tokens to the facade's 31,157; 26 median steps to 10.
 
 An earlier revision of this section reported $66.16 and 82.7%. That run was
 measured on `claude-sonnet-5` while every other arm ran `claude-sonnet-5-5`,
@@ -203,8 +203,9 @@ which is a mistake worth recording: the same arm, same dataset and same judge
 moved from $66.16 to $25.54 and from 82.7% to 77.7% on the model change alone.
 Any table mixing the two is meaningless.
 
-Nothing is wrong with the tools. Only **4 INCORRECT** in 94 graded rows: this
-arm almost never answers wrongly, it gets walled. The cost is structural. Twenty-five fine-grained verbs mean a model
+Nothing is wrong with the tools. Only **4 INCORRECT** in 100 graded rows: this
+arm almost never answers wrongly, it gets walled -- 21 times, the joint worst
+in the set. The cost is structural. Twenty-five fine-grained verbs mean a model
 turn per action, and `browser_snapshot` returns a full page representation
 where the facade's `run` returns whatever the snippet chose.
 
@@ -274,10 +275,11 @@ second before reporting any number.
 
 ## What the whole set says
 
-**Cost spans 30x and accuracy spans 11 points, and they are barely related.**
-The cheapest arm (facade, $2.46) is also the second most accurate; the most
-expensive (browser-use, $73.15) lands mid-table; the richest tool surface
-(playwright MCP, 25 tools) is seventh of eight.
+**Cost spans 24x and accuracy spans 11 points, and they are barely related.**
+The two cheapest arms (REPL at $2.42, facade at $2.46) bracket the accuracy
+range -- last and second -- while the most expensive (browser-use, $58.81)
+lands fourth and the richest tool surface (playwright MCP, 25 tools) is seventh
+of eight.
 
 What separates them is how much a tool returns and how many turns it costs to
 get it:
@@ -286,9 +288,9 @@ get it:
   agent wanted them; the facade's `run` returns whatever the snippet chose.
 * Playwright's 25 fine-grained verbs mean a model turn per action -- 26 median
   steps against the facade's 10.
-* The two cheapest arms, facade ($2.46) and agent-browser ($2.89), have nothing
-  in common except that the agent decides what comes back: one writes
-  JavaScript, the other writes shell.
+* facade ($2.46) and agent-browser ($3.09) have nothing in common except that
+  the agent decides what comes back: one writes JavaScript, the other writes
+  shell. Both run ~10 steps a task.
 
 **Most accuracy differences are bot-walling, not browsing skill.** Across the
 set, INCORRECT counts cluster between 3 and 7 regardless of arm, while BLOCKED
@@ -296,10 +298,11 @@ ranges from 7 to 21. Arms do not mostly answer wrongly; they mostly get walled,
 and which site walls which run is close to arbitrary -- of 49 blocked rows in
 the first three arms, none overlapped across all three.
 
-**Caveats worth carrying.** agent-browser is n=84 and playwright n=94 because
-both CI jobs were SIGTERMed at the 240-minute cap before finishing; their rates
-rest on a smaller base. Wall clock is not comparable between deployment arms
-and CI arms. And three arms spend a second model on Browserbase's side that
+**Caveats worth carrying.** Every arm is now n=100 bar CLI and REPL at 99,
+which lost one row each to an ungradeable empty answer. Three CI jobs were
+SIGTERMed at the old 240-minute cap and finished by resuming only their missing
+examples, so no arm rests on a truncated base. Wall clock is not comparable
+between deployment arms and CI arms. And three arms spend a second model on Browserbase's side that
 never enters our traces, so their token counts understate the real work.
 
 ## Why CLI and REPL are so much cheaper

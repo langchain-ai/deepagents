@@ -1918,14 +1918,14 @@ def _pulled_events(update: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 class TestParentPull:
-    async def test_news_is_added_before_the_model_call(self) -> None:
+    async def test_status_update_is_added_before_the_model_call(self) -> None:
         update = await _pull("abefore_model", _lead_state(), _ended())
 
         assert [e["status"] for e in _pulled_events(update)] == ["success"]
         assert "<result>\nremote done\n</result>" in _text(update["messages"][0])
         assert update["async_tasks"]["thread_abc"]["status"] == "success"
 
-    async def test_news_is_added_at_the_start_of_a_run(self) -> None:
+    async def test_status_update_is_added_at_the_start_of_a_run(self) -> None:
         update = await _pull("abefore_agent", _lead_state(), _ended())
 
         assert [e["status"] for e in _pulled_events(update)] == ["success"]

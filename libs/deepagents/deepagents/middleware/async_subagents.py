@@ -337,8 +337,9 @@ def _reference_for(spec: AsyncSubAgent, runtime: ToolRuntime) -> _ParentReferenc
 def _thread_metadata(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, str]:
     """Metadata for a task's thread, so apps can find a parent's subagent threads with `threads.search`.
 
-    It also keeps the parent's assistant, so runs started elsewhere on the
-    thread (such as the user answering the subagent) can still notify the parent.
+    For subagents on this deployment, it also keeps the parent's assistant, so runs
+    started elsewhere on the thread (such as the user answering the subagent) can
+    still notify the parent.
     """
     reference = _reference_for(spec, runtime)
     metadata = {"parent_thread_id": reference["thread_id"]} if "thread_id" in reference else {}
@@ -382,7 +383,7 @@ _MAX_RESULT_CHARS = NUM_CHARS_PER_TOKEN * 20_000
 
 
 class TaskEvent(TypedDict):
-    """How an async subagent's task ended, as reported to the agent that started it.
+    """How an async subagent's task ended or paused, as reported to the agent that started it.
 
     A notification message carries it in `additional_kwargs["deepagents_notification"]`,
     so apps can tell these messages from the user's.
@@ -587,7 +588,7 @@ async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUp
 async def _notify_parent(config: RunnableConfig, event: _TaskUpdate) -> None:
     """Wake the parent if it's idle; otherwise it finds out on its own.
 
-    A busy parent sees the news before its next model call, a paused one after
+    A busy parent sees the status update before its next model call, a paused one after
     the user answers its approval. Schedules one delayed check for a parent that
     was just finishing. Never raises.
     """
@@ -1358,7 +1359,7 @@ _PULL_TIMEOUT_SECONDS = 5
 """How long the parent waits on one task's status before skipping it until the next check."""
 
 _UNFINISHED_STATUSES = frozenset({"running", "pending", _WAITING})
-"""Tracked task statuses that can still change, so the parent checks them for news."""
+"""Tracked task statuses that can still change, so the parent checks them for status updates."""
 
 
 def _notification_message(update: _TaskUpdate) -> dict[str, Any]:
@@ -1489,11 +1490,11 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             return await self._acheck_task(check)
         recorded = self._record_notification(state) or {}
         tasks = {**(state.get("async_tasks") or {}), **recorded.get("async_tasks", {})}
-        news = await self._apull(tasks)
+        updates = await self._apull(tasks)
         return {
             **recorded,
-            **news,
-            "async_tasks": {**recorded.get("async_tasks", {}), **news.get("async_tasks", {})},
+            **updates,
+            "async_tasks": {**recorded.get("async_tasks", {}), **updates.get("async_tasks", {})},
         }
 
     def before_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
@@ -1501,7 +1502,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         return None
 
     async def abefore_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
-        """(async) Add news from this agent's tasks before the model call."""
+        """(async) Add status updates from this agent's tasks before the model call."""
         return await self._apull(state.get("async_tasks") or {}) or None
 
     async def _apull(self, tasks: Mapping[str, AsyncTask]) -> dict[str, Any]:

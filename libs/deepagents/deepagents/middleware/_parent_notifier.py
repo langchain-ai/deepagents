@@ -75,7 +75,9 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
     async def _areport(self, status: Literal["success", "error"], **details: object) -> None:
         """Notify once per run, for this graph's own run that an async subagent tool started."""
         config = get_config()
-        if not _launching_agent(config) or not _is_own_task_run(config):
+        # Graphs nested in this run (e.g. a sync subagent that's a deep agent) inherit its config,
+        # parent reference included; only the top-level graph reports, so the parent gets this agent's answer.
+        if not _launching_agent(config) or not _is_top_level_graph(config):
             return
         run_key = _current_run_id(config)
         if run_key is None or run_key in self._reported:
@@ -87,6 +89,6 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
         await _notify_parent(config, _task_event(config, name, status, **details))
 
 
-def _is_own_task_run(config: Mapping[str, Any]) -> bool:
+def _is_top_level_graph(config: Mapping[str, Any]) -> bool:
     """Whether this is the outermost graph of a task run, not a graph nested in it."""
     return "|" not in str((config.get("configurable") or {}).get("checkpoint_ns") or "")

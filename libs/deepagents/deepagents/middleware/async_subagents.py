@@ -14,7 +14,7 @@ import html
 import json
 import logging
 import urllib.parse
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
@@ -32,10 +32,9 @@ from langchain.agents.middleware.types import (
 )
 from langchain.tools import ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
-from langchain_core.messages import AnyMessage, ToolMessage
+from langchain_core.messages import AnyMessage, BaseMessage, ContentBlock, ToolMessage, convert_to_messages
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import StructuredTool
-from langgraph.config import get_config
 from langgraph.runtime import Runtime
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
@@ -409,8 +408,8 @@ class TaskEvent(TypedDict):
 class _TaskUpdate(TaskEvent, total=False):
     """A task event plus what the parent's model reads about it."""
 
-    result: str | list[str | dict[str, Any]]
-    """The subagent's final answer, as content (text, or blocks such as images), when it succeeded."""
+    result: list[ContentBlock]
+    """The subagent's final answer, as standard content blocks (text, images, ...), when it succeeded."""
 
     error: str
     """A short description of the failure; `check_async_task` has the details."""
@@ -419,9 +418,9 @@ class _TaskUpdate(TaskEvent, total=False):
     """What it asked (`id` and `value` per interrupt), when it's waiting."""
 
 
-def _notification_event(message: object) -> TaskEvent | None:
+def _notification_event(message: BaseMessage) -> TaskEvent | None:
     """The task event a notification message carries, or `None` for any other message."""
-    event = (getattr(message, "additional_kwargs", None) or {}).get(_NOTIFICATION_KEY)
+    event = message.additional_kwargs.get(_NOTIFICATION_KEY)
     return cast("TaskEvent", event) if isinstance(event, dict) else None
 
 
@@ -457,23 +456,22 @@ def _text_block(text: str) -> dict[str, Any]:
     return {"type": "text", "text": text}
 
 
-_MEDIA_BLOCK_TYPES = frozenset({"image", "image_url", "file"})
-"""Result blocks passed through as they are; a notification is a user message, where providers reject the rest."""
+_MEDIA_BLOCK_TYPES = frozenset({"image", "audio", "video", "file"})
+"""Standard content blocks passed on as they are; a notification is a user message, where providers reject the rest."""
 
 
-def _result_blocks(result: str | list[str | dict[str, Any]]) -> list[dict[str, Any]]:
+def _result_blocks(blocks: Sequence[ContentBlock]) -> list[dict[str, Any]]:
     """The subagent's answer as user content: text escaped and cut when very long, media as it is.
 
-    Blocks only valid in an assistant turn, such as thinking, reasoning and tool calls, are dropped.
+    Reasoning, tool calls and blocks LangChain doesn't recognize are dropped.
     """
-    blocks: list[dict[str, Any]] = []
-    for item in [result] if isinstance(result, str) else result:
-        if isinstance(item, str) or item.get("type") == "text":
-            text = item if isinstance(item, str) else str(item.get("text", ""))
-            blocks.append(_text_block(_escape(_clip(text))))
-        elif item.get("type") in _MEDIA_BLOCK_TYPES:
-            blocks.append(item)
-    return blocks
+    kept: list[dict[str, Any]] = []
+    for block in blocks:
+        if block["type"] == "text":
+            kept.append(_text_block(_escape(_clip(block["text"]))))
+        elif block["type"] in _MEDIA_BLOCK_TYPES:
+            kept.append(dict(block))
+    return kept
 
 
 def _escape(text: str) -> str:
@@ -510,64 +508,28 @@ def _task_event(config: RunnableConfig, agent_name: str, status: Literal["succes
     return _event(str((config.get("configurable") or {}).get("thread_id", "")), agent_name, status, _current_run_id(config), **details)
 
 
-def _final_content(result: Mapping[str, Any]) -> str | list[str | dict[str, Any]]:
-    """The content of the subagent's last message, as the task's result; it may hold images."""
-    messages = result.get("messages") or []
+def _final_content(values: Mapping[str, Any]) -> list[ContentBlock]:
+    """The subagent's last message as standard content blocks, the task's result; it may hold images."""
+    messages = values.get("messages") or []
     if not messages:
-        return "(completed with no output messages)"
-    return messages[-1].content
-
-
-_CHECK_KEY = "deepagents_task_check"
-"""`configurable` key marking a stateless run of the parent's graph as a delayed check on one task run."""
-
-_RACE_CHECK_SECONDS = 30
-"""How long after a subagent ends the delayed check runs, when the parent couldn't be woken then."""
-
-
-class _TaskCheck(TypedDict):
-    task_id: str
-    run_id: str
-    parent_thread_id: str
-    assistant_id: str
-
-
-async def _aschedule_check(check: _TaskCheck) -> None:
-    """Queue one delayed check on a task run, as a stateless run of the parent's graph.
-
-    It covers a subagent that ends just as the parent finishes its run. It never
-    touches the parent's thread or calls the model, and survives restarts.
-    """
-    try:
-        await get_client().runs.create(
-            None,
-            check["assistant_id"],
-            input={"messages": []},
-            config={"configurable": {_CHECK_KEY: check}},
-            after_seconds=_RACE_CHECK_SECONDS,
-        )
-    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors; the parent still finds out when it next checks
-        logger.warning("Failed to schedule a check on task %s", check["task_id"], exc_info=True)
-
-
-_Delivery = Literal["delivered", "later", "unreachable"]
-"""Whether a notification started a parent run, the parent will find out on its own, or the parent isn't on this deployment."""
+        return [{"type": "text", "text": "(completed with no output messages)"}]
+    return convert_to_messages(messages[-1:])[0].content_blocks
 
 
 _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
 """Parent thread statuses a notification run can start on: neither running nor waiting for a human."""
 
 
-async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUpdate) -> _Delivery:
+async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUpdate) -> None:
     """Start a notification run on the parent's thread only while it's idle (or its last run failed).
 
     A new run on a thread waiting for a human would cancel that approval; `reject` covers a thread that just became busy.
-    A parent thread this deployment doesn't have is `unreachable`: it's on another deployment, or gone.
+    A busy parent picks the update up itself, before its next model call or after its final answer. Never raises.
     """
     client = get_client()
     try:
         if (await client.threads.get(thread_id=parent_thread_id)).get("status") not in _DELIVERABLE_THREAD_STATUSES:
-            return "later"
+            return
         await client.runs.create(
             thread_id=parent_thread_id,
             assistant_id=assistant_id,
@@ -576,30 +538,19 @@ async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUp
         )
     except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
         status = getattr(getattr(e, "response", None), "status_code", None)
-        if status == 404:  # noqa: PLR2004  # HTTP not found
-            logger.debug("Parent thread of task %s isn't on this deployment", event["task_id"])
-            return "unreachable"
-        log = logger.debug if status == 409 else logger.warning  # noqa: PLR2004  # 409: became busy
-        log("Didn't deliver the notification for task %s yet", event["task_id"], exc_info=True)
-        return "later"
-    return "delivered"
+        log = logger.debug if status in {404, 409} else logger.warning  # 404: parent gone; 409: became busy
+        log("Didn't deliver the notification for task %s", event["task_id"], exc_info=True)
 
 
 async def _notify_parent(config: RunnableConfig, event: _TaskUpdate) -> None:
     """Wake the parent if it's idle; otherwise it finds out on its own.
 
-    A busy parent sees the status update before its next model call, a paused one after
-    the user answers its approval. Schedules one delayed check for a parent that
-    was just finishing. Never raises.
+    A busy parent sees the status update before its next model call or after its
+    final answer, a paused one after the user answers its approval. Never raises.
     """
     parent = _launching_agent(config) or {}
-    if "thread_id" not in parent or "assistant_id" not in parent:
-        return
-    if await _awake_parent(parent["thread_id"], parent["assistant_id"], event) != "later" or "run_id" not in event:
-        return
-    await _aschedule_check(
-        {"task_id": event["task_id"], "run_id": event["run_id"], "parent_thread_id": parent["thread_id"], "assistant_id": parent["assistant_id"]}
-    )
+    if "thread_id" in parent and "assistant_id" in parent:
+        await _awake_parent(parent["thread_id"], parent["assistant_id"], event)
 
 
 class _ClientCache:
@@ -1333,23 +1284,15 @@ def _build_async_subagent_tools(
     ]
 
 
-async def _aparent_task(check: _TaskCheck) -> AsyncTask | None:
-    """Read the parent's record of the checked task from its thread, without starting a run there."""
-    try:
-        values = (await get_client().threads.get(thread_id=check["parent_thread_id"])).get("values")
-    except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors; treated as gone
-        logger.warning("Failed to read the parent thread of task %s", check["task_id"], exc_info=True)
-        return None
-    tasks = values.get("async_tasks") if isinstance(values, dict) else None
-    return cast("AsyncTask | None", (tasks or {}).get(check["task_id"]))
-
-
 def _check_event(task: AsyncTask, run: Run, thread: Thread | None, status: str) -> _TaskUpdate | None:
     """The notification for a task outcome a check found, or `None` for outcomes not worth waking for."""
     if status not in {"success", "error", "timeout", _WAITING}:
         return None
     result = _build_check_result(run, task["thread_id"], thread)
-    details = {key: result[key] for key in ("result", "interrupts") if key in result}
+    details: dict[str, object] = {"interrupts": result["interrupts"]} if "interrupts" in result else {}
+    if status == "success":
+        values = thread.get("values") if thread else None
+        details["result"] = _final_content(values if isinstance(values, Mapping) else {})
     if status == "error":
         details["error"] = "The subagent failed."
     return _event(task["task_id"], task["agent_name"], status, run.get("run_id", task["run_id"]), **details)
@@ -1402,9 +1345,9 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     !!! warning "Beta"
 
         On an Agent Server, the agent is told when its async subagent tasks
-        finish, fail or wait for the user: before each model call while it
-        runs, and through a new run when a deep agent subagent on this
-        deployment ends while it's idle. This needs the async path (`ainvoke`,
+        finish, fail or wait for the user: before each model call and after
+        its final answer while it runs, and through a new run when a deep
+        agent subagent on this deployment ends while it's idle. This needs the async path (`ainvoke`,
         which the Agent Server uses); with `invoke`, only the tools work. This
         may change.
 
@@ -1473,21 +1416,12 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         else:
             self.system_prompt = system_prompt
 
-    @hook_config(can_jump_to=["end"])
     def before_agent(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
-        """Route this run: a task check, or a normal run.
-
-        Task checks and notifying the parent need the async path; the Agent Server runs graphs that way.
-        """
-        if (get_config().get("configurable") or {}).get(_CHECK_KEY):
-            return {"jump_to": "end"}
+        """Record the task notification that started this run, if one did."""
         return self._record_notification(state)
 
-    @hook_config(can_jump_to=["end"])
     async def abefore_agent(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
-        """(async) Route this run: a task check, or a normal run."""
-        if check := (get_config().get("configurable") or {}).get(_CHECK_KEY):
-            return await self._acheck_task(check)
+        """(async) Record the notification that started this run, then add status updates from this agent's tasks."""
         recorded = self._record_notification(state) or {}
         tasks = {**(state.get("async_tasks") or {}), **recorded.get("async_tasks", {})}
         updates = await self._apull(tasks)
@@ -1504,6 +1438,24 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     async def abefore_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """(async) Add status updates from this agent's tasks before the model call."""
         return await self._apull(state.get("async_tasks") or {}) or None
+
+    def after_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
+        """Pass through: checking tasks needs the async path, which the Agent Server uses."""
+        return None
+
+    @hook_config(can_jump_to=["model"])
+    async def aafter_model(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
+        """(async) After a final answer, check tasks once more; on a status update, give the model another turn.
+
+        Each extra turn needs a new status update, so the tasks themselves bound how many there are.
+        """
+        messages = state.get("messages") or []
+        if not messages or getattr(messages[-1], "tool_calls", None):
+            return None
+        updates = await self._apull(state.get("async_tasks") or {})
+        if not updates.get("messages"):
+            return updates or None
+        return {**updates, "jump_to": "model"}
 
     async def _apull(self, tasks: Mapping[str, AsyncTask]) -> dict[str, Any]:
         """Check unfinished tasks; return their updated records and a notification per new outcome.
@@ -1551,21 +1503,6 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         if run_id != task["run_id"] and task["status"] not in _UNFINISHED_STATUSES:
             return None
         return {"async_tasks": {task["task_id"]: _observed(task, event["status"], run_id)}}
-
-    async def _acheck_task(self, check: _TaskCheck) -> dict[str, Any]:
-        """Wake the parent once if the task ended and the parent hasn't recorded it; a busy or paused parent is left alone."""
-        task = await _aparent_task(check)
-        # A newer launch, or an outcome the parent already recorded, needs nothing.
-        if task is None or task["run_id"] != check["run_id"] or task["status"] not in {"running", "pending"}:
-            return {"jump_to": "end"}
-        try:
-            run, thread = await _aobserve(self._clients.get_async(task["agent_name"]), task)
-        except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors; the parent finds out when it next checks
-            logger.warning("Failed to check task %s", task["task_id"], exc_info=True)
-            return {"jump_to": "end"}
-        if event := _check_event(task, run, thread, _task_status(run, thread)):
-            await _awake_parent(check["parent_thread_id"], check["assistant_id"], event)
-        return {"jump_to": "end"}
 
     def wrap_model_call(
         self,

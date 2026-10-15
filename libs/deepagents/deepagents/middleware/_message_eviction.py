@@ -275,7 +275,7 @@ def _offload_tool_message_content(
     result = backend.write(file_path, content_str)
     if result is None or result.error:
         return None
-    replacement_text = _render_too_large_tool_msg(tool_call_id=message.tool_call_id, file_path=file_path, content_str=content_str)
+    replacement_text = _render_too_large_tool_msg(tool_call_id=message.tool_call_id, file_path=result.path or file_path, content_str=content_str)
     return _build_evicted_tool_message(message, _build_evicted_content(message, replacement_text))
 
 
@@ -291,5 +291,5 @@ async def _aoffload_tool_message_content(
     result = await backend.awrite(file_path, content_str)
     if result is None or result.error:
         return None
-    replacement_text = _render_too_large_tool_msg(tool_call_id=message.tool_call_id, file_path=file_path, content_str=content_str)
+    replacement_text = _render_too_large_tool_msg(tool_call_id=message.tool_call_id, file_path=result.path or file_path, content_str=content_str)
     return _build_evicted_tool_message(message, _build_evicted_content(message, replacement_text))

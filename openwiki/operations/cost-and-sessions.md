@@ -3,9 +3,6 @@ type: operations reference
 title: Cost Tracking and Session Operations
 description: Operate dcode's checkpointed estimated-cost accounting, isolated side-task subtotals, pricing catalog behavior, and SQLite session lifecycle. Covers cost diagnostics, remote presentation, safe local inspection, thread ownership, and server-side offload settlement.
 tags: [dcode, cost-tracking, sessions, sqlite, pricing, diagnostics]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-09T08:07:51.383Z
 sources:
   - id: openwiki-source-dc8749c06f6da0ecc0666f26
     resource: repo://libs/code/deepagents_code/_session_stats.py
@@ -43,6 +40,10 @@ sources:
     resource: repo://libs/code/deepagents_code/tui/modals/_cost_breakdown.py
   - id: openwiki-source-f8c8eb69e25f569e0f8a5adb
     resource: repo://libs/code/deepagents_code/tui/modals/cost_breakdown.py
+  - id: openwiki-source-851e33831638e46febf30b1d
+    resource: repo://libs/code/deepagents_code/tui/widgets/debug_console.py
+  - id: openwiki-source-2c41bc0b19795204a48854ee
+    resource: repo://libs/code/deepagents_code/tui/widgets/status.py
   - id: openwiki-source-e008f655edf2ad7c28fdfaed
     resource: repo://libs/code/deepagents_code/tui/widgets/thread_selector.py
   - id: openwiki-source-140e3a9397d67359bab19562
@@ -51,15 +52,22 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_app.py
   - id: openwiki-source-0f0d55280cd10c91f60f7af1
     resource: repo://libs/code/tests/unit_tests/test_cold_cache.py
+  - id: openwiki-source-a44dd48d815d149c53537ce9
+    resource: repo://libs/code/tests/unit_tests/test_cost_breakdown.py
   - id: openwiki-source-a1c23c211325ea69f28f8ca0
     resource: repo://libs/code/tests/unit_tests/test_cost_tracking.py
+  - id: openwiki-source-4a1c43d9b711698f20494eb8
+    resource: repo://libs/code/tests/unit_tests/test_debug_console.py
   - id: openwiki-source-8574be7f7f29e3e1dd328837
     resource: repo://libs/code/tests/unit_tests/test_js_cost_tracking.py
   - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
     resource: repo://libs/code/tests/unit_tests/test_sessions.py
   - id: openwiki-source-53083c05d51a08d395327737
     resource: repo://libs/code/tests/unit_tests/test_thread_titles.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-09T08:07:51.383Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-14T08:05:41.101Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
 ---
 
 # Cost Tracking and Session Operations
@@ -103,9 +111,27 @@ For an upstream `LookupError`, dcode consults a user `prices.json` and bundled `
 
 ## Operator-facing cost diagnostics
 
-The entire-thread breakdown formatter renders only a mapping with `version == 1` and `historical_complete is True`. For valid data it labels unavailable values, marks incomplete categories as `(partial)`, notes any directionless cost that cannot be attributed to input or output, and warns when priced and total request counts differ. Parent input/output rows include their indented cache and reasoning subsets.
+The entire-thread breakdown formatter renders only a mapping with `version == 1` and `historical_complete is True`. This is deliberately stricter than showing a dollar total: checkpoints with older dollar-only history, an unsupported version, or malformed detail produce no table, so the UI cannot imply full historical token coverage. A version-one receipt records request totals and priced-request totals; it also carries input/output/cache/reasoning tokens and costs plus completeness flags. An unpriceable request can therefore retain reported usage while its cost fields remain incomplete.
 
-`CostBreakdownScreen` is a read-only live modal. It will not stack a duplicate modal, refreshes its provider every 0.5 seconds, and preserves the last view if refresh fails. Display and clipboard content are sanitized plain text without markup; `Esc` closes it and a clipboard failure reports a warning. Treat this view as an operational diagnostic, not a bill or a persistence/backup mechanism.
+```mermaid
+flowchart TD
+    Record["Completed model request"] --> Middleware["CostTrackingMiddleware"]
+    Middleware --> Checkpoint["Private additive cost channels"]
+    Checkpoint --> Formatter["Valid version-one complete history"]
+    Formatter --> Footer["Footer cost span"]
+    Formatter --> Debug["Debug Console button"]
+    Footer --> Modal["Live copyable modal"]
+    Debug --> Modal
+    Formatter --> Hidden["No detail control"]
+```
+
+*The formatter is the coverage gate shared by the footer and Debug Console; an empty result hides or prevents the detail view while the aggregate total can remain visible.*
+
+For valid data, the table labels invalid or missing values `unavailable`, appends `(partial)` to incomplete categories, and explains that cache and reasoning rows are subsets of input and output. It calculates percentages against the supplied total, reports directionless cost that cannot be attributed to input or output, and warns if the number of priceable requests differs from the request total. The values are estimates, not invoices.
+
+The footer's clickable cost span calls `action_open_cost_breakdown()`, which formats the app's authoritative `_session_cost_usd` and `_session_cost_breakdown`. Opening first obtains a nonempty table and refuses to stack a second `CostBreakdownScreen`. The Debug Console receives the same formatter as its optional detail provider: its button is hidden when the provider is empty or fails, and it opens the same modal when detail is available. Thus the diagnostic routes have a shared completeness rule rather than two independent renderers.
+
+`CostBreakdownScreen` is a read-only, live modal. It polls its provider every 0.5 seconds; an exception or empty refresh leaves the currently displayed table in place. Both the initial and refreshed string have control characters sanitized while preserving newlines before they are rendered or copied. `Esc` closes the modal, `c` copies the most recently accepted string, and clipboard errors become a non-fatal warning. The body is a Markdown widget, so sanitization protects terminal/control-character handling rather than converting Markdown syntax into literal text.
 
 ### Remote presentation
 
@@ -192,6 +218,9 @@ On a failed checkpoint write, offload rolls back only if readback proves the che
 
 ## Focused verification
 
+- Run `tests/unit_tests/test_cost_breakdown.py` for formatter eligibility, partial/unavailable values, tiny-cost formatting, attribution notes, and unpriceable-request warnings.
+- Run the `TestFooterCostBreakdown` cases in `tests/unit_tests/test_app.py` for footer entry, duplicate-modal suppression, live refresh, focus restoration, and withholding detail when history is absent or incomplete.
+- Run the cost-breakdown cases in `tests/unit_tests/test_debug_console.py` for the Debug Console entry, live updates, copying the newest accepted table, and hiding the control for incomplete history.
 - Run `tests/unit_tests/test_cost_tracking.py` for price fallback/update behavior, recorder ownership, breakdown completeness, middleware charging, and prepared-operation settlement.
 - Run `tests/unit_tests/test_thread_titles.py` for bounded visible title input, tool-free provider requests, output normalization, timeouts, and initialization cancellation.
 - Run `tests/unit_tests/test_sessions.py` and thread-ownership tests after changing listing, names, deletion, ownership, or checkpoint-derived metadata.

@@ -1,7 +1,7 @@
 ---
 type: delegation and progressive-disclosure concept
 title: Subagents and Skills
-description: Deep Agents delegates local and remote work across explicit state, tracing, and lifecycle boundaries. The Code skill adapter discovers and pins trusted instruction bundles while the underlying skills middleware gates selected tools on visible disclosure.
+description: Deep Agents separates synchronous and remote delegation across explicit state and lifecycle boundaries. Skills expose instructions progressively and disclose selected tools only after a visible read or pin, with provider-aware payload placement and recorded tool-time gating.
 tags: [deepagents, subagents, delegation, skills, middleware, tool-gating, agent-protocol]
 sources:
   - id: openwiki-source-dc1e984fa4e6a51458e9ff9d
@@ -20,14 +20,22 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-13e0ea89aadd1a5e309ac7e3
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
+  - id: openwiki-source-6ce85b02eabe462f99e0c912
+    resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
   - id: openwiki-source-ca8183c87e6002c442ee2d62
     resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
+  - id: openwiki-source-85b5cce2a96e09663cd92f4c
+    resource: repo://libs/talon/tests/unit_tests/test_cron_pinned_skills.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-13T08:11:05.854Z
+    at: 2026-10-15T08:05:41.400Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
 ---
 
 # Subagents and Skills
@@ -84,19 +92,32 @@ sequenceDiagram
     participant Parent
     participant AsyncTools as Async task tools
     participant Remote as Agent Protocol server
+    participant Human as Remote user
     Parent->>AsyncTools: start_async_task
-    AsyncTools->>Remote: create thread and run
+    AsyncTools->>Remote: create linked thread and run
     AsyncTools-->>Parent: task ID and async_tasks update
     Parent->>AsyncTools: check update cancel or list
-    AsyncTools->>Remote: read run create replacement cancel or refresh
+    AsyncTools->>Remote: read run and thread status
+    alt Remote run paused for human
+        Remote-->>AsyncTools: waiting and pending interrupts
+        Human->>Remote: answer or approve on child thread
+    else Update or cancellation
+        AsyncTools->>Remote: replacement run or cancel
+    end
     AsyncTools-->>Parent: ToolMessage and task state update
 ```
 
-*Remote work is tracked in parent state while execution and resources remain on the Agent Protocol server.*
+*The parent tracks a remote task, while its child thread owns execution and any human interaction.*
 
-`async_tasks` is a merge-reduced map keyed by the thread ID. Each record contains the task/thread ID, agent name, current run ID, cached status, and creation/check/update timestamps. `check_async_task` reads the tracked run and, when it succeeds, fetches the thread values to return its final message. `update_async_task` starts an interrupting replacement run on the same thread, retains the task ID, and replaces the run ID. `cancel_async_task` records cancellation only after remote cancellation succeeds. `list_async_tasks` filters on cached status before refreshing nonterminal entries; a status-fetch failure preserves the cached status.
+### Parent linkage, ownership, and task lifecycle
 
-Unknown types or task IDs and SDK failures return tool errors without a task-state mutation. Clients are cached by URL and resolved headers; `x-auth-scheme: langsmith` is added unless supplied. Environment credentials support managed deployments, and `headers` is the self-hosted extension point. URL-less local ASGI transport is async-only, so it requires an entry point such as `ainvoke`; synchronous use requires a reachable URL.
+`start_async_task` creates a remote thread with `parent_thread_id` metadata when the parent has a thread ID. It also puts the available parent thread and assistant identifiers under `configurable.deepagents_parent` on each launch or replacement run. This is linkage for an Agent Protocol application—not shared execution: the remote graph owns its prompt, tools, credentials, approvals, checkpointer and durable thread state. In particular, parent `permissions` and `interrupt_on` are **not** inherited by an `AsyncSubAgent`; configure approvals and credential access on the remote deployment. For URL-less local ASGI launches and updates, trace headers can nest the child run under the current LangSmith trace without forwarding the parent's run metadata to the child.
+
+`async_tasks` is a merge-reduced parent-state map keyed by remote thread ID. Each record contains the task/thread ID, agent name, current run ID, cached status, and creation/check/update timestamps; preserving parent state with a checkpointer preserves this tracking map, while the Agent Protocol server persists and serves the actual thread. Launch records `running`. `check_async_task` reads the tracked run and, after a successful run, reads the thread to return its final message. If that success has left the thread `interrupted`, the task becomes `waiting`, not terminal: its result includes the pending interrupts and says that the user must answer or approve on the subagent's own thread. The parent cannot satisfy that approval.
+
+A resumed child may have a newer run than the recorded one. When a tracked successful run finds its thread `busy` or `error`, observation lists the newest remote run and updates the stored `run_id`, allowing status recovery after another client resumes the child. `update_async_task` creates an interrupting replacement run on the same thread, retains the task ID, marks it `running`, and—when it was waiting—drops the outstanding human request. `cancel_async_task` cancels an active remote run before recording `cancelled`; a waiting task has no active run, so it is simply marked cancelled and later checks do not regress it to `waiting`. `list_async_tasks` filters by cached status before refreshing nonterminal tasks; `waiting` is refreshable, whereas `cancelled`, `success`, `error`, `timeout`, and `interrupted` are not. A live-status failure leaves the cached status intact.
+
+Unknown types or task IDs and SDK failures return tool errors without a task-state mutation. Clients are cached by URL and resolved headers; `x-auth-scheme: langsmith` is added unless supplied. Managed deployments obtain credentials through the SDK environment variables, while `headers` is the self-hosted authentication extension point. URL-less local ASGI transport is async-only, so it requires an entry point such as `ainvoke`; synchronous use requires a reachable URL.
 
 ## Skills: SDK index and Code adapter
 
@@ -139,22 +160,47 @@ If a selected `SKILL.md` resolves outside all allowed roots, the run interrupts 
 
 ## Skill-selected tools: disclosure is a gate
 
-`metadata.include_tools` names tools that `SkillsMiddleware(tools=...)` can resolve from a static list or a `SkillToolResolver`. These tools are deliberately absent from the ordinary tool node. A successful read of a known `SKILL.md`, or a pinned-skill message, triggers resolution before a later model call; the middleware records genuinely gated tool names and their include names in private `_skill_tools_disclosed`.
+`metadata.include_tools` names tools that `SkillsMiddleware(tools=...)` can resolve from a static list or a `SkillToolResolver`. These tools are deliberately absent from the ordinary tool node. A successful result for `read_file` on a known skill's `SKILL.md`—including a partial read—or a pinned-skill `HumanMessage` is a trigger. Before the subsequent model call, the middleware resolves the named includes and writes genuinely gated `{tool name: include name}` entries to private `_skill_tools_disclosed`; it writes an empty record when nothing is disclosed, so an old checkpoint cannot authorize a later call.
 
-At execution time, an ordinary registered runtime tool takes precedence. Otherwise the name must be present in the latest disclosure record and its recorded include name must still resolve to a same-named tool. Calls before disclosure, in the triggering turn, after compaction removes their only trigger, or with stale resolver output remain invalid-tool calls. If compaction leaves another trigger, disclosure is re-anchored to it. This is an availability boundary only: a disclosed tool still passes through permissions and HITL middleware.
+The resolver is an extension boundary, not a one-time lookup: it is called after eligible reads for every model request and again immediately before a gated tool runs. A resolver can map one include name to several tools and can be asynchronous only on an async agent entry point. It should be stable and cheap (or appropriately context-scoped cached), because unstable output can change the prompt prefix and a tool returned at disclosure but absent at execution is refused.
 
-Provider delivery is request-format specific. Supported Anthropic models receive inline `tool_addition` blocks and supported OpenAI Responses models receive anchored `additional_tools` developer items; other models receive tools bound on the next request. The disclosure record follows what the model was actually shown. Anthropic definitions with root `oneOf`, `anyOf`, or `allOf` are withheld because that provider rejects them.
+At execution time, an ordinary registered runtime tool takes precedence. Otherwise the name must be in the latest disclosure record and its recorded include name must still resolve to a same-named tool. Calls before disclosure, in the triggering turn, after compaction removes their only trigger, or with stale resolver output remain invalid-tool calls. If compaction leaves another trigger, disclosure is re-anchored to the earliest remaining one. This is an availability boundary only: a disclosed tool still passes through permissions and HITL middleware.
+
+Provider delivery preserves the conversation prefix rather than moving a newly discovered definition to its beginning. For a model whose profile advertises mid-conversation tools, Anthropic receives inline `tool_addition` blocks and OpenAI Responses receives developer `additional_tools` items. They are inserted after the complete tool-result batch that contains the read, and after queued user messages or empty assistant replies as necessary; repeated calls reproduce the same insertion and bytes while the anchor remains visible. Other models bind the disclosed tools for the next request. The disclosure record follows what the model was actually shown. Anthropic definitions with root `oneOf`, `anyOf`, or `allOf` are withheld because that provider rejects them.
+
+```mermaid
+sequenceDiagram
+    participant Model
+    participant Files as Filesystem tools
+    participant Skills as Skills middleware
+    participant Provider
+    Model->>Files: read_file SKILL.md
+    Files-->>Skills: successful ToolMessage
+    Skills->>Skills: resolve include_tools and record gate
+    Skills->>Provider: next request with anchored tool definition
+    Provider-->>Model: tool is visible
+    Model->>Skills: call disclosed tool
+    Skills->>Skills: re-resolve recorded include name
+    Skills-->>Model: run tool or invalid-tool error
+```
+
+*Successful reads and pins disclose tools for a later request; the recorded disclosure and a fresh resolver result jointly control execution.*
+
+### Scheduled Talon turns
+
+Talon passes `pinned_skills` from request metadata only when `trigger == "cron"`; ordinary channel turns cannot inject pins through metadata. The names are placed in the graph payload before the model call, where `SkillsMiddleware` converts them into the normal pinned snapshots. Talon also fingerprints host-readable `SKILL.md` paths by path, modification time, and size per conversation: a new process or a changed fingerprint writes `skills_metadata=None` to make the SDK reload its cached index. In sandbox mode, only the assistant's `skills` directory is fingerprinted as host-readable.
 
 ## Operations and focused tests
 
 Choose an isolated declarative worker for bounded work with deliberately scoped inputs and configuration. Choose a fork only for context-dependent continuation and accept its experimental, nonrecursive contract. Use a compiled worker when another graph owns the child implementation, and an async worker for remote work that needs explicit status management.
 
-Focused graph tests cover classification, default-worker profile controls, and the `SkillsMiddleware` ordering/replacement slot on the main, generated, isolated, and forked stacks. Local tests cover routing, input validation, state filtering, fork reconstruction and refusal, structured-result forwarding, and tracing. Async tests cover the five tools, duplicate/mode validation, headers, task reduction, launch/check/update/cancel/list behavior, cached-status fallback, and async-only ASGI transport. Code skill tests exercise sync and async trust interrupts, denial and persistence failures, pin snapshots, failed-pin cleanup, reload-driven rescans, root-base resolution, duplicate pins, and checking every requested name. SDK skill tests cover disclosure timing, resolver behavior, compaction, approval integration, and provider payloads, including actual Anthropic and OpenAI request payload placement.
+Focused graph tests cover classification, default-worker profile controls, and the `SkillsMiddleware` ordering/replacement slot on the main, generated, isolated, and forked stacks. Local tests cover routing, input validation, state filtering, fork reconstruction and refusal, structured-result forwarding, and tracing. Async tests cover the five tools, duplicate/mode validation, headers, task reduction, launch/check/update/cancel/list behavior, cached-status fallback, and async-only ASGI transport. Code skill tests exercise sync and async trust interrupts, denial and persistence failures, pin snapshots, failed-pin cleanup, reload-driven rescans, root-base resolution, duplicate pins, and checking every requested name. SDK payload tests stub real Anthropic and OpenAI transports to assert provider bytes: placement after reads and complete result batches, stable cached prefixes, compaction re-anchoring, fallback-model formatting, schema rejection, and the matching execution gate. Talon tests assert that cron metadata pins an instruction body while the same metadata on a non-scheduled turn does not.
 
 ## Related
 
+- [Middleware catalog](/openwiki/concepts/middleware-catalog.md)
+- [Talon scheduling](/openwiki/concepts/talon-scheduling.md)
 - [Middleware stack](/openwiki/architecture/middleware-stack.md)
-- [Runtime behavior](/openwiki/architecture/runtime-behavior.md)
 - [Permissions and HITL](/openwiki/concepts/permissions-hitl.md)
 - [Testing guide](/openwiki/testing/testing-guide.md)
 - [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md)

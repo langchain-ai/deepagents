@@ -1,18 +1,21 @@
 ---
 type: operations guide
 title: Development, Dependencies, and Releases
-description: Package-scoped uv and Make workflows, lockfile closure, dependency-floor automation, and the release-please-to-PyPI lifecycle for the Deep Agents monorepo.
+description: Package-scoped uv development, lockfile maintenance, automated LangChain-family dependency-floor updates, and release-please-managed publishing for the Deep Agents monorepo.
 tags: [development, dependencies, uv, lockfiles, releases, release-please]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-13T08:11:05.854Z
 sources:
+  - id: openwiki-source-9d81aa681a56a98960013750
+    resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
   - id: openwiki-source-594b8b7a84e0fb527fbafd52
     resource: repo://.github/scripts/checks/raise_langchain_minimums.py
   - id: openwiki-source-ea29da8749b893917f11666d
     resource: repo://.github/scripts/release/release-notes.js
   - id: openwiki-source-1bc32c2b33ab6e58128b0319
     resource: repo://.github/scripts/tests/checks/test_raise_langchain_minimums.py
+  - id: openwiki-source-fa3e3af42f9e8d6ed58a473e
+    resource: repo://.github/workflows/check_lockfiles.yml
+  - id: openwiki-source-164e2da859b5277df81c7d94
+    resource: repo://.github/workflows/ci.yml
   - id: openwiki-source-bc54cf7ca3addab1b243d7a6
     resource: repo://.github/workflows/raise_langchain_minimums.yml
   - id: openwiki-source-de0ecb740a3d9d20b8ad07cc
@@ -47,16 +50,16 @@ sources:
     resource: repo://libs/talon/pyproject.toml
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-14T08:05:41.101Z" }
 ---
 
 # Development, Dependencies, and Releases
 
-This repository is a monorepo of independently versioned distributions under `libs/`, not a single root Python project. Work in the package that owns the change: its `pyproject.toml` defines Python compatibility and dependencies, and its `Makefile` is the command authority. Start with `make help`. See the [architecture overview](../architecture/overview.md), [sandbox partners](../integrations/sandbox-partners.md), [quickstart](../quickstart.md), and [Testing Guide](../testing/testing-guide.md) for adjacent concerns.
+This is a monorepo of independently versioned distributions under `libs/`, not one root Python project. Work in the package that owns the change: its `pyproject.toml` defines its Python and dependency contract, its `Makefile` defines supported commands, and it owns its own uv environment and `uv.lock`. Start with `make help` in that package. For adjacent topics, see the [architecture overview](../architecture/overview.md), [quickstart](../quickstart.md), and [Testing Guide](../testing/testing-guide.md).
 
 ## Package-local development
 
-Use `uv` for interpreters, environments, and dependencies; do not substitute `pip`, Poetry, or Conda. Install hooks once, then synchronize and validate the affected package. `uv` provisions the selected interpreter, so there is no repository-wide Python installation or range to impose.
+Use `uv` for interpreters, environments, and dependencies; do not substitute `pip`, Poetry, or Conda. `uv` provisions the interpreter selected by the package, so contributors should not impose a repository-wide Python installation. Do not create or activate a shared environment outside the package: synchronize and run commands from the package directory whose environment and lockfile you intend to use.
 
 ```bash
 uv tool install pre-commit
@@ -68,11 +71,11 @@ make test
 make lint
 ```
 
-`uv sync --all-groups` installs the package and all declared dependency groups. Prefer package Make targets for normal work and `uv run ...` for direct exceptional commands. The Deep Agents and Code Makefiles set `UV_FROZEN = true`: an operation that would silently rewrite a stale lock instead fails, requiring an intentional lock update.
+`uv sync --all-groups` installs that package and all of its declared dependency groups. Prefer its `make` targets for normal work and use `uv run ...` only for direct, exceptional commands. The Deep Agents and Code Makefiles export `UV_FROZEN = true`, so commands do not silently repair a stale lock; update the owning package's lock intentionally.
 
 ```mermaid
 flowchart TD
-    Work["Enter the owning package"] --> Sync["Synchronize required uv groups"]
+    Work["Enter the owning package"] --> Sync["Synchronize that package's uv groups"]
     Sync --> Change["Change source and focused test"]
     Change --> Check["Run package test and lint targets"]
     Check --> Result{"Checks pass"}
@@ -80,43 +83,40 @@ flowchart TD
     Result -->|"Yes"| Review["Open a scoped pull request"]
 ```
 
-*The local loop makes package manifest and lock state explicit before validation.*
+*The local loop keeps each package's environment, manifest, and lock state explicit before validation.*
 
 ### Common package targets
 
-The target set varies, so run `make help` in the package. In `libs/deepagents` and `libs/code`, `make test` uses the `test` group and parallel pytest, disables non-Unix sockets while allowing Unix sockets, disables benchmarks, and reports coverage; set `TEST_FILE` to focus it. `make integration_test` selects `tests/integration_tests/` with a 30-second timeout. `make lint` verifies Ruff formatting, runs Ruff checks, and invokes `ty`; `make format` applies Ruff formatting and safe fixes.
+Target sets vary; run `make help` in the package. In `libs/deepagents` and `libs/code`, `make test` uses the `test` group and parallel pytest, disables non-Unix sockets while allowing Unix sockets, disables benchmarks, and reports coverage; set `TEST_FILE` to focus it. `make integration_test` selects `tests/integration_tests/` with a 30-second timeout. `make lint` verifies Ruff formatting, runs Ruff checks, and invokes `ty`; `make format` applies Ruff formatting and safe fixes.
 
-Code has additional local CI-parity gates:
+Code has additional package-local CI-parity gates:
 
 - `make bootstrap` synchronizes its `test` group and installs hooks.
-- `make check` runs lint, import checks, and tests; then it checks extras synchronization, `pyproject.toml`/`_version.py` equality, and `uv.lock` freshness. Its SDK-pin check is advisory only when it exits `1`; another checker failure stops the target.
+- `make check` runs lint, import checks, and tests; then checks extras synchronization, `pyproject.toml`/`_version.py` equality, and its own `uv.lock` freshness. Its SDK-pin check is advisory only for exit status `1`; other checker failures stop the target.
 - `make commands-catalog` regenerates `COMMANDS.md`; `make commands-catalog-check` detects drift. Do not hand-edit that generated catalog.
 
 External contributors must link an approved issue or discussion and be assigned before opening a PR.
 
-## Compatibility contracts, pins, and lockfile closure
+## Compatibility contracts and lockfiles
 
-Each package owns its own compatibility range. ACP and QuickJS support Python 3.11+; Code and Talon require Python 3.12+; Deep Agents supports Python 3.11 through the pre-4.0 range. These runtime contracts are distinct from the interpreter selected for aggregate lock resolution.
-
-The following runtime constraints are representative compatibility boundaries, not a promise that every transitive dependency shares the same range:
+Each package owns its own runtime compatibility range. ACP and QuickJS support Python 3.11+; Code and Talon require Python 3.12+; Deep Agents supports Python 3.11 through the pre-4.0 range. These runtime contracts are distinct from the interpreter selected to resolve a lockfile.
 
 | Package | Current compatibility-critical requirements |
 | --- | --- |
-| `libs/deepagents` | `langchain>=1.4.4,<2.0.0`, `langchain-core>=1.6.10,<2.0.0`, and `langsmith>=0.14.7` |
-| `libs/code` | Exact `deepagents==0.7.24` consumer pin; `langchain>=1.4.4,<2.0.0`; `deepagents-acp>=0.0.10,<1.0.0` |
-| `libs/acp` | Editable local `deepagents` source and `agent-client-protocol>=0.10.1` |
-| `libs/talon` | `deepagents>=0.7.24`, `deepagents-code>=0.1.71,<1.0.0`, `langchain>=1.4.4,<2.0.0`, `langgraph>=1.2.14,<2.0.0` |
-| `libs/partners/quickjs` | `deepagents>=0.7.0,<0.8.0`, `langchain>=1.4.4,<2.0.0`, `langchain-core>=1.6.10,<2.0.0`, `langgraph>=1.2.14,<2.0.0` |
+| `libs/deepagents` | `langchain>=1.4.5,<2.0.0`, `langchain-core>=1.6.10,<2.0.0`, and `langsmith>=0.14.8` |
+| `libs/code` | Exact `deepagents==0.7.24` consumer pin; `langchain>=1.4.5,<2.0.0`; `deepagents-acp>=0.0.10,<1.0.0` |
+| `libs/talon` | `deepagents>=0.7.24`, `deepagents-code>=0.1.71,<1.0.0`, `langchain>=1.4.5,<2.0.0`, and `langgraph>=1.2.15,<2.0.0` |
+| `libs/partners/quickjs` | `deepagents>=0.7.0,<0.8.0`, `langchain>=1.4.5,<2.0.0`, `langchain-core>=1.6.10,<2.0.0`, and `langgraph>=1.2.15,<2.0.0` |
 
-The current Deep Agents release baseline is `0.7.24`, and Code's exact consumer pin is `deepagents==0.7.24`. Do not casually convert that exact consumer pin into a floor: the daily minimum-raise automation intentionally excludes `==` requirements. A successful Deep Agents publish instead dispatches the dedicated Code SDK-pin bump workflow as a non-blocking follow-up.
+The Deep Agents source is currently `0.7.25`, while Code's exact consumer pin remains `deepagents==0.7.24`. Do not convert that pin into a floor: the daily minimum-raise automation deliberately excludes `==` requirements. A successful Deep Agents publish instead dispatches the dedicated Code SDK-pin bump workflow as a non-blocking follow-up.
 
-Local consumers use editable `[tool.uv.sources]` paths. For example, Code resolves Deep Agents, ACP, and partner integrations from sibling directories, so source changes can be consumed without publishing a distribution. This means a producer manifest change is also a consumer-lock concern: a consumer lock embeds requirements resolved through its local path.
+Local consumers use editable `[tool.uv.sources]` paths. For example, Code resolves Deep Agents, ACP, and partner integrations from sibling directories, allowing local consumer work without a publish. Consequently, a producer manifest change is also a consumer-lock concern: a consumer lock embeds requirements resolved through its local path.
 
-Regenerate the changed manifest owner's lock and every reverse path-dependent consumer lock; never edit `uv.lock` by hand. The aggregate resolver deliberately uses Python 3.14 for ACP and Python 3.12 for all other discovered library and example locks. This resolver policy does not alter a package's `requires-python` contract.
+Regenerate the changed package's lock and every reverse path-dependent consumer lock; never edit `uv.lock` by hand. The aggregate resolver uses Python 3.14 for ACP and Python 3.12 for other discovered library and example locks. That lock-resolution policy does not change any package's `requires-python` contract.
 
-From `libs/`, the aggregate Makefile discovers library/partner Makefiles and example manifests. Its fan-out recipes use `set -e`, so the first failure stops the operation.
+From `libs/`, the aggregate Makefile discovers library/partner Makefiles and example manifests. Its fan-out recipes use `set -e`, so the first failure stops the operation. These are aggregate operations; package-specific work should still run from the owning package and affect its uv environment and lockfile.
 
-| Command | Purpose |
+| Command from `libs/` | Purpose |
 | --- | --- |
 | `make lint` / `make format` | Invoke that target across discovered library packages. |
 | `make lock [no-cache]` | Resolve all discovered library and example locks; `no-cache` adds `--no-cache`. |
@@ -124,9 +124,11 @@ From `libs/`, the aggregate Makefile discovers library/partner Makefiles and exa
 | `make lock-bump DEP=<pkg>` | Re-resolve every discovered lock with `-P <pkg>`; `DEP` is required. |
 | `make bench-all` | Run `bench` for Deep Agents and Code. |
 
+CI calls the lockfile check workflow on every pull request, push to `main`, and merge group. The workflow uses Python 3.14 to run its checker; that checker supplies 3.14 for ACP and 3.12 for every other package when it invokes `uv lock --check`.
+
 ## Automated dependency minimums
 
-`raise_langchain_minimums.yml` runs daily at 09:00 UTC and can be dispatched for one release component or `all`. Its optional comma-separated `dependencies` input narrows a run to exact normalized PyPI names; `skip_dependent_locks` is an explicit exception that leaves reverse consumers stale. The workflow invokes `raise_langchain_minimums.py`, regenerates every reported `directory=Python` lock specification, verifies reported manifest edits actually changed the tree, and creates or refreshes a generated dependency PR only when edits occurred.
+`raise_langchain_minimums.yml` runs daily at 09:00 UTC and can be manually dispatched for one release component or `all`. Its optional comma-separated `dependencies` input narrows a run to exact normalized PyPI names; `skip_dependent_locks` is an explicit exception that leaves reverse consumers stale. The workflow invokes `raise_langchain_minimums.py`, regenerates every reported `directory=Python` lock specification, verifies reported manifest edits changed the tree, and creates or refreshes a generated dependency PR only when edits occurred.
 
 The script reads `[project.dependencies]`, `[project.optional-dependencies]`, and top-level `[dependency-groups]`. By default it considers PyPI-resolved names beginning `langchain`, `langgraph`, `langsmith`, or `deepagents`; local path/URL sources and the manifest's own distribution are excluded. A narrowed request replaces prefix selection rather than adding to it.
 
@@ -140,16 +142,16 @@ flowchart TD
     Plan --> Changed{"Any edits"}
     Changed -->|"No"| Current["Report current or fail on incomplete input"]
     Changed -->|"Yes"| Closure["Find transitive reverse path consumers"]
-    Closure --> Lock["Regenerate each reported uv.lock"]
+    Closure --> Lock["Regenerate each reported package lock"]
     Lock --> Verify["Verify manifest edits landed"]
     Verify --> PR["Create or refresh dependency PR"]
 ```
 
-*The updater makes manifest rewrites and the complete path-consumer lockfile closure one change set.*
+*The updater turns safe manifest edits and the complete path-consumer lockfile closure into one change set.*
 
-Failure is deliberately fail-closed. An unknown package, empty broad scope, unresolved PyPI metadata, an unrewritable manifest, or a narrowed name that is absent, locally resolved, or has no raiseable floor fails rather than producing a misleading success. It plans every manifest before writing any of them, but can isolate a rewrite failure to report a valid partial plan alongside the failure. Literal replacements are anchored to full quoted TOML requirement strings, are applied longest-first, and must match; this avoids corrupting prefix-like requirements or comments.
+Failure is deliberately fail-closed. An unknown package, empty broad scope, unresolved PyPI metadata, an unrewritable manifest, or a narrowed name that is absent, locally resolved, or has no raiseable floor fails rather than producing a misleading success. It plans every manifest before writing any of them, while isolating a manifest rewrite failure so valid plans can be reported alongside that failure. Literal replacements are anchored to full quoted TOML requirement strings, applied longest-first, and required to match; this prevents corruption of prefix-like requirements or comments.
 
-When floors change, the normal lock set is the transitive reverse closure of `[tool.uv.sources]` consumers because their locks embed producer requirements. `--skip-dependent-locks` intentionally reports only directly changed package locks; it is useful only with an explicit plan to repair the stale dependent locks. Focused tests cover upper and compatible-release bounds, extras and markers, exact pins, local-source exclusion, dependency-group discovery, replacement anchoring, package selection, scope narrowing, and transitive stale-lock discovery.
+When floors change, the normal lock set is the transitive reverse closure of `[tool.uv.sources]` consumers because their locks embed producer requirements. `--skip-dependent-locks` intentionally reports only directly changed package locks; use it only with an explicit plan to repair the stale dependent locks. Focused tests cover upper and compatible-release bounds, extras and markers, exact pins, local-source exclusion, dependency-group discovery, replacement anchoring, package selection, scope narrowing, and transitive stale-lock discovery.
 
 ## Release baselines and release-please
 
@@ -159,7 +161,7 @@ The release-please manifest records last-release state, not a development versio
 
 | Manifest path | Baseline |
 | --- | --- |
-| `libs/deepagents` | `0.7.24` |
+| `libs/deepagents` | `0.7.25` |
 | `libs/acp` | `0.0.13` |
 | `libs/code` | `0.1.84` |
 | `libs/talon` | `0.0.9` |
@@ -167,13 +169,13 @@ The release-please manifest records last-release state, not a development versio
 | `libs/partners/modal` | `0.0.6` |
 | `libs/partners/runloop` | `0.0.7` |
 | `libs/partners/vercel` | `0.0.2` |
-| `libs/partners/quickjs` | `0.3.8` |
+| `libs/partners/quickjs` | `0.3.9` |
 
 When adding a managed package, update both `release-please-config.json` and `.release-please-manifest.json`. For an unreleased first source version `0.0.1`, use a `0.0.0` manifest baseline; a `0.0.1` baseline means that version was already released and would make the first release PR target `0.0.2`.
 
 Code illustrates the metadata invariant: `deepagents-code` is `0.1.84` in project metadata and its annotated version marker, its changelog starts at that release, and it has the exact `deepagents==0.7.24` SDK pin.
 
-Release attribution is path-based. Keep bump-worthy work scoped to one managed component: a changed dependent lock may fan out to other components, while a pathless commit can fan out to every package. The release-please workflow rejects ordinary empty commits before release-please runs; its narrowly defined repository-hotfix merge exception still requires every merged second-parent commit to touch files. After a release PR merge, publication dispatch requires both the matching `release(component): version` title and that component's `CHANGELOG.md` change.
+Release attribution is path-based. Keep bump-worthy work scoped to one managed component: a changed dependent lock may fan out to other components, while a pathless commit can fan out to every package. The release-please workflow rejects ordinary empty commits before release-please runs. After a release PR merge, publication dispatch requires both the matching `release(component): version` title and that component's `CHANGELOG.md` change.
 
 ## Curated notes and publication lifecycle
 

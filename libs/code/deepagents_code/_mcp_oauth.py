@@ -10,7 +10,7 @@
 !!! warning "Temporary copy"
 
     This module is a verbatim copy of `langchain.mcp.oauth` from
-    langchain-ai/langchain#41262 (commit `3a025ae`), vendored so dcode does not
+    langchain-ai/langchain#41262 (commit `69404b1`), vendored so dcode does not
     depend on an unreleased `langchain`. Replace imports of this module with
     `langchain.mcp.oauth` once a `langchain` release ships it, then delete it.
     Keep edits limited to what dcode's lint and type checks require.
@@ -494,7 +494,9 @@ class MCPOAuthProvider(OAuthClientProvider):
             request_sender: Sends discovery, registration, and token requests.
                 Defaults to a fresh client per request that follows no
                 redirects, times out after 30 seconds, and reads at most 1 MiB.
-            on_event: Receives `OAuthEvent`s.
+            on_event: Receives `OAuthEvent`s. An exception it raises propagates
+                in place of the provider's own error, so a host can raise its own
+                reauthorization error from `AuthorizationRequired`.
             refresh_lock: Returns a context manager that serializes refreshes
                 across processes and yields whether the lock was acquired.
                 Under the lock, credentials are reloaded so a peer's refresh is
@@ -643,6 +645,9 @@ class MCPOAuthProvider(OAuthClientProvider):
             with _in_flow():
                 if not self._initialized:
                     await self._initialize()
+                self.context.protocol_version = request.headers.get(
+                    MCP_PROTOCOL_VERSION_HEADER
+                )
                 await self._refresh_before_request()
         flow = super().async_auth_flow(request)
         try:

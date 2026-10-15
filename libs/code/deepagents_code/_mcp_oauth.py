@@ -10,7 +10,7 @@
 !!! warning "Temporary copy"
 
     This module is a verbatim copy of `langchain.mcp.oauth` from
-    langchain-ai/langchain#41262 (commit `69404b1`), vendored so dcode does not
+    langchain-ai/langchain#41262 (commit `6992104`), vendored so dcode does not
     depend on an unreleased `langchain`. Replace imports of this module with
     `langchain.mcp.oauth` once a `langchain` release ships it, then delete it.
     Keep edits limited to what dcode's lint and type checks require.
@@ -114,7 +114,9 @@ _DEFAULT_TIMEOUT_SECONDS: Final = 30.0
 _DEFAULT_MAX_RESPONSE_BYTES: Final = 1024 * 1024
 _DEFAULT_PENDING_TTL_SECONDS: Final = 600.0
 _DEFAULT_EXPIRY_SKEW_SECONDS: Final = 30.0
-_UNAUTHORIZED: Final = 401
+_CHALLENGES: Final = frozenset({401, 403})
+_UNREACHABLE: Final = (httpx2.ConnectError, httpx2.ConnectTimeout)
+"""Transport errors raised before a request could reach the server, so safe to retry."""
 _TOO_MANY_REQUESTS: Final = 429
 _SERVER_ERROR: Final = 500
 _TOKEN_SUCCESS: Final = frozenset({200, 201})
@@ -144,8 +146,11 @@ class MCPAuthorizationRequiredError(MCPOAuthError):
 class MCPOAuthUnavailableError(MCPOAuthError):
     """The authorization server could not be reached or failed temporarily.
 
-    Stored credentials are left intact, since this is not evidence that the
-    user's grant was revoked.
+    Raised for connection failures, HTTP 429, and 5xx responses: cases where
+    the request was not processed. Stored credentials are left intact, since
+    this is not evidence that the user's grant was revoked. Other transport
+    errors, such as a read timeout, propagate unchanged because the server may
+    already have rotated a refresh token.
     """
 
 
@@ -552,7 +557,9 @@ class MCPOAuthProvider(OAuthClientProvider):
 
         Raises:
             MCPOAuthError: If the server does not ask for OAuth, or discovery
-                or registration fails.
+                or registration fails. SDK errors, which may quote provider
+                responses, are replaced; exceptions from `request_sender` and
+                the store propagate unchanged.
             MCPOAuthUnavailableError: If a server cannot be reached.
         """
         probe = _initialize_request(self.context.server_url, headers)
@@ -564,12 +571,10 @@ class MCPOAuthProvider(OAuthClientProvider):
                 await self._drive_until_paused(probe)
             except _AuthorizationPausedError as paused:
                 return paused.start
-            except httpx2.TransportError:
+            except _UNREACHABLE:
                 msg = "Could not reach the MCP server or its authorization server"
                 raise MCPOAuthUnavailableError(msg) from None
-            except MCPOAuthError:
-                raise
-            except Exception as error:
+            except (OAuthFlowError, ValidationError) as error:
                 msg = f"MCP OAuth discovery or registration failed ({type(error).__name__})"
                 raise MCPOAuthError(msg) from None
             finally:
@@ -774,7 +779,7 @@ class MCPOAuthProvider(OAuthClientProvider):
             outbound = await anext(flow)
             while True:
                 response = await self._send(outbound)
-                if outbound is probe and response.status_code != _UNAUTHORIZED:
+                if outbound is probe and response.status_code not in _CHALLENGES:
                     return
                 outbound = await flow.asend(response)
         except StopAsyncIteration:
@@ -911,7 +916,7 @@ class MCPOAuthProvider(OAuthClientProvider):
     async def _send_or_unavailable(self, request: httpx2.Request) -> httpx2.Response:
         try:
             return await self._send(request)
-        except httpx2.TransportError:
+        except _UNREACHABLE:
             msg = "Could not reach the MCP authorization server"
             raise MCPOAuthUnavailableError(msg) from None
 

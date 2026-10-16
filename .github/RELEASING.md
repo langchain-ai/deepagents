@@ -44,7 +44,7 @@ To release a package:
 2. [Wait for release-please to finish refreshing the release PR](#waiting-for-a-release-pr-refresh), including its lockfile updates.
 3. Review the generated changelog in the PR. The published GitHub release body is extracted from the merged package `CHANGELOG.md`, not from the release PR description.
    1. Follow the [curated release-notes workflow](#curated-release-notes) after moving the PR from draft to ready for review. This applies to every release-please managed package.
-4. Merge the release PR after its required checks pass — this triggers the pre-release checks, PyPI publish, and GitHub release
+4. Complete [pre-merge verification](#pre-merge-verification), then merge the release PR. This triggers the pre-release checks, PyPI publish, and GitHub release.
 
 > [!IMPORTANT]
 > `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. If you intentionally need to ship a release PR with an older SDK pin, add the `ci:dcode-skip-sdk-pin` label before merging. See [Release Failed: Code SDK Pin Is Older Than SDK](#release-failed-code-sdk-pin-is-older-than-sdk) for recovery if a stale pin slips through.
@@ -126,6 +126,17 @@ For `openai:…`, pick a Chat Completions model (for example `openai:gpt-5.5`). 
 A mismatched secret name resolves to an empty key and fails the draft run with "The selected release-note model API key is not configured."
 
 For the check to actually gate merges, add the literal `curated release notes` workflow job name to `main`'s required status checks (repo settings). Without that required check, failures remain visible on the PR but do not prevent a stale or unapplied changelog from being merged. The job reports a passing status on non-release PRs, so requiring it does not block unrelated work.
+
+### Pre-merge verification
+
+Before merging a release PR, verify CI against the commit you intend to merge:
+
+1. Record the PR's current `headRefOid` with `gh pr view <pr> --repo langchain-ai/deepagents --json headRefOid`.
+2. Inspect the actual CI workflow with `gh run list --repo langchain-ai/deepagents --workflow ci.yml --commit <head-sha>`. A queued or pending workflow may not have created any checks yet, so an all-green PR check list is not enough. Wait for the current run to finish and its CI Success check to pass. Missing runs, canceled runs without a successful replacement, and runs awaiting approval are not passing CI; inspect them before proceeding. Do not use an older successful run to ignore a newer pending or failed run.
+3. Confirm the other required checks, including `curated release notes`, pass for that same head. For a [curated-notes-only commit](#curated-release-notes), skipped package jobs are expected, but its own CI Success check must still pass after validating the parent's result.
+4. Merge with `--match-head-commit <verified-head-sha>`. If the head changes, repeat verification for the new commit rather than dropping the flag or substituting an unverified SHA.
+
+A request to "force merge after CI" authorizes an admin override of remaining merge restrictions only after these checks pass. It does not authorize bypassing failed or unfinished CI. Use `--admin` only when explicitly requested, and keep `--match-head-commit` on that merge command too.
 
 ### Releasable Commit Types and Version Bumping
 

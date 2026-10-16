@@ -137,6 +137,8 @@ Use [`.github/RELEASING.md`](.github/RELEASING.md) for release-please behavior, 
 
 After changes land on `main`, wait for release-please and its lockfile updates before manually updating a release PR or drafting/applying its notes. Do not race the automation with a manual rebase; see [Waiting for a release PR refresh](.github/RELEASING.md#waiting-for-a-release-pr-refresh).
 
+Before merging a release PR, verify the current head's CI workflow has finished and its CI Success check passes; the PR check list alone can omit pending runs. "Force merge after CI" does not authorize bypassing failed or unfinished CI. Pin the merge to the verified SHA with `--match-head-commit`; see [Pre-merge verification](.github/RELEASING.md#pre-merge-verification).
+
 Pin GitHub Actions to full-length commit SHAs; a tag reference is rejected. Verify whether a tag is annotated and dereference it before using its commit. Use the `gh` CLI to resolve one.
 
 ## Additional resources

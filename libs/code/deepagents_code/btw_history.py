@@ -42,7 +42,24 @@ def _read(
     ).fetchone()
     if row is None:
         return None
-    return [(question, answer) for question, answer in json.loads(row[1])], row[0]
+    msg = f"Stored /btw history for thread {thread_id} is malformed."
+    try:
+        stored = json.loads(row[1])
+    except json.JSONDecodeError as exc:
+        raise ValueError(msg) from exc
+    match stored:
+        case list():
+            pairs: list[object] = stored
+        case _:
+            raise ValueError(msg)
+    exchanges: list[Exchange] = []
+    for pair in pairs:
+        match pair:
+            case [str(question), str(answer)]:
+                exchanges.append((question, answer))
+            case _:
+                raise ValueError(msg)
+    return exchanges, row[0]
 
 
 def load_history(thread_id: str) -> tuple[list[Exchange], int]:
@@ -53,7 +70,10 @@ def load_history(thread_id: str) -> tuple[list[Exchange], int]:
 
     Returns:
         Ordered exchanges and the epoch to pass to `append_exchange`.
-    """
+
+    Raises:
+        ValueError: If the stored history is malformed.
+    """  # noqa: DOC502 — raised by _read
     path = _database_path()
     if not path.exists():
         return [], 0
@@ -82,7 +102,10 @@ def append_exchange(thread_id: str, epoch: int, question: str, answer: str) -> b
 
     Returns:
         Whether the exchange was stored.
-    """
+
+    Raises:
+        ValueError: If the stored history is malformed.
+    """  # noqa: DOC502 — raised by _read
     with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(_CREATE_TABLE)

@@ -27,6 +27,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _MAX_QUESTION_LENGTH = 16_000
 _MAX_HISTORY_LENGTH = 128_000
+_UNREADABLE_HISTORY = (
+    "Stored /btw history could not be read. Press Ctrl+X in /btw to clear it."
+)
 
 
 async def _remember[T](
@@ -47,7 +50,7 @@ async def _remember[T](
     text, cost = await answer
     try:
         await asyncio.to_thread(append_exchange, thread_id, epoch, question, text)
-    except sqlite3.Error:
+    except (sqlite3.Error, ValueError):
         logger.warning("Could not save the side exchange", exc_info=True)
         return text, cost, True
     return text, cost, False
@@ -177,6 +180,10 @@ async def btw(request: Request) -> Response:
     question = question.strip()
     try:
         history, epoch = await asyncio.to_thread(load_history, thread_id)
+    except ValueError:
+        logger.exception("Could not read side history")
+        return JSONResponse({"detail": _UNREADABLE_HISTORY}, status_code=500)
+    try:
         if sum(len(q) + len(a) for q, a in history) > _MAX_HISTORY_LENGTH:
             return JSONResponse(
                 {
@@ -281,7 +288,11 @@ async def btw_history(request: Request) -> JSONResponse:
     thread_id = await _bound_thread(request)
     if isinstance(thread_id, JSONResponse):
         return thread_id
-    history, _ = await asyncio.to_thread(load_history, thread_id)
+    try:
+        history, _ = await asyncio.to_thread(load_history, thread_id)
+    except ValueError:
+        logger.exception("Could not read side history")
+        return JSONResponse({"detail": _UNREADABLE_HISTORY}, status_code=500)
     return JSONResponse({"history": history})
 
 

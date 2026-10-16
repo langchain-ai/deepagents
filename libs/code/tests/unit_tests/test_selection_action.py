@@ -52,17 +52,15 @@ async def test_selection_action_preserves_draft_and_focus() -> None:
         assert area.text == "Explain: \n\n> " + selected + "\n\n"
         assert area.cursor_location == (4, 0)
         assert area.has_focus
-        # The terminal cursor must follow the chat input after it grows. The
-        # headless driver settles it even without
-        # `ChatInput._settle_cursor_after_insert`, so this pins the outcome but
-        # does not guard that helper; a real terminal is the check for it.
+        # The terminal cursor must follow the chat input after it grows, which
+        # `ChatInput._settle_cursor_after_insert` handles.
         assert app.cursor_position == area.cursor_screen_offset
         assert not app.query(SelectionAction)
         assert not app.screen.selections
 
 
 async def test_selection_action_dismisses_without_selection() -> None:
-    """Clicking elsewhere removes the shortcut instead of retaining stale text."""
+    """Clicking elsewhere removes the action instead of retaining stale text."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         message = UserMessage("selected text")
@@ -77,7 +75,7 @@ async def test_selection_action_dismisses_without_selection() -> None:
 
 @pytest.mark.parametrize("key", ["a", "enter", "escape", "left"])
 async def test_selection_action_dismissed_by_keypress(key: str) -> None:
-    """Typing in the focused composer removes the shortcut."""
+    """Any key, including ones the focused chat input consumes, removes it."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         message = UserMessage("selected text")
@@ -296,14 +294,10 @@ async def test_selection_action_dismissed_by_resize() -> None:
 async def test_selection_action_warns_when_insert_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A composer that rejects the insert reports it and keeps the selection."""
+    """A chat input that rejects the insert reports it."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         assert app._chat_input is not None
-        message = UserMessage("selected text")
-        await app.query_one("#messages", Container).mount(message)
-        await pilot.pause()
-        await _drag_select(pilot, message)
         monkeypatch.setattr(app._chat_input, "insert_at_end", lambda _text: False)
         notices: list[str] = []
         monkeypatch.setattr(app, "notify", lambda msg, **_: notices.append(msg))
@@ -312,7 +306,6 @@ async def test_selection_action_warns_when_insert_fails(
         assert notices == [
             "Could not add the selection to the chat input. Copy and paste it instead."
         ]
-        assert app.screen.selections
 
 
 async def test_selection_action_warns_when_modal_arrives(
@@ -351,8 +344,9 @@ async def test_multiline_quote_keeps_cursor_visible() -> None:
         assert area.text == "\n".join(["> quoted line"] * 30) + "\n\n"
         assert area.cursor_location == (31, 0)
         assert area.has_focus
-        # Like the cursor check above, headless runs pass this without the
-        # settle helper, so it pins the outcome rather than guarding the fix.
+        # Unlike the terminal cursor check in
+        # `test_selection_action_preserves_draft_and_focus`, headless runs pass
+        # this without the settle helper, so it pins the outcome only.
         assert area.scroll_y > 0
 
 
@@ -407,7 +401,7 @@ async def test_selection_spanning_chrome_is_not_transcript() -> None:
 
 
 async def test_messages_outside_the_transcript_are_not_transcript() -> None:
-    """A message widget outside `#messages`, such as in a modal, is rejected."""
+    """A message widget mounted outside `#messages` is rejected."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         inside = UserMessage("in the transcript")

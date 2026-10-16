@@ -25014,9 +25014,12 @@ class DeepAgentsApp(App):
         self._selection_anchor = (widget, region.y)
 
     def on_selection_action_ask(self, event: SelectionAction.Ask) -> None:
-        """Quote the selected text into the draft as a Markdown blockquote.
+        """Append the selected text to the draft as a Markdown blockquote.
 
-        Does nothing while an inline prompt or a modal screen is active.
+        Shows a warning instead while an inline prompt is pending, a modal is
+        open, or a shell or command draft is typed. An empty shell or command
+        draft switches back to normal mode first. Also warns when the chat
+        input cannot take the text.
         """
         self._dismiss_selection_action()
         chat_input = self._chat_input

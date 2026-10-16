@@ -3860,6 +3860,17 @@ class ChatInput(Vertical):
         self._text_area.call_after_refresh(self._settle_cursor_after_insert)
         return True
 
+    def insert_at_end(self, text: str) -> bool:
+        """Append text after the draft through the undoable edit path.
+
+        Returns:
+            Whether the text area was available for insertion.
+        """
+        if not self._text_area:
+            return False
+        self._text_area.move_cursor_to_end()
+        return self.insert_at_cursor(text)
+
     def _settle_cursor_after_insert(self) -> None:
         """Reveal the cursor and re-place the terminal cursor after layout.
 

@@ -2,6 +2,25 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.86](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.85...deepagents-code==0.1.86) (2026-10-16)
+
+
+### Features
+
+* **code:** add NVIDIA OpenShell sandbox provider ([#6999](https://github.com/langchain-ai/deepagents/issues/6999)) ([84d4b14](https://github.com/langchain-ai/deepagents/commit/84d4b146cdc3ab45e3e0b9c79c972690ad814ab1))
+* **code:** highlight expired prompt caches as banner ([#6957](https://github.com/langchain-ai/deepagents/issues/6957)) ([70f4342](https://github.com/langchain-ai/deepagents/commit/70f43426ce7c0bf2d03c616e4ef4845ab9b75ca5))
+
+
+### Bug Fixes
+
+* **code:** add `/resume` alias and rank alias matches ([#6988](https://github.com/langchain-ai/deepagents/issues/6988)) ([964ec92](https://github.com/langchain-ai/deepagents/commit/964ec92aeeb81e26e807805e611aeab1ee83c7be))
+* **code:** compare effective interpreter permissions ([#6993](https://github.com/langchain-ai/deepagents/issues/6993)) ([23361fb](https://github.com/langchain-ai/deepagents/commit/23361fb4bf796016e4ad7e07d0b223c02765491f))
+* **code:** highlight expired prompt cache in the footer ([#6970](https://github.com/langchain-ai/deepagents/issues/6970)) ([23bc1d7](https://github.com/langchain-ai/deepagents/commit/23bc1d77f94bef746f64cfae7730705e23485d52))
+* **code:** replace chat input when recalling a prompt ([#6994](https://github.com/langchain-ai/deepagents/issues/6994)) ([ba72013](https://github.com/langchain-ai/deepagents/commit/ba72013ff06cfb9d41670e7dc37c219b9f5cc7c0))
+* **code:** replace repeated thread resume errors ([#6990](https://github.com/langchain-ai/deepagents/issues/6990)) ([fd3e64a](https://github.com/langchain-ai/deepagents/commit/fd3e64ab6b605450bed5a2c22ef2ec84cd40542e))
+* **code:** report workspace refusals accurately during resume ([#6992](https://github.com/langchain-ai/deepagents/issues/6992)) ([0dfa1f6](https://github.com/langchain-ai/deepagents/commit/0dfa1f6047006687b825d7909f9a3a890934057b))
+* **code:** surface actionable Groq tool-limit errors ([#6996](https://github.com/langchain-ai/deepagents/issues/6996)) ([12b12f9](https://github.com/langchain-ai/deepagents/commit/12b12f966dd679f8ba3f134e6f4853fa88da80b3))
+
 ## [0.1.85](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.84...deepagents-code==0.1.85) (2026-10-14)
 
 ### Bug Fixes

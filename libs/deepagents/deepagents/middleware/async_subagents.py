@@ -85,6 +85,8 @@ class AsyncSubAgent(TypedDict):
         so apps can find a parent's subagent threads with `threads.search`, and
         a subagent's graph factory can read it from its run's
         `config["metadata"]`. This may change.
+
+        Subagents on this deployment run with the parent's run context.
     """
 
     name: str
@@ -298,8 +300,10 @@ _PARENT_KEY = "deepagents_parent"
 """`configurable` key carrying the launching agent's `_ParentReference` to an async subagent's run.
 
 Apps read it directly (Managed Deep Agents does), so keep the key and shape stable.
-A run that gets the parent's context has no `configurable` (the Agent Server takes
-one or the other); it finds its parent from its thread's `parent_thread_id` metadata.
+It's only there when deepagents starts the run without the parent's context (the
+Agent Server takes `context` or `configurable`, not both). Apps that need the parent
+in every run read it here, else from the run's `parent_thread_id` and
+`parent_assistant_id` metadata, which the Agent Server copies from the task thread.
 """
 
 

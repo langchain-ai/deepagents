@@ -3851,7 +3851,9 @@ class ChatInput(Vertical):
         # once the screen processes its relayout. A paint in between (cursor
         # blink, toast, our own repaint) shows a multi-line insert crammed into
         # the old height for a frame, so hold painting until layout settles.
-        self.app.delay_update()
+        # Single-line inserts never grow the composer, so they skip the hold.
+        if "\n" in text:
+            self.app.delay_update()
         self._text_area.insert(text, maintain_selection_offset=False)
         self._text_area.call_after_refresh(self._settle_cursor_after_insert)
         return True

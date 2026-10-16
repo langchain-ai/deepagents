@@ -166,6 +166,30 @@ async def test_selection_action_warns_when_prompt_arrives(
         assert notices == ["Answer the pending prompt before adding the selection"]
 
 
+async def test_selection_action_dismissed_by_scroll_and_resize() -> None:
+    """The shortcut leaves when the transcript or terminal moves under it."""
+    app = DeepAgentsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        messages = app.query_one("#messages", Container)
+        message = UserMessage("selected text")
+        await messages.mount(message)
+        await messages.mount_all(UserMessage(f"filler {i}") for i in range(40))
+        await pilot.pause()
+        app.query_one("#chat").scroll_home(animate=False)
+        await pilot.pause()
+        await _drag_select(pilot, message)
+        assert app.query(SelectionAction)
+        app.query_one("#chat").scroll_down(animate=False)
+        await pilot.pause()
+        assert not app.query(SelectionAction)
+
+        await _drag_select(pilot, message)
+        assert app.query(SelectionAction)
+        await pilot.resize_terminal(100, 30)
+        await pilot.pause()
+        assert not app.query(SelectionAction)
+
+
 async def test_multiline_quote_keeps_cursor_visible() -> None:
     """A long quote preserves line breaks and reveals the following blank line."""
     app = DeepAgentsApp()

@@ -8844,8 +8844,11 @@ class DeepAgentsApp(App):
         """Hydrate history in both directions whenever the chat scrolls.
 
         Driven by `_ChatScroll.Scrolled` (see that message for why hydration
-        keys off the scroll offset rather than the scrollbar messages).
+        keys off the scroll offset rather than the scrollbar messages). Also
+        dismisses the selection shortcut, which would otherwise float over
+        text that has moved away from it.
         """
+        self._dismiss_selection_action()
         if (
             self._transcript_prune_timer is not None
             and not self._message_store.hard_window_exceeded()
@@ -8856,6 +8859,7 @@ class DeepAgentsApp(App):
 
     def on_resize(self, _event: Resize) -> None:
         """Scale cached message heights when terminal width changes."""
+        self._dismiss_selection_action()
         # A terminal resize moves the bottom chrome even when its height is
         # unchanged, so re-anchor before the early returns below.
         self._anchor_toast_rack()

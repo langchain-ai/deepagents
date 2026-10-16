@@ -30223,11 +30223,9 @@ class DeepAgentsApp(App):
                     "Failed to prefetch cross-agent thread %s",
                     target.thread_id,
                 )
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Could not load thread {target.thread_id}: {exc}. "
-                        "Staying on the current agent."
-                    )
+                await self._mount_thread_switch_error(
+                    f"Could not load thread {target.thread_id}: {exc}. "
+                    "Staying on the current agent."
                 )
                 return
 
@@ -30267,11 +30265,9 @@ class DeepAgentsApp(App):
                 target.thread_id,
                 target.agent_name,
             )
-            await self._mount_message(
-                ErrorMessage(
-                    f"Could not switch to agent {target.agent_name!r} and resume "
-                    f"thread {target.thread_id}."
-                )
+            await self._mount_thread_switch_error(
+                f"Could not switch to agent {target.agent_name!r} and resume "
+                f"thread {target.thread_id}."
             )
 
     def _open_thread_reference_selector(self, initial_query: str) -> None:
@@ -31502,11 +31498,9 @@ class DeepAgentsApp(App):
                     await self._restore_cwd_after_failed_thread_switch(prev_cwd)
                     if isinstance(exc, asyncio.CancelledError):
                         raise
-                    await self._mount_message(
-                        AppMessage(
-                            f"Failed to switch to thread {thread_id}: {exc}. "
-                            "Use /threads to try again.",
-                        ),
+                    await self._mount_thread_switch_error(
+                        f"Failed to switch to thread {thread_id}: {exc}. "
+                        "Use /threads to try again."
                     )
                     return
                 logger.exception("Failed to switch to thread %s", thread_id)
@@ -31554,7 +31548,7 @@ class DeepAgentsApp(App):
                 if rollback_restore_failed:
                     error_message += " Previous thread history could not be restored."
                 error_message += " Use /threads to try again."
-                await self._mount_message(AppMessage(error_message))
+                await self._mount_thread_switch_error(error_message)
             finally:
                 if self._chat_input:
                     self._chat_input.set_cursor_active(active=not self._agent_running)

@@ -18541,7 +18541,7 @@ class TestRestartServerForAgentSwap:
                 "_thread_resume_block",
                 AsyncMock(side_effect=OSError("sessions unavailable")),
             ),
-            patch.object(app, "_mount_message", side_effect=mounted.append),
+            patch.object(app, "_mount_thread_switch_error", side_effect=mounted.append),
             patch(
                 "deepagents_code.app.asyncio.to_thread", AsyncMock(return_value=True)
             ),
@@ -18553,7 +18553,7 @@ class TestRestartServerForAgentSwap:
         server_proc.restart.assert_not_awaited()
         assert any(
             "Could not switch to agent 'researcher' and resume thread stale-thread"
-            in str(getattr(message, "_content", message))
+            in str(message)
             for message in mounted
         )
 
@@ -27269,13 +27269,29 @@ class TestResumeThreadCwdSwitch:
         assert app._server_kwargs["cwd"] == str(current)
         assert agent._snapshot_workspace() == original
 
+    @pytest.mark.parametrize(
+        "failure", ["prompt", "prefetch", "cross-prefetch", "cross-policy"]
+    )
     async def test_resume_errors_replace_previous_failure(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, monkeypatch: pytest.MonkeyPatch, failure: str, tmp_path: Path
     ) -> None:
+        (tmp_path / "researcher").mkdir()
+        monkeypatch.setattr("deepagents_code.app.user_deepagents_dir", lambda: tmp_path)
         app = DeepAgentsApp(thread_id="current-thread")
+        monkeypatch.setattr(app, "_thread_resume_block", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            app, "_offer_thread_cwd_switch", AsyncMock(return_value="continue")
+        )
+        monkeypatch.setattr(app, "_push_screen_wait", AsyncMock(return_value="switch"))
+        failing_method = {
+            "prompt": "_resume_thread",
+            "prefetch": "_fetch_thread_history_data",
+            "cross-prefetch": "_fetch_thread_history_data",
+            "cross-policy": "_thread_resume_block",
+        }[failure]
         monkeypatch.setattr(
             app,
-            "_resume_thread",
+            failing_method,
             AsyncMock(
                 side_effect=[
                     RuntimeError("first refusal"),
@@ -27283,20 +27299,33 @@ class TestResumeThreadCwdSwitch:
                 ]
             ),
         )
+
+        async def resume(thread_id: str) -> None:
+            if failure.startswith("cross-"):
+                await app._confirm_then_resume_cross_agent_thread(
+                    _ThreadsResumeTarget(thread_id, "researcher")
+                )
+            else:
+                await app._resume_same_agent_thread(thread_id)
+
         async with app.run_test() as pilot:
             await pilot.pause()
             unrelated = ErrorMessage("Keep this error")
             await app._mount_message(unrelated)
-            await app._resume_same_agent_thread("first-thread")
+            app._agent = MagicMock()
+            app._server_kwargs = {}
+            app._server_proc = MagicMock()
+            await resume("first-thread")
             first = app._thread_switch_error_widget
-            await app._resume_same_agent_thread("second-thread")
+            await resume("second-thread")
             assert first is not None
             assert not first.is_attached
             assert unrelated.is_attached
             errors = list(app.query(ErrorMessage))
             assert len(errors) == 2
             assert "second-thread" in errors[-1].render().plain
-            assert "second refusal" in errors[-1].render().plain
+            if failure != "cross-policy":
+                assert "second refusal" in errors[-1].render().plain
             assert app._message_store.total_count == 1
 
     @pytest.mark.parametrize("with_diagnostics", [False, True])

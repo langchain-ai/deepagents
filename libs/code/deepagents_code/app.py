@@ -17530,7 +17530,15 @@ class DeepAgentsApp(App):
                 question: str,
                 on_text: Callable[[str], Awaitable[None]] | None = None,
             ) -> str:
-                text = await remote.abtw(question, config=config, on_text=on_text)
+                text = await remote.abtw(
+                    question,
+                    config=config,
+                    on_text=on_text,
+                    on_unsaved=lambda: self.notify(
+                        "This /btw answer was not saved; follow-ups will not see it.",
+                        severity="warning",
+                    ),
+                )
                 cost = remote.get_cached_session_cost(config)
                 if cost is not None and thread_id == self._lc_thread_id:
                     self._set_session_cost(

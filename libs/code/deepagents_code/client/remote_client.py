@@ -521,6 +521,7 @@ class RemoteAgent:
         *,
         config: Mapping[str, Any],
         on_text: Callable[[str], Awaitable[None]] | None = None,
+        on_unsaved: Callable[[], None] | None = None,
     ) -> str:
         """Ask without submitting a run or writing conversation state.
 
@@ -531,6 +532,8 @@ class RemoteAgent:
             question: Side question to answer.
             config: Configuration identifying the main conversation.
             on_text: Optional receiver for streamed answer text.
+            on_unsaved: Called when the server answered but could not store
+                the exchange, so follow-ups will not see it.
 
         Returns:
             The ephemeral answer.
@@ -554,11 +557,14 @@ class RemoteAgent:
         except NotFoundError as exc:
             msg = "This server does not support /btw. Update the built-in dcode server."
             raise RuntimeError(msg) from exc
-        text = response.get("text") if isinstance(response, dict) else None
-        cost = response.get("cost") if isinstance(response, dict) else None
-        if not isinstance(text, str):
+        if not isinstance(response, dict) or not isinstance(
+            text := response.get("text"), str
+        ):
             msg = "Invalid side-question response from the server."
             raise TypeError(msg)
+        cost = response.get("cost")
+        if response.get("save_failed") is True and on_unsaved is not None:
+            on_unsaved()
         # Accounting is best-effort: _refresh_side_cost also handles malformed totals.
         await self._refresh_side_cost(
             thread_id,

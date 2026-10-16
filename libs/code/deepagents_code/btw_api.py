@@ -35,18 +35,22 @@ async def _remember[T](
     thread_id: str,
     epoch: int,
     question: str,
-) -> tuple[str, T]:
+) -> tuple[str, T, bool]:
     """Store the exchange only after its answer completes within the request.
 
+    A storage failure does not fail the answer, but the caller must tell the
+    client so the user knows follow-ups will not see it.
+
     Returns:
-        The completed answer and its cost.
+        The completed answer, its cost, and whether storage failed.
     """
     text, cost = await answer
     try:
         await asyncio.to_thread(append_exchange, thread_id, epoch, question, text)
     except sqlite3.Error:
         logger.warning("Could not save the side exchange", exc_info=True)
-    return text, cost
+        return text, cost, True
+    return text, cost, False
 
 
 async def _wait_for_disconnect(request: Request) -> None:
@@ -87,7 +91,7 @@ class _BtwStreamingResponse(Response):
         request: Request,
         answer: Callable[
             [Callable[[str], Awaitable[None]]],
-            Coroutine[object, object, tuple[str, CostBreakdown | None]],
+            Coroutine[object, object, tuple[str, CostBreakdown | None, bool]],
         ],
     ) -> None:
         super().__init__(
@@ -120,7 +124,7 @@ class _BtwStreamingResponse(Response):
 
         try:
             async with asyncio.timeout(120):
-                text, cost = await self._answer(on_text)
+                text, cost, save_failed = await self._answer(on_text)
         except TimeoutError:
             await emit("error", {"detail": "Side question timed out. Try again."})
         except ClientDisconnect:
@@ -132,7 +136,10 @@ class _BtwStreamingResponse(Response):
                 {"detail": "Side question failed on the server; see the server log."},
             )
         else:
-            await emit("complete", {"text": text, "cost": cost})
+            complete: dict[str, object] = {"text": text, "cost": cost}
+            if save_failed:
+                complete["save_failed"] = True
+            await emit("complete", complete)
         return True
 
 
@@ -194,7 +201,7 @@ async def btw(request: Request) -> Response:
 
             def answer(
                 on_text: Callable[[str], Awaitable[None]] | None = None,
-            ) -> Coroutine[object, object, tuple[str, CostBreakdown | None]]:
+            ) -> Coroutine[object, object, tuple[str, CostBreakdown | None, bool]]:
                 return _remember(
                     answer_with_cost(
                         operation.answer(
@@ -217,10 +224,12 @@ async def btw(request: Request) -> Response:
             result = await _answer_while_connected(request, answer())
         if result is None:
             return JSONResponse({"detail": "Client disconnected."}, status_code=499)
-        text, cost = result
-        response: dict[str, str | CostBreakdown] = {"text": text}
+        text, cost, save_failed = result
+        response: dict[str, str | CostBreakdown | bool] = {"text": text}
         if cost is not None:
             response["cost"] = cost
+        if save_failed:
+            response["save_failed"] = True
         return JSONResponse(response)
     except TimeoutError:
         return JSONResponse(

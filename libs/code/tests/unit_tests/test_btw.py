@@ -1516,6 +1516,7 @@ async def test_app_keyboard_scroll_and_escape_leave_main_worker_running(
             "why",
             config={"configurable": {"thread_id": app._lc_thread_id}},
             on_text=ANY,
+            on_unsaved=ANY,
         )
         scroll = app.screen.query_one("#btw-scroll", VerticalScroll)
         assert scroll.max_scroll_y > 0

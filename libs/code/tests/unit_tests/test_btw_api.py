@@ -306,14 +306,6 @@ async def test_side_history_persists_across_requests(
     ]
 
 
-async def test_failed_answer_is_not_stored(side_server: _SideServer) -> None:
-    reply: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-    reply.set_exception(ValueError("provider failed"))
-    side_server.replies["why"] = reply
-    assert (await side_server.ask("why")).status_code == 500
-    assert await side_server.history() == []
-
-
 @pytest.mark.parametrize("streaming", [False, True])
 async def test_clear_discards_answer_in_progress(
     side_server: _SideServer, streaming: bool

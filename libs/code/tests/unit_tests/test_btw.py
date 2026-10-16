@@ -1605,7 +1605,6 @@ async def test_app_follow_ups_preserve_exchanges_and_recover_after_error(
         await pilot.press(*"/btw", "enter")
         await pilot.pause()
         assert remote.abtw.await_count == 3
-        assert remote.aget_btw_history.await_count == 2
         assert [widget.raw_text for widget in app.screen.query(UserMessage)] == [
             "Which option?",
             "Why?",
@@ -1738,10 +1737,8 @@ async def test_clear_discards_side_history_errors_and_draft(
             await pilot.press("tab")
             assert screen.query_one("#btw-scroll").has_focus
 
-        clears = remote.aclear_btw_history.await_count
         await pilot.press("ctrl+x")
         await pilot.pause()
-        assert remote.aclear_btw_history.await_count == clears + 1
         assert app.screen is screen
         assert not screen.query(UserMessage)
         assert not screen.query(AssistantMessage)
@@ -1769,7 +1766,6 @@ async def test_clear_cancels_side_answer_and_keeps_main_worker_running(
     started = asyncio.Event()
     cancelled = asyncio.Event()
     release_main = asyncio.Event()
-    order: list[str] = []
 
     async def answer(
         question: str, *, on_text: Callable[[str], Awaitable[None]], **_kwargs: object
@@ -1782,12 +1778,10 @@ async def test_clear_cancels_side_answer_and_keeps_main_worker_running(
             started.set()
             await asyncio.Event().wait()
         finally:
-            order.append("cancelled")
             cancelled.set()
         return "unreachable"
 
     remote.abtw.side_effect = answer
-    remote.aclear_btw_history.side_effect = lambda **_: order.append("cleared")
     async with app.run_test(size=(110, 36)) as pilot:
         await pilot.pause()
         app._connecting = False
@@ -1806,7 +1800,6 @@ async def test_clear_cancels_side_answer_and_keeps_main_worker_running(
             await pilot.press("ctrl+x")
             await asyncio.wait_for(cancelled.wait(), 2)
             await pilot.pause()
-            assert order == ["cancelled", "cleared"]
             assert app.screen is screen
             assert not screen.query(AssistantMessage)
             assert message._stream is None

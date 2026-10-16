@@ -533,8 +533,9 @@ class RemoteAgent:
             question: Side question to answer.
             config: Configuration identifying the main conversation.
             on_text: Optional receiver for streamed answer text.
-            on_unsaved: Called when the server answered but could not store
-                the exchange, so follow-ups will not see it.
+            on_unsaved: Called when the server answered but did not store the
+                exchange, because storage failed or the history was cleared
+                meanwhile, so follow-ups will not see it.
 
         Returns:
             The answer text. It is not added to the main conversation.
@@ -564,7 +565,7 @@ class RemoteAgent:
             msg = "Invalid side-question response from the server."
             raise TypeError(msg)
         cost = response.get("cost")
-        if response.get("save_failed") is True and on_unsaved is not None:
+        if response.get("unsaved") is True and on_unsaved is not None:
             on_unsaved()
         # Accounting is best-effort: _refresh_side_cost also handles malformed totals.
         await self._refresh_side_cost(

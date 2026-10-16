@@ -58,11 +58,12 @@ async def _remember(
 
     The deadline covers generation only. Once the write starts it finishes even
     if the client leaves, so a timeout never reports an answer it stored.
-    A storage failure does not fail the answer, but the caller must tell the
+    An answer that was not stored, because storage failed or another client
+    cleared the history meanwhile, still succeeds. The caller must tell the
     client so the user knows follow-ups will not see it.
 
     Returns:
-        The completed answer, its cost, and whether storage failed.
+        The completed answer, its cost, and whether it was left unsaved.
 
     Raises:
         TimeoutError: If generation exceeds its deadline.
@@ -76,15 +77,13 @@ async def _remember(
     )
     cancellation = await _join_task_deferring_cancellation(write)
     try:
-        write.result()
+        unsaved = not write.result()
     except (sqlite3.Error, ValueError):
         logger.warning("Could not save the side exchange", exc_info=True)
-        save_failed = True
-    else:
-        save_failed = False
+        unsaved = True
     if cancellation is not None:
         raise cancellation
-    return text, cost, save_failed
+    return text, cost, unsaved
 
 
 async def _wait_for_disconnect(request: Request) -> None:
@@ -157,7 +156,7 @@ class _BtwStreamingResponse(Response):
             await emit("text", text)
 
         try:
-            text, cost, save_failed = await self._answer(on_text)
+            text, cost, unsaved = await self._answer(on_text)
         except TimeoutError:
             await emit("error", {"detail": "Side question timed out. Try again."})
         except ClientDisconnect:
@@ -170,8 +169,8 @@ class _BtwStreamingResponse(Response):
             )
         else:
             complete: dict[str, object] = {"text": text, "cost": cost}
-            if save_failed:
-                complete["save_failed"] = True
+            if unsaved:
+                complete["unsaved"] = True
             await emit("complete", complete)
         return True
 
@@ -260,12 +259,12 @@ async def btw(request: Request) -> Response:
         result = await _answer_while_connected(request, answer())
         if result is None:
             return JSONResponse({"detail": "Client disconnected."}, status_code=499)
-        text, cost, save_failed = result
+        text, cost, unsaved = result
         response: dict[str, str | CostBreakdown | bool] = {"text": text}
         if cost is not None:
             response["cost"] = cost
-        if save_failed:
-            response["save_failed"] = True
+        if unsaved:
+            response["unsaved"] = True
         return JSONResponse(response)
     except TimeoutError:
         return JSONResponse(

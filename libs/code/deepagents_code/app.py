@@ -4138,8 +4138,11 @@ class DeepAgentsApp(App):
         self._selection_action: SelectionAction | None = None
         """The mounted "Ask about this" action, if one is showing."""
 
-        self._selection_anchor: tuple[Widget, int] | None = None
-        """A selected widget and its last screen row, for the action to follow."""
+        self._selection_anchor: tuple[Widget, int, int] | None = None
+        """A selected widget's top row and the selection's row when last seen.
+
+        Both are screen rows, so the action can follow its selection on scroll.
+        """
 
         self._debug_console_click_to_copy = _load_debug_console_click_to_copy()
         r"""Whether the `Ctrl+\` Debug Console copies on click.
@@ -24984,7 +24987,7 @@ class DeepAgentsApp(App):
         )
         self._selection_action = action
         anchor = next(iter(screen.selections))
-        self._selection_anchor = (anchor, anchor.region.y)
+        self._selection_anchor = (anchor, anchor.region.y, y)
         await screen.mount(action)
 
     def _follow_selection_action(self) -> None:
@@ -24997,21 +25000,20 @@ class DeepAgentsApp(App):
         action, anchor = self._selection_action, self._selection_anchor
         if action is None or anchor is None:
             return
-        widget, last_row = anchor
+        widget, last_top, last_row = anchor
         region = widget.region
         try:
             chat = self.query_one("#chat", VerticalScroll).region
         except NoMatches:
             self._dismiss_selection_action()
             return
-        x, y = action.styles.offset.resolve(action.size, self.screen.size)
-        # The action sits one row above the row where the selection ended.
-        row = y + 1 + region.y - last_row
+        row = last_row + region.y - last_top
         if not region or not chat.y <= row < chat.bottom:
             self._dismiss_selection_action()
             return
-        action.styles.offset = (x, row - 1)
-        self._selection_anchor = (widget, region.y)
+        x = action.styles.offset.resolve(action.size, self.screen.size).x
+        action.styles.offset = (x, max(0, row - 1))
+        self._selection_anchor = (widget, region.y, row)
 
     def on_selection_action_ask(self, event: SelectionAction.Ask) -> None:
         """Append the selected text to the draft as a Markdown blockquote.

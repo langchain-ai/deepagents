@@ -137,26 +137,42 @@ class BtwScreen(ModalScreen[None]):
 
     @work(group="btw-history")
     async def _open(self) -> None:
-        """Restore stored exchanges before accepting or sending a question."""
+        """Restore stored exchanges before accepting or sending a question.
+
+        When loading fails, the server may still answer with the hidden
+        history, so the initial question waits in the editor instead of
+        being sent.
+        """
         history: Sequence[Exchange] = ()
+        loaded = True
         if self._load_history is not None:
             try:
                 history = await self._load_history()
             except Exception as exc:
                 logger.debug("Could not load side history", exc_info=True)
-                self.notify(
-                    f"Could not load earlier /btw exchanges: {_describe(exc)}",
-                    severity="error",
-                    markup=False,
-                )
+                loaded = False
+                self._notify_hidden_history(exc)
         await self._restore_history(history)
         self._pending = self._loading = False
         editor = self.query_one(BtwTextArea)
         editor.disabled = False
-        if self._question:
+        if self._question and loaded:
             await self._start(self._question)
-        else:
-            editor.focus(scroll_visible=False)
+            return
+        if self._question:
+            editor.load_text(self._question)
+        editor.focus(scroll_visible=False)
+
+    def _notify_hidden_history(self, exc: Exception) -> None:
+        """Warn that unseen stored exchanges may still shape the next answer."""
+        self.add_class("has-history")
+        self.query_one("#btw-help", Static).update(self._help_text())
+        self.notify(
+            f"Could not load earlier /btw exchanges: {_describe(exc)}\n"
+            "Answers may still use them. Press Ctrl+X to clear them.",
+            severity="error",
+            markup=False,
+        )
 
     def _follow_rendered_content(
         self, scroll: VerticalScroll, old_size: Size, new_size: Size

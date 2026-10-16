@@ -1419,6 +1419,7 @@ async def test_side_cost_survives_main_cancellation(
         config = {"configurable": {"thread_id": app._lc_thread_id}}
         # The last observed main total may be ahead of its durable checkpoint.
         graph.client.http.get = AsyncMock(return_value={"cost": None})
+        graph.client.http.post = AsyncMock(return_value={"history": []})
         await remote.aget_session_cost(
             config, checkpoint={"_session_cost_usd": main_total}
         )
@@ -1839,6 +1840,15 @@ async def test_failed_history_requests_notify_without_dropping_transcript(
         await pilot.pause()
         load.assert_awaited_once_with()
         assert "server down" in notify.call_args.args[0]
+        assert "Ctrl+X" in notify.call_args.args[0]
+        # The server may still answer from history the user cannot see.
+        answer.assert_not_awaited()
+        assert app.screen.has_class("has-history")
+        editor = app.screen.query_one(BtwTextArea)
+        assert editor.text == "Kept"
+        await pilot.press("enter")
+        await app.workers.wait_for_complete()
+        await pilot.pause()
         answer.assert_awaited_once_with("Kept")
         await pilot.press("ctrl+x")
         await pilot.pause()

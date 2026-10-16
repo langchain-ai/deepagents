@@ -9758,11 +9758,15 @@ class DeepAgentsApp(App):
         banners = self.screen_stack[0].query("#cache-expired-banner")
         if banners:
             expires_at = self._status_bar.cache_expires_at if self._status_bar else None
-            banners.first().display = (
+            banner = banners.first(Static)
+            banner.display = (
                 not self._cache_reconciliation_pending
                 and expires_at is not None
                 and datetime.now(UTC) >= expires_at
             )
+            if banner.display and expires_at is not None:
+                expired_at = expires_at.astimezone().strftime("%H:%M:%S")
+                banner.update(f"Prompt cache expired at {expired_at}")
 
     def _check_cache_expiry(self) -> None:
         """Offer a handoff once per expired cache window, only when idle.

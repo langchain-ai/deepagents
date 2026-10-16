@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import BaseMessage, HumanMessage
+from textual.widgets import Static
 
 from deepagents_code.app import DeepAgentsApp, QueuedMessage, TextualSessionState
 from deepagents_code.hooks.client_lifecycle import ClientHookStopError
@@ -232,16 +233,24 @@ async def test_expiry_banner_survives_activity_and_clears_on_refresh(
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
-        banner = app.query_one("#cache-expired-banner")
+        banner = app.query_one("#cache-expired-banner", Static)
         assert not banner.display
         _prepare(app, monkeypatch)
+        assert app._status_bar is not None
+        expires_at = datetime(2025, 1, 2, 15, 4, 5, tzinfo=UTC)
+        app._status_bar.cache_expires_at = expires_at
         app._agent_running = True
         app._cold_cache_suppressed_for_session = True
         app._check_cache_expiry()
         await pilot.pause()
         assert banner.display
+        expired_at = expires_at.astimezone().strftime("%H:%M:%S")
+        assert str(banner.content) == f"Prompt cache expired at {expired_at}"
         assert banner.region.y <= 1
-        assert app._status_bar is not None
+        app._status_bar.cache_expires_at = expires_at + timedelta(hours=1)
+        app._check_cache_expiry()
+        expired_at = app._status_bar.cache_expires_at.astimezone().strftime("%H:%M:%S")
+        assert str(banner.content) == f"Prompt cache expired at {expired_at}"
         app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(minutes=5)
         app._check_cache_expiry()
         assert not banner.display

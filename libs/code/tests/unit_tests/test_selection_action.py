@@ -46,6 +46,8 @@ async def test_selection_action_preserves_draft_and_focus(tmp_path: Path) -> Non
         assert area.text == "Explain: \n\n> " + selected + "\n\n"
         assert area.cursor_location == (4, 0)
         assert area.has_focus
+        # The terminal cursor must follow the chat input after it grows.
+        assert app.cursor_position == area.cursor_screen_offset
         assert not app.query(SelectionAction)
         assert not app.screen.selections
 

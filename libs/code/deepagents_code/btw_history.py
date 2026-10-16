@@ -73,7 +73,8 @@ def load_history(thread_id: str) -> HistorySnapshot:
 
     Raises:
         MalformedHistoryError: If the stored history is malformed.
-    """  # noqa: DOC502 — raised by _read
+        sqlite3.Error: If the sessions database is busy or unavailable.
+    """  # noqa: DOC502 — raised by _read and sqlite3
     path = _database_path()
     if not path.exists():
         return HistorySnapshot([], 0)
@@ -91,7 +92,7 @@ def append_exchange(thread_id: str, question: str, answer: str, *, epoch: int) -
     """Append one completed exchange unless the history was cleared meanwhile.
 
     The immediate transaction serializes overlapping answers, including those
-    from other server processes, and writes each exchange whole.
+    from other server processes, so none interleave or lose an exchange.
 
     Args:
         thread_id: Main thread that owns the side conversation.
@@ -104,7 +105,8 @@ def append_exchange(thread_id: str, question: str, answer: str, *, epoch: int) -
 
     Raises:
         MalformedHistoryError: If the stored history is malformed.
-    """  # noqa: DOC502 — raised by _read
+        sqlite3.Error: If the sessions database is busy or unavailable.
+    """  # noqa: DOC502 — raised by _read and sqlite3
     with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(_CREATE_TABLE)
@@ -125,7 +127,10 @@ def clear_history(thread_id: str) -> None:
 
     Args:
         thread_id: Main thread that owns the side conversation.
-    """
+
+    Raises:
+        sqlite3.Error: If the sessions database is busy or unavailable.
+    """  # noqa: DOC502 — raised by sqlite3
     with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(_CREATE_TABLE)

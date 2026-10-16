@@ -1,4 +1,4 @@
-"""Side-question generation and durable usage without conversation writes."""
+"""Side-question generation, usage, and history without conversation writes."""
 
 from __future__ import annotations
 
@@ -72,9 +72,9 @@ async def _remember(
 
     The deadline covers generation only. Once the write starts it finishes even
     if the client leaves, so a timeout never reports an answer it stored.
-    An answer that was not stored, because storage failed or another client
-    cleared the history meanwhile, still succeeds. The caller must tell the
-    client so the user knows follow-ups will not see it.
+    An answer that was not stored, because storage failed or the history was
+    cleared or its thread deleted meanwhile, still succeeds. The caller must
+    tell the client so the user knows follow-ups will not see it.
 
     Returns:
         The completed answer, its cost, and whether it was left unsaved.
@@ -211,6 +211,10 @@ async def _load_side_history(thread_id: str) -> HistorySnapshot | JSONResponse:
 async def btw(request: Request) -> Response:
     """Answer without starting or updating a graph run.
 
+    The thread's stored side history is the answer's context, and the
+    completed exchange is stored. The response carries `unsaved: true` when
+    it could not be stored.
+
     Returns:
         Answer text or a safe error response.
     """
@@ -317,7 +321,8 @@ async def _bound_thread(request: Request) -> str | JSONResponse:
     """Confirm the caller's workspace owns the thread before history access.
 
     Returns:
-        The thread ID, or an error response when the binding does not match.
+        The thread ID, or an error response when the payload is invalid or
+            the workspace does not own the thread.
     """
     thread_id = request.path_params["thread_id"]
     try:

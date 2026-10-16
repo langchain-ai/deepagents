@@ -532,15 +532,15 @@ class RemoteAgent:
         """Ask without submitting a run or writing the main conversation.
 
         The server uses the thread's stored side history as context, then
-        stores the completed exchange unless the history was cleared meanwhile.
+        stores the completed exchange unless storage fails or the history was
+        cleared or its thread deleted meanwhile.
 
         Args:
             question: Side question to answer.
             config: Configuration identifying the main conversation.
             on_text: Optional receiver for streamed answer text.
             on_unsaved: Called when the server answered but did not store the
-                exchange, because storage failed or the history was cleared
-                meanwhile, so follow-ups will not see it.
+                exchange, so follow-ups will not see it.
 
         Returns:
             The answer text. It is not added to the main conversation.

@@ -46,7 +46,10 @@ async def test_selection_action_preserves_draft_and_focus(tmp_path: Path) -> Non
         assert area.text == "Explain: \n\n> " + selected + "\n\n"
         assert area.cursor_location == (4, 0)
         assert area.has_focus
-        # The terminal cursor must follow the chat input after it grows.
+        # The terminal cursor must follow the chat input after it grows. The
+        # headless driver settles it even without
+        # `ChatInput._settle_cursor_after_insert`, so this pins the outcome but
+        # does not guard that helper; a real terminal is the check for it.
         assert app.cursor_position == area.cursor_screen_offset
         assert not app.query(SelectionAction)
         assert not app.screen.selections
@@ -227,6 +230,8 @@ async def test_multiline_quote_keeps_cursor_visible() -> None:
         assert area.text == "\n".join(["> quoted line"] * 30) + "\n\n"
         assert area.cursor_location == (31, 0)
         assert area.has_focus
+        # Like the cursor check above, headless runs pass this without the
+        # settle helper, so it pins the outcome rather than guarding the fix.
         assert area.scroll_y > 0
 
 

@@ -24702,7 +24702,7 @@ class DeepAgentsApp(App):
                             severity="warning",
                         )
                     return
-                if result is not None and not current_input.insert_at_cursor(result):
+                if result is not None and not current_input.replace_with_prompt(result):
                     self.notify(
                         "Could not insert the prompt: the composer is unavailable",
                         severity="warning",

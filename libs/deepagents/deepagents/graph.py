@@ -43,6 +43,7 @@ from deepagents._version import _lc_version
 from deepagents.backends import StateBackend
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._fs_interrupt import _build_interrupt_on_from_permissions
+from deepagents.middleware._parent_notifier import _ParentNotifierMiddleware
 from deepagents.middleware._prompt_caching import append_prompt_caching_middleware
 from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware._tool_exclusion import _ToolExclusionMiddleware
@@ -895,7 +896,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
             _permissions=permissions,
-        )
+        ),
     ]
     sub_agent_middleware: SubAgentMiddleware | None = None
     if inline_subagents:
@@ -913,6 +914,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
         [
+            _ParentNotifierMiddleware(),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
         ]

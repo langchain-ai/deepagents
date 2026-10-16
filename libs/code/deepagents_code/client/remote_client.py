@@ -19,6 +19,7 @@ from deepagents_code.client.session_cost import SessionCostTracker
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
+    from deepagents_code.btw_history import Exchange
     from deepagents_code.client.session_cost import SessionCost
     from deepagents_code.cost_tracking import CostBreakdown
     from deepagents_code.mcp_tools import MCPServerInfo
@@ -572,9 +573,7 @@ class RemoteAgent:
         )
         return text
 
-    async def aget_btw_history(
-        self, *, config: Mapping[str, Any]
-    ) -> list[tuple[str, str]]:
+    async def aget_btw_history(self, *, config: Mapping[str, Any]) -> list[Exchange]:
         """Read the side exchanges the server stored for this thread.
 
         Args:
@@ -592,7 +591,7 @@ class RemoteAgent:
         if not isinstance(raw, list):
             msg = "Invalid side-history response from the server."
             raise TypeError(msg)
-        history: list[tuple[str, str]] = []
+        history: list[Exchange] = []
         for pair in raw:
             match pair:
                 case [str(question), str(answer)]:

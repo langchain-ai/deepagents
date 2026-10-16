@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import sqlite3
@@ -32,13 +33,13 @@ _UNREADABLE_HISTORY = (
 )
 
 
-async def _remember[T](
-    answer: Awaitable[tuple[str, T]],
+async def _remember(
+    answer: Awaitable[tuple[str, CostBreakdown | None]],
     *,
     thread_id: str,
     epoch: int,
     question: str,
-) -> tuple[str, T, bool]:
+) -> tuple[str, CostBreakdown | None, bool]:
     """Store the exchange only after its answer completes within the request.
 
     A storage failure does not fail the answer, but the caller must tell the
@@ -49,7 +50,9 @@ async def _remember[T](
     """
     text, cost = await answer
     try:
-        await asyncio.to_thread(append_exchange, thread_id, epoch, question, text)
+        await asyncio.to_thread(
+            functools.partial(append_exchange, thread_id, question, text, epoch=epoch)
+        )
     except (sqlite3.Error, ValueError):
         logger.warning("Could not save the side exchange", exc_info=True)
         return text, cost, True

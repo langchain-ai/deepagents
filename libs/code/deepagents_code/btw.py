@@ -51,6 +51,8 @@ if TYPE_CHECKING:
     )
     from langchain_core.runnables import RunnableConfig
 
+    from deepagents_code.btw_history import Exchange
+
 _INSTRUCTIONS = (
     "The user is asking a quick side question about the conversation so far. "
     "Answer directly and concisely in markdown from what you already know. "
@@ -537,7 +539,7 @@ class BtwOperation(AgentMiddleware):
         state: Mapping[str, object],
         question: str,
         *,
-        history: Sequence[tuple[str, str]] = (),
+        history: Sequence[Exchange] = (),
         on_text: Callable[[str], Awaitable[None]] | None = None,
     ) -> str:
         """Generate without tools or checkpoint writes.

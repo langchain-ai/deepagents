@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import closing
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from deepagents_code.workspace import _database_path
 
@@ -33,9 +33,14 @@ type Exchange = tuple[str, str]
 """A completed side question and the answer returned for it."""
 
 
-def _read(
-    conn: sqlite3.Connection, thread_id: str
-) -> tuple[list[Exchange], int] | None:
+class HistorySnapshot(NamedTuple):
+    """Side exchanges paired with the epoch an answer must present to store."""
+
+    exchanges: list[Exchange]
+    epoch: int
+
+
+def _read(conn: sqlite3.Connection, thread_id: str) -> HistorySnapshot | None:
     row = conn.execute(
         "SELECT epoch, exchanges FROM dcode_btw_history WHERE thread_id = ?",
         (thread_id,),
@@ -59,10 +64,10 @@ def _read(
                 exchanges.append((question, answer))
             case _:
                 raise ValueError(msg)
-    return exchanges, row[0]
+    return HistorySnapshot(exchanges, row[0])
 
 
-def load_history(thread_id: str) -> tuple[list[Exchange], int]:
+def load_history(thread_id: str) -> HistorySnapshot:
     """Read a thread's side exchanges and the epoch they belong to.
 
     Args:
@@ -76,7 +81,7 @@ def load_history(thread_id: str) -> tuple[list[Exchange], int]:
     """  # noqa: DOC502 — raised by _read
     path = _database_path()
     if not path.exists():
-        return [], 0
+        return HistorySnapshot([], 0)
     with closing(
         sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=5)
     ) as conn:
@@ -85,10 +90,10 @@ def load_history(thread_id: str) -> tuple[list[Exchange], int]:
             "WHERE type = 'table' AND name = 'dcode_btw_history'"
         ).fetchone()
         stored = _read(conn, thread_id) if exists else None
-    return stored or ([], 0)
+    return stored or HistorySnapshot([], 0)
 
 
-def append_exchange(thread_id: str, epoch: int, question: str, answer: str) -> bool:
+def append_exchange(thread_id: str, question: str, answer: str, *, epoch: int) -> bool:
     """Append one completed exchange unless the history was cleared meanwhile.
 
     The immediate transaction serializes overlapping answers, including those
@@ -96,9 +101,9 @@ def append_exchange(thread_id: str, epoch: int, question: str, answer: str) -> b
 
     Args:
         thread_id: Main thread that owns the side conversation.
-        epoch: Epoch returned by the `load_history` call the answer used.
         question: Question the model answered.
         answer: Answer text returned to the client.
+        epoch: Epoch returned by the `load_history` call the answer used.
 
     Returns:
         Whether the exchange was stored.
@@ -109,7 +114,7 @@ def append_exchange(thread_id: str, epoch: int, question: str, answer: str) -> b
     with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(_CREATE_TABLE)
-        exchanges, current = _read(conn, thread_id) or ([], 0)
+        exchanges, current = _read(conn, thread_id) or HistorySnapshot([], 0)
         if current != epoch:
             return False
         exchanges.append((question, answer))

@@ -351,7 +351,7 @@ async def test_overlapping_answers_store_every_exchange_whole(
 
 
 async def test_stored_history_over_cap_is_rejected(side_server: _SideServer) -> None:
-    append_exchange("thread", 0, "q", "x" * 128_000)
+    append_exchange("thread", "q", "x" * 128_000, epoch=0)
     response = await side_server.ask("why")
     assert response.status_code == 422
     assert "Ctrl+X" in response.json()["detail"]
@@ -389,9 +389,9 @@ async def test_thread_deletion_erases_side_history(
 
     monkeypatch.setattr(sessions, "get_db_path", lambda: side_db)
     await side_server.ask("Secret")
-    stale = load_history("thread")[1]
+    stale = load_history("thread").epoch
     await sessions.delete_thread("thread")
     assert await side_server.history() == []
     # An answer that started before deletion cannot restore the history.
-    assert not append_exchange("thread", stale, "Late", "answer")
+    assert not append_exchange("thread", "Late", "answer", epoch=stale)
     assert await side_server.history() == []

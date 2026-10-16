@@ -31,6 +31,8 @@ if TYPE_CHECKING:
     from textual.timer import Timer
     from textual.widget import Widget
 
+    from deepagents_code.btw_history import Exchange
+
 
 logger = logging.getLogger(__name__)
 _MAX_QUESTION_LENGTH = 16_000
@@ -63,7 +65,7 @@ class BtwScreen(ModalScreen[None]):
         answer: Callable[[str], Awaitable[str]],
         question: str = "",
         *,
-        load_history: Callable[[], Awaitable[Sequence[tuple[str, str]]]] | None = None,
+        load_history: Callable[[], Awaitable[Sequence[Exchange]]] | None = None,
         stream_answer: Callable[[str, Callable[[str], Awaitable[None]]], Awaitable[str]]
         | None = None,
         on_clear: Callable[[], Awaitable[None]] | None = None,
@@ -135,7 +137,7 @@ class BtwScreen(ModalScreen[None]):
     @work(group="btw-history")
     async def _open(self) -> None:
         """Restore stored exchanges before accepting or sending a question."""
-        history: Sequence[tuple[str, str]] = ()
+        history: Sequence[Exchange] = ()
         if self._load_history is not None:
             try:
                 history = await self._load_history()
@@ -167,7 +169,7 @@ class BtwScreen(ModalScreen[None]):
         if new_size.height > old_size.height and scroll.scroll_y >= old_bottom:
             self._follow_answer()
 
-    async def _restore_history(self, history: Sequence[tuple[str, str]]) -> None:
+    async def _restore_history(self, history: Sequence[Exchange]) -> None:
         if not history:
             return
         self.add_class("has-history")

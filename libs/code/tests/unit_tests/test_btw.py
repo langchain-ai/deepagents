@@ -1280,7 +1280,7 @@ async def test_follow_up_reaches_model_with_stored_history_and_leaves_state_unch
     monkeypatch.setattr(remote, "_get_graph", lambda: graph)
     monkeypatch.setattr(remote, "_workspace_for_thread", AsyncMock(return_value={}))
     monkeypatch.setattr(remote, "aensure_thread", AsyncMock())
-    append_exchange("thread", 0, "Which option?", "Use the cache.")
+    append_exchange("thread", "Which option?", "Use the cache.", epoch=0)
     assert (
         await remote.abtw(
             "Why that option?",
@@ -1301,7 +1301,7 @@ async def test_follow_up_reaches_model_with_stored_history_and_leaves_state_unch
     ]
     await remote.aclear_btw_history(config=config)
     assert await remote.aget_btw_history(config=config) == []
-    assert load_history("thread")[0] == []
+    assert load_history("thread").exchanges == []
     messages = invoke.call_args.args[0]
     assert [(message.type, message.text) for message in messages[1:-1]] == [
         ("human", "Main task"),

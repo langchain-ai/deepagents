@@ -1,11 +1,11 @@
 ---
 type: system architecture
 title: Repository Architecture Overview
-description: Architecture and release map for the Deep Agents Python monorepo, covering the SDK, dcode, ACP, evaluations, Talon, and partner integrations. Explains current package dependencies, graph assembly and delegation boundaries, persistence, and host lifecycle ownership.
+description: Architecture and release map for the Deep Agents Python monorepo, covering the SDK, dcode, ACP, evaluations, Talon, and partner integrations. Explains package boundaries, graph assembly, persistence, and host lifecycle ownership.
 tags: [architecture, deepagents, langgraph, sdk, talon, integrations]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-15T08:05:41.400Z
+    at: 2026-10-16T08:05:35.701Z
 sources:
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
@@ -55,7 +55,7 @@ sources:
     resource: repo://README.md
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
 ---
 
 # Repository Architecture Overview
@@ -64,7 +64,6 @@ This repository is a monorepo of independently versioned Python packages, not on
 
 - [SDK construction and execution](./sdk-construction-execution.md)
 - [Code agent](./code-agent.md)
-- [Runtime behavior](./runtime-behavior.md)
 - [ACP integration](../integrations/acp.md)
 - [Talon integration](../integrations/talon.md)
 - [Development](../operations/development.md)
@@ -73,16 +72,16 @@ This repository is a monorepo of independently versioned Python packages, not on
 
 | Package | Current version and Python baseline | Architectural role |
 | --- | --- | --- |
-| `deepagents` | `0.7.25`; `>=3.11,<4.0` | Core SDK: `create_deep_agent`, middleware, and pluggable backends. |
+| `deepagents` | `0.7.26`; `>=3.11,<4.0` | Core SDK: `create_deep_agent`, middleware, and pluggable backends. |
 | `deepagents-acp` | `0.0.13`; `>=3.11` | Agent Client Protocol bridge for serving graphs to editor clients. |
 | `deepagents-code` (`dcode`) | `0.1.85`; `>=3.12,<4.0` | Reference terminal coding-agent product, including interactive and headless clients. |
 | `deepagents-talon` | `0.0.9`; `>=3.12` | Experimental local host for channels, turns, and cron scheduling. |
 | `deepagents-evals` | `0.0.1`; `>=3.12,<3.14` | End-to-end behavioral evaluation and Harbor benchmark suite. |
 | `langchain-quickjs` | `0.3.9`; `>=3.11,<4.0` | Optional JavaScript REPL middleware partner integration. |
 
-Release Please manages separate release lines for the SDK, ACP, dcode, Talon, and five partner packages: Daytona, Modal, Runloop, Vercel, and QuickJS. The manifest records dcode at `0.1.85`; `deepagents-evals` is absent from both the manifest and configured package list. Release Please creates separate draft release pull requests and skips automated GitHub releases. Thus, a package under `libs/` does not itself imply participation in the automated release line.
+Release Please manages separate release lines for the SDK, ACP, dcode, Talon, and five partner packages: Daytona, Modal, Runloop, Vercel, and QuickJS. The manifest records the SDK at `0.7.26`; `deepagents-evals` is absent from both the manifest and configured package list. Release Please creates separate draft release pull requests and skips automated GitHub releases. Thus, a package under `libs/` does not itself imply participation in the automated release line.
 
-Published package dependencies point toward the SDK: ACP depends on `deepagents`; dcode pins `deepagents==0.7.25` and depends on ACP; Talon requires both the SDK and dcode; evals requires the SDK and dcode; and QuickJS requires the 0.7.x SDK plus LangChain and LangGraph. Their Python baselines are, respectively, ACP `>=3.11`, dcode `>=3.12,<4.0`, Talon `>=3.12`, evals `>=3.12,<3.14`, and QuickJS `>=3.11,<4.0`. In monorepo development, local `uv` source mappings make the SDK dependencies editable where declared.
+Published package dependencies point toward the SDK: ACP depends on `deepagents`; dcode pins `deepagents==0.7.26` and depends on ACP; Talon requires both the SDK and dcode; evals requires the SDK and dcode; and QuickJS requires the 0.7.x SDK plus LangChain and LangGraph. Their Python baselines are, respectively, ACP `>=3.11`, dcode `>=3.12,<4.0`, Talon `>=3.12`, evals `>=3.12,<3.14`, and QuickJS `>=3.11,<4.0`.
 
 ```mermaid
 flowchart TD
@@ -97,8 +96,17 @@ flowchart TD
   QuickJS --> SDK
   SDK --> LangChain["LangChain create_agent"]
   LangChain --> LangGraph["LangGraph runtime"]
+  Dcode -. editable workspace source .-> SDK
+  Dcode -. editable workspace source .-> ACP
+  ACP -. editable workspace source .-> SDK
+  Talon -. editable workspace source .-> SDK
+  Talon -. editable workspace source .-> Dcode
+  Evals -. workspace source .-> SDK
+  Evals -. workspace source .-> Dcode
+  Evals -. editable workspace source .-> QuickJS
+  QuickJS -. editable workspace source .-> SDK
 ```
-This shows the principal package and runtime dependency direction: an arrow points from a consumer to a required package or lower layer.
+Solid arrows are published dependency constraints; dotted arrows are `uv` workspace-source mappings, which replace selected published distributions with local source during monorepo development. An arrow points from a consumer to a required package or lower runtime layer.
 
 The SDK base dependencies include LangChain, LangChain Core, Anthropic and Google model integrations, LangSmith, `packaging`, and `wcmatch`. AWS, QuickJS, and video are optional extras rather than base requirements.
 

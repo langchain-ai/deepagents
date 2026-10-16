@@ -1,9 +1,17 @@
 ---
 type: security operations guide
-title: Security and Operational Boundaries
-description: Operational security boundaries for Deep Agents and Deep Agents Code, with emphasis on filesystem permission, symlink, bulk-tool, glob-interrupt, and sandbox-containment limits.
-tags: [security, operations, deepagents, filesystem, mcp, workspace, approvals]
+title: Security Boundaries and Operational Safety
+description: Operational security boundaries for Deep Agents, dcode, and Talon, covering tool authority, approval limits, OAuth transport and token handling, and safe terminal rendering.
+tags: [security, operations, deepagents, filesystem, mcp, oauth, approvals, terminal-ui]
 sources:
+  - id: openwiki-source-15628256fe9cd22197db74ed
+    resource: repo://libs/code/AGENTS.md
+  - id: openwiki-source-4e1eab6b8c54443429c68b30
+    resource: repo://libs/code/deepagents_code/_markdown.py
+  - id: openwiki-source-fdf5afeb1dd1d11652374e88
+    resource: repo://libs/code/deepagents_code/app.py
+  - id: openwiki-source-a9143c1c174362216a1cfa2c
+    resource: repo://libs/code/deepagents_code/approval_mode.py
   - id: openwiki-source-7f6b98925b5f1ba065df3a04
     resource: repo://libs/code/deepagents_code/config.py
   - id: openwiki-source-a97cce048cd7efd394ae7dca
@@ -12,8 +20,14 @@ sources:
     resource: repo://libs/code/deepagents_code/model_config.py
   - id: openwiki-source-52062c280ae38e9e9acab191
     resource: repo://libs/code/deepagents_code/thread_titles.py
+  - id: openwiki-source-885087faefbbd5773a2d43ab
+    resource: repo://libs/code/deepagents_code/tui/widgets/_links.py
+  - id: openwiki-source-f820645728a7602f14195650
+    resource: repo://libs/code/deepagents_code/tui/widgets/auto_mode_notice.py
   - id: openwiki-source-030d8bd153a9c3ea2a99cb7d
     resource: repo://libs/code/deepagents_code/workspace.py
+  - id: openwiki-source-11d6c59d85493653aee76558
+    resource: repo://libs/code/tests/unit_tests/test_app.py
   - id: openwiki-source-53083c05d51a08d395327737
     resource: repo://libs/code/tests/unit_tests/test_thread_titles.py
   - id: openwiki-source-877b53371bf970f1b38a1809
@@ -26,15 +40,21 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
   - id: openwiki-source-851e3a9c96663d8db5ca3dec
     resource: repo://libs/deepagents/tests/unit_tests/test_permissions.py
+  - id: openwiki-source-31e40ff79779f51cafd03f01
+    resource: repo://libs/talon/deepagents_talon/mcp_auth.py
+  - id: openwiki-source-111101dcd1462ff54277b1fc
+    resource: repo://libs/talon/deepagents_talon/mcp_config.py
+  - id: openwiki-source-caa081bf22565f9bef5bc7d1
+    resource: repo://libs/talon/tests/unit_tests/test_oauth_transport.py
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-13T08:11:05.854Z
+    at: 2026-10-16T08:05:35.701Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
 ---
 
-# Security and Operational Boundaries
+# Security Boundaries and Operational Safety
 
 ## Trust model: tools and the runtime are the boundary
 
@@ -91,6 +111,12 @@ Permissions are a **tool-level** control. `create_deep_agent` documents that dir
 
 Use an execution backend with filesystem, process, and network isolation if commands must not inherit the application process's authority. Subagents inherit the parent rules only when they do not specify their own `permissions`; a subagent-supplied list replaces the inherited policy. Remote async subagents also require their own approval configuration.
 
+## dcode Auto approval: a notice and review layer, not a sandbox
+
+`dcode` has Manual, Auto, and YOLO approval modes. Auto is only selectable where the live runtime says it is eligible; it is unavailable with a sandbox. On its first enable for a notice version, the terminal UI displays `AutoModeNoticeScreen` before activating the mode. The notice says that routine gated actions—for example file edits and read-only Git commands—may proceed without asking, uncertain actions are reviewed by the classifier model, and the agent can still change files, run commands, and use tools. If a distinct classifier is configured, the notice identifies it as separate from the coding model; the model label is markdown-escaped before interpolation.
+
+Enter explicitly confirms and persists the install-local notice before the live approval-mode write; Escape, programmatic dismissal, a failed modal push, or a failed live-mode write leaves Auto inactive. The app prevents competing entry points from stacking notices by sharing a pending confirmation future. Once recorded, the notice is not shown again until its notice version changes. This flow makes the mode transition visible and avoids accidental activation, but neither the classifier nor the acknowledgement reduces the authority of an allowed tool or process.
+
 ## Approval is deliberate interaction, not authorization
 
 Use interrupt rules or `interrupt_on` for actions an operator needs to inspect in context, such as writes outside a routine work area, destructive operations, or sensitive MCP calls. Approval is meaningful only if the serving application presents the paused state to an authenticated human and resumes with that decision. It does not retroactively constrain already-issued credentials, direct backend access, an unmediated tool, or a remote service's authority.
@@ -113,13 +139,23 @@ Project-server approval is scoped rather than merely name-based: persisted appro
 
 The `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` setting is an explicit process-level escape hatch, not a repository setting. Review each approved MCP server as code plus egress policy: stdio commands execute locally, and remote servers can receive requests and any headers or environment-derived values that the configuration permits.
 
-## MCP OAuth credentials are protected files, not a vault
+## MCP OAuth credentials and endpoint discovery
 
-`FileTokenStorage` persists MCP OAuth state under the selected profile's state directory in `mcp-tokens`. Token-file names require safe server names and include a hash of the server URL, separating identically named servers at different endpoints. The JSON envelope can contain bearer tokens, client registration data, OAuth metadata, and expiry state. Treat it as credential material.
+### dcode: protected files, not a vault
+
+Deep Agents Code `FileTokenStorage` persists MCP OAuth state under the selected profile's state directory in `mcp-tokens`. Token-file names require safe server names and include a hash of the server URL, separating identically named servers at different endpoints. The JSON envelope can contain bearer tokens, client registration data, OAuth metadata, and expiry state. Treat it as credential material.
 
 Writes serialize a read-modify-write operation with an in-process path lock, create the token directory with owner-only permissions where supported, write a temporary file using mode `0600`, atomically replace the destination, and apply `0600` again. The implementation warns when it cannot set directory mode `0700` or file mode `0600`. Atomic replacement ensures a reader sees an old or new complete file rather than a partial JSON document; it does not protect against another process that can read the account's files.
 
 Token values must never be logged: the OAuth token model's normal representation includes access and refresh tokens. Corrupt, non-object, or unsupported-version token files fail with recovery instructions to delete the file and log in again. Back up or migrate this state only through a protected secret-handling process; do not commit it, expose it through shared volumes, or assume file modes defend against the same user, an administrator, or a compromised host.
+
+### Talon: credential persistence is paired with guarded OAuth requests
+
+Talon stores tokens, expiry, and client registration in `~/.deepagents/mcp-tokens`. The server URL—and non-default OAuth configuration when present—contributes to the file digest, so credentials for incompatible server or client identities do not share a file. Updates take a per-path lock, harden the directory to `0700`, write and `fsync` a `0600` temporary file, then replace the destination. A refresh response that omits `refresh_token` retains the previously stored refresh token; a fresh authorization deliberately does not. This protects update integrity and availability, not confidentiality from the agent process or any principal that can read the account's home directory. Talon warns when the token location is inside its agent workspace because its default shell backend can still read arbitrary absolute paths; moving a secret out of the workspace is not a security boundary.
+
+Talon treats the OAuth discovery and token endpoints as untrusted network input. OAuth HTTP clients use an HTTPS-only SSRF-safe transport, ignore proxy-related environment configuration, disable redirects, apply request and DNS-resolution timeouts, and bound JSON response bodies to 64 KiB. Discovery requires a validated public HTTPS issuer, validates device-flow endpoint origin against that issuer, and rejects malformed metadata; provider-driven requests also validate every metadata endpoint, reject userinfo URLs and redirects, and re-check issuer equality. The transport preserves the hostname for HTTP `Host` and TLS SNI while connecting to the safe resolved address, and rejects a hostname with mixed public and loopback DNS answers. These measures constrain where the OAuth helper connects and how it processes discovery. They do **not** make an approved MCP server trustworthy, constrain the permissions granted by an OAuth token, or replace egress and service authorization policy.
+
+For interactive login, Talon presents a browser URL and accepts a callback only when its scheme, authority, and path exactly match the configured redirect URI and the callback supplies `code` and `state`. Channel-based login binds the authorization prompt and callback to the current invocation; runs without such a channel must use an interactive login instead. Device authorization similarly expires on its server-provided deadline, observes `authorization_pending` and `slow_down`, and stores the result only after a valid bearer-token response.
 
 ## Server-authoritative workspace sharing
 
@@ -135,6 +171,12 @@ Repository text, shell output, MCP responses, and conversation content can conta
 
 This containment is scoped to title generation; it does not sanitize the primary agent conversation or turn malicious text into trusted content. For any new summarizer, classifier, extractor, or automation model call, define an explicit data allowlist, size limit, tool/callback policy, timeout, output validation, and a no-secret/no-privilege assumption.
 
+## Rendering external content in the terminal UI
+
+Terminal presentation is also an input boundary. In dcode's Textual UI, strings from users, tools, files, API responses, paths, and exceptions must not be interpolated into Rich markup. Use `Content.from_markup()` with `$var` substitution for external values, or compose `Content` fragments; use `markup=False` for notifications containing dynamic values. Raw Markdown is a different parser path: normalize line breaks and escape markdown-significant characters with `escape_markdown`, and build tables through the escaping table helper. This prevents external text from creating markup, links, HTML-like content, additional blocks, or table columns in the UI.
+
+The Auto notice illustrates the split: its static body is rendered as Markdown, but an external classifier-model label is escaped before insertion. It disables Markdown's automatic link handling and sends clicked URLs through the shared URL opener, which checks URL safety before invoking the browser; notifications from that path disable markup and strip dangerous Unicode for display. These are rendering and user-interaction safeguards, not sanitization of content for model consumption or authorization of a clicked destination.
+
 ## Deployment checklist and focused tests
 
 1. **Choose the enforcement layer.** Use a sandboxed execution backend, separate service account, read-only mounts, restricted egress, and narrowly scoped credentials for hard boundaries. Do not rely on prompting, filesystem middleware, or approval alone.
@@ -142,8 +184,10 @@ This containment is scoped to title generation; it does not sanitize the primary
 3. **Protect the approval surface.** Ensure only authenticated operators can decide interrupts, record decisions as appropriate for the deployment, and test malformed, pathless, current-directory, absolute-pattern, `..`-pattern, and edited tool requests.
 4. **Do not combine a permission claim with shell authority.** Expect nonempty permissions to be rejected on an execution-capable backend unless every pattern is scoped to a composite route; in either case, use a sandbox for `execute`.
 5. **Treat repositories as hostile until trusted.** Disable project dotenv where practical; keep trust controls in launch, user, or managed configuration; review project MCP definitions before granting an out-of-repository approval.
-6. **Operate OAuth state as a secret.** Protect the selected profile state directory, watch permission-hardening warnings, avoid token logging, and verify corrupt-file recovery and endpoint-separated storage.
+6. **Operate OAuth state as a secret.** Protect the selected profile state directory, watch permission-hardening warnings, avoid token logging, and verify corrupt-file recovery and endpoint-separated storage. For Talon, test unsafe, mixed DNS, userinfo, redirect, oversized-response, and timeout failures as well as normal OAuth flows.
 7. **Keep workspace identity server-side.** Require bindings on every server run, reject policy drift, protect the SQLite database, and do not persist credentials or prompts in workspace-policy records.
-8. **Test injection boundaries.** Include adversarial repository text, tool output, shell output, and MCP responses in tests for secondary model calls and approval flows.
+8. **Make Auto’s limits explicit.** Confirm the first-enable notice before persisting Auto, test Escape and modal-failure paths, disclose a separate classifier model, and never describe the mode as sandboxing or least privilege.
+9. **Render external terminal content as data.** Test markup and Markdown metacharacters, line breaks, URLs, and invisible Unicode in tool output, exception messages, model labels, and links.
+10. **Test injection boundaries.** Include adversarial repository text, tool output, shell output, and MCP responses in tests for secondary model calls and approval flows.
 
-See [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [filesystem tools](/openwiki/concepts/tools-filesystem.md), [MCP](/openwiki/integrations/mcp.md), and [sandbox providers](/openwiki/integrations/sandbox-partners.md) for adjacent component guidance.
+See [permissions and HITL](/openwiki/concepts/permissions-hitl.md), [filesystem tools](/openwiki/concepts/tools-filesystem.md), [MCP](/openwiki/integrations/mcp.md), [Talon](/openwiki/integrations/talon.md), and [development operations](/openwiki/operations/development.md) for adjacent component guidance.

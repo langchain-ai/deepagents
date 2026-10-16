@@ -8,7 +8,6 @@ that leaves the process.
 from __future__ import annotations
 
 import asyncio
-import functools
 import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -16,7 +15,6 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import langchain_anthropic.chat_models as anthropic_chat_models
-import langchain_aws.chat_models.anthropic as aws_anthropic_chat_models
 from langchain.tools import ToolRuntime  # noqa: TC002  # `@tool` resolves the injected `runtime` annotation at runtime
 from langchain_anthropic import ChatAnthropic
 from langchain_aws import ChatAnthropicBedrock, ChatAnthropicMantle, ChatOpenAIMantle
@@ -320,12 +318,8 @@ def stub_anthropic_on_bedrock(
     """Return a real langchain-aws `ChatAnthropic` subclass whose HTTP transport answers from `turns`."""
     stub = ProviderStub(anthropic_message, list(turns))
     transport = httpx.MockTransport(stub)
-    for name in ("AnthropicBedrock", "AnthropicBedrockMantle"):
-        client_class = getattr(aws_anthropic_chat_models, name)
-        monkeypatch.setattr(aws_anthropic_chat_models, name, functools.partial(client_class, http_client=httpx.Client(transport=transport)))
-    for name in ("AsyncAnthropicBedrock", "AsyncAnthropicBedrockMantle"):
-        client_class = getattr(aws_anthropic_chat_models, name)
-        monkeypatch.setattr(aws_anthropic_chat_models, name, functools.partial(client_class, http_client=httpx.AsyncClient(transport=transport)))
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", lambda _, request: transport.handle_request(request))
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", lambda _, request: transport.handle_async_request(request))
     chat_model = model_class(
         model=model,
         region_name="us-east-1",

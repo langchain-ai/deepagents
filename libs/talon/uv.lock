@@ -939,7 +939,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.7.25"
+version = "0.7.26"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -956,11 +956,11 @@ requires-dist = [
     { name = "av", marker = "extra == 'video'", specifier = ">=18.0.0,<19.0.0" },
     { name = "langchain", specifier = ">=1.4.6,<2.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.7.6,<2.0.0" },
-    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.8.2,<2.0.0" },
-    { name = "langchain-core", specifier = ">=1.6.10,<2.0.0" },
+    { name = "langchain-aws", marker = "extra == 'aws'", specifier = ">=1.9.0,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.6.11,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.2,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.9" },
-    { name = "langsmith", specifier = ">=0.14.8" },
+    { name = "langsmith", specifier = ">=0.14.11" },
     { name = "packaging", specifier = ">=23.2" },
     { name = "pillow", marker = "extra == 'video'", specifier = ">=12.3.0,<13.0.0" },
     { name = "wcmatch", specifier = ">=11.0" },
@@ -971,7 +971,7 @@ provides-extras = ["aws", "quickjs", "video"]
 test = [
     { name = "av", specifier = ">=18.0.0,<19.0.0" },
     { name = "build" },
-    { name = "langchain-aws", specifier = ">=1.8.2,<2.0.0" },
+    { name = "langchain-aws", specifier = ">=1.9.0,<2.0.0" },
     { name = "langchain-openai", specifier = ">=1.7.2,<2.0.0" },
     { name = "langchain-tests", specifier = ">=1.1.9" },
     { name = "pillow", specifier = ">=12.3.0,<13.0.0" },
@@ -1089,7 +1089,7 @@ requires-dist = [
     { name = "langchain-agentcore-codeinterpreter", marker = "extra == 'agentcore'", specifier = ">=0.0.5,<1.0.0" },
     { name = "langchain-anthropic", specifier = ">=1.7.6,<2.0.0" },
     { name = "langchain-anthropic", marker = "extra == 'anthropic'", specifier = ">=1.7.6,<2.0.0" },
-    { name = "langchain-aws", marker = "extra == 'bedrock'", specifier = ">=1.8.2,<2.0.0" },
+    { name = "langchain-aws", marker = "extra == 'bedrock'", specifier = ">=1.9.0,<2.0.0" },
     { name = "langchain-baseten", marker = "extra == 'baseten'", specifier = ">=0.2.5,<1.0.0" },
     { name = "langchain-cohere", marker = "extra == 'cohere'", specifier = ">=0.6.0,<1.0.0" },
     { name = "langchain-daytona", marker = "extra == 'daytona'", editable = "../partners/daytona" },
@@ -1118,9 +1118,9 @@ requires-dist = [
     { name = "langchain-xai", marker = "extra == 'xai'", specifier = ">=1.3.0,<2.0.0" },
     { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.2,<4.0.0" },
     { name = "langgraph-cli", extras = ["inmem"], specifier = ">=0.4.35,<1.0.0" },
-    { name = "langgraph-runtime-inmem", specifier = ">=0.36.0,<1.0.0" },
+    { name = "langgraph-runtime-inmem", specifier = ">=0.36.1,<1.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.7,<1.0.0" },
-    { name = "langsmith", extras = ["sandbox"], specifier = ">=0.14.8" },
+    { name = "langsmith", extras = ["sandbox"], specifier = ">=0.14.11" },
     { name = "markdownify", specifier = ">=1.2.3,<2.0.0" },
     { name = "mcp", specifier = ">=2.0.0,<3.0.0" },
     { name = "packaging", specifier = ">=26.2" },
@@ -1248,7 +1248,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28.1,<1.0.0" },
     { name = "httpx2", specifier = ">=2.13.1,<3.0.0" },
     { name = "langchain", specifier = ">=1.4.6,<2.0.0" },
-    { name = "langchain-core", specifier = ">=1.6.10,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.6.11,<2.0.0" },
     { name = "langchain-openai", marker = "extra == 'history-openai'", specifier = ">=1.7.2,<2.0.0" },
     { name = "langchain-voyageai", marker = "extra == 'history-voyage'", specifier = ">=0.4.1,<0.5.0" },
     { name = "langgraph", specifier = ">=1.2.15,<2.0.0" },
@@ -1259,7 +1259,7 @@ requires-dist = [
     { name = "langgraph-prebuilt", specifier = ">=1.1.1,<2.0.0" },
     { name = "langgraph-sdk", specifier = ">=0.4.7,<1.0.0" },
     { name = "langgraph-store-mongodb", marker = "extra == 'mongodb'", specifier = ">=0.4.0,<0.5.0" },
-    { name = "langsmith", specifier = ">=0.14.8" },
+    { name = "langsmith", specifier = ">=0.14.11" },
     { name = "librosa", marker = "extra == 'media'", specifier = ">=0.11.0,<1.0.0" },
     { name = "mcp", specifier = ">=2.3.0,<3.0.0" },
     { name = "numpy", marker = "extra == 'media'", specifier = ">=2.5.4,<3.0.0" },
@@ -2260,7 +2260,7 @@ wheels = [
 
 [[package]]
 name = "langchain-core"
-version = "1.6.10"
+version = "1.6.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -2274,9 +2274,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uuid-utils" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f7/00/0a95f74a79908e7bc844a82fca35c1afc55689f55aaed086e95745946db8/langchain_core-1.6.10.tar.gz", hash = "sha256:3ad7a64eab150c1fea9f8a748b1c076aa1a960c5cf7c28d81a841a2f2dbffad1", size = 1010280, upload-time = "2026-10-12T14:13:51.184Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/06/ae/3af9efe9e6280bb13d9e7d2c8b1173fd870aff0202d239a9710c8c2ce922/langchain_core-1.6.11.tar.gz", hash = "sha256:1ae4133bba30fb14100f74718ea7458cb6134d135704977354f8f178d561122a", size = 1015244, upload-time = "2026-10-15T18:32:20.71Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1e/2c/6ed698c6b451af0ed0efdbe94a703c18aea768d925347d8d1efd5645ae8c/langchain_core-1.6.10-py3-none-any.whl", hash = "sha256:14341bdd8b42d0dd9a53dbbcd8b0599ab47b0c718c7caa12e3eb5c50b32cffcb", size = 573253, upload-time = "2026-10-12T14:13:49.616Z" },
+    { url = "https://files.pythonhosted.org/packages/b7/fa/765b77cab75ba67b94ce66d2bc3b0a6b66e5077bd152dca1877f0d8c8670/langchain_core-1.6.11-py3-none-any.whl", hash = "sha256:0036e7cc6c6be6eac28970bd7e46df5d2b5da9cced583507a5ffcda2ec57a401", size = 573799, upload-time = "2026-10-15T18:32:19.358Z" },
 ]
 
 [[package]]
@@ -2359,7 +2359,7 @@ requires-dist = [
     { name = "bsdiff4", specifier = ">=1.2.6,<2.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "langchain", specifier = ">=1.4.6,<2.0.0" },
-    { name = "langchain-core", specifier = ">=1.6.10,<2.0.0" },
+    { name = "langchain-core", specifier = ">=1.6.11,<2.0.0" },
     { name = "langgraph", specifier = ">=1.2.15,<2.0.0" },
     { name = "quickjs-rs", specifier = ">=0.2.5,<0.3.0" },
 ]
@@ -2566,7 +2566,7 @@ wheels = [
 
 [[package]]
 name = "langgraph-runtime-inmem"
-version = "0.36.0"
+version = "0.36.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "blockbuster" },
@@ -2577,9 +2577,9 @@ dependencies = [
     { name = "starlette" },
     { name = "structlog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/75/b2/920a9226741aa240b5365097182bd915f32c9b3f35b2f696be07e6fd1a7a/langgraph_runtime_inmem-0.36.0.tar.gz", hash = "sha256:46f7313ba7f8dd759e68b435e449fa3f6a9c6589589b9507381aadb6bdec1a03", size = 135047, upload-time = "2026-10-10T00:14:35.086Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/58/9f/0bf43030c9d2bbcfae5d9dcac48d7037783dbe7344f49ecfc5501a6ae3b7/langgraph_runtime_inmem-0.36.1.tar.gz", hash = "sha256:5f043f3cd6d1ae188a57f1bce5e22778b18241e11183453652ee3cc1b937735f", size = 135044, upload-time = "2026-10-15T23:23:44.845Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/40/26/5ed050eb7a8b25927ca4ab663d212e3ec79e93e9fa9bb47a8372eb8c472b/langgraph_runtime_inmem-0.36.0-py3-none-any.whl", hash = "sha256:2fcf3ce0caecd3b020e5c4c45024f5e826f22a3793d781e85e72516dc2b0282c", size = 54346, upload-time = "2026-10-10T00:14:33.835Z" },
+    { url = "https://files.pythonhosted.org/packages/70/0c/8f0bb7408e58042c721b16ed520647512ee5febbf66d3d815d914f6918e9/langgraph_runtime_inmem-0.36.1-py3-none-any.whl", hash = "sha256:092da196fda56ce03e34780b2fcd279b0bbf5b7fd946c7a971cf62e351f23409", size = 54347, upload-time = "2026-10-15T23:23:43.22Z" },
 ]
 
 [[package]]
@@ -2614,7 +2614,7 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.14.8"
+version = "0.14.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -2632,9 +2632,9 @@ dependencies = [
     { name = "xxhash" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/35/3a/d34ed0164451df7c2effd79ef119c90db7ec7a315731b391d3a57874829d/langsmith-0.14.8.tar.gz", hash = "sha256:667d0e69efb64b3ed3a9e1686e5246e4f9f46aacfba8c644d41e7e74bcd4eb37", size = 5002526, upload-time = "2026-10-13T00:42:26.107Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/c3/a9a98d7adf573fdd5ea5c92cadbc26d7c597ab36f4dc31c093eb19507808/langsmith-0.14.11.tar.gz", hash = "sha256:d9e7ffe587e12ce51573cab654d02e84feb924d3b1f582274c4b1412ebeabf4c", size = 5020659, upload-time = "2026-10-16T07:16:56.865Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/67/a8/5bfbcf7704f48331372ec36212a1e0e6bcb83eb967829d760fbdbf386616/langsmith-0.14.8-py3-none-any.whl", hash = "sha256:bda7ec3d74bc5af3244c90920e924efcf99a700638860bf87d0231bfdb4f4ce4", size = 862391, upload-time = "2026-10-13T00:42:23.53Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/1d/b683b3d8777e625e021efeaaf72dc04f709be59e6a5f2d65725cebaedcfb/langsmith-0.14.11-py3-none-any.whl", hash = "sha256:9ecca7633df228ef2c44563f7187e426b8a79e7c5c2351c5dd8c9074c61512e7", size = 869018, upload-time = "2026-10-16T07:16:54.634Z" },
 ]
 
 [package.optional-dependencies]

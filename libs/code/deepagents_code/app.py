@@ -9723,14 +9723,16 @@ class DeepAgentsApp(App):
             logger.debug("Cache-expiring notification failed", exc_info=True)
 
     def _refresh_cache_expiry_banner(self) -> None:
-        """Show cache expiry independently of handoff preferences and activity."""
+        """Show reconciled cache expiry independently of handoff preferences."""
         if not self.screen_stack:
             return
         banners = self.screen_stack[0].query("#cache-expired-banner")
         if banners:
             expires_at = self._status_bar.cache_expires_at if self._status_bar else None
             banners.first().display = (
-                expires_at is not None and datetime.now(UTC) >= expires_at
+                not self._cache_reconciliation_pending
+                and expires_at is not None
+                and datetime.now(UTC) >= expires_at
             )
 
     def _check_cache_expiry(self) -> None:
@@ -21972,6 +21974,7 @@ class DeepAgentsApp(App):
                 self._last_cache_write = activity
             await self._refresh_cache_timing()
         self._cache_reconciliation_pending = pending
+        self._refresh_cache_expiry_banner()
 
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).

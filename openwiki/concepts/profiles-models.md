@@ -1,47 +1,18 @@
 ---
 type: model resolution and runtime profiles
-title: Models, Profiles, and Provider Configuration
-description: Describes server-owned model discovery and safe client presentation data, model construction and request-time switching, retry ownership, and prompt-cache identity state. Explains the boundaries between capability profiles, credentials, constructor settings, and persisted session metadata.
+title: Profiles and Models
+description: Explains Deep Agents SDK provider and harness profiles, dcode provider configuration, exact SDK pinning, and request-time model behavior. Separates construction, graph assembly, capability metadata, credentials, retries, and session cache state.
 tags: [models, sdk-profiles, model-catalog, runtime-selection, auto-mode, retries, prompt-cache, dcode]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-16T08:05:35.701Z
 sources:
-  - id: openwiki-source-ac769408e1d61a20b9874382
-    resource: repo://libs/code/deepagents_code/_version.py
-  - id: openwiki-source-05106e66a949150d557266a2
-    resource: repo://libs/code/deepagents_code/agent.py
-  - id: openwiki-source-18abc7e59899514f067032b2
-    resource: repo://libs/code/deepagents_code/auto_mode.py
-  - id: openwiki-source-c0415071c1e2979d2795bd05
-    resource: repo://libs/code/deepagents_code/cold_cache.py
+  - id: openwiki-source-15628256fe9cd22197db74ed
+    resource: repo://libs/code/AGENTS.md
   - id: openwiki-source-7f6b98925b5f1ba065df3a04
     resource: repo://libs/code/deepagents_code/config.py
-  - id: openwiki-source-55d5c39401ac52584ce1f973
-    resource: repo://libs/code/deepagents_code/configurable_model.py
-  - id: openwiki-source-7e241f30f5c7753642ea34d5
-    resource: repo://libs/code/deepagents_code/model_api.py
-  - id: openwiki-source-5afb93f98c34330c27609db2
-    resource: repo://libs/code/deepagents_code/model_catalog.py
-  - id: openwiki-source-4a7b6def251b42596a410ebc
-    resource: repo://libs/code/deepagents_code/model_config.py
-  - id: openwiki-source-ece74ecc87a2bc395b3ce368
-    resource: repo://libs/code/deepagents_code/model_metadata.py
-  - id: openwiki-source-c101168dc0286ff6c29ed37f
-    resource: repo://libs/code/deepagents_code/model_retry.py
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
     resource: repo://libs/code/pyproject.toml
-  - id: openwiki-source-7246ad9a05cb1ad11e4569a6
-    resource: repo://libs/code/tests/unit_tests/test_agent.py
-  - id: openwiki-source-30d7e9e18e8d7c616fbbb0bf
-    resource: repo://libs/code/tests/unit_tests/test_auto_mode.py
-  - id: openwiki-source-42e76fc26f690f7d6dab298d
-    resource: repo://libs/code/tests/unit_tests/test_cache_expiry.py
-  - id: openwiki-source-563d8f99b354174d66aab140
-    resource: repo://libs/code/tests/unit_tests/test_configurable_model.py
-  - id: openwiki-source-e012c5898b6bc6cb1317467d
-    resource: repo://libs/code/tests/unit_tests/test_model_catalog.py
-  - id: openwiki-source-0dfd43fc1de1af401946bc38
-    resource: repo://libs/code/tests/unit_tests/test_model_config.py
-  - id: openwiki-source-c04c6318f6e59e0d1c9d6182
-    resource: repo://libs/code/tests/unit_tests/test_model_retry.py
   - id: openwiki-source-50173942904153d619b9ae0d
     resource: repo://libs/deepagents/deepagents/_models.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
@@ -56,27 +27,22 @@ sources:
     resource: repo://libs/deepagents/deepagents/profiles/provider/provider_profiles.py
   - id: openwiki-source-478a579b56d29c6928ec2320
     resource: repo://libs/deepagents/pyproject.toml
-  - id: openwiki-source-82f3138080e1d0012e6ffb72
-    resource: repo://libs/deepagents/tests/unit_tests/test_harness_profiles.py
   - id: openwiki-source-38c26264bf4a1dadb3401e80
     resource: repo://libs/deepagents/tests/unit_tests/test_models.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-15T08:05:41.400Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
 ---
 
-# Models, Profiles, and Provider Configuration
+# Profiles and Models
 
 This page covers two separate profile systems in the Deep Agents SDK, then the dcode model-selection layer that builds on provider construction. Do not use the word *profile* as if it meant one configuration object: provider profiles, harness profiles, and dcode capability profiles operate at different times and have different security boundaries.
 
 ## Version and package boundary
 
-The `deepagents-code` distribution is **0.1.85**, requires Python `>=3.12,<4.0`, and declares the exact published SDK dependency `deepagents==0.7.25`. The checked-out `deepagents` package is also **0.7.25** and supports Python `>=3.11,<4.0`. Thus the current dcode release and sibling SDK source agree on the version, but the exact pin—not a minimum version—is dcode's consumer compatibility contract.
+The `deepagents-code` distribution is **0.1.85**, requires Python `>=3.12,<4.0`, and declares the exact published SDK dependency `deepagents==0.7.26`. The checked-out `deepagents` package is also **0.7.26** and supports Python `>=3.11,<4.0`. Thus the current dcode release and sibling SDK source agree on the version, but the exact pin—not a minimum version—is dcode's consumer compatibility contract.
 
-For monorepo development, dcode's `[tool.uv.sources]` maps `deepagents` to the editable sibling `../deepagents` directory. That wiring intentionally lets development exercise the checkout; it does not widen the released dependency contract. A future source-tree SDK change can precede a dcode pin bump, so treat that bump and its compatibility tests as a deliberate consumer change. The profile APIs are beta in the SDK: verify construction and graph-assembly behavior against the exact SDK artifact being released.
+**Maintenance invariant:** when a dcode feature begins to require SDK functionality, update the exact `deepagents==X.Y.Z` pin in the same change and test against that release. CI rejects a pin older than the SDK version at release time unless `dangerous-skip-sdk-pin-check` is used; a pin ahead of the workspace SDK is permitted for intentional prerelease coordination. The `[tool.uv.sources]` editable mapping to `../deepagents` makes monorepo development exercise the checkout, but does not widen the published compatibility contract. The profile APIs are beta, so verify construction and graph-assembly behavior against the exact SDK artifact being released.
 
-The base dcode install includes the Anthropic, Google GenAI, and OpenAI LangChain integrations. Other model integrations are opt-in extras such as `deepagents-code[fireworks]` or `deepagents-code[openrouter]`; `deepagents-code[all-providers]` aggregates the supported provider extras. Selecting a configured provider whose integration is absent is therefore an installation/configuration failure on the inference host, not a client-side discovery task.
+The base dcode install includes the Anthropic, Google GenAI, and OpenAI LangChain integrations. Other model integrations are opt-in extras such as `deepagents-code[fireworks]` or `deepagents-code[openrouter]`; `deepagents-code[all-providers]` aggregates the supported provider extras. Each provider integration declares a bounded dependency range, not merely a package name. Selecting a configured provider whose integration is absent or below its supported floor is therefore an installation/configuration failure on the inference host, not a client-side discovery task.
 
 ## SDK provider and harness profiles
 

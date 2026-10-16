@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:9920891cb857640f454e9be6a71b3f34bf6e911eb6854f106ef4fc36015b9cea",
+  "pageVersion": "sha256:50b0994d5323e6030060b679d8ae83e1617fa70ac1ec3c29a94f51905816b794",
   "claims": [
     {
       "id": "claim_bb941496a1ea42cd805f3446242fcb0c",
@@ -99,10 +99,88 @@
           "version": "repo-lines-v1:sha256:df5529df7b9cae6d948085b9cf0481887be2b5a23d966ceb97356bdb98a1d1ef:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZDM2MTEzYmJkNDgzYWIwOTNiZDM3YjQwNWUwMjcyNjkzMGUzODhhNDRjZTM4NDIyYzk3YjVjNmQ1ZmY4MjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzYmQ1OWFmODA4ZGZkMDJjNGQ2MTYyNzJiNThlZGE3MDM0YzRiYmFkNDcwNjJmNGJhNGYxYzM1ZGZiMGQyNzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhODJlYmU5ZWQ0MDdjM2E2YmE0YjAwMzQyOTJiYWE1MmMxMWNlNWFlMjg2MTA3NDAyZGU0NzkyZWVlY2FjZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_216741387a4849aa8eafc202856297bb",
+      "statement": "Async-subagent context forwarding is deployment-scoped: a child on the parent deployment receives serializable parent context and parent-assistant metadata, but a parent-reference-only context and children on another server do not receive that context.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/tests/unit_tests/test_async_subagents.py#L1433-L1472",
+          "version": "repo-lines-v1:sha256:37bf23d05e09df683f1c03a8b3e217bdcb508eebda869780ede53c7dc46b6f6f:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMzNzg5MzZkODU5Y2ExOGYwYjc3MjFlNTExNjdlNWIxN2VjZDZlMjFmODE1MDI1ZTRiZmQwMzRjY2Q0NjNmMTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU2OGYwZmRkNmM5NDdhODFhMjY5MTI5ODYxZmI0MGViYTUyY2U4ODc1Y2IyMTFkNTk2YmI0OGZmMDZkYmRhNTIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVjODE2MWNmZjY4ZmJkMDI3ZjU0NzNjZjUwZDFhYzY5YWNhYTkyZDNiODg2ZmIzM2Y2NTlhNDg1OTAyNWU2MTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0NTIyN2E5Mzk2YTkyMmM3NzMwNDY4ZDQ5YmI5MDE3YWRmZWI4ZjlkYzRmZGFkMThhNDQwMjlkZWEzYWRiNDMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_b40753f4961c40f880d49d7eda41c5e0",
+      "statement": "Status-bar UI tests mount a minimal Textual app and assert responsive observable layout: the cwd tooltip keeps the full path, long paths condense or hide at narrow widths, and branch display remains visible while using the configured Unicode or ASCII ellipsis.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/tui/widgets/test_status.py#L159-L247",
+          "version": "repo-lines-v1:sha256:c5af455f8839128634a9ef109293cbaee7c768763f9444b380eb37d3e125a107:eyJzZWxlY3RlZExpbmVDb3VudCI6ODksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc5OTJjNmYzNTJmYjYzODY1NGY0YTUwZmQxMmFkY2I5MDc3MDIyNDc0ZjQ4NGE3ZWQ5OTM5YzI2YWFjMzNjMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliMTk5ZDFhODZlYTljNmQ3NzY2MzFmYjBkY2FkZTViYzZlZTA2Yzc4ZWQ3OTk2ZjhmODg1ZTg4MjBlMGM4MjQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkwOWVkZDliNmU3NDYxMWQxOTAwNGQzNjQ4ZTZiNTI1MWNjOTEyMDdjYjk2M2EwN2JhMWJiNDA4MWM0NzNlOTkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4YWU0ODNhMzEzNDdiM2QxZDFlY2E3NjRjYTRmMWM0OWVlMGU1OGQzMGI2YWU0ODYyNThiN2E5Mjk1YzRjYjQifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/tui/widgets/test_status.py#L37-L72",
+          "version": "repo-lines-v1:sha256:3c30ceb44329677a0de81f5f15145cd9d84aed46ca049c03029bde0ca33fa48b:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZmMDg2NmY0MDExZTU4NWZmYzA5MDkyZWRmMDgzMmUxN2I1MmY0YzkwYzRjYTBiNDJkY2ZhMDUwZmEzNzViNWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkODkxMjlhMjgyMjIwMzcxMjNmYzAzZDZmYmY3MDFiZDMwZDg3MTQ2MjYyMjZkMjZhMzk2ZTk4MjY0NzQzMjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ1YzBiYWYyN2M3ZjA2NDI1Mzg1MTZkYWMwY2FlZGMzMGYxZGQ2ZDA5YzQ1YTMwOGU1NjA3MDg1NzYwNjU2NjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVhZDI3MDkwMmY0ZGEyYTBmNWM0YjRmMTA4NmE4MTU2Y2Q1MjdlY2FkOWFmZGQzYTFiNGUzZGNjMDIyYjllOWQifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/tui/widgets/test_status.py#L84-L145",
+          "version": "repo-lines-v1:sha256:18bcc1dd3ff88c65260098426cd0116b3f7f0e157786214eeb1fa78d8577f97f:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE4OTJkZDYzNWVmNGJhOWY5ZDA1NjcwODBkM2M5ZmM3OTUzYTIwMjQxZjlkMzE0ODMwNWM4ZDM0ZTVlZmRjZTkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJiZjVmMmUyMDVjNTViZjVjMzYzMTAxZGQwNTZlOTUwY2M3MzRjMWVjYTA0N2E0ZDg3MmEwMWY3MmI2NjQ3MzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYzNTY4YzA4NzA1NzM3Yzk4YTU5OGIxMDAwYjc5ZGQ3NzllNWQyMTJhNzEzYTkyMzJkMTY5MDEzNGZmZjc4N2MifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8356f0dd80a24f3fa99814f59680ef7b",
+      "statement": "Talon OAuth tests pin a DNS-resolved public address while preserving the requested hostname for TLS SNI and HTTP Host, require certificate and hostname verification, preserve configured or default User-Agent behavior, and reject a DNS answer set that includes a private address.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/mcp_auth.py#L769-L794",
+          "version": "repo-lines-v1:sha256:ece5dc69605ce2a5cb9f00fe0a79b34856e8a2a3623eb78864e726be8037ada5:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3NGYzYTk4ODA2NzExYzkwYjFmNmQ0ZDUzM2FiMzRlNWE4NTc5NWE1ZDgyMmMyNzRlYTBlYzhiOTJmOTdkZDUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImEwNzNlY2Q1NDljYTQ2YWVkMGJkMDk1YmRkNDMyYjQ1ZTVkZjMxZDU5MDU2NTJhNDVlMWQ2MDg5YTA2OWI1ZDciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjgxYzg3Mjg2N2VlNTYyMTkzNTdkZmNhNmJlMjk0MjFiMzU1YTc3MWY1MjJlMTlkYzM0MmViY2JkMjY5MTg0NzQifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_oauth_transport.py#L22-L100",
+          "version": "repo-lines-v1:sha256:8bbee126e7415829ae199cf535fb0ad03e5b946594e7ec62ba26e302c4bc3153:eyJzZWxlY3RlZExpbmVDb3VudCI6NzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExMDViZjU2YzViNjIxMGYzZWJmNGY4Y2ZmOGU1YjY5MmM1NTRlOTQ1OGNkMzFjNTgyYzhmZGQ3OWYyMzI4OGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlZjI4M2QxNzkzZTMyYTVlYjM1NDAyYjczM2ZmMjBlMmM2NDVhZTEwNGRhZjgzNDlhZWU3MTY3OTQ5OTEwYzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OGIwNjNkOWI0N2U2NTM3OTYyNTU3MmNjZTE5NzY2OWQ1NzY3ZTEyYzE4YmUwNzU2NTJiOGNkOTgxY2U4ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0908641e5af947b8be3f4163fb759d47",
+      "statement": "Package-local Makefile targets are the source of truth: deepagents and dcode unit targets run socket-restricted parallel pytest with coverage, while Talon runs its bridge tests before socket-restricted Python pytest with a 10-second timeout.",
+      "evidence": [
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L49-L88",
+          "version": "repo-lines-v1:sha256:92a6adcf6b85b46bc7ca06ed013b3cae75f7ac52a3ce3caa6e993d74e11e262d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2OTU5OTNiM2Q5NDNkMDZiMmRlN2I4OTViMDE1MmY3YzNmZmQ2YmI2YjcxZGI4ZDgyNGI0NjNmZjA4OTA1ZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YzA2YzU2MWQ1YzMyNzM0MzY4NTI2OGE0NmIzMzkxZjM5OThlZWU4OTBkMmJlNTFmMGQyMWNjNGE1M2FlNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVlNzQzNjEwNGFkZDhlZTcwNDliMGZiMDQyOTJiYzUyNzE1MGM0ZThmNTk3Y2RjNzFhMDJlNmNjZTI5M2VjYTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM3NzY1M2E4ODRiMjliOTVhMjQyOTkzZTJkYmE0NzgzNDMxNmFhZGQxZDY5MDYyZGMzNzdhYTNhMWFmNjE4ZWQifQ"
+        },
+        {
+          "resource": "repo://libs/code/Makefile#L14-L39",
+          "version": "repo-lines-v1:sha256:5e9c8a781a2587711313141f3ca35ed5da71a807c6f74f9b59ad6d8b80a43bd9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ZjNhNzI0MWE2NmI3NjAwYjM2MzViZmQ3NzE4MGU4NDY2YTZkMzYxZDRjOGY1ZTg4ZmEzMWFlNTgyMTZkN2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiMGRhNmZkYTVmZGRkMTM4ZjVmMjNhMGQ2ZDk3ODBhN2Y1OTJjMTQwYjdjODI5NjVmODJlODdlZTYxNWE0NDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0ZWJhYzU1OWIxOGIxZWE4ZTkxZWUzMGM3YmE0ZWMxMGY4YTU5OGQ5NDNkYThmZDI1NDRkMzJlNGZlZWYwMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4YmM5MDIwNDM1ODU2Njg4YzU4MjkyNDAwODViMDI1Y2QyMWZjNmFiZDI0NThjNDM3ZTQ4Yjc3YzZiOTJhODIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/Makefile#L12-L38",
+          "version": "repo-lines-v1:sha256:e80d443fbec6ebefd315a7f1120531b91aa1d20c05bd1a64b7c50dff84787637:eyJzZWxlY3RlZExpbmVDb3VudCI6MjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ZjNhNzI0MWE2NmI3NjAwYjM2MzViZmQ3NzE4MGU4NDY2YTZkMzYxZDRjOGY1ZTg4ZmEzMWFlNTgyMTZkN2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwNWEzOGQzODM4ZjhkOTY4YTEwMjMyMDY4OGE1NGE2YzZmNDM0MTFkMDJlNWRkMjQzYTBlN2Q4ZGQ4N2EwNzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0ZWJhYzU1OWIxOGIxZWE4ZTkxZWUzMGM3YmE0ZWMxMGY4YTU5OGQ5NDNkYThmZDI1NDRkMzJlNGZlZWYwMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0YWM5ZjFmMzlmMGQ4OWJhNzkzMjlhMGU3ZDU0NWExYWMxMTUyODM2NTZjMWEzZDk1OGUxMzMzNWM4MWMyZWUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/Makefile#L8-L18",
+          "version": "repo-lines-v1:sha256:0952ce0f926e46b95cf4e1d3875222090398f364f47d7ba2ffac617907e1c0d8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiZTA4NmJjNzE2ZTQ1ZjVjN2NkMjMwMTFkZTgyNjgyNWU2ZjM5NmI5NDBlOTMyNDdjMzYxZjJmOWQ5YWNjOGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlNjI5YWM1NjQ1YjZiMmYwZDEyNjYwYzhiNTA0MjgxZGMzYjg2M2I5YjYyNTRiYTY2YjdmZmQ5MTg2MWRkNzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI0NjNkZTM4NmUwNzkxYWRkNTJlM2Y2ZTNhMDlmMmJmNjQ4ZmU0MzEzMThlMTkxNWI3ZTVkZTk5ZjdhNTg0NTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiZGQ2ODEwMjRlZDhkZjcyOTU4N2JkZDdiMTZmYzI3YWVjMDk2NGJlZTE0Nzc3NDg3ZTg2NGQ0ZTg3ZjkwOWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6f5170dc10b44114a2b682113d06b6f4",
+      "statement": "Repository test guidance requires deterministic tests of observable behavior, places network-free and networked suites in unit and integration directories respectively, uses automatic asyncio mode, and treats unaccepted warnings as errors.",
+      "evidence": [
+        {
+          "resource": "repo://AGENTS.md#L78-L96",
+          "version": "repo-lines-v1:sha256:b63372845dddf71fc708720e93a2605f9091d82b8e0c04ccd692bb8b789fd51b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY0NmI4NzJmN2YwNGIyNTNhMTkxZWIxZGExNWE2MDI0ZjdjZjE5NTNmZDNhYjM4MWU1MjkwYmU0YTYyNDAxNTAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3Yzk1ZGExNmJkMzBjMTJlZTcwNzBkZGI1YTBjMjg4YTQwMzMyMDM0NTExZDE3OTBiM2NmMWIwZTE3YWMwMWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhOTA4ZDNmNzM2NGVkZmYyOWY5NDI5ZWVkMzIxNDRiNTUzZGQxYTc0M2YzMjFjMWM3NGY2NzZmMjEzYjY3ZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYzMzRmZjEzNjg4MzgzMTMzODRlZmUzZDZmM2RkOTE5NWRjMTg2NzFjMjlkNmQzZmZlNjllMTEzNTVkMmIxOWQifQ"
+        },
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L177-L189",
+          "version": "repo-lines-v1:sha256:c71497c26bf7b6b3da453dcf8727b4cd2146113010356ff86f71c64920fc9278:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1ZTg2ZjY4N2VhMWVhMDRiYTk2Y2M4NzlmMmZmOTI5MjgwNDU4NWVmYTU4NmU3NjA3ODYwNzg4NWVjOTMwMjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzYjg3OTBiZTY0Y2JhZDI5YWI4NWQyYjY5ZjgzZGJlZGYzZWRhNzA4NzVmN2NhZGRlYmI4NTY3YmMyOGY3ZGEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYwYWFhMzkzYjJiODYyMDBjYmFlOTU1NDc4ZDk4MTMyZTNhYWFmZWJiODI0NzA0OWM4ZDJmZmVhYmRjNWQ5OGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRhMjk4MDY3MDA3ZmZkODIzYTFmMDFiZTlmYTdlYmYxMzU1NTIxODBmYzg5MTk1ZDljNmY5YTIxYjM3M2U2MjAifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-15T08:05:41.400Z"
+    "at": "2026-10-16T08:05:35.701Z"
   }
 }

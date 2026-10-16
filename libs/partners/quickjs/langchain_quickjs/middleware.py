@@ -120,7 +120,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         memory_limit: Bytes the QuickJS heap may use. Shared across all
             contexts under the same Runtime. Default 64 MiB.
         timeout: Per-call timeout in seconds. Applied to every
-            `eval` on every context. Default 5.
+            `eval` on every context. `None` disables the deadline. Default 5.
 
             !!! warning
 
@@ -130,6 +130,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 is not counted against it. A slow or blocking host call can
                 therefore stall an `eval` for longer than `timeout` seconds, so
                 do not rely on it to bound total wall-clock duration.
+                Disabling the deadline permits infinite synchronous execution.
+                Asyncio cancellation or an outer async timeout cannot terminate
+                a spinning worker thread; use enforceable termination such as
+                process isolation when running untrusted code without a deadline.
         max_ptc_calls: Maximum number of `tools.*` bridge calls allowed
             during one `eval` execution. Exceeding this budget throws
             from the host-function bridge before invoking the tool.
@@ -234,7 +238,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self,
         *,
         memory_limit: int = _DEFAULT_MEMORY_LIMIT,
-        timeout: float = _DEFAULT_TIMEOUT,
+        timeout: float | None = _DEFAULT_TIMEOUT,
         max_ptc_calls: int | None = _DEFAULT_MAX_PTC_CALLS,
         tool_name: str = _DEFAULT_TOOL_NAME,
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
@@ -248,6 +252,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
+        if timeout is not None and not timeout > 0:
+            msg = "`timeout` must be > 0 or None"
+            raise ValueError(msg)
         if max_ptc_calls is not None and max_ptc_calls < 1:
             msg = "`max_ptc_calls` must be >= 1 or None"
             raise ValueError(msg)

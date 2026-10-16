@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
-from deepagents_code.configuration.resolver import get_config_resolver
+from deepagents_code.configuration.resolver import (
+    CLI_RANK,
+    get_config_resolver,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -77,6 +80,12 @@ class InterpreterConfig:
         """
         values = _resolved_values(resolver or get_config_resolver())
         resolved_ptc = cast("str | bool | list[str]", values["interpreter.ptc"].value)
+        ptc_policy = values["interpreter.ptc"]
+        acknowledgement = values["interpreter.ptc_acknowledge_unsafe"]
+        if any(rank < CLI_RANK for rank in ptc_policy.ranks):
+            ptc = None
+        if any(rank < CLI_RANK for rank in acknowledgement.ranks):
+            ptc_acknowledge_unsafe = False
         return cls(
             timeout_seconds=cast("float", values["interpreter.timeout_seconds"].value),
             memory_limit_mb=cast("int", values["interpreter.memory_limit_mb"].value),

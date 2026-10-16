@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from textual.containers import Container
 from textual.pilot import Pilot
-from textual.screen import Screen
+from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
 from textual.widgets import Input, Markdown, Static
 
@@ -293,8 +293,29 @@ async def test_selection_action_warns_when_insert_fails(
         monkeypatch.setattr(app, "notify", lambda msg, **_: notices.append(msg))
         app.post_message(SelectionAction.Ask("selected text"))
         await pilot.pause()
-        assert notices == ["Could not add the selection: the composer is unavailable"]
+        assert notices == [
+            "Could not add the selection to the chat input. Copy and paste it instead."
+        ]
         assert app.screen.selections
+
+
+async def test_selection_action_warns_when_modal_arrives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A modal that opens before the click lands leaves the draft unchanged."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        assert app._chat_input is not None
+        area = app._chat_input._text_area
+        assert area is not None
+        area.load_text("existing draft")
+        await app.push_screen(ModalScreen())
+        notices: list[str] = []
+        monkeypatch.setattr(app, "notify", lambda msg, **_: notices.append(msg))
+        app.post_message(SelectionAction.Ask("selected text"))
+        await pilot.pause()
+        assert area.text == "existing draft"
+        assert notices == ["Close the open dialog before adding the selection"]
 
 
 async def test_multiline_quote_keeps_cursor_visible() -> None:

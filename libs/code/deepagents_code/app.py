@@ -24993,7 +24993,14 @@ class DeepAgentsApp(App):
                 severity="warning",
             )
             return
-        if not self._chat_input or isinstance(self.screen, ModalScreen):
+        if not self._chat_input:
+            logger.warning("Ask about this: chat input is not mounted")
+            return
+        if isinstance(self.screen, ModalScreen):
+            self.notify(
+                "Close the open dialog before adding the selection",
+                severity="warning",
+            )
             return
         if self._chat_input.mode != "normal":
             # A quote line starts with `>`, which a shell reads as a redirect.
@@ -25011,8 +25018,10 @@ class DeepAgentsApp(App):
         trailing = len(draft) - len(draft.rstrip("\n"))
         separator = "\n" * max(0, 2 - trailing) if draft else ""
         if not self._chat_input.insert_at_end(separator + quote + "\n\n"):
+            logger.warning("Ask about this: chat input text area is not mounted")
             self.notify(
-                "Could not add the selection: the composer is unavailable",
+                "Could not add the selection to the chat input. "
+                "Copy and paste it instead.",
                 severity="warning",
             )
             return

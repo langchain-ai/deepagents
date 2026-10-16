@@ -24901,7 +24901,12 @@ class DeepAgentsApp(App):
             quote = "\n".join("> " + line for line in event.text.split("\n"))
             separator = "\n\n" if self._chat_input.value else ""
             self._chat_input.focus_input()
-            self._chat_input.insert_at_cursor(separator + quote + "\n\n")
+            if not self._chat_input.insert_at_cursor(separator + quote + "\n\n"):
+                self.notify(
+                    "Could not add the selection: the composer is unavailable",
+                    severity="warning",
+                )
+                return
             self.screen.clear_selection()
 
     def _inline_prompt_pending(self) -> bool:

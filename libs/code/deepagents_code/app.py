@@ -24857,12 +24857,7 @@ class DeepAgentsApp(App):
             return
         if isinstance(self.screen, ModalScreen):
             return
-        if (
-            self._pending_approval_widget
-            or self._pending_ask_user_widget
-            or self._pending_goal_review_widget
-            or self._is_input_focused()
-        ):
+        if self._inline_prompt_pending() or self._is_input_focused():
             return
         if self._chat_input.handle_external_paste(event.text):
             event.prevent_default()
@@ -24880,13 +24875,7 @@ class DeepAgentsApp(App):
             return
         self._chat_input._notify_app_focus()
         self._chat_input.set_cursor_blink(blink=self._cursor_blink_enabled)
-        if isinstance(self.screen, ModalScreen):
-            return
-        if (
-            self._pending_approval_widget
-            or self._pending_ask_user_widget
-            or self._pending_goal_review_widget
-        ):
+        if isinstance(self.screen, ModalScreen) or self._inline_prompt_pending():
             return
         self._chat_input.focus_input()
 
@@ -24930,11 +24919,7 @@ class DeepAgentsApp(App):
         if isinstance(self.screen, ModalScreen):
             return
         # Don't steal focus from active inline prompt widgets.
-        if (
-            self._pending_approval_widget
-            or self._pending_ask_user_widget
-            or self._pending_goal_review_widget
-        ):
+        if self._inline_prompt_pending():
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
@@ -24963,10 +24948,9 @@ class DeepAgentsApp(App):
             self,
             screen=self.screen,
         )
-        if not isinstance(self.screen, ModalScreen):
-            self.call_after_refresh(
-                self._show_selection_action, self.screen, event.screen_x, event.screen_y
-            )
+        self.call_after_refresh(
+            self._show_selection_action, self.screen, event.screen_x, event.screen_y
+        )
 
     async def _show_selection_action(self, screen: Screen, x: int, y: int) -> None:
         """Replace any existing shortcut with one for the current selection.
@@ -24978,11 +24962,11 @@ class DeepAgentsApp(App):
         if (
             not self._ask_about_selection
             or screen is not self.screen
+            or isinstance(screen, ModalScreen)
             or not self._chat_input
             or self._inline_prompt_pending()
+            or not is_transcript_selection(screen.selections)
         ):
-            return
-        if not screen.selections or not is_transcript_selection(screen.selections):
             return
         text = screen.get_selected_text()
         if not text or not text.strip():
@@ -25000,6 +24984,7 @@ class DeepAgentsApp(App):
 
         Does nothing while an inline prompt or a modal screen is active.
         """
+        self._dismiss_selection_action()
         if self._inline_prompt_pending():
             # The action is hidden while a prompt waits, but one can arrive
             # between showing the action and the click.
@@ -25008,16 +24993,16 @@ class DeepAgentsApp(App):
                 severity="warning",
             )
             return
-        if self._chat_input and not isinstance(self.screen, ModalScreen):
-            quote = "\n".join("> " + line for line in event.text.split("\n"))
-            separator = "\n\n" if self._chat_input.value else ""
-            self._chat_input.focus_input()
-            if not self._chat_input.insert_at_cursor(separator + quote + "\n\n"):
-                self.notify(
-                    "Could not add the selection: the composer is unavailable",
-                    severity="warning",
-                )
-                return
+        if not self._chat_input or isinstance(self.screen, ModalScreen):
+            return
+        quote = "\n".join("> " + line for line in event.text.split("\n"))
+        separator = "\n\n" if self._chat_input.value else ""
+        self._chat_input.focus_input()
+        if not self._chat_input.insert_at_cursor(separator + quote + "\n\n"):
+            self.notify(
+                "Could not add the selection: the composer is unavailable",
+                severity="warning",
+            )
 
     def _inline_prompt_pending(self) -> bool:
         """Return whether an approval, question, or goal review awaits input."""
@@ -25039,7 +25024,7 @@ class DeepAgentsApp(App):
         The focused `TextArea` stops printable keys, Enter, and Escape, so an
         `on_key` handler on the app never sees ordinary typing.
         """
-        if isinstance(event, Key):
+        if self._selection_action is not None and isinstance(event, Key):
             self._dismiss_selection_action()
         await super().on_event(event)
 

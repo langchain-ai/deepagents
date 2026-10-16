@@ -24899,6 +24899,15 @@ class DeepAgentsApp(App):
             return
         if not self._chat_input or isinstance(self.screen, ModalScreen):
             return
+        if self._chat_input.mode != "normal":
+            # A quote line starts with `>`, which a shell reads as a redirect.
+            if self._chat_input.value:
+                self.notify(
+                    "Clear the shell or command input before adding the selection",
+                    severity="warning",
+                )
+                return
+            self._chat_input.mode = "normal"
         quote = "\n".join("> " + line for line in event.text.split("\n"))
         separator = "\n\n" if self._chat_input.value else ""
         self._chat_input.focus_input()

@@ -297,13 +297,23 @@ async def side_server(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_SideSer
 async def test_side_history_persists_across_requests(
     side_server: _SideServer, streaming: bool
 ) -> None:
-    assert (await side_server.ask("  First  ", streaming=streaming)).is_success
+    first = await side_server.ask("  First  ", streaming=streaming)
+    assert "unsaved" not in _completed(first, streaming=streaming)
     assert (await side_server.ask("Second", streaming=streaming)).is_success
     assert side_server.histories == [[], [("First", "answer to First")]]
     assert await side_server.history() == [
         ["First", "answer to First"],
         ["Second", "answer to Second"],
     ]
+
+
+def _completed(response: Response, *, streaming: bool) -> dict[str, object]:
+    """Decode the final answer payload from either response shape."""
+    if not streaming:
+        return response.json()
+    events = response.text.split("\n\n")
+    complete = next(e for e in events if e.startswith("event: complete"))
+    return json.loads(complete.split("data: ", 1)[1])
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -319,7 +329,10 @@ async def test_clear_discards_answer_in_progress(
     assert cleared.json() == {"history": []}
     reply.set_result("late answer")
     response = await asyncio.wait_for(pending, 2)
-    assert "late answer" in response.text
+    result = _completed(response, streaming=streaming)
+    assert result["text"] == "late answer"
+    # The client warns that follow-ups will not see this answer.
+    assert result["unsaved"] is True
     assert await side_server.history() == []
     await side_server.ask("Fresh")
     assert side_server.histories[-1] == []
@@ -440,3 +453,18 @@ async def test_history_storage_failure_hints_match_the_cause(
     assert hint in response.json()["detail"]
     assert "Ctrl+X" not in response.json()["detail"]
     assert side_server.histories == []
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_answer_survives_failed_save_and_reports_it_unsaved(
+    side_server: _SideServer, monkeypatch: pytest.MonkeyPatch, streaming: bool
+) -> None:
+    def fail(*_args: object, **_kwargs: object) -> bool:
+        msg = "database is locked"
+        raise sqlite3.OperationalError(msg)
+
+    monkeypatch.setattr(btw_api, "append_exchange", fail)
+    response = await side_server.ask("why", streaming=streaming)
+    result = _completed(response, streaming=streaming)
+    assert result["text"] == "answer to why"
+    assert result["unsaved"] is True

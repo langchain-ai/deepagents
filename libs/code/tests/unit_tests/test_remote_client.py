@@ -1859,3 +1859,75 @@ async def test_btw_stream_delivers_fragments_and_closes_transport(
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("unsaved", [True, False])
+async def test_btw_reports_answers_the_server_did_not_store(
+    unsaved: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from httpx import AsyncClient, MockTransport, Request, Response
+    from langgraph_sdk.client import HttpClient
+
+    def respond(request: Request) -> Response:
+        if request.method == "GET":
+            return Response(200, json={"cost": None})
+        body: dict[str, object] = {"text": "answer"}
+        if unsaved:
+            body["unsaved"] = True
+        return Response(200, json=body)
+
+    agent = _make_agent([])
+    monkeypatch.setattr(agent, "aensure_thread", AsyncMock())
+    monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
+    on_unsaved = MagicMock()
+    async with AsyncClient(
+        transport=MockTransport(respond), base_url="http://test"
+    ) as http:
+        agent._graph.client.http = HttpClient(http)
+        text = await agent.abtw("why", config=_config(), on_unsaved=on_unsaved)
+    assert text == "answer"
+    assert on_unsaved.called is unsaved
+
+
+@pytest.mark.parametrize(
+    ("reply", "expected"),
+    [
+        (None, "Could not reach"),
+        ((404, {"detail": "Not Found"}), "does not support /btw history"),
+        ((503, {"detail": "Busy. Try again."}), "^Busy. Try again.$"),
+        ((500, ["not", "a", "dict"]), r"HTTP 500"),
+    ],
+)
+async def test_btw_history_failures_explain_what_to_do(
+    reply: tuple[int, object] | None, expected: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import httpx
+    from httpx import AsyncClient, MockTransport, Request, Response
+    from langgraph_sdk.client import HttpClient
+
+    def respond(request: Request) -> Response:
+        if reply is None:
+            msg = "refused"
+            raise httpx.ConnectError(msg, request=request)
+        status, body = reply
+        return Response(status, json=body)
+
+    agent = _make_agent([])
+    monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
+    async with AsyncClient(
+        transport=MockTransport(respond), base_url="http://test"
+    ) as http:
+        agent._graph.client.http = HttpClient(http)
+        for request in (agent.aget_btw_history, agent.aclear_btw_history):
+            with pytest.raises(RuntimeError, match=expected):
+                await request(config=_config())
+
+
+async def test_btw_history_rejects_a_malformed_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _make_agent([])
+    monkeypatch.setattr(agent, "_workspace_for_thread", AsyncMock(return_value={}))
+    agent._graph.client.http.post = AsyncMock(return_value={"history": "nope"})
+    with pytest.raises(TypeError, match="Invalid side-history"):
+        await agent.aget_btw_history(config=_config())

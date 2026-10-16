@@ -250,6 +250,81 @@ async def test_expiry_banner_survives_activity_and_clears_on_refresh(
         assert not banner.display
 
 
+@pytest.mark.parametrize("outcome", ["read", "write", "none", "expired"])
+async def test_expiry_banner_follows_request_reconciliation(
+    outcome: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from langchain_core.messages import AIMessageChunk
+
+    from deepagents_code.tui.textual_adapter import TextualUIAdapter
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        _prepare(app, monkeypatch)
+        app._agent_running = True
+        app._cold_cache_suppressed_for_session = True
+        banner = app.query_one("#cache-expired-banner")
+        app._check_cache_expiry()
+        assert banner.display
+        assert app._status_bar is not None
+        previous_expiry = app._status_bar.cache_expires_at
+        requested_at = datetime.now(UTC) - timedelta(
+            minutes=6 if outcome == "expired" else 1
+        )
+        adapter = TextualUIAdapter(
+            mount_message=AsyncMock(),
+            update_status=MagicMock(),
+            request_approval=AsyncMock(),
+            on_cache_reconciliation=app._on_cache_reconciliation,
+        )
+        start = {
+            "type": "model_attempt",
+            "phase": "start",
+            "call_id": "banner-request",
+            "attempt": 0,
+            "cache_activity": {
+                "requested_at": requested_at.isoformat(),
+                "model_spec": "anthropic:claude-sonnet-4-6",
+                "endpoint": "default",
+                "params": None,
+            },
+        }
+        await adapter._cache_attempt_event(start)
+        assert not banner.display
+        app._check_cache_expiry()
+        assert not banner.display
+        assert app._status_bar.cache_expires_at == previous_expiry
+        app._on_user_visible_output_started()
+        assert not banner.display
+        if outcome == "none":
+            await adapter._cache_attempt_event({**start, "phase": "complete"})
+            assert app._status_bar.cache_expires_at == previous_expiry
+        else:
+            await adapter._cache_usage(
+                AIMessageChunk(
+                    content="still streaming",
+                    usage_metadata={
+                        "input_tokens": 100,
+                        "output_tokens": 1,
+                        "total_tokens": 101,
+                        "input_token_details": {
+                            "cache_creation"
+                            if outcome == "write"
+                            else "cache_read": 100
+                        },
+                    },
+                ),
+                {"dcode_cache_attempt": ["banner-request", 0]},
+            )
+            assert app._status_bar.cache_expires_at == requested_at + timedelta(
+                minutes=5
+            )
+        assert not app._cache_reconciliation_pending
+        assert app._agent_running
+        assert banner.display is (outcome in {"none", "expired"})
+
+
 @pytest.mark.parametrize("size", [(80, 20), (60, 16)])
 @pytest.mark.parametrize("allow_send", [False, True])
 async def test_short_terminal_keeps_handoff_actions_visible(

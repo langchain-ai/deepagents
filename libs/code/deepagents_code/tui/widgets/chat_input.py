@@ -3858,6 +3858,7 @@ class ChatInput(Vertical):
         """
         if not self._text_area:
             return False
+        self.mode, text = self._history_entry_mode_and_text(text)
         self._text_area.replace(
             text, (0, 0), self._text_area.document.end, maintain_selection_offset=False
         )

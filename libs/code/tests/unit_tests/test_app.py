@@ -31671,8 +31671,9 @@ class TestPromptClipboard:
 
     @pytest.mark.parametrize("full_view", [False, True])
     @pytest.mark.parametrize("key", ["tab", "enter"])
+    @pytest.mark.parametrize("mode", ["normal", "shell", "shell_incognito", "command"])
     async def test_selection_replaces_draft_and_can_be_undone(
-        self, monkeypatch: pytest.MonkeyPatch, full_view: bool, key: str
+        self, monkeypatch: pytest.MonkeyPatch, full_view: bool, key: str, mode: str
     ) -> None:
         """Both recall tiers replace the whole draft without submitting it."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -31686,6 +31687,7 @@ class TestPromptClipboard:
             prompt = "saved draft\ntext prompt"
             monkeypatch.setattr(chat_input, "recent_prompts", lambda: (prompt,))
             text_area.insert(draft)
+            chat_input.mode = mode
             text_area.move_cursor((0, 2))
 
             await pilot.press("ctrl+r")
@@ -31697,6 +31699,7 @@ class TestPromptClipboard:
             await pilot.pause()
 
             assert chat_input.value == prompt
+            assert chat_input.mode == "normal"
             assert text_area.cursor_location == (1, len("text prompt"))
             assert app.focused is text_area
             assert not chat_input._prompt_search_active

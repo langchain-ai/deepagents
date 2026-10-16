@@ -41,13 +41,21 @@ Each package gets its own **draft** release PR on a branch named `release-please
 To release a package:
 
 1. Merge one or more [releasable conventional commits](#releasable-commit-types-and-version-bumping) to `main`
-2. Wait for the release-please action to create/update the release PR (can take a minute or two)
+2. [Wait for release-please to finish refreshing the release PR](#waiting-for-a-release-pr-refresh), including its lockfile updates.
 3. Review the generated changelog in the PR. The published GitHub release body is extracted from the merged package `CHANGELOG.md`, not from the release PR description.
    1. Follow the [curated release-notes workflow](#curated-release-notes) after moving the PR from draft to ready for review. This applies to every release-please managed package.
 4. Merge the release PR after its required checks pass — this triggers the pre-release checks, PyPI publish, and GitHub release
 
 > [!IMPORTANT]
 > `deepagents-code` pins an exact `deepagents==` version in `libs/code/pyproject.toml`. Bump this pin as part of any PR that depends on new SDK functionality — don't defer it to release time. The pin should always reflect the minimum SDK version `deepagents-code` actually requires. If you intentionally need to ship a release PR with an older SDK pin, add the `ci:dcode-skip-sdk-pin` label before merging. See [Release Failed: Code SDK Pin Is Older Than SDK](#release-failed-code-sdk-pin-is-older-than-sdk) for recovery if a stale pin slips through.
+
+### Waiting for a release PR refresh
+
+After merging changes into `main`, including an SDK-pin bump, let release-please update the release PR. Do not manually rebase it, merge `main` into it, or edit its branch while the automation is queued or running. Release-please can replace those changes, invalidate reviewed notes, or move the branch while `@release-bot apply` is starting.
+
+Check the `release-please.yml` workflow run for the `main` commit you need included. Wait for its release-please job and the release PR's `Update lockfiles` job to finish. A new commit on the release branch alone does not mean the refresh is complete. Confirm the expected changes are present and no further refresh of that PR is queued or running before marking it ready for review or running `@release-bot draft` / `@release-bot apply`.
+
+If automation fails, skips the update, or leaves the branch stale, inspect the run and diagnose why before making a manual update. Once the refresh finishes, follow the [curated release-notes process](#curated-release-notes), including any instructions to re-draft or re-apply existing notes.
 
 ### Curated Release Notes
 

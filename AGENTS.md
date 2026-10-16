@@ -135,6 +135,8 @@ Benchmarks live in `deepagents`, `code`, and `partners/quickjs`; other packages 
 
 Use [`.github/RELEASING.md`](.github/RELEASING.md) for release-please behavior, version branches, changelog overrides, reverts, and release troubleshooting, including the CI guardrails that gate a release. Use [`.github/LAYOUT.md`](.github/LAYOUT.md) to find a workflow by what it does. Workflow files are authoritative for linting and labeling behavior.
 
+After changes land on `main`, wait for release-please and its lockfile updates before manually updating a release PR or drafting/applying its notes. Do not race the automation with a manual rebase; see [Waiting for a release PR refresh](.github/RELEASING.md#waiting-for-a-release-pr-refresh).
+
 Pin GitHub Actions to full-length commit SHAs; a tag reference is rejected. Verify whether a tag is annotated and dereference it before using its commit. Use the `gh` CLI to resolve one.
 
 ## Additional resources

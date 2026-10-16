@@ -15,6 +15,7 @@ from deepagents_code.tui.widgets.messages import (
     UserMessage,
 )
 from deepagents_code.tui.widgets.selection_action import (
+    SELECTION_ACTION_WIDTH,
     SelectionAction,
     is_transcript_selection,
 )
@@ -315,3 +316,19 @@ async def test_selection_action_draws_above_autocomplete() -> None:
         layers = app.screen.layers
         layer = app.query_one(SelectionAction).styles.layer
         assert layers.index(layer) > layers.index("autocomplete")
+
+
+async def test_selection_action_stays_on_screen_at_right_edge() -> None:
+    """A selection ending at the right edge keeps the whole label visible."""
+    app = DeepAgentsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        message = UserMessage("x" * 70)
+        await app.query_one("#messages", Container).mount(message)
+        await pilot.pause()
+        await pilot.mouse_down(message, offset=(0, 0))
+        await pilot.hover(message, offset=(message.size.width - 1, 0))
+        await pilot.mouse_up(message, offset=(message.size.width - 1, 0))
+        await pilot.pause()
+        action = app.query_one(SelectionAction)
+        assert action.region.right <= app.screen.size.width
+        assert action.region.width == SELECTION_ACTION_WIDTH

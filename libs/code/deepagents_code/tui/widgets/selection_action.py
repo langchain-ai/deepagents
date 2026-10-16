@@ -21,6 +21,11 @@ _TRANSCRIPT_IDS = frozenset(
 )
 """Widget ids whose subtree holds message or tool content, not chrome."""
 
+_LABEL = "Ask about this"
+
+SELECTION_ACTION_WIDTH = len(_LABEL) + 2
+"""Cells the action occupies: its label plus one cell of padding per side."""
+
 
 def is_transcript_selection(widgets: Iterable[Widget]) -> bool:
     """Return whether every selected widget shows transcript text.
@@ -61,7 +66,6 @@ class SelectionAction(Static):
     SelectionAction {
         layer: selection-action;
         position: absolute;
-        width: 18;
         height: 1;
         padding: 0 1;
         background: $primary;
@@ -83,8 +87,9 @@ class SelectionAction(Static):
 
     def __init__(self, text: str) -> None:
         """Create the action with a snapshot of the selection."""
-        super().__init__("Ask about this", markup=False)
+        super().__init__(_LABEL, markup=False)
         self.selected_text = text
+        self.styles.width = SELECTION_ACTION_WIDTH
 
     @property
     def allow_select(self) -> bool:

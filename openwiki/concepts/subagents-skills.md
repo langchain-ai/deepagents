@@ -3,15 +3,14 @@ type: delegation and progressive-disclosure concept
 title: Subagents and Skills
 description: Deep Agents separates synchronous and remote delegation across explicit state and lifecycle boundaries. Skills expose instructions progressively and disclose selected tools only after a visible read or pin, with provider-aware payload placement and recorded tool-time gating.
 tags: [deepagents, subagents, delegation, skills, middleware, tool-gating, agent-protocol]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-16T08:05:35.701Z
 sources:
-  - id: openwiki-source-dc1e984fa4e6a51458e9ff9d
-    resource: repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py
-  - id: openwiki-source-1eafe6f1154067896b272b26
-    resource: repo://libs/code/deepagents_code/skills/invocation.py
-  - id: openwiki-source-7315c344b29bd7441321ac75
-    resource: repo://libs/code/deepagents_code/skills/trust.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-41c16d89908bf285e252530e
+    resource: repo://libs/deepagents/deepagents/middleware/_parent_notifier.py
   - id: openwiki-source-5c9c6a877b43f30407158658
     resource: repo://libs/deepagents/deepagents/middleware/_skill_tools.py
   - id: openwiki-source-e51c4102234507d1529a2440
@@ -20,27 +19,14 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/skills.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
-  - id: openwiki-source-13e0ea89aadd1a5e309ac7e3
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_skill_tools_payload.py
   - id: openwiki-source-6ce85b02eabe462f99e0c912
     resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
-  - id: openwiki-source-6d183faf1a4bc5a5ba451aba
-    resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
-  - id: openwiki-source-ca8183c87e6002c442ee2d62
-    resource: repo://libs/deepagents/tests/unit_tests/test_subagents.py
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-85b5cce2a96e09663cd92f4c
-    resource: repo://libs/talon/tests/unit_tests/test_cron_pinned_skills.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-15T08:05:41.400Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
 ---
 
 # Subagents and Skills
 
-`create_deep_agent` combines two distinct delegation paths. A local `task` call runs a synchronous child and returns one result to its caller. An `AsyncSubAgent` starts a background run on an Agent Protocol server and records a task that the parent can manage later. Skills are instruction bundles: the SDK middleware indexes and progressively discloses them, while Deep Agents Code adds recursive plugin discovery, explicit `/skill:` invocation semantics, and trusted-root enforcement for instruction reads.
+`create_deep_agent` combines two distinct delegation paths. A local `task` call runs a synchronous child and returns one result to its caller. An `AsyncSubAgent` starts a background run on an Agent Protocol server and records a task that the parent can manage later. Every Deep Agent also installs a parent notifier: a same-deployment remote child can wake an idle parent with a terminal result or failure notification, while task polling remains the portable mechanism. Skills are instruction bundles: the SDK middleware indexes and progressively discloses them, while Deep Agents Code adds recursive plugin discovery, explicit `/skill:` invocation semantics, and trusted-root enforcement for instruction reads.
 
 A skill is neither a subagent nor an authorization policy. Its text guides the model; `metadata.include_tools` can participate in a model-visible tool gate, but filesystem permissions and approval/`interrupt_on` remain independent controls. See [Middleware stack](/openwiki/architecture/middleware-stack.md), [Permissions and HITL](/openwiki/concepts/permissions-hitl.md), and [Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md).
 
@@ -88,34 +74,51 @@ A declarative fork cannot set its `skills` field: by default it starts from the 
 An `AsyncSubAgent` has a name, description, `graph_id`, optional URL, headers, and an isolated-or-fork mode. `start_async_task` creates a remote thread and run, sending a single user task in isolated mode. In fork mode it snapshots reconstructed parent history, removes nonportable tool artifacts and parent-local eviction metadata, hydrates blob-backed tool content, and serializes the resulting messages for the remote child. The remote graph still owns its own prompt, tools, permissions, and state; a conversation snapshot does not synchronize those settings.
 
 ```mermaid
-sequenceDiagram
-    participant Parent
-    participant AsyncTools as Async task tools
-    participant Remote as Agent Protocol server
-    participant Human as Remote user
-    Parent->>AsyncTools: start_async_task
-    AsyncTools->>Remote: create linked thread and run
-    AsyncTools-->>Parent: task ID and async_tasks update
-    Parent->>AsyncTools: check update cancel or list
-    AsyncTools->>Remote: read run and thread status
-    alt Remote run paused for human
-        Remote-->>AsyncTools: waiting and pending interrupts
-        Human->>Remote: answer or approve on child thread
-    else Update or cancellation
-        AsyncTools->>Remote: replacement run or cancel
-    end
-    AsyncTools-->>Parent: ToolMessage and task state update
+stateDiagram-v2
+    [*] --> running: start_async_task
+    running --> running: check or list
+    running --> running: update creates replacement run
+    running --> cancelled: cancel
+    running --> success: completed run and idle thread
+    running --> error: failed run
+    running --> timeout: timed out run
+    running --> waiting: successful run and interrupted thread
+    waiting --> running: update replaces human request
+    waiting --> cancelled: cancel
+    waiting --> running: child user resumes it
+    success --> [*]
+    error --> [*]
+    timeout --> [*]
+    cancelled --> [*]
 ```
 
-*The parent tracks a remote task, while its child thread owns execution and any human interaction.*
+*Remote task state is held by the parent; `waiting` is nonterminal because the child thread, not the parent, awaits its user.*
+
+```mermaid
+sequenceDiagram
+    participant Parent
+    participant Tools as Async task tools
+    participant Local as Same deployment child
+    participant Cross as Other deployment child
+    Tools->>Local: local context or parent reference
+    Tools->>Local: thread metadata with parent thread and assistant
+    Tools->>Cross: parent thread reference only
+    Tools->>Cross: thread metadata with parent thread only
+    Local-->>Parent: wake idle parent on success or error
+    Cross-->>Parent: parent polls with check or list
+```
+
+*The parent assistant ID is a same-deployment wake-up capability, not an identifier forwarded to another deployment; both kinds of child retain their own execution state.*
 
 ### Parent linkage, ownership, and task lifecycle
 
-`start_async_task` creates a remote thread with `parent_thread_id` metadata when the parent has a thread ID. It also puts the available parent thread and assistant identifiers under `configurable.deepagents_parent` on each launch or replacement run. This is linkage for an Agent Protocol application—not shared execution: the remote graph owns its prompt, tools, credentials, approvals, checkpointer and durable thread state. In particular, parent `permissions` and `interrupt_on` are **not** inherited by an `AsyncSubAgent`; configure approvals and credential access on the remote deployment. For URL-less local ASGI launches and updates, trace headers can nest the child run under the current LangSmith trace without forwarding the parent's run metadata to the child.
+`start_async_task` creates a remote thread with `parent_thread_id` metadata when the parent has a thread ID. The linkage distinguishes deployments. For a URL-less same-deployment child, the launch forwards JSON-serializable run context when present; otherwise it places the available parent thread and assistant identifiers under `configurable.deepagents_parent`. Its thread metadata can retain both `parent_thread_id` and `parent_assistant_id`, so a later run on that child thread can find and wake its parent. A URL-configured cross-deployment child gets only the parent thread reference and `parent_thread_id`: its assistant ID is deliberately withheld because it cannot wake that parent deployment. This is linkage for an Agent Protocol application—not shared execution: the remote graph owns its prompt, tools, credentials, approvals, checkpointer and durable thread state. In particular, parent `permissions` and `interrupt_on` are **not** inherited by an `AsyncSubAgent`; configure approvals and credential access on the remote deployment. URL-less local ASGI launches and updates can also nest tracing under the current LangSmith trace, while omitting parent run metadata from those headers.
 
 `async_tasks` is a merge-reduced parent-state map keyed by remote thread ID. Each record contains the task/thread ID, agent name, current run ID, cached status, and creation/check/update timestamps; preserving parent state with a checkpointer preserves this tracking map, while the Agent Protocol server persists and serves the actual thread. Launch records `running`. `check_async_task` reads the tracked run and, after a successful run, reads the thread to return its final message. If that success has left the thread `interrupted`, the task becomes `waiting`, not terminal: its result includes the pending interrupts and says that the user must answer or approve on the subagent's own thread. The parent cannot satisfy that approval.
 
 A resumed child may have a newer run than the recorded one. When a tracked successful run finds its thread `busy` or `error`, observation lists the newest remote run and updates the stored `run_id`, allowing status recovery after another client resumes the child. `update_async_task` creates an interrupting replacement run on the same thread, retains the task ID, marks it `running`, and—when it was waiting—drops the outstanding human request. `cancel_async_task` cancels an active remote run before recording `cancelled`; a waiting task has no active run, so it is simply marked cancelled and later checks do not regress it to `waiting`. `list_async_tasks` filters by cached status before refreshing nonterminal tasks; `waiting` is refreshable, whereas `cancelled`, `success`, `error`, `timeout`, and `interrupted` are not. A live-status failure leaves the cached status intact.
+
+On the async path, the middleware also polls unfinished tasks at agent start, before each model call, and once after a final answer; a newly observed `success`, `error`, `timeout`, or `waiting` becomes a marked system notification and an after-answer update returns the model for another turn. Separately, `_ParentNotifierMiddleware`, installed on every graph, lets a top-level same-deployment Deep Agent child wake an *idle* parent on success or model failure. It never replaces a parent run that is busy or waiting for approval, never raises if delivery fails, and reports only once per child run. A child pause raises `GraphInterrupt` rather than notifying; the parent later observes `waiting`, and the user answers or approves on the child thread. Notification content keeps safe text and media result blocks, escapes child-controlled text, clips large text, and omits underlying failure details.
 
 Unknown types or task IDs and SDK failures return tool errors without a task-state mutation. Clients are cached by URL and resolved headers; `x-auth-scheme: langsmith` is added unless supplied. Managed deployments obtain credentials through the SDK environment variables, while `headers` is the self-hosted authentication extension point. URL-less local ASGI transport is async-only, so it requires an entry point such as `ainvoke`; synchronous use requires a reachable URL.
 

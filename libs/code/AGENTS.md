@@ -143,7 +143,9 @@ Hints that tell the user to run something (for example the teardown `-r <thread>
 
 ## Splash screen tips
 
-When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding entry to the `_TIPS` dict in `deepagents_code/tui/widgets/startup_tip.py`, mapping the tip text to a relative selection weight (higher = shown more often). One tip is chosen at random above the input on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+g to compose prompts in your external editor"`).
+Treat the `_TIPS` dict in `deepagents_code/tui/widgets/startup_tip.py` as a curated, limited-attention surface, not a feature changelog. Do not add a tip by default when adding a feature. One tip is chosen at random above the chat input on startup, so each addition competes with existing tips.
+
+Add a tip only for a broadly useful, frequently applicable action that is hard to discover through existing help or UI and can be explained accurately in one short, action-oriented sentence (e.g., `"Press ctrl+g to compose prompts in your external editor"`). Niche or advanced configuration, experimental or opt-in tuning, and features requiring caveats about cost, quality, or tradeoffs belong in documentation or contextual help, not startup tips. If the value to most users is unclear, leave the list unchanged. Before adding one, check for overlap and explain why it earns space over existing tips in the PR. Map accepted tip text to a relative selection weight (higher = shown more often); do not increase weight merely because a feature is new.
 
 ## Slash commands
 

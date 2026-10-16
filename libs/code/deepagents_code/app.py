@@ -2641,6 +2641,38 @@ def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
     return resolved_env_var_name(key_env)
 
 
+def _build_resume_workspace_error_body(exc: BaseException) -> str | Content:
+    """Return markup-safe workspace refusal guidance with allowlisted field names."""
+    from deepagents_code.client.remote_client import workspace_conflict_diagnostics
+    from deepagents_code.workspace_diagnostics import (
+        SAFE_SNAPSHOT_FIELDS,
+        FieldChange,
+        WorkspaceDiagnostics,
+        format_diagnostics_content,
+    )
+
+    text = (
+        "Couldn't restore this thread's workspace because the server refused its "
+        "configuration. Model restoration was not attempted. Restore the original "
+        "settings or start a separate server with matching configuration, then "
+        "retry resume."
+    )
+    diagnostics = workspace_conflict_diagnostics(exc)
+    if diagnostics is None:
+        return text
+    safe = WorkspaceDiagnostics(
+        category="unknown",
+        reason="workspace configuration conflict",
+        changes=tuple(
+            FieldChange(name=change.name, state="values_unavailable")
+            for change in diagnostics.changes
+            if change.name in SAFE_SNAPSHOT_FIELDS
+        ),
+        snapshot_status=diagnostics.snapshot_status,
+    )
+    return Content.assemble(text, "\n\n", format_diagnostics_content(safe))
+
+
 def _build_agent_error_body(
     text: str, exc: BaseException, *, key_env: str | None = None
 ) -> str | Content:
@@ -4340,6 +4372,7 @@ class DeepAgentsApp(App):
         state and must not appear in scrollback or serialized history.
         """
 
+        self._thread_switch_error_widget: ErrorMessage | None = None
         self._startup_failure_widget: ErrorMessage | None = None
         """Transient chat surface for the most recent server-startup failure.
         Mounted by `on_deep_agents_app_server_start_failed`; removed on
@@ -9719,14 +9752,16 @@ class DeepAgentsApp(App):
             logger.debug("Cache-expiring notification failed", exc_info=True)
 
     def _refresh_cache_expiry_banner(self) -> None:
-        """Show cache expiry independently of handoff preferences and activity."""
+        """Show reconciled cache expiry independently of handoff preferences."""
         if not self.screen_stack:
             return
         banners = self.screen_stack[0].query("#cache-expired-banner")
         if banners:
             expires_at = self._status_bar.cache_expires_at if self._status_bar else None
             banners.first().display = (
-                expires_at is not None and datetime.now(UTC) >= expires_at
+                not self._cache_reconciliation_pending
+                and expires_at is not None
+                and datetime.now(UTC) >= expires_at
             )
 
     def _check_idle_compaction(self) -> None:
@@ -17788,7 +17823,9 @@ class DeepAgentsApp(App):
                 raise
         elif cmd == "/rename" or cmd.startswith("/rename "):
             await self._rename_current_thread(command.partition(" ")[2])
-        elif cmd == "/threads" or cmd.startswith("/threads "):
+        elif cmd in {"/threads", "/resume"} or cmd.startswith(
+            ("/threads ", "/resume ")
+        ):
             await self._handle_threads_command(command)
         elif cmd == "/trace":
             await self._handle_trace_command(command)
@@ -22036,6 +22073,7 @@ class DeepAgentsApp(App):
                 self._last_cache_write = activity
             await self._refresh_cache_timing()
         self._cache_reconciliation_pending = pending
+        self._refresh_cache_expiry_banner()
 
     def _set_active_message(self, message_id: str | None) -> None:
         """Set the active streaming message (won't be pruned).
@@ -30034,7 +30072,24 @@ class DeepAgentsApp(App):
                 "Use /threads to try again.",
                 exc,
             )
-            await self._mount_message(ErrorMessage(body))
+            await self._mount_thread_switch_error(body)
+
+    async def _mount_thread_switch_error(self, body: str | Content) -> None:
+        """Replace transient thread-switch failures without storing them in history."""
+        async with self._transcript_mutation_lock:
+            prior = self._thread_switch_error_widget
+            self._thread_switch_error_widget = None
+            if prior is not None and prior.is_attached:
+                await prior.remove()
+            try:
+                messages = self.query_one("#messages", Container)
+            except NoMatches:
+                return
+            if not messages.is_attached:
+                return
+            widget = ErrorMessage(body)
+            await self._mount_before_queued(messages, widget)
+            self._thread_switch_error_widget = widget
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None
@@ -30271,11 +30326,9 @@ class DeepAgentsApp(App):
                     "Failed to prefetch cross-agent thread %s",
                     target.thread_id,
                 )
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Could not load thread {target.thread_id}: {exc}. "
-                        "Staying on the current agent."
-                    )
+                await self._mount_thread_switch_error(
+                    f"Could not load thread {target.thread_id}: {exc}. "
+                    "Staying on the current agent."
                 )
                 return
 
@@ -30315,11 +30368,9 @@ class DeepAgentsApp(App):
                 target.thread_id,
                 target.agent_name,
             )
-            await self._mount_message(
-                ErrorMessage(
-                    f"Could not switch to agent {target.agent_name!r} and resume "
-                    f"thread {target.thread_id}."
-                )
+            await self._mount_thread_switch_error(
+                f"Could not switch to agent {target.agent_name!r} and resume "
+                f"thread {target.thread_id}."
             )
 
     def _open_thread_reference_selector(self, initial_query: str) -> None:
@@ -31550,11 +31601,9 @@ class DeepAgentsApp(App):
                     await self._restore_cwd_after_failed_thread_switch(prev_cwd)
                     if isinstance(exc, asyncio.CancelledError):
                         raise
-                    await self._mount_message(
-                        AppMessage(
-                            f"Failed to switch to thread {thread_id}: {exc}. "
-                            "Use /threads to try again.",
-                        ),
+                    await self._mount_thread_switch_error(
+                        f"Failed to switch to thread {thread_id}: {exc}. "
+                        "Use /threads to try again."
                     )
                     return
                 logger.exception("Failed to switch to thread %s", thread_id)
@@ -31602,7 +31651,7 @@ class DeepAgentsApp(App):
                 if rollback_restore_failed:
                     error_message += " Previous thread history could not be restored."
                 error_message += " Use /threads to try again."
-                await self._mount_message(AppMessage(error_message))
+                await self._mount_thread_switch_error(error_message)
             finally:
                 if self._chat_input:
                     self._chat_input.set_cursor_active(active=not self._agent_running)
@@ -32031,9 +32080,16 @@ class DeepAgentsApp(App):
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
                 if from_resume:
-                    await self._mount_resume_adoption_failure(
-                        display, "the model could not be initialized"
-                    )
+                    from langgraph_sdk.errors import ConflictError
+
+                    if isinstance(exc, ConflictError):
+                        await self._mount_message(
+                            ErrorMessage(_build_resume_workspace_error_body(exc))
+                        )
+                    else:
+                        await self._mount_resume_adoption_failure(
+                            display, "the model could not be initialized"
+                        )
                 else:
                     await self._mount_message(
                         ErrorMessage(_build_model_switch_error_body(exc)),

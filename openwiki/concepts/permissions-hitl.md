@@ -12,8 +12,12 @@ sources:
     resource: repo://libs/code/deepagents_code/approval_mode.py
   - id: openwiki-source-18abc7e59899514f067032b2
     resource: repo://libs/code/deepagents_code/auto_mode.py
+  - id: openwiki-source-f820645728a7602f14195650
+    resource: repo://libs/code/deepagents_code/tui/widgets/auto_mode_notice.py
   - id: openwiki-source-1e08095c051ecc153fadc178
     resource: repo://libs/code/deepagents_code/tui/widgets/yolo_mode_notice.py
+  - id: openwiki-source-11d6c59d85493653aee76558
+    resource: repo://libs/code/tests/unit_tests/test_app.py
   - id: openwiki-source-b93533cac55718d75277d1cf
     resource: repo://libs/deepagents/deepagents/_excluded_middleware.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
@@ -58,10 +62,10 @@ sources:
     resource: repo://libs/talon/tests/unit_tests/test_tool_approval_runtime.py
   - id: openwiki-source-d4964daa078854bf4438d764
     resource: repo://libs/talon/tests/unit_tests/test_tool_approvals.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-15T08:05:41.400Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
+    at: 2026-10-16T08:05:35.701Z
 ---
 
 # Permissions and Human-in-the-Loop
@@ -109,7 +113,7 @@ Caption: dcode selects review routing after a gated call is proposed; neither Au
 
 ### Auto and YOLO acknowledgement lifecycle
 
-Auto is only selectable when eligible; for example, the interactive switcher omits it for a remote sandbox. Its first enablement shows an educational confirmation. Confirming records a versioned install-local notice, while Escape leaves the mode unchanged and leaves the notice unsaved for a later prompt. The notice explicitly says Auto can approve routine gated actions and is not a sandbox.
+Auto is only selectable when eligible; for example, the interactive switcher omits it for a remote sandbox. Its first enablement shows an educational confirmation before activating the mode. The disclosure says that Auto can approve routine gated actions, that it is not a sandbox, and which classifier reviews uncertain actions. When a separate classifier is configured, the modal names it and says it is not the model writing code. Enter records a versioned install-local notice and then the client must persist the live Auto mode; Escape leaves both mode and notice unchanged so the prompt can recur. A failed modal presentation or live-mode write likewise leaves Auto inactive.
 
 Entering YOLO from the switcher requires an explicit acknowledgement of the current warning policy version. The modal's Enter enables and records acknowledgement; `m` selects Manual and Escape preserves the previous mode, neither persisting it. The acknowledgement is stored in private `approval.json` state with a process lock and cross-process file lock, atomic replacement, and restrictive directory/file permissions where supported. Corrupt or unreadable state is treated as absent, so it re-prompts rather than authorizing YOLO. Muting the recurring YOLO toast is cosmetic: it does not bypass acknowledgement, the `startup.yolo_switcher` setting, or the active status indicator.
 
@@ -151,7 +155,9 @@ Caption: A user entry overrides generated routing by tool name; whether routed o
 
 ## Subagents: inheritance is explicit and type-dependent
 
-For declarative `SubAgent` specifications, including experimental `mode="fork"`, omitted `permissions` inherits the parent list; a supplied list, including `[]`, replaces it completely. The graph constructs each declarative subagent with its own `FilesystemMiddleware` and builds filesystem-derived interrupt routing from that subagent's effective rules. The auto-added general-purpose subagent also uses the parent permissions.
+For declarative `SubAgent` specifications, including experimental `mode="fork"`, omitted `permissions` inherits the parent list; a supplied list, including `[]`, replaces it completely. The graph constructs each declarative subagent with its own `FilesystemMiddleware` and builds filesystem-derived interrupt routing from that subagent's effective rules.
+
+The auto-added `general-purpose` subagent is constructed separately, rather than passing through the declarative-default path, but it receives the parent `permissions` and the same merged top-level `interrupt_on` map. It is added unless the harness profile disables it or a supplied inline subagent already has that name. It only inherits caller middleware which replaces a default general-purpose middleware slot; main-agent-specific middleware is not copied wholesale.
 
 Top-level `interrupt_on` is inherited by declarative subagents unless their specification supplies its own map. The effective map merges generated filesystem interrupts first and then user configuration, so the relevant user map takes precedence on name conflicts. `CompiledSubAgent` and remote `AsyncSubAgent` specifications instead pass through as already-built or separately deployed agents: they inherit neither the parent's filesystem permissions nor its top-level `interrupt_on`. Configure filesystem enforcement and approval behavior in the compiled or remote graph itself. Do not infer a common enforcement boundary merely because the parent delegates work.
 

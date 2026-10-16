@@ -1526,7 +1526,7 @@ class TestResumeThread:
             side_effect=RuntimeError("UI gone")
         )
         _app_test_double(app)._update_status = MagicMock()
-        _app_test_double(app)._mount_message = AsyncMock()
+        _app_test_double(app)._mount_thread_switch_error = AsyncMock()
         _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
 
         await app._resume_thread("new-thread")
@@ -1534,8 +1534,8 @@ class TestResumeThread:
         assert app._lc_thread_id == "old-thread"
         assert app._session_state.thread_id == "old-thread"
         assert any(
-            "Failed to switch" in _get_widget_text(call.args[0])
-            for call in _app_test_double(app)._mount_message.call_args_list
+            "Failed to switch" in str(call.args[0])
+            for call in _app_test_double(app)._mount_thread_switch_error.call_args_list
         )
         _app_test_double(app)._update_status.assert_any_call("")
 
@@ -1559,7 +1559,7 @@ class TestResumeThread:
         _app_test_double(app)._load_thread_history = AsyncMock(
             side_effect=[RuntimeError("checkpoint corrupt"), None]
         )
-        _app_test_double(app)._mount_message = AsyncMock()
+        _app_test_double(app)._mount_thread_switch_error = AsyncMock()
         _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
 
         await app._resume_thread("new-thread")
@@ -1567,8 +1567,8 @@ class TestResumeThread:
         assert app._lc_thread_id == "old-thread"
         assert app._session_state.thread_id == "old-thread"
         assert any(
-            "Failed to switch" in _get_widget_text(call.args[0])
-            for call in _app_test_double(app)._mount_message.call_args_list
+            "Failed to switch" in str(call.args[0])
+            for call in _app_test_double(app)._mount_thread_switch_error.call_args_list
         )
 
     async def test_prefetch_failure_keeps_current_thread_visible(
@@ -1586,7 +1586,7 @@ class TestResumeThread:
         mount_message_mock = AsyncMock()
         _app_test_double(app)._fetch_thread_history_data = fetch_history_mock
         _app_test_double(app)._clear_messages = clear_messages_mock
-        _app_test_double(app)._mount_message = mount_message_mock
+        _app_test_double(app)._mount_thread_switch_error = mount_message_mock
 
         await app._resume_thread("new-thread")
 
@@ -1594,7 +1594,7 @@ class TestResumeThread:
         assert app._lc_thread_id == "old-thread"
         clear_messages_mock.assert_not_awaited()
         assert any(
-            "Failed to switch" in _get_widget_text(call.args[0])
+            "Failed to switch" in str(call.args[0])
             for call in mount_message_mock.call_args_list
         )
 

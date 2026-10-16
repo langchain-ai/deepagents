@@ -71,7 +71,7 @@ Run `make help` to see every available target.
 
 ## LangSmith tracing projects
 
-When LangSmith tracing is enabled and a `LANGSMITH_API_KEY` is available, `deepagents-code` traces its own agent runs to LangSmith. A key alone is not enough for environment-supplied keys — set `LANGSMITH_TRACING=true`. Keys stored via `/auth` auto- enable tracing unless you explicitly opt out (for example `DEEPAGENTS_CODE_LANGSMITH_TRACING=false`).
+When LangSmith tracing is enabled and a `LANGSMITH_API_KEY` is available, `deepagents-code` traces its own agent runs to LangSmith. A key alone is not enough for environment-supplied keys — set `LANGSMITH_TRACING=true`. Keys stored via `/auth` auto-enable tracing unless you explicitly opt out (for example `DEEPAGENTS_CODE_LANGSMITH_TRACING=false`).
 
 By default those runs land in the `deepagents-code` project, but the team routes shared runs to a GA project (`shared-deepagents-code`) that is monitored by LangSmith Engine, which raises high-priority Slack alerts on suspected issues.
 
@@ -150,8 +150,6 @@ Raw stdio MCP server stderr is discarded to protect the TUI and prevent unbounde
 Press `Ctrl+\` (or run the hidden `/debug` command) inside a session to toggle a read-only Debug Console overlay. It shows a point-in-time session/runtime snapshot (version, model, thread, cwd, auto-approve, sandbox, MCP servers, token usage, debug-log path) plus a live tail of recent `deepagents_code.*` log records.
 
 The tail is fed by an always-on in-memory ring buffer (`_debug_buffer.install_log_buffer`, installed on the package logger in `__init__.py`), so it works **without** `DEEPAGENTS_CODE_DEBUG` — though enabling that switch raises the captured level to `DEBUG` and adds the file handler above. In the console, `Ctrl+X` clears the on-screen view (the buffer keeps accruing) and `c` copies the visible lines. `Ctrl+L` remains an alias for clearing the view.
-
-In `/btw`, `Esc` hides the modal and cancels any unfinished answer. Completed side exchanges remain available when you reopen `/btw` or switch away from the main thread and return. Each main thread has its own side history, stored by the server in the sessions database, so it survives restarting dcode and stays separate from the main conversation. `Ctrl+X` cancels the side answer and clears that thread's side transcript, follow-up context, and draft while keeping the modal open.
 
 ## Local dev installs
 

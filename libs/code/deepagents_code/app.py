@@ -37,7 +37,7 @@ from typing import (
     runtime_checkable,
 )
 
-from textual import on
+from textual import events, on
 from textual.app import App, ScreenStackError
 from textual.binding import Binding, BindingType
 from textual.containers import Container, VerticalScroll
@@ -4470,6 +4470,7 @@ class DeepAgentsApp(App):
         """Whether a hydration slice is queued or currently running."""
 
         self._selection_copy_timer: Timer | None = None
+        self._pending_selection_copy: Callable[[], None] | None = None
 
         self._transcript_prune_timer: Timer | None = None
         """Idle timer that defers opposite-edge pruning while scrolling."""
@@ -24859,11 +24860,30 @@ class DeepAgentsApp(App):
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
+    async def on_event(self, event: events.Event) -> None:
+        """Flush a finished selection before an unrelated press clears it."""
+        if (
+            isinstance(event, events.MouseDown)
+            and not event.is_forwarded
+            and event.screen_offset != self._click_chain_last_offset
+        ):
+            self._flush_selection_copy()
+        await App.on_event(self, event)
+
+    def _flush_selection_copy(self) -> None:
+        if self._selection_copy_timer is not None:
+            self._selection_copy_timer.stop()
+            self._selection_copy_timer = None
+        callback, self._pending_selection_copy = self._pending_selection_copy, None
+        if callback is not None:
+            callback()
+
     def on_mouse_down(self) -> None:
         """Cancel pending selection copy while another click or drag begins."""
         if self._selection_copy_timer is not None:
             self._selection_copy_timer.stop()
             self._selection_copy_timer = None
+        self._pending_selection_copy = None
 
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
         """Copy selection to clipboard after click-chain selection updates.
@@ -24886,9 +24906,11 @@ class DeepAgentsApp(App):
 
         if self._selection_copy_timer is not None:
             self._selection_copy_timer.stop()
+        self._pending_selection_copy = partial(
+            copy_selection_to_clipboard, self, screen=self.screen
+        )
         self._selection_copy_timer = self.set_timer(
-            self.CLICK_CHAIN_TIME_THRESHOLD,
-            partial(copy_selection_to_clipboard, self, screen=self.screen),
+            self.CLICK_CHAIN_TIME_THRESHOLD, self._flush_selection_copy
         )
 
     # =========================================================================

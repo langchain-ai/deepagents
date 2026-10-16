@@ -36,6 +36,9 @@ class _SelectionApp(App[None]):
 
 
 class _SelectionCopyApp(_SelectionApp):
+    on_event = DeepAgentsApp.on_event
+    _flush_selection_copy = DeepAgentsApp._flush_selection_copy
+    _pending_selection_copy = None
     on_mouse_down = DeepAgentsApp.on_mouse_down
     on_mouse_up = DeepAgentsApp.on_mouse_up
     _selection_copy_timer = None
@@ -290,6 +293,31 @@ class TestAppSelectionCopy:
                 await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.1)
                 copy.assert_called_once()
                 assert copy.call_args.args[1] != "hello"
+
+    async def test_unrelated_press_preserves_pending_copy(self) -> None:
+        for drag in (False, True):
+            app = _SelectionCopyApp()
+            async with app.run_test() as pilot:
+                with patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy:
+                    if drag:
+                        await _send_selection_mouse(pilot, events.MouseDown)
+                        await _send_selection_mouse(pilot, events.MouseMove, 5)
+                        await _send_selection_mouse(pilot, events.MouseUp, 5)
+                        expected = "hello "
+                    else:
+                        for _ in range(3):
+                            await _send_selection_mouse(pilot, events.MouseDown)
+                            await _send_selection_mouse(pilot, events.MouseUp)
+                        expected = _BASE_TEXT
+                    copy.assert_not_called()
+                    await _send_selection_mouse(pilot, events.MouseDown, 10)
+                    copy.assert_called_once_with(app, expected)
+                    await _send_selection_mouse(pilot, events.MouseUp, 10)
+                    await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.1)
+                    copy.assert_called_once_with(app, expected)
 
     async def test_deferred_copy_stays_on_the_released_screen(self) -> None:
         app = _SelectionCopyApp()

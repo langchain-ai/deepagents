@@ -25010,12 +25010,13 @@ class DeepAgentsApp(App):
         draft = self._chat_input.value
         trailing = len(draft) - len(draft.rstrip("\n"))
         separator = "\n" * max(0, 2 - trailing) if draft else ""
-        self._chat_input.focus_input()
         if not self._chat_input.insert_at_end(separator + quote + "\n\n"):
             self.notify(
                 "Could not add the selection: the composer is unavailable",
                 severity="warning",
             )
+            return
+        self._chat_input.focus_input()
 
     def _inline_prompt_pending(self) -> bool:
         """Return whether an approval, question, or goal review awaits input."""

@@ -389,12 +389,20 @@ async def test_thread_deletion_erases_side_history(
     assert await side_server.history() == []
 
 
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "{}",
+        # An empty answer would reach the model as an empty AI message.
+        '[["question", " "]]',
+    ],
+)
 async def test_malformed_history_points_to_clear_and_clear_recovers(
-    side_server: _SideServer, side_db: Path
+    side_server: _SideServer, side_db: Path, stored: str
 ) -> None:
     clear_history("thread")
     with sqlite3.connect(side_db) as conn:
-        conn.execute("UPDATE dcode_btw_history SET exchanges = '{}'")
+        conn.execute("UPDATE dcode_btw_history SET exchanges = ?", (stored,))
     conn.close()
     for response in (
         await side_server.ask("why"),

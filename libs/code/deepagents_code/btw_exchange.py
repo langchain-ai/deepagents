@@ -17,14 +17,15 @@ def parse_exchanges(raw: object) -> list[Exchange] | None:
         raw: Decoded JSON that should hold question/answer string pairs.
 
     Returns:
-        Ordered exchanges, or `None` if `raw` has any other shape.
+        Ordered exchanges, or `None` if `raw` has any other shape or an
+            empty question or answer, which some providers reject as context.
     """
     if not isinstance(raw, list):
         return None
     exchanges: list[Exchange] = []
     for pair in raw:
         match pair:
-            case [str(question), str(answer)]:
+            case [str(question), str(answer)] if question.strip() and answer.strip():
                 exchanges.append((question, answer))
             case _:
                 return None

@@ -26,7 +26,7 @@ _TIPS: dict[str, int] = {
     "Ask /btw side questions and follow-ups while the agent keeps working": 2,
     "Use /offload to summarize older messages and free up the context window": 2,
     "Use /context to see context window usage and remaining space": 1,
-    'Select conversation text and click "Ask about this" to add it to your prompt': 2,
+    'Select conversation text and click "Ask about this" to quote it in your prompt': 2,
     "Press Ctrl+R to search and reuse previously submitted prompts": 2,
     "Use /cost to see a breakdown of estimated spend": 1,
     "Use /tools to list the tools available to the agent": 1,

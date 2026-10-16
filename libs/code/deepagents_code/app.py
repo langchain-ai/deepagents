@@ -173,7 +173,10 @@ from deepagents_code.tui.widgets.messages import (
     ToolGroupSummary,
     UserMessage,
 )
-from deepagents_code.tui.widgets.selection_action import SelectionAction
+from deepagents_code.tui.widgets.selection_action import (
+    SelectionAction,
+    is_transcript_selection,
+)
 from deepagents_code.tui.widgets.startup_tip import StartupTip, show_startup_tip
 from deepagents_code.tui.widgets.status import StatusBar
 from deepagents_code.tui.widgets.subagent_panel import SubagentPanel
@@ -24959,10 +24962,7 @@ class DeepAgentsApp(App):
             or not self._chat_input
         ):
             return
-        if not screen.selections or any(
-            not any(parent.id == "chat" for parent in widget.ancestors)
-            for widget in screen.selections
-        ):
+        if not screen.selections or not is_transcript_selection(screen.selections):
             return
         text = screen.get_selected_text()
         if not text or not text.strip():

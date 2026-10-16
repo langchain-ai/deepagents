@@ -980,6 +980,26 @@ class ChatTextArea(PasteBurstTextArea):
         # refresh so it stays in view.
         self.call_after_refresh(self.scroll_cursor_visible)
 
+    def _check_refresh(self) -> None:
+        """Queue the screen relayout before the repaint for a resizing edit.
+
+        Textual's `_check_refresh` posts `Update` before `Layout`. The screen
+        paints from a timer task that can fire between the two messages, so a
+        multi-line insert (such as "Ask about this") briefly paints the new
+        text inside the old, shorter composer before it grows. A queued
+        `Layout` reflows and repaints this widget on its own, so sending it
+        first leaves the trailing `Update` as a harmless extra paint.
+
+        Deliberately overrides Textual's private `_check_refresh` and its
+        `_repaint_required`/`_layout_required` flags; verified against Textual
+        8.2.8. Re-verify these names on every Textual bump.
+        """
+        if self._repaint_required and self._layout_required:
+            self._repaint_required = False
+            super()._check_refresh()
+            self._repaint_required = True
+        super()._check_refresh()
+
     def _refresh_scrollbars(self) -> None:
         """Refresh scrollbars without flashing a transient vertical bar.
 

@@ -9,6 +9,7 @@ from textual.pilot import Pilot
 from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
 from textual.widgets import Input, Markdown, Static
+from textual.widgets.text_area import Selection
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.tui.widgets.messages import (
@@ -537,3 +538,50 @@ async def test_selection_action_returns_focus_to_composer() -> None:
         await pilot.click(app.query_one(SelectionAction))
         await pilot.pause()
         assert area.has_focus
+
+
+async def test_insert_collapses_a_selected_range_in_the_draft() -> None:
+    """Inserting with a range selected leaves a plain cursor after the text."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        assert app._chat_input is not None
+        area = app._chat_input._text_area
+        assert area is not None
+        area.load_text("hello world")
+        area.selection = Selection((0, 0), (0, 5))
+        assert app._chat_input.insert_at_cursor("hi")
+        await pilot.pause()
+        assert area.text == "hellohi world"
+        assert area.selection == Selection.cursor((0, 7))
+
+
+async def test_selection_action_label_is_not_selectable() -> None:
+    """A drag that starts on the action keeps its label out of the selection."""
+    app = DeepAgentsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        message = UserMessage("\n".join(f"line {i}" for i in range(6)))
+        await app.query_one("#messages", Container).mount(message)
+        await pilot.pause()
+        top = message.region.y
+        action = SelectionAction("text")
+        action.styles.offset = (0, top + 2)
+        await app.screen.mount(action)
+        await pilot.pause()
+        await pilot.mouse_down(action, offset=(1, 0))
+        await pilot.hover(message, offset=(20, 4))
+        await pilot.mouse_up(message, offset=(20, 4))
+        await pilot.pause()
+        assert "Ask about this" not in (app.screen.get_selected_text() or "")
+
+
+async def test_selection_action_stays_on_screen_at_top_row() -> None:
+    """A selection on the top screen row keeps the action on screen."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        message = UserMessage("selected text")
+        await app.query_one("#messages", Container).mount(message)
+        await pilot.pause()
+        await _drag_select(pilot, message)
+        await app._show_selection_action(app.screen, 0, 0)
+        await pilot.pause()
+        assert app.query_one(SelectionAction).region.y == 0

@@ -3892,6 +3892,20 @@ class ChatInput(Vertical):
         self._text_area.scroll_cursor_visible(animate=False)
         self.app.cursor_position = self._text_area.cursor_screen_offset
 
+    def replace_with_prompt(self, text: str) -> bool:
+        """Replace the draft through the undoable edit path.
+
+        Returns:
+            Whether the text area was available for replacement.
+        """
+        if not self._text_area:
+            return False
+        self.mode, text = self._history_entry_mode_and_text(text)
+        self._text_area.replace(
+            text, (0, 0), self._text_area.document.end, maintain_selection_offset=False
+        )
+        return True
+
     @property
     def _prompt_search_active(self) -> bool:
         """Whether the inline prompt search panel is open.
@@ -4072,11 +4086,11 @@ class ChatInput(Vertical):
         )
 
     def _prompt_search_insert_selected(self) -> None:
-        """Insert the selected prompt into the draft and close the panel."""
+        """Replace the draft with the selected prompt and close the panel."""
         prompt = self._prompt_search_filtered[self._prompt_search_index]
         self._close_prompt_search(restore_draft=False)
         if self._text_area is not None:
-            self._text_area.insert(prompt)
+            self.replace_with_prompt(prompt)
             self._text_area.scroll_cursor_visible()
 
     def _handle_prompt_search_key(self, event: events.Key) -> bool:

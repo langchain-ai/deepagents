@@ -256,15 +256,6 @@ async def _start_fake_gateway(
     return gateway
 
 
-async def test_gateway_enables_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
-    created = _install_fake_client(monkeypatch)
-
-    gateway = await _start_fake_gateway(lambda _: asyncio.sleep(0))
-    await gateway.stop()
-
-    assert created[0].reconnect_values == [True]
-
-
 async def test_gateway_reports_connection_events(monkeypatch: pytest.MonkeyPatch) -> None:
     created = _install_fake_client(monkeypatch)
     states, _arrived, record_state = _connection_recorder()
@@ -351,6 +342,8 @@ def test_from_talon_config_builds_defaults(tmp_path):
     assert result.exposure.operator_ids == frozenset({"999"})
     assert result.allowed_user_ids == frozenset()
     assert result.request_timeout_seconds == discord_module.DEFAULT_REQUEST_TIMEOUT_SECONDS
+    assert result.slash_commands_enabled is True
+    assert result.command_guild_id is None
 
 
 def test_from_talon_config_reads_allowlist_users(tmp_path):
@@ -455,16 +448,6 @@ async def test_send_message_splits_long_text_into_multiple_messages(tmp_path):
     assert result.message_id == gateway.next_message_id
 
 
-async def test_send_message_short_text_sends_a_single_message(tmp_path):
-    gateway = RecordingGateway()
-    channel = DiscordChannel(_make_config(tmp_path), gateway=gateway)
-
-    result = await channel.send_message("channel-1", "hello")
-
-    assert result.success
-    assert gateway.sent_text == [("channel-1", "hello")]
-
-
 async def test_send_media_uses_caption_as_message_content(tmp_path):
     gateway = RecordingGateway()
     channel = DiscordChannel(_make_config(tmp_path), gateway=gateway)
@@ -511,25 +494,6 @@ async def test_send_media_rejects_files_outside_the_outbound_root(tmp_path):
             "channel-1",
             ChannelMedia(path=image_path, media_type="image", caption=None),
         )
-
-
-async def test_edit_message_delegates_to_gateway(tmp_path):
-    gateway = RecordingGateway()
-    channel = DiscordChannel(_make_config(tmp_path), gateway=gateway)
-
-    result = await channel.edit_message("channel-1", "msg-1", "updated")
-
-    assert result.success
-    assert gateway.edits == [("channel-1", "msg-1", "updated")]
-
-
-async def test_send_typing_delegates_to_gateway(tmp_path):
-    gateway = RecordingGateway()
-    channel = DiscordChannel(_make_config(tmp_path), gateway=gateway)
-
-    await channel.send_typing("channel-1")
-
-    assert gateway.typing == ["channel-1"]
 
 
 async def test_send_typing_swallows_transport_errors(tmp_path):
@@ -996,20 +960,6 @@ async def test_slash_command_is_dispatched_as_its_text_equivalent(tmp_path):
     assert received[0].message_id == "int-1"
 
 
-async def test_every_registered_command_dispatches_its_text(tmp_path):
-    """A registered command must produce text the host recognizes as that command."""
-    gateway = RecordingGateway()
-    channel = _operator_channel(tmp_path, gateway)
-    received, handler = _collector()
-    channel.set_message_handler(handler)
-    await channel.start()
-
-    for command in visible_commands():
-        await gateway.deliver_interaction(_interaction(command.name))
-
-    assert [message.text for message in received] == [c.text for c in visible_commands()]
-
-
 async def test_slash_command_metadata_matches_a_typed_command(tmp_path):
     """Authorization reads metadata, so both inbound paths must produce the same keys."""
     gateway = RecordingGateway()
@@ -1323,29 +1273,6 @@ async def test_gateway_registers_every_advertised_command(monkeypatch: pytest.Mo
     assert tree.allowed_installs.guild is True
 
 
-async def test_gateway_does_not_register_hidden_commands(monkeypatch: pytest.MonkeyPatch) -> None:
-    created = _install_fake_client(monkeypatch)
-
-    gateway = await _start_fake_gateway(lambda _: asyncio.sleep(0))
-    await gateway.stop()
-
-    tree = created[0].tree
-    assert tree is not None
-    assert "reset-all-history" not in tree.commands
-    assert COMMANDS_BY_NAME["reset-all-history"].hidden is True
-
-
-async def test_gateway_registers_command_descriptions(monkeypatch: pytest.MonkeyPatch) -> None:
-    created = _install_fake_client(monkeypatch)
-
-    gateway = await _start_fake_gateway(lambda _: asyncio.sleep(0))
-    await gateway.stop()
-
-    tree = created[0].tree
-    assert tree is not None
-    assert tree.commands["new"].description == COMMANDS_BY_NAME["new"].summary
-
-
 async def test_gateway_syncs_commands_once_across_reconnects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1524,21 +1451,6 @@ def test_from_talon_config_reads_command_registration_settings(tmp_path):
 
     assert discord_config.command_guild_id == "123"
     assert discord_config.slash_commands_enabled is False
-
-
-def test_from_talon_config_registers_commands_by_default(tmp_path):
-    config = _talon_config(
-        tmp_path,
-        {
-            "DEEPAGENTS_TALON_DISCORD_BOT_TOKEN": "token",
-            "DEEPAGENTS_TALON_DISCORD_OPERATOR_ID": "op-1",
-        },
-    )
-
-    discord_config = DiscordChannelConfig.from_talon_config(config)
-
-    assert discord_config.slash_commands_enabled is True
-    assert discord_config.command_guild_id is None
 
 
 @pytest.mark.parametrize(

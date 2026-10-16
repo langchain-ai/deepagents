@@ -547,6 +547,29 @@ def _disable_terminal_escape(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_clipboard(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep clipboard backends in memory instead of touching the host or terminal."""
+    import pyperclip
+    from textual.app import App
+
+    from deepagents_code import clipboard
+
+    contents = ""
+
+    def copy(text: str) -> None:
+        nonlocal contents
+        contents = text
+
+    def copy_local(app: App, text: str) -> None:
+        app._clipboard = text
+
+    monkeypatch.setattr(pyperclip, "copy", copy)
+    monkeypatch.setattr(pyperclip, "paste", lambda: contents)
+    monkeypatch.setattr(App, "copy_to_clipboard", copy_local)
+    monkeypatch.setattr(clipboard, "_copy_osc52", lambda _text: None)
+
+
+@pytest.fixture(autouse=True)
 def _register_theme_variables(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make app-specific CSS variables available to all test `App` instances.
 

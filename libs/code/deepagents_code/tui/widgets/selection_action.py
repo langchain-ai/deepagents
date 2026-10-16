@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable
 
-from textual.events import Click, MouseDown, MouseUp
+from textual.events import Click, MouseUp
 from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Static
@@ -102,11 +102,6 @@ class SelectionAction(Static):
     def allow_select(self) -> bool:
         """Keep the action label out of terminal selections."""
         return False
-
-    @staticmethod
-    def on_mouse_down(event: MouseDown) -> None:
-        """Keep the selection action from triggering app mouse handling."""
-        event.stop()
 
     @staticmethod
     def on_mouse_up(event: MouseUp) -> None:

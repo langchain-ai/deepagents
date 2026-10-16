@@ -4,15 +4,13 @@
 
 ## [0.7.27](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.26...deepagents==0.7.27) (2026-10-16)
 
-
 ### Features
 
-* **sdk:** tell the main agent about async subagent status updates ([#6853](https://github.com/langchain-ai/deepagents/issues/6853)) ([9cf009b](https://github.com/langchain-ai/deepagents/commit/9cf009bb21b6bf3578f94555ac4ebfbc59d4e500))
-
+- Keep the main agent informed of asynchronous subagent status updates ([#6853](https://github.com/langchain-ai/deepagents/pull/6853)).
 
 ### Bug Fixes
 
-* **sdk:** propagate subagent name to subagents ([#6987](https://github.com/langchain-ai/deepagents/issues/6987)) ([610a5fb](https://github.com/langchain-ai/deepagents/commit/610a5fb036120e272842684e4bbd4909c6cf7c1f))
+- Pass subagent names to subagents ([#6987](https://github.com/langchain-ai/deepagents/pull/6987)).
 
 ## [0.7.26](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.25...deepagents==0.7.26) (2026-10-15)
 

@@ -1403,7 +1403,11 @@ class TestParentReference:
     @patch("deepagents.middleware.async_subagents.get_client")
     async def test_launch_tags_the_task_thread_with_its_parent(self, mock_get_client: MagicMock) -> None:
         client = await _alaunch(mock_get_client)
-        assert client.threads.create.call_args.kwargs["metadata"] == {"parent_thread_id": "thread_parent", "parent_assistant_id": "assistant_parent"}
+        assert client.threads.create.call_args.kwargs["metadata"] == {
+            "subagent_name": "alpha",
+            "parent_thread_id": "thread_parent",
+            "parent_assistant_id": "assistant_parent",
+        }
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_subagent_on_another_server_gets_only_the_parent_thread(self, mock_get_client: MagicMock) -> None:
@@ -1411,7 +1415,7 @@ class TestParentReference:
         client = _launch(mock_get_client)
 
         assert _sent_reference(client) == {"thread_id": "thread_parent"}
-        assert client.threads.create.call_args.kwargs["metadata"] == {"parent_thread_id": "thread_parent"}
+        assert client.threads.create.call_args.kwargs["metadata"] == {"subagent_name": "alpha", "parent_thread_id": "thread_parent"}
 
     @patch("deepagents.middleware.async_subagents.get_sync_client")
     def test_update_resends_parent_reference(self, mock_get_client: MagicMock) -> None:
@@ -1763,7 +1767,7 @@ def _callback_config(parent: dict[str, Any] | None = _PARENT, **configurable_ext
     configurable: dict[str, Any] = {"thread_id": "child_thread", "checkpoint_ns": "model:1", **configurable_extra}
     if parent is not None:
         configurable["deepagents_parent"] = parent
-    return {"configurable": configurable, "metadata": {"run_id": "child_run", "graph_id": "researcher"}}
+    return {"configurable": configurable, "metadata": {"run_id": "child_run", "graph_id": "research-graph", "subagent_name": "researcher"}}
 
 
 async def _call_callback(hook: str, *args: Any, server: _FakeServer, parent: dict[str, Any] | None = _PARENT, **configurable: Any) -> Any:  # noqa: ANN401
@@ -1792,6 +1796,20 @@ class TestParentNotifier:
             "run_id": "child_run",
         }
         assert "<result>\nfound it\n</result>" in _woken_text(server)
+
+    async def test_thread_without_a_subagent_name_falls_back_to_the_graph(self) -> None:
+        """Task threads created before `subagent_name` existed name the subagent by its graph."""
+        server = _FakeServer()
+        config = _callback_config()
+        del config["metadata"]["subagent_name"]
+
+        with (
+            patch("deepagents.middleware._parent_notifier.get_config", return_value=config),
+            patch("deepagents.middleware.async_subagents.get_client", return_value=server),
+        ):
+            await _ParentNotifierMiddleware().aafter_agent({"messages": [AIMessage(content="found it")]}, MagicMock())
+
+        assert _woken_event(server)["agent_name"] == "research-graph"
 
     async def test_parent_wakes_with_the_subagents_context(self) -> None:
         server = _FakeServer()

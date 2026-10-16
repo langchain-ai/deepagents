@@ -343,12 +343,15 @@ def _reference_for(spec: AsyncSubAgent, runtime: ToolRuntime) -> _ParentReferenc
 def _thread_metadata(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, str]:
     """Metadata for a task's thread, so apps can find a parent's subagent threads with `threads.search`.
 
-    For subagents on this deployment, it also keeps the parent's assistant, so runs
-    started elsewhere on the thread (such as the user answering the subagent) can
-    still notify the parent.
+    It names the subagent as the parent knows it, so its notifications match the
+    parent's tracked task. For subagents on this deployment, it also keeps the
+    parent's assistant, so runs started elsewhere on the thread (such as the user
+    answering the subagent) can still notify the parent.
     """
     reference = _reference_for(spec, runtime)
-    metadata = {"parent_thread_id": reference["thread_id"]} if "thread_id" in reference else {}
+    metadata = {"subagent_name": spec["name"]}
+    if "thread_id" in reference:
+        metadata["parent_thread_id"] = reference["thread_id"]
     if "assistant_id" in reference:
         metadata["parent_assistant_id"] = reference["assistant_id"]
     return metadata

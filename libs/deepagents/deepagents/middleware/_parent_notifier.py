@@ -85,7 +85,8 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
         self._reported[run_key] = None
         if len(self._reported) > 1000:  # noqa: PLR2004  # bounded memory in long-lived processes
             del self._reported[next(iter(self._reported))]
-        name = str((config.get("metadata") or {}).get("graph_id") or "subagent")
+        metadata = config.get("metadata") or {}
+        name = str(metadata.get("subagent_name") or metadata.get("graph_id") or "subagent")
         await _notify_parent(config, _task_event(config, name, status, **details), context)
 
 

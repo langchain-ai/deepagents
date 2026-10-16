@@ -32,21 +32,24 @@ def is_transcript_selection(widgets: Iterable[Widget]) -> bool:
 
 
 def _is_transcript_widget(widget: Widget) -> bool:
-    """Walk up from `widget` to the first node that classifies it.
+    """Return whether `widget` shows transcript text in the main conversation.
 
-    Returns:
-        `True` when an ancestor below `#messages` marks transcript content.
+    A `diff-header` widget is always chrome. Otherwise `widget` or one of its
+    ancestors must mark transcript content, and `#messages` must contain it,
+    so messages rendered elsewhere (for example in `/btw`) do not qualify.
     """
     if widget.has_class("diff-header"):
         return False
+    matched = False
     node = widget
-    while node is not None and node.id != "messages":
-        if (
+    while node is not None:
+        if node.id == "messages":
+            return matched
+        matched = matched or (
             isinstance(node, (UserMessage, DiffMessage))
             or node.id in _TRANSCRIPT_IDS
             or node.has_class("tool-args")
-        ):
-            return True
+        )
         node = node.parent
     return False
 

@@ -284,3 +284,16 @@ async def test_selection_spanning_chrome_is_not_transcript() -> None:
         assert is_transcript_selection([message])
         assert not is_transcript_selection([message, status])
         assert not is_transcript_selection([app.query_one("#welcome-banner")])
+
+
+async def test_messages_outside_the_transcript_are_not_transcript() -> None:
+    """A message widget outside `#messages`, such as in a modal, is rejected."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        inside = UserMessage("in the transcript")
+        outside = UserMessage("in a side panel")
+        await app.query_one("#messages", Container).mount(inside)
+        await app.screen.mount(outside)
+        await pilot.pause()
+        assert is_transcript_selection([inside])
+        assert not is_transcript_selection([outside])

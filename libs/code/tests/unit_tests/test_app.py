@@ -27269,6 +27269,36 @@ class TestResumeThreadCwdSwitch:
         assert app._server_kwargs["cwd"] == str(current)
         assert agent._snapshot_workspace() == original
 
+    async def test_resume_errors_replace_previous_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        app = DeepAgentsApp(thread_id="current-thread")
+        monkeypatch.setattr(
+            app,
+            "_resume_thread",
+            AsyncMock(
+                side_effect=[
+                    RuntimeError("first refusal"),
+                    RuntimeError("second refusal"),
+                ]
+            ),
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            unrelated = ErrorMessage("Keep this error")
+            await app._mount_message(unrelated)
+            await app._resume_same_agent_thread("first-thread")
+            first = app._thread_switch_error_widget
+            await app._resume_same_agent_thread("second-thread")
+            assert first is not None
+            assert not first.is_attached
+            assert unrelated.is_attached
+            errors = list(app.query(ErrorMessage))
+            assert len(errors) == 2
+            assert "second-thread" in errors[-1].render().plain
+            assert "second refusal" in errors[-1].render().plain
+            assert app._message_store.total_count == 1
+
     @pytest.mark.parametrize("with_diagnostics", [False, True])
     async def test_picker_bind_conflict_preserves_current_session(
         self,

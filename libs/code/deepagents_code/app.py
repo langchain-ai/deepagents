@@ -4340,6 +4340,7 @@ class DeepAgentsApp(App):
         state and must not appear in scrollback or serialized history.
         """
 
+        self._thread_switch_error_widget: ErrorMessage | None = None
         self._startup_failure_widget: ErrorMessage | None = None
         """Transient chat surface for the most recent server-startup failure.
         Mounted by `on_deep_agents_app_server_start_failed`; removed on
@@ -29968,7 +29969,24 @@ class DeepAgentsApp(App):
                 "Use /threads to try again.",
                 exc,
             )
-            await self._mount_message(ErrorMessage(body))
+            await self._mount_thread_switch_error(body)
+
+    async def _mount_thread_switch_error(self, body: str | Content) -> None:
+        """Replace transient thread-switch failures without storing them in history."""
+        async with self._transcript_mutation_lock:
+            prior = self._thread_switch_error_widget
+            self._thread_switch_error_widget = None
+            if prior is not None and prior.is_attached:
+                await prior.remove()
+            try:
+                messages = self.query_one("#messages", Container)
+            except NoMatches:
+                return
+            if not messages.is_attached:
+                return
+            widget = ErrorMessage(body)
+            await self._mount_before_queued(messages, widget)
+            self._thread_switch_error_widget = widget
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None

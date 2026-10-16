@@ -305,7 +305,7 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=1.6.11,<2.0.0" },
     { name = "langchain-google-genai", specifier = ">=4.4.2,<5.0.0" },
     { name = "langchain-quickjs", marker = "extra == 'quickjs'", specifier = ">=0.3.9" },
-    { name = "langsmith", specifier = ">=0.14.9" },
+    { name = "langsmith", specifier = ">=0.14.11" },
     { name = "packaging", specifier = ">=23.2" },
     { name = "pillow", marker = "extra == 'video'", specifier = ">=12.3.0,<13.0.0" },
     { name = "wcmatch", specifier = ">=11.0" },
@@ -733,7 +733,7 @@ wheels = [
 
 [[package]]
 name = "langsmith"
-version = "0.14.9"
+version = "0.14.11"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -751,9 +751,9 @@ dependencies = [
     { name = "xxhash" },
     { name = "zstandard" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/81/78/53965f83edcaeb6a2e5eaf489951e1431752ba729eb6df24f4455b8470e9/langsmith-0.14.9.tar.gz", hash = "sha256:e54c41dcc06cbad971364fe5ecaaf976c11b418bdd0a125f816e2534c6caf2f2", size = 5008113, upload-time = "2026-10-15T13:34:43.455Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f8/c3/a9a98d7adf573fdd5ea5c92cadbc26d7c597ab36f4dc31c093eb19507808/langsmith-0.14.11.tar.gz", hash = "sha256:d9e7ffe587e12ce51573cab654d02e84feb924d3b1f582274c4b1412ebeabf4c", size = 5020659, upload-time = "2026-10-16T07:16:56.865Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/94/2d/eb8499785c05745e7b01822e3584bb8611b6684da811e776b3acab9ea024/langsmith-0.14.9-py3-none-any.whl", hash = "sha256:ae8a41f6b3712fe344c9163e16e06c6c1294623aaf5f565874da65f36482e7e4", size = 862514, upload-time = "2026-10-15T13:34:41.319Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/1d/b683b3d8777e625e021efeaaf72dc04f709be59e6a5f2d65725cebaedcfb/langsmith-0.14.11-py3-none-any.whl", hash = "sha256:9ecca7633df228ef2c44563f7187e426b8a79e7c5c2351c5dd8c9074c61512e7", size = 869018, upload-time = "2026-10-16T07:16:54.634Z" },
 ]
 
 [[package]]

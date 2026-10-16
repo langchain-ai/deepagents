@@ -52,14 +52,31 @@ async def test_selection_action_preserves_draft_and_focus(tmp_path: Path) -> Non
         assert not app.screen.selections
 
 
-async def test_selection_action_dismisses_without_selection(tmp_path: Path) -> None:
+async def test_selection_action_dismisses_without_selection() -> None:
     """Clicking elsewhere removes the shortcut instead of retaining stale text."""
-    (tmp_path / "config.toml").write_text("[ui]\nask_about_selection = true\n")
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
-        await app.screen.mount(SelectionAction("old selection"))
-        app.screen.clear_selection()
-        await app._show_selection_action(app.screen, 0, 0)
+        message = UserMessage("selected text")
+        await app.query_one("#messages", Container).mount(message)
+        await pilot.pause()
+        await _drag_select(pilot, message)
+        assert app.query(SelectionAction)
+        await pilot.click(message, offset=(2, 0))
+        await pilot.pause()
+        assert not app.query(SelectionAction)
+
+
+@pytest.mark.parametrize("key", ["a", "enter", "escape", "left"])
+async def test_selection_action_dismissed_by_keypress(key: str) -> None:
+    """Typing in the focused composer removes the shortcut."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        message = UserMessage("selected text")
+        await app.query_one("#messages", Container).mount(message)
+        await pilot.pause()
+        await _drag_select(pilot, message)
+        assert app.query(SelectionAction)
+        await pilot.press(key)
         await pilot.pause()
         assert not app.query(SelectionAction)
 

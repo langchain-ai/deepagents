@@ -1,62 +1,62 @@
 ---
 type: architecture concept
-title: Filesystem Tools and Policies
-description: FilesystemMiddleware turns backend file operations into model-facing tools and applies capability, path-policy, content, and compatibility controls. FilesystemBackend supplies direct host storage with virtual-path semantics that are useful but are not process isolation.
+title: Tools and Filesystem
+description: FilesystemMiddleware exposes backend-backed file tools while separately applying model-surface filtering, filesystem policy, human approval, and content lifecycle controls. Composite routing remaps file paths across backends, whereas execution remains attached to the composite default backend.
 tags: [tools, filesystem, execution, middleware, backends, persistence, multimodal, permissions]
 sources:
-  - id: openwiki-source-e483ff4cfd25918c8107d575
-    resource: repo://libs/deepagents/deepagents/backends/filesystem.py
-  - id: openwiki-source-f84c83d6fab6028c94be90bc
-    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
-  - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
-    resource: repo://libs/deepagents/deepagents/backends/protocol.py
+  - id: openwiki-source-a1549ea98d425efea270be93
+    resource: repo://libs/deepagents/deepagents/backends/composite.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-303a7196a0e1a36cc078621b
     resource: repo://libs/deepagents/deepagents/middleware/_blob_offload.py
   - id: openwiki-source-0fb4155c19dd248acd3ffe4f
     resource: repo://libs/deepagents/deepagents/middleware/_fs_interrupt.py
-  - id: openwiki-source-9841bc6daf811e4615c54a88
-    resource: repo://libs/deepagents/deepagents/middleware/_message_eviction.py
+  - id: openwiki-source-8b1aaf77fc0430fd00711a73
+    resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
   - id: openwiki-source-fed4b84a38685f37e58018c5
     resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-  - id: openwiki-source-837c84a3f3120bc778033547
-    resource: repo://libs/deepagents/deepagents/middleware/unsupported_content.py
-  - id: openwiki-source-7b8607fdda73d9d47ee17387
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_filesystem_backend.py
-  - id: openwiki-source-58bc0b41ad72708cee0fee6e
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_blob_offload.py
-  - id: openwiki-source-f913f8fa643e6c2796621ca5
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_filesystem_middleware_init.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-13T08:11:05.854Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
+    at: 2026-10-16T08:05:35.701Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
 ---
 
-# Filesystem Tools and Policies
+# Tools and Filesystem
 
-`FilesystemMiddleware` is the model-facing adapter over an initialized `BackendProtocol`: it creates tools, validates and formats their results, applies middleware-owned permission policy, and manages large or binary message content. The backend owns storage and operation implementation. A visible tool is not a guarantee that the backend implements it, and a tool allowlist is not an authorization boundary. See [Backends](backends.md) for storage and routing, and [Permissions & HITL](permissions-hitl.md) for approval configuration.
+`FilesystemMiddleware` is the model-facing adapter over an initialized `BackendProtocol`: it creates tools, validates and formats their results, applies middleware-owned permission policy, and manages large or binary message content. The backend owns storage and operation implementation. A visible tool is not a guarantee that the backend implements it, and neither a tool allowlist nor a profile exclusion is an authorization boundary. See [Backends](backends.md) for storage and routing, and [Permissions & HITL](permissions-hitl.md) for approval configuration.
 
 ## Tool surface and request boundary
 
-The built-in vocabulary is `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`. `tools=None` and `tools="all"` build all of them; an explicit list must include `read_file`, and tools absent from that list are not dispatchable. At model-request time, the middleware removes `delete` when the backend does not implement the optional operation and removes `execute` unless the backend is execution capable. It also adjusts the default `grep` and `execute` guidance to the remaining visible tools.
+The built-in vocabulary is `ls`, `read_file`, `write_file`, `edit_file`, `delete`, `glob`, `grep`, and `execute`. `tools=None` and `tools="all"` build all of them; an explicit list must include `read_file`, and tools absent from that list are not registered with the dispatchable tool node. At model-request time, filesystem middleware removes `delete` when the backend does not implement the optional operation and removes `execute` unless the backend is execution capable. It also adjusts the default `grep` and `execute` guidance to the remaining visible tools.
+
+A harness profile's `excluded_tools` is a later, independent model-surface control. Graph construction appends `_ToolExclusionMiddleware` after profile and caller middleware so it removes named tools after all injection has happened; it also rejects a model call that still names an excluded tool. This makes the advertised and executable surfaces agree for that agent/profile, but it is explicitly not a security control. It is distinct from an absent construction-time tool, capability filtering, a filesystem permission denial, and a HITL interruption.
 
 ```mermaid
 flowchart TD
     Config["Middleware configuration"] --> Factories["Create allowed tool factories"]
-    Factories --> Request["Model request"]
-    Request --> Capability["Remove unsupported delete and execute"]
-    Capability --> Model["Model-visible tools"]
+    Factories --> Capability["Remove unsupported delete and execute"]
+    Capability --> Exclusion["Profile excludes named tools last"]
+    Exclusion --> Model["Model-visible tools"]
     Model --> Call["Tool call"]
-    Call --> Guard["Validate path and enforce policy"]
+    Call --> Check{"Excluded name"}
+    Check --> Reject["Reject excluded name"]
+    Check --> Guard["Validate path and enforce policy"]
     Guard --> Backend["Backend file operation or execution"]
     Backend --> Result["Structured result and ToolMessage"]
 ```
 
-This flow separates construction-time tool selection, request-time backend capability gating, per-call policy, and backend behavior.
+This flow separates construction-time registration, request-time capability and profile filtering, tool-call exclusion rejection, per-call policy, and backend behavior.
 
-`BackendProtocol` returns structured results, not presentation strings. `ReadResult` rejects incoherent pagination metadata; backends must tolerate negative offsets and non-positive limits, while middleware owns line-number formatting and long-line continuation rows. `grep` and `glob` can be successful yet incomplete, so `truncated=True` means absence from returned matches is not proof of absence from storage. The agent-facing `grep` is literal, not regex; its default total cap is 1,000 matches, a positive per-call `max_count` can override it, and `None` disables the default cap.
+`BackendProtocol` returns structured results, not presentation strings. `ReadResult` rejects incoherent pagination metadata; backends must tolerate negative offsets and non-positive limits, while middleware owns line-number formatting and long-line continuation rows. `grep` and `glob` can be successful yet incomplete, so `truncated=True` means absence from returned matches is not proof of absence from storage. The agent-facing `grep` is literal, not regex; its configured default total cap is 1,000 matches, and a positive per-call `max_count` can override it. Set `grep_max_count=None` when constructing the middleware to disable the default cap.
+
+## Composite routes are a path namespace, not a shell namespace
+
+`CompositeBackend` chooses the longest matching route prefix for a file path. It strips that prefix before delegating to the routed backend and restores it on path-bearing results, while unmatched paths go to the default backend. A listing of `/` combines the default root with synthetic route directories. This lets one model-visible tree span state, persistent, local, or remote backends without exposing each backend's internal root.
+
+Search has deliberate cross-route semantics. With `path` omitted or `/`, `grep` searches the default and routes under one global match budget, remapping route result paths; if an earlier backend fills the budget, later routes are skipped and the result is conservatively marked truncated. `glob` also merges and remaps results, but rewrites a route-targeting anchored pattern relative to that route, forwards a bare pattern into every route, and skips routes for a root-anchored pattern that cannot match beneath their prefix. An error from any searched backend is surfaced rather than represented as a successful partial glob. These details matter when interpreting an empty or truncated search result.
+
+File operations route individually, but `execute` does not: a composite always delegates execution to its default backend. Consequently, a route prefix is a file-tool addressing mechanism, not evidence that the default shell can access the same path; the execution section describes the limited prompt-only host mapping.
 
 ## FilesystemBackend and virtual paths
 
@@ -131,9 +131,9 @@ Binary offload is best effort: failed uploads keep inline content. Rehydration u
 
 ## Operational checks and focused tests
 
-Keep `read_file` in explicit tool lists, and treat missing `delete` or `execute` as a backend capability issue rather than an allowlist issue. Treat search truncation as incomplete output. Configure binary offload only when the blob route supports upload/download outside checkpoint state. For direct host backends, keep virtual mode enabled unless trusted local workflows explicitly need host paths; do not mistake it for sandboxing.
+Keep `read_file` in explicit tool lists, and treat missing `delete` or `execute` as a backend capability issue rather than an allowlist issue. Use a harness profile exclusion to suppress a tool for a particular agent surface, not to authorize storage or isolate execution. Treat composite search truncation as incomplete output and do not assume file-tool route paths are shell paths. Configure binary offload only when the blob route supports upload/download outside checkpoint state. For direct host backends, keep virtual mode enabled unless trusted local workflows explicitly need host paths; do not mistake it for sandboxing.
 
-Focused tests cover virtual-root mapping and traversal rejection, virtual-path output, symlink-loop errors and containment, literal search and dot-glob rules, pagination and binary reads, recursive deletion, ordered batch upload/download partial failure, and trailing-newline edit behavior. Permission tests cover first-match ordering, resolved symlink targets, recursive-delete fail-closed behavior, and bulk HITL bypass cases including root aliases and absolute glob patterns.
+Focused tests cover virtual-root mapping and traversal rejection, virtual-path output, symlink-loop errors and containment, literal search and dot-glob rules, composite routing/remapping and merged-search error/truncation behavior, pagination and binary reads, recursive deletion, ordered batch upload/download partial failure, and trailing-newline edit behavior. Middleware and graph tests cover request-time capability filtering, profile exclusion visibility and tool-call rejection, compatibility fallback, and the distinction between permission denial and generated HITL predicates. Permission tests cover first-match ordering, resolved symlink targets, recursive-delete fail-closed behavior, and bulk HITL bypass cases including root aliases and absolute glob patterns.
 
 ## Related pages
 

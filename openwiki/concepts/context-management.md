@@ -3,9 +3,6 @@ type: context-management concept
 title: Context Management
 description: Deep Agents keeps model requests within usable context through recoverable result eviction, event-based conversation compaction, media archival, and bounded overflow recovery. It documents the model-aware defaults and shared state contract for automatic and manual compaction.
 tags: [context-management, summarization, compaction, eviction, overflow-recovery, middleware]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-15T08:05:41.400Z
 sources:
   - id: openwiki-source-a1549ea98d425efea270be93
     resource: repo://libs/deepagents/deepagents/backends/composite.py
@@ -27,7 +24,10 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_artifacts_root.py
   - id: openwiki-source-10e4084b6aa57e5cc82620b3
     resource: repo://libs/deepagents/tests/unit_tests/test_end_to_end.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-10-16T08:05:35.701Z
 ---
 
 # Context Management
@@ -41,15 +41,25 @@ These mechanisms do not make filesystem storage optional from an operational per
 
 ```mermaid
 flowchart TD
-    Request["Model request"] --> Effective["Apply prior summary event"]
+    ToolResult["Tool result"] --> ToolSize{"Oversized tool text"}
+    ToolSize -->|No| Effective["Apply prior summary event"]
+    ToolSize -->|Yes| ToolWrite["Write full result"]
+    ToolWrite --> ToolStored{"Write succeeds"}
+    ToolStored -->|Yes| ToolPreview["Use pointer and preview"]
+    ToolStored -->|No| ToolOriginal["Keep original result"]
+    ToolPreview --> Effective
+    ToolOriginal --> Effective
     Effective --> Count["Count messages system prompt and tools"]
     Count --> Trigger{"Trigger or input budget exceeded"}
     Trigger -->|No| Invoke["Call model"]
     Trigger -->|Yes| Media["Rewrite inline media as archive references"]
     Media --> Archive["Append selected raw history"]
-    Media --> Summary["Create summary"]
-    Archive --> Event["Store summary event and session ID"]
-    Summary --> Event
+    Archive --> ArchiveStored{"Archive write or edit succeeds"}
+    ArchiveStored -->|Yes| Summary["Create summary with archive path"]
+    ArchiveStored -->|No| NoArchive["Warn and use no archive path"]
+    NoArchive --> SummaryNoPath["Create summary without archive path"]
+    Summary --> Event["Store summary event and session ID"]
+    SummaryNoPath --> Event
     Event --> Invoke
     Invoke -->|"recognized context overflow"| Recover["Clip trailing tool-result batch"]
     Recover --> Retry["One smaller retry"]
@@ -57,7 +67,7 @@ flowchart TD
     Invoke -->|"other error"| Error["Propagate error"]
 ```
 
-*Automatic compaction changes the effective request through private state; raw `messages` remain available while archival and summary generation prepare the replacement context.*
+*The flow shows generic tool-result eviction and automatic compaction. A failed backend write leaves a tool result intact; a failed archive write produces an in-context summary event with no recovery path, rather than an archive pointer. Raw `messages` remain available while the event changes the effective request.*
 
 ## Recoverable eviction and artifact placement
 

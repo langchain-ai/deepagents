@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:45a38dbe914aeb96e0d64c7ace50cf9483cdd3d1a9660ee291165f90c69411c6",
+  "pageVersion": "sha256:cdd79a83b69c62d45203b096d8df767bde2b04634946a577e31155589897bab2",
   "claims": [
     {
       "id": "claim_348ce521c96a4f32a102f91b81305997",
@@ -68,7 +68,7 @@
       "evidence": [
         {
           "resource": "repo://libs/partners/quickjs/pyproject.toml",
-          "version": "repo-file-v1:sha256:3e3aa2512be6787354ca5d10b4a05f017e40bfb2fd830ec602b9c4c76c71ecd2"
+          "version": "repo-file-v1:sha256:1d7d6088d520188901f54b452f6e033e75ef0dc6a188715c4bb12e0efc4ba443"
         }
       ]
     },
@@ -121,10 +121,66 @@
           "version": "repo-file-v1:sha256:2456e04b524000ab05b03fa369dbb4583967817cf90c214645af67ab9fed20d3"
         }
       ]
+    },
+    {
+      "id": "claim_30e7a6ab546449b291ddfa72f975d8c2",
+      "statement": "dcode keeps its five curated external sandbox adapters optional behind provider-specific extras and all-sandboxes, while LangSmith sandbox support and QuickJS are normal dependencies; its empty quickjs extra is retained for backwards-compatible installation commands.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/pyproject.toml#L138-L151",
+          "version": "repo-lines-v1:sha256:c98bb4fd52977d7e93faee02f8d13aa94a7bbda2789647ed431f7fd6b72fe0c9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMxZDNkMjhiMTFhN2RhMTQyM2JlODdlOTZjMTQ3NWJlM2UwMjIxNzA0YjcxZDcxYjMxYzgyZDBlNjg1MTcwMTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc2OTIxYTcxYzBkNDU3MGMzODhkNjI5N2IzYjQ5OTJkZjNjMGZkYWIzMjZjYWZhY2E0YjQ4NzE4OGExZDZiMDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYwYmMxYmQzMjEyODlkOTI4NDlkYmFmNzMxYTliN2VkYWJiMzE4YmIyYmViMmVhMGE4OWE5MzFlY2RmYmZmMWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUwZmEzNjJjYjQ5NGE1MWE5YTQ3NTA0Yjk5OTFhYjZmNGVmZWUxODcxZWRiYTY0NDFmYjk1MDA3OTc0OTJjMDgifQ"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L28-L65",
+          "version": "repo-lines-v1:sha256:13c04c34d32965116252e883e728f42da248f8855346d9401e1ac7581b0726ed:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiZGMwN2NkZTZjM2MzNDZlNzY2OTk1ZWZiNWYwNGJjZmUwNDA2Y2ZkMTdiYzk4MDM5NzAwNWJiMmE2MThlNDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhZmQwZDk4OTM5MWMwMDdhN2Q3YWM0NWI0OWJmY2Y3MjE0OWNlNjA3MTgzOTBiY2U0MTQzMDZkNGQ4YTQ2ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczMzIzZWNmMTk3MGMyMzFmZWIyNzY2ZWRjZDE5NGIyNWE5ZjY5OGU3YjZhMzYyYjFlZDdlNjAwYTkxZTJiM2IifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0e2299d221ac4c0db64ad6596b285672",
+      "statement": "The curated provider packages and QuickJS are independently versioned, release-please-managed Python packages; local manifests point their Deep Agents dependency at the editable core source, and dcode also maps its partnered adapters to editable local sources.",
+      "evidence": [
+        {
+          "resource": "repo://.release-please-manifest.json#L2-L10",
+          "version": "repo-lines-v1:sha256:118de309e358369a3459fdcbefb42dbe464d9d35396e032b9e1af0eb46888812:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDU1YzBkODA0ZTViYTYxOGIxZTEwY2Q3MjlmY2EwOWI5OGEwZTJiZTY2MzIwY2E4MGY4ODUyNWJjNzliMDQ5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmQxZDM2Y2JhZGNlMDAzMDYxNGVlM2QzOWI1Njg2ZGUxOTQ5ZTExYzNiYzQ1YjRlNWUxYzI1Njk1Yjc5NmU0YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjEsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYTZmYjA4ZmRhMWFjYjk1N2I2MTE2YmQzNzgxMWExZmU0MWEwMTYxMWMwNjMxZWRiZjc4NmQ2ODg5YTI3YTU1YyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjEsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNDEyY2EzNDVjY2Y3NWJmOWMwODA2YmNlNjk1YmU4ZGU4MDhiNzk5ODQyNTFhN2E1NGQyMDJjZjYxMDFkZDQ1MSJ9"
+        },
+        {
+          "resource": "repo://libs/code/pyproject.toml#L213-L230",
+          "version": "repo-lines-v1:sha256:2200e24e72c657c5cb7dc92de423c147a86ce05d0b814b6ccf97d87a3f170dd3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2ZWYwMmIwYTRhYjY4NTNhZTZiMmEyNWIzYjM1OGZlNTgzNzk5N2IzNGVlNDFmOTIyNzY3OWFhMWM5MDFjODciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjBmNWJhODQyMzAxYmVmMDQ3NzcyODMyMDk1ZTk5ZWIyNTQzNmYxN2MwODZhY2VlYjU1M2IyOGM4MzNkOTMzMjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZmZWI3MWU1ODRmY2Y2MTM5ZjE1ODg2ODhjNjQxNzc3NGNmYzkxY2YzYWRjZWJkYTM2MzI2NjViMjRiODcyZTEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2ZWYzNzljNWY4MjgwOTA1OGFiZDYwZDBjZWNiNWQ5ZDk1ODBlODI4MWE2MmJiM2Y0MDFhN2FhMTEwZDliY2EifQ"
+        },
+        {
+          "resource": "repo://libs/partners/AGENTS.md#L1-L24",
+          "version": "repo-lines-v1:sha256:871bfc1ce717943bae7d79351c4744ae0ad532347db6e8345b673d0b9fee3011:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUwYzczZWNhNjUzMzllM2E5NDJjMzViY2MzOGMxN2NjNTJmOGYxOTk3YmNjNzdiZDUwMjc1MDNlMWExZTUwODYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVmNzBlMzM5NGQ0OTRiOTRlYzNjNDliNDBmZTVmZjFmNmNlOTcwZTJlMjJkYWMzYzJkMjc4NDhmZWRjMTgxZDUifQ"
+        },
+        {
+          "resource": "repo://libs/partners/daytona/pyproject.toml#L22-L27",
+          "version": "repo-lines-v1:sha256:d3b7905b4b9ad9f292a5f35a7e35d61e8162e324ee6bc7357880ff7c8c6dbfb5:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjA2MWYwYjc0ZTQ2NmE3NThkNDNhOGViZmEzNzQ4NjE3ZGRhY2FkYTExNWNmMGQ1NTJjOTRmNGZjNGRmN2M3MSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMmI5ZjUwN2E5Y2FiMjFhN2UyNWUzN2JkY2Y5MDQ4Mzc4YmRhNzVhZGY2M2Q4OWZjOGY5ZjQzMjgzY2E2MWFlYyJ9"
+        },
+        {
+          "resource": "repo://libs/partners/modal/pyproject.toml#L22-L27",
+          "version": "repo-lines-v1:sha256:acf64698635512d6b10f775119e6f008de10a2aab0230e7c1f5f88b61fbd7655:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjY3ZDQ4YmExNTVhNWQ3MzNjZTNmMWY4NDlhMWZkOGIxYzI4NTI3ZTIwN2Q1MTQ3YjIzMTkxMzVkOWQ5OTllNyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNjUxYTcwZGZhM2EyNWZjZWNmZjhjZWFiZDEzZjA2YTVhZTg1YTdhZDYwOTUzZTQxOTYxYTQ3NzBkYzJmNmY5NiJ9"
+        },
+        {
+          "resource": "repo://libs/partners/quickjs/pyproject.toml#L62-L70",
+          "version": "repo-lines-v1:sha256:87fee0055f884c0c5f50c798fa375fe31d14b7990f6e736fbf6f40ac3a20a957:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTZlZjAyYjBhNGFiNjg1M2FlNmIyYTI1YjNiMzU4ZmU1ODM3OTk3YjM0ZWU0MWY5MjI3Njc5YWExYzkwMWM4NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjU5MTNhMGIyMTA1MTRkYWM5OTJmMTM3ZDRlYjJiMWRmNmIzMWM4MTg5YzcwMDI3NTkzNWZkYjkxZGY1YjBlNyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiY2ZjNjk5ODcxZmJlMDliYzVhMGQxNjQ3YzhhODA5ZDA3N2E2MjEwYmI3NjgyNTA4MDE2NTI2YjJkZDUwMzdjZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGE2N2ZjNjQxZDQ1NTI1ODk3YzE0MWUyODlhYTJhNDk0ZWYxZWExZjNmZDZkMjg5MmY3ODg3N2Q0MWJlNmM5YiJ9"
+        },
+        {
+          "resource": "repo://libs/partners/runloop/pyproject.toml#L22-L27",
+          "version": "repo-lines-v1:sha256:51cd34dd67878131dfa9e549805db87f4ced33ad40421c0c27051139bc446264:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYjIwMWIwZTE2ZDEwMjZjNTUyOTRjNzA5ZmVjNjAyMWEzMjU4M2JmMjIzOTNmMTdlM2Q2YTY5ZWE3MDMwN2Y5ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzcwNTM1Yjk0NGZjYWRiZWZjMjk1MTk5MzQ1NDcwMDc1MTIzMGE2NTNkYjQyOTY1YzJkZjM0ZTlmZDkwOTM0YSJ9"
+        },
+        {
+          "resource": "repo://libs/partners/vercel/pyproject.toml#L22-L27",
+          "version": "repo-lines-v1:sha256:3156da33574d61f5206215516a000edc4e34b0946f119073b10350495e73ad85:eyJzZWxlY3RlZExpbmVDb3VudCI6NiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2Q2NTQ3N2Y3MGVhMjEyZWFjNjFlZWZjZDAzNTM3ZjI1OTkzMWZmMTE3NDE0NzAxMmI3ZGE3M2FjMDRlZWRhYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjk0MTZlMDlmNzhiYTMxNmMwMzI1NjgyMTNiODU1ZWU3NTZlNDE1NjVkOTE4ZjA5NTE5YzgxZmQ2MjBmNDA2MCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzBlM2JkZDc0YWJkOGViYjVjMDMyNTNkNGZmNTA2ZmNhZmNjYWExZDkyMDVlMWQxZmMzMzUzOGY2MTViMTI1OCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNmQ3MWM3MWM3MGFiYjEwMjY0OWI3YTNkOTI5MTlhZjM1OTFmZTQ5MTVmYjc2MDZhYjdkM2JkZDMwMWI5NjQ4OSJ9"
+        },
+        {
+          "resource": "repo://release-please-config.json#L120-L193",
+          "version": "repo-lines-v1:sha256:b22c633b23ea8c6577e638b75c1bf0fc777bcbb9d191c5f565a9de26d554418a:eyJzZWxlY3RlZExpbmVDb3VudCI6NzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmZDA4ZmI3MDFiMGEzNmM1OGYyY2E0MTE2NmJmNGY2ZWNmMTBlZmI5MDBlYTZlMzFkYjhmMmZmYzVlNGY0NDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0MjIzOWIxYmQ4MmI4NWVkNTBjMThhYmU2YjhlOTk3ODc1NWRhYzZmZDgwNDA5MjRjOGE4ODBjNTJmMDY1ZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY5ODY0ZDljNTk3MGNiYTRlMGI0ZWUxNDU4YzUwNWJmMjBmYjNiYTMyMWQwMjcxNzUxZjYwN2JhMTE4ZmU1MDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJmNTM5YWYwOTFjZTMyYTNhMzllMzM0N2NmYTFkZjUyNjM2YWViYTJkYTdhMTRjZTIyNDNiYmQ1YjBiNDU0OTEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-14T08:05:41.101Z"
+    "at": "2026-10-16T08:05:35.701Z"
   }
 }

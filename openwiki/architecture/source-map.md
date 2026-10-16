@@ -1,14 +1,24 @@
 ---
 type: architecture source map
 title: Source Map and Ownership Boundaries
-description: Practical change-routing map for Deep Agents graph assembly, synchronous and asynchronous delegation, and conversation summarization. Distinguishes reusable SDK seams from Talon's runtime-specific integration.
-tags: [deepagents, source-map, architecture, middleware, subagents, summarization, testing]
+description: Practical change-routing map for Deep Agents graph construction and middleware, dcode, Talon, public SDK surfaces, and package automation. Use it to find the owning seam and the nearest focused regression test.
+tags: [deepagents, source-map, architecture, middleware, dcode, talon, testing]
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-15T08:05:41.400Z
+    at: 2026-10-16T08:05:35.701Z
 sources:
+  - id: openwiki-source-9d81aa681a56a98960013750
+    resource: repo://.github/scripts/checks/check_lockfiles_pre_commit.py
+  - id: openwiki-source-fdf5afeb1dd1d11652374e88
+    resource: repo://libs/code/deepagents_code/app.py
+  - id: openwiki-source-11d6c59d85493653aee76558
+    resource: repo://libs/code/tests/unit_tests/test_app.py
+  - id: openwiki-source-fd64c1b88759a3b897a5452c
+    resource: repo://libs/deepagents/deepagents/__init__.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
+  - id: openwiki-source-fc54598423086acf9d53d9fd
+    resource: repo://libs/deepagents/deepagents/middleware/__init__.py
   - id: openwiki-source-e51c4102234507d1529a2440
     resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
   - id: openwiki-source-114a1c7a58992fa867a94ef0
@@ -21,118 +31,140 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-6d183faf1a4bc5a5ba451aba
     resource: repo://libs/deepagents/tests/unit_tests/test_graph.py
+  - id: openwiki-source-31e40ff79779f51cafd03f01
+    resource: repo://libs/talon/deepagents_talon/mcp_auth.py
   - id: openwiki-source-665a21e2fbd09a89d3f13ac0
     resource: repo://libs/talon/deepagents_talon/runtime.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-15T08:05:41.400Z" }
+  - id: openwiki-source-df8e616d4a20b5878bc1a05e
+    resource: repo://libs/talon/tests/test_mcp_auth.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
 ---
 
 # Source Map and Ownership Boundaries
 
-Use this page to route a behavioral change to the component that owns it, then run the smallest focused SDK test. The key boundary is intentional: Deep Agents owns reusable graph construction and middleware behavior; Talon owns its product runtime composition and invokes those SDK seams rather than redefining them. See the [architecture overview](./overview.md), [SDK construction and execution](./sdk-construction-execution.md), [middleware catalog](../concepts/middleware-catalog.md), [quickstart](../quickstart.md), and [testing guide](../testing/testing-guide.md) for broader guidance.
+Route a change by the behavior it changes, not by the product where it was observed. The reusable `deepagents` SDK owns graph assembly, backends, profiles, and middleware; dcode and Talon are consumers which own their product-specific composition, interaction, and operational policy. For system context see the [architecture overview](./overview.md), [code-agent architecture](./code-agent.md), [middleware stack](./middleware-stack.md), [quickstart](../quickstart.md), and [testing guide](../testing/testing-guide.md).
 
-## Route a change
+## Change routing
 
-| Change intent | Owner and primary seam | Focused test starting point |
+| Change intent | Owner and entry point | Start with |
 | --- | --- | --- |
-| Change graph state, model/profile resolution, backend defaults, middleware ordering, generated general-purpose subagent, permissions-to-approval wiring, or final graph compilation | Deep Agents: `libs/deepagents/deepagents/graph.py` — `create_deep_agent` | `libs/deepagents/tests/unit_tests/test_graph.py` |
-| Change blocking `task` validation, child compilation, child input/output state boundary, fork behavior, or returned result selection | Deep Agents: `libs/deepagents/deepagents/middleware/subagents.py` — `SubAgentMiddleware` and `_build_task_tool` | SDK subagent tests under `libs/deepagents/tests/unit_tests/middleware/` plus graph coverage when assembly changes |
-| Change Agent Protocol client use, remote task launch/check/update/cancel/list semantics, async task state, tracing headers, or remote fork payloads | Deep Agents: `libs/deepagents/deepagents/middleware/async_subagents.py` — `AsyncSubAgentMiddleware` | `libs/deepagents/tests/unit_tests/test_async_subagents.py` |
-| Change compaction thresholds, summary generation, history/media offload, overflow recovery, or the factory's defaults and knobs | Deep Agents: `libs/deepagents/deepagents/middleware/summarization.py` — `create_summarization_middleware` and `SummarizationMiddleware` | `libs/deepagents/tests/unit_tests/middleware/test_summarization_factory.py`; add behavior-specific summarization tests for lifecycle changes |
-| Change Talon-only tools, approval store integration, model selection, progress delivery, Talon backend choice, or its middleware replacements | Talon: `libs/talon/deepagents_talon/runtime.py` — `DeepAgentRuntime._create_graph` | Talon runtime tests; do not move product policy into the SDK middleware above |
+| SDK graph inputs, state schema, profile resolution, default backend, middleware order, permissions, or compilation | `libs/deepagents/deepagents/graph.py` — `create_deep_agent` | `libs/deepagents/tests/unit_tests/test_graph.py` |
+| Public SDK import or compatibility surface | `libs/deepagents/deepagents/__init__.py`; feature exports in `middleware/__init__.py` | Import/API coverage nearest to the exported component, then graph tests if construction changed |
+| Blocking `task`, child compilation, fork context, or parent/child state crossing | `libs/deepagents/deepagents/middleware/subagents.py` — `SubAgentMiddleware` | Subagent tests under `libs/deepagents/tests/unit_tests/middleware/`, plus graph coverage for assembly |
+| Remote Agent Protocol delegation and `async_tasks` lifecycle | `libs/deepagents/deepagents/middleware/async_subagents.py` — `AsyncSubAgentMiddleware` | `libs/deepagents/tests/unit_tests/test_async_subagents.py` |
+| Context compaction, offload, overflow recovery, or summary policy | `libs/deepagents/deepagents/middleware/summarization.py` | `libs/deepagents/tests/unit_tests/middleware/test_summarization_factory.py` and the nearest lifecycle test |
+| Terminal UI, UI/server lifecycle, thread switching, rendering, or dcode approval interaction | `libs/code/deepagents_code/app.py` — `DeepAgentsApp` | `libs/code/tests/unit_tests/test_app.py`, then a narrower neighboring dcode suite |
+| Talon graph composition, runtime tools, approvals, progress, background work, or checkpointing | `libs/talon/deepagents_talon/runtime.py` — `DeepAgentRuntime._create_graph` | The nearest Talon runtime test |
+| Talon MCP OAuth storage, discovery, redirect, or SSRF policy | `libs/talon/deepagents_talon/mcp_auth.py` | `libs/talon/tests/test_mcp_auth.py` and `libs/talon/tests/unit_tests/test_oauth_transport.py` |
+| A package manifest, lockfile, or local editable-consumer closure | `.github/scripts/checks/check_lockfiles_pre_commit.py` | `.github/scripts/tests/checks/test_refresh_lockfiles.py`; run `cd libs && make lock-check` |
 
 ```mermaid
 flowchart TD
-  Change["Change request"] --> Scope{"Reusable SDK behavior"}
-  Scope -->|"yes"| Graph["graph.py assembly"]
-  Scope -->|"sync task"| Sync["subagents.py task bridge"]
-  Scope -->|"remote task"| Async["async_subagents.py Agent Protocol bridge"]
-  Scope -->|"context compaction"| Summary["summarization.py"]
-  Scope -->|"no Talon integration"| Talon["Talon runtime.py"]
-  Graph --> GraphTest["test_graph.py"]
-  Async --> AsyncTest["test_async_subagents.py"]
-  Summary --> SummaryTest["test_summarization_factory.py"]
+  Change["Change request"] --> Scope{"What behavior changes"}
+  Scope -->|"Reusable agent behavior"| Graph["SDK graph or middleware"]
+  Scope -->|"Terminal interaction"| Dcode["dcode app"]
+  Scope -->|"Talon host policy"| Talon["Talon runtime or MCP auth"]
+  Scope -->|"Dependencies"| Lock["Lockfile automation"]
+  Graph --> SDKTests["Focused SDK test"]
+  Dcode --> DcodeTests["Focused dcode test"]
+  Talon --> TalonTests["Focused Talon test"]
+  Lock --> LockTests["Automation test and lock check"]
 ```
 
-This map routes by the behavior being changed, not by the product that happens to call it.
+*The route is determined by the owner of the reusable contract or product policy, then validated at its closest observable boundary.*
 
-## Graph assembly: the SDK composition seam
+## SDK graph construction and public surface
 
-`create_deep_agent` is the public construction boundary. It resolves a model and harness profile, supplies `StateBackend()` when the caller omits a backend, classifies supplied subagent specifications, builds the final middleware stack, and delegates compilation to LangChain `create_agent`. It passes through the supplied prompt, tools, response format, context schema, checkpointer, store, debug, name, and cache. The result is configured with Deep Agents metadata and a recursion limit.
+`create_deep_agent` is the SDK construction seam. It resolves the model and harness profile, selects `StateBackend()` if no backend is supplied, separates inline from remote subagent specifications, builds the system prompt and middleware, and hands the result to LangChain `create_agent`. The returned graph receives Deep Agents metadata and a recursion limit. The public arguments are therefore the extension boundary for tools, middleware, subagents, skills, memory, permissions, backend, state/context schemas, interrupts, persistence, cache, and graph name.
 
-`DeepAgentState.messages` uses a `DeltaChannel` and the SDK reducer rather than repeatedly checkpointing the complete message list. The reducer handles replay without a seeded messages value, replaces or removes messages by ID, and supports the all-messages reset sentinel. A custom state schema must retain the `DeepAgentState` message-channel contract.
+Deep Agents inserts novel caller middleware after its core stack and before the tail, replaces same-named stack entries in place, and applies profile tool exclusion last so custom middleware cannot restore an excluded tool.
 
-The assembly order is a compatibility boundary. Its core is filesystem middleware, synchronous subagent middleware when inline workers exist, summarization, patched tool calls, and asynchronous-subagent middleware when remote workers exist. Profile layers, optional skills and memory, caching, optional human review, unsupported-content handling, and final tool exclusion form the tail. A same-named caller middleware replaces the existing slot; a new one is placed after the core and before the tail. Middleware filtering runs again after that merge, while tool exclusion is appended last.
+`DeepAgentState.messages` is a `DeltaChannel` with a snapshot frequency, rather than a whole-history checkpoint value. A custom `state_schema` must extend `DeepAgentState` to preserve that reducer; parallel subagents changing the same custom field need a reducer or LangGraph rejects the conflicting update.
 
-`FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding: filesystem middleware supplies built-in file behavior and permissions, while synchronous subagent middleware supplies `task`. A harness profile that attempts to exclude either fails at construction rather than producing an agent without a core capability. This does not make every subagent mandatory: when no inline worker exists because the general-purpose worker is disabled and no synchronous spec is supplied, `task` is absent; remote async tools remain independently available.
+FilesystemMiddleware and SubAgentMiddleware are protected Deep Agents scaffolding because they respectively enforce built-in filesystem permissions and implement the task tool; excluding either through a harness profile raises instead of producing a degraded graph.
+
+The top-level `deepagents` package is the curated consumer import surface: it exports graph construction/state, filesystem and subagent types, selected middleware, profiles, and profile-registration functions. The `deepagents.middleware` package separately exposes middleware-facing subagent, async-task, filesystem, memory, rubric, skills, summarization-tool, and unsupported-content types. Add a public capability deliberately in these modules; do not make consumers import an internal implementation incidentally.
 
 ```mermaid
 flowchart TD
-  Inputs["Model options and subagent specs"] --> Build["create_deep_agent"]
-  Build --> Classify["Classify inline and remote subagents"]
-  Classify --> Core["Build core middleware stack"]
-  Core --> Tail["Add profile and optional tail middleware"]
+  Inputs["Model, backend, tools, schemas, subagents"] --> Build["create_deep_agent"]
+  Build --> Resolve["Resolve model and harness profile"]
+  Resolve --> Split["Split inline and remote subagents"]
+  Split --> Core["Build protected core"]
+  Core --> Tail["Add profile and optional tail"]
   Tail --> Merge["Merge caller middleware by name"]
-  Merge --> Filter["Apply profile exclusions"]
-  Filter --> Tools["Append final tool exclusion"]
-  Tools --> Compile["LangChain create_agent"]
-  Compile --> Agent["Configured graph"]
+  Merge --> Exclude["Apply profile exclusions"]
+  Exclude --> ToolFilter["Append final tool exclusion"]
+  ToolFilter --> Compile["LangChain create_agent"]
 ```
 
-This flow shows where ordering changes belong and why a caller middleware cannot restore a profile-excluded tool.
+*Graph assembly applies policy after extension merging, so a profile remains authoritative over the visible tool surface.*
 
-## Synchronous delegation: `subagents.py`
+## Middleware and delegation ownership
 
-`SubAgentMiddleware` owns the blocking `task` tool. Its input pool consists of declarative `SubAgent` specifications and caller-owned `CompiledSubAgent` runnables. The middleware rejects duplicate names and unsupported modes before building the tool. A declarative child is compiled with its resolved model, tools, middleware, and optional response format; a compiled child is not reconstructed or given a new schema by the SDK.
+`SubAgentMiddleware` owns the blocking `task` bridge for declarative `SubAgent` specifications and caller-provided `CompiledSubAgent` runnables. An isolated child gets allowed parent state and a delegated human message; a fork gets effective parent history after applying the summarization event. The child returns a `Command` to its parent, rather than exposing its complete private graph state.
 
-An isolated task receives permitted parent state plus one human message containing the delegated description. A fork instead receives the parent’s effective conversation—applying the current summarization event—followed by the task. Declarative forks retain the state needed to rebuild the parent’s prompt but receive a private marker that refuses recursive `task` calls. Compiled forks get a narrower state because the SDK cannot assume their graph schema. These are state-ownership rules, not merely prompt conventions.
+SubAgentMiddleware exposes the blocking task bridge for declarative and compiled subagents: isolated children receive a delegated description, forks receive effective summarized parent history, and completed children return one ToolMessage while private, excluded, and unchanged inherited state is withheld from the parent update.
 
-When a child finishes, the bridge requires a `messages` result. It removes messages, defined excluded keys, middleware-private fields, and unchanged inherited values from the parent update; then it returns exactly one tool message to the parent. That message contains a serialized structured response when one exists, otherwise the last non-empty AI message. Changes to what crosses this boundary belong here and should consider parallel task calls and custom state reducers.
+AsyncSubAgentMiddleware runs remote Agent Protocol work without blocking the parent by persisting a local async_tasks record on launch and exposing start, check, update, cancel, and list tools; remote execution and its thread remain owned by the remote graph.
 
-## Remote delegation: `async_subagents.py`
+Remote async task updates create an interrupting run on the existing thread and replace the tracked run ID; task checks map a successfully finished but interrupted remote thread to waiting, while cancellation of a waiting task is recorded locally because no active run exists to cancel.
 
-`AsyncSubAgentMiddleware` is a separate, non-blocking delegation path for Agent Protocol servers. Each spec identifies a remote graph by `graph_id` and may provide a URL and headers. Construction requires at least one uniquely named spec and accepts only `isolated` or experimental `fork` modes. The middleware publishes five tools: `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`.
-
-Launch creates a remote thread and run, then writes a local `async_tasks` record keyed by that thread ID with the agent name, current run ID, status, and timestamps. Thus parent graph state owns tracking, while the remote server owns execution, its thread, tools, policy, and approval interactions. A check reads the remote run and, after success, its thread: an interrupted thread is represented locally as `waiting`; successful output is the remote thread’s final message. Lists filter local cached records before refreshing nonterminal records, and retain cached status when a refresh fails.
-
-Updates create a new run on the same remote thread with an interrupting multitask strategy and replace only the tracked run ID. Cancellation calls the server except for a `waiting` task, where no active run exists and the local record is simply marked cancelled. An isolated launch sends only the description. A fork snapshots effective compacted parent history, strips artifacts, rehydrates offloaded tool content, and serializes that snapshot plus the new task. Omitting `url` uses local ASGI transport and therefore requires an async parent invocation; synchronous launch needs a reachable URL.
+An async spec without a URL uses local ASGI transport and therefore needs an asynchronous parent invocation; synchronous callers need a reachable URL. For forks, the middleware snapshots effective compacted history, removes artifacts, restores offloaded tool content, and serializes portable child messages. Treat the parent `async_tasks` record as monitoring state, not as ownership of the remote graph's tools, approvals, or schema.
 
 ```mermaid
 sequenceDiagram
   participant Parent as Parent graph
-  participant Tools as Async task tools
-  participant Remote as Remote Agent Protocol graph
-  Parent->>Tools: start_async_task
-  Tools->>Remote: create thread and run
-  Tools-->>Parent: task record and task ID
-  Parent->>Tools: check or list task
-  Tools->>Remote: read run and thread
-  Tools-->>Parent: refreshed local task state
-  Parent->>Tools: update or cancel task
-  Tools->>Remote: interrupting run or cancellation
+  participant Bridge as Async middleware
+  participant Remote as Remote graph
+  Parent->>Bridge: start async task
+  Bridge->>Remote: create thread and run
+  Bridge-->>Parent: record task in async_tasks
+  Parent->>Bridge: check update cancel or list
+  Bridge->>Remote: inspect or control remote run
+  Bridge-->>Parent: update local task record
 ```
 
-This sequence separates durable parent tracking from remote execution ownership.
+*The parent tracks a remote task durably while the remote graph retains execution and approval ownership.*
 
-## Summarization: compact requests while retaining a recoverable history
+## Context compaction
 
-`SummarizationMiddleware` is the SDK layer for automatic compaction and backend-backed recovery. It keeps raw message state and records a private summarization event that reconstructs the effective model request as the summary plus the retained tail. Its per-invocation session ID is persisted so later turns append evicted history to the same backend history file; separate invocations, including subagents, receive different IDs.
+Deep Agents summarization preserves raw messages while recording a private event that reconstructs the compacted request, persists a session ID for append-only backend history, and continues with a warning when history offload fails; its factory selects fraction-based defaults from max_input_tokens or fixed fallback defaults and requires a resolved BaseChatModel.
 
-Before compaction, the middleware can truncate older large tool-call arguments. It summarizes when its configured thresholds are reached and also retries through compaction after a recognized context-overflow error. Evicted history is offloaded while the summary is generated; an offload failure does not prevent summarization, but leaves no recoverable history path and emits a warning. Inline media is offloaded to references before history persistence; media that cannot be preserved becomes an explicit placeholder rather than silently disappearing.
+Use `create_summarization_middleware` for default threshold and model-profile policy; use `SummarizationMiddleware` for lifecycle, persistence, media handling, and overflow-retry changes. The factory test proves construction branches, but an altered compaction or recovery behavior needs a direct lifecycle regression near its implementation.
 
-`create_summarization_middleware` is the default construction seam used by graph assembly. It requires a resolved `BaseChatModel`, computes fraction-based trigger and retention defaults when the model exposes `max_input_tokens`, and otherwise uses conservative fixed token and message defaults. Its optional summary prompt, trim budget, token counter, and replacement summarizer are keyword-only and pass through to the middleware. Use this factory for default-policy changes; use the middleware implementation for compaction lifecycle and storage semantics.
+## Product-owned seams: dcode and Talon
 
-## Talon is a caller, not an SDK ownership shortcut
+`DeepAgentsApp` is dcode's Textual application boundary. It owns terminal key bindings, screen and modal lifecycle, session/thread presentation, message rendering, user approvals, and background server-startup handoff through `ServerReady` and `ServerStartFailed`. Do not move terminal presentation policy into SDK middleware; when an edit crosses the client/server handoff, use `test_app.py` and a focused suite for the affected UI or thread behavior.
 
-`DeepAgentRuntime._create_graph` is the Talon integration seam. It prepares Talon runtime tools, approvals, model selection, progress middleware, a checkpointer, and its backend, then calls `create_deep_agent`. It deliberately replaces the default filesystem and summarization slots for Talon-specific behavior and conditionally adds its own summarization-tool middleware. Change that composition in `runtime.py` only when the behavior is Talon-specific. Change the reusable `task`, remote task, default summarization, or graph-assembly contract in the corresponding Deep Agents owner first.
+Talon's DeepAgentRuntime is an integration caller of the SDK builder: it prepares Talon-specific tools, approvals, middleware, backend, and checkpointing, then invokes create_deep_agent, including a replacement filesystem middleware and selected-model summarization layer.
+
+Talon MCP OAuth belongs in `mcp_auth.py`, not in the generic graph builder. `FileTokenStorage` isolates credentials by a hash of the server identity and optional OAuth configuration, stores token/client information atomically under owner-only permissions, and preserves an existing refresh token when a refresh response omits one. Its provider restores persisted expiry and rejects unsafe OAuth endpoints and redirects using an HTTPS-only SSRF-safe transport; preserve those checks when changing discovery or authorization flows.
+
+## Package and lockfile operations
+
+`libs/ARCHITECTURE.md` is the maintainer orientation for the SDK's LangChain/LangGraph layering and directs behavior changes from `create_deep_agent` into middleware, backends, profiles, exports, and tests. It is a navigation document; code is the authority for a runtime contract.
+
+The pre-commit lockfile check maps changed paths to package directories that own lockfiles; when manifests change, the related refresh workflow must also cover transitive consumers declared through local `[tool.uv.sources]` paths. It runs `uv lock --check` using each package's required interpreter and stops at the first stale lockfile with the command needed to refresh it. Validate automation changes against its temporary-repository tests rather than a repository-wide lockfile accident.
 
 ## Focused verification
 
-From `libs/deepagents`, the package test target accepts a focused file through `TEST_FILE`:
+Run package commands from the owning package. Typical first commands are:
 
 ```bash
+cd libs/deepagents
 make test TEST_FILE=tests/unit_tests/test_graph.py
 make test TEST_FILE=tests/unit_tests/test_async_subagents.py
 make test TEST_FILE=tests/unit_tests/middleware/test_summarization_factory.py
+
+cd ../code
+make test TEST_FILE=tests/unit_tests/test_app.py
+
+cd ../talon
+make test TEST_FILE=tests/test_mcp_auth.py
+
+cd ..
+make lock-check
 ```
 
-For a graph edit, prove assembly order, protected/excluded middleware, subagent classification, and resulting compilation inputs. For an async task edit, test both synchronous and asynchronous tool implementations with a mocked SDK transport, persisted task updates, status transitions, remote failures, and fork serialization as applicable. For a factory edit, cover both model-profile branches, prompt formatting, pass-through knobs, model validation, and custom summarizer behavior. A behavior change below the summarization factory also needs a lifecycle-level test near the implementation; the factory test alone intentionally covers construction policy.
+For an assembly edit, assert the final middleware/tool surface and failure paths such as protected exclusions. For delegation, assert returned `Command` state and serialized child input, not only mocked internal calls. For dcode, mount or exercise the real Textual app where event routing matters. For OAuth and lock automation, use isolated filesystem or temporary-repository tests so credential permissions, redirect/SSRF failure behavior, and dependency closure are observable deterministically.

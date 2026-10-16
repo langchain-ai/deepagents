@@ -190,6 +190,16 @@ def workspace_conflict_diagnostics(
     )
 
 
+def _server_detail(body: object, fallback: str) -> str:
+    """Read the server's readable `detail`, or fall back when it has none.
+
+    Returns:
+        The `detail` string from a JSON error body, or `fallback`.
+    """
+    detail = body.get("detail") if isinstance(body, dict) else None
+    return detail if isinstance(detail, str) else fallback
+
+
 def _require_thread_id(config: Mapping[str, Any] | None) -> str:
     """Extract and validate that `thread_id` is present in config.
 
@@ -497,15 +507,10 @@ class RemoteAgent:
                     },
                 )
             except APIStatusError as exc:
-                body = exc.body
-                detail = body.get("detail") if isinstance(body, dict) else None
-                msg = (
-                    detail
-                    if isinstance(detail, str)
-                    else (
-                        "Model metadata is unavailable from this server. "
-                        "Update or restart the server and retry."
-                    )
+                msg = _server_detail(
+                    exc.body,
+                    "Model metadata is unavailable from this server. "
+                    "Update or restart the server and retry.",
                 )
                 raise RuntimeError(msg) from exc
             return ModelMetadata.from_payload(response)
@@ -638,12 +643,9 @@ class RemoteAgent:
             )
             raise RuntimeError(msg) from exc
         except APIStatusError as exc:
-            body = exc.body
-            detail = body.get("detail") if isinstance(body, dict) else None
-            msg = (
-                detail
-                if isinstance(detail, str)
-                else f"The /btw history request failed (HTTP {exc.status_code})."
+            msg = _server_detail(
+                exc.body,
+                f"The /btw history request failed (HTTP {exc.status_code}).",
             )
             raise RuntimeError(msg) from exc
         except TimeoutError as exc:
@@ -668,15 +670,8 @@ class RemoteAgent:
                 elif event.event == "complete":
                     return event.data
                 elif event.event == "error":
-                    detail = (
-                        event.data.get("detail")
-                        if isinstance(event.data, dict)
-                        else None
-                    )
-                    msg = (
-                        detail
-                        if isinstance(detail, str)
-                        else "Side question failed on the server."
+                    msg = _server_detail(
+                        event.data, "Side question failed on the server."
                     )
                     raise RuntimeError(msg)
         msg = "Side-question stream ended before the answer was complete."

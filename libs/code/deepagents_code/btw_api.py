@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import json
 import logging
 import sqlite3
@@ -15,7 +14,12 @@ from starlette.responses import JSONResponse, Response
 from deepagents_code._async import _join_task_deferring_cancellation
 from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
 from deepagents_code.btw_cost import answer_with_cost, load_cost
-from deepagents_code.btw_history import append_exchange, clear_history, load_history
+from deepagents_code.btw_history import (
+    HistorySnapshot,
+    append_exchange,
+    clear_history,
+    load_history,
+)
 from deepagents_code.workspace import WorkspaceConflictError, require_thread_workspace
 
 if TYPE_CHECKING:
@@ -71,9 +75,7 @@ async def _remember(
     async with asyncio.timeout(120):
         text, cost = await answer
     write = asyncio.create_task(
-        asyncio.to_thread(
-            functools.partial(append_exchange, thread_id, question, text, epoch=epoch)
-        )
+        asyncio.to_thread(append_exchange, thread_id, question, text, epoch=epoch)
     )
     cancellation = await _join_task_deferring_cancellation(write)
     try:
@@ -175,6 +177,27 @@ class _BtwStreamingResponse(Response):
         return True
 
 
+async def _load_side_history(thread_id: str) -> HistorySnapshot | JSONResponse:
+    """Load the history an answer builds on, refusing one too long to send.
+
+    Returns:
+        The stored history, or an error response when it is unusable.
+    """
+    try:
+        history = await asyncio.to_thread(load_history, thread_id)
+    except (sqlite3.Error, ValueError) as exc:
+        return _history_error(exc)
+    if sum(len(q) + len(a) for q, a in history.exchanges) > _MAX_HISTORY_LENGTH:
+        return JSONResponse(
+            {
+                "detail": "Side conversation is too long. "
+                "Press Ctrl+X in /btw to clear it."
+            },
+            status_code=422,
+        )
+    return history
+
+
 async def btw(request: Request) -> Response:
     """Answer without starting or updating a graph run.
 
@@ -207,19 +230,11 @@ async def btw(request: Request) -> Response:
     except WorkspaceConflictError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=409)
     question = question.strip()
+    loaded = await _load_side_history(thread_id)
+    if isinstance(loaded, JSONResponse):
+        return loaded
+    history, epoch = loaded
     try:
-        history, epoch = await asyncio.to_thread(load_history, thread_id)
-    except (sqlite3.Error, ValueError) as exc:
-        return _history_error(exc)
-    try:
-        if sum(len(q) + len(a) for q, a in history) > _MAX_HISTORY_LENGTH:
-            return JSONResponse(
-                {
-                    "detail": "Side conversation is too long. "
-                    "Press Ctrl+X in /btw to clear it."
-                },
-                status_code=422,
-            )
         async with asyncio.timeout(120):
             server = await get_server_runtime(binding)
             operation = getattr(server.backend, BTW_OPERATION_ATTR, None)

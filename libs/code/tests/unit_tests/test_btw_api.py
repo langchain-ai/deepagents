@@ -224,23 +224,22 @@ class _SideServer:
         self.replies: dict[str, asyncio.Future[str]] = {}
         self.started = asyncio.Semaphore(0)
 
-        async def answer(
-            _thread: str,
-            _state: object,
-            question: str,
-            *,
-            history: list[tuple[str, str]],
-            on_text: object = None,
-        ) -> str:
-            del on_text
-            self.histories.append(list(history))
-            reply = self.replies.pop(question, None)
-            if reply is None:
-                return f"answer to {question}"
-            self.started.release()
-            return await reply
-
-        self.answer = answer
+    async def answer(
+        self,
+        _thread: str,
+        _state: object,
+        question: str,
+        *,
+        history: list[tuple[str, str]],
+        on_text: object = None,
+    ) -> str:
+        del on_text
+        self.histories.append(list(history))
+        reply = self.replies.pop(question, None)
+        if reply is None:
+            return f"answer to {question}"
+        self.started.release()
+        return await reply
 
     async def ask(self, question: str, *, streaming: bool = False) -> Response:
         headers = {"accept": "text/event-stream"} if streaming else {}

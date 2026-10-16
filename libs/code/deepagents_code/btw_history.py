@@ -40,13 +40,13 @@ class HistorySnapshot(NamedTuple):
     epoch: int
 
 
-def _read(conn: sqlite3.Connection, thread_id: str) -> HistorySnapshot | None:
+def _read(conn: sqlite3.Connection, thread_id: str) -> HistorySnapshot:
     row = conn.execute(
         "SELECT epoch, exchanges FROM dcode_btw_history WHERE thread_id = ?",
         (thread_id,),
     ).fetchone()
     if row is None:
-        return None
+        return HistorySnapshot([], 0)
     msg = f"Stored /btw history for thread {thread_id} is malformed."
     epoch, stored = row
     try:
@@ -80,8 +80,7 @@ def load_history(thread_id: str) -> HistorySnapshot:
             "SELECT 1 FROM sqlite_master "
             "WHERE type = 'table' AND name = 'dcode_btw_history'"
         ).fetchone()
-        stored = _read(conn, thread_id) if exists else None
-    return stored or HistorySnapshot([], 0)
+        return _read(conn, thread_id) if exists else HistorySnapshot([], 0)
 
 
 def append_exchange(thread_id: str, question: str, answer: str, *, epoch: int) -> bool:
@@ -105,7 +104,7 @@ def append_exchange(thread_id: str, question: str, answer: str, *, epoch: int) -
     with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(_CREATE_TABLE)
-        exchanges, current = _read(conn, thread_id) or HistorySnapshot([], 0)
+        exchanges, current = _read(conn, thread_id)
         if current != epoch:
             return False
         exchanges.append((question, answer))

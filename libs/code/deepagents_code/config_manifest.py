@@ -2388,6 +2388,14 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("ui", "debug_console_click_to_copy"),
     ),
     ConfigOption(
+        key="display.ask_about_selection",
+        group="Display",
+        summary='Show "Ask about this" for selected conversation text (on by default).',
+        kind=OptionKind.BOOL,
+        default=True,
+        toml_keys=("ui", "ask_about_selection"),
+    ),
+    ConfigOption(
         key="display.collapse_pastes",
         group="Display",
         summary="Collapse large chat-input pastes into compact placeholders.",

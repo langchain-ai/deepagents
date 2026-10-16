@@ -15,13 +15,12 @@ class SelectionAction(Static):
         width: 18;
         height: 1;
         padding: 0 1;
-        background: $panel;
-        color: $text;
+        background: $primary;
+        color: $background;
         text-style: bold;
     }
     SelectionAction:hover {
-        background: $accent;
-        color: $text-accent;
+        background: $primary-lighten-1;
     }
     """
 

@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import logging
+import ntpath
 import os
 import shutil
 import subprocess
@@ -9,7 +10,7 @@ import sys
 import threading
 import warnings
 from collections.abc import Iterator
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Self
 
 import pytest
@@ -20,6 +21,92 @@ from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import DeleteResult, EditResult, GrepMatch, ReadResult, WriteResult
 from deepagents.backends.utils import format_grep_matches
 from deepagents.middleware.filesystem import GLOB_TIMEOUT, FilesystemMiddleware
+
+
+@pytest.mark.parametrize("root", [r"C:\root", r"\\server\share\root"])
+@pytest.mark.parametrize("extended_root", [False, True])
+@pytest.mark.parametrize("extended_target", [False, True])
+def test_resolved_windows_path_namespaces(root: str, *, extended_root: bool, extended_target: bool) -> None:
+    base = PureWindowsPath(root)
+    target = base / "blobs" / ("a" * 64)
+    extended = "\\\\?\\" + root if root.startswith("C:") else "\\\\?\\UNC\\" + root[2:]
+    comparison_root = PureWindowsPath(extended) if extended_root else base
+    comparison_target = PureWindowsPath(extended) / "blobs" / ("a" * 64) if extended_target else target
+
+    assert fs_module._relative_to_resolved(comparison_target, comparison_root).as_posix() == "blobs/" + "a" * 64
+
+
+@pytest.mark.parametrize(
+    ("target", "root"),
+    [
+        (r"\\?\C:\root-other\secret", r"C:\root"),
+        (r"\\?\D:\root\secret", r"C:\root"),
+        (r"\\?\UNC\server\other\root\secret", r"\\server\share\root"),
+        (r"\\?\UNC\other\share\root\secret", r"\\server\share\root"),
+        (r"\\.\C:\root\secret", r"C:\root"),
+    ],
+)
+def test_resolved_windows_path_containment(target: str, root: str) -> None:
+    with pytest.raises(ValueError, match=r"not in the subpath|not a subpath|different anchors"):
+        fs_module._relative_to_resolved(PureWindowsPath(target), PureWindowsPath(root))
+
+
+def test_resolved_posix_path_is_unchanged() -> None:
+    path = PurePosixPath(r"/root/\\?\C:\file")
+    assert fs_module._relative_to_resolved(path, PurePosixPath("/root")) == path.relative_to("/root")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows extended filesystem paths")
+def test_upload_preserves_extended_resolved_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    target = backend.cwd / "blobs" / "image"
+    extended = Path("\\\\?\\" + str(target))
+    resolve = Path.resolve
+
+    def extended_resolve(path: Path, *, strict: bool = False) -> Path:
+        return extended if path == target else resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", extended_resolve)
+    assert backend._resolve_path("/blobs/image") == extended
+    assert backend.upload_files([("/blobs/image", b"image")])[0].error is None
+    assert target.read_bytes() == b"image"
+    assert backend._to_virtual_path(target) == "/blobs/image"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Real Windows path resolution")
+def test_upload_when_parent_appears_during_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+    target = backend.cwd / "blobs" / "image"
+    final_path = ntpath._getfinalpathname
+    errors: list[int] = []
+
+    def create_parent_after_lookup(path: str) -> str:
+        try:
+            return final_path(path)
+        except OSError as exc:
+            if path == str(target):
+                errors.append(exc.winerror)
+                if not target.parent.exists():
+                    target.parent.mkdir()
+            raise
+
+    monkeypatch.setattr(ntpath, "_getfinalpathname", create_parent_after_lookup)
+    resolved = backend._resolve_path("/blobs/image")
+    assert errors[0] == 3, errors
+    assert errors[-1] == 2, errors
+    assert str(resolved).startswith("\\\\?\\"), (resolved, errors)
+    with pytest.raises(ValueError, match=r"not in the subpath|not a subpath|different anchors"):
+        resolved.relative_to(backend.cwd)
+    assert backend._to_virtual_path(resolved) == "/blobs/image"
+
+    target.parent.rmdir()
+    errors.clear()
+    assert backend.upload_files([("/blobs/image", b"image")])[0].error is None
+    assert errors[0] == 3 and errors[-1] == 2, errors
+    assert target.read_bytes() == b"image"
+    outside = Path("\\\\?\\" + str(backend.cwd.parent / "outside"))
+    with pytest.raises(ValueError, match=r"not in the subpath|not a subpath|different anchors"):
+        fs_module._relative_to_resolved(outside, backend.cwd)
 
 
 def require_ripgrep() -> None:

@@ -584,15 +584,10 @@ class RemoteAgent:
             Ordered question/answer pairs.
 
         Raises:
+            RuntimeError: If the server cannot return the history.
             TypeError: If the response is malformed.
-        """
-        thread_id = _require_thread_id(config)
-        workspace = await self._workspace_for_thread(config)
-        async with asyncio.timeout(10):
-            response = await self._get_graph().client.http.post(
-                f"/dcode/threads/{thread_id}/btw/history",
-                json={"workspace": workspace},
-            )
+        """  # noqa: DOC502 — RuntimeError is raised by _post_btw_history
+        response = await self._post_btw_history(config, "history")
         raw = response.get("history") if isinstance(response, dict) else None
         if not isinstance(raw, list):
             msg = "Invalid side-history response from the server."
@@ -612,14 +607,46 @@ class RemoteAgent:
 
         Args:
             config: Configuration identifying the main conversation.
+
+        Raises:
+            RuntimeError: If the server cannot clear the history.
+        """  # noqa: DOC502 — raised by _post_btw_history
+        await self._post_btw_history(config, "clear")
+
+    async def _post_btw_history(self, config: Mapping[str, Any], action: str) -> object:
+        """Send a workspace-bound side-history request with readable failures.
+
+        Returns:
+            The decoded response body.
+
+        Raises:
+            RuntimeError: If the server is outdated, rejects the request, or
+                does not answer in time.
         """
+        from langgraph_sdk.errors import APIStatusError, NotFoundError
+
         thread_id = _require_thread_id(config)
         workspace = await self._workspace_for_thread(config)
-        async with asyncio.timeout(10):
-            await self._get_graph().client.http.post(
-                f"/dcode/threads/{thread_id}/btw/clear",
-                json={"workspace": workspace},
+        try:
+            async with asyncio.timeout(10):
+                return await self._get_graph().client.http.post(
+                    f"/dcode/threads/{thread_id}/btw/{action}",
+                    json={"workspace": workspace},
+                )
+        except NotFoundError as exc:
+            msg = (
+                "This server does not support /btw history. "
+                "Update the built-in dcode server."
             )
+            raise RuntimeError(msg) from exc
+        except APIStatusError as exc:
+            body = exc.body
+            detail = body.get("detail") if isinstance(body, dict) else None
+            msg = detail if isinstance(detail, str) else "The server rejected /btw."
+            raise RuntimeError(msg) from exc
+        except TimeoutError as exc:
+            msg = "Timed out reaching the server for /btw history. Try again."
+            raise RuntimeError(msg) from exc
 
     async def _stream_btw(
         self,

@@ -99,9 +99,9 @@ def create_sandbox(
 
     Args:
         provider: Sandbox provider name. Built-ins (`'agentcore'`, `'daytona'`,
-            `'langsmith'`, `'modal'`, `'runloop'`, `'vercel'`), entry-point
-            providers, and config-declared providers are all resolved through
-            the registry.
+            `'langsmith'`, `'modal'`, `'openshell'`, `'runloop'`, `'vercel'`),
+            entry-point providers, and config-declared providers are all
+            resolved through the registry.
         sandbox_id: Optional existing sandbox ID to reuse
         snapshot_name: Optional sandbox snapshot name to use or create.
             Honored by providers whose metadata sets `supports_snapshot_name`
@@ -1363,6 +1363,113 @@ class _VercelProvider(SandboxProvider):
             # Generic message avoids leaking credentials; chain preserves cause.
             msg = "Failed while waiting for Vercel sandbox startup."
             raise RuntimeError(msg) from exc
+
+
+_OPENSHELL_DEFAULT_WORKSPACE = "default"
+"""Workspace the OpenShell CLI uses when `OPENSHELL_WORKSPACE` is unset."""
+
+
+class _OpenShellProvider(SandboxProvider):
+    """NVIDIA OpenShell sandbox provider, bound to the active gateway.
+
+    Credentials come from the OpenShell CLI's on-disk gateway state, so no
+    token is read here. `OPENSHELL_GATEWAY` and `OPENSHELL_WORKSPACE` select
+    the gateway and workspace, as they do for the CLI.
+    """
+
+    def __init__(self) -> None:
+        """Connect to the active OpenShell gateway.
+
+        Raises:
+            RuntimeError: If no gateway is configured or it cannot be reached.
+        """
+        openshell = _import_provider_module(
+            "openshell",
+            provider="openshell",
+            package="langchain-nvidia-openshell",
+        )
+
+        from deepagents_code.model_config import resolve_env_var
+
+        try:
+            self._client = openshell.SandboxClient.from_active_cluster(
+                cluster=resolve_env_var("OPENSHELL_GATEWAY")
+            )
+        except Exception as exc:  # OpenShell SDK exception types vary by version
+            # Generic message avoids leaking gateway auth state; chain keeps cause.
+            msg = (
+                "Failed to connect to the active OpenShell gateway. Run "
+                "`openshell gateway select` or set OPENSHELL_GATEWAY."
+            )
+            raise RuntimeError(msg) from exc
+        self._workspace = (
+            resolve_env_var("OPENSHELL_WORKSPACE") or _OPENSHELL_DEFAULT_WORKSPACE
+        )
+        self._names: dict[str, str] = {}
+        """Sandbox name by id; the SDK deletes by name, callers delete by id."""
+
+    def get_or_create(
+        self,
+        *,
+        sandbox_id: str | None = None,
+        timeout: int = 180,
+        **kwargs: Any,  # noqa: ARG002
+    ) -> SandboxBackendProtocol:
+        """Attach to an OpenShell sandbox by name, or create one.
+
+        Args:
+            sandbox_id: Existing sandbox name, as the OpenShell CLI shows it.
+            timeout: Seconds to wait for a new sandbox to become ready.
+            **kwargs: Unused.
+
+        Returns:
+            `OpenShellSandbox` instance.
+        """
+        backend = _import_provider_module(
+            "langchain_nvidia_openshell",
+            provider="openshell",
+            package="langchain-nvidia-openshell",
+        )
+        session = self._attach(sandbox_id) if sandbox_id else self._create(timeout)
+        self._names[session.id] = session.sandbox.name
+        return backend.OpenShellSandbox(sandbox=session)
+
+    def delete(self, *, sandbox_id: str, **kwargs: Any) -> None:  # noqa: ARG002
+        """Delete an OpenShell sandbox by id, or by name if it was not created here."""
+        name = self._names.pop(sandbox_id, sandbox_id)
+        self._client.delete(name, workspace=self._workspace, allow_missing=True)
+
+    def _attach(self, name: str) -> Any:  # noqa: ANN401  # `openshell.SandboxSession`; SDK is optional
+        try:
+            return self._client.get_session(name, workspace=self._workspace)
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if callable(code) and getattr(code(), "name", None) == "NOT_FOUND":
+                raise SandboxNotFoundError(name) from exc
+            raise
+
+    def _create(self, timeout: int) -> Any:  # noqa: ANN401  # `openshell.SandboxSession`; SDK is optional
+        session = self._client.create_session(workspace=self._workspace)
+        name = session.sandbox.name
+        try:
+            self._client.wait_ready(
+                name, workspace=self._workspace, timeout_seconds=timeout
+            )
+        except Exception as exc:
+            self._discard(name)
+            msg = (
+                f"OpenShell sandbox {name} did not become ready within "
+                f"{timeout} seconds."
+            )
+            raise RuntimeError(msg) from exc
+        return session
+
+    def _discard(self, name: str) -> None:
+        """Delete a sandbox that failed to start; `create_sandbox` never saw it."""
+        try:
+            self._client.delete(name, workspace=self._workspace, allow_missing=True)
+        except Exception:  # Cleanup must not mask the startup failure
+            logger.warning("Could not delete OpenShell sandbox %s", name, exc_info=True)
 
 
 def _get_provider(

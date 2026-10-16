@@ -17,11 +17,13 @@ from deepagents_code.integrations.sandbox_factory import (
     _AgentCoreProvider,
     _get_provider,
     _ModalProvider,
+    _OpenShellProvider,
     _VercelProvider,
     create_sandbox,
     get_default_working_dir,
     verify_sandbox_deps,
 )
+from deepagents_code.integrations.sandbox_provider import SandboxNotFoundError
 from deepagents_code.integrations.sandbox_registry import SandboxRegistry
 
 if TYPE_CHECKING:
@@ -194,6 +196,7 @@ def test_context_exit_cleans_up_only_owned_sandbox(
     [
         ("daytona", "langchain-daytona"),
         ("modal", "langchain-modal"),
+        ("openshell", "langchain-nvidia-openshell"),
         ("runloop", "langchain-runloop"),
     ],
 )
@@ -1400,3 +1403,91 @@ def test_agentcore_honors_a_prefixed_aws_credential_override() -> None:
         profile_name="prefixed-profile",
         region_name="us-test-1",
     )
+
+
+class _NotFoundError(Exception):
+    """Stand-in for an OpenShell `GatewayError` carrying a gRPC status code."""
+
+    def code(self) -> MagicMock:
+        status = MagicMock()
+        status.name = "NOT_FOUND"
+        return status
+
+
+class TestOpenShellProvider:
+    """Tests for the OpenShell sandbox provider lifecycle."""
+
+    @staticmethod
+    def _provider(
+        monkeypatch: pytest.MonkeyPatch, workspace: str | None = None
+    ) -> tuple[_OpenShellProvider, MagicMock]:
+        """Build a provider against a fake SDK client; return both."""
+        for name in ("OPENSHELL_GATEWAY", "OPENSHELL_WORKSPACE"):
+            monkeypatch.delenv(name, raising=False)
+            monkeypatch.delenv(f"DEEPAGENTS_CODE_{name}", raising=False)
+        if workspace is not None:
+            monkeypatch.setenv("OPENSHELL_WORKSPACE", workspace)
+        sdk = MagicMock()
+        client = sdk.SandboxClient.from_active_cluster.return_value
+        session = client.create_session.return_value
+        session.id = "uuid-1"
+        session.sandbox.name = "brave-otter"
+        with patch(f"{_FACTORY}._import_provider_module", return_value=sdk):
+            provider = _OpenShellProvider()
+        return provider, client
+
+    def test_created_sandbox_is_deleted_by_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`create_sandbox` deletes by backend id; OpenShell deletes by name."""
+        provider, client = self._provider(monkeypatch)
+
+        with patch(f"{_FACTORY}._import_provider_module"):
+            provider.get_or_create()
+        provider.delete(sandbox_id="uuid-1")
+
+        client.delete.assert_called_once_with(
+            "brave-otter", workspace="default", allow_missing=True
+        )
+
+    def test_failed_startup_deletes_the_sandbox(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A sandbox that never becomes ready is not leaked."""
+        provider, client = self._provider(monkeypatch)
+        client.wait_ready.side_effect = TimeoutError("still provisioning")
+
+        with (
+            patch(f"{_FACTORY}._import_provider_module"),
+            pytest.raises(RuntimeError, match="brave-otter did not become ready"),
+        ):
+            provider.get_or_create(timeout=5)
+
+        client.delete.assert_called_once_with(
+            "brave-otter", workspace="default", allow_missing=True
+        )
+
+    def test_missing_sandbox_raises_not_found(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Attaching to an unknown name surfaces `SandboxNotFoundError`."""
+        provider, client = self._provider(monkeypatch)
+        client.get_session.side_effect = _NotFoundError()
+
+        with (
+            patch(f"{_FACTORY}._import_provider_module"),
+            pytest.raises(SandboxNotFoundError),
+        ):
+            provider.get_or_create(sandbox_id="gone")
+
+    def test_workspace_env_var_is_honored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`OPENSHELL_WORKSPACE` selects the workspace, as it does for the CLI."""
+        provider, client = self._provider(monkeypatch, workspace="team-a")
+
+        provider.delete(sandbox_id="attached-name")
+
+        client.delete.assert_called_once_with(
+            "attached-name", workspace="team-a", allow_missing=True
+        )

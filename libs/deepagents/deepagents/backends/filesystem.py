@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import threading
 import time
@@ -179,7 +180,7 @@ class FilesystemBackend(BackendProtocol):
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
 
-    def _resolve_path(self, key: str) -> Path:
+    def _resolve_path(self, key: str, *, follow_final_symlink: bool = True) -> Path:
         """Resolve a file path with security checks.
 
         When `virtual_mode=True`, treat incoming paths as virtual absolute paths under
@@ -191,6 +192,8 @@ class FilesystemBackend(BackendProtocol):
 
         Args:
             key: File path (absolute, relative, or virtual when `virtual_mode=True`).
+            follow_final_symlink: Resolve the final component too. Disable for
+                deletion, which must remove the link rather than its target.
 
         Returns:
             Resolved absolute `Path` object.
@@ -205,16 +208,22 @@ class FilesystemBackend(BackendProtocol):
             if ".." in vpath or vpath.startswith("~"):
                 msg = "Path traversal not allowed"
                 raise ValueError(msg)
-            full = (self.cwd / vpath.lstrip("/")).resolve()
+            full = self.cwd / vpath.lstrip("/")
+            full = full.resolve() if follow_final_symlink else full.parent.resolve() / full.name
             try:
                 full.relative_to(self.cwd)
             except ValueError:
                 msg = f"Path:{full} outside root directory: {self.cwd}"
                 raise ValueError(msg) from None
-            _raise_if_symlink_loop(full)
+            _raise_if_symlink_loop(full if follow_final_symlink else full.parent)
             return full
 
         path = Path(key)
+        if not follow_final_symlink:
+            path = path if path.is_absolute() else self.cwd / path
+            resolved = path.parent.resolve() / path.name
+            _raise_if_symlink_loop(resolved.parent)
+            return resolved
         if path.is_absolute():
             _raise_if_symlink_loop(path)
             return path
@@ -616,15 +625,17 @@ class FilesystemBackend(BackendProtocol):
                 example when a nested entry is not writable).
         """
         try:
-            resolved_path = self._resolve_path(file_path)
+            resolved_path = self._resolve_path(file_path, follow_final_symlink=False)
         except (OSError, RuntimeError) as e:
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")
 
         try:
-            if not resolved_path.exists() and not resolved_path.is_symlink():
+            if not os.path.lexists(resolved_path):
                 return DeleteResult(error=f"Error: '{file_path}' not found")
             if resolved_path.is_symlink():
                 resolved_path.unlink()
+            elif os.name == "nt" and resolved_path.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT:
+                resolved_path.rmdir()
             elif resolved_path.is_dir():
                 shutil.rmtree(resolved_path)
             else:

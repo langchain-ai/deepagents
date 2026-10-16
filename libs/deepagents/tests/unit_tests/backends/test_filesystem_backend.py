@@ -59,6 +59,14 @@ def make_symlink_loop(path: Path) -> None:
         pytest.skip("platform does not support symlinks")
 
 
+def make_junction(path: Path, target: Path) -> None:
+    executable = shutil.which("cmd.exe")
+    assert executable is not None
+    subprocess.run(  # noqa: S603  # Resolved system command and disposable pytest paths.
+        [executable, "/c", "mklink", "/J", str(path), str(target)], check=True, capture_output=True
+    )
+
+
 def test_filesystem_backend_normal_mode(tmp_path: Path):
     root = tmp_path
     f1 = root / "a.txt"
@@ -2659,20 +2667,83 @@ class TestFilesystemDelete:
         assert not (tmp_path / "sub").exists()
         assert (tmp_path / "keep.txt").exists()
 
-    def test_delete_symlink_to_dir_does_not_follow(self, tmp_path: Path) -> None:
-        # Deleting a symlink that points at a directory removes only the link;
+    @pytest.mark.parametrize("mode", ["relative", "virtual", "absolute"])
+    @pytest.mark.parametrize("target_kind", ["file", "directory", "missing"])
+    @pytest.mark.parametrize("outside_root", [False, True])
+    def test_delete_symlink_does_not_follow(self, tmp_path: Path, mode: str, target_kind: str, *, outside_root: bool) -> None:
+        root = tmp_path / "root"
+        root.mkdir()
+        target = (tmp_path if outside_root else root) / "target"
+        if target_kind == "directory":
+            target.mkdir()
+            write_file(target / "keep.txt", "keep")
+        elif target_kind == "file":
+            write_file(target, "keep")
+        link = root / "link"
+        try:
+            link.symlink_to(target, target_is_directory=target_kind == "directory")
+        except (NotImplementedError, OSError):
+            if sys.platform != "win32" or target_kind != "directory":
+                pytest.skip("platform does not support symlinks")
+            make_junction(link, target)
+        be = FilesystemBackend(root_dir=str(root), virtual_mode=mode == "virtual")
+        file_path = str(link) if mode == "absolute" else "/link" if mode == "virtual" else "link"
+
+        result = be.delete(file_path)
+
+        assert result.error is None
+        assert result.path == file_path
+        assert not os.path.lexists(link)
+        if target_kind == "directory":
+            assert (target / "keep.txt").read_text() == "keep"
+        elif target_kind == "file":
+            assert target.read_text() == "keep"
+        else:
+            assert not target.exists()
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows directory junctions")
+    @pytest.mark.parametrize("mode", ["relative", "virtual", "absolute"])
+    @pytest.mark.parametrize("missing_target", [False, True])
+    def test_delete_junction_does_not_follow(self, tmp_path: Path, mode: str, *, missing_target: bool) -> None:
         target = tmp_path / "target"
         target.mkdir()
-        write_file(target / "keep.txt", "keep")
+        if not missing_target:
+            write_file(target / "keep.txt", "keep")
         link = tmp_path / "link"
-        link.symlink_to(target, target_is_directory=True)
-        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+        make_junction(link, target)
+        if missing_target:
+            target.rmdir()
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=mode == "virtual")
+        file_path = str(link) if mode == "absolute" else "/link" if mode == "virtual" else "link"
 
-        result = be.delete(str(link))
+        result = be.delete(file_path)
+
         assert result.error is None
-        assert not link.exists()
-        assert target.exists()
-        assert (target / "keep.txt").exists()
+        assert not os.path.lexists(link)
+        if missing_target:
+            assert not target.exists()
+        else:
+            assert (target / "keep.txt").read_text() == "keep"
+
+    def test_delete_through_escaping_parent_is_blocked(self, tmp_path: Path) -> None:
+        root = tmp_path / "root"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        write_file(outside / "keep.txt", "keep")
+        link = root / "escape"
+        try:
+            link.symlink_to(outside, target_is_directory=True)
+        except (NotImplementedError, OSError):
+            if sys.platform != "win32":
+                pytest.skip("platform does not support directory symlinks")
+            make_junction(link, outside)
+        be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+        with pytest.raises(ValueError, match="outside root directory"):
+            be.delete("/escape/keep.txt")
+
+        assert (outside / "keep.txt").read_text() == "keep"
 
     def test_delete_only_removes_target(self, tmp_path: Path) -> None:
         write_file(tmp_path / "keep.txt", "keep")
@@ -2697,7 +2768,7 @@ class TestFilesystemDelete:
         # A failure resolving the path surfaces as a deletion error, not a raise.
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
 
-        def _boom(_path: str) -> Path:
+        def _boom(_path: str, **_kwargs: bool) -> Path:
             raise OSError
 
         monkeypatch.setattr(be, "_resolve_path", _boom)

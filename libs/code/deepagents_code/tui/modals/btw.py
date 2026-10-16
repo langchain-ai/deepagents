@@ -292,6 +292,9 @@ class BtwScreen(ModalScreen[None]):
             await self._complete_answer(answer, text)
         except asyncio.CancelledError:
             await answer.stop_stream()
+            # Visible only if the transcript survives, e.g. after a failed clear.
+            error.update("Answer cancelled.")
+            error.display = True
             return
         except Exception as exc:
             await answer.stop_stream()

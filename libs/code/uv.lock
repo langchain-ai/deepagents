@@ -1173,6 +1173,7 @@ all-sandboxes = [
     { name = "langchain-agentcore-codeinterpreter" },
     { name = "langchain-daytona" },
     { name = "langchain-modal" },
+    { name = "langchain-nvidia-openshell" },
     { name = "langchain-runloop" },
     { name = "langchain-vercel-sandbox" },
 ]
@@ -1238,6 +1239,9 @@ openai = [
 openrouter = [
     { name = "langchain-openrouter" },
 ]
+openshell = [
+    { name = "langchain-nvidia-openshell" },
+]
 perplexity = [
     { name = "langchain-perplexity" },
 ]
@@ -1287,7 +1291,7 @@ requires-dist = [
     { name = "av", marker = "extra == 'media'", specifier = ">=18.0.0,<19.0.0" },
     { name = "deepagents", editable = "../deepagents" },
     { name = "deepagents-acp", editable = "../acp" },
-    { name = "deepagents-code", extras = ["agentcore", "daytona", "modal", "runloop", "vercel"], marker = "extra == 'all-sandboxes'" },
+    { name = "deepagents-code", extras = ["agentcore", "daytona", "modal", "openshell", "runloop", "vercel"], marker = "extra == 'all-sandboxes'" },
     { name = "deepagents-code", extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "meta", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai"], marker = "extra == 'all-providers'" },
     { name = "fastmcp", specifier = ">=4.0.0b4,<5.0.0" },
     { name = "filelock", specifier = ">=3.29.7,<3.30" },
@@ -1314,6 +1318,7 @@ requires-dist = [
     { name = "langchain-mistralai", marker = "extra == 'mistralai'", specifier = ">=1.1.6,<2.0.0" },
     { name = "langchain-modal", marker = "extra == 'modal'", editable = "../partners/modal" },
     { name = "langchain-nvidia-ai-endpoints", marker = "extra == 'nvidia'", specifier = ">=1.5.0,<2.0.0" },
+    { name = "langchain-nvidia-openshell", marker = "extra == 'openshell'", specifier = ">=0.1.1" },
     { name = "langchain-ollama", marker = "extra == 'ollama'", specifier = ">=1.1.0,<2.0.0" },
     { name = "langchain-openai", specifier = ">=1.7.2,<2.0.0" },
     { name = "langchain-openai", marker = "extra == 'openai'", specifier = ">=1.7.2,<2.0.0" },
@@ -1348,7 +1353,7 @@ requires-dist = [
     { name = "tomli-w", specifier = ">=1.2.0,<2.0.0" },
     { name = "uuid-utils", specifier = ">=0.17.0,<1.0.0" },
 ]
-provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "meta", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai", "all-providers", "agentcore", "daytona", "modal", "runloop", "vercel", "all-sandboxes", "media", "quickjs"]
+provides-extras = ["anthropic", "baseten", "bedrock", "cohere", "deepseek", "fireworks", "google-genai", "groq", "huggingface", "ibm", "litellm", "meta", "mistralai", "nvidia", "ollama", "openai", "openrouter", "perplexity", "together", "vertex", "xai", "all-providers", "agentcore", "daytona", "modal", "openshell", "runloop", "vercel", "all-sandboxes", "media", "quickjs"]
 
 [package.metadata.requires-dev]
 test = [
@@ -3086,6 +3091,23 @@ wheels = [
 ]
 
 [[package]]
+name = "langchain-nvidia-openshell"
+version = "0.1.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "deepagents" },
+    { name = "grpcio" },
+    { name = "langchain-nvidia-ai-endpoints" },
+    { name = "openshell" },
+    { name = "python-dotenv" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f1/2f/a40e9a6715a6235a200a049e5e89dd53b3f06273eda485b3d650607c53e6/langchain_nvidia_openshell-0.1.1.tar.gz", hash = "sha256:9a2a828ff2a5e2527f35bcbe22b9de381f2bcb6601fdf8c5e269793701e3516d", size = 16249, upload-time = "2026-10-16T15:35:13.872Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0e/13/65354df9e8e228e596f034dc2dd5f1157070b6d8739998c7ded75b8deffd/langchain_nvidia_openshell-0.1.1-py3-none-any.whl", hash = "sha256:1297aa653a7e5b058188f01c4cc7dc6c7fb0259a0b727b81fb4d4ebb37606c76", size = 12980, upload-time = "2026-10-16T15:35:12.742Z" },
+]
+
+[[package]]
 name = "langchain-ollama"
 version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -4177,6 +4199,21 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5e/61/6a238508a4e4310a7674c360b656a652a8e11973e451c6eca8da8bf45d8d/openrouter-0.11.46.tar.gz", hash = "sha256:5470af3e7bf25ad84cd410b43bbd4aba3052642d7a5033e5767b35c0ee5608db", size = 380405, upload-time = "2026-07-20T17:06:23.391Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/08/e3/0504f94e182c8975750bc9eb280552cf9cec9a7ffe20edeb44a825fa605d/openrouter-0.11.46-py3-none-any.whl", hash = "sha256:9acbb9922bcae46239ef4364c8ec095284773494fac40c92c61a24e1a1d239b4", size = 837323, upload-time = "2026-07-20T17:06:22.039Z" },
+]
+
+[[package]]
+name = "openshell"
+version = "0.1.4"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cloudpickle" },
+    { name = "googleapis-common-protos" },
+    { name = "grpcio" },
+    { name = "httpx" },
+    { name = "protobuf" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/09/7f/0f2132b67d3d6e606d8d7a1bce67abe6dd3f4e631ccf1a20608f1c132309/openshell-0.1.4-py3-none-any.whl", hash = "sha256:2a25991a4c050e9d40d947b9df537d5c5370cf9a569b7a4e8c92cea882f5ddcb", size = 138757, upload-time = "2026-10-13T20:49:52.401Z" },
 ]
 
 [[package]]

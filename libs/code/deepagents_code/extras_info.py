@@ -1027,7 +1027,7 @@ Keep in sync with `[project.optional-dependencies]` in `pyproject.toml`.
 """
 
 SANDBOX_EXTRAS: frozenset[str] = frozenset(
-    {"agentcore", "daytona", "modal", "runloop", "vercel"}
+    {"agentcore", "daytona", "modal", "openshell", "runloop", "vercel"}
 )
 """Optional extras that add sandbox integrations."""
 

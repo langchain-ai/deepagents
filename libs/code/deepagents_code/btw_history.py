@@ -14,10 +14,13 @@ import sqlite3
 from contextlib import closing
 from typing import TYPE_CHECKING, NamedTuple
 
+from deepagents_code.btw_exchange import parse_exchanges
 from deepagents_code.workspace import _database_path
 
 if TYPE_CHECKING:
     import aiosqlite
+
+    from deepagents_code.btw_exchange import Exchange
 
 _CREATE_TABLE = (
     "CREATE TABLE IF NOT EXISTS dcode_btw_history "
@@ -28,9 +31,6 @@ _RESET = (
     "INSERT INTO dcode_btw_history VALUES (?, 1, '[]') "
     "ON CONFLICT(thread_id) DO UPDATE SET epoch = epoch + 1, exchanges = '[]'"
 )
-
-type Exchange = tuple[str, str]
-"""A completed side question and the answer returned for it."""
 
 
 class HistorySnapshot(NamedTuple):
@@ -48,23 +48,14 @@ def _read(conn: sqlite3.Connection, thread_id: str) -> HistorySnapshot | None:
     if row is None:
         return None
     msg = f"Stored /btw history for thread {thread_id} is malformed."
+    epoch, stored = row
     try:
-        stored = json.loads(row[1])
-    except json.JSONDecodeError as exc:
+        exchanges = parse_exchanges(json.loads(stored))
+    except (TypeError, json.JSONDecodeError) as exc:
         raise ValueError(msg) from exc
-    match stored:
-        case list():
-            pairs: list[object] = stored
-        case _:
-            raise ValueError(msg)
-    exchanges: list[Exchange] = []
-    for pair in pairs:
-        match pair:
-            case [str(question), str(answer)]:
-                exchanges.append((question, answer))
-            case _:
-                raise ValueError(msg)
-    return HistorySnapshot(exchanges, row[0])
+    if exchanges is None or not isinstance(epoch, int):
+        raise ValueError(msg)
+    return HistorySnapshot(exchanges, epoch)
 
 
 def load_history(thread_id: str) -> HistorySnapshot:

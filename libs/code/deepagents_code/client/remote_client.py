@@ -12,14 +12,14 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from contextlib import aclosing
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from deepagents_code.client.session_cost import SessionCostTracker
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 
-    from deepagents_code.btw_history import Exchange
+    from deepagents_code.btw_exchange import Exchange
     from deepagents_code.client.session_cost import SessionCost
     from deepagents_code.cost_tracking import CostBreakdown
     from deepagents_code.mcp_tools import MCPServerInfo
@@ -587,19 +587,14 @@ class RemoteAgent:
             RuntimeError: If the server cannot return the history.
             TypeError: If the response is malformed.
         """  # noqa: DOC502 — RuntimeError is raised by _post_btw_history
+        from deepagents_code.btw_exchange import parse_exchanges
+
         response = await self._post_btw_history(config, "history")
         raw = response.get("history") if isinstance(response, dict) else None
-        if not isinstance(raw, list):
+        history = parse_exchanges(raw)
+        if history is None:
             msg = "Invalid side-history response from the server."
             raise TypeError(msg)
-        history: list[Exchange] = []
-        for pair in raw:
-            match pair:
-                case [str(question), str(answer)]:
-                    history.append((question, answer))
-                case _:
-                    msg = "Invalid side-history response from the server."
-                    raise TypeError(msg)
         return history
 
     async def aclear_btw_history(self, *, config: Mapping[str, Any]) -> None:
@@ -613,7 +608,9 @@ class RemoteAgent:
         """  # noqa: DOC502 — raised by _post_btw_history
         await self._post_btw_history(config, "clear")
 
-    async def _post_btw_history(self, config: Mapping[str, Any], action: str) -> object:
+    async def _post_btw_history(
+        self, config: Mapping[str, Any], action: Literal["history", "clear"]
+    ) -> object:
         """Send a workspace-bound side-history request with readable failures.
 
         Returns:

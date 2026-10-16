@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     )
     from langchain_core.runnables import RunnableConfig
 
-    from deepagents_code.btw_history import Exchange
+    from deepagents_code.btw_exchange import Exchange
 
 _INSTRUCTIONS = (
     "The user is asking a quick side question about the conversation so far. "

@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from textual.timer import Timer
     from textual.widget import Widget
 
-    from deepagents_code.btw_history import Exchange
+    from deepagents_code.btw_exchange import Exchange
 
 
 logger = logging.getLogger(__name__)

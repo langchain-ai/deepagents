@@ -4372,6 +4372,7 @@ class DeepAgentsApp(App):
         state and must not appear in scrollback or serialized history.
         """
 
+        self._thread_switch_error_widget: ErrorMessage | None = None
         self._startup_failure_widget: ErrorMessage | None = None
         """Transient chat surface for the most recent server-startup failure.
         Mounted by `on_deep_agents_app_server_start_failed`; removed on
@@ -30002,7 +30003,24 @@ class DeepAgentsApp(App):
                 "Use /threads to try again.",
                 exc,
             )
-            await self._mount_message(ErrorMessage(body))
+            await self._mount_thread_switch_error(body)
+
+    async def _mount_thread_switch_error(self, body: str | Content) -> None:
+        """Replace transient thread-switch failures without storing them in history."""
+        async with self._transcript_mutation_lock:
+            prior = self._thread_switch_error_widget
+            self._thread_switch_error_widget = None
+            if prior is not None and prior.is_attached:
+                await prior.remove()
+            try:
+                messages = self.query_one("#messages", Container)
+            except NoMatches:
+                return
+            if not messages.is_attached:
+                return
+            widget = ErrorMessage(body)
+            await self._mount_before_queued(messages, widget)
+            self._thread_switch_error_widget = widget
 
     async def _resolve_threads_resume_target(
         self, requested_id: str | None
@@ -30239,11 +30257,9 @@ class DeepAgentsApp(App):
                     "Failed to prefetch cross-agent thread %s",
                     target.thread_id,
                 )
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Could not load thread {target.thread_id}: {exc}. "
-                        "Staying on the current agent."
-                    )
+                await self._mount_thread_switch_error(
+                    f"Could not load thread {target.thread_id}: {exc}. "
+                    "Staying on the current agent."
                 )
                 return
 
@@ -30283,11 +30299,9 @@ class DeepAgentsApp(App):
                 target.thread_id,
                 target.agent_name,
             )
-            await self._mount_message(
-                ErrorMessage(
-                    f"Could not switch to agent {target.agent_name!r} and resume "
-                    f"thread {target.thread_id}."
-                )
+            await self._mount_thread_switch_error(
+                f"Could not switch to agent {target.agent_name!r} and resume "
+                f"thread {target.thread_id}."
             )
 
     def _open_thread_reference_selector(self, initial_query: str) -> None:
@@ -31518,11 +31532,9 @@ class DeepAgentsApp(App):
                     await self._restore_cwd_after_failed_thread_switch(prev_cwd)
                     if isinstance(exc, asyncio.CancelledError):
                         raise
-                    await self._mount_message(
-                        AppMessage(
-                            f"Failed to switch to thread {thread_id}: {exc}. "
-                            "Use /threads to try again.",
-                        ),
+                    await self._mount_thread_switch_error(
+                        f"Failed to switch to thread {thread_id}: {exc}. "
+                        "Use /threads to try again."
                     )
                     return
                 logger.exception("Failed to switch to thread %s", thread_id)
@@ -31570,7 +31582,7 @@ class DeepAgentsApp(App):
                 if rollback_restore_failed:
                     error_message += " Previous thread history could not be restored."
                 error_message += " Use /threads to try again."
-                await self._mount_message(AppMessage(error_message))
+                await self._mount_thread_switch_error(error_message)
             finally:
                 if self._chat_input:
                     self._chat_input.set_cursor_active(active=not self._agent_running)

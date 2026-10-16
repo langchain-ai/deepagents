@@ -279,8 +279,11 @@ class SlashCommandController:
                 (score, entry)
                 for entry in self._commands
                 if (
-                    score := self._score_command(
-                        search, entry.name, entry.description, entry.hidden_keywords
+                    score := max(
+                        self._score_command(
+                            search, name, entry.description, entry.hidden_keywords
+                        )
+                        for name in (entry.name, *entry.aliases)
                     )
                 )
                 > 0

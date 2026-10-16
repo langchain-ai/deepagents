@@ -66,6 +66,15 @@ class TestSlashCommandController:
         """Create a SlashCommandController with mock view."""
         return SlashCommandController(get_slash_commands(), mock_view)
 
+    @pytest.mark.parametrize("query", ["/res", "/resume"])
+    def test_resume_ranks_threads_first(self, controller, mock_view, query):
+        controller.on_text_changed(query, len(query))
+
+        suggestions = mock_view.render_completion_suggestions.call_args[0][0]
+        assert suggestions[0][0] == "/threads"
+        assert sum(label == "/threads" for label, _ in suggestions) == 1
+        assert controller._suggestion_names[0] == "/threads"
+
     def test_substring_description_match_fresh(self, controller, mock_view):
         """Typing 'fresh' surfaces /clear via substring on 'Start a fresh thread'."""
         controller.on_text_changed("/fresh", 6)

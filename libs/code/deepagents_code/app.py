@@ -17739,7 +17739,9 @@ class DeepAgentsApp(App):
                 raise
         elif cmd == "/rename" or cmd.startswith("/rename "):
             await self._rename_current_thread(command.partition(" ")[2])
-        elif cmd == "/threads" or cmd.startswith("/threads "):
+        elif cmd in {"/threads", "/resume"} or cmd.startswith(
+            ("/threads ", "/resume ")
+        ):
             await self._handle_threads_command(command)
         elif cmd == "/trace":
             await self._handle_trace_command(command)

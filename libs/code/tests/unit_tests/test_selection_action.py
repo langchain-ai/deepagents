@@ -119,7 +119,7 @@ async def test_selection_action_config(
 async def test_selection_action_preserves_pending_prompt(
     monkeypatch: pytest.MonkeyPatch, pending: str
 ) -> None:
-    """Clicking the action leaves a pending prompt focused and the draft unchanged."""
+    """A pending prompt hides the action and keeps focus and the draft."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         assert app._chat_input is not None
@@ -132,18 +132,38 @@ async def test_selection_action_preserves_pending_prompt(
         monkeypatch.setattr(app, pending, prompt)
         prompt.focus()
         await pilot.pause()
-        await pilot.mouse_down(message, offset=(0, 0))
-        await pilot.hover(message, offset=(8, 0))
-        await pilot.mouse_up(message, offset=(8, 0))
-        await pilot.pause()
-        await pilot.click(app.query_one(SelectionAction))
-        await pilot.pause()
+        await _drag_select(pilot, message)
+        assert app.screen.get_selected_text()
+        assert not app.query(SelectionAction)
         assert prompt.has_focus
-        assert area.text == "existing draft"
         await pilot.press("y")
         await pilot.pause()
         assert prompt.value == "y"
         assert area.text == "existing draft"
+
+
+async def test_selection_action_warns_when_prompt_arrives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A prompt that appears after the action shows leaves the draft unchanged."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        assert app._chat_input is not None
+        area = app._chat_input._text_area
+        assert area is not None
+        area.load_text("existing draft")
+        message = UserMessage("selected text")
+        await app.query_one("#messages", Container).mount(message)
+        await pilot.pause()
+        await _drag_select(pilot, message)
+        action = app.query_one(SelectionAction)
+        monkeypatch.setattr(app, "_pending_approval_widget", Input())
+        notices: list[str] = []
+        monkeypatch.setattr(app, "notify", lambda msg, **_: notices.append(msg))
+        await pilot.click(action)
+        await pilot.pause()
+        assert area.text == "existing draft"
+        assert notices == ["Answer the pending prompt before adding the selection"]
 
 
 async def test_multiline_quote_keeps_cursor_visible() -> None:

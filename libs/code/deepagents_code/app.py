@@ -9766,7 +9766,14 @@ class DeepAgentsApp(App):
             )
             if banner.display and expires_at is not None:
                 expired_at = expires_at.astimezone().strftime("%H:%M:%S")
-                banner.update(f"Prompt cache expired at {expired_at}")
+                elapsed = datetime.now(UTC) - expires_at
+                age = "just now"
+                for unit in ("day", "hour", "minute"):
+                    count = elapsed // timedelta(**{f"{unit}s": 1})
+                    if count:
+                        age = f"{count} {unit}{'s' if count != 1 else ''} ago"
+                        break
+                banner.update(f"Prompt cache expired at {expired_at} ({age})")
 
     def _check_cache_expiry(self) -> None:
         """Offer a handoff once per expired cache window, only when idle.

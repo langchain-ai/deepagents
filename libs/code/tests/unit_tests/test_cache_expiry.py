@@ -238,20 +238,37 @@ async def test_expiry_banner_survives_activity_and_clears_on_refresh(
         _prepare(app, monkeypatch)
         assert app._status_bar is not None
         expires_at = datetime(2025, 1, 2, 15, 4, 5, tzinfo=UTC)
+        clock = MagicMock(wraps=datetime)
+        monkeypatch.setattr("deepagents_code.app.datetime", clock)
         app._status_bar.cache_expires_at = expires_at
         app._agent_running = True
         app._cold_cache_suppressed_for_session = True
-        app._check_cache_expiry()
-        await pilot.pause()
-        assert banner.display
         expired_at = expires_at.astimezone().strftime("%H:%M:%S")
-        assert str(banner.content) == f"Prompt cache expired at {expired_at}"
-        assert banner.region.y <= 1
+        for elapsed, age in (
+            (timedelta(seconds=0), "just now"),
+            (timedelta(seconds=59), "just now"),
+            (timedelta(minutes=1), "1 minute ago"),
+            (timedelta(minutes=59), "59 minutes ago"),
+            (timedelta(hours=1), "1 hour ago"),
+            (timedelta(hours=23), "23 hours ago"),
+            (timedelta(days=1), "1 day ago"),
+            (timedelta(days=2), "2 days ago"),
+        ):
+            clock.now.return_value = expires_at + elapsed
+            app._check_cache_expiry()
+            await pilot.pause()
+            assert banner.display
+            assert (
+                str(banner.content) == f"Prompt cache expired at {expired_at} ({age})"
+            )
+            assert banner.region.y <= 1
         app._status_bar.cache_expires_at = expires_at + timedelta(hours=1)
         app._check_cache_expiry()
         expired_at = app._status_bar.cache_expires_at.astimezone().strftime("%H:%M:%S")
-        assert str(banner.content) == f"Prompt cache expired at {expired_at}"
-        app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(minutes=5)
+        assert (
+            str(banner.content) == f"Prompt cache expired at {expired_at} (1 day ago)"
+        )
+        app._status_bar.cache_expires_at = clock.now.return_value + timedelta(minutes=5)
         app._check_cache_expiry()
         assert not banner.display
         app._status_bar.cache_expires_at = None

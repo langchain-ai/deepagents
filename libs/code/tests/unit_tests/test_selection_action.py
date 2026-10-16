@@ -253,22 +253,38 @@ async def test_selection_action_keeps_special_mode_draft(
         ]
 
 
-async def test_selection_action_dismissed_by_scroll_and_resize() -> None:
-    """The shortcut leaves when the transcript or terminal moves under it."""
+async def test_selection_action_follows_scroll_until_out_of_view() -> None:
+    """The action moves with its selection and leaves once it scrolls away."""
     app = DeepAgentsApp()
     async with app.run_test(size=(80, 24)) as pilot:
         messages = app.query_one("#messages", Container)
+        chat = app.query_one("#chat")
         message = UserMessage("selected text")
+        await messages.mount_all(UserMessage(f"filler {i}") for i in range(20))
         await messages.mount(message)
-        await messages.mount_all(UserMessage(f"filler {i}") for i in range(40))
+        await messages.mount_all(UserMessage(f"filler {i}") for i in range(20))
         await pilot.pause()
-        app.query_one("#chat").scroll_home(animate=False)
+        chat.scroll_to_center(message, animate=False)
         await pilot.pause()
         await _drag_select(pilot, message)
-        assert app.query(SelectionAction)
-        app.query_one("#chat").scroll_down(animate=False)
+        action = app.query_one(SelectionAction)
+        gap = message.region.y - action.region.y
+        chat.scroll_relative(y=2, animate=False)
+        await pilot.pause()
+        assert app.query_one(SelectionAction) is action
+        assert message.region.y - action.region.y == gap
+        chat.scroll_end(animate=False)
         await pilot.pause()
         assert not app.query(SelectionAction)
+
+
+async def test_selection_action_dismissed_by_resize() -> None:
+    """The action leaves when the terminal resizes under it."""
+    app = DeepAgentsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        message = UserMessage("selected text")
+        await app.query_one("#messages", Container).mount(message)
+        await pilot.pause()
 
         await _drag_select(pilot, message)
         assert app.query(SelectionAction)

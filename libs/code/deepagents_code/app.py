@@ -2641,6 +2641,38 @@ def _langsmith_gateway_key_mismatch(provider: str | None) -> str | None:
     return resolved_env_var_name(key_env)
 
 
+def _build_resume_workspace_error_body(exc: BaseException) -> str | Content:
+    """Return markup-safe workspace refusal guidance with allowlisted field names."""
+    from deepagents_code.client.remote_client import workspace_conflict_diagnostics
+    from deepagents_code.workspace_diagnostics import (
+        SAFE_SNAPSHOT_FIELDS,
+        FieldChange,
+        WorkspaceDiagnostics,
+        format_diagnostics_content,
+    )
+
+    text = (
+        "Couldn't restore this thread's workspace because the server refused its "
+        "configuration. Model restoration was not attempted. Restore the original "
+        "settings or start a separate server with matching configuration, then "
+        "retry resume."
+    )
+    diagnostics = workspace_conflict_diagnostics(exc)
+    if diagnostics is None:
+        return text
+    safe = WorkspaceDiagnostics(
+        category="unknown",
+        reason="workspace configuration conflict",
+        changes=tuple(
+            FieldChange(name=change.name, state="values_unavailable")
+            for change in diagnostics.changes
+            if change.name in SAFE_SNAPSHOT_FIELDS
+        ),
+        snapshot_status=diagnostics.snapshot_status,
+    )
+    return Content.assemble(text, "\n\n", format_diagnostics_content(safe))
+
+
 def _build_agent_error_body(
     text: str, exc: BaseException, *, key_env: str | None = None
 ) -> str | Content:
@@ -31967,9 +31999,16 @@ class DeepAgentsApp(App):
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
                 if from_resume:
-                    await self._mount_resume_adoption_failure(
-                        display, "the model could not be initialized"
-                    )
+                    from langgraph_sdk.errors import ConflictError
+
+                    if isinstance(exc, ConflictError):
+                        await self._mount_message(
+                            ErrorMessage(_build_resume_workspace_error_body(exc))
+                        )
+                    else:
+                        await self._mount_resume_adoption_failure(
+                            display, "the model could not be initialized"
+                        )
                 else:
                     await self._mount_message(
                         ErrorMessage(_build_model_switch_error_body(exc)),

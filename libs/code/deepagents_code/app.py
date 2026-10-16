@@ -174,6 +174,7 @@ from deepagents_code.tui.widgets.messages import (
     UserMessage,
 )
 from deepagents_code.tui.widgets.selection_action import (
+    SELECTION_ACTION_WIDTH,
     SelectionAction,
     is_transcript_selection,
 )
@@ -24881,7 +24882,7 @@ class DeepAgentsApp(App):
             return
         action = SelectionAction(text)
         action.styles.offset = (
-            max(0, min(x, screen.size.width - 18)),
+            max(0, min(x, screen.size.width - SELECTION_ACTION_WIDTH)),
             max(0, y - 1),
         )
         self._selection_action = action

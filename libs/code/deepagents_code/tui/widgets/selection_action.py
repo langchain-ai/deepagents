@@ -32,6 +32,9 @@ def is_transcript_selection(widgets: Iterable[Widget]) -> bool:
 
     Headers, toggles, hints, status lines, notices, and inline prompts in the
     conversation are UI chrome, so a selection that touches one is rejected.
+    `UserMessage` and `DiffMessage` count as transcript as a whole, apart from
+    a diff header. An empty selection returns `True`, so callers must check
+    for one first.
     """
     return all(_is_transcript_widget(widget) for widget in widgets)
 
@@ -60,7 +63,11 @@ def _is_transcript_widget(widget: Widget) -> bool:
 
 
 class SelectionAction(Static):
-    """Clickable selection tooltip that retains text while focus changes."""
+    """Floating "Ask about this" button for the current selection.
+
+    It snapshots the selected text because clicking it clears the screen
+    selection before the `Click` arrives.
+    """
 
     DEFAULT_CSS = """
     SelectionAction {
@@ -103,7 +110,7 @@ class SelectionAction(Static):
 
     @staticmethod
     def on_mouse_up(event: MouseUp) -> None:
-        """Preserve the captured selection until the click is handled."""
+        """Keep the app's mouse-up handler from removing this before `Click`."""
         event.stop()
 
     def on_click(self, event: Click) -> None:

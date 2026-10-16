@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from textual.containers import Container
 from textual.pilot import Pilot
+from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import Input, Markdown, Static
 
@@ -12,6 +13,7 @@ from deepagents_code.app import DeepAgentsApp
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
+    DiffMessage,
     UserMessage,
 )
 from deepagents_code.tui.widgets.selection_action import (
@@ -21,9 +23,8 @@ from deepagents_code.tui.widgets.selection_action import (
 )
 
 
-async def test_selection_action_preserves_draft_and_focus(tmp_path: Path) -> None:
+async def test_selection_action_preserves_draft_and_focus() -> None:
     """A real drag and click inserts the selection without sending the draft."""
-    (tmp_path / "config.toml").write_text("[ui]\nask_about_selection = true\n")
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -332,3 +333,64 @@ async def test_selection_action_stays_on_screen_at_right_edge() -> None:
         action = app.query_one(SelectionAction)
         assert action.region.right <= app.screen.size.width
         assert action.region.width == SELECTION_ACTION_WIDTH
+
+
+async def test_whitespace_selection_shows_no_action() -> None:
+    """Selecting only blank space offers nothing to ask about."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        message = UserMessage("        ")
+        await app.query_one("#messages", Container).mount(message)
+        await pilot.pause()
+        await _drag_select(pilot, message)
+        assert app.screen.get_selected_text()
+        assert not app.query(SelectionAction)
+
+
+async def test_diff_body_is_transcript_but_header_is_not() -> None:
+    """Diff lines count as transcript text; the diff header is chrome."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        diff = DiffMessage("@@ -1 +1 @@\n-old\n+new\n", "file.py")
+        await app.query_one("#messages", Container).mount(diff)
+        await pilot.pause()
+        header = diff.query_one(".diff-header")
+        body = [w for w in diff.query(Static) if not w.has_class("diff-header")]
+        assert body
+        assert is_transcript_selection(body)
+        assert not is_transcript_selection([header])
+
+
+async def test_selection_action_skips_a_replaced_screen() -> None:
+    """A screen switch before the deferred show leaves no action anywhere."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        message = UserMessage("selected text")
+        await app.query_one("#messages", Container).mount(message)
+        await pilot.pause()
+        base = app.screen
+        await pilot.mouse_down(message, offset=(0, 0))
+        await pilot.hover(message, offset=(8, 0))
+        await app.push_screen(Screen())
+        await app._show_selection_action(base, 0, 0)
+        await pilot.pause()
+        assert not base.query(SelectionAction)
+        assert not app.screen.query(SelectionAction)
+
+
+async def test_selection_action_returns_focus_to_composer() -> None:
+    """Clicking the action moves focus back to the chat input."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        assert app._chat_input is not None
+        area = app._chat_input._text_area
+        assert area is not None
+        other = Input()
+        message = UserMessage("selected text")
+        await app.query_one("#messages", Container).mount(message, other)
+        other.focus()
+        await pilot.pause()
+        await _drag_select(pilot, message)
+        await pilot.click(app.query_one(SelectionAction))
+        await pilot.pause()
+        assert area.has_focus

@@ -33,6 +33,10 @@ _RESET = (
 )
 
 
+class MalformedHistoryError(ValueError):
+    """Stored side history cannot be decoded; clearing it recovers the thread."""
+
+
 class HistorySnapshot(NamedTuple):
     """Side exchanges paired with the epoch an answer must present to store."""
 
@@ -52,9 +56,9 @@ def _read(conn: sqlite3.Connection, thread_id: str) -> HistorySnapshot:
     try:
         exchanges = parse_exchanges(json.loads(stored))
     except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError(msg) from exc
+        raise MalformedHistoryError(msg) from exc
     if exchanges is None or not isinstance(epoch, int):
-        raise ValueError(msg)
+        raise MalformedHistoryError(msg)
     return HistorySnapshot(exchanges, epoch)
 
 
@@ -68,7 +72,7 @@ def load_history(thread_id: str) -> HistorySnapshot:
         Ordered exchanges and the epoch to pass to `append_exchange`.
 
     Raises:
-        ValueError: If the stored history is malformed.
+        MalformedHistoryError: If the stored history is malformed.
     """  # noqa: DOC502 — raised by _read
     path = _database_path()
     if not path.exists():
@@ -99,7 +103,7 @@ def append_exchange(thread_id: str, question: str, answer: str, *, epoch: int) -
         Whether the exchange was stored.
 
     Raises:
-        ValueError: If the stored history is malformed.
+        MalformedHistoryError: If the stored history is malformed.
     """  # noqa: DOC502 — raised by _read
     with closing(sqlite3.connect(_database_path(), timeout=5)) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")

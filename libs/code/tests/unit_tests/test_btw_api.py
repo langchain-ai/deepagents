@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
@@ -15,7 +16,7 @@ from starlette.requests import Request
 
 from deepagents_code import btw_api, offload_api
 from deepagents_code.btw import BtwOperation
-from deepagents_code.btw_history import append_exchange, load_history
+from deepagents_code.btw_history import append_exchange, clear_history, load_history
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
@@ -386,3 +387,48 @@ async def test_thread_deletion_erases_side_history(
     # An answer that started before deletion cannot restore the history.
     assert not append_exchange("thread", "Late", "answer", epoch=stale)
     assert await side_server.history() == []
+
+
+async def test_malformed_history_points_to_clear_and_clear_recovers(
+    side_server: _SideServer, side_db: Path
+) -> None:
+    clear_history("thread")
+    with sqlite3.connect(side_db) as conn:
+        conn.execute("UPDATE dcode_btw_history SET exchanges = '{}'")
+    conn.close()
+    for response in (
+        await side_server.ask("why"),
+        await side_server.client.post(
+            "/dcode/threads/thread/btw/history", json={"workspace": {}}
+        ),
+    ):
+        assert response.status_code == 500
+        assert "Ctrl+X" in response.json()["detail"]
+    assert (await side_server.clear()).is_success
+    assert (await side_server.ask("why")).json()["text"] == "answer to why"
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "hint"),
+    [
+        (sqlite3.OperationalError("database is locked"), 503, "Try again"),
+        # Clearing cannot fix an unusable path, so no Ctrl+X hint.
+        (ValueError("relative path"), 500, "server logs"),
+    ],
+)
+async def test_history_storage_failure_hints_match_the_cause(
+    side_server: _SideServer,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    status: int,
+    hint: str,
+) -> None:
+    def fail(_thread: str) -> None:
+        raise error
+
+    monkeypatch.setattr(btw_api, "load_history", fail)
+    response = await side_server.ask("why")
+    assert response.status_code == status
+    assert hint in response.json()["detail"]
+    assert "Ctrl+X" not in response.json()["detail"]
+    assert side_server.histories == []

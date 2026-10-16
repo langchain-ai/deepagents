@@ -16,6 +16,7 @@ from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
 from deepagents_code.btw_cost import answer_with_cost, load_cost
 from deepagents_code.btw_history import (
     HistorySnapshot,
+    MalformedHistoryError,
     append_exchange,
     clear_history,
     load_history,
@@ -37,18 +38,27 @@ _UNREADABLE_HISTORY = (
     "Stored /btw history could not be read. Press Ctrl+X in /btw to clear it."
 )
 _UNAVAILABLE_HISTORY = "Stored /btw history is busy or unavailable. Try again."
+_INACCESSIBLE_HISTORY = (
+    "Stored /btw history could not be opened. Check the server logs."
+)
 
 
 def _history_error(exc: sqlite3.Error | ValueError) -> JSONResponse:
     """Log a history storage failure and describe it so the user can act.
 
+    Only malformed history gets the Ctrl+X hint, because clearing cannot fix
+    other failures, such as an invalid database path.
+
     Returns:
-        A recovery hint for malformed history, or a retry hint otherwise.
+        A recovery hint for malformed history, a retry hint for a busy
+        database, or a pointer to the server logs otherwise.
     """
     logger.error("Could not access side history", exc_info=exc)
-    if isinstance(exc, ValueError):
+    if isinstance(exc, MalformedHistoryError):
         return JSONResponse({"detail": _UNREADABLE_HISTORY}, status_code=500)
-    return JSONResponse({"detail": _UNAVAILABLE_HISTORY}, status_code=503)
+    if isinstance(exc, sqlite3.Error):
+        return JSONResponse({"detail": _UNAVAILABLE_HISTORY}, status_code=503)
+    return JSONResponse({"detail": _INACCESSIBLE_HISTORY}, status_code=500)
 
 
 async def _remember(

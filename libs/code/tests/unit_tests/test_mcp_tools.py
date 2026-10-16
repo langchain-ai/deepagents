@@ -54,6 +54,7 @@ from deepagents_code.mcp_tools import (
     _mcp_tool_name,
     _same_config_location,
     _server_stderr_log,
+    _validate_server_config,
     _warm_mcp_adapter_imports,
     discover_mcp_config_sources,
     extract_project_server_summaries,
@@ -79,6 +80,12 @@ def _set_profile_root(
     snapshot = _capture_paths(str(root), launch_home=launch_home)
     monkeypatch.setattr("deepagents_code._paths.PATHS", snapshot)
     monkeypatch.setattr("deepagents_code.mcp_tools.PATHS", snapshot)
+
+
+@pytest.mark.parametrize("value", ["true", 1, None, []])
+def test_skill_only_requires_boolean(value: object) -> None:
+    with pytest.raises(TypeError, match="'skillOnly' must be a boolean"):
+        _validate_server_config("records", {"command": "node", "skillOnly": value})
 
 
 def _raise_oserror() -> Path:
@@ -1041,6 +1048,35 @@ class TestGetMCPTools:
         }
         assert original_name in str(result)
         await manager.cleanup()  # ty: ignore
+
+    @pytest.mark.parametrize("skill_only", [False, True])
+    async def test_skill_only_tools_keep_mcp_identity(
+        self,
+        mcp_servers: MCPServerRegistry,
+        skill_only: bool,
+    ) -> None:
+        """Skill-only loading preserves filtering and MCP dispatch metadata."""
+        mcp_servers.register("records", "read", "write")
+        tools, manager, infos = await _load_tools_from_config(
+            {
+                "mcpServers": {
+                    "records": {
+                        "command": "node",
+                        "skillOnly": skill_only,
+                        "allowedTools": ["read"],
+                    }
+                }
+            },
+            stateless=True,
+        )
+        assert manager is None
+        assert len(tools) == 1
+        metadata = tools[0].metadata or {}
+        assert bool(metadata.get("_deepagents_code_skill_only")) is skill_only
+        assert metadata["_deepagents_code_mcp"] is True
+        assert metadata["_deepagents_code_mcp_server"] == "records"
+        assert infos[0].tools[0].name == tools[0].name
+        assert "read" in str(await tools[0].ainvoke({}))
 
     async def test_long_tool_name_keeps_the_original_in_metadata(
         self,

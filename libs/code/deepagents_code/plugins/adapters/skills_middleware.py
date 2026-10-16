@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
     from deepagents.backends.protocol import BackendProtocol
     from langchain_core.runnables import RunnableConfig
+    from langchain_core.tools import BaseTool
     from langgraph.runtime import Runtime
 
 logger = logging.getLogger(__name__)
@@ -440,6 +441,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
         sources: Sequence[CodeSkillSource],
         system_prompt: str | None = sdk_skills.SKILLS_SYSTEM_PROMPT,
         path_base: Path | None = None,
+        tools: Sequence[BaseTool] = (),
     ) -> None:
         """Initialize the middleware with Code-local plugin source tuples.
 
@@ -451,6 +453,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             path_base: Directory that relative `skills.extra_allowed_dirs`
                 entries resolve against. If `None`, the process working
                 directory is used.
+            tools: Tools disclosed only after their skill is read or pinned.
         """
         self._allowed_roots = tuple(Path(source[0]).resolve() for source in sources)
         self._path_base = path_base
@@ -459,6 +462,7 @@ class PluginSkillsMiddleware(SkillsMiddleware):
             backend=backend,
             sources=sdk_sources,
             system_prompt=system_prompt,
+            tools=tools,
         )
         self._namespaces = tuple(
             source[2] if len(source) == _PLUGIN_SKILL_SOURCE_LENGTH else None

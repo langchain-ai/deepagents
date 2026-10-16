@@ -549,3 +549,25 @@ async def test_selection_action_stays_on_screen_at_top_row() -> None:
         await app._show_selection_action(app.screen, 0, 0)
         await pilot.pause()
         assert app.query_one(SelectionAction).region.y == 0
+
+
+async def test_selection_action_from_top_row_follows_scroll() -> None:
+    """An action clamped to the top row still lands above its selection."""
+    app = DeepAgentsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        messages = app.query_one("#messages", Container)
+        chat = app.query_one("#chat")
+        message = UserMessage("selected text")
+        await messages.mount_all(UserMessage(f"filler {i}") for i in range(20))
+        await messages.mount(message)
+        await messages.mount_all(UserMessage(f"filler {i}") for i in range(20))
+        await pilot.pause()
+        chat.scroll_to_center(message, animate=False)
+        await pilot.pause()
+        await _drag_select(pilot, message)
+        await app._show_selection_action(app.screen, 0, 0)
+        await pilot.pause()
+        chat.scroll_relative(y=-2, animate=False)
+        await pilot.pause()
+        # The selection row moved from 0 to 2, so the action sits on row 1.
+        assert app.query_one(SelectionAction).region.y == 1

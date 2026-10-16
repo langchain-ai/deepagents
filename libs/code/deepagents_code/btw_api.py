@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, cast, override
 from starlette.requests import ClientDisconnect
 from starlette.responses import JSONResponse, Response
 
+from deepagents_code._async import _join_task_deferring_cancellation
 from deepagents_code.btw import BTW_OPERATION_ATTR, BtwOperation
 from deepagents_code.btw_cost import answer_with_cost, load_cost
 from deepagents_code.btw_history import append_exchange, clear_history, load_history
@@ -55,21 +56,35 @@ async def _remember(
 ) -> tuple[str, CostBreakdown | None, bool]:
     """Store the exchange only after its answer completes within the request.
 
+    The deadline covers generation only. Once the write starts it finishes even
+    if the client leaves, so a timeout never reports an answer it stored.
     A storage failure does not fail the answer, but the caller must tell the
     client so the user knows follow-ups will not see it.
 
     Returns:
         The completed answer, its cost, and whether storage failed.
-    """
-    text, cost = await answer
-    try:
-        await asyncio.to_thread(
+
+    Raises:
+        TimeoutError: If generation exceeds its deadline.
+    """  # noqa: DOC502 — raised by asyncio.timeout
+    async with asyncio.timeout(120):
+        text, cost = await answer
+    write = asyncio.create_task(
+        asyncio.to_thread(
             functools.partial(append_exchange, thread_id, question, text, epoch=epoch)
         )
+    )
+    cancellation = await _join_task_deferring_cancellation(write)
+    try:
+        write.result()
     except (sqlite3.Error, ValueError):
         logger.warning("Could not save the side exchange", exc_info=True)
-        return text, cost, True
-    return text, cost, False
+        save_failed = True
+    else:
+        save_failed = False
+    if cancellation is not None:
+        raise cancellation
+    return text, cost, save_failed
 
 
 async def _wait_for_disconnect(request: Request) -> None:
@@ -142,8 +157,7 @@ class _BtwStreamingResponse(Response):
             await emit("text", text)
 
         try:
-            async with asyncio.timeout(120):
-                text, cost, save_failed = await self._answer(on_text)
+            text, cost, save_failed = await self._answer(on_text)
         except TimeoutError:
             await emit("error", {"detail": "Side question timed out. Try again."})
         except ClientDisconnect:
@@ -221,29 +235,29 @@ async def btw(request: Request) -> Response:
             state = dict(snapshot.get("values") or {})
             state["messages"] = convert_to_messages(state.get("messages", []))
 
-            def answer(
-                on_text: Callable[[str], Awaitable[None]] | None = None,
-            ) -> Coroutine[object, object, tuple[str, CostBreakdown | None, bool]]:
-                return _remember(
-                    answer_with_cost(
-                        operation.answer(
-                            thread_id,
-                            state,
-                            question,
-                            history=history,
-                            on_text=on_text,
-                        ),
-                        thread_id=thread_id,
-                        state=cast("CostState", state),
+        def answer(
+            on_text: Callable[[str], Awaitable[None]] | None = None,
+        ) -> Coroutine[object, object, tuple[str, CostBreakdown | None, bool]]:
+            return _remember(
+                answer_with_cost(
+                    operation.answer(
+                        thread_id,
+                        state,
+                        question,
+                        history=history,
+                        on_text=on_text,
                     ),
                     thread_id=thread_id,
-                    epoch=epoch,
-                    question=question,
-                )
+                    state=cast("CostState", state),
+                ),
+                thread_id=thread_id,
+                epoch=epoch,
+                question=question,
+            )
 
-            if "text/event-stream" in request.headers.get("accept", ""):
-                return _BtwStreamingResponse(request, answer)
-            result = await _answer_while_connected(request, answer())
+        if "text/event-stream" in request.headers.get("accept", ""):
+            return _BtwStreamingResponse(request, answer)
+        result = await _answer_while_connected(request, answer())
         if result is None:
             return JSONResponse({"detail": "Client disconnected."}, status_code=499)
         text, cost, save_failed = result

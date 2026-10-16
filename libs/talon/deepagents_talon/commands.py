@@ -96,6 +96,7 @@ CHAT_COMMANDS: tuple[ChatCommand, ...] = (
         "Show or set the model used by ask_for_help across all chats.",
         argument="A provider:model, off, or default to restore the configured model.",
     ),
+    ChatCommand("tools-reload", "Reload local Python tools after edits."),
 )
 """Every command the host dispatches, in the order `/help` lists them."""
 
@@ -108,6 +109,7 @@ CONTEXT_DOCTOR = CHAT_COMMANDS[5].text
 PAIR = CHAT_COMMANDS[6].text
 MODEL = CHAT_COMMANDS[7].text
 SMART_MODEL = CHAT_COMMANDS[8].text
+TOOLS_RELOAD = CHAT_COMMANDS[9].text
 
 COMMANDS_BY_NAME: Mapping[str, ChatCommand] = MappingProxyType(
     {command.name: command for command in CHAT_COMMANDS},

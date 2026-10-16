@@ -372,6 +372,14 @@ class MCPReloadableRuntime(Protocol):
 
 
 @runtime_checkable
+class LocalToolsReloadableRuntime(Protocol):
+    """Optional runtime capability for reloading configured local Python tools."""
+
+    async def reload_local_tools(self) -> None:
+        """Reimport local Python tools without restarting the runtime."""
+
+
+@runtime_checkable
 class BackgroundRuntime(Protocol):
     """Optional runtime capability for expendable background subagents."""
 

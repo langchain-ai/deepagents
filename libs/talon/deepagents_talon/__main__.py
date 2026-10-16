@@ -381,6 +381,7 @@ async def _agent_runtime(
     return DeepAgentRuntime(
         model=config.model,
         tools=mcp.tools,
+        tools_dirs=config.tools_dirs,
         refresh_tools=mcp_provider.refresh_if_needed,
         reload_tools=mcp_provider.reload,
         assistant_dir=config.manifest_dir,

@@ -59,7 +59,7 @@ class SelectionAction(Static):
 
     DEFAULT_CSS = """
     SelectionAction {
-        layer: tooltip;
+        layer: selection-action;
         position: absolute;
         width: 18;
         height: 1;

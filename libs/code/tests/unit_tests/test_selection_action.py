@@ -302,3 +302,16 @@ async def test_messages_outside_the_transcript_are_not_transcript() -> None:
         await pilot.pause()
         assert is_transcript_selection([inside])
         assert not is_transcript_selection([outside])
+
+
+async def test_selection_action_draws_above_autocomplete() -> None:
+    """The action's layer exists on the screen and stacks above autocomplete."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        message = UserMessage("selected text")
+        await app.query_one("#messages", Container).mount(message)
+        await pilot.pause()
+        await _drag_select(pilot, message)
+        layers = app.screen.layers
+        layer = app.query_one(SelectionAction).styles.layer
+        assert layers.index(layer) > layers.index("autocomplete")

@@ -18874,8 +18874,7 @@ class DeepAgentsApp(App):
                     self._set_agent_running(False)
                     return
                 self.notify(
-                    "Compacting idle context before cache expiry. Set "
-                    "history.idle_compaction_tokens = 0 to disable.",
+                    "Compacting idle context before cache expiry.",
                     markup=False,
                 )
             await self._handle_offload(reserved=True)

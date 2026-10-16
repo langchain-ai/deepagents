@@ -190,6 +190,26 @@ async def test_selection_action_dismissed_by_scroll_and_resize() -> None:
         assert not app.query(SelectionAction)
 
 
+async def test_selection_action_warns_when_insert_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A composer that rejects the insert reports it and keeps the selection."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        assert app._chat_input is not None
+        message = UserMessage("selected text")
+        await app.query_one("#messages", Container).mount(message)
+        await pilot.pause()
+        await _drag_select(pilot, message)
+        monkeypatch.setattr(app._chat_input, "insert_at_cursor", lambda _text: False)
+        notices: list[str] = []
+        monkeypatch.setattr(app, "notify", lambda msg, **_: notices.append(msg))
+        app.post_message(SelectionAction.Ask("selected text"))
+        await pilot.pause()
+        assert notices == ["Could not add the selection: the composer is unavailable"]
+        assert app.screen.selections
+
+
 async def test_multiline_quote_keeps_cursor_visible() -> None:
     """A long quote preserves line breaks and reveals the following blank line."""
     app = DeepAgentsApp()

@@ -13,10 +13,13 @@ import logging
 from typing import TYPE_CHECKING, Self
 from unittest.mock import MagicMock, patch
 
+from textual import events
 from textual.app import App, ComposeResult
+from textual.geometry import Offset
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_code.app import DeepAgentsApp
 from deepagents_code.clipboard import _copy_osc52, copy_selection_to_clipboard
 
 if TYPE_CHECKING:
@@ -30,6 +33,21 @@ class _SelectionApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Static(_BASE_TEXT, id="base-static")
+
+
+class _SelectionCopyApp(_SelectionApp):
+    on_mouse_down = DeepAgentsApp.on_mouse_down
+    on_mouse_up = DeepAgentsApp.on_mouse_up
+    _selection_copy_timer = None
+
+
+async def _send_selection_mouse(
+    pilot: Pilot[None], event_type: type[events.MouseEvent], x: int = 0
+) -> None:
+    widget = pilot.app.query_one("#base-static")
+    offset = widget.content_region.offset + Offset(x, 0)
+    await pilot.app.on_event(event_type(None, *offset, 0, 0, 1, False, False, False))
+    await pilot.pause()
 
 
 class _SelectableModal(ModalScreen[None]):
@@ -238,6 +256,54 @@ class TestSelectionCopyScreenScope:
 
 class TestAppSelectionCopy:
     """Regression coverage for click-chain selection copy timing."""
+
+    async def test_copies_only_the_completed_click_chain(self) -> None:
+        for clicks, expected in ((2, "hello"), (3, _BASE_TEXT)):
+            app = _SelectionCopyApp()
+            async with app.run_test() as pilot:
+                with patch(
+                    "deepagents_code.clipboard.copy_text_to_clipboard",
+                    return_value=(True, None),
+                ) as copy:
+                    for _ in range(clicks):
+                        await _send_selection_mouse(pilot, events.MouseDown)
+                        await _send_selection_mouse(pilot, events.MouseUp)
+                    copy.assert_not_called()
+                    await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.1)
+                    copy.assert_called_once_with(app, expected)
+
+    async def test_next_press_cancels_copy_until_release(self) -> None:
+        app = _SelectionCopyApp()
+        async with app.run_test() as pilot:
+            with patch(
+                "deepagents_code.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy:
+                for _ in range(2):
+                    await _send_selection_mouse(pilot, events.MouseDown)
+                    await _send_selection_mouse(pilot, events.MouseUp)
+                await _send_selection_mouse(pilot, events.MouseDown)
+                await _send_selection_mouse(pilot, events.MouseMove, 10)
+                await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.1)
+                copy.assert_not_called()
+                await _send_selection_mouse(pilot, events.MouseUp, 10)
+                await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.1)
+                copy.assert_called_once()
+                assert copy.call_args.args[1] != "hello"
+
+    async def test_deferred_copy_stays_on_the_released_screen(self) -> None:
+        app = _SelectionCopyApp()
+        async with app.run_test() as pilot:
+            with patch(
+                "deepagents_code.clipboard.copy_text_to_clipboard",
+                return_value=(True, None),
+            ) as copy:
+                for _ in range(3):
+                    await _send_selection_mouse(pilot, events.MouseDown)
+                    await _send_selection_mouse(pilot, events.MouseUp)
+                app.push_screen(_SelectableModal())
+                await pilot.pause(app.CLICK_CHAIN_TIME_THRESHOLD + 0.1)
+                copy.assert_called_once_with(app, _BASE_TEXT)
 
 
 class TestClipboardLogger:

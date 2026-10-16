@@ -4469,6 +4469,8 @@ class DeepAgentsApp(App):
         self._hydration_scheduled = False
         """Whether a hydration slice is queued or currently running."""
 
+        self._selection_copy_timer: Timer | None = None
+
         self._transcript_prune_timer: Timer | None = None
         """Idle timer that defers opposite-edge pruning while scrolling."""
 
@@ -24857,6 +24859,12 @@ class DeepAgentsApp(App):
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
+    def on_mouse_down(self) -> None:
+        """Cancel pending selection copy while another click or drag begins."""
+        if self._selection_copy_timer is not None:
+            self._selection_copy_timer.stop()
+            self._selection_copy_timer = None
+
     def on_mouse_up(self, event: MouseUp) -> None:  # noqa: ARG002  # Textual event handler signature
         """Copy selection to clipboard after click-chain selection updates.
 
@@ -24872,12 +24880,15 @@ class DeepAgentsApp(App):
         dereferenced it to forward this `MouseUp`, and the only code that
         empties the stack runs after the message loop has stopped.
         """
+        from functools import partial
+
         from deepagents_code.clipboard import copy_selection_to_clipboard
 
-        self.call_after_refresh(
-            copy_selection_to_clipboard,
-            self,
-            screen=self.screen,
+        if self._selection_copy_timer is not None:
+            self._selection_copy_timer.stop()
+        self._selection_copy_timer = self.set_timer(
+            self.CLICK_CHAIN_TIME_THRESHOLD,
+            partial(copy_selection_to_clipboard, self, screen=self.screen),
         )
 
     # =========================================================================

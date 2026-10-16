@@ -3849,9 +3849,11 @@ class ChatInput(Vertical):
             return False
         # The edit is visible to any paint at once, but the composer only grows
         # once the screen processes its relayout. A paint in between (cursor
-        # blink, toast, our own repaint) shows a multi-line insert crammed into
-        # the old height for a frame, so hold painting until layout settles.
-        # Single-line inserts never grow the composer, so they skip the hold.
+        # blink, toast) shows a multi-line insert crammed into the old height
+        # for a frame, so hold painting briefly (`delay_update` waits 50 ms)
+        # while the relayout lands. Only inserts with a newline take the hold:
+        # a long single line can soft-wrap and grow the composer too, but
+        # holding every insert would delay ordinary typing-sized edits.
         if "\n" in text:
             self.app.delay_update()
         self._text_area.insert(text, maintain_selection_offset=False)
@@ -3875,9 +3877,10 @@ class ChatInput(Vertical):
     def _settle_cursor_after_insert(self) -> None:
         """Reveal the cursor and re-place the terminal cursor after layout.
 
-        `TextArea` sets `app.cursor_position` during the edit, before a
-        multi-line insert grows the chat input. Without a refresh the terminal
-        cursor stays at the pre-resize offset, below the chat input.
+        `TextArea` sets `app.cursor_position` and scrolls to the cursor during
+        the edit, before an insert grows the chat input. Without redoing both
+        once layout settles, the terminal cursor stays at the pre-resize
+        offset, outside the chat input, and the cursor line can sit out of view.
         """
         if not self._text_area:
             return

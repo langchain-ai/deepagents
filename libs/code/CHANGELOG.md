@@ -2,6 +2,23 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.86](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.85...deepagents-code==0.1.86) (2026-10-16)
+
+### Features
+
+- Add NVIDIA OpenShell as a sandbox provider ([#6999](https://github.com/langchain-ai/deepagents/pull/6999)).
+- Show a banner when a prompt cache expires ([#6957](https://github.com/langchain-ai/deepagents/pull/6957)).
+
+### Bug Fixes
+
+- Add `/resume` as an alias and improve how alias matches are ranked ([#6988](https://github.com/langchain-ai/deepagents/pull/6988)).
+- Report workspace refusals accurately when resuming a thread ([#6992](https://github.com/langchain-ai/deepagents/pull/6992)).
+- Replace repeated thread-resume errors ([#6990](https://github.com/langchain-ai/deepagents/pull/6990)).
+- Replace the chat input when recalling a prompt ([#6994](https://github.com/langchain-ai/deepagents/pull/6994)).
+- Show an expired prompt cache in the footer ([#6970](https://github.com/langchain-ai/deepagents/pull/6970)).
+- Provide actionable errors when Groq tool limits are reached ([#6996](https://github.com/langchain-ai/deepagents/pull/6996)).
+- Compare effective interpreter permissions ([#6993](https://github.com/langchain-ai/deepagents/pull/6993)).
+
 ## [0.1.85](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.84...deepagents-code==0.1.85) (2026-10-14)
 
 ### Bug Fixes

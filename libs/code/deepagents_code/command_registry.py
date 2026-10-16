@@ -71,6 +71,7 @@ class SlashCommand:
             description=self.description,
             hidden_keywords=self.hidden_keywords,
             argument_hint=self.argument_hint,
+            aliases=self.aliases,
         )
 
 
@@ -254,6 +255,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="continue history sessions resume back previous",
         argument_hint="[-r [ID]]",
+        aliases=("/resume",),
     ),
     SlashCommand(
         name="/trace",
@@ -481,6 +483,9 @@ class CommandEntry(NamedTuple):
     still matching and inserting its full canonical `name`
     (e.g. `/skill:my-plugin:review`). Falls back to `name` when empty.
     """
+
+    aliases: tuple[str, ...] = ()
+    """Alternative command names used for autocomplete ranking."""
 
     def label(self) -> str:
         """Return the popup label, preferring `display_name` over `name`.

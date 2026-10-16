@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from textual.widget import MountError
 
 from deepagents_code.app import (
@@ -31,6 +32,14 @@ def _make_app() -> DeepAgentsApp:
 
 class TestHandleThreadsCommand:
     """`/threads` dispatch: bare opens the selector, `-r` resumes in place."""
+
+    @pytest.mark.parametrize("command", ["/resume", "/resume -r abc123"])
+    async def test_resume_alias_dispatches_threads(self, command: str) -> None:
+        app = _make_app()
+        handler = AsyncMock()
+        with patch.object(app, "_handle_threads_command", handler):
+            await app._handle_command(command)
+        handler.assert_awaited_once_with(command)
 
     async def test_no_resume_when_target_none(self) -> None:
         app = _make_app()

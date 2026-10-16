@@ -999,7 +999,7 @@ class AgentServerACP(ACPAgent):
         tool_call_accumulator = {}  # index -> {id, name, args_str}
 
         current_state = None
-        user_decisions = []
+        resume_values: dict[str, Any] = {}
 
         while current_state is None or current_state.interrupts:
             # Check for cancellation
@@ -1007,10 +1007,10 @@ class AgentServerACP(ACPAgent):
                 self._cancelled_sessions.discard(session_id)  # Reset for next prompt
                 return PromptResponse(stop_reason="cancelled")
 
-            pending_interrupts: Sequence[Interrupt] = ()
+            pending_interrupts: dict[str, Interrupt] = {}
             async for stream_chunk in agent.astream(
-                Command(resume={"decisions": user_decisions})
-                if user_decisions
+                Command(resume=resume_values)
+                if resume_values
                 else {"messages": [{"role": "user", "content": content_blocks}]},
                 config=config,
                 stream_mode=["messages", "updates"],
@@ -1056,7 +1056,7 @@ class AgentServerACP(ACPAgent):
                             # the stream iterator has closed. Defer reading state until
                             # after leaving the async iterator so persistent checkpointers
                             # do not return a stale, pre-interrupt snapshot.
-                            pending_interrupts = interrupt_objs
+                            pending_interrupts.update((item.id, item) for item in interrupt_objs)
                             continue
 
                     for node_name, update in updates.items():
@@ -1127,16 +1127,24 @@ class AgentServerACP(ACPAgent):
             # The loop continues while there are interrupts
             # We get the current state to check the loop condition
             current_state = await agent.aget_state(config)
-            if pending_interrupts:
-                user_decisions = await self._handle_interrupts(
+            # Streamed child updates may repeat or omit interrupts. Keep each
+            # ID once, including checkpoint-only interrupts, and route only its
+            # own decisions back to the corresponding paused graph task.
+            for item in current_state.interrupts:
+                pending_interrupts.setdefault(item.id, item)
+            resume_values = {}
+            for interrupt_obj in pending_interrupts.values():
+                decisions = await self._handle_interrupts(
                     current_state=current_state,
                     session_id=session_id,
-                    pending_interrupts=pending_interrupts,
+                    pending_interrupts=(interrupt_obj,),
                 )
-                if user_decisions:
-                    # A stale snapshot has no interrupts and would otherwise end
-                    # the loop before the selected decisions can resume the graph.
-                    current_state = None
+                if decisions:
+                    resume_values[interrupt_obj.id] = {"decisions": decisions}
+            if resume_values:
+                # A stale snapshot has no interrupts and would otherwise end
+                # the loop before the selected decisions can resume the graph.
+                current_state = None
 
         return PromptResponse(stop_reason="end_turn")
 

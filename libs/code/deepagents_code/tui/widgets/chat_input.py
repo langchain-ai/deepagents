@@ -3857,16 +3857,11 @@ class ChatInput(Vertical):
         `TextArea` sets `app.cursor_position` during the edit, before a
         multi-line insert grows the chat input. Without a refresh the terminal
         cursor stays at the pre-resize offset, below the chat input.
-
-        `cursor_position` is a plain attribute that Textual only writes to the
-        terminal with the next compositor update, so request one; otherwise
-        the move waits for an unrelated repaint such as the next cursor blink.
         """
         if not self._text_area:
             return
         self._text_area.scroll_cursor_visible(animate=False)
         self.app.cursor_position = self._text_area.cursor_screen_offset
-        self._text_area.refresh()
 
     @property
     def _prompt_search_active(self) -> bool:

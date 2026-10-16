@@ -177,6 +177,7 @@ from deepagents_code.tui.widgets.selection_action import (
     SELECTION_ACTION_WIDTH,
     SelectionAction,
     is_transcript_selection,
+    quote_after,
 )
 from deepagents_code.tui.widgets.startup_tip import StartupTip, show_startup_tip
 from deepagents_code.tui.widgets.status import StatusBar
@@ -25018,39 +25019,17 @@ class DeepAgentsApp(App):
         Does nothing while an inline prompt or a modal screen is active.
         """
         self._dismiss_selection_action()
-        if self._inline_prompt_pending():
-            # The action is hidden while a prompt waits, but one can arrive
-            # between showing the action and the click.
-            self.notify(
-                "Answer the pending prompt before adding the selection",
-                severity="warning",
-            )
-            return
-        if not self._chat_input:
+        chat_input = self._chat_input
+        if not chat_input:
             logger.warning("Ask about this: chat input is not mounted")
             return
-        if isinstance(self.screen, ModalScreen):
-            self.notify(
-                "Close the open dialog before adding the selection",
-                severity="warning",
-            )
+        blocker = self._selection_ask_blocker(chat_input)
+        if blocker:
+            self.notify(blocker, severity="warning")
             return
-        if self._chat_input.mode != "normal":
-            # A quote line starts with `>`, which a shell reads as a redirect.
-            if self._chat_input.value:
-                self.notify(
-                    "Clear the shell or command input before adding the selection",
-                    severity="warning",
-                )
-                return
-            self._chat_input.mode = "normal"
-        quote = "\n".join("> " + line for line in event.text.split("\n"))
-        # The quote is appended, so the draft keeps its own text intact and
-        # gets exactly one blank line before the quote.
-        draft = self._chat_input.value
-        trailing = len(draft) - len(draft.rstrip("\n"))
-        separator = "\n" * max(0, 2 - trailing) if draft else ""
-        if not self._chat_input.insert_at_end(separator + quote + "\n\n"):
+        # Only an empty draft gets here in shell or command mode.
+        chat_input.mode = "normal"
+        if not chat_input.insert_at_end(quote_after(chat_input.value, event.text)):
             logger.warning("Ask about this: chat input text area is not mounted")
             self.notify(
                 "Could not add the selection to the chat input. "
@@ -25058,7 +25037,20 @@ class DeepAgentsApp(App):
                 severity="warning",
             )
             return
-        self._chat_input.focus_input()
+        chat_input.focus_input()
+
+    def _selection_ask_blocker(self, chat_input: ChatInput) -> str | None:
+        """Return why the selection cannot be quoted right now, if anything."""
+        if self._inline_prompt_pending():
+            # The action is hidden while a prompt waits, but one can arrive
+            # between showing the action and the click.
+            return "Answer the pending prompt before adding the selection"
+        if isinstance(self.screen, ModalScreen):
+            return "Close the open dialog before adding the selection"
+        if chat_input.mode != "normal" and chat_input.value:
+            # A quote line starts with `>`, which a shell reads as a redirect.
+            return "Clear the shell or command input before adding the selection"
+        return None
 
     def _inline_prompt_pending(self) -> bool:
         """Return whether an approval, question, or goal review awaits input."""

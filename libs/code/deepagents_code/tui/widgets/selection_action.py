@@ -61,6 +61,18 @@ def _is_transcript_widget(widget: Widget) -> bool:
     return False
 
 
+def quote_after(draft: str, text: str) -> str:
+    """Return `text` as a Markdown blockquote to append after `draft`.
+
+    A non-empty draft gets exactly one blank line before the quote, and the
+    quote ends with a blank line so the user can type below it.
+    """
+    quote = "\n".join("> " + line for line in text.split("\n"))
+    trailing = len(draft) - len(draft.rstrip("\n"))
+    separator = "\n" * max(0, 2 - trailing) if draft else ""
+    return separator + quote + "\n\n"
+
+
 class SelectionAction(Static):
     """Floating "Ask about this" button for the current selection.
 

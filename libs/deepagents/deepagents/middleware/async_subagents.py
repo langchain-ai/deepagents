@@ -1453,7 +1453,7 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
     async def abefore_agent(self, state: AsyncSubAgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
         """(async) Record the notification that started this run, then add status updates from this agent's tasks."""
-        recorded = self._record_notification(state) or {}
+        recorded = await self._arecord_notification(state) or {}
         tasks = {**(state.get("async_tasks") or {}), **recorded.get("async_tasks", {})}
         updates = await self._apull(tasks)
         return {
@@ -1522,17 +1522,52 @@ class AsyncSubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             return None
 
     @staticmethod
-    def _record_notification(state: Mapping[str, Any]) -> dict[str, Any] | None:
-        """When a task notification started this run, record the task's outcome so checks don't report it again."""
+    def _notification_to_record(state: Mapping[str, Any]) -> tuple[TaskEvent, AsyncTask] | None:
+        """Find a tracked notification without reopening a settled task for another run."""
         messages = state.get("messages") or []
         event = _notification_event(messages[-1]) if messages else None
         task = (state.get("async_tasks") or {}).get(event["task_id"]) if event else None
         if event is None or task is None:
             return None
         run_id = event.get("run_id", task["run_id"])
-        # Answering a pause starts a new run; an update cancels the old run before it can report.
         if run_id != task["run_id"] and task["status"] not in _UNFINISHED_STATUSES:
             return None
+        return event, task
+
+    def _record_notification(self, state: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Record same-run outcomes, or verify a different run is the latest on the server."""
+        notification = self._notification_to_record(state)
+        if notification is None:
+            return None
+        event, task = notification
+        run_id = event.get("run_id", task["run_id"])
+        if run_id != task["run_id"]:
+            try:
+                runs = self._clients.get_sync(task["agent_name"]).runs.list(thread_id=task["thread_id"], limit=1)
+            except Exception:  # noqa: BLE001  # LangGraph SDK raises untyped errors
+                logger.warning("Failed to verify notification for task %s", task["task_id"], exc_info=True)
+                return None
+            if not runs or runs[0]["run_id"] != run_id:
+                return None
+        return {"async_tasks": {task["task_id"]: _observed(task, event["status"], run_id)}}
+
+    async def _arecord_notification(self, state: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Verify mismatched run IDs without rejecting legitimate human-resume outcomes."""
+        notification = self._notification_to_record(state)
+        if notification is None:
+            return None
+        event, task = notification
+        run_id = event.get("run_id", task["run_id"])
+        if run_id != task["run_id"]:
+            try:
+                runs = await asyncio.wait_for(
+                    self._clients.get_async(task["agent_name"]).runs.list(thread_id=task["thread_id"], limit=1), _PULL_TIMEOUT_SECONDS
+                )
+            except Exception:  # noqa: BLE001  # SDK errors or a timeout must not replace tracked state
+                logger.warning("Failed to verify notification for task %s", task["task_id"], exc_info=True)
+                return None
+            if not runs or runs[0]["run_id"] != run_id:
+                return None
         return {"async_tasks": {task["task_id"]: _observed(task, event["status"], run_id)}}
 
     def wrap_model_call(

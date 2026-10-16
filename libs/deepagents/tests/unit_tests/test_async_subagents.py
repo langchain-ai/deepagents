@@ -1897,6 +1897,132 @@ def _pulled_events(update: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 class TestParentPull:
+    @pytest.mark.parametrize("outcome", ["success", "error", "waiting"])
+    @pytest.mark.parametrize("invocation", ["sync", "async"])
+    async def test_superseded_notification_cannot_replace_the_current_run(self, outcome: str, invocation: str) -> None:
+        middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote")])
+        state = _make_runtime_with_task(agent_name="remote", run_id="run_new").state
+        event = {"task_id": "thread_abc", "agent_name": "remote", "status": outcome, "run_id": "run_xyz"}
+        state["messages"] = [HumanMessage(content="old outcome", additional_kwargs={"deepagents_notification": event})]
+        server = _FakeServer(run={"run_id": "run_new", "status": "running"})
+        # A transient polling failure must not let an old waiting notification
+        # replace the current run either.
+        server.runs.get = AsyncMock(side_effect=RuntimeError("temporarily unavailable"))
+        sync_client = MagicMock()
+        sync_client.runs.list.return_value = [server.run]
+        with (
+            patch("deepagents.middleware.async_subagents.get_client", return_value=server),
+            patch("deepagents.middleware.async_subagents.get_sync_client", return_value=sync_client),
+        ):
+            if invocation == "async":
+                received = await middleware.abefore_agent(state, MagicMock())
+            else:
+                received = middleware.before_agent(state, MagicMock())
+        received = received or {}
+        current = {**state["async_tasks"], **received.get("async_tasks", {})}["thread_abc"]
+
+        assert (current["run_id"], current["status"]) == ("run_new", "running")
+        assert not _pulled_events(received)
+
+    async def test_superseded_notification_after_checkpoint_restart(self) -> None:
+        checkpointer = InMemorySaver()
+        config = {"configurable": {"thread_id": "parent"}}
+        state = _make_runtime_with_task(agent_name="remote", run_id="run_new").state
+        state["messages"] = [HumanMessage(content="continue")]
+        server = _FakeServer(run={"run_id": "run_new", "status": "running"})
+        agent = create_agent(
+            GenericFakeChatModel(messages=iter([AIMessage(content="working")])),
+            middleware=[AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote")])],
+            checkpointer=checkpointer,
+        )
+        with patch("deepagents.middleware.async_subagents.get_client", return_value=server):
+            await agent.ainvoke(state, config)
+        restarted = create_agent(
+            GenericFakeChatModel(messages=iter([AIMessage(content="still working"), AIMessage(content="finished")])),
+            middleware=[AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote")])],
+            checkpointer=checkpointer,
+        )
+        event = {"task_id": "thread_abc", "agent_name": "remote", "status": "success", "run_id": "run_xyz"}
+        with patch("deepagents.middleware.async_subagents.get_client", return_value=server):
+            await restarted.ainvoke({"messages": [HumanMessage(content="old result", additional_kwargs={"deepagents_notification": event})]}, config)
+            current = restarted.get_state(config).values["async_tasks"]["thread_abc"]
+            assert (current["run_id"], current["status"]) == ("run_new", "running")
+            event["run_id"] = "run_new"
+            await restarted.ainvoke({"messages": [HumanMessage(content="new result", additional_kwargs={"deepagents_notification": event})]}, config)
+        completed = restarted.get_state(config).values["async_tasks"]["thread_abc"]
+        assert (completed["run_id"], completed["status"]) == ("run_new", "success")
+
+    @pytest.mark.parametrize("invocation", ["sync", "async"])
+    async def test_resumed_run_notification_is_accepted_after_it_has_finished(self, invocation: str) -> None:
+        middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote")])
+        state = _lead_state("waiting")
+        event = {"task_id": "thread_abc", "agent_name": "remote", "status": "success", "run_id": "run_resumed"}
+        state["messages"] = [HumanMessage(content="resumed result", additional_kwargs={"deepagents_notification": event})]
+        server = _ended()
+        server.run = {"run_id": "run_resumed", "status": "success"}
+        sync_client = MagicMock()
+        sync_client.runs.list.return_value = [server.run]
+        with (
+            patch("deepagents.middleware.async_subagents.get_client", return_value=server),
+            patch("deepagents.middleware.async_subagents.get_sync_client", return_value=sync_client),
+        ):
+            update = await middleware.abefore_agent(state, MagicMock()) if invocation == "async" else middleware.before_agent(state, MagicMock())
+        current = update["async_tasks"]["thread_abc"]
+        assert (current["run_id"], current["status"]) == ("run_resumed", "success")
+
+    @pytest.mark.parametrize("invocation", ["sync", "async"])
+    @pytest.mark.parametrize("failure", ["empty", "error", "timeout"])
+    async def test_unverified_notification_keeps_the_tracked_run(self, invocation: str, failure: str) -> None:
+        middleware = AsyncSubAgentMiddleware(async_subagents=[_make_spec("remote")])
+        state = _lead_state()
+        event = {"task_id": "thread_abc", "agent_name": "remote", "status": "success", "run_id": "unverified_run"}
+        state["messages"] = [HumanMessage(content="unverified result", additional_kwargs={"deepagents_notification": event})]
+        server = _FakeServer()
+        sync_client = MagicMock()
+        if failure == "empty":
+            server.runs.list = AsyncMock(return_value=[])
+            sync_client.runs.list.return_value = []
+        else:
+            error = TimeoutError if failure == "timeout" else RuntimeError
+            server.runs.list = AsyncMock(side_effect=error)
+            sync_client.runs.list.side_effect = error
+        with (
+            patch("deepagents.middleware.async_subagents.get_client", return_value=server),
+            patch("deepagents.middleware.async_subagents.get_sync_client", return_value=sync_client),
+        ):
+            received = await middleware.abefore_agent(state, MagicMock()) if invocation == "async" else middleware.before_agent(state, MagicMock())
+        current = {**state["async_tasks"], **(received or {}).get("async_tasks", {})}["thread_abc"]
+        assert (current["run_id"], current["status"]) == ("run_xyz", "running")
+
+    async def test_unresponsive_notification_verification_does_not_hold_up_the_model(self) -> None:
+        state = _lead_state()
+        event = {"task_id": "thread_abc", "agent_name": "remote", "status": "success", "run_id": "unverified_run"}
+        state["messages"] = [HumanMessage(content="unverified result", additional_kwargs={"deepagents_notification": event})]
+        server = _FakeServer()
+
+        async def never_answers(**_kwargs: Any) -> list[dict[str, Any]]:
+            await asyncio.Event().wait()
+            return []
+
+        server.runs.list = never_answers
+        with patch("deepagents.middleware.async_subagents._PULL_TIMEOUT_SECONDS", 0.01):
+            received = await asyncio.wait_for(_pull("abefore_agent", state, server), 1)
+
+        current = {**state["async_tasks"], **received.get("async_tasks", {})}["thread_abc"]
+        assert (current["run_id"], current["status"]) == ("run_xyz", "running")
+
+    @pytest.mark.parametrize("status", ["success", "error", "cancelled", "timeout", "interrupted"])
+    async def test_other_run_notification_does_not_reopen_a_settled_task(self, status: str) -> None:
+        state = _lead_state(status)
+        event = {"task_id": "thread_abc", "agent_name": "remote", "status": "success", "run_id": "another_run"}
+        state["messages"] = [HumanMessage(content="other result", additional_kwargs={"deepagents_notification": event})]
+        server = _FakeServer(run={"run_id": "another_run", "status": "success"})
+
+        received = await _pull("abefore_agent", state, server)
+
+        current = {**state["async_tasks"], **received.get("async_tasks", {})}["thread_abc"]
+        assert (current["run_id"], current["status"]) == ("run_xyz", status)
+
     async def test_status_update_is_added_before_the_model_call(self) -> None:
         update = await _pull("abefore_model", _lead_state(), _ended())
 

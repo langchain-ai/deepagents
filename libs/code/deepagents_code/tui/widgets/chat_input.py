@@ -3863,11 +3863,16 @@ class ChatInput(Vertical):
     def insert_at_end(self, text: str) -> bool:
         """Append text after the draft through the undoable edit path.
 
+        Closes an open prompt search first: it freezes the draft, so the text
+        would otherwise land out of view behind the search panel.
+
         Returns:
             Whether the text area was available for insertion.
         """
         if not self._text_area:
             return False
+        if self._prompt_search_active:
+            self._close_prompt_search(restore_draft=False, refocus=False)
         self._text_area.move_cursor_to_end()
         return self.insert_at_cursor(text)
 

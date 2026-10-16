@@ -198,6 +198,23 @@ async def test_selection_action_appends_after_draft(
         assert area.cursor_location == area.document.end
 
 
+async def test_selection_action_closes_prompt_search() -> None:
+    """An open Ctrl+R search closes so the quote lands in the visible draft."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        assert app._chat_input is not None
+        area = app._chat_input._text_area
+        assert area is not None
+        area.load_text("draft")
+        assert app._chat_input.open_prompt_search() == "inline"
+        await pilot.pause()
+        app.post_message(SelectionAction.Ask("q"))
+        await pilot.pause()
+        assert not app._chat_input._prompt_search_active
+        assert area.text == "draft\n\n> q\n\n"
+        assert area.has_focus
+
+
 @pytest.mark.parametrize("mode", ["shell", "shell_incognito", "command"])
 async def test_selection_action_leaves_empty_special_mode(mode: str) -> None:
     """An empty shell or command draft switches to normal before the quote."""

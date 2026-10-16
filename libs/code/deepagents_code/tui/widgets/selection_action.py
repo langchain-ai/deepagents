@@ -116,7 +116,7 @@ class SelectionAction(Static):
 
     @staticmethod
     def on_mouse_up(event: MouseUp) -> None:
-        """Keep the app's mouse-up handler from removing this before `Click`."""
+        """Stop the app's mouse-up handler from dismissing this before `Click`."""
         event.stop()
 
     def on_click(self, event: Click) -> None:

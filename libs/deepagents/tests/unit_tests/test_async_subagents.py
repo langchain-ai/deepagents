@@ -5,7 +5,9 @@ import base64
 import json
 import urllib.parse
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, TypeVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1423,6 +1425,53 @@ class TestParentReference:
         assert _sent_reference(mock_client)["thread_id"] == "thread_parent"
 
 
+@dataclass
+class _TeamContext:
+    team: str
+
+
+class TestForwardedContext:
+    @pytest.mark.parametrize("context", [{"team": "eng"}, _TeamContext(team="eng")], ids=["dict", "dataclass"])
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_subagent_on_this_deployment_runs_with_the_parents_context(self, mock_get_client: MagicMock, context: object) -> None:
+        runtime = _parent_runtime()
+        runtime.context = context
+
+        client = await _alaunch(mock_get_client, runtime)
+
+        kwargs = client.runs.create.call_args.kwargs
+        assert kwargs["context"] == {"team": "eng"}
+        # The Agent Server takes `context` or `configurable`; the thread's metadata names the parent.
+        assert "config" not in kwargs
+        assert client.threads.create.call_args.kwargs["metadata"]["parent_assistant_id"] == "assistant_parent"
+
+    @patch("deepagents.middleware.async_subagents.get_client")
+    async def test_a_context_that_is_only_a_parent_reference_is_not_forwarded(self, mock_get_client: MagicMock) -> None:
+        """A run started without a context sees its `configurable` as one."""
+        runtime = _parent_runtime()
+        runtime.context = {"deepagents_parent": {"thread_id": "grandparent"}}
+
+        client = await _alaunch(mock_get_client, runtime)
+
+        assert "context" not in client.runs.create.call_args.kwargs
+        assert _sent_reference(client)["thread_id"] == "thread_parent"
+
+    @patch("deepagents.middleware.async_subagents.get_sync_client")
+    def test_subagent_on_another_server_does_not_get_the_parents_context(self, mock_get_client: MagicMock) -> None:
+        mock_client = MagicMock()
+        mock_client.threads.create.return_value = {"thread_id": "thread_abc"}
+        mock_client.runs.create.return_value = {"run_id": "run_xyz"}
+        mock_get_client.return_value = mock_client
+        runtime = _parent_runtime()
+        runtime.context = {"team": "eng"}
+        launch = _get_tool(_build_async_subagent_tools([_make_spec("alpha")]), "start_async_task")
+
+        launch.func(description="analyze data", subagent_type="alpha", runtime=runtime)
+
+        assert "context" not in mock_client.runs.create.call_args.kwargs
+        assert _sent_reference(mock_client) == {"thread_id": "thread_parent"}
+
+
 @patch("deepagents.middleware.async_subagents.get_client")
 async def test_launch_reads_assistant_from_configurable_when_metadata_lacks_it(mock_get_client: MagicMock) -> None:
     runtime = _parent_runtime()
@@ -1743,6 +1792,14 @@ class TestParentNotifier:
             "run_id": "child_run",
         }
         assert "<result>\nfound it\n</result>" in _woken_text(server)
+
+    async def test_parent_wakes_with_the_subagents_context(self) -> None:
+        server = _FakeServer()
+
+        await _call_callback("aafter_agent", {"messages": [AIMessage(content="found it")]}, SimpleNamespace(context={"team": "eng"}), server=server)
+
+        (wake,) = server.wakes()
+        assert wake["context"] == {"team": "eng"}
 
     async def test_model_failure_wakes_the_parent_without_details(self) -> None:
         server = _FakeServer()

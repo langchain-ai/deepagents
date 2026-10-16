@@ -45,9 +45,9 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
         """Pass through: reporting needs the async path, which the Agent Server uses."""
         return None
 
-    async def aafter_agent(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:  # noqa: ARG002  # signature set by AgentMiddleware
+    async def aafter_agent(self, state: AgentState, runtime: Runtime[ContextT]) -> dict[str, Any] | None:
         """Report a finished run with its final answer."""
-        await self._areport("success", result=_final_content(state))
+        await self._areport("success", runtime.context, result=_final_content(state))
         return None
 
     def wrap_model_call(
@@ -69,10 +69,10 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
         except GraphInterrupt:
             raise
         except Exception as e:
-            await self._areport("error", error=_failure_text(e))
+            await self._areport("error", request.runtime.context, error=_failure_text(e))
             raise
 
-    async def _areport(self, status: Literal["success", "error"], **details: object) -> None:
+    async def _areport(self, status: Literal["success", "error"], context: ContextT, **details: object) -> None:
         """Notify once per run, for this graph's own run that an async subagent tool started."""
         config = get_config()
         # Graphs nested in this run (e.g. a sync subagent that's a deep agent) inherit its config,
@@ -86,7 +86,7 @@ class _ParentNotifierMiddleware(AgentMiddleware[AgentState, ContextT, ResponseT]
         if len(self._reported) > 1000:  # noqa: PLR2004  # bounded memory in long-lived processes
             del self._reported[next(iter(self._reported))]
         name = str((config.get("metadata") or {}).get("graph_id") or "subagent")
-        await _notify_parent(config, _task_event(config, name, status, **details))
+        await _notify_parent(config, _task_event(config, name, status, **details), context)
 
 
 def _is_top_level_graph(config: Mapping[str, Any]) -> bool:

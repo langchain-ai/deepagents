@@ -10,6 +10,7 @@ Compatible with LangGraph Platform (managed) and self-hosted servers.
 """
 
 import asyncio
+import dataclasses
 import html
 import json
 import logging
@@ -297,6 +298,8 @@ _PARENT_KEY = "deepagents_parent"
 """`configurable` key carrying the launching agent's `_ParentReference` to an async subagent's run.
 
 Apps read it directly (Managed Deep Agents does), so keep the key and shape stable.
+A run that gets the parent's context has no `configurable` (the Agent Server takes
+one or the other); it finds its parent from its thread's `parent_thread_id` metadata.
 """
 
 
@@ -348,11 +351,29 @@ def _thread_metadata(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, str
 
 
 def _run_options(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, Any]:
-    """Keyword arguments for `runs.create` that link a launched run to this agent."""
+    """Keyword arguments for `runs.create` that link a launched run to this agent.
+
+    A subagent on this deployment runs with this agent's context, like a sync subagent.
+    """
     options: dict[str, Any] = {"headers": _trace_headers(spec)}
-    if reference := _reference_for(spec, runtime):
+    context = None if spec.get("url") else _forwarded_context(runtime.context)
+    if context is not None:
+        options["context"] = context
+    elif reference := _reference_for(spec, runtime):
         options["config"] = {"configurable": {_PARENT_KEY: reference}}
     return options
+
+
+def _forwarded_context(context: object) -> dict[str, Any] | None:
+    """A run context as JSON data for another run, without deepagents' parent reference."""
+    if isinstance(context, BaseModel):
+        context = context.model_dump(mode="json")
+    elif dataclasses.is_dataclass(context) and not isinstance(context, type):
+        context = dataclasses.asdict(context)
+    if not isinstance(context, Mapping):
+        return None
+    # A run started without a context sees its `configurable` as one, parent reference included.
+    return {str(key): value for key, value in context.items() if key != _PARENT_KEY} or None
 
 
 def _launching_agent(config: RunnableConfig) -> _ParentReference | None:
@@ -520,7 +541,7 @@ _DELIVERABLE_THREAD_STATUSES = frozenset({"idle", "error"})
 """Parent thread statuses a notification run can start on: neither running nor waiting for a human."""
 
 
-async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUpdate) -> None:
+async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUpdate, context: dict[str, Any] | None = None) -> None:
     """Start a notification run on the parent's thread only while it's idle (or its last run failed).
 
     A new run on a thread waiting for a human would cancel that approval; `reject` covers a thread that just became busy.
@@ -535,6 +556,7 @@ async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUp
             assistant_id=assistant_id,
             input={"messages": [_notification_message(event)]},
             multitask_strategy="reject",
+            **({"context": context} if context is not None else {}),
         )
     except Exception as e:  # noqa: BLE001  # LangGraph SDK raises untyped errors
         status = getattr(getattr(e, "response", None), "status_code", None)
@@ -542,15 +564,16 @@ async def _awake_parent(parent_thread_id: str, assistant_id: str, event: _TaskUp
         log("Didn't deliver the notification for task %s", event["task_id"], exc_info=True)
 
 
-async def _notify_parent(config: RunnableConfig, event: _TaskUpdate) -> None:
+async def _notify_parent(config: RunnableConfig, event: _TaskUpdate, context: object = None) -> None:
     """Wake the parent if it's idle; otherwise it finds out on its own.
 
     A busy parent sees the status update before its next model call or after its
-    final answer, a paused one after the user answers its approval. Never raises.
+    final answer, a paused one after the user answers its approval. The parent's
+    run gets this run's context back. Never raises.
     """
     parent = _launching_agent(config) or {}
     if "thread_id" in parent and "assistant_id" in parent:
-        await _awake_parent(parent["thread_id"], parent["assistant_id"], event)
+        await _awake_parent(parent["thread_id"], parent["assistant_id"], event, _forwarded_context(context))
 
 
 class _ClientCache:

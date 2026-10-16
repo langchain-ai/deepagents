@@ -24867,6 +24867,7 @@ class DeepAgentsApp(App):
             not self._ask_about_selection
             or screen is not self.screen
             or not self._chat_input
+            or self._inline_prompt_pending()
         ):
             return
         if not screen.selections or not is_transcript_selection(screen.selections):
@@ -24884,11 +24885,13 @@ class DeepAgentsApp(App):
 
     def on_selection_action_ask(self, event: SelectionAction.Ask) -> None:
         """Bring selected text into the draft without interrupting inline prompts."""
-        if (
-            self._pending_approval_widget
-            or self._pending_ask_user_widget
-            or self._pending_goal_review_widget
-        ):
+        if self._inline_prompt_pending():
+            # The action is hidden while a prompt waits, but one can arrive
+            # between showing the action and the click.
+            self.notify(
+                "Answer the pending prompt before adding the selection",
+                severity="warning",
+            )
             return
         if self._chat_input and not isinstance(self.screen, ModalScreen):
             quote = "\n".join("> " + line for line in event.text.split("\n"))
@@ -24896,6 +24899,14 @@ class DeepAgentsApp(App):
             self._chat_input.focus_input()
             self._chat_input.insert_at_cursor(separator + quote + "\n\n")
             self.screen.clear_selection()
+
+    def _inline_prompt_pending(self) -> bool:
+        """Return whether an approval, question, or goal review awaits input."""
+        return bool(
+            self._pending_approval_widget
+            or self._pending_ask_user_widget
+            or self._pending_goal_review_widget
+        )
 
     def _dismiss_selection_action(self) -> None:
         """Remove the "Ask about this" action if one is showing."""

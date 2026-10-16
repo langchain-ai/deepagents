@@ -44,7 +44,7 @@ from textual.containers import Container, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.dom import NoScreen
-from textual.events import Click
+from textual.events import Click, Key
 from textual.message import Message
 from textual.notifications import Notification as _Notification, Notify as _Notify
 from textual.screen import ModalScreen, Screen
@@ -1077,7 +1077,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.pregel import Pregel
     from textual.app import ComposeResult
-    from textual.events import MouseUp, Paste, Resize
+    from textual.events import Event, MouseUp, Paste, Resize
     from textual.geometry import Size
     from textual.layout import DockArrangeResult
     from textual.timer import Timer
@@ -4128,6 +4128,9 @@ class DeepAgentsApp(App):
         self._ask_about_selection = _load_bool_display_preference(
             "display.ask_about_selection", fallback=True
         )
+
+        self._selection_action: SelectionAction | None = None
+        """The mounted "Ask about this" action, if one is showing."""
 
         self._debug_console_click_to_copy = _load_debug_console_click_to_copy()
         r"""Whether the `Ctrl+\` Debug Console copies on click.
@@ -24955,7 +24958,7 @@ class DeepAgentsApp(App):
 
     async def _show_selection_action(self, screen: Screen, x: int, y: int) -> None:
         """Offer a prompt shortcut for selections in the conversation."""
-        await screen.query(SelectionAction).remove()
+        self._dismiss_selection_action()
         if (
             not self._ask_about_selection
             or screen is not self.screen
@@ -24972,6 +24975,7 @@ class DeepAgentsApp(App):
             max(0, min(x, screen.size.width - 18)),
             max(0, y - 1),
         )
+        self._selection_action = action
         await screen.mount(action)
 
     def on_selection_action_ask(self, event: SelectionAction.Ask) -> None:
@@ -24989,9 +24993,21 @@ class DeepAgentsApp(App):
             self._chat_input.insert_at_cursor(separator + quote + "\n\n")
             self.screen.clear_selection()
 
-    def on_key(self) -> None:
-        """Dismiss the selection shortcut when keyboard interaction resumes."""
-        self.screen.query(SelectionAction).remove()
+    def _dismiss_selection_action(self) -> None:
+        """Remove the "Ask about this" action if one is showing."""
+        action, self._selection_action = self._selection_action, None
+        if action is not None and action.is_attached:
+            action.remove()
+
+    async def on_event(self, event: Event) -> None:
+        """Dismiss the selection shortcut on any key before it is dispatched.
+
+        The focused `TextArea` stops printable keys, Enter, and Escape, so an
+        `on_key` handler on the app never sees ordinary typing.
+        """
+        if isinstance(event, Key):
+            self._dismiss_selection_action()
+        await super().on_event(event)
 
     # =========================================================================
     # Model Switching

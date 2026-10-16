@@ -172,6 +172,44 @@ async def test_selection_action_warns_when_prompt_arrives(
         assert notices == ["Answer the pending prompt before adding the selection"]
 
 
+@pytest.mark.parametrize("mode", ["shell", "shell_incognito", "command"])
+async def test_selection_action_leaves_empty_special_mode(mode: str) -> None:
+    """An empty shell or command draft switches to normal before the quote."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        assert app._chat_input is not None
+        area = app._chat_input._text_area
+        assert area is not None
+        app._chat_input.mode = mode
+        app.post_message(SelectionAction.Ask("selected text"))
+        await pilot.pause()
+        assert app._chat_input.mode == "normal"
+        assert area.text == "> selected text\n\n"
+
+
+@pytest.mark.parametrize("mode", ["shell", "command"])
+async def test_selection_action_keeps_special_mode_draft(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """A typed shell or command draft is never turned into a quote."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        assert app._chat_input is not None
+        area = app._chat_input._text_area
+        assert area is not None
+        app._chat_input.mode = mode
+        area.load_text("ls")
+        notices: list[str] = []
+        monkeypatch.setattr(app, "notify", lambda msg, **_: notices.append(msg))
+        app.post_message(SelectionAction.Ask("selected text"))
+        await pilot.pause()
+        assert app._chat_input.mode == mode
+        assert area.text == "ls"
+        assert notices == [
+            "Clear the shell or command input before adding the selection"
+        ]
+
+
 async def test_selection_action_dismissed_by_scroll_and_resize() -> None:
     """The shortcut leaves when the transcript or terminal moves under it."""
     app = DeepAgentsApp()

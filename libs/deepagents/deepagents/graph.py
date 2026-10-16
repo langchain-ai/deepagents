@@ -892,8 +892,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
     # Build main agent middleware stack
     deepagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
-        # First, so it sees model errors only after any retries gave up.
-        _ParentNotifierMiddleware(),
         FilesystemMiddleware(
             backend=backend,
             custom_tool_descriptions=_profile.tool_description_overrides,
@@ -916,6 +914,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(
         [
+            _ParentNotifierMiddleware(),
             create_summarization_middleware(model, backend),
             PatchToolCallsMiddleware(),
         ]

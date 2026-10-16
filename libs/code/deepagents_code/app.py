@@ -8895,7 +8895,11 @@ class DeepAgentsApp(App):
         self._check_hydration_below_needed()
 
     def on_resize(self, _event: Resize) -> None:
-        """Scale cached message heights when terminal width changes."""
+        """Scale cached message heights when terminal width changes.
+
+        Also dismisses the "Ask about this" action, whose position no longer
+        matches the reflowed selection.
+        """
         self._dismiss_selection_action()
         # A terminal resize moves the bottom chrome even when its height is
         # unchanged, so re-anchor before the early returns below.
@@ -24885,7 +24889,7 @@ class DeepAgentsApp(App):
         dereferenced it to forward this `MouseUp`, and the only code that
         empties the stack runs after the message loop has stopped.
 
-        The same captured screen goes to `_show_selection_action`, which skips
+        The same screen goes to `_show_selection_action`, which skips
         any screen that is no longer active by then. A modal needs no check of
         its own: only the main screen holds `#messages`, so no selection on a
         modal counts as transcript text.
@@ -24934,7 +24938,8 @@ class DeepAgentsApp(App):
 
         Streaming output scrolls a bottom-anchored chat on every chunk, so
         dismissing on any scroll would make the action unusable during a run.
-        The action is dismissed once the selection leaves the visible chat.
+        The action is dismissed once the selection leaves the visible chat, or
+        when its widget or the chat is no longer laid out.
         """
         action, anchor = self._selection_action, self._selection_anchor
         if action is None or anchor is None:
@@ -24992,7 +24997,8 @@ class DeepAgentsApp(App):
         if isinstance(self.screen, ModalScreen):
             return "Close the open dialog before adding the selection"
         if chat_input.mode != "normal" and chat_input.value:
-            # A quote line starts with `>`, which a shell reads as a redirect.
+            # A quote line starts with `>`, which a shell reads as a redirect
+            # and a slash command would take as its arguments.
             return "Clear the shell or command input before adding the selection"
         return None
 
@@ -25014,8 +25020,8 @@ class DeepAgentsApp(App):
     async def on_event(self, event: Event) -> None:
         """Dismiss the "Ask about this" action on any key before it is dispatched.
 
-        The focused `TextArea` stops printable keys, Enter, and Escape, so an
-        `on_key` handler on the app never sees ordinary typing.
+        The focused chat input stops most keys, including ordinary typing,
+        before they bubble, so an `on_key` handler on the app would miss them.
         """
         if self._selection_action is not None and isinstance(event, Key):
             self._dismiss_selection_action()

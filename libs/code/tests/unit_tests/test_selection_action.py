@@ -82,6 +82,9 @@ async def test_selection_action_dismissed_by_keypress(key: str) -> None:
     """Any key, including ones the focused chat input consumes, removes it."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
+        assert app._chat_input is not None
+        area = app._chat_input._text_area
+        assert area is not None
         message = UserMessage("selected text")
         await app.query_one("#messages", Container).mount(message)
         await pilot.pause()
@@ -90,6 +93,9 @@ async def test_selection_action_dismissed_by_keypress(key: str) -> None:
         await pilot.press(key)
         await pilot.pause()
         assert not app.query(SelectionAction)
+        if key == "a":
+            # Dismissing must not swallow the key the user typed.
+            assert area.text == "a"
 
 
 @pytest.mark.parametrize(

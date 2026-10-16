@@ -95,7 +95,7 @@ A server keeps the first workspace's tracing configuration for its lifetime. Wor
 
 Idle compaction is disabled by default. When enabled, the interactive client
 automatically uses the existing `/offload` operation for contexts at or above
-the configured token threshold during the final 60 seconds of a known
+the configured token threshold during the final 120 seconds of a known
 prompt-cache retention window. This keeps the same thread and archives older
 messages; it does not create a handoff thread. The configured offload model is
 used, so summarization can incur costs and cache reuse is not guaranteed.

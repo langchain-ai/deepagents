@@ -2111,6 +2111,9 @@ Two seconds balances responsiveness with avoiding accidental approval
 key presses.
 """
 
+_IDLE_COMPACTION_LEAD_SECONDS = 120
+"""Lead time for automatic idle context compaction."""
+
 _CACHE_EXPIRING_LEAD_SECONDS = 60
 """Lead time for the prompt-cache retention notification."""
 
@@ -9783,7 +9786,7 @@ class DeepAgentsApp(App):
             or self._idle_compaction_seen.get(thread_id) == expires_at
             or not 0
             < (expires_at - datetime.now(UTC)).total_seconds()
-            <= _CACHE_EXPIRING_LEAD_SECONDS
+            <= _IDLE_COMPACTION_LEAD_SECONDS
             or not self._cache_maintenance_idle()
             or self._remote_agent() is None
         ):

@@ -11,7 +11,8 @@ from deepagents_code.config_manifest import get_option
 
 
 @pytest.mark.parametrize(
-    "blocker", ["none", "busy", "typing", "small", "expired", "disabled"]
+    "blocker",
+    ["none", "busy", "typing", "small", "expired", "disabled", "early", "boundary"],
 )
 async def test_idle_compaction_guards(
     monkeypatch: pytest.MonkeyPatch, blocker: str
@@ -32,8 +33,16 @@ async def test_idle_compaction_guards(
         app._context_tokens = 100_000
         app._tokens_approximate = False
         assert app._status_bar is not None
-        app._status_bar.cache_expires_at = datetime.now(UTC) + timedelta(seconds=45)
-        if blocker == "busy":
+        now = datetime.now(UTC)
+        clock = MagicMock(wraps=datetime)
+        clock.now.return_value = now
+        monkeypatch.setattr("deepagents_code.app.datetime", clock)
+        app._status_bar.cache_expires_at = now + timedelta(seconds=90)
+        if blocker == "early":
+            app._status_bar.cache_expires_at = now + timedelta(seconds=121)
+        elif blocker == "boundary":
+            app._status_bar.cache_expires_at = now + timedelta(seconds=120)
+        elif blocker == "busy":
             app._agent_running = True
         elif blocker == "typing":
             monkeypatch.setattr(app, "_is_user_typing", lambda: True)
@@ -53,8 +62,8 @@ async def test_idle_compaction_guards(
         app._check_idle_compaction()
         app._check_idle_compaction()
         await pilot.pause()
-        assert offload.await_count == (1 if blocker == "none" else 0)
-        if blocker == "none":
+        assert offload.await_count == (1 if blocker in {"none", "boundary"} else 0)
+        if blocker in {"none", "boundary"}:
             assert not app._agent_running
 
 

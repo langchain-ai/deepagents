@@ -1397,7 +1397,7 @@ app = Starlette(
         Route(
             "/dcode/threads/{thread_id:str}/btw/history",
             btw_history,
-            methods=["GET"],
+            methods=["POST"],
         ),
         Route(
             "/dcode/threads/{thread_id:str}/btw/clear",

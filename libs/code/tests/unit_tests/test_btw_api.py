@@ -256,7 +256,9 @@ class _SideServer:
         )
 
     async def history(self) -> list[list[str]]:
-        response = await self.client.get("/dcode/threads/thread/btw/history")
+        response = await self.client.post(
+            "/dcode/threads/thread/btw/history", json={"workspace": {}}
+        )
         response.raise_for_status()
         return response.json()["history"]
 
@@ -358,7 +360,7 @@ async def test_stored_history_over_cap_is_rejected(side_server: _SideServer) -> 
     assert (await side_server.ask("why")).is_success
 
 
-async def test_clear_requires_workspace_binding(
+async def test_history_access_requires_workspace_binding(
     side_server: _SideServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from deepagents_code.workspace import WorkspaceConflictError
@@ -370,8 +372,13 @@ async def test_clear_requires_workspace_binding(
         AsyncMock(side_effect=WorkspaceConflictError("wrong workspace")),
     )
     assert (await side_server.clear()).status_code == 409
+    history = await side_server.client.post(
+        "/dcode/threads/thread/btw/history", json={"workspace": {}}
+    )
+    assert history.status_code == 409
     response = await side_server.client.post("/dcode/threads/thread/btw/clear", json={})
     assert response.status_code == 422
+    monkeypatch.setattr(btw_api, "require_thread_workspace", AsyncMock())
     assert await side_server.history() == [["Keep", "answer to Keep"]]
 
 

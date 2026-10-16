@@ -581,9 +581,11 @@ class RemoteAgent:
             TypeError: If the response is malformed.
         """
         thread_id = _require_thread_id(config)
+        workspace = await self._workspace_for_thread(config)
         async with asyncio.timeout(10):
-            response = await self._get_graph().client.http.get(
-                f"/dcode/threads/{thread_id}/btw/history"
+            response = await self._get_graph().client.http.post(
+                f"/dcode/threads/{thread_id}/btw/history",
+                json={"workspace": workspace},
             )
         raw = response.get("history") if isinstance(response, dict) else None
         if not isinstance(raw, list):

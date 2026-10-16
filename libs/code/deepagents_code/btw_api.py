@@ -244,21 +244,11 @@ async def btw_cost(request: Request) -> JSONResponse:
     return JSONResponse({"cost": cost})
 
 
-async def btw_history(request: Request) -> JSONResponse:
-    """Read the stored side exchanges so a client can show them on open.
+async def _bound_thread(request: Request) -> str | JSONResponse:
+    """Confirm the caller's workspace owns the thread before history access.
 
     Returns:
-        Ordered question/answer pairs for the thread.
-    """
-    history, _ = await asyncio.to_thread(load_history, request.path_params["thread_id"])
-    return JSONResponse({"history": history})
-
-
-async def btw_clear(request: Request) -> JSONResponse:
-    """Empty the side history and discard answers still in progress.
-
-    Returns:
-        The now-empty history, or a safe error response.
+        The thread ID, or an error response when the binding does not match.
     """
     thread_id = request.path_params["thread_id"]
     try:
@@ -270,5 +260,30 @@ async def btw_clear(request: Request) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=422)
     except WorkspaceConflictError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=409)
+    return thread_id
+
+
+async def btw_history(request: Request) -> JSONResponse:
+    """Read the stored side exchanges so a client can show them on open.
+
+    Returns:
+        Ordered question/answer pairs for the thread, or a safe error response.
+    """
+    thread_id = await _bound_thread(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
+    history, _ = await asyncio.to_thread(load_history, thread_id)
+    return JSONResponse({"history": history})
+
+
+async def btw_clear(request: Request) -> JSONResponse:
+    """Empty the side history and discard answers still in progress.
+
+    Returns:
+        The now-empty history, or a safe error response.
+    """
+    thread_id = await _bound_thread(request)
+    if isinstance(thread_id, JSONResponse):
+        return thread_id
     await asyncio.to_thread(clear_history, thread_id)
     return JSONResponse({"history": []})

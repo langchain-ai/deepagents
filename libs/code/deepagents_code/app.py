@@ -25018,7 +25018,6 @@ class DeepAgentsApp(App):
                     severity="warning",
                 )
                 return
-            self.screen.clear_selection()
 
     def _inline_prompt_pending(self) -> bool:
         """Return whether an approval, question, or goal review awaits input."""

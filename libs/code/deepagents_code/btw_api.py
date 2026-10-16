@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import sqlite3
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, NamedTuple, cast, override
 
 from starlette.requests import ClientDisconnect
 from starlette.responses import JSONResponse, Response
@@ -61,13 +61,24 @@ def _history_error(exc: sqlite3.Error | ValueError) -> JSONResponse:
     return JSONResponse({"detail": _INACCESSIBLE_HISTORY}, status_code=500)
 
 
+class _Answer(NamedTuple):
+    """A completed side answer and whether the exchange was left unsaved."""
+
+    text: str
+    cost: CostBreakdown | None
+    unsaved: bool
+
+
+type _Generation = Coroutine[object, object, _Answer]
+
+
 async def _remember(
     answer: Awaitable[tuple[str, CostBreakdown | None]],
     *,
     thread_id: str,
     epoch: int,
     question: str,
-) -> tuple[str, CostBreakdown | None, bool]:
+) -> _Answer:
     """Store the exchange only after its answer completes within the request.
 
     The deadline covers generation only. Once the write starts it finishes even
@@ -95,7 +106,7 @@ async def _remember(
         unsaved = True
     if cancellation is not None:
         raise cancellation
-    return text, cost, unsaved
+    return _Answer(text, cost, unsaved)
 
 
 async def _wait_for_disconnect(request: Request) -> None:
@@ -134,10 +145,7 @@ class _BtwStreamingResponse(Response):
     def __init__(
         self,
         request: Request,
-        answer: Callable[
-            [Callable[[str], Awaitable[None]]],
-            Coroutine[object, object, tuple[str, CostBreakdown | None, bool]],
-        ],
+        answer: Callable[[Callable[[str], Awaitable[None]]], _Generation],
     ) -> None:
         super().__init__(
             media_type="text/event-stream", headers={"Cache-Control": "no-store"}
@@ -265,7 +273,7 @@ async def btw(request: Request) -> Response:
 
         def answer(
             on_text: Callable[[str], Awaitable[None]] | None = None,
-        ) -> Coroutine[object, object, tuple[str, CostBreakdown | None, bool]]:
+        ) -> _Generation:
             return _remember(
                 answer_with_cost(
                     operation.answer(

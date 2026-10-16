@@ -1,8 +1,54 @@
 """Floating action for asking about selected conversation text."""
 
+from collections.abc import Iterable
+
 from textual.events import Click, MouseDown, MouseUp
 from textual.message import Message
+from textual.widget import Widget
 from textual.widgets import Static
+
+from deepagents_code.tui.widgets.messages import DiffMessage, UserMessage
+
+_TRANSCRIPT_IDS = frozenset(
+    {
+        "assistant-content",
+        "reasoning-body",
+        "task-desc",
+        "args-full",
+        "output-preview",
+        "output-full",
+    }
+)
+"""Widget ids whose subtree holds message or tool content, not chrome."""
+
+
+def is_transcript_selection(widgets: Iterable[Widget]) -> bool:
+    """Return whether every selected widget shows transcript text.
+
+    Headers, toggles, hints, status lines, notices, and inline prompts in the
+    conversation are UI chrome, so a selection that touches one is rejected.
+    """
+    return all(_is_transcript_widget(widget) for widget in widgets)
+
+
+def _is_transcript_widget(widget: Widget) -> bool:
+    """Walk up from `widget` to the first node that classifies it.
+
+    Returns:
+        `True` when an ancestor below `#messages` marks transcript content.
+    """
+    if widget.has_class("diff-header"):
+        return False
+    node = widget
+    while node is not None and node.id != "messages":
+        if (
+            isinstance(node, (UserMessage, DiffMessage))
+            or node.id in _TRANSCRIPT_IDS
+            or node.has_class("tool-args")
+        ):
+            return True
+        node = node.parent
+    return False
 
 
 class SelectionAction(Static):

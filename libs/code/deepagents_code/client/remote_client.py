@@ -524,10 +524,10 @@ class RemoteAgent:
         on_text: Callable[[str], Awaitable[None]] | None = None,
         on_unsaved: Callable[[], None] | None = None,
     ) -> str:
-        """Ask without submitting a run or writing conversation state.
+        """Ask without submitting a run or writing the main conversation.
 
-        The server answers with the thread's stored side history and stores
-        the completed exchange.
+        The server uses the thread's stored side history as context, then
+        stores the completed exchange unless the history was cleared meanwhile.
 
         Args:
             question: Side question to answer.

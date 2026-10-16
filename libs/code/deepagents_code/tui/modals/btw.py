@@ -88,7 +88,8 @@ class BtwScreen(ModalScreen[None]):
         self._spinner = Spinner()
         self._spinner_timer: Timer | None = None
         self._pending = False
-        # Clearing while history loads would cancel the initial question unseen.
+        # Ctrl+X during load would cancel the `_open` worker and drop the
+        # initial question before it is sent.
         self._loading = True
         # Content may grow before the deferred scroll runs; retain follow intent
         # through that layout so stream completion cannot mistake it for a scroll up.
@@ -327,7 +328,11 @@ class BtwScreen(ModalScreen[None]):
             target.scroll_visible(top=True, animate=False)
 
     async def action_clear(self) -> None:
-        """Cancel the side answer and start fresh without closing the modal."""
+        """Cancel the side answer and start fresh without closing the modal.
+
+        Ignored while stored history loads. If erasing the stored history
+        fails, the transcript stays and the editor accepts input again.
+        """
         if self._loading:
             return
         self._stop_spinner()

@@ -562,7 +562,8 @@ class BtwOperation(AgentMiddleware):
             on_text: Optional receiver for text fragments as the model produces them.
 
         Returns:
-            The ephemeral answer text.
+            The answer text. This method stores nothing; the caller decides
+                whether to keep the exchange.
 
         Raises:
             TypeError: If the configured model is not a chat model.

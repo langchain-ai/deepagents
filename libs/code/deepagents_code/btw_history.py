@@ -141,7 +141,8 @@ def clear_history(thread_id: str) -> None:
 async def delete_history(conn: aiosqlite.Connection, thread_id: str) -> None:
     """Erase side history in the caller's thread-deletion transaction.
 
-    Advancing the epoch keeps answers still in progress from restoring it.
+    Keep an empty tombstone row whose advanced epoch keeps answers still in
+    progress from restoring it.
 
     Args:
         conn: Sessions connection whose transaction owns thread deletion.

@@ -31,6 +31,19 @@ _MAX_HISTORY_LENGTH = 128_000
 _UNREADABLE_HISTORY = (
     "Stored /btw history could not be read. Press Ctrl+X in /btw to clear it."
 )
+_UNAVAILABLE_HISTORY = "Stored /btw history is busy or unavailable. Try again."
+
+
+def _history_error(exc: sqlite3.Error | ValueError) -> JSONResponse:
+    """Log a history storage failure and describe it so the user can act.
+
+    Returns:
+        A recovery hint for malformed history, or a retry hint otherwise.
+    """
+    logger.error("Could not access side history", exc_info=exc)
+    if isinstance(exc, ValueError):
+        return JSONResponse({"detail": _UNREADABLE_HISTORY}, status_code=500)
+    return JSONResponse({"detail": _UNAVAILABLE_HISTORY}, status_code=503)
 
 
 async def _remember(
@@ -183,9 +196,8 @@ async def btw(request: Request) -> Response:
     question = question.strip()
     try:
         history, epoch = await asyncio.to_thread(load_history, thread_id)
-    except ValueError:
-        logger.exception("Could not read side history")
-        return JSONResponse({"detail": _UNREADABLE_HISTORY}, status_code=500)
+    except (sqlite3.Error, ValueError) as exc:
+        return _history_error(exc)
     try:
         if sum(len(q) + len(a) for q, a in history) > _MAX_HISTORY_LENGTH:
             return JSONResponse(
@@ -293,9 +305,8 @@ async def btw_history(request: Request) -> JSONResponse:
         return thread_id
     try:
         history, _ = await asyncio.to_thread(load_history, thread_id)
-    except ValueError:
-        logger.exception("Could not read side history")
-        return JSONResponse({"detail": _UNREADABLE_HISTORY}, status_code=500)
+    except (sqlite3.Error, ValueError) as exc:
+        return _history_error(exc)
     return JSONResponse({"history": history})
 
 
@@ -308,5 +319,8 @@ async def btw_clear(request: Request) -> JSONResponse:
     thread_id = await _bound_thread(request)
     if isinstance(thread_id, JSONResponse):
         return thread_id
-    await asyncio.to_thread(clear_history, thread_id)
+    try:
+        await asyncio.to_thread(clear_history, thread_id)
+    except sqlite3.Error as exc:
+        return _history_error(exc)
     return JSONResponse({"history": []})

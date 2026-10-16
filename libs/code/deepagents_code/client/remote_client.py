@@ -641,7 +641,11 @@ class RemoteAgent:
         except APIStatusError as exc:
             body = exc.body
             detail = body.get("detail") if isinstance(body, dict) else None
-            msg = detail if isinstance(detail, str) else "The server rejected /btw."
+            msg = (
+                detail
+                if isinstance(detail, str)
+                else f"The /btw history request failed (HTTP {exc.status_code})."
+            )
             raise RuntimeError(msg) from exc
         except TimeoutError as exc:
             msg = "Timed out reaching the server for /btw history. Try again."

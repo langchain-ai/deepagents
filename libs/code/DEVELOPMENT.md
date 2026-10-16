@@ -91,6 +91,30 @@ When onboarding a new tracing project to Engine, capture the nature of that proj
 
 A server keeps the first workspace's tracing configuration for its lifetime. Workspaces sharing that server must use matching tracing credentials, projects, endpoints, profile selectors, tracing flags, and redaction policy. A conflicting workspace is refused before its settings can affect cached or concurrent runs; start a separate server for that workspace. Restart the server to change its tracing configuration.
 
+## Idle context compaction
+
+Idle compaction is disabled by default. When enabled, the interactive client
+automatically uses the existing `/offload` operation for contexts at or above
+the configured token threshold during the final 120 seconds of a known
+prompt-cache retention window. This keeps the same thread and archives older
+messages; it does not create a handoff thread. The configured offload model is
+used, so summarization can incur costs and cache reuse is not guaranteed.
+
+Opt in with a token threshold through the normal layered config:
+
+```toml
+[history]
+idle_compaction_tokens = 100000
+```
+
+Set `idle_compaction_tokens = 0` to disable it again. File edits take effect after
+`/reload`. This setting is independent of cold-cache warning preferences.
+Compaction skips busy sessions, queued input, active typing, modals, lifecycle
+transitions, and approximate token counts. It attempts at most once per thread
+and cache window, announces the operation, and supports Escape cancellation.
+Input arriving before the worker starts skips compaction; input arriving after
+it starts uses the normal offload queue and runs once compaction finishes.
+
 ## Debugging
 
 Deep Agents Code runs as two processes: the **Textual TUI** you interact with, and a **`langgraph dev` subprocess** that hosts the agent graph. Each writes its own log, and a single switch turns both on:

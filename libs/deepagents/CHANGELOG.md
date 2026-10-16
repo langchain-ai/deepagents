@@ -2,6 +2,12 @@
 
 # Deep Agents Changelog
 
+## [0.7.28](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.27...deepagents==0.7.28) (2026-10-16)
+
+### Bug Fixes
+
+- Fixed `ContextHubBackend.glob` to honor the `path` argument.
+
 ## [0.7.27](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.26...deepagents==0.7.27) (2026-10-16)
 
 ### Features

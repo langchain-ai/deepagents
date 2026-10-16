@@ -611,6 +611,46 @@ def test_glob_matches_pattern() -> None:
     assert paths == ["/a.md", "/c.md"]
 
 
+def test_glob_only_matches_files_under_path() -> None:
+    backend, _ = _make_backend(
+        **{
+            "a.md": FileEntry(type="file", content="a"),
+            "nested/b.md": FileEntry(type="file", content="b"),
+            "nested/c.txt": FileEntry(type="file", content="c"),
+            "nested-other/d.md": FileEntry(type="file", content="d"),
+        }
+    )
+    result = backend.glob("*.md", "/nested/")
+    assert result.matches is not None
+    assert [m["path"] for m in result.matches] == ["/nested/b.md"]
+
+
+def test_glob_on_file_path_only_matches_that_file() -> None:
+    backend, _ = _make_backend(
+        **{
+            "instructions.md": FileEntry(type="file", content="a"),
+            ".mda/deploy-manifest.json": FileEntry(type="file", content="{}"),
+            "skills/research/SKILL.md": FileEntry(type="file", content="b"),
+        }
+    )
+    result = backend.glob("**/*", "/instructions.md")
+    assert result.matches is not None
+    assert [m["path"] for m in result.matches] == ["/instructions.md"]
+
+
+def test_glob_under_path_accepts_patterns_from_repo_root() -> None:
+    """Callers that scoped a glob in the pattern, before `path` was honored, keep working."""
+    backend, _ = _make_backend(
+        **{
+            "skills/research/SKILL.md": FileEntry(type="file", content="a"),
+            "memories/AGENTS.md": FileEntry(type="file", content="b"),
+        }
+    )
+    result = backend.glob("skills/**/SKILL.md", "/skills")
+    assert result.matches is not None
+    assert [m["path"] for m in result.matches] == ["/skills/research/SKILL.md"]
+
+
 async def test_glob_refused_pattern_returns_error() -> None:
     """Sync and inherited async glob calls report patterns refused by `wcmatch`."""
     backend, _ = _make_backend()

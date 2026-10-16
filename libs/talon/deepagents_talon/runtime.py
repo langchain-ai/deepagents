@@ -52,6 +52,7 @@ from deepagents_talon.clock import current_time
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
+from deepagents_talon.heads_up import HeadsUpObserver, heads_up_turn
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
@@ -479,6 +480,7 @@ class DeepAgentRuntime:
                 self.backend,
             ),
             ModelSelectionMiddleware(),
+            HeadsUpObserver(),
             ProgressMessages(),
             *self.middleware,
         ]
@@ -716,6 +718,7 @@ class DeepAgentRuntime:
                     if isinstance(self.checkpointer, ConversationSaver)
                     else contextlib.nullcontext(),
                     self._turn_models(request),
+                    heads_up_turn(request, self.env),
                 ):
                     text = await self._invoke_until_text(request, activity)
         except BaseException as error:

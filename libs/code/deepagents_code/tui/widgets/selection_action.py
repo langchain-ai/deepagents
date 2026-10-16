@@ -14,7 +14,6 @@ _TRANSCRIPT_IDS = frozenset(
         "assistant-content",
         "reasoning-body",
         "task-desc",
-        "args-full",
         "output-preview",
         "output-full",
     }
@@ -43,7 +42,8 @@ def _is_transcript_widget(widget: Widget) -> bool:
 
     A `diff-header` widget is always chrome. Otherwise `widget` or one of its
     ancestors must mark transcript content, and `#messages` must contain it,
-    so messages rendered elsewhere (for example in `/btw`) do not qualify.
+    so message widgets rendered anywhere else, such as on another screen, do
+    not qualify.
     """
     if widget.has_class("diff-header"):
         return False

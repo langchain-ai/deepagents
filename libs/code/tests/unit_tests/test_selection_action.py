@@ -1,5 +1,6 @@
 """Tests for asking about selected conversation text."""
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,8 @@ from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,
+    ReasoningMessage,
+    ToolCallMessage,
     UserMessage,
 )
 from deepagents_code.tui.widgets.selection_action import (
@@ -353,8 +356,6 @@ async def test_multiline_quote_keeps_cursor_visible() -> None:
 @pytest.mark.parametrize(
     ("widget", "shown"),
     [
-        (Static("tool output text", id="output-full"), True),
-        (Static("tool args text", classes="tool-args"), True),
         (Static("Waiting for typing to finish..."), False),
         (AppMessage("Checking for updates..."), False),
     ],
@@ -370,6 +371,41 @@ async def test_selection_action_only_for_transcript(
         await _drag_select(pilot, widget)
         assert app.screen.get_selected_text()
         assert bool(app.query(SelectionAction)) is shown
+
+
+@pytest.mark.parametrize(
+    ("message", "selector", "transcript"),
+    [
+        (lambda: ReasoningMessage("thinking"), "#reasoning-body", True),
+        (lambda: ReasoningMessage("thinking"), "#reasoning-hint", False),
+        (
+            lambda: ToolCallMessage("task", {"description": "Audit the repo"}),
+            "#task-desc",
+            True,
+        ),
+        (
+            lambda: ToolCallMessage("custom_tool", {"query": "x"}),
+            ".tool-args",
+            True,
+        ),
+        (lambda: ToolCallMessage("custom_tool"), "#args-full", True),
+        (lambda: ToolCallMessage("custom_tool"), "#output-preview", True),
+        (lambda: ToolCallMessage("custom_tool"), "#output-full", True),
+        (lambda: ToolCallMessage("custom_tool"), "#status", False),
+        (lambda: ToolCallMessage("custom_tool"), "#tool-header", False),
+    ],
+)
+async def test_real_message_parts_are_classified(
+    message: Callable[[], Widget], selector: str, *, transcript: bool
+) -> None:
+    """Content parts of real message widgets are transcript; their chrome is not."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        widget = message()
+        await app.query_one("#messages", Container).mount(widget)
+        await pilot.pause()
+        part = widget.query(selector).first()
+        assert is_transcript_selection([part]) is transcript
 
 
 async def test_selection_action_for_assistant_markdown() -> None:

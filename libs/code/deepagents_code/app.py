@@ -4101,6 +4101,9 @@ class DeepAgentsApp(App):
         self._selection_action: SelectionAction | None = None
         """The mounted "Ask about this" action, if one is showing."""
 
+        self._selection_anchor: tuple[Widget, int] | None = None
+        """A selected widget and its last screen row, for the action to follow."""
+
         self._debug_console_click_to_copy = _load_debug_console_click_to_copy()
         r"""Whether the `Ctrl+\` Debug Console copies on click.
 
@@ -8841,10 +8844,11 @@ class DeepAgentsApp(App):
 
         Driven by `_ChatScroll.Scrolled` (see that message for why hydration
         keys off the scroll offset rather than the scrollbar messages). Also
-        dismisses the selection shortcut, which would otherwise float over
-        text that has moved away from it.
+        moves the "Ask about this" action with its selection once the scroll
+        has been laid out.
         """
-        self._dismiss_selection_action()
+        if self._selection_action is not None:
+            self.call_after_refresh(self._follow_selection_action)
         if (
             self._transcript_prune_timer is not None
             and not self._message_store.hard_window_exceeded()
@@ -24882,7 +24886,35 @@ class DeepAgentsApp(App):
             max(0, y - 1),
         )
         self._selection_action = action
+        anchor = next(iter(screen.selections))
+        self._selection_anchor = (anchor, anchor.region.y)
         await screen.mount(action)
+
+    def _follow_selection_action(self) -> None:
+        """Move the action by as many rows as its selection has scrolled.
+
+        Streaming output scrolls a bottom-anchored chat on every chunk, so
+        dismissing on any scroll would make the action unusable during a run.
+        The action is dismissed once the selection leaves the visible chat.
+        """
+        action, anchor = self._selection_action, self._selection_anchor
+        if action is None or anchor is None:
+            return
+        widget, last_row = anchor
+        region = widget.region
+        try:
+            chat = self.query_one("#chat", VerticalScroll).region
+        except NoMatches:
+            self._dismiss_selection_action()
+            return
+        x, y = action.styles.offset.resolve(action.size, self.screen.size)
+        # The action sits one row above the row where the selection ended.
+        row = y + 1 + region.y - last_row
+        if not region or not chat.y <= row < chat.bottom:
+            self._dismiss_selection_action()
+            return
+        action.styles.offset = (x, row - 1)
+        self._selection_anchor = (widget, region.y)
 
     def on_selection_action_ask(self, event: SelectionAction.Ask) -> None:
         """Quote the selected text into the draft as a Markdown blockquote.
@@ -24943,6 +24975,7 @@ class DeepAgentsApp(App):
     def _dismiss_selection_action(self) -> None:
         """Remove the "Ask about this" action if one is showing."""
         action, self._selection_action = self._selection_action, None
+        self._selection_anchor = None
         if action is not None and action.is_attached:
             action.remove()
 

@@ -81,10 +81,11 @@ class AsyncSubAgent(TypedDict):
         (no `url`) send the parent's LangSmith trace headers, so a receiver can
         nest the subagent's run under the parent's trace. This may change.
 
-        Each task's thread is created with `metadata={"parent_thread_id": ...}`,
-        so apps can find a parent's subagent threads with `threads.search`, and
-        a subagent's graph factory can read it from its run's
-        `config["metadata"]`. This may change.
+        Each task's thread is created with
+        `metadata={"subagent_name": ..., "parent_thread_id": ...}`, so apps can
+        find a parent's subagent threads with `threads.search`, and a subagent's
+        graph factory can read them from its run's `config["metadata"]`.
+        `subagent_name` is this spec's `name`. This may change.
 
         Subagents on this deployment run with the parent's run context.
     """
@@ -343,12 +344,15 @@ def _reference_for(spec: AsyncSubAgent, runtime: ToolRuntime) -> _ParentReferenc
 def _thread_metadata(spec: AsyncSubAgent, runtime: ToolRuntime) -> dict[str, str]:
     """Metadata for a task's thread, so apps can find a parent's subagent threads with `threads.search`.
 
-    For subagents on this deployment, it also keeps the parent's assistant, so runs
-    started elsewhere on the thread (such as the user answering the subagent) can
-    still notify the parent.
+    It names the subagent as the parent knows it, so its notifications match the
+    parent's tracked task. For subagents on this deployment, it also keeps the
+    parent's assistant, so runs started elsewhere on the thread (such as the user
+    answering the subagent) can still notify the parent.
     """
     reference = _reference_for(spec, runtime)
-    metadata = {"parent_thread_id": reference["thread_id"]} if "thread_id" in reference else {}
+    metadata = {"subagent_name": spec["name"]}
+    if "thread_id" in reference:
+        metadata["parent_thread_id"] = reference["thread_id"]
     if "assistant_id" in reference:
         metadata["parent_assistant_id"] = reference["assistant_id"]
     return metadata

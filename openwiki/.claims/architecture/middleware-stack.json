@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:b5a841d8bef5ba1ccaab54202abe0d91e4dbfc3494e8e55fb7002fa9f925c94d",
+  "pageVersion": "sha256:fa8c42461603e14e1f71df0a5d4877286b009947a576c42ae9071d79a1f9639e",
   "claims": [
     {
       "id": "claim_bc674aacf0874840a042084e9e86b93b",
@@ -8,7 +8,7 @@
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py#L888-L969",
-          "version": "repo-lines-v1:sha256:c8dc48f01b1f09a647bc6643097b7bfdf64b703960998b3308f149760f95b3cd:eyJzZWxlY3RlZExpbmVDb3VudCI6ODIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczZDQyN2Q4MzdjM2M5NTZhNzA2NmQ5NTQ3Y2ZkNzNlYWFiNWJiZjM1MDlhNzI1OTJjMTE1OTg5NmFhOWNjODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmOGQyNGRhMjI3NGM2MTFiMDc5ZjFhMWIwYTMyMmRmMjg3MzVmNDIxMDhjZGNhNmJkMzkxM2YzMTlkYmEwZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImExNjQ5YWQxOWU3NDQ1YWYwZjY0NDA0ZTBkMDViZGY1OWM5MTdhODU4ODMzMTU4ZGM4YjUwODM0ZjM3ZjllN2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1NzAxMmNhNDg0YWE3OTJhMTQ5YWVkYzIzZDRhODYyMTVhZTg0ZjcwY2VkODc4NjNhNWQ1MGUwOTgzMDY0MDYifQ"
+          "version": "repo-lines-v1:sha256:b34094b1fd56ef22cd639e7ed17cf30a8f93820c2bd2ec80818861e2880f9de9:eyJzZWxlY3RlZExpbmVDb3VudCI6ODMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczZDQyN2Q4MzdjM2M5NTZhNzA2NmQ5NTQ3Y2ZkNzNlYWFiNWJiZjM1MDlhNzI1OTJjMTE1OTg5NmFhOWNjODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJmOGQyNGRhMjI3NGM2MTFiMDc5ZjFhMWIwYTMyMmRmMjg3MzVmNDIxMDhjZGNhNmJkMzkxM2YzMTlkYmEwZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImExNjQ5YWQxOWU3NDQ1YWYwZjY0NDA0ZTBkMDViZGY1OWM5MTdhODU4ODMzMTU4ZGM4YjUwODM0ZjM3ZjllN2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg1NzAxMmNhNDg0YWE3OTJhMTQ5YWVkYzIzZDRhODYyMTVhZTg0ZjcwY2VkODc4NjNhNWQ1MGUwOTgzMDY0MDYifQ"
         }
       ]
     },
@@ -191,10 +191,20 @@
           "version": "repo-lines-v1:sha256:eb40be532c10cf1a8b01ffbb1c30c18a2f945ba3dafa2186b60ea966284e16b4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI1MGU3NDQxMDE5YzdmN2RmMzgzMjIxYzFlMDFjM2VkOGEzOWIyOTRjZmI2NGFjYWU2NTExYzdmMjAzYmU4ZmMxIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJlY2Q5YjUwZDgwYjc3ZTkzY2FhZjk2NGFhYWYyNTg1MjJhOWUyYWQzMTdhY2RlOGUyYWU2NzllM2ZlNWNkNDEyIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiJiNTExYmJjMzdmYWFjMWQwM2U1MzlmNTk2YmM2OTE3YzlmZGUzM2RkOWJmYjRmZjJjNmI4NGE4ZmMxZGNlZTE4IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiIyYTFmNWNkODUxYzcxOTY2NjcyYTEyM2MxMDQzMTQ1Y2NiZTgxZWY1OThlYWVhODI2ZjQ1YWZlYjRhZDA3YzA3In0"
         }
       ]
+    },
+    {
+      "id": "claim_21e7b5890e9d4b94a1ff64431582e76b",
+      "statement": "The main core includes _ParentNotifierMiddleware between the optional synchronous SubAgentMiddleware and summarization middleware, so a novel caller middleware is inserted after that notifier as part of the core.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/graph.py#L893-L930",
+          "version": "repo-lines-v1:sha256:fa9a25e642dfa95d38e8f1eaf08b259417bfa3da1d88fe134e9a786efe497313:eyJzZWxlY3RlZExpbmVDb3VudCI6MzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjczZDQyN2Q4MzdjM2M5NTZhNzA2NmQ5NTQ3Y2ZkNzNlYWFiNWJiZjM1MDlhNzI1OTJjMTE1OTg5NmFhOWNjODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdjNDQ0NmFkMmViMmY4NzE1YThmZTliNGZlMWRhMDhlMTdiYzQ0ZDIzYWMwNjQ5OWM1NTZiNzU3M2QwZDdjMDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImExNjQ5YWQxOWU3NDQ1YWYwZjY0NDA0ZTBkMDViZGY1OWM5MTdhODU4ODMzMTU4ZGM4YjUwODM0ZjM3ZjllN2IiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdhODNjZTczZjNhZDJjMzBhY2JjMjA4N2Y1NWJmZWUyN2VhMzYxYjVkODZkMzAwN2YzNDZmZGE5MGU5NzYyMjIifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-13T08:11:05.854Z"
+    "at": "2026-10-16T08:05:35.701Z"
   }
 }

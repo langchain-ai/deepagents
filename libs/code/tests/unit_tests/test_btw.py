@@ -1854,6 +1854,8 @@ async def test_failed_history_requests_notify_without_dropping_transcript(
         await pilot.pause()
         clear.assert_awaited_once_with()
         assert "[/tmp] unreachable" in notify.call_args.args[0]
+        # The clear may have reached the server, so the notice asks for a retry.
+        assert "Press Ctrl+X to try again" in notify.call_args.args[0]
         assert notify.call_args.kwargs["markup"] is False
         screen = app.screen
         assert [widget.raw_text for widget in screen.query(UserMessage)] == ["Kept"]

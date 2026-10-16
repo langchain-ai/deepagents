@@ -363,8 +363,11 @@ class BtwScreen(ModalScreen[None]):
                 await self._on_clear()
             except Exception as exc:
                 logger.debug("Could not clear side history", exc_info=True)
+                # A request that timed out or lost its response may still have
+                # cleared the server; retrying a clear is harmless.
                 self.notify(
-                    f"Could not clear /btw history: {_describe(exc)}",
+                    f"Could not confirm the /btw history was cleared: "
+                    f"{_describe(exc)}\nPress Ctrl+X to try again.",
                     severity="error",
                     markup=False,
                 )

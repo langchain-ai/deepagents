@@ -1,6 +1,6 @@
 """Floating action for asking about selected conversation text."""
 
-from collections.abc import Iterable
+from collections.abc import Collection
 
 from textual.events import Click, MouseUp
 from textual.message import Message
@@ -27,16 +27,15 @@ SELECTION_ACTION_WIDTH = len(_LABEL) + 2
 """Cells the action occupies: its label plus one cell of padding per side."""
 
 
-def is_transcript_selection(widgets: Iterable[Widget]) -> bool:
-    """Return whether every selected widget shows transcript text.
+def is_transcript_selection(widgets: Collection[Widget]) -> bool:
+    """Return whether a non-empty selection shows only transcript text.
 
     Headers, toggles, hints, status lines, notices, and inline prompts in the
     conversation are UI chrome, so a selection that touches one is rejected.
     `UserMessage` and `DiffMessage` count as transcript as a whole, apart from
-    a diff header. An empty selection returns `True`, so callers must check
-    for one first.
+    a diff header.
     """
-    return all(_is_transcript_widget(widget) for widget in widgets)
+    return bool(widgets) and all(_is_transcript_widget(widget) for widget in widgets)
 
 
 def _is_transcript_widget(widget: Widget) -> bool:
@@ -112,4 +111,3 @@ class SelectionAction(Static):
         """Send the captured text to the chat input."""
         event.stop()
         self.post_message(self.Ask(self.selected_text))
-        self.remove()

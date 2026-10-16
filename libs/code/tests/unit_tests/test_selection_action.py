@@ -23,6 +23,13 @@ from deepagents_code.tui.widgets.selection_action import (
 )
 
 
+async def _drag_select(pilot: Pilot[None], widget: Widget) -> None:
+    await pilot.mouse_down(widget, offset=(0, 0))
+    await pilot.hover(widget, offset=(8, 0))
+    await pilot.mouse_up(widget, offset=(8, 0))
+    await pilot.pause()
+
+
 async def test_selection_action_preserves_draft_and_focus() -> None:
     """A real drag and click inserts the selection without sending the draft."""
     app = DeepAgentsApp()
@@ -36,10 +43,7 @@ async def test_selection_action_preserves_draft_and_focus() -> None:
         message = UserMessage("selected text")
         await app.query_one("#messages", Container).mount(message)
         await pilot.pause()
-        await pilot.mouse_down(message, offset=(0, 0))
-        await pilot.hover(message, offset=(8, 0))
-        await pilot.mouse_up(message, offset=(8, 0))
-        await pilot.pause()
+        await _drag_select(pilot, message)
         action = app.query_one(SelectionAction)
         selected = action.selected_text
         assert selected.strip()
@@ -105,10 +109,7 @@ async def test_selection_action_config(
         message = UserMessage("selected text")
         await app.query_one("#messages", Container).mount(message)
         await pilot.pause()
-        await pilot.mouse_down(message, offset=(0, 0))
-        await pilot.hover(message, offset=(8, 0))
-        await pilot.mouse_up(message, offset=(8, 0))
-        await pilot.pause()
+        await _drag_select(pilot, message)
         assert app.screen.get_selected_text()
         assert bool(app.query(SelectionAction)) is enabled
 
@@ -237,13 +238,6 @@ async def test_multiline_quote_keeps_cursor_visible() -> None:
         assert area.scroll_y > 0
 
 
-async def _drag_select(pilot: Pilot[None], widget: Widget) -> None:
-    await pilot.mouse_down(widget, offset=(0, 0))
-    await pilot.hover(widget, offset=(8, 0))
-    await pilot.mouse_up(widget, offset=(8, 0))
-    await pilot.pause()
-
-
 @pytest.mark.parametrize(
     ("widget", "shown"),
     [
@@ -289,6 +283,7 @@ async def test_selection_spanning_chrome_is_not_transcript() -> None:
         await app.query_one("#messages", Container).mount(message, status)
         await pilot.pause()
         assert is_transcript_selection([message])
+        assert not is_transcript_selection([])
         assert not is_transcript_selection([message, status])
         assert not is_transcript_selection([app.query_one("#welcome-banner")])
 

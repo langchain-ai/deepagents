@@ -86,6 +86,8 @@ class BtwScreen(ModalScreen[None]):
         self._spinner = Spinner()
         self._spinner_timer: Timer | None = None
         self._pending = False
+        # Clearing while history loads would cancel the initial question unseen.
+        self._loading = True
         # Content may grow before the deferred scroll runs; retain follow intent
         # through that layout so stream completion cannot mistake it for a scroll up.
         self._follow_pending = False
@@ -145,7 +147,7 @@ class BtwScreen(ModalScreen[None]):
                     markup=False,
                 )
         await self._restore_history(history)
-        self._pending = False
+        self._pending = self._loading = False
         editor = self.query_one(BtwTextArea)
         editor.disabled = False
         if self._question:
@@ -321,6 +323,8 @@ class BtwScreen(ModalScreen[None]):
 
     async def action_clear(self) -> None:
         """Cancel the side answer and start fresh without closing the modal."""
+        if self._loading:
+            return
         self._stop_spinner()
         # Finish cancellation before removing widgets or resetting history so a
         # late answer cannot repopulate the new conversation.

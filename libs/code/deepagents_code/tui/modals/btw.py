@@ -326,8 +326,9 @@ class BtwScreen(ModalScreen[None]):
         if self._loading:
             return
         self._stop_spinner()
-        # Finish cancellation before removing widgets or resetting history so a
-        # late answer cannot repopulate the new conversation.
+        # Finish cancellation before removing widgets so a late answer cannot
+        # render into the new transcript. The server's epoch keeps it out of
+        # the stored history.
         for worker in self.workers.cancel_node(self):
             with suppress(WorkerCancelled):
                 await worker.wait()
@@ -352,7 +353,7 @@ class BtwScreen(ModalScreen[None]):
         editor.focus()
 
     def _resume_editor(self) -> None:
-        """Keep the transcript the server still holds, but accept a new question."""
+        """Leave the transcript in place after a failed clear and accept input."""
         self._pending = self._follow_pending = False
         self.query_one("#btw-loading").display = False
         editor = self.query_one(BtwTextArea)

@@ -603,7 +603,7 @@ class RemoteAgent:
         return history
 
     async def aclear_btw_history(self, *, config: Mapping[str, Any]) -> None:
-        """Erase this thread's side history, including answers in progress.
+        """Erase this thread's side history. Answers in progress are not stored.
 
         Args:
             config: Configuration identifying the main conversation.

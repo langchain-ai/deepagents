@@ -297,7 +297,7 @@ async def btw_history(request: Request) -> JSONResponse:
 
 
 async def btw_clear(request: Request) -> JSONResponse:
-    """Empty the side history and discard answers still in progress.
+    """Empty the side history so answers still in progress are not stored.
 
     Returns:
         The now-empty history, or a safe error response.

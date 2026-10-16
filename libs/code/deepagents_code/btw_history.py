@@ -122,7 +122,7 @@ def append_exchange(thread_id: str, epoch: int, question: str, answer: str) -> b
 
 
 def clear_history(thread_id: str) -> None:
-    """Empty a thread's side history and discard answers still in progress.
+    """Empty a thread's side history so answers still in progress are not stored.
 
     Args:
         thread_id: Main thread that owns the side conversation.

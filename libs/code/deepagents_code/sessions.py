@@ -1809,12 +1809,13 @@ async def rename_thread(
 
 
 async def delete_thread(thread_id: str) -> bool:
-    """Delete thread checkpoints, side-question costs and history, and offloads.
+    """Delete thread checkpoints, `/btw` costs and history, and offloaded files.
 
-    Removes the thread's checkpoint/write rows, then makes a best-effort attempt
-    to remove the per-thread compaction archive and handoff snapshots under
-    `~/.deepagents` (local mode) so deletion does not leave orphaned history
-    behind. History cleanup failures are logged, not raised, and do not affect
+    Removes the thread's checkpoint/write rows and erases its side-question
+    costs and history in the same transaction. It then makes a best-effort
+    attempt to remove the per-thread compaction archive and handoff snapshots
+    under `~/.deepagents` (local mode) so deletion does not leave orphaned files
+    behind. Offload cleanup failures are logged, not raised, and do not affect
     the return value, which reflects only whether checkpoint rows were removed.
 
     Returns:

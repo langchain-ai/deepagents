@@ -536,7 +536,7 @@ class RemoteAgent:
                 the exchange, so follow-ups will not see it.
 
         Returns:
-            The ephemeral answer.
+            The answer text. It is not added to the main conversation.
 
         Raises:
             RuntimeError: If the server cannot complete the side question.

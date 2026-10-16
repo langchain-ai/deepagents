@@ -3848,10 +3848,20 @@ class ChatInput(Vertical):
         if not self._text_area:
             return False
         self._text_area.insert(text, maintain_selection_offset=False)
-        self._text_area.call_after_refresh(
-            self._text_area.scroll_cursor_visible, animate=False
-        )
+        self._text_area.call_after_refresh(self._settle_cursor_after_insert)
         return True
+
+    def _settle_cursor_after_insert(self) -> None:
+        """Reveal the cursor and re-place the terminal cursor after layout.
+
+        `TextArea` sets `app.cursor_position` during the edit, before a
+        multi-line insert grows the chat input. Without a refresh the terminal
+        cursor stays at the pre-resize offset, below the chat input.
+        """
+        if not self._text_area:
+            return
+        self._text_area.scroll_cursor_visible(animate=False)
+        self.app.cursor_position = self._text_area.cursor_screen_offset
 
     @property
     def _prompt_search_active(self) -> bool:

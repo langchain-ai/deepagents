@@ -64,7 +64,7 @@ def _is_transcript_widget(widget: Widget) -> bool:
 def quote_after(draft: str, text: str) -> str:
     """Return `text` as a Markdown blockquote to append after `draft`.
 
-    A non-empty draft gets exactly one blank line before the quote, and the
+    A non-empty draft gets at least one blank line before the quote, and the
     quote ends with a blank line so the user can type below it.
     """
     quote = "\n".join("> " + line for line in text.split("\n"))

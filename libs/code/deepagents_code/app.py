@@ -24843,7 +24843,9 @@ class DeepAgentsApp(App):
         empties the stack runs after the message loop has stopped.
 
         The same captured screen goes to `_show_selection_action`, which skips
-        modal screens and any screen that is no longer active by then.
+        any screen that is no longer active by then. A modal needs no check of
+        its own: only the main screen holds `#messages`, so no selection on a
+        modal counts as transcript text.
         """
         from deepagents_code.clipboard import copy_selection_to_clipboard
 
@@ -24866,7 +24868,6 @@ class DeepAgentsApp(App):
         if (
             not self._ask_about_selection
             or screen is not self.screen
-            or isinstance(screen, ModalScreen)
             or not self._chat_input
             or self._inline_prompt_pending()
             or not is_transcript_selection(screen.selections)

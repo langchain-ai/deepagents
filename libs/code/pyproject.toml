@@ -27,7 +27,7 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.7.26",
+    "deepagents==0.7.27",
     "langchain>=1.4.6,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.1.2,<4.0.0",
 

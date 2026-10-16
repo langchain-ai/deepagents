@@ -620,9 +620,10 @@ class RemoteAgent:
             The decoded response body.
 
         Raises:
-            RuntimeError: If the server is outdated, rejects the request, or
-                does not answer in time.
+            RuntimeError: If the server is outdated, unreachable, rejects the
+                request, or does not answer in time.
         """
+        import httpx
         from langgraph_sdk.errors import APIStatusError, NotFoundError
 
         thread_id = _require_thread_id(config)
@@ -650,6 +651,9 @@ class RemoteAgent:
             raise RuntimeError(msg) from exc
         except TimeoutError as exc:
             msg = "Timed out reaching the server for /btw history. Try again."
+            raise RuntimeError(msg) from exc
+        except httpx.TransportError as exc:
+            msg = "Could not reach the server for /btw history. Try again."
             raise RuntimeError(msg) from exc
 
     async def _stream_btw(

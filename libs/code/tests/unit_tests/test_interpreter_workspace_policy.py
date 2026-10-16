@@ -195,3 +195,25 @@ def test_unsafe_all_still_requires_acknowledgement(policy_resolver):
         )
         == []
     )
+
+
+async def test_target_workspace_environment_keeps_runtime_policy(
+    tmp_path, policy_resolver, monkeypatch
+):
+    from deepagents_code import server_graph
+    from deepagents_code.config import _preview_dotenv_environ, use_environment
+    from deepagents_code.workspace import resolve_workspace
+
+    policy_resolver('[interpreter]\nptc = ["task"]\n')
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / ".env").write_text("WORKSPACE_ONLY=target\n")
+    launch = ServerConfig(cwd=str(tmp_path), enable_interpreter=True)
+    identity = resolve_workspace(str(target))
+    scoped = launch.resolve_workspace(identity.cwd, identity.project_root)
+    binding = resolve_workspace(str(target), scoped.to_workspace_payload())
+    monkeypatch.setattr(ServerConfig, "from_env", lambda: launch)
+    resolved = await server_graph._resolve_bound_workspace_config(binding)
+    with use_environment(_preview_dotenv_environ(start_path=target)):
+        runtime = InterpreterConfig.from_resolver(ptc=resolved.interpreter_ptc)
+    assert runtime.ptc == binding.workspace_config()["interpreter_ptc"] == ["task"]

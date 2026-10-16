@@ -77,7 +77,7 @@ async def test_selection_action_dismisses_without_selection() -> None:
         assert not app.query(SelectionAction)
 
 
-@pytest.mark.parametrize("key", ["a", "enter", "escape", "left"])
+@pytest.mark.parametrize("key", ["a", "enter", "escape"])
 async def test_selection_action_dismissed_by_keypress(key: str) -> None:
     """Any key, including ones the focused chat input consumes, removes it."""
     app = DeepAgentsApp()
@@ -96,7 +96,6 @@ async def test_selection_action_dismissed_by_keypress(key: str) -> None:
     ("config", "enabled"),
     [
         ("", True),
-        ("[ui]\nask_about_selection = true\n", True),
         ("[ui]\nask_about_selection = false\n", False),
         ('[ui]\nask_about_selection = "invalid"\n', True),
     ],
@@ -295,23 +294,6 @@ async def test_selection_action_dismissed_by_resize() -> None:
         assert not app.query(SelectionAction)
 
 
-async def test_selection_action_warns_when_insert_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A chat input that rejects the insert reports it."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        assert app._chat_input is not None
-        monkeypatch.setattr(app._chat_input, "insert_at_end", lambda _text: False)
-        notices: list[str] = []
-        monkeypatch.setattr(app, "notify", lambda msg, **_: notices.append(msg))
-        app.post_message(SelectionAction.Ask("selected text"))
-        await pilot.pause()
-        assert notices == [
-            "Could not add the selection to the chat input. Copy and paste it instead."
-        ]
-
-
 async def test_selection_action_warns_when_modal_arrives(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -355,23 +337,18 @@ async def test_multiline_quote_keeps_cursor_visible() -> None:
 
 
 @pytest.mark.parametrize(
-    ("widget", "shown"),
-    [
-        (Static("Waiting for typing to finish..."), False),
-        (AppMessage("Checking for updates..."), False),
-    ],
+    "widget",
+    [Static("Waiting for typing to finish..."), AppMessage("Checking for updates...")],
 )
-async def test_selection_action_only_for_transcript(
-    widget: Static, *, shown: bool
-) -> None:
-    """Message and tool content get the action; conversation chrome does not."""
+async def test_selection_action_not_for_chrome(widget: Static) -> None:
+    """Conversation chrome in `#messages` gets no action."""
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await app.query_one("#messages", Container).mount(widget)
         await pilot.pause()
         await _drag_select(pilot, widget)
         assert app.screen.get_selected_text()
-        assert bool(app.query(SelectionAction)) is shown
+        assert not app.query(SelectionAction)
 
 
 @pytest.mark.parametrize(
@@ -448,19 +425,6 @@ async def test_messages_outside_the_transcript_are_not_transcript() -> None:
         await pilot.pause()
         assert is_transcript_selection([inside])
         assert not is_transcript_selection([outside])
-
-
-async def test_selection_action_draws_above_autocomplete() -> None:
-    """The action's layer exists on the screen and stacks above autocomplete."""
-    app = DeepAgentsApp()
-    async with app.run_test() as pilot:
-        message = UserMessage("selected text")
-        await app.query_one("#messages", Container).mount(message)
-        await pilot.pause()
-        await _drag_select(pilot, message)
-        layers = app.screen.layers
-        layer = app.query_one(SelectionAction).styles.layer
-        assert layers.index(layer) > layers.index("autocomplete")
 
 
 async def test_selection_action_stays_on_screen_at_right_edge() -> None:

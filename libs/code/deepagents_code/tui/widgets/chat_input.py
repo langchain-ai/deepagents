@@ -3842,6 +3842,9 @@ class ChatInput(Vertical):
     def insert_at_cursor(self, text: str) -> bool:
         """Insert text at the current cursor through the undoable edit path.
 
+        Leaves the cursor after the inserted text and keeps it visible once the
+        chat input reflows.
+
         Returns:
             Whether the text area was available for insertion.
         """

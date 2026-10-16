@@ -24931,7 +24931,7 @@ class DeepAgentsApp(App):
     def on_mouse_up(self, event: MouseUp) -> None:
         """Copy the selection and offer "Ask about this" after selection updates.
 
-        The scan is pinned to the active screen captured here, not resolved
+        The clipboard scan is pinned to the active screen captured here, not resolved
         inside the deferred callback. Textual routes mouse events only to the
         top of the screen stack (`App.on_event` forwards to `self.screen`), so
         that is necessarily where the release landed. Without pinning, a
@@ -24960,7 +24960,7 @@ class DeepAgentsApp(App):
         )
 
     async def _show_selection_action(self, screen: Screen, x: int, y: int) -> None:
-        """Replace any existing shortcut with one for the current selection.
+        """Replace any existing "Ask about this" action with one for the selection.
 
         The old action is always removed first, so a click that leaves no
         transcript selection also clears a stale one.
@@ -25071,7 +25071,7 @@ class DeepAgentsApp(App):
             action.remove()
 
     async def on_event(self, event: Event) -> None:
-        """Dismiss the selection shortcut on any key before it is dispatched.
+        """Dismiss the "Ask about this" action on any key before it is dispatched.
 
         The focused `TextArea` stops printable keys, Enter, and Escape, so an
         `on_key` handler on the app never sees ordinary typing.

@@ -4093,6 +4093,10 @@ class DeepAgentsApp(App):
         self._ask_about_selection = _load_bool_display_preference(
             "display.ask_about_selection", fallback=True
         )
+        """Whether selecting conversation text shows "Ask about this".
+
+        Read once at startup from `[ui].ask_about_selection`. On by default.
+        """
 
         self._selection_action: SelectionAction | None = None
         """The mounted "Ask about this" action, if one is showing."""
@@ -24838,8 +24842,8 @@ class DeepAgentsApp(App):
             return
         self.call_after_refresh(self._chat_input.focus_input)
 
-    def on_mouse_up(self, event: MouseUp) -> None:  # Textual event handler signature
-        """Copy selection to clipboard after click-chain selection updates.
+    def on_mouse_up(self, event: MouseUp) -> None:
+        """Copy the selection and offer "Ask about this" after selection updates.
 
         The scan is pinned to the active screen captured here, not resolved
         inside the deferred callback. Textual routes mouse events only to the
@@ -24852,6 +24856,9 @@ class DeepAgentsApp(App):
         `self.screen` needs no empty-stack guard: `App.on_event` already
         dereferenced it to forward this `MouseUp`, and the only code that
         empties the stack runs after the message loop has stopped.
+
+        The same captured screen goes to `_show_selection_action`, which skips
+        modal screens and any screen that is no longer active by then.
         """
         from deepagents_code.clipboard import copy_selection_to_clipboard
 
@@ -24866,7 +24873,11 @@ class DeepAgentsApp(App):
             )
 
     async def _show_selection_action(self, screen: Screen, x: int, y: int) -> None:
-        """Offer a prompt shortcut for selections in the conversation."""
+        """Replace any existing shortcut with one for the current selection.
+
+        The old action is always removed first, so a click that leaves no
+        transcript selection also clears a stale one.
+        """
         self._dismiss_selection_action()
         if (
             not self._ask_about_selection
@@ -24889,7 +24900,10 @@ class DeepAgentsApp(App):
         await screen.mount(action)
 
     def on_selection_action_ask(self, event: SelectionAction.Ask) -> None:
-        """Bring selected text into the draft without interrupting inline prompts."""
+        """Quote the selected text into the draft as a Markdown blockquote.
+
+        Does nothing while an inline prompt or a modal screen is active.
+        """
         if self._inline_prompt_pending():
             # The action is hidden while a prompt waits, but one can arrive
             # between showing the action and the click.

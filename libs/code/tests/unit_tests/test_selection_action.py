@@ -172,6 +172,32 @@ async def test_selection_action_warns_when_prompt_arrives(
         assert notices == ["Answer the pending prompt before adding the selection"]
 
 
+@pytest.mark.parametrize(
+    ("draft", "cursor", "expected"),
+    [
+        ("please fix this", (0, 3), "please fix this\n\n> q\n\n"),
+        ("please fix this", (0, 0), "please fix this\n\n> q\n\n"),
+        ("> a\n\n", (0, 0), "> a\n\n> q\n\n"),
+        ("note\n", (1, 0), "note\n\n> q\n\n"),
+    ],
+)
+async def test_selection_action_appends_after_draft(
+    draft: str, cursor: tuple[int, int], expected: str
+) -> None:
+    """The quote goes after the draft with one blank line, wherever the cursor is."""
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        assert app._chat_input is not None
+        area = app._chat_input._text_area
+        assert area is not None
+        area.load_text(draft)
+        area.move_cursor(cursor)
+        app.post_message(SelectionAction.Ask("q"))
+        await pilot.pause()
+        assert area.text == expected
+        assert area.cursor_location == area.document.end
+
+
 @pytest.mark.parametrize("mode", ["shell", "shell_incognito", "command"])
 async def test_selection_action_leaves_empty_special_mode(mode: str) -> None:
     """An empty shell or command draft switches to normal before the quote."""
@@ -245,7 +271,7 @@ async def test_selection_action_warns_when_insert_fails(
         await app.query_one("#messages", Container).mount(message)
         await pilot.pause()
         await _drag_select(pilot, message)
-        monkeypatch.setattr(app._chat_input, "insert_at_cursor", lambda _text: False)
+        monkeypatch.setattr(app._chat_input, "insert_at_end", lambda _text: False)
         notices: list[str] = []
         monkeypatch.setattr(app, "notify", lambda msg, **_: notices.append(msg))
         app.post_message(SelectionAction.Ask("selected text"))

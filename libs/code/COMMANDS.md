@@ -49,7 +49,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/scrollbar` |  | Show or hide the chat scrollbar |
 | `/skill-creator` |  | Create or refine agent skills |
 | `/theme` |  | Change color theme |
-| `/threads` |  | Browse and resume past threads |
+| `/threads` | `/resume` | Browse and resume past threads |
 | `/timestamps` |  | Show or hide message timestamps |
 | `/tokens` |  | Show token usage |
 | `/tools` |  | List the tools available to the agent |

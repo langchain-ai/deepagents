@@ -1,14 +1,18 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:d26a70ce7613bd61793e67df474b5e9dc811844c54b18721636d758bc151d82a",
+  "pageVersion": "sha256:6327e92256b879015177a06188c7d4a17ee87b741111288b30ab856c525874f0",
   "claims": [
     {
       "id": "claim_7e77f7ec620944c29e36936e3abea92f",
-      "statement": "The repository is an independently versioned Python monorepo: the SDK is deepagents 0.7.26, dcode is 0.1.85, ACP is 0.0.13, Talon is 0.0.9, and evals is 0.0.1; Release Please has release lines for the first four and five partners but not evals, and is configured for separate draft pull requests without automatic GitHub releases.",
+      "statement": "The repository is an independently versioned Python monorepo: the SDK is deepagents 0.7.28, dcode is 0.1.86, ACP is 0.0.13, Talon is 0.0.9, and evals is 0.0.1; Release Please has release lines for the first four and five partners but not evals, creates separate draft release pull requests, and delegates PyPI and GitHub release creation to the release workflow after a release PR is merged.",
       "evidence": [
         {
+          "resource": "repo://.github/RELEASING.md",
+          "version": "repo-file-v1:sha256:9bd7464627062084936795312a9bf73bcf5f93c2696d6c9e2f34041a456a95a8"
+        },
+        {
           "resource": "repo://.release-please-manifest.json",
-          "version": "repo-file-v1:sha256:4d0df6ad2af63f32a255a02210eb4df1b06ffffb39830d4dda66b0eb0abec096"
+          "version": "repo-file-v1:sha256:49f7fd716935c53332718551b9d0c62972f2f59a2dcb631ba7209e49fa2b42fd"
         },
         {
           "resource": "repo://libs/acp/pyproject.toml",
@@ -16,11 +20,11 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:c55fd6125a04af4124e625ed4ea44331c28d9bc353787fda5e0350aced8dbb07"
+          "version": "repo-file-v1:sha256:f2f280a8499dc76d371202dda329ba59846fb8e509c3a0902981cb6ee88b24de"
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml",
-          "version": "repo-file-v1:sha256:a23e84bfcbfb2c749306d7003dba7c855aa4b71b2023000fb3a0cabc0d41c84c"
+          "version": "repo-file-v1:sha256:b3ab370eee9c74b350923154560eac2d90618057cdfae82f572fa53723c5cdbb"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml",
@@ -28,7 +32,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:56ee3c71d27439faad3f70971172e89dd661d8d7d83697f5f2296c5c96b90aa4"
+          "version": "repo-file-v1:sha256:5d2cb61c60626642b8b5d714012b3c0d6f4301bb555285742fcf94c226c6ed96"
         },
         {
           "resource": "repo://release-please-config.json",
@@ -38,7 +42,7 @@
     },
     {
       "id": "claim_c476cf01e3534db9823db06bc72373e9",
-      "statement": "Published dependencies flow from ACP to the SDK, dcode to ACP and pinned deepagents==0.7.26, Talon to the SDK and dcode, evals to the SDK and dcode, and QuickJS to the 0.7.x SDK; `uv` source mappings replace selected dependencies with editable local checkouts during monorepo development.",
+      "statement": "Published dependencies flow from ACP to the SDK, dcode to ACP, QuickJS, and pinned deepagents==0.7.28, Talon to the SDK and dcode, evals to the SDK, dcode, and QuickJS, and QuickJS to the 0.7.x SDK; separate `uv` source mappings replace selected dependencies with sibling monorepo source during development, and only mappings marked `editable = true` are editable installs.",
       "evidence": [
         {
           "resource": "repo://libs/acp/pyproject.toml",
@@ -46,7 +50,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml",
-          "version": "repo-file-v1:sha256:c55fd6125a04af4124e625ed4ea44331c28d9bc353787fda5e0350aced8dbb07"
+          "version": "repo-file-v1:sha256:f2f280a8499dc76d371202dda329ba59846fb8e509c3a0902981cb6ee88b24de"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml",
@@ -58,7 +62,7 @@
         },
         {
           "resource": "repo://libs/talon/pyproject.toml",
-          "version": "repo-file-v1:sha256:56ee3c71d27439faad3f70971172e89dd661d8d7d83697f5f2296c5c96b90aa4"
+          "version": "repo-file-v1:sha256:5d2cb61c60626642b8b5d714012b3c0d6f4301bb555285742fcf94c226c6ed96"
         }
       ]
     },
@@ -90,7 +94,7 @@
         },
         {
           "resource": "repo://libs/deepagents/deepagents/middleware/async_subagents.py",
-          "version": "repo-file-v1:sha256:1e89c0dbff1203444693e639800cece2c843458de2c54472e2dc72f01b53fc5e"
+          "version": "repo-file-v1:sha256:2a4ce6a5d9a072eb09c8601a9325a5b57cb338914a318e859d5e1f5b554641c2"
         }
       ]
     },
@@ -122,11 +126,11 @@
       "evidence": [
         {
           "resource": "repo://libs/talon/README.md",
-          "version": "repo-file-v1:sha256:bce54cf55524dcc4ae03727f3ae9cc6858919c1ea6d519fbf70cd8480b791f91"
+          "version": "repo-file-v1:sha256:6326fad8c0835a98d9255aa098dba1699a0ef137077ed43e4a5ffa99aaf9b864"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/host.py",
-          "version": "repo-file-v1:sha256:5ec7f046c478ed1c0276918bad474d4ba24b65cdd8766f6ad3f47b7f606ac13c"
+          "version": "repo-file-v1:sha256:47bf496031e579d7767ba95f3389a7f9ea07bd167f5bd366ab9c36364c8505a1"
         },
         {
           "resource": "repo://libs/talon/deepagents_talon/runtime.py",
@@ -167,6 +171,6 @@
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-16T08:05:35.701Z"
+    "at": "2026-10-17T08:04:56.296Z"
   }
 }

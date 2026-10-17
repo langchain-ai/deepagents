@@ -1,9 +1,11 @@
 ---
 type: runtime architecture
-title: Runtime Behavior and Delegated Execution
-description: How Deep Agents assembles its execution loop, maintains recoverable context, and delegates work to local inline or remote asynchronous subagents. Covers parent linkage, notification delivery, state refresh, failure boundaries, and remote-fork context transfer.
-tags: [deepagents, runtime, middleware, state, async-subagents, delegation, notifications, context-management]
+title: Runtime Behavior and Failure Boundaries
+description: How Deep Agents persists recoverable runtime state, delegates asynchronous work, distinguishes pauses from failure, and reports task outcomes across graph and deployment boundaries. Covers model and host retry policies as well as parent wake-up and polling behavior.
+tags: [deepagents, runtime, middleware, state, persistence, async-subagents, retries, notifications]
 sources:
+  - id: openwiki-source-c101168dc0286ff6c29ed37f
+    resource: repo://libs/code/deepagents_code/model_retry.py
   - id: openwiki-source-822ae989625ba99d4c7cc08b
     resource: repo://libs/deepagents/deepagents/_messages_reducer.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
@@ -22,19 +24,21 @@ sources:
     resource: repo://libs/deepagents/tests/unit_tests/test_async_subagents.py
   - id: openwiki-source-dc64f28a66d10932b86fcd61
     resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
+  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
+    resource: repo://libs/talon/deepagents_talon/runtime.py
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-16T08:05:35.701Z
-generated: { by: "openwiki/0.4.2", at: "2026-10-16T08:05:35.701Z" }
+    at: 2026-10-17T08:04:56.296Z
+generated: { by: "openwiki/0.4.2", at: "2026-10-17T08:04:56.296Z" }
 ---
 
-# Runtime Behavior and Delegated Execution
+# Runtime Behavior and Failure Boundaries
 
-`create_deep_agent()` is the assembly boundary for the LangGraph agent loop. It supplies caller tools and the selected backend along with Deep Agents middleware and optional context schema, state schema, checkpointer, store, cache, and response format. The compiled graph has recursion limit `9_999` and integration/version metadata. A caller owns durable continuation: pass a checkpointer and reuse the LangGraph `thread_id` when a conversation, approval interrupt, or task state must continue. See [SDK Construction and Execution](/openwiki/architecture/sdk-construction-execution.md) and [State Persistence](/openwiki/concepts/state-persistence.md).
+`create_deep_agent()` is the assembly boundary for a LangGraph agent. It combines caller tools and model/backend selection with ordered Deep Agents middleware, and passes optional context and state schemas, checkpointer, store, cache, and response format to LangChain. The resulting graph has recursion limit `9_999` and Deep Agents integration/version metadata. Durable continuation remains a caller/graph concern: provide a checkpointer and reuse the LangGraph `thread_id` to continue a conversation, approval interrupt, or persisted task records. See [SDK Construction and Execution](/openwiki/architecture/sdk-construction-execution.md) and [State Persistence](/openwiki/concepts/state-persistence.md).
 
-## Loop composition and recoverable context
+## Graph-owned state and context recovery
 
-The main stack starts with filesystem handling, then inline `task` delegation when configured, `_ParentNotifierMiddleware`, summarization, and tool-call repair. `AsyncSubAgentMiddleware` is added only when remote specifications exist. Profile, skills, prompt-cache, and memory layers follow; human approval, unsupported-content handling, and finally excluded-tool filtering are applied at the tail. Custom middleware can replace a named core layer or be spliced before the profile tail, but excluded tools are removed after custom middleware so they cannot be reintroduced to a model call.
+The core stack starts with filesystem handling and optional inline `task` delegation, then parent notification, summarization, and tool-call repair. `AsyncSubAgentMiddleware` is added only for remote specifications. Profile middleware, skills, prompt caching, and memory follow; human approval and unsupported-content handling are near the tail. Custom middleware can replace a named core layer or be spliced ahead of the profile tail. Excluded tools are filtered again after custom middleware so a custom wrapper cannot restore them to a model request.
 
 ```mermaid
 flowchart TD
@@ -48,115 +52,111 @@ flowchart TD
     Exclude --> Agent["Configured LangGraph agent"]
 ```
 
-Caption: the graph is assembled as an ordered middleware loop; remote task polling and parent notification are separate layers rather than properties of the remote graph.
+Caption: the graph owns ordered middleware composition; remote task execution and notification are separate integration layers.
 
-`DeepAgentState.messages` uses a `DeltaChannel` with the local reducer and snapshot frequency 50. The reducer coercively merges message-like values by stable ID, supports removal and the last `REMOVE_ALL_MESSAGES` reset, and treats an absent replay base as empty. This preserves deterministic replay while avoiding repeated full-history checkpoint writes. Before an agent resumes, `PatchToolCallsMiddleware` repairs unmatched AI tool calls by appending correlated error results and replacing the messages channel atomically with a reset followed by the repaired history.
+`DeepAgentState.messages` is a `DeltaChannel` using the local message reducer with snapshot frequency 50. The reducer coerces message-like inputs, merges by stable ID, supports removals and the last `REMOVE_ALL_MESSAGES` reset, and treats a missing replay base as empty. Stable IDs are assigned before checkpoint serialization, not during replay. This makes checkpoint growth linear rather than repeatedly writing full message history. Before resumption, `PatchToolCallsMiddleware` repairs unmatched AI tool calls by appending correlated error `ToolMessage` records and atomically replacing messages with a reset and repaired history.
 
-Summarization changes **model context**, not the raw history channel. It records a private summarization event containing a cutoff, generated summary message, and optional backend history path, then supplies the summary plus retained tail to the model. It can offload old history and trim older large write/edit arguments; a provider context-overflow rejection triggers a smaller recovery attempt through summarization. This leaves the full message record available for replay and a fork snapshot. `SummarizationToolMiddleware` optionally offers an explicitly called `compact_conversation` tool: it shares the event/session state, gates compaction at about half of the automatic trigger, and returns a correlated `ToolMessage` without changing summary state when no cutoff exists or summary generation fails. See [Context Management](/openwiki/concepts/context-management.md).
+Summarization changes the **effective model history**, not the raw messages channel. It records a private event with cutoff, generated summary, and optional offloaded-history path; the model receives that summary and retained tail while raw history remains available for replay and forks. It can offload older history, shorten old large tool arguments, and recover from a provider context overflow through summarization plus a bounded smaller retry. The optional `compact_conversation` tool shares that event/session state, triggers at roughly half the automatic threshold, and returns a `ToolMessage` without changing summary state when no cutoff exists or generation fails.
 
-## Delegation boundaries
+## Remote tasks: ownership and transferred data
 
-Inline subagents and asynchronous subagents are different execution models:
+Inline delegation blocks until its child returns a correlated `ToolMessage`. In contrast, `AsyncSubAgentMiddleware` uses the LangGraph SDK against an Agent Protocol server and immediately returns a task ID. It adds `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`.
 
-- An inline `task` invocation runs a child through `invoke` or `ainvoke` and blocks until it returns a correlated `ToolMessage`. It can receive eligible inherited state, while private and delegation-inappropriate state is excluded.
-- `AsyncSubAgentMiddleware` launches an Agent Protocol run through the LangGraph SDK and returns immediately. It owns five model-facing tools: `start_async_task`, `check_async_task`, `update_async_task`, `cancel_async_task`, and `list_async_tasks`.
-- A remote child is its own graph. Parent tools, prompt, checkpointer, filesystem permissions, approval policy, credentials, and state are not shared merely because a task was launched.
+A task ID is the remote thread ID. The parent graph persists records in `async_tasks`, whose reducer merges updates by task ID. Each record carries the agent name, thread ID, current run ID, status, and timestamps. This is **local parent state**, not an authoritative copy of the remote service: checks and lists refresh it, and SDK errors return tool text instead of destroying a known record. A remote child owns its own graph, prompt, tools, approvals, credentials, filesystem resources, and persistence.
 
-An async task ID is the remote thread ID. The local `async_tasks` state map stores the selected agent name, current remote run ID, status, and timestamps; its reducer merges records by task ID, so state updates from task operations survive graph transitions and context reduction. Launch, check, update, cancel, and list return tool text on SDK failures rather than overwriting a known task record.
+An async specification with `url` targets that server; no `url` uses local ASGI transport and requires an async parent path such as `ainvoke`. The synchronous path needs a reachable URL. Clients default `x-auth-scheme` to `langsmith` unless headers override it. Local launches and updates can forward trace-nesting headers; those trace headers are deliberately not sent to a remote URL.
 
-### Local deployment versus remote server
+For every launch, thread metadata carries `subagent_name` and the parent thread ID where available. A local task also retains the parent assistant ID, enabling a later child run—such as one started when the child user answers a pause—to locate and wake its parent. JSON-serializable local context is forwarded after stripping `deepagents_parent`; when it cannot be forwarded, a configurable parent reference is used instead. A URL-targeted child gets only the parent thread reference, not the assistant ID: association across deployments does not grant the ability to run or wake the parent.
 
-An async specification with `url` uses that remote Agent Protocol server. Omitting `url` uses local ASGI transport and therefore requires an asynchronous parent entrypoint such as `ainvoke`; a synchronous parent needs a reachable URL. The SDK defaults `x-auth-scheme` to `langsmith` unless the specification supplies one.
-
-Every launch creates a child thread with `parent_thread_id` metadata when available. For a local deployment, metadata also retains the parent assistant ID, which lets a later run on the child thread find and wake the parent. The launch forwards JSON-serializable runtime context to the local child after removing `deepagents_parent`; if context cannot be forwarded, it instead sends the `deepagents_parent` configurable reference. For a `url` remote server, the reference contains only the parent thread ID—the parent assistant is intentionally omitted because another deployment cannot wake that parent. These fields are association and routing data, not shared state or authorization.
-
-When tracing is active, a local launch or update may include trace headers that ask the receiver to nest its span under the parent. Those headers are not sent to a remote URL. The parent reference can also be recovered from child-thread metadata, so a child resumed directly by its user can still identify the original local parent.
-
-### Launch and context forwarding
-
-`mode="isolated"` sends only the delegated description. Experimental `mode="fork"` snapshots the parent’s *effective* conversation at launch, including any summary event, appends a preambled task message, removes local `ToolMessage.artifact` data and parent-local eviction metadata, hydrates portable blob references, and serializes the resulting messages. The snapshot is made before network work, so later parent changes do not alter it. The remote graph nevertheless owns its own prompt, tools, runtime resources, and persistence.
+`mode="isolated"` sends only the task description. Experimental `mode="fork"` takes a launch-time snapshot of the parent’s effective conversation, appends a preambled task message, clears `ToolMessage.artifact` and parent-local eviction metadata, hydrates portable blob content, and serializes the messages for dispatch. Later parent edits do not alter the snapshot.
 
 ```mermaid
 sequenceDiagram
-    participant Lead as Parent agent
-    participant Async as Async middleware
+    participant Parent as Parent graph
+    participant Middleware as Async middleware
     participant SDK as LangGraph SDK
     participant Child as Child thread
-    Lead->>Async: start_async_task
-    alt isolated task
-        Async->>SDK: create thread and run with task text
-    else fork task
-        Async->>Async: snapshot effective history and hydrate blobs
-        Async->>SDK: create thread and run with serialized messages
+    Parent->>Middleware: start_async_task
+    alt isolated
+        Middleware->>SDK: create thread and run with task text
+    else fork
+        Middleware->>Middleware: snapshot effective history and hydrate blobs
+        Middleware->>SDK: create thread and run with serialized messages
     end
     SDK->>Child: background run
-    Async-->>Lead: task ID and async_tasks record
-    Note over Lead,Child: Child resources and state remain independent
+    Middleware-->>Parent: task ID and persisted task record
 ```
 
-Caption: both forms return before the child completes; fork transfers a launch-time message snapshot, not a live parent context.
+Caption: fork transfers one portable message snapshot; it does not share live state or runtime resources.
 
-## Task lifecycle, polling, and waiting
+## Lifecycle: pause is not cancellation or failure
 
-A launch records `running`. A check reads the tracked run; only a successful run causes a thread read. A successful run whose thread has pending interrupts is `waiting`, not complete, and check returns the interrupt IDs and values. If its successful tracked run has been superseded and the thread is busy or errored, observation switches to the newest run. A normal completed thread returns the final thread message.
+The tracked `run_id` is replaceable while the task/thread identity remains stable. A normal launch starts as `running`. `update_async_task` creates a replacement run on the same thread with `multitask_strategy="interrupt"`; an update to a paused task drops its human request. Cancelling a non-waiting task calls the SDK to cancel its tracked run and records `cancelled`. Cancelling `waiting` does **not** issue SDK cancellation because that pause has no active run; it records a local cancellation, and later checks preserve `cancelled` rather than reclassifying the still-paused child as waiting.
 
-`update_async_task` starts a replacement run on the same thread with `multitask_strategy="interrupt"`; the task ID remains stable and the run ID becomes the new run. Updating a waiting task therefore drops its pending human request. `cancel_async_task` cancels a non-waiting remote run, but a waiting task has no active run to cancel, so it only records local `cancelled`. A later check deliberately preserves that cancellation instead of reclassifying the still-paused thread as `waiting`.
-
-`list_async_tasks` first filters from cached state, then reads live state only for selected nonterminal records and writes refreshed status/run IDs back. A lookup failure logs a warning and returns the cached record. Terminal records are not polled.
+A child that calls `interrupt()` is distinct from a failed or terminally cancelled run: its run can be `success`, but its thread is `interrupted` with pending interrupts. Observation maps that combination to nonterminal `waiting`, returns interrupt IDs and values, and tells the parent agent that the child user must answer on the child’s own thread. If a tracked successful run has been superseded by an externally resumed busy or error thread, observation selects the newest run. `list_async_tasks` filters cached records first, live-fetches selected nonterminal tasks, and falls back to cached status on lookup failure; terminal records are not polled.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> running: start creates remote thread and run
-    running --> running: update creates replacement run
-    running --> waiting: successful run with pending interrupt
-    waiting --> running: child is resumed or update replaces pause
-    running --> success: successful completed thread
-    running --> error: remote run or thread error
+    [*] --> running: launch
+    running --> waiting: successful run with pending child interrupt
+    waiting --> running: child user resumes or parent update replaces pause
+    running --> success: completed child thread
+    running --> error: remote error
     running --> timeout: remote timeout
-    running --> cancelled: cancel remote run
-    waiting --> cancelled: record local cancellation only
-    cancelled --> cancelled: check preserves cancelled pause
+    running --> cancelled: cancel tracked active run
+    waiting --> cancelled: local cancellation record only
+    cancelled --> cancelled: later check preserves local cancellation
     success --> [*]
     error --> [*]
     timeout --> [*]
     cancelled --> [*]
 ```
 
-Caption: `waiting` is a thread-level human pause, whereas `interrupted` is a terminal server-run status; task identity remains the child thread across replacement runs.
+Caption: `waiting` is an actionable child-owned input pause, while `cancelled`, `error`, `timeout`, and server-run `interrupted` are terminal task outcomes.
 
-## Parent notification path and safety
+## Reporting: direct wake-up versus polling
 
-`create_deep_agent()` attaches `_ParentNotifierMiddleware` to every Deep Agents graph. On the asynchronous path, the outermost graph of an asynchronously launched child reports successful completion after the agent and reports a model-call exception as an error. It ignores `GraphInterrupt`, so a child paused for human input is not falsely reported as failed or complete. A bounded per-run set prevents duplicate reports; nested Deep Agents graphs do not report independently.
+`create_deep_agent()` installs `_ParentNotifierMiddleware` on every Deep Agents graph. On the async path, only the outermost graph of an async-launched local child reports its own completion: `aafter_agent` reports success and `awrap_model_call` reports a model-call exception. It re-raises `GraphInterrupt` without reporting it, so a child paused for its own approval or question does not masquerade as a parent-visible success or failure. Per-run tracking suppresses duplicates; nested Deep Agents graphs do not independently notify.
 
-For a child with both local parent thread and assistant IDs, the notifier attempts to start a notification run on the parent only when the parent thread is `idle` or `error`, using `multitask_strategy="reject"`. It never interrupts a busy or approval-paused parent. Delivery errors—including a missing parent or a race to busy—are logged and do not fail the child. If the parent is active, it discovers changes itself during asynchronous polling before a model call and once more after a final answer; a new notification causes another model turn. A run begun by a notification records that event so it is not emitted again.
+A direct wake-up is opportunistic and local. When the child has both parent thread and assistant IDs, the notifier starts a reject-strategy notification run only if the parent thread is `idle` or `error`. It does not interrupt a busy or approval-paused parent, and delivery failures (including missing parent or a race to busy) are logged but cannot fail the child. URL-targeted children lack the assistant ID, so they cannot directly wake the parent.
 
-Notifications are explicitly framed as system notification content rather than user input and carry a `deepagents_notification` event marker. Result text and structured details are HTML-escaped so child-controlled text cannot close the envelope; text is clipped to `NUM_CHARS_PER_TOKEN * 20_000` characters and directs the parent to `check_async_task` for full details. Image, audio, video, and file blocks may pass through, while reasoning, tool calls, and unsupported assistant-only blocks are dropped. Automatic error notifications reveal only a failure class such as `RuntimeError`, not the exception message or remote error detail.
+Polling is the fallback and is also what surfaces pauses. On async parent runs, `AsyncSubAgentMiddleware` polls unfinished tasks at run start and before each model call; after a final non-tool answer it polls once more and requests another model turn only when it found a new notification. Polling emits new notifications for `success`, `error`, `timeout`, and `waiting`; it does not wake the parent for cancellation or server-run `interrupted`. Thus a child waiting for its own user requires status polling (or the next parent run), whereas a locally linked child success or model failure can attempt a direct wake-up. A polling timeout or SDK failure merely skips that task until the next check.
 
 ```mermaid
 sequenceDiagram
     participant Child as Local child graph
     participant Notifier as Parent notifier
-    participant Lead as Parent thread
+    participant Parent as Parent thread
     participant Poller as Parent async middleware
     Child->>Notifier: success or model failure
-    alt parent idle or error and assistant reference available
-        Notifier->>Lead: notification run with reject strategy
-        Lead->>Poller: record delivered event
-    else parent busy or paused
-        Notifier-->>Child: do not interrupt parent
-        Poller->>Poller: poll before model or after final answer
+    alt parent idle or error with assistant reference
+        Notifier->>Parent: notification run using reject strategy
+    else parent busy paused or remote
+        Notifier-->>Child: no direct interruption
+        Poller->>Poller: poll before model and after final answer
     end
-    Poller-->>Lead: escaped clipped task notification and state update
+    Poller-->>Parent: new success error timeout or waiting notice
 ```
 
-Caption: direct wake-up is local and opportunistic; polling provides the fallback and does not turn a notification-delivery failure into a child failure.
+Caption: direct notification is restricted to locally routable completion/failure; polling is required to discover a child-owned pause and is the resilient fallback for all outcomes.
+
+Notifications are marked as non-user input and carry a `deepagents_notification` event. Child-controlled text is HTML-escaped; long text is clipped to `NUM_CHARS_PER_TOKEN * 20_000` and directs the parent to `check_async_task` for full details. Standard image, audio, video, and file blocks can pass through, while reasoning, tool calls, and other assistant-only blocks are removed. Automatic failure reports expose a failure class rather than exception details.
+
+## Retry boundaries
+
+`CodeModelRetryMiddleware` is deliberately scoped to the model node, so retrying a transient provider failure does not rerun completed tool calls. The runtime-selected model may carry a provider-specific retry budget, which takes precedence over middleware’s startup fallback. Retry classification accepts retryable `ModelError`s, selected status codes and 5xx responses, known provider/transport failures, and transport failures found through exception groups or cause chains; graph control flow (`GraphBubbleUp`) is immediately re-raised. A Groq 128-tool request rejection is converted to a stable actionable error, while a non-retryable or exhausted model failure is re-raised rather than represented as an AI answer.
+
+Backoff begins at 0.2 seconds, doubles with modest jitter, caps at 10 seconds, honors a valid `Retry-After` up to 60 seconds, and has a 60-second cumulative interactive delay budget. Each model attempt emits correlated `model_attempt` start/complete events. A retry emits a `model_retry` event with the failed attempt and whether output may already have streamed, allowing clients to mark superseded partial output rather than presenting it as a finished answer. Event-emission failures are logged but do not replace the model result or failure.
+
+Talon adds a host-level retry boundary around the entire asynchronous graph invocation. Its configured `max_retries` counts total attempts and uses 1, 2, then capped-10-second exponential sleeps. It immediately propagates `asyncio.CancelledError`, and otherwise retries connection/timeout/provider transport conditions plus configured status- and message-based transient signals. This is broader than model-node retry: it may repeat a graph invocation after a retryable graph-level failure, so it belongs to the host runtime rather than the graph’s completed-tool safety guarantee.
 
 ## Change and test focus
 
-- Keep `_ParentNotifierMiddleware` in graph assembly and preserve its async-only reporting semantics. Test success, model failure sanitization, `GraphInterrupt`, nested graphs, unavailable parents, and busy or interrupted parent threads.
-- Test parent-reference routing separately for local ASGI and `url` remote deployments: forwarded context must exclude `deepagents_parent`; remote references must not contain the parent assistant ID.
-- Exercise notification escaping, clipping, media forwarding, assistant-only block removal, duplicate suppression, status refresh before a model call, and the extra turn after a final answer.
-- Exercise task transitions independently: a paused child is `waiting`; update replaces its run on the same thread; cancellation of waiting is local; list uses cached filtering and a live-status fallback.
-- Preserve raw messages and the `DeltaChannel` reducer contract when changing context middleware. Fork tests should cover summary-effective snapshots, artifact/eviction cleanup, blob hydration, isolation from parent resources, and snapshot stability.
+- Preserve the DeltaChannel reducer and repair unmatched tool calls before changing checkpoint or resume behavior.
+- Test pause, terminal cancellation, server interruption, failure, and timeout as separate states. A paused child must expose its interrupts and never be reported as an automatic child failure.
+- Test direct local notification separately from polling: only an idle/error parent with local assistant routing can be woken; busy, approval-paused, missing, and cross-deployment parents rely on subsequent polls.
+- Exercise parent notification escaping, clipping, media forwarding, removal of assistant-only blocks, failure-detail redaction, and duplicate suppression.
+- Test fork snapshot cleanup/hydration and ensure it remains independent of parent resources and later parent state.
+- For retries, test exception-group classification, `Retry-After` and cumulative-delay boundaries, graph control-flow propagation, streamed partial-output correlation, and Talon cancellation propagation.
 
-For configuration examples and subagent selection guidance, see [Subagents and Skills](/openwiki/concepts/subagents-skills.md). For test execution conventions, see the [Testing Guide](/openwiki/testing/testing-guide.md).
+For configuration examples, see [Subagents and Skills](/openwiki/concepts/subagents-skills.md). For test execution conventions, see the [Testing Guide](/openwiki/testing/testing-guide.md), and for a hosted invocation workflow see [Run DCode Session](/openwiki/workflows/run-dcode-session.md).

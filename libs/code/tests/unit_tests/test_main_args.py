@@ -841,6 +841,66 @@ class TestMaxTurnsArgument:
         assert mock_run.await_args.kwargs["max_turns"] == 5  # ty: ignore
 
 
+class TestHeadlessResumeArguments:
+    """`-r` in non-interactive mode needs an ID and continues that thread."""
+
+    def _cli(self, *argv: str, stdin_text: str | None = None) -> tuple[int, AsyncMock]:
+        """Drive `cli_main` and return its exit code and the headless runner mock."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = stdin_text is None
+        mock_stdin.read.return_value = stdin_text or ""
+        with (
+            patch.object(sys, "argv", ["deepagents", *argv]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch("os.open", side_effect=OSError("No tty in test sandbox")),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+        code = exc_info.value.code
+        assert isinstance(code, int)
+        return code, mock_run
+
+    @pytest.mark.parametrize(
+        ("argv", "stdin_text"),
+        [(("-r", "-n", "continue"), None), (("-r",), "piped task")],
+        ids=["flag", "piped-stdin"],
+    )
+    def test_bare_resume_is_a_usage_error(
+        self, argv: tuple[str, ...], stdin_text: str | None
+    ) -> None:
+        code, mock_run = self._cli(*argv, stdin_text=stdin_text)
+        assert code == 2
+        mock_run.assert_not_awaited()
+
+    def test_resume_with_rubric_is_a_usage_error(self) -> None:
+        code, mock_run = self._cli("-r", "t-1", "-n", "continue", "--rubric", "done")
+        assert code == 2
+        mock_run.assert_not_awaited()
+
+    def test_resume_id_reaches_the_headless_runner(self) -> None:
+        from deepagents_code.client.headless_resume import ResumeRequest
+
+        code, mock_run = self._cli("-r", "t-1", "-n", "continue", "-M", "openai:x")
+        assert code == 0
+        await_args = mock_run.await_args
+        assert await_args is not None
+        assert await_args.kwargs["resume"] == ResumeRequest(
+            "t-1", adopt_agent=True, adopt_model=False
+        )
+
+
 class TestTimeoutArgument:
     """Tests for --timeout argument parsing, validation, and runtime behavior."""
 

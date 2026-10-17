@@ -38,6 +38,9 @@ from langsmith import Client
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from experiment_native import DATASET, PROMPT, grade  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "webtailbench"))
+from grade_rubric import grade_rubric  # noqa: E402
+
 # Every arm runs headless, by a different mechanism each time:
 #   playwright    --headless flag
 #   browser-use   BROWSER_USE_HEADLESS env var
@@ -214,6 +217,7 @@ MODEL = "anthropic:claude-sonnet-5-5"
 async def run_one(arm, ls, project, ex, sem, out, rep=0):
     async with sem:
         inp = ex.inputs
+        rubric = (ex.outputs or {}).get("rubric")
         t0 = time.time()
         answer, steps, run_id, status = "", 0, None, "ok"
         session_id = None
@@ -251,7 +255,7 @@ async def run_one(arm, ls, project, ex, sem, out, rep=0):
             with tracing_v2_enabled(project_name=project, example_id=ex.id) as tracer:
                 state = await asyncio.wait_for(
                     agent.ainvoke(
-                        {"messages": [{"role": "user", "content": PROMPT.format(**inp)}]},
+                        {"messages": [{"role": "user", "content": _prompt(inp)}]},
                         config={"recursion_limit": 200},
                     ),
                     timeout=MAX_SECONDS,
@@ -273,7 +277,15 @@ async def run_one(arm, ls, project, ex, sem, out, rep=0):
         scores = None
         if status == "ok" and answer:
             try:
-                scores = grade(inp["ques"], inp["web"], answer, ex.outputs)
+                # The judge follows the dataset: WebVoyager ships a reference
+                # answer, WebTailBench ships a rubric and is scored on the
+                # fraction of criteria met.
+                if rubric:
+                    r = grade_rubric(inp["ques"], answer, rubric)
+                    scores = r and {"correct": r["score"], "blocked": r["blocked"],
+                                    "met": r["met"], "total": r["total"]}
+                else:
+                    scores = grade(inp["ques"], inp["web"], answer, ex.outputs)
             except Exception as err:  # noqa: BLE001
                 print(f"    judge error: {str(err)[:110]}", flush=True)
 

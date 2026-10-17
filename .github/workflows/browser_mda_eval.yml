@@ -40,7 +40,7 @@ jobs:
   # same dataset.
   prep:
     runs-on: ubuntu-latest
-    environment: evals
+    environment: oss
     outputs:
       # Passed to the arms so they read by id. Looking the dataset up by name
       # is not read-after-write consistent -- run 38152050542 created it at
@@ -75,7 +75,7 @@ jobs:
     # Holds LANGSMITH_API_KEY; the workspace it belongs to must own the
     # dataset being run and have a TYPESAFE_API_KEY workspace secret, or the
     # gateway returns 424 when the Jev judge is called.
-    environment: evals
+    environment: oss
     # 100 tasks x 1 rep at concurrency 6, with per-task timeouts of 900s.
     timeout-minutes: 240
     steps:
@@ -90,7 +90,11 @@ jobs:
         env:
           # Both the deployment and the Jev judge authenticate with the
           # LangSmith key; the judge reaches Jev through the LangSmith gateway.
-          ANTHROPIC_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          # Two keys, two jobs. LANGSMITH_API_KEY must belong to the
+          # workspace that owns the deployments, or every run dies on
+          # `PermissionDeniedError: Invalid tenant ID`; ANTHROPIC_API_KEY is
+          # the gateway service key the Jev judge authenticates with.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
           # Inputs are null on a push event, so each one carries a default.
           # Kept out of the run script itself so they are never interpolated

@@ -408,15 +408,23 @@ class TestFilesystemMiddleware:
         assert result.content == str([])
 
     def test_glob_timeout_returns_error_message(self):
+        """The sync glob timeout must return before the search itself finishes.
+
+        `ThreadPoolExecutor.__exit__` waits for the worker. Returning the
+        timeout error from inside that context manager would block until
+        `slow_glob` ends, so this test fails if the call takes about as long
+        as the search.
+        """
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
         backend_obj = middleware._get_backend(_runtime())
 
         def slow_glob(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
-            time.sleep(2)
+            time.sleep(3)
             return []
 
+        started = time.perf_counter()
         with (
             patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
             patch.object(middleware, "_get_backend", return_value=backend_obj),
@@ -428,8 +436,10 @@ class TestFilesystemMiddleware:
                     "runtime": _runtime(),
                 }
             )
+        elapsed = time.perf_counter() - started
 
         assert result == "Error: glob timed out after 0.5s. Try a more specific pattern or a narrower path."
+        assert elapsed < 1.5
 
     def test_glob_search_truncates_large_results(self):
         """Test that glob results are truncated when they exceed token limit."""

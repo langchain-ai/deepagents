@@ -33,6 +33,12 @@ ARMS = {
     # agent-browser used to be CI-only, driving a Chrome installed on the
     # runner. It now has a sandbox deployment of its own, so it runs the same
     # way every other arm does and in the same kind of environment.
+    # Ablation: the facade arm with `screenshot` removed, to price the 93.8%
+    # of its tool output that screenshots account for.
+    "facade-noshot": (
+        "https://browser-agent-facade-noshot-e2dd80c3b97250efaafd66b3525cedf0.us.langgraph.app",
+        "browser-agent-facade-noshot",
+    ),
     "agent-browser": (
         "https://browser-agent-agent-browser-ba5da2114a285fc380481d9442818f9f.us.langgraph.app",
         "browser-agent-agent-browser",

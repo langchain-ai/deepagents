@@ -2,6 +2,13 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.87](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.86...deepagents-code==0.1.87) (2026-10-17)
+
+
+### Features
+
+* **code:** show the prompt-cache expiration time ([#7005](https://github.com/langchain-ai/deepagents/issues/7005)) ([3407dc3](https://github.com/langchain-ai/deepagents/commit/3407dc33b9918c98c126097bf485dbf6d2f035bd))
+
 ## [0.1.86](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.85...deepagents-code==0.1.86) (2026-10-16)
 
 ### Features

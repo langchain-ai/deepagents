@@ -1,0 +1,43 @@
+browser-mda-facade-noshot/instructions.md
+  s_199de864fdc442::t_57f60f5e9bdf4e 1-43
+browser-mda-facade-noshot/pyproject.toml
+  s_199de864fdc442::t_57f60f5e9bdf4e 1-12
+browser-mda-facade-noshot/tools/_assets/playwright_facade.js
+  s_199de864fdc442::t_57f60f5e9bdf4e 1-1689
+browser-mda-facade-noshot/middleware/session.py
+  s_199de864fdc442::t_57f60f5e9bdf4e 1-30
+browser-mda-facade-noshot/middleware/tool_errors.py
+  s_199de864fdc442::t_57f60f5e9bdf4e 1-52
+browser-mda-facade-noshot/.gitignore
+  s_199de864fdc442::t_57f60f5e9bdf4e 1-20
+browser-mda-facade-noshot/agent.py
+  s_199de864fdc442::t_57f60f5e9bdf4e 2,7,15-18,24-36
+  s_199de864fdc442::t_5c2f216764ccc8 19-23
+  s_199de864fdc442::t_d77a76250807bb 1,3-6,8-14
+browser-mda-facade-noshot/middleware/__init__.py
+  s_199de864fdc442::t_57f60f5e9bdf4e 1-5
+browser-mda-facade-noshot/tools/_assets/README.md
+  s_199de864fdc442::t_57f60f5e9bdf4e 1-9
+browser-mda-facade-noshot/tools/facade.py
+  s_199de864fdc442::t_57f60f5e9bdf4e 1-365
+browser-mda-facade-noshot/uv.lock
+  s_199de864fdc442::t_f944cad820baff 1-1813
+browser-mda/benchmarks/webtailbench/bench_webtail.py
+  s_199de864fdc442::t_8d19f2f77ad43f 36-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "1def5570a66613c0b813e57cbe3fb77c98ff8686",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

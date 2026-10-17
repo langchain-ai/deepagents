@@ -1,0 +1,61 @@
+.github/workflows/browser_mda_webtail.yml
+  s_199de864fdc442::t_a5b0437c533e0e 1-33,38-128
+  s_199de864fdc442::t_b601618f295f9f 34-37
+browser-mda/benchmarks/webtailbench/ensure_dataset.py
+  s_199de864fdc442::t_1d41daabd5b4e7 1-79
+browser-mda-agent-browser/pyproject.toml
+  s_199de864fdc442::t_bbbe61040ccbbb 2
+  s_199de864fdc442::t_77109f5cfc94bf 1,3-11
+browser-mda/benchmarks/webtailbench/webtailbench_150.jsonl
+  s_199de864fdc442::t_26de3eb127bdcc 1-150
+browser-mda-agent-browser/sandbox/setup.sh
+  s_199de864fdc442::t_55ba00fe46f8bc 11,31,38-44,46-48,54-57
+  s_199de864fdc442::t_77109f5cfc94bf 1-10,12-30,32-37,45,49-53
+browser-mda-agent-browser/.env.example
+  s_199de864fdc442::t_77109f5cfc94bf 1-22
+browser-mda-agent-browser/agent.py
+  s_199de864fdc442::t_77109f5cfc94bf 15-19,21-22
+  s_199de864fdc442::t_bbbe61040ccbbb 1-12
+  s_199de864fdc442::t_b44f76691a635d 13-14
+  s_199de864fdc442::t_7a968833398911 20
+browser-mda/benchmarks/webtailbench/webtailbench_smoke.jsonl
+  s_199de864fdc442::t_866eb690fb7ab1 1-11
+browser-mda-agent-browser/.gitignore
+  s_199de864fdc442::t_77109f5cfc94bf 1-20
+browser-mda-agent-browser/sandbox/__init__.py
+  s_199de864fdc442::t_77109f5cfc94bf 1-45
+browser-mda/benchmarks/webtailbench/webtailbench_full.jsonl
+  s_199de864fdc442::t_866eb690fb7ab1 1-609
+browser-mda/benchmarks/webtailbench/regrade_rubric.py
+  s_199de864fdc442::t_e2b70abe3503d2 1-78
+browser-mda/benchmarks/webtailbench/grade_rubric.py
+  s_199de864fdc442::t_9e7cd636117d42 81
+  s_199de864fdc442::t_d9778d3dde0e8d 1-47,50,58-59,64,67-80
+  s_199de864fdc442::t_ec0335ff8fbb64 48-49,51-57,60-63,65-66
+browser-mda/benchmarks/webtailbench/bench_webtail.py
+  s_199de864fdc442::t_3a7a762dc40430 33-39
+  s_199de864fdc442::t_8d0f08ca939f69 108-110,117-118
+  s_199de864fdc442::t_5aab0a4ce8efce 1-32,40-107,111-116,119-167
+browser-mda/benchmarks/webvoyager/bench_local.py
+  s_199de864fdc442::t_5bb365fc9b7d7a 41-43,220,258,280-288
+browser-mda-agent-browser/instructions.md
+  s_199de864fdc442::t_7a968833398911 1-21
+browser-mda-agent-browser/uv.lock
+  s_199de864fdc442::t_9c059c189ffefc 1-1775
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "85466fc6bd9b6bd650ac1a0f91a371cac818aab3",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

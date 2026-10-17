@@ -40,7 +40,7 @@ def _remap_grep_path(m: GrepMatch, route_prefix: str) -> GrepMatch:
         "GrepMatch",
         {
             **m,
-            "path": f"{route_prefix[:-1]}{m['path']}",
+            "path": f"{route_prefix.rstrip('/')}{m['path']}",
         },
     )
 
@@ -112,7 +112,7 @@ def _remap_file_info_path(fi: FileInfo, route_prefix: str) -> FileInfo:
         "FileInfo",
         {
             **fi,
-            "path": f"{route_prefix[:-1]}{fi['path']}",
+            "path": f"{route_prefix.rstrip('/')}{fi['path']}",
         },
     )
 

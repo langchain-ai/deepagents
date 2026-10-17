@@ -169,6 +169,7 @@ def test_local_shell_backend_timeout_reports_incomplete_cleanup(failure: str, ca
     """Test failed cleanup releases pipes and warns the caller about a live command."""
     process = MagicMock(pid=1234)
     process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
+    process.snapshot.return_value = ("", "")
     if failure == "termination":
         process.kill.side_effect = PermissionError
     else:
@@ -703,6 +704,40 @@ class TestLocalShellVirtualModeDefault:
 
         deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
         assert deprecations == []
+
+
+@_POSIX_SHELL_ONLY
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("limit", [20, 100_000])
+async def test_local_shell_backend_timeout_reports_output_printed_before_it(tmp_path: Path, *, asynchronous: bool, limit: int) -> None:
+    """Keep partial output, stderr prefixes and truncation on both timeout paths."""
+    backend = LocalShellBackend(root_dir=tmp_path, inherit_env=True, max_output_bytes=limit)
+    command = 'printf "progress line\n"; printf "error line\n" >&2; sleep 30'
+    result = await backend.aexecute(command, timeout=1) if asynchronous else backend.execute(command, timeout=1)
+
+    assert result.exit_code == 124
+    assert "timed out" in result.output
+    assert "progress line" in result.output
+    assert result.truncated is (limit == 20)
+    if not result.truncated:
+        assert "[stderr] error line" in result.output
+
+
+@_POSIX_SHELL_ONLY
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("stream", [1, 2], ids=["stdout", "stderr"])
+@pytest.mark.parametrize("data", [b"progress \xe2", b"progress \xff"])
+async def test_local_shell_backend_timeout_replaces_undecodable_output(tmp_path: Path, stream: int, data: bytes, *, asynchronous: bool) -> None:
+    """Incomplete or invalid UTF-8 must preserve the timeout and partial output."""
+    script = f"import os, time; os.write({stream}, {data!r}); time.sleep(30)"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    backend = LocalShellBackend(root_dir=tmp_path, inherit_env=True)
+    result = await backend.aexecute(command, timeout=1) if asynchronous else backend.execute(command, timeout=1)
+
+    assert result.exit_code == 124
+    assert "timed out after 1 seconds (custom timeout)" in result.output
+    assert "The command may be stuck or require more time." in result.output
+    assert "progress \ufffd" in result.output
 
 
 def test_local_shell_backend_already_exited_group_is_not_a_cleanup_failure(caplog: pytest.LogCaptureFixture) -> None:

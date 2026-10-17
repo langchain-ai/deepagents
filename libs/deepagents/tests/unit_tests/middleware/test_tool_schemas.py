@@ -2,8 +2,14 @@
 
 from langchain_core.tools import StructuredTool
 
+from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 from deepagents.backends.state import StateBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
+
+
+class _SchemaSandbox(SandboxBackendProtocol, StateBackend):
+    def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+        return ExecuteResponse(output="", exit_code=0)
 
 
 class TestFilesystemToolSchemas:
@@ -15,7 +21,7 @@ class TestFilesystemToolSchemas:
         Uses tool_call_schema.model_json_schema() which is the schema passed to the LLM.
         """
         # Create the middleware to get the tools
-        backend = StateBackend()
+        backend = _SchemaSandbox()
         middleware = FilesystemMiddleware(backend=backend)
         tools = middleware.tools
 

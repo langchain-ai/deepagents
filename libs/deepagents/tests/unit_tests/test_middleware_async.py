@@ -835,31 +835,6 @@ class TestFilesystemMiddlewareAsync:
         # The file is left untouched since deletion was blocked.
         assert mem_store.get(("filesystem",), "/test.txt") is not None
 
-    async def test_aexecute_tool_returns_error_when_backend_doesnt_support(self):
-        """Test async execute tool returns friendly error instead of raising exception."""
-        backend, _ = _make_backend()
-        middleware = FilesystemMiddleware(backend=backend)
-
-        # Find the execute tool
-        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
-
-        # Create runtime with StoreBackend
-        runtime = ToolRuntime(
-            state={},
-            context=None,
-            tool_call_id="test_exec",
-            store=InMemoryStore(),
-            stream_writer=lambda _: None,
-            config={},
-        )
-
-        # Execute should return error message, not raise exception
-        result = await execute_tool.ainvoke({"command": "ls -la", "runtime": runtime})
-
-        assert isinstance(result, ToolMessage)
-        assert "Error: Execution not available" in result.content
-        assert "does not support command execution" in result.content
-
     async def test_aexecute_tool_forwards_zero_timeout_to_backend(self):
         """Async execute tool should forward timeout=0 for no-timeout backends."""
         captured_timeout = {}

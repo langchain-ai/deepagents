@@ -6016,16 +6016,9 @@ class DeepAgentsApp(App):
         Returns:
             A short user-facing provenance and rationale sentence.
         """
-        if source == "managed config":
-            owner = "Your administrator set this policy through managed config"
-        elif source == "config.toml":
-            owner = "This policy was set in your config.toml"
-        else:
-            owner = "This policy was set by active configuration"
-        return (
-            f"{owner} to keep older threads from restoring stale context after "
-            "model or policy changes."
-        )
+        from deepagents_code.resume_policy import resume_cutoff_explanation
+
+        return resume_cutoff_explanation(source)
 
     @staticmethod
     def _resume_cutoff() -> tuple[datetime, str, bool] | None:
@@ -6034,69 +6027,16 @@ class DeepAgentsApp(App):
         Returns:
             The cutoff, its source, and whether it is rolling, or `None`.
         """
-        from deepagents_code.config_manifest import (
-            _emit_ranked_diagnostics,
-            _ranked_source,
-            get_option,
-            parse_duration_seconds,
-        )
-        from deepagents_code.configuration.resolver import get_config_resolver
+        from deepagents_code.resume_policy import resume_cutoff
 
-        resolver = get_config_resolver()
-        cutoffs: list[tuple[datetime, str, bool]] = []
-        for key in ("threads.resume_after", "threads.max_resume_age"):
-            option = get_option(key)
-            if option is None:
-                continue
-            resolved = resolver.get(option)
-            _emit_ranked_diagnostics(option, resolved)
-            value = resolved.value
-            if key.endswith("resume_after") and isinstance(value, str):
-                cutoffs.append(
-                    (datetime.fromisoformat(value), _ranked_source(resolved), False)
-                )
-            elif key.endswith("max_resume_age") and isinstance(value, str):
-                seconds = parse_duration_seconds(value)
-                if seconds is not None:
-                    cutoff = datetime.min.replace(tzinfo=UTC)
-                    with suppress(OverflowError):
-                        cutoff = datetime.now(UTC) - timedelta(seconds=seconds)
-                    cutoffs.append((cutoff, _ranked_source(resolved), True))
-        return max(cutoffs, default=None)
+        return resume_cutoff()
 
     @staticmethod
     async def _thread_resume_block(thread_id: str) -> str | None:
         """Return why configured policy blocks resuming a thread, if applicable."""
-        from deepagents_code.config_manifest import normalize_iso_datetime
-        from deepagents_code.sessions import get_thread_updated_at
+        from deepagents_code.resume_policy import thread_resume_block
 
-        policy = DeepAgentsApp._resume_cutoff()
-        if policy is None:
-            return None
-        cutoff, source, rolling = policy
-        explanation = DeepAgentsApp._resume_cutoff_explanation(source)
-        updated_value = await get_thread_updated_at(thread_id)
-        normalized = normalize_iso_datetime(updated_value)
-        if normalized is None:
-            logger.warning(
-                "Blocking resume for thread %s: missing or invalid updated_at %r",
-                thread_id,
-                updated_value,
-            )
-            return (
-                f"Thread {thread_id} cannot be resumed because its last-updated "
-                f"time could not be verified.\n\n{explanation}"
-            )
-        if datetime.fromisoformat(normalized) >= cutoff:
-            return None
-        reason = (
-            "it is older than the configured maximum age"
-            if rolling
-            else f"it was last updated before {cutoff.isoformat()}"
-        )
-        return (
-            f"Thread {thread_id} cannot be resumed because {reason}.\n\n{explanation}"
-        )
+        return await thread_resume_block(thread_id, DeepAgentsApp._resume_cutoff())
 
     def _reserve_thread(self, thread_id: str) -> None:
         """Reserve a locally managed thread before reading or adopting it."""
@@ -30643,46 +30583,14 @@ class DeepAgentsApp(App):
     ) -> tuple[Literal["match", "unavailable", "mismatch"], Path | None]:
         """Classify a stored thread cwd against the current app cwd.
 
-        Args:
-            raw: The cwd recorded in the thread's checkpoint metadata. May be
-                relative or use `~`; both are normalized here.
-            current_cwd: The app's current working directory.
+        See `resume_policy.classify_thread_cwd`.
 
         Returns:
-            A `(status, path)` pair. `path` is only set when `status` is
-            `"mismatch"`; it is `None` otherwise. `status` is one of:
-
-            - `"match"`: the stored cwd resolves to the current cwd; no action.
-            - `"unavailable"`: the stored cwd is relative/malformed, or names an
-                absolute directory that no longer exists — it cannot be honored,
-                so the caller should warn and stay put.
-            - `"mismatch"`: the stored cwd is a real directory that differs from
-                the current cwd — the caller should offer to switch.
+            A `(status, path)` pair; `path` is set only for `"mismatch"`.
         """
-        target = Path(raw).expanduser()
-        if not target.is_absolute() or not target.is_dir():
-            # Relative/malformed or missing directory: cannot be honored.
-            return "unavailable", None
-        try:
-            current = Path(current_cwd).expanduser().resolve()
-            resolved = target.resolve()
-        except OSError:
-            # Symlink resolution failed (e.g. ELOOP, permission on a path
-            # component). Fall back to a non-resolving comparison, which can
-            # report a spurious mismatch for symlinked-but-equal paths; log so
-            # the degraded comparison is traceable.
-            logger.debug(
-                "Could not resolve cwd paths for mismatch check (%r vs %r); "
-                "falling back to non-resolving comparison",
-                current_cwd,
-                raw,
-                exc_info=True,
-            )
-            current = Path(current_cwd).expanduser().absolute()
-            resolved = target.absolute()
-        if current == resolved:
-            return "match", None
-        return "mismatch", resolved
+        from deepagents_code.resume_policy import classify_thread_cwd
+
+        return classify_thread_cwd(raw, current_cwd)
 
     async def _thread_cwd_mismatch(self, thread_id: str) -> Path | None:
         """Return the thread cwd when it differs from the current app cwd."""

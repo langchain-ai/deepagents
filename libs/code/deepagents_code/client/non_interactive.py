@@ -115,6 +115,8 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
 
     from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.client.headless_resume import ResumeRequest
+    from deepagents_code.client.remote_client import RemoteAgent
     from deepagents_code.hooks.manager import HooksManager
     from deepagents_code.hooks.models.domain import SessionEndCause
     from deepagents_code.hooks.presenter import (
@@ -2137,6 +2139,8 @@ async def _run_agent_loop(
     prompt_id: UUID | None = None,
     summarization_model: str | None = None,
     skill_name: str | None = None,
+    context_overrides: CLIContext | None = None,
+    resumed: bool = False,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -2181,6 +2185,9 @@ async def _run_agent_loop(
         prompt_id: Stable identifier for the headless turn.
         summarization_model: Model spec used only for context-compaction summaries.
         skill_name: Explicitly invoked skill for the SDK to pin on this turn.
+        context_overrides: Run-context fields to apply, such as a resumed
+            thread's model.
+        resumed: Whether this run continues an existing thread.
 
     Raises:
         ClientHookStopError: If a client-owned hook stops processing.
@@ -2207,12 +2214,17 @@ async def _run_agent_loop(
     }
     if rubric is not None:
         stream_input["rubric"] = rubric
+    elif resumed:
+        # `--rubric` is per invocation and rejected with `-r`, so a rubric left
+        # in the checkpoint by an earlier run must not grade this turn.
+        stream_input["rubric"] = None
 
     thread_id = state.thread_id
     # An empty or missing thread ID carries no session identity, so leave it
     # unset in context rather than passing a blank string to model middleware.
     context_thread_id = thread_id if isinstance(thread_id, str) and thread_id else None
     context = CLIContext(
+        **(context_overrides or {}),
         thread_id=context_thread_id,
         summarization_model=summarization_model,
     )
@@ -2285,7 +2297,7 @@ async def _run_agent_loop(
     state.transcript = state.hooks.recorder(thread_id)
 
     start_outcome = await state.hooks.on_session_start(
-        SessionStartCause.STARTUP,
+        SessionStartCause.RESUME if resumed else SessionStartCause.STARTUP,
         model=runtime_state.model_name or None,
     )
     if not start_outcome.ok:
@@ -2548,6 +2560,158 @@ def _build_non_interactive_header(
     return Text.assemble(*parts)
 
 
+async def _select_thread(
+    resume: ResumeRequest | None, assistant_id: str
+) -> tuple[str, str]:
+    """Pick this run's thread, checking a resumed one without reserving it.
+
+    Args:
+        resume: The `-r <id>` request, or `None` for a new thread.
+        assistant_id: The agent selected on the command line.
+
+    Returns:
+        The thread ID and the agent to run it with.
+
+    Raises:
+        ResumeError: The requested thread cannot be resumed from here.
+    """
+    if resume is None:
+        return generate_thread_id(), assistant_id
+
+    from pathlib import Path
+
+    from deepagents_code.client.headless_resume import (
+        ResumeError,
+        cwd_conflict,
+        resolve_resume_target,
+    )
+
+    target = await resolve_resume_target(resume.thread_id)
+    if conflict := cwd_conflict(target, str(Path.cwd())):
+        raise ResumeError(conflict)
+    if resume.adopt_agent and target.agent_name:
+        assistant_id = target.agent_name
+    return target.thread_id, assistant_id
+
+
+async def _reserve_thread(thread_id: str) -> None:
+    """Reserve a resumed thread so no other session writes to it meanwhile.
+
+    Raises:
+        ResumeError: The thread was deleted after `_select_thread` checked it.
+    """
+    from deepagents_code.client.headless_resume import ResumeError
+    from deepagents_code.sessions import thread_exists
+    from deepagents_code.thread_ownership import ensure_owned
+
+    ensure_owned(thread_id)
+    # Deleting a thread requires its reservation, so this check cannot go stale.
+    if not await thread_exists(thread_id):
+        msg = f"Thread '{thread_id}' was deleted before it could be resumed."
+        raise ResumeError(msg)
+
+
+async def _resumed_model_context(
+    agent: RemoteAgent,
+    config: RunnableConfig,
+    *,
+    adopt_model: bool,
+    profile_override: dict[str, Any] | None,
+    console: Console,
+) -> CLIContext:
+    """Restore the model a resumed thread last used, when adopting it.
+
+    Returns:
+        Context overrides selecting that model, or none.
+    """
+    from deepagents_code.client.headless_resume import persisted_model
+
+    if not adopt_model:
+        return CLIContext()
+    # A fresh server reads persisted checkpoints only for registered threads.
+    await agent.aensure_thread(dict(config))
+    state = await agent.aget_state(dict(config))
+    selection = persisted_model(state.values) if state else None
+    if selection is None:
+        return CLIContext()
+    return await _adopt_thread_model(
+        agent, config, *selection, profile_override=profile_override, console=console
+    )
+
+
+async def _adopt_thread_model(
+    agent: RemoteAgent,
+    config: RunnableConfig,
+    spec: str,
+    params: dict[str, Any] | None,
+    *,
+    profile_override: dict[str, Any] | None,
+    console: Console,
+) -> CLIContext:
+    """Switch the run to the model a resumed thread last used.
+
+    Mirrors the TUI: a model that no longer resolves falls back to the launch
+    model with a warning, while a workspace conflict still aborts the run.
+
+    Returns:
+        Context overrides selecting the model, or none when it was not restored.
+
+    Raises:
+        ConflictError: The thread's workspace binding refused this invocation.
+    """
+    from langgraph_sdk.errors import ConflictError
+
+    launch = f"{runtime_state.model_provider}:{runtime_state.model_name}"
+    try:
+        metadata = await agent.aresolve_model(config, spec, extra_kwargs=params)
+    except ConflictError:
+        raise
+    except Exception:
+        logger.warning("Could not restore model %s on resume", spec, exc_info=True)
+        console.print(
+            f"[yellow]Warning:[/yellow] could not restore this thread's model "
+            f"{escape_markup(spec)}; continuing with {escape_markup(launch)}."
+        )
+        return CLIContext()
+    metadata.apply_to_runtime_state()
+    return CLIContext(
+        model=f"{metadata.provider}:{metadata.model_name}",
+        model_params=params or {},
+        profile_overrides=profile_override or {},
+        model_context_limit=runtime_state.model_context_limit,
+    )
+
+
+def _print_resume_error(console: Console, exc: Exception) -> None:
+    # `soft_wrap` keeps the message on one line for scripts that grep it.
+    console.print(f"[red]Error: {escape_markup(str(exc))}[/red]", soft_wrap=True)
+
+
+def _workspace_conflict_text(exc: BaseException) -> str | None:
+    """Explain a server refusal to resume a thread under different settings.
+
+    Returns:
+        The user-facing message, or `None` when `exc` is not a 409 conflict.
+    """
+    from langgraph_sdk.errors import ConflictError
+
+    if not isinstance(exc, ConflictError):
+        return None
+    from deepagents_code.client.headless_resume import WORKSPACE_CONFLICT_MESSAGE
+    from deepagents_code.client.remote_client import workspace_conflict_diagnostics
+    from deepagents_code.workspace_diagnostics import SAFE_SNAPSHOT_FIELDS
+
+    diagnostics = workspace_conflict_diagnostics(exc)
+    changed = sorted(
+        {change.name for change in diagnostics.changes} & SAFE_SNAPSHOT_FIELDS
+        if diagnostics is not None
+        else set()
+    )
+    if not changed:
+        return WORKSPACE_CONFLICT_MESSAGE
+    return f"{WORKSPACE_CONFLICT_MESSAGE} Changed: {', '.join(changed)}."
+
+
 async def _run_startup_command(
     command: str,
     console: Console,
@@ -2661,6 +2825,7 @@ async def run_non_interactive(
     trust_project_hooks: bool = False,
     trust_project_extensions: bool = False,
     extension_paths: tuple[str, ...] = (),
+    resume: ResumeRequest | None = None,
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -2753,6 +2918,9 @@ async def run_non_interactive(
             Defaults to `False`; persisted or configured trust may still grant
             project loading inside the server.
         extension_paths: Explicit one-run extension files or directories.
+        resume: Continue this existing thread instead of starting a new one.
+
+            Any resume failure exits 1 rather than starting a new thread.
 
     Returns:
         Exit code: 0 for success or an intentional hook stop, 1 for error, 124
@@ -2764,6 +2932,22 @@ async def run_non_interactive(
     # stderr=True routes all console.print() to stderr; agent response text
     # uses _write_text() -> sys.stdout directly.
     console = Console(stderr=True) if quiet else Console()
+
+    from deepagents_code.client.headless_resume import ResumeError
+    from deepagents_code.thread_ownership import ThreadOwnershipError
+
+    # Check `-r` before `--startup-cmd` so a bad ID fails without side effects.
+    # The reservation waits for the main `try`, whose `finally` releases it.
+    try:
+        thread_id, assistant_id = await _select_thread(resume, assistant_id)
+    except ResumeError as exc:
+        _print_resume_error(console, exc)
+        return 1
+    if quiet:
+        # Printed despite `-q`: scripts parse it to resume the thread later.
+        console.print(
+            f"Thread: {thread_id}", markup=False, highlight=False, soft_wrap=True
+        )
 
     if startup_cmd and startup_cmd.strip():
         await _run_startup_command(startup_cmd.strip(), console, quiet=quiet)
@@ -2781,7 +2965,6 @@ async def run_non_interactive(
         message_kwargs = envelope.message_kwargs
         skill_name = envelope.skill_name
 
-    thread_id = generate_thread_id()
     from deepagents_code._debug import bind_debug_logging_to_thread
 
     bind_debug_logging_to_thread(thread_id)
@@ -2811,6 +2994,9 @@ async def run_non_interactive(
             logger.warning("MCP metadata preload task creation failed", exc_info=True)
 
     try:
+        if resume is not None:
+            await _reserve_thread(thread_id)
+
         from pathlib import Path
 
         from deepagents_code.approval_mode import ApprovalMode
@@ -2909,6 +3095,17 @@ async def run_non_interactive(
         ) as (agent, _server_proc):
             metadata = await agent.aget_model_metadata()
             metadata.apply_to_runtime_state()
+            context_overrides = (
+                await _resumed_model_context(
+                    agent,
+                    config,
+                    adopt_model=resume.adopt_model,
+                    profile_override=profile_override,
+                    console=console,
+                )
+                if resume is not None
+                else None
+            )
             if not quiet:
                 header = _build_non_interactive_header(
                     assistant_id,
@@ -2957,11 +3154,16 @@ async def run_non_interactive(
                 prompt_id=turn_id,
                 summarization_model=summarization_model,
                 skill_name=skill_name,
+                context_overrides=context_overrides,
+                resumed=resume is not None,
             )
 
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted[/yellow]")
         return 130
+    except (ResumeError, ThreadOwnershipError) as exc:
+        _print_resume_error(console, exc)
+        return 1
     except ClientHookStopError as exc:
         console.print(Text(f"\nOperation stopped by hook: {exc}", style="yellow"))
         return 0
@@ -2981,6 +3183,11 @@ async def run_non_interactive(
         return 1
     except Exception as e:
         logger.exception("Unexpected error during non-interactive execution")
+        if resume is not None and (conflict := _workspace_conflict_text(e)):
+            console.print(
+                f"\n[red]Error: {escape_markup(conflict)}[/red]", soft_wrap=True
+            )
+            return 1
         if e.args and isinstance(e.args[0], dict):
             # The server raised it; show its type and message, not the dict.
             from deepagents_code.client.remote_client import format_agent_exception

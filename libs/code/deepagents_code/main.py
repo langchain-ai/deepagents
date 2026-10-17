@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from deepagents_code._dep_floor_check import _FloorViolation
     from deepagents_code.app import AppResult
     from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.client.headless_resume import ResumeRequest
     from deepagents_code.config import Glyphs
     from deepagents_code.configuration.resolver import ConfigResolver
     from deepagents_code.configuration.types import ProviderStatus
@@ -1569,11 +1570,29 @@ def _resolve_rubric_text(rubric: str | None) -> str | None:
 # That check exists because an in-session one-shot rubric is embedded in the notice
 # beside an actionable goal's objective and status note, and the pair can exceed
 # `GOAL_NOTICE_TEXT_CHAR_LIMIT` even when each fits alone. `--rubric` cannot reach
-# that state: it requires `-n`, and `run_non_interactive` takes no resume or
-# thread-id argument, so it always starts a fresh thread with no checkpointed goal.
-# `--goal` is rejected alongside `--rubric` and is interactive-only, so no goal
-# objective can be set on this path either. Add the combined check here if the
-# non-interactive path ever gains thread resumption.
+# that state: it requires `-n` and is rejected with `-r`, so it always runs on a
+# fresh thread with no checkpointed goal. `--goal` is rejected alongside `--rubric`
+# and is interactive-only, so no goal objective can be set on this path either.
+# Add the combined check here before allowing `--rubric` with `-r`.
+
+
+def _headless_resume_request(args: argparse.Namespace) -> "ResumeRequest | None":
+    """Build the resume request for `-r <ID>` in non-interactive mode.
+
+    Bare `-r` is rejected earlier in `cli_main`, so the value is a thread ID.
+
+    Returns:
+        The request, or `None` when the run starts a new thread.
+    """
+    if args.resume_thread is None:
+        return None
+    from deepagents_code.client.headless_resume import ResumeRequest
+
+    return ResumeRequest(
+        thread_id=args.resume_thread,
+        adopt_agent=args.agent is None,
+        adopt_model=args.model is None,
+    )
 
 
 def _warn_if_interpreter_tools_without_interpreter(
@@ -2492,7 +2511,10 @@ def parse_args() -> argparse.Namespace:
         const="__MOST_RECENT__",
         default=None,
         metavar="ID",
-        help="Resume thread: -r for most recent, -r <ID> for specific thread",
+        help=(
+            "Resume thread: -r for most recent, -r <ID> for specific thread "
+            "(-n requires <ID>)"
+        ),
     )
 
     parser.add_argument(
@@ -5850,6 +5872,27 @@ def cli_main() -> None:
             )
             sys.exit(2)
 
+        resume_thread = getattr(args, "resume_thread", None)
+        if resume_thread == "__MOST_RECENT__" and args.non_interactive_message:
+            from rich.console import Console as _Console
+
+            from deepagents_code._invocation import invoked_name
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] -r needs a thread ID with "
+                "--non-interactive (-n) or piped stdin\n"
+                f"  {invoked_name()} -r <ID> -n 'continue the refactor'"
+            )
+            sys.exit(2)
+        if resume_thread is not None and getattr(args, "rubric", None) is not None:
+            from rich.console import Console as _Console
+
+            _Console(stderr=True).print(
+                "[bold red]Error:[/bold red] --rubric cannot be combined with "
+                "-r in non-interactive mode yet. Resume without --rubric."
+            )
+            sys.exit(2)
+
         if (args.quiet or args.no_stream) and not args.non_interactive_message:
             # Print to stderr (not the module-level stdout console) and exit
             # with code 2 to match the POSIX convention for usage errors, as
@@ -6412,6 +6455,7 @@ def cli_main() -> None:
                                 args, "rubric_max_iterations", None
                             ),
                             recursion_limit=_resolved_recursion_limit(args),
+                            resume=_headless_resume_request(args),
                         ),
                         timeout=timeout,
                     )

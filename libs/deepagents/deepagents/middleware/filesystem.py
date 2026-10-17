@@ -923,13 +923,22 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                 validated_path = validate_path(path)
             except ValueError as e:
                 return f"Error: {e}"
+            # `with ThreadPoolExecutor()` calls `shutdown(wait=True)` on the way
+            # out, so a `return` after `future.result(timeout=...)` still blocks
+            # until `glob` finishes. Shut the pool down explicitly and, on
+            # timeout, abandon the worker instead of waiting for it.
             ctx = contextvars.copy_context()
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            timed_out = False
+            try:
                 future = executor.submit(lambda: ctx.run(resolved_backend.glob, pattern, path=validated_path))
                 try:
                     glob_result = future.result(timeout=GLOB_TIMEOUT)
                 except concurrent.futures.TimeoutError:
+                    timed_out = True
                     return f"Error: glob timed out after {GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path."
+            finally:
+                executor.shutdown(wait=not timed_out, cancel_futures=timed_out)
             if glob_result.error:
                 return f"Error: {glob_result.error}"
             infos = glob_result.matches or []

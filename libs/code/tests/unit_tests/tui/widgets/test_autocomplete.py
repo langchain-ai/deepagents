@@ -1,5 +1,6 @@
 """Tests for autocomplete fuzzy search functionality."""
 
+import locale
 import logging
 import subprocess
 from pathlib import Path
@@ -358,6 +359,35 @@ class TestGetProjectFiles:
         files = _get_project_files(tmp_path)
 
         assert files == []
+
+    def test_non_ascii_names_are_returned_verbatim(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Regression test for #6965: non-ASCII names come back as real paths.
+
+        Under `core.quotePath`, plain `git ls-files` prints such names C-quoted
+        with octal escapes. Unquoted output must still be decoded as UTF-8: a
+        legacy Windows code page is simulated through `locale.getencoding`,
+        which `subprocess` consults when no encoding is given.
+        """
+        self._init_repo(tmp_path)
+        # Pin git's default so a global `core.quotePath=false` can't mask it.
+        subprocess.run(
+            ["git", "config", "core.quotePath", "true"],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+        (tmp_path / "résumé.md").write_text("tracked\n")
+        subprocess.run(
+            ["git", "add", "résumé.md"], cwd=tmp_path, check=True, capture_output=True
+        )
+        (tmp_path / "naïve.py").write_text("untracked\n")
+        monkeypatch.setattr(locale, "getencoding", lambda: "cp1252")
+
+        files = _get_project_files(tmp_path)
+
+        assert files == ["résumé.md", "naïve.py"]
 
     def test_deduplicates_repeated_paths(self, tmp_path: Path) -> None:
         """A path emitted more than once by git ls-files appears only once.

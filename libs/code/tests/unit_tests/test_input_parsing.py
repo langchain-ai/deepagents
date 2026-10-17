@@ -51,6 +51,20 @@ def test_parse_file_mentions_handles_path_traversal(
     assert files == [file_path.resolve()]
 
 
+@pytest.mark.parametrize("name", ["résumé.md", "笔记.md"])
+def test_parse_file_mentions_with_non_ascii_name(
+    name: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for #6965: a non-ASCII name is part of the mention."""
+    file_path = tmp_path / name
+    file_path.write_text("content")
+    monkeypatch.chdir(tmp_path)
+
+    _, files = parse_file_mentions(f"summarize @{name} please")
+
+    assert files == [file_path.resolve()]
+
+
 def test_dropped_payload_paths_resolves_non_media(tmp_path: Path) -> None:
     """Classification is left to the caller, so non-media paths resolve too."""
     doc = tmp_path / "notes.txt"

@@ -69,6 +69,9 @@ OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_DISCORD_OPEN_ACK"
 SLASH_COMMANDS_ENV = "DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS"
 COMMAND_GUILD_ID_ENV = "DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID"
 INCLUDE_OTHER_THREAD_PARTICIPANTS_ENV = "DEEPAGENTS_TALON_DISCORD_INCLUDE_OTHER_THREAD_PARTICIPANTS"
+MENTION_OPTIONAL_CHATS_ENV = "DEEPAGENTS_TALON_DISCORD_MENTION_OPTIONAL_CHATS"
+ALL_CHATS = "*"
+"""Entry in `mention_optional_chats` that makes mentions optional in every guild channel."""
 _ENV_PREFIX = "DEEPAGENTS_TALON_DISCORD"
 
 _COMMAND_UNAVAILABLE_MESSAGE = "That command is not available here."
@@ -117,6 +120,10 @@ class DiscordChannelConfig:
         include_other_thread_participants: Include thread history from
             non-allowlisted senders, accepting their potential influence on
             privileged tools.
+        mention_optional_chats: Guild channel ids where a human's message is a
+            turn without mentioning the bot, in the channel and its threads;
+            `*` means every guild channel. Only the mention requirement is
+            lifted: the exposure policy still decides who is admitted.
     """
 
     bot_token: str = field(repr=False)
@@ -130,6 +137,7 @@ class DiscordChannelConfig:
     command_guild_id: str | None = None
     pairing: SenderPairing | None = None
     include_other_thread_participants: bool = field(default=False, kw_only=True)
+    mention_optional_chats: frozenset[str] = field(default_factory=frozenset, kw_only=True)
 
     @classmethod
     def from_talon_config(cls, config: TalonConfig) -> DiscordChannelConfig:
@@ -191,6 +199,9 @@ class DiscordChannelConfig:
                 home=config.home,
             ),
             include_other_thread_participants=include_participants == "1",
+            mention_optional_chats=_parse_mention_optional_chats(
+                env.get(MENTION_OPTIONAL_CHATS_ENV, "")
+            ),
         )
 
 
@@ -221,6 +232,7 @@ class _DiscordInboundMessage:
             integration role.
         parent_id: Parent channel of the thread the message was posted in, for
             public and private threads alike; `None` outside a thread.
+        from_bot: Whether a bot account, this one or another, authored the message.
     """
 
     channel_id: str
@@ -233,6 +245,7 @@ class _DiscordInboundMessage:
     history_chat: str | None = None
     mentioned: bool = False
     parent_id: str | None = None
+    from_bot: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1008,9 +1021,7 @@ class DiscordChannel:
             # must never reach exposure checks -- admitting them would redispatch
             # every reply as a new prompt, looping forever.
             return
-        if not inbound.is_dm and not inbound.mentioned:
-            # The Gateway delivers every guild message the bot can read; like a
-            # Slack channel, only one that addresses the bot is a turn.
+        if not inbound.is_dm and not self._is_guild_turn(inbound):
             return
         message = ChannelMessage(
             conversation_id=inbound.channel_id,
@@ -1040,6 +1051,29 @@ class DiscordChannel:
         )
         await dispatch_message(self._handler, message, provider="Discord")
         log_debug_event(logger, "discord.inbound.message.dispatched")
+
+    def _is_guild_turn(self, inbound: _DiscordInboundMessage) -> bool:
+        """Return whether a guild message addresses the bot.
+
+        The Gateway delivers every guild message the bot can read; like a Slack
+        channel, only a mention is a turn, except from a human in a channel where
+        mentions are optional. Another bot must always mention this one, so two
+        bots that each answer everything cannot reply to each other forever.
+
+        Args:
+            inbound: Gateway view of the guild message.
+
+        Returns:
+            `True` when the message should go on to the exposure policy.
+        """
+        if inbound.mentioned:
+            return True
+        optional = self.config.mention_optional_chats
+        return not inbound.from_bot and (
+            ALL_CHATS in optional
+            or inbound.channel_id in optional
+            or (inbound.parent_id is not None and inbound.parent_id in optional)
+        )
 
     async def _route_guild_message(
         self, message: ChannelMessage, inbound: _DiscordInboundMessage
@@ -1257,6 +1291,7 @@ def _convert_message(message: discord.Message, *, bot_id: str | None) -> _Discor
         history_chat=_public_thread_parent(message.channel),
         mentioned=mentioned,
         parent_id=_thread_parent(message.channel),
+        from_bot=message.author.bot,
     )
 
 
@@ -1465,6 +1500,25 @@ def _allows_discord_message(
     return exposure.allows(message)
 
 
+def _parse_mention_optional_chats(value: str) -> frozenset[str]:
+    """Parse the channels where mentions are optional.
+
+    Args:
+        value: Comma-separated guild channel ids, or `*` for every guild channel.
+
+    Returns:
+        The parsed entries.
+
+    Raises:
+        ValueError: If an entry is neither a channel id nor `*`.
+    """
+    chats = frozenset(split_csv(value))
+    if any(chat != ALL_CHATS and not chat.isdigit() for chat in chats):
+        msg = f"{MENTION_OPTIONAL_CHATS_ENV} must be Discord channel ids or {ALL_CHATS}"
+        raise ValueError(msg)
+    return chats
+
+
 def _thread_name(text: str) -> str:
     """Name a new thread after the first line of the message that opened it."""
     for line in text.splitlines():
@@ -1482,21 +1536,26 @@ def _format_thread_context(
 ) -> str:
     """Render earlier thread messages as escaped, bounded context lines.
 
+    Only messages after the bot's last reply are kept. Everything before that
+    reply is already in the agent's history, either as an earlier turn or as the
+    context that turn was given, and in a thread where mentions are optional
+    every trusted message is a turn.
+
     Args:
         messages: Earlier thread messages, oldest first.
-        bot_id: This bot's user id; its own replies are already in the agent's
-            history, so they are left out.
+        bot_id: This bot's user id.
         senders: Senders whose messages may be included, or `None` for anyone.
 
     Returns:
         One `sender: text` line per included message, trimmed from the oldest
             end to fit the context budget.
     """
+    replies = [index for index, message in enumerate(messages) if message.sender_id == bot_id]
+    unseen = messages[replies[-1] + 1 :] if replies else messages
     lines = [
         f"{message.sender_id}: {_context_text(message)}"
-        for message in messages
-        if message.sender_id != bot_id
-        and (senders is None or message.sender_id in senders)
+        for message in unseen
+        if (senders is None or message.sender_id in senders)
         and not _contains_oauth_callback(message.text)
     ]
     while lines and sum(len(line) + 1 for line in lines) > _THREAD_CONTEXT_CHARS:

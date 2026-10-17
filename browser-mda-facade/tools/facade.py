@@ -25,6 +25,7 @@ import asyncio
 import base64
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 from langchain.tools import tool
@@ -37,6 +38,59 @@ _MODEL = os.environ.get("STAGEHAND_MODEL", "google/gemini-2.5-flash-lite")
 # so if a run dies before teardown the slot should come back quickly.
 _SESSION_TIMEOUT = int(os.environ.get("BROWSERBASE_SESSION_TIMEOUT", "300"))
 _MAX_CHARS = 8_000
+
+_FACADE_JS = (Path(__file__).parent / "_assets" / "playwright_facade.js").read_text()
+
+# Fixed sleeps are the single biggest avoidable cost in a browsing agent.
+# Models write `await page.waitForTimeout(3000)` constantly, and every one of
+# those is a full N milliseconds whether the page settled in 200ms or never.
+# Baihao measured ~30% of agent time going to them.
+#
+# Two remedies were tried upstream. Prompting the model to wait on elements
+# instead was *worse*: those waits run to their 30s default when the selector
+# never appears, costing +55s and +25% per pass. Turning each sleep into "wait
+# until the page is quiet, capped at the number the model asked for" cut ~30%.
+#
+# Doing it by overriding the method beats rewriting the source: it catches
+# calls inside helpers and string-built code, and it keeps the model's own
+# number as the ceiling, so the worst case is exactly today's behaviour.
+_QUIET_WAIT = """
+const __quietWait = async (ms) => {
+  const cap = Math.max(0, Number(ms) || 0);
+  if (cap === 0) return;
+  try {
+    await page.waitForLoadState("networkidle", { timeout: cap });
+  } catch (error) {
+    // Capped: a page that never goes quiet costs exactly the sleep it asked
+    // for, never more.
+  }
+};
+page.waitForTimeout = __quietWait;
+if (context && context.waitForTimeout) context.waitForTimeout = __quietWait;
+"""
+
+_RUN_SOURCE = """async (batchStagehand, input) => {
+  "use strict";
+  const __identity = (target) => target;
+  for (let i = 0; i <= 32; i += 1) {
+    globalThis[i === 0 ? "__name" : "__name" + i] = __identity;
+  }
+  %(facade)s
+  const runtime = await createPlaywrightCompatRuntime(batchStagehand);
+  const page = runtime.page;
+  const context = runtime.context;
+  const browser = runtime.browser;
+  %(quiet)s
+  return await (async () => { %(code)s })();
+}"""
+
+RUN_TIMEOUT_MS = 120_000
+
+
+def _run_source(code: str) -> str:
+    return _RUN_SOURCE % {"facade": _FACADE_JS, "quiet": _QUIET_WAIT, "code": code}
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -191,31 +245,34 @@ async def run(
 
     Provide exactly one of `code` or `actions`.
 
-    `code` runs **in the page**, like a devtools console: `document`, `window`
-    and `location` are in scope. There is no `page`, `context` or `browser`
-    object -- navigate with an action instead:
-    `{"actions": [{"op": "goto", "url": "https://example.com"}]}`.
+    `code` runs against a Playwright-shaped API: `page`, `context` and
+    `browser` are in scope. Navigate with
+    `await page.goto("https://example.com")`.
+
+    Prefer waiting on a condition over sleeping. `page.waitForTimeout(n)` is
+    reinterpreted as "wait until the page goes quiet, capped at n", so a sleep
+    costs what the page needs rather than what you guessed.
 
     Args:
-        code: JavaScript evaluated in the page. Return a JSON-serializable value,
-            e.g. `return [...document.querySelectorAll('h3')].map(e => e.innerText)`.
-        actions: Batch of steps. `{"op": "goto", "url": ...}` navigates; every
-            other op takes an `id` from the most recent snapshot --
-            click, hover, fill, type, press, select.
+        code: JavaScript with `page`/`context`/`browser` in scope. Return a
+            JSON-serializable value, e.g.
+            `await page.goto(url); return await page.title();`
+        actions: Batch of steps against ids from the most recent snapshot --
+            click, hover, fill, type, press, select. `{"op": "goto", "url": ...}`
+            also works, though navigation is simpler in `code`.
     """
     if (code is None) == (actions is None):
         return "error: provide exactly one of `code` or `actions`."
 
     key = _thread_key(runtime)
 
-    async def go(browser, _stagehand):
+    async def go(browser, stagehand):
         page = await _page(browser)
         if code is not None:
-            if "page." in code or "context." in code or "browser." in code:
-                return ("error: `code` runs in the page, so there is no `page`, "
-                        "`context` or `browser` object. Use `document`/`window`, "
-                        'or navigate with {"actions": [{"op": "goto", "url": ...}]}.')
-            return _clip(str(await page.evaluate(_as_expression(code))))
+            result = await stagehand.experimental_batch(
+                _run_source(code), {}, timeout=RUN_TIMEOUT_MS, page=page
+            )
+            return _clip(str(result))
 
         id_map = _id_maps.get(key) or {}
         done = []

@@ -91,6 +91,7 @@ from deepagents_talon.speech import transcribe_voice_message
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from deepagents_talon.breakout import BreakoutHandler
     from deepagents_talon.config import TalonConfig
     from deepagents_talon.cron.jobs import CronJob, CronOrigin
     from deepagents_talon.speech import VoiceTranscriber
@@ -1018,6 +1019,8 @@ class TalonHost:
         async def message_handler(text: str) -> SendResult:
             return await send_with_retry(lambda: send_progress(text))
 
+        breakout_handler = self._breakout_handler(route, turn, lambda: active and not unattended)
+
         try:
             result = await self._invoke_agent(
                 conversation_id=agent_conversation_id,
@@ -1052,6 +1055,7 @@ class TalonHost:
                 ),
                 tool_approval_operator=operator,
                 message_handler=message_handler,
+                breakout_handler=breakout_handler,
                 model=turn.model,
             )
             suppress_result = agent_conversation_id in self._terminal_authorizations
@@ -1071,6 +1075,68 @@ class TalonHost:
             history_chat=_history_chat(message, turn.provider),
             suppress_result=suppress_result,
         )
+
+    def _breakout_handler(
+        self, route: _BackgroundRoute, turn: _Turn, is_active: Callable[[], bool]
+    ) -> BreakoutHandler:
+        used = False
+
+        async def handle(title: str, instructions: str) -> str:
+            nonlocal used
+            if (
+                not is_active()
+                or self._generations[turn.conversation_id] != turn.generation
+                or self._agent_conversation_id(turn.conversation_root) != turn.conversation_id
+                or route.metadata.get("breakout_parent")
+                or used
+            ):
+                return "Breakout unavailable for this turn."
+            if not isinstance(route.channel, SlackChannel):
+                return "Breakout is currently supported only on Slack."
+            used = True
+            return await self._start_breakout(route, title, instructions)
+
+        return handle
+
+    async def _start_breakout(self, route: _BackgroundRoute, title: str, instructions: str) -> str:
+        channel = route.channel
+        if not isinstance(channel, SlackChannel):
+            return "Breakout is currently supported only on Slack."
+        try:
+            async with asyncio.timeout(30):
+                target = await channel.create_breakout(
+                    route.message.conversation_id, title, instructions
+                )
+        except Exception:
+            logger.exception("Failed to create breakout thread")
+            return "Breakout creation failed; no task was started. Check Slack before retrying."
+        root = self._conversation_root(route.provider or type(channel).__name__, target)
+        message = ChannelMessage(
+            target,
+            instructions,
+            sender_id=route.message.sender_id,
+            metadata={
+                key: value
+                for key, value in route.message.metadata.items()
+                if key in {"is_dm", "from_self"}
+            },
+        )
+        self._history_roots[root] = (
+            _channel_key(channel, route.provider),
+            _history_chat(message, route.provider),
+        )
+        async with self._conversation_lock(root):
+            await self._replace_agent_turn(
+                _BackgroundRoute(
+                    channel=channel,
+                    message=message,
+                    conversation_root=root,
+                    conversation_id=self._agent_conversation_id(root),
+                    provider=route.provider,
+                    metadata={"breakout_parent": route.conversation_id},
+                )
+            )
+        return f"Breakout started in Slack thread {target}. This conversation remains active."
 
     async def _stop_typing_and_requeue(
         self, task: asyncio.Task[None], result: AgentResult | None, *, suppress_result: bool
@@ -1276,6 +1342,7 @@ class TalonHost:
         tool_approval_operator: bool = False,
         message_handler: ProgressMessageHandler | None = None,
         model: str | None = None,
+        breakout_handler: BreakoutHandler | None = None,
     ) -> AgentResult:
         metadata = {
             **metadata,
@@ -1298,6 +1365,7 @@ class TalonHost:
                         approval_handler=approval_handler,
                         authorization_handler=authorization_handler,
                         message_handler=message_handler,
+                        breakout_handler=breakout_handler,
                         model=model,
                     ),
                 )

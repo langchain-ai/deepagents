@@ -48,6 +48,7 @@ from deepagents_talon.background import (
     _SCHEDULED_TURN,
     BackgroundSubagents,
 )
+from deepagents_talon.breakout import BREAKOUT_HANDLER, breakout
 from deepagents_talon.clock import current_time
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.context_doctor import ContextDoctor
@@ -709,6 +710,7 @@ class DeepAgentRuntime:
         scheduled_token = _SCHEDULED_TURN.set(request.metadata.get("trigger") == "cron")
         authorization_token = set_authorization_handler(request.authorization_handler)
         message_token = MESSAGE_HANDLER.set(request.message_handler)
+        breakout_token = BREAKOUT_HANDLER.set(request.breakout_handler)
         try:
             with _history_context(request):
                 async with (
@@ -729,6 +731,7 @@ class DeepAgentRuntime:
             ACTIVE_APPROVALS.reset(policy_token)
             reset_authorization_handler(authorization_token)
             MESSAGE_HANDLER.reset(message_token)
+            BREAKOUT_HANDLER.reset(breakout_token)
             _SCHEDULED_TURN.reset(scheduled_token)
             _CRON_ORIGIN.reset(token)
             self._invocation_graph.reset(graph_token)
@@ -945,7 +948,7 @@ class DeepAgentRuntime:
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
     ) -> list[BaseTool | Callable[..., object]]:
-        tools: list[BaseTool | Callable[..., object]] = [current_time, send_message]
+        tools: list[BaseTool | Callable[..., object]] = [current_time, send_message, breakout]
         if self._smart_model is not None:
             tools.append(self._help_tool(self._smart_model))
         if isinstance(self.checkpointer, ConversationSaver):

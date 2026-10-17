@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:4d500ad1ae64a2a3c12cda8f3c1ca5648bf6c9f8655ec5bb670da16ca9c73403",
+  "pageVersion": "sha256:1e06f6e2f046ef66917fd83dd1016ad623ee4127ef8a1907084a98a3a44cbd61",
   "claims": [
     {
       "id": "claim_ca81ddc0509f4e11a1d572e37ab6aaea",
@@ -183,30 +183,118 @@
       ]
     },
     {
-      "id": "claim_93a053c7461f445f97da1ea25afa6c2b",
-      "statement": "The focused OAuth regression coverage verifies unsafe discovery and redirect rejection, credential-storage safety and refresh semantics, channel authorization binding, and transport behavior that rejects mixed public/private DNS answers while preserving hostname TLS and Host headers for a pinned public address.",
+      "id": "claim_f09fa4946de5400bba44ad1a97ac9eb9",
+      "statement": "The CLI creates assistant state and applies retention cleanup, then composes enabled channels and a cron store; model-backed operation opens an optional sandbox plus checkpoint and history resources, wraps the checkpointer in `ConversationSaver`, and constructs the runtime, while an unconfigured model uses `EchoAgentRuntime`.",
       "evidence": [
         {
-          "resource": "repo://libs/talon/tests/test_host.py#L364-L681",
-          "version": "repo-lines-v1:sha256:2e510da96230dada1c6db717755d6c1409915d6a467c74d4a71e517dbe79087a:eyJzZWxlY3RlZExpbmVDb3VudCI6MzE4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJlZjA1MDc3M2RjOTE4MDZhMzU1Mzc4ZWY4YjI0MjVjYTcxYmI2Y2E0ZDY0ODk4OGI1NWNkOWNjNDZhNGM3ZjQ3IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJiMjNjNDI3NDdmNGZlNTAwOTUwODM3YTYyZDU4MTFiNGI3NTM4OWE2OWNmMzE1YjViZjgxN2FjMDNkYjdmMjFhIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIyZTQ3ZTM1MzhlZTA2ZDc2Mzc5ZTJlY2QyMWYxOTkzN2I0N2VmZmIwZDdjMjIyMTg4NjlkYzYyNTMwZGJlZWRjIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJlZGQ0NTA1ZTJhMGNiZjIyZjQzYjFmMTgwN2FlZTJjZTYzMWU2MTA5ZDlhZWM1ZDg3OWFjY2UzYzUxNjI2NDI5In0"
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L108-L130",
+          "version": "repo-lines-v1:sha256:e7b7a83752868095f0f2bd5fbd5ff8d016436d936e774e46c7cb36cf748d44ec:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3M2U1N2M0Yzc2ZTI1MWYzMjhiYTBhZTE1MWYzMDliNTFkMmE4OGJlZTM0ODEzOTc1MjNiMzRiZDQ1ODcyZDIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViN2YxYWM4ZGQ3M2U2NDAyZTk1YTk0ZGJhZjdiNWRmYjZhYjJiOTk4MzdmOTNjNmYyOWU1Y2I4ZDFkOWM0ZjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhmZGI3MGNiMmVlNGExYzdiMjc0MWViZWViNjI4MTBjZjgwYWI1MjVjNTUwZmMyOTgyYjkwZGU5MDA4NWMxNjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhkMWMxNjExZDBiNjQwMmI1NzEyMjc4NzViMGMyZjMzZGQ2MzU4MjViMmQ0OWFmZDFmNjNhNTEwZGU2YjEyZDQifQ"
         },
         {
-          "resource": "repo://libs/talon/tests/test_mcp_auth.py#L1010-L1205",
-          "version": "repo-lines-v1:sha256:c95bdac0100178c2bc2f83ed686e485e285e09c0434efb5837466cd3f25fb782:eyJzZWxlY3RlZExpbmVDb3VudCI6MTk2LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIwYTM2ZGM2YjEwZjI4ZmU5OTZkNjc1YzhhNjY5MWUxNjJhM2M5Zjg3MDUwYzQyMTI5ZmQ5MTk4YzcwZmU2NjM4IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI4MjRiYmViNWZmNjZiMjMyZGVjN2Y5ODI4NTY3NjE4ZWFkZWM2MGU1ZjU0MjE4ZWFiMDc2MTAxNjRmY2ZjNTE0IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxNzBiZDhkODJkMzJkMDdjNGUwODZkMzU2ODM2MzUxZWI3OGRkZWRjYjgzY2U4ZDdhNmE0ZTEyZjJlNjY3ZjlhIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJkZTFiMDc4M2E0M2FhM2Y2OTRkNmY2ZmFhYjFkNmM1NDQ2YjI3MDFiMzc5OGMzYzRkMTI4MjVjOTc1N2E4Y2YyIn0"
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L296-L394",
+          "version": "repo-lines-v1:sha256:05f65931607b5f9cd6401db02edc5a0b9718b3e5a5f188881409e4bd281cc235:eyJzZWxlY3RlZExpbmVDb3VudCI6OTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjVmYzkyMjNhY2Y4NmU1MDA5NmE0NDUzMzMzNDE4ODZkMTc0MWU1NTdhZDFmMDRhMjA2ZmFhOGJmOTg2MzdhOWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZkYTViZmQzZDAyM2QwZTZjOGZlZDdkNzg2ODYyNWQ3MTg2NDdmNzAxNTk3MmY2ZGJjODNhYmYzOWZlNjBlOTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ0NWRjY2NiN2JmYmEwYTZjNzI0MjNlYTE2NjdiMjMwNTBjNzY5MzM1MmEzOTU1YjZhNmNhYWRmMTVkZTA3NmUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_598880b19c994d0fb0cff8b8cb43ea9a",
+      "statement": "`TalonHost` starts the runtime before channels and scheduler, unwinds a failed partial startup in reverse order, and on shutdown cancels active work while continuing to stop every managed component even if an earlier stop fails.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/host.py#L381-L489",
+          "version": "repo-lines-v1:sha256:835220c459c76fa184f1224a41a3e318c64a0b544c5fec496ec2331b19cf7206:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA5LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiJhYzZkZmJiNzZjNWZjYzRiY2QzNzI1ODk1MzU4Y2U4YmNlYWI1Y2I1ZWIxMjYzMDc2ZWM5Y2FhMTY3ZWVjMDM0IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiJkMDQ4NWE0N2RhMzk1ZmQyYTYxMWE5MTQyZTM2NjEyYmI3MGRmMzUwMmRlNzNjM2Y0MmZhYTQwNDY4ZDMzOGM1IiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI3MmMwYTM0MTk3MTgyOTYxOWM4YWQ5N2FkODgzYTBjOWUwMWUxNjYyMTNiMTExOGQ5NTg1NmQzNWJhN2FmZGI0IiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI1NzJjMmZmOGI5ZmFlNTk4NDQ5NDgyYzUzYTdiMDE2NjAwOGMyN2RkZWFiYWI1NzUxYWM5MzUwZjc1ZjU5NjRlIn0"
+        }
+      ]
+    },
+    {
+      "id": "claim_1523b4efc6b94556802386e62a3f8101",
+      "statement": "A validated assistant ID namespaces the default `~/.deepagents/<assistant_id>` home; Talon creates its home, manifest, agent, cron, channel, and inbound-media directories with owner-only permissions and installs defaults and the approval store without overwriting existing files.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/config.py#L272-L301",
+          "version": "repo-lines-v1:sha256:b4adda1f0ce91a1550afd54fb7d9ad9b2580be0b835446d8d67a05116b394fa3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1NzBhODAyNjQ5NjQ4MDAwYTFiZjcyYTk2ZDQ4ODhkNjI1ZWUzZWYwMjlkOTY4NGQ5ZTJjYWMxNWJjNzQwMGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImI3NjU2NjE0ZTE0YWUwNzYwNThiMjUxMTc4ZjdiN2RiNjRlMzliMmQ4MGNiOTQwNzg2NDI1MDg2OWY5YTQ1ZDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU5NDFkMGI2NjlmNTdlZjM5OGVlNTExMGM4ODZjNmYwMzEyZWYzMzkwZTE0MzBkNDA5MzMwNWVmMGUzMDlhMTEifQ"
         },
         {
-          "resource": "repo://libs/talon/tests/test_mcp_auth.py#L761-L824",
-          "version": "repo-lines-v1:sha256:bc7bab748ec937e7a384236bf4f69b234088aee9532949682b6558e7c5c78c8a:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFmMzQ1ODNhNTk4NzY3YmY1NmFlZmViNjVlMjAzM2ExNjUxY2M0YzhkN2U2ZjBhZjNlNWNmZDMyOTNmOTMzYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyNGI1ZWYyMzU2ZWE4NWEyZWVjMzk4NmNlZTVhMzgzODRkYmYzYTY5YjBkOGExMmYzM2Q1OGE4MDM2NGY3NWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkZjllZDc3MmRhZjcxODZjZTRmODNlNzQ1MTRmMzYzYjlkNjFkZmE2Y2QyMTFjMzhkZGM4YTVkZTY4NTgwZjciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMwMWViZDlmZjg4NDY5ZmFiZWZjNWZlMzFiODNiZmQ0MGQ4YTcyMzE3YzkyMjdlZjM1N2U0OGJiYmY5NDM4OGEifQ"
+          "resource": "repo://libs/talon/deepagents_talon/config.py#L319-L329",
+          "version": "repo-lines-v1:sha256:89bc0049c10ddbe8bb58a761b46ece8dcead2bd962e74f619feae94d8b88da83:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmOTQ3Y2IzNjE0N2YwNmViZjI0NDUyNzg4NWUzODczZGE0Mzc5MDRjZjdkYmM2ZjIzOTQzNjM1MzM5OTA2YzgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk3ZmJkOTZhZDNlMmZlNjIzM2FiOWI4MDA3YmVhYmY0MzRmMmVkNGUxNzkzNmM4ZjdkYTVlNDI2N2RmZDdhOWQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMyMTA5NTY4MjNhNmFlODEwMjE4NmQxM2YwMThlNWNkNzBmYTcxYmQzODYzMDhkNWNlYzZiOTkxMDYyYjBjYmEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdlNzQzOTBkYjZjMmM4MGE4MTg4ZDI1ZTE1NWNkNTIxMjA1ZTNjZDljYjYxNWJmM2VkOWVkMGIwMWNjNzYzODMifQ"
         },
         {
-          "resource": "repo://libs/talon/tests/unit_tests/test_oauth_transport.py#L22-L100",
-          "version": "repo-lines-v1:sha256:8bbee126e7415829ae199cf535fb0ad03e5b946594e7ec62ba26e302c4bc3153:eyJzZWxlY3RlZExpbmVDb3VudCI6NzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExMDViZjU2YzViNjIxMGYzZWJmNGY4Y2ZmOGU1YjY5MmM1NTRlOTQ1OGNkMzFjNTgyYzhmZGQ3OWYyMzI4OGYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZlZjI4M2QxNzkzZTMyYTVlYjM1NDAyYjczM2ZmMjBlMmM2NDVhZTEwNGRhZjgzNDlhZWU3MTY3OTQ5OTEwYzgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE5OGIwNjNkOWI0N2U2NTM3OTYyNTU3MmNjZTE5NzY2OWQ1NzY3ZTEyYzE4YmUwNzU2NTJiOGNkOTgxY2U4ZDUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+          "resource": "repo://libs/talon/deepagents_talon/config.py#L57-L132",
+          "version": "repo-lines-v1:sha256:c79ea86403455cff7d40419e02ebd211f5653e54d28aad57dc7f226ca121fad3:eyJzZWxlY3RlZExpbmVDb3VudCI6NzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgyMGI0NTNmNWUwYzkyZDVmNmMyNTFhNWVhMTk2MGQ3MmYzYmQwNzk1NmFlODU3ZGEyMGUzMWE4OGM1NTk2OWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQzMDhmMzg4OWY5NDBmMTY5MmZkZjM2NjIwZTI0MmIzMjk0NTQ1MjE4MWUzZjAyZGUwMzQ3M2JhZWI3MWQyZTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRkZTdjNWIzNGI2ODI0ODc5ZDk3N2Y5YmJjNjUzYTJhOGUzZmQwNWRhMzU4OGI5NjRlYzRiYjQ0ZDQyZWY1ZGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImMzZTI3ODIwZDNmOTYyOTg4YWQzYmYzNDk1NzFhNzA5MTJlMDc3MzM2YzI3MmQ2YjI4ODcxZGYyNTNmNmRhYzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1970d4e50efa4bdaaae266101cc675a7",
+      "statement": "Checkpoint and conversation-history storage are independently selected: checkpoint URIs choose a LangGraph saver, whereas history URIs open an assistant-namespaced archive store that is combined with the saver through `ConversationSaver`.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/__main__.py#L309-L331",
+          "version": "repo-lines-v1:sha256:1347a8119cd28d0b38b0806405cbc91e3636e2c82ec923ac8b7dd9875e553a65:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcyM2FkYTA1NDQyZjc4MWVlYTViN2VlNTU0MGQwOTQzNWRhYTc4ZmIxODE0N2QxODBjZGQyYzU5MjhjZmQwZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5YzVjZjJmMGZkYjM0YTEzOWJmMzBiYzhjYjM3YjYwOTlmODcxNjViOTJkMjlkYmJjYzA1ZjAyNWFiY2QxYTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg0ZGM5ZDNjZTQ0YzU0OGQ0MjlhNzE3NmRkYTIyYmExM2ZkZDJhZGJjMWM3NTAwZjA0NDYzOTJjYWU2MWEzMzgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlmZjNmMGI1MmVlOGQxMjZkMzc3NGYxMmI3MmM5YjY0NTRlMDEwYWE4OGM3ODFiZjc3MGY4OTEzY2VjZmI1ZjkifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/checkpoint_backends.py#L25-L55",
+          "version": "repo-lines-v1:sha256:6ea2a22abc00f7f18dfd3db978362a1652712cd3be27ee03ada98962ed8e098f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZTAwOGZjZTI2NTZlMmYzNjE4N2ZhNzVmYzQ0ODNhYmRlNmVlNDc2OWNkNDNhNjI0ODZkMzY0MTEwOWNjMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxMGZiZmU2ZTdmZDZmNzE4MWE0NDY2MjY3MDNlZmNkYjFjZWVjNDhhODVmNDg5NjEyODE5Y2YwMDYxODhiNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxNDJhMTBkZGU0YWEzMzFlNzY1MGM2MGNhY2VjMTljNzkyYmQyM2EzZWZkOTA0MTBmZmM5YzZkOThjZWQzMWIifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/config.py#L183-L198",
+          "version": "repo-lines-v1:sha256:d4e783a06e97a1248989d2b7a53c73990d794998e8e0d47403847279098e63d4:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYzZDAwY2YyNzA5NjRkNDRhMTNkZmFjODc1MmIwOWZjYzQzNWIwZjE5YjMxNmFiY2Y4MWE3YWE2NGJiMTIyZDYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ZGNiNzdjMzgxYzQ3NWQzMWQzNTRiMTFjYjdkN2Q1YTg4OGY1ODc2NGVkZWVmZjFjM2YzODhhNTczN2QyNzMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZiOTI5ZDBjYzdiYWMyY2U4MzIxOTgxMDE2NGQzOWFhYTJiMWVkMGY4ZjgzOTg5YzdhYTk1NzczNjUzYzY4MzAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBjMDc3NmZiZjBmOWIxMDAxMTdmNGE1YzhkMGMyNDM0MGJiN2FiNjkyMDgwZDBmMzliNzEyYjEyMTBlODY1ODUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/history_backends.py#L37-L91",
+          "version": "repo-lines-v1:sha256:ef27d3ac746d28d944c778bed747c918b36d4f22b68f3c001018c55c2bdfe894:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU4MWFmNDU5MTJkZWU3OTIzMjQzODk0ZWNhMjU2YmE1ZDhmMTIyMWFmY2Y5NzFmNGVjNjRmZTMxYTRjMGU5Y2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA3Zjk1YzVkMGJiNzU0MzkwN2ZjNWJjYTI1NTc5YjUxMmE1OWFhNGI0N2FhMzcxZWU1NDcxN2I4YWJjYmYxZmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdhNmU5MDI4NTVjOWEwYTIzMjQ3NjA1Njk3MGZkZDRhOTNlNzcwOTc2ZTU0MmE1NzU4YWMyMmVkOGVlYWMxZWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_07a83f56e3bb40dc8e08a612ae2e5eb5",
+      "statement": "Startup cleanup retains cron records and inbound media only for configured retention windows, defaulting to 30 days and 24 hours respectively; it does not implement a general purge of other assistant state.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/data_lifecycle.py#L19-L85",
+          "version": "repo-lines-v1:sha256:4f1f47ed0d7442336ee44261295cf8f33ec6c9b75d4f9271551011ff6fdfba70:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMzQwY2QxYzdjM2JiNDczMzc0ZTE4NzQ3ZGZkYjhiYzMwNzliZTA2NjBiNzc4YmUzMjE1MmFmOWFiNzkzNzUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZkZjg2NjRiMTdhN2YwNmY0ZGNhMTE2YzJmY2NlNjdjNjNmMDJmZGMxMTcyMzg4ODVmNzE3ODE0YTA0NDY4YzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdiZmUxYThiNDhiMjFhNWNhMTIwOTM5YzkzZDMzZDU3MTk3ZDQ3MTk2MTQ2OTM5NTE0ZWJlNDQ0NmY5MGViMDgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_01fdcd5e2a26485686c2a097dceb2308",
+      "statement": "When sandboxing is enabled, Talon creates one dcode sandbox for the host lifetime and fails closed if it cannot start; an attached sandbox ID is not deleted, while an owned sandbox is closed on exit, including after cancellation during thread-backed startup.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L133-L186",
+          "version": "repo-lines-v1:sha256:60154f47a3679e19eb6f3fe30ee99ddf930077fee83983484f9be914e3137268:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1YTc5OWNmODczYmVhMTkyMzg2N2EwMWM0YzhjOWNjOWE0OGVjYzE4NTAzNmZkZDFhODE2ODY1ZDI3YzUzZWUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4ZGJkZTBlMGM2ODgwOWQwOTZmYmQzZWI3OTMwY2M3YjIyMTA1MTk1Njc2YTYwYjg0ODY0ZmMxZDQzYWQwNDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjkxNTNiYjYwNzM4Y2ExZDMzNTczYjE1NWQzOWNiMjZiODdmNzg0OTk3ODI1ODgyZjgzMGM4YjYxMTJkNTEwODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImYwMWJmYWQ2M2YxNWYyNWU1Y2M2YzhhNGI1MWY4NTRjZWY0ZDkwMmEyZTk5YjllN2UzNDNhMTI3ZjkzN2I4NDUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L65-L99",
+          "version": "repo-lines-v1:sha256:9e4eb59b5b159930c6de68d6c05c6f56dff49926bcd77df77428f95c747496ad:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3Y2ZmM2YxNzg0MmRlYzZlN2U5MWMzZTNiOGZjZTBhODIyZmMzMTEyNzM4MWIwMGY0NGE5ZjEzMzMzMDNhMmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3NzI2ZGY3MDFjNzg1NjlhNjQ4YmI4M2FkMmMzYjk1ZGRiNTdjYzgzMDViYmY3YTVjZjdhNDViNzcwNTg2ODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk3NmNmMGYxOTEyZWZlYjE3ZDk3OTAyZGUyZmVjNDI0MzY1ZjZiMTMwOTQwZGE1MTliZTJkMWJmZGI3ODM1YWUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_sandbox.py#L144-L210",
+          "version": "repo-lines-v1:sha256:c4a22093a7269721fa6e486b1c8aea8836f9f9aa40feff723f6e7e3dc2b32433:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZkYTdlYWY2ZjhmZmRiNzc4MWY2M2Y0ZmZjZjVmYThiZjVmNDEyODk0ZmRiNmIwMmQ2NjgwOThkM2RkNDFlMDciLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjM4MjQzNWNlODVjMjdmYjRlMTAxYmZmN2JjZjc3ZDk2NDEzYTM4Y2E4YzY5NmRkOWFiZmViOGYyZGUxMjgzMDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhYTNhNWE4MjhhOWE4MWRjOTA3YzdhNTEwNmIxNzQ4YTgyMjE5NTQ4YmIxOTQ4NDJmMzZiMTFmZDg2ZGQ3N2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzN2EwMTUyNDQzMzgzNzE1ZjYyNDkzMWNlZWYyMjZlODYxNzg4NzM2MmY4OTY0ZjI5NTIyY2ViYzUzZjc2NGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_f501628ad88242e08a1f2de25c91aff8",
+      "statement": "The sandbox composite backend keeps assistant `skills/`, `memory/`, and offloaded blobs on host routes while sending other filesystem paths and command execution to the sandbox, preventing sandbox traversal from rewriting host `tools.json` through the memory route.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/deepagents_talon/sandbox.py#L101-L130",
+          "version": "repo-lines-v1:sha256:b327d7639c64735d83cba20d99ea485015d215a1ff00472036da9c02de43ba1f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjODhkMzdjNWUyZTIwMGJmYjkzZjA1YzVlYTNkZGQyZTYzMTNhYWYwNDE3NzkzNmI5Y2UzNjdkZDFhYmNjNDAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA3N2M3N2YzOTM5OGIxYjIzODE1NDkwMzlmNTdkNjU3YzgwZDc0YWE4OGNlYmUwNzMxNGQ2NzQwMDdlOWExM2MiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjRjMDc4ZWFhYmU4ZWY1MDRlNzBhY2EwNmRjNTVlMTc3ZDM1NDIxMGZmMzI2N2M4YTg1OGNmZDczMjIwMDhmODYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAyNDdkOTRlMjdmOGZkMjE2Y2Y3ZDZlNjhmNzNkNDQ3ZTBhNWE2YzA2YjBhMTFkZjdmOTY0MTMzNjc3ZmQwN2MifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_sandbox.py#L111-L136",
+          "version": "repo-lines-v1:sha256:c26f546e4c6cca8b2cb33bf5593af763558154ee2378ed165900eab0e2f029ba:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ1Y2RhY2YzYWMwYzkzYjlhOWE3ZmZkY2RkZDA0OTE3YjRiZDdkNjc3YzI3NzM1MTNmMjE1OGFiYjFmNzcyNjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZiMmExY2MzM2E4Yjc4MGJkMzhmOWVmYThhYmZlMDlhMDY4Mzk5MDhiMzMxOWRmZGQ3NDZmZTViMmVlYmQyMjYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImIzMzU2MzgzNzFlMTNhYjVlZWVmMGEzNTk0ZWI1ZTk2MGQwNTFkMzViMzQ2NGVjZDZlOTI4MTFmODI0MjU5M2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRmOTU3Mjk3ZjM4ODgxY2FmMWQwM2RmNGYzN2MwYzk1MmYxZWI3ZTc0MDllZDNkMThlMzY1MWVmZDM3OTJjYTcifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/unit_tests/test_sandbox.py#L235-L249",
+          "version": "repo-lines-v1:sha256:dc9072ed62fcb8e6cc6fa6fa731a751f8cb31e6fcce8fb23f1efe849e3d6c769:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjljMDZlODcyN2I3ZWZlM2FkY2RhNDgwZjdmNzkwZmVlYzdkNDJiOTEwNTZhMTYyYTAwZThhODdjODdjZTAxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgzNDI3NmNiYjUwZWExMjk4NDBlNjUxMWNhZmU1OWEyNDFhZDgwOWFjNWNhNzBjNzA1N2QzZTZkZDFjNTk3YTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE3ZTEzYTQ5NjY4NTg0MWU2ODFmMTVjYTkxNmRiNmIxOTVkMDJhNTFiYzBkYmRiYzcyYzM1NjM0OTQ5Y2RjZTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE1OTllMDNiMzhkNmVjMDhiMGRmYjdiMzAxNGQzOTMxZjJiZjEyN2VmNDY3NzI2NDk3OTg4YWFmMzRmNDQ2ZDIifQ"
         }
       ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-10-16T08:05:35.701Z"
+    "at": "2026-10-17T08:04:56.296Z"
   }
 }

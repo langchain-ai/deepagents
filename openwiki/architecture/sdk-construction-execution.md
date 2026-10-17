@@ -3,9 +3,6 @@ type: architecture
 title: SDK Construction and Execution
 description: How create_deep_agent assembles the main and general-purpose agent stacks, applies profile and caller policy, and compiles the final LangChain graph.
 tags: [deepagents, sdk-construction, agent-execution, middleware, subagents, permissions, langgraph]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-10-16T08:05:35.701Z
 sources:
   - id: openwiki-source-b93533cac55718d75277d1cf
     resource: repo://libs/deepagents/deepagents/_excluded_middleware.py

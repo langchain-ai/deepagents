@@ -1,66 +1,22 @@
 ---
 type: architecture concept
-title: Backends
-description: DeepAgents backends define file storage, persistence scope, virtual-path routing, artifact placement, and optional command execution. This page explains the backend contract, composite mounts, binary-content offload, and Talon's host-versus-sandbox routing and lifecycle.
-tags: [backends, storage-routing, filesystem, state, persistence, sandbox, artifacts, talon]
+title: Backends and Durable File State
+description: DeepAgents backends define file storage, persistence scope, virtual-path routing, artifact placement, and optional command execution. This page explains the backend contract, Context Hub's locally visible remote-commit workflow, composite mounts, binary-content offload, and Talon's host-versus-sandbox routing and lifecycle.
+tags: [backends, storage-routing, filesystem, state, persistence, context-hub, sandbox, artifacts, talon]
 sources:
-  - id: openwiki-source-a1549ea98d425efea270be93
-    resource: repo://libs/deepagents/deepagents/backends/composite.py
   - id: openwiki-source-d70fe6f8bf81e2aa641a4950
     resource: repo://libs/deepagents/deepagents/backends/context_hub.py
-  - id: openwiki-source-e483ff4cfd25918c8107d575
-    resource: repo://libs/deepagents/deepagents/backends/filesystem.py
-  - id: openwiki-source-78080f2f51de08303032f288
-    resource: repo://libs/deepagents/deepagents/backends/langsmith.py
-  - id: openwiki-source-f84c83d6fab6028c94be90bc
-    resource: repo://libs/deepagents/deepagents/backends/local_shell.py
-  - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
-    resource: repo://libs/deepagents/deepagents/backends/protocol.py
-  - id: openwiki-source-d4463137befa776cd47750d4
-    resource: repo://libs/deepagents/deepagents/backends/sandbox.py
-  - id: openwiki-source-07f9eac13e71bcbdb4e6994b
-    resource: repo://libs/deepagents/deepagents/backends/state.py
-  - id: openwiki-source-21e2b0401425a427d8cea9c1
-    resource: repo://libs/deepagents/deepagents/backends/store.py
-  - id: openwiki-source-303a7196a0e1a36cc078621b
-    resource: repo://libs/deepagents/deepagents/middleware/_blob_offload.py
-  - id: openwiki-source-fed4b84a38685f37e58018c5
-    resource: repo://libs/deepagents/deepagents/middleware/filesystem.py
-  - id: openwiki-source-ff7e5dfd747aa11f43332e1b
-    resource: repo://libs/deepagents/tests/unit_tests/backends/test_file_format.py
-  - id: openwiki-source-58bc0b41ad72708cee0fee6e
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_blob_offload.py
-  - id: openwiki-source-f913f8fa643e6c2796621ca5
-    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_filesystem_middleware_init.py
-  - id: openwiki-source-f445d59792df76394a37a768
-    resource: repo://libs/deepagents/tests/unit_tests/test_artifacts_root.py
-  - id: openwiki-source-7c1cff57fb2b25a4a7848547
-    resource: repo://libs/partners/daytona/langchain_daytona/sandbox.py
-  - id: openwiki-source-5e387cb8bab7ca8537e7d97c
-    resource: repo://libs/partners/modal/langchain_modal/sandbox.py
-  - id: openwiki-source-7f1708ee428f7c8fdfb29abd
-    resource: repo://libs/partners/runloop/langchain_runloop/sandbox.py
-  - id: openwiki-source-edb310aff3786a7a99593231
-    resource: repo://libs/partners/vercel/langchain_vercel_sandbox/sandbox.py
-  - id: openwiki-source-6a038e6e1a11f450bcafce54
-    resource: repo://libs/talon/deepagents_talon/__main__.py
-  - id: openwiki-source-81698d033a5726401d48b135
-    resource: repo://libs/talon/deepagents_talon/config.py
-  - id: openwiki-source-665a21e2fbd09a89d3f13ac0
-    resource: repo://libs/talon/deepagents_talon/runtime.py
-  - id: openwiki-source-580d91c607e0a09e0659e565
-    resource: repo://libs/talon/deepagents_talon/sandbox.py
-  - id: openwiki-source-e264ca9ac3bacf697861a60e
-    resource: repo://libs/talon/tests/unit_tests/test_media_blobs.py
-  - id: openwiki-source-57a0613315e23277d358df76
-    resource: repo://libs/talon/tests/unit_tests/test_sandbox.py
-generated: { by: "openwiki/0.4.2", at: "2026-10-13T08:11:05.854Z" }
+  - id: openwiki-source-241b6d854a4556d611c320e7
+    resource: repo://libs/deepagents/tests/integration_tests/test_context_hub_backend.py
+  - id: openwiki-source-97b09ca9987a984f1b37f8c8
+    resource: repo://libs/deepagents/tests/unit_tests/backends/test_context_hub_backend.py
+generated: { by: "openwiki/0.4.2", at: "2026-10-17T08:04:56.296Z" }
 verified:
   - by: openwiki/0.4.2
-    at: 2026-10-13T08:11:05.854Z
+    at: 2026-10-17T08:04:56.296Z
 ---
 
-# Backends
+# Backends and Durable File State
 
 A **backend** is the implementation boundary behind agent file operations. It determines where files live, how long they persist, how virtual paths are routed, where middleware artifacts are written, and whether a shell exists. It is not a model-visible tool or an authorization policy: [filesystem tools](/openwiki/concepts/tools-filesystem.md) register and dispatch operations, while storage selection determines persistence and execution behavior.
 
@@ -126,7 +82,51 @@ A prefix does not grant permission and does not make a routed backend's files av
 
 `StoreBackend` is the cross-thread option. A caller supplies a `NamespaceFactory` that scopes data in a `BaseStore`; each namespace component is validated as non-empty safe text, rejecting wildcard and glob syntax so a namespace cannot broaden a store lookup. The backend uses an explicit store when supplied or resolves one through `get_store()` at call time. A namespace factory that depends on `Runtime` still needs graph context; an explicit store plus a factory that does not inspect runtime can be used directly.
 
-`ContextHubBackend` persists remote Hub repository content. It caches the tree and overlays accepted pending and in-flight mutations so reads see local changes. A worker batches mutations briefly, each mutator waits for its commit outcome, and a Hub conflict refreshes the tree and rematerializes write, edit, or delete intents before retrying. It has file semantics, not shell execution.
+`ContextHubBackend(identifier, client=None)` persists UTF-8 text files in a LangSmith Hub agent repository. `identifier` is an `owner/name` or `-/name` Hub handle; the backend constructs a `langsmith.Client` when one is not supplied. It implements file operations but not `SandboxBackendProtocol`, so it supplies **no shell**. It can also be mounted beneath a `CompositeBackend` route—for example `/memories/`—where the router strips and restores the route prefix.
+
+### Context Hub: local visibility, then remote durability
+
+The Hub backend is a remote persistence adapter, not an authorization, filesystem-isolation, or concurrency-isolation boundary. Permissions and tool visibility remain middleware concerns, and a local overlay is deliberately not proof that another backend instance—or another client—can yet see a mutation. Its sequencing is:
+
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant HubBackend as ContextHubBackend
+    participant Cache as Local cache and overlay
+    participant Worker as Batch worker
+    participant Hub as LangSmith Hub
+    Caller->>HubBackend: write edit delete or upload
+    HubBackend->>Cache: accept intent into pending overlay
+    Cache-->>Caller: reads can see accepted change
+    HubBackend->>Worker: wait for mutation outcome
+    Worker->>Hub: push merged changes with parent commit
+    alt commit succeeds
+        Hub-->>Worker: commit URL or snapshot
+        Worker->>Cache: update durable snapshot and hash
+        Worker-->>Caller: successful result
+    else parent conflict
+        Hub-->>Worker: conflict
+        Worker->>Hub: pull fresh tree
+        Worker->>Cache: rematerialize intents
+        Worker->>Hub: retry push
+    else Hub failure
+        Hub-->>Worker: error
+        Worker->>Cache: invalidate cache and overlays
+        Worker-->>Caller: mutation failure
+    end
+```
+
+This sequence shows read-your-accepted-mutation visibility preceding the remote commit that establishes durability.
+
+On the first cache use, the backend pulls the Hub tree once under its condition lock. A missing repository (`LangSmithNotFoundError`) becomes an empty tree, allowing lazy creation on the first write; other `LangSmithError` pull failures become an operation result containing `Hub unavailable`, while unexpected non-LangSmith exceptions propagate. File entries populate the content cache, whereas linked agent/skill entries are exposed separately through `get_linked_entries()` as path-to-repository-handle mappings. `has_prior_commits()` reports whether the loaded tree has a commit hash.
+
+Every accepted write, edit, delete, and valid batch-upload change is placed in either the pending or in-flight overlay. `read`, `ls`, `grep`, `glob`, `download_files`, and subsequent edits/deletes consult that overlay over the last pulled tree, so they observe a pending create, replacement, or removal. The invoking mutation call does **not** return success at that point: it waits until its own event is settled after commit or failure. A later operation can therefore derive an edit from an earlier in-flight write, but the two calls still wait for their corresponding remote commit outcomes.
+
+A daemon worker starts with the first accepted mutation and waits a 50 ms window anchored to that mutation; further arrivals do not extend the deadline. It serializes pushes, coalesces a burst into one `push_agent` request, and merges changes in queue order, so a later same-path mutation wins within one commit. The worker passes the cached `parent_commit`; after success it extracts the hash from current or legacy commit URLs, or pulls an authoritative snapshot when the URL lacks a hash. Valid `upload_files()` inputs are decoded first and committed together; duplicate input paths use their last value, while each non-UTF-8 input receives `invalid_path` without preventing valid siblings from committing. Downloads return UTF-8 encoded bytes from the cache.
+
+A parent-commit conflict is handled optimistically, with at most three retries after the initial push. The worker pulls a fresh tree and **rematerializes intent**, rather than blindly reusing stale content: a write reuses its requested changes, an edit re-applies its exact replacement to current remote text, and a recursive delete recalculates every current key at or below its path. This preserves unrelated remote changes and makes remote files added below a deleted directory part of the retried deletion. If an edit's old text no longer matches, or its target has disappeared, that intent fails as a Hub-unavailable result rather than overwriting remote state. A commit failure also fails every in-flight and queued waiter in that burst, clears the overlay, and invalidates the cached tree so the next operation re-pulls.
+
+Hub operation errors are intentionally distinguishable from ordinary file conditions. A missing path produces the usual operation-specific not-found result without a Hub request failure; a missing remote repository reads as an empty repository; unavailable Hub calls are rendered as `Hub unavailable: ...` on supported result objects. `edit` retains exact-match behavior and its occurrence count, and `delete` removes the exact key plus all nested keys. Context Hub's `grep` remains literal, but its optional `glob` filter deliberately uses case-normalized `fnmatch` against the whole Hub path—where `*` crosses `/` and braces are literal—so do not assume it matches the shared include-glob behavior used by its `glob()` operation.
 
 The shared state/store format represents UTF-8 uploads as text and non-UTF-8 uploads as base64. Downloads restore original bytes; a later text write replaces the binary encoding with `utf-8` while retaining the original creation timestamp.
 
@@ -187,4 +187,4 @@ The runtime aligns its metadata loading with that boundary. It fingerprints and 
 
 For LangSmith without an attached sandbox ID, Talon defaults the snapshot to `talon-<assistant_id>` unless `DEEPAGENTS_TALON_SANDBOX_SNAPSHOT` supplies one or the provider's own `LANGSMITH_SANDBOX_SNAPSHOT_NAME` override is set. Operators can use `DEEPAGENTS_TALON_SANDBOX_ID` to attach rather than own a sandbox, and `DEEPAGENTS_TALON_SANDBOX_SETUP` to pass a host script to the provider factory. Talon warns when `DEEPAGENTS_TALON_SKILLS_DIRS` or `SKILLS_DIRS` is set in sandbox mode because those locations are not host-mounted.
 
-Focused tests cover state-schema selection for direct and nested state branches, artifact-root normalization, blob upload failure and tamper rejection, the shared state/store file format, and composite search/routing boundaries. Talon's sandbox tests additionally verify that approvals stay out of host routes, blobs land under the host artifact directory, provider cleanup occurs on normal exit and cancelled startup, configured startup fails closed, and non-routed memory paths are excluded. They are useful safeguards when changing persistence, routing, or model-visible tool behavior.
+Focused backend tests cover Context Hub cold-cache and missing-repository behavior, visible pending and in-flight overlays, coalesced concurrent write/edit/delete/upload commits, hashless commit reloads, conflict rematerialization, retry exhaustion, and failure-burst recovery. Integration tests (enabled only with `LANGSMITH_API_KEY`) exercise lazy repository creation, persistence across backend instances, real parent-commit conflict recovery, and single-commit batch upload. Other coverage includes state-schema selection for direct and nested state branches, artifact-root normalization, blob upload failure and tamper rejection, the shared state/store file format, and composite search/routing boundaries. Talon's sandbox tests additionally verify that approvals stay out of host routes, blobs land under the host artifact directory, provider cleanup occurs on normal exit and cancelled startup, configured startup fails closed, and non-routed memory paths are excluded. These are useful safeguards when changing persistence, routing, or model-visible tool behavior.

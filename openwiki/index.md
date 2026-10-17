@@ -4,7 +4,7 @@ okf_version: "0.2"
 
 # Files
 
-- [Deep Agents Maintainer Quickstart](quickstart.md) - A compact routing map for maintaining the independently released Deep Agents packages. Use it to identify the behavior owner, dependency direction, and first focused validation for a change.
+- [Deep Agents Monorepo Quickstart](quickstart.md) - A task-routing entry point for maintainers of the Deep Agents monorepo. Identify the package that owns a behavior, then follow the linked workflow, operations, architecture, or test guide.
 
 # Directories
 

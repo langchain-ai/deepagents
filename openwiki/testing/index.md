@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Deterministic, package-local test routing for Deep Agents middleware and async-task contracts, dcode Textual UI behavior, Talon OAuth transport security, and lockfile automation. Select the narrowest test that observes the public boundary and its failure behavior.
+- [Testing Guide](testing-guide.md) - Focused, deterministic regression routing for SDK async/background work and Context Hub persistence, dcode application/configuration/autocomplete behavior, and Talon Discord host integration. Use package-local commands and assert observable contracts at the relevant boundary.

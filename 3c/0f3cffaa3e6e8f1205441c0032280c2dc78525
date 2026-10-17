@@ -1,0 +1,27 @@
+browser-mda-facade/tools/_assets/README.md
+  s_199de864fdc442::t_cda86867d8ed57 1-9
+browser-mda-facade/tools/facade.py
+  s_199de864fdc442::t_7d8b02c2640409 28,42-93
+  s_199de864fdc442::t_d9aaf5f01381a4 273-275
+  s_199de864fdc442::t_8e5f92a0589902 94,248-254,257-262,269,272
+browser-mda-facade/tools/_assets/playwright_facade.js
+  s_199de864fdc442::t_cda86867d8ed57 1-1689
+browser-mda-facade/instructions.md
+  s_199de864fdc442::t_2594ecca9dc03a 5,24-31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3c0f3cffaa3e6e8f1205441c0032280c2dc78525",
+  "prompts": {},
+  "sessions": {
+    "s_199de864fdc442": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ef2256c0-e240-44d5-a34c-fbc22ec5bcbf",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

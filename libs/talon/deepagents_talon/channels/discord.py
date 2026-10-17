@@ -9,11 +9,13 @@ import asyncio
 import contextlib
 import logging
 import mimetypes
+import re
 import urllib.error
 import urllib.request
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from html import escape
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
@@ -49,6 +51,7 @@ from deepagents_talon.interfaces import (
     ReactionHandler,
     SendResult,
 )
+from deepagents_talon.mcp_auth import extract_loopback_oauth_callback_url
 from deepagents_talon.observability import log_debug_event
 from deepagents_talon.pairing import SenderPairing, pairing_from_env
 
@@ -65,12 +68,25 @@ DEFAULT_REQUEST_TIMEOUT_SECONDS = 35.0
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_DISCORD_OPEN_ACK"
 SLASH_COMMANDS_ENV = "DEEPAGENTS_TALON_DISCORD_SLASH_COMMANDS"
 COMMAND_GUILD_ID_ENV = "DEEPAGENTS_TALON_DISCORD_COMMAND_GUILD_ID"
+INCLUDE_OTHER_THREAD_PARTICIPANTS_ENV = "DEEPAGENTS_TALON_DISCORD_INCLUDE_OTHER_THREAD_PARTICIPANTS"
 _ENV_PREFIX = "DEEPAGENTS_TALON_DISCORD"
 
 _COMMAND_UNAVAILABLE_MESSAGE = "That command is not available here."
 _UNAUTHORIZED_MESSAGE = "This assistant does not accept commands from you."
 _COMMAND_NO_REPLY_MESSAGE = "Done."
 _COMMAND_FAILED_MESSAGE = "Something went wrong running that command. Check Talon logs."
+_THREAD_NAME_CHARS = 100
+"""Discord rejects a thread name longer than 100 characters."""
+
+_DEFAULT_THREAD_NAME = "Talon"
+_THREAD_CONTEXT_MESSAGES = 40
+_THREAD_CONTEXT_MESSAGE_CHARS = 1000
+_THREAD_CONTEXT_CHARS = 12000
+_THREAD_CONTEXT_UNAVAILABLE = "[Discord thread history unavailable; ask for context before acting.]"
+_CONTEXT_MESSAGE_TYPES = frozenset({discord.MessageType.default, discord.MessageType.reply})
+"""Message types that carry user-authored text, as opposed to system notices."""
+
+_OAUTH_CANDIDATE_PATTERN = re.compile(r"http://[^\s<>\"'`]+", flags=re.IGNORECASE)
 _TRUTHY_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 _FALSY_ENV_VALUES = frozenset({"0", "false", "no", "off"})
 
@@ -98,6 +114,9 @@ class DiscordChannelConfig:
             developing, but by construction it never reaches direct messages.
         pairing: Optional sender pairing policy that admits approved DM senders
             and issues codes to unknown ones.
+        include_other_thread_participants: Include thread history from
+            non-allowlisted senders, accepting their potential influence on
+            privileged tools.
     """
 
     bot_token: str = field(repr=False)
@@ -110,6 +129,7 @@ class DiscordChannelConfig:
     slash_commands_enabled: bool = True
     command_guild_id: str | None = None
     pairing: SenderPairing | None = None
+    include_other_thread_participants: bool = field(default=False, kw_only=True)
 
     @classmethod
     def from_talon_config(cls, config: TalonConfig) -> DiscordChannelConfig:
@@ -125,6 +145,10 @@ class DiscordChannelConfig:
             ValueError: If the bot token is missing or exposure configuration is invalid.
         """
         env = config.env
+        include_participants = env.get(INCLUDE_OTHER_THREAD_PARTICIPANTS_ENV, "0")
+        if include_participants not in {"0", "1"}:
+            msg = f"{INCLUDE_OTHER_THREAD_PARTICIPANTS_ENV} must be 0 or 1"
+            raise ValueError(msg)
         token = env.get("DEEPAGENTS_TALON_DISCORD_BOT_TOKEN")
         if not token:
             msg = "Discord bot token is required (DEEPAGENTS_TALON_DISCORD_BOT_TOKEN)"
@@ -166,6 +190,7 @@ class DiscordChannelConfig:
                 open_exposure=exposure.mode == ExposureMode.OPEN,
                 home=config.home,
             ),
+            include_other_thread_participants=include_participants == "1",
         )
 
 
@@ -181,7 +206,22 @@ class _DiscordAttachment:
 
 @dataclass(frozen=True, slots=True)
 class _DiscordInboundMessage:
-    """Provider-neutral view of a Gateway `on_message` event."""
+    """Provider-neutral view of a Gateway `on_message` event.
+
+    Args:
+        channel_id: Channel or thread the message was posted in.
+        message_id: Discord's id for the message.
+        sender_id: Discord user id of the author.
+        text: Message text with the bot's own mentions removed.
+        is_dm: Whether the message arrived outside a guild.
+        from_self: Whether this bot authored the message.
+        attachments: Files attached to the message.
+        history_chat: Parent channel whose archive a public thread shares.
+        mentioned: Whether the message mentions the bot, directly or through its
+            integration role.
+        parent_id: Parent channel of the thread the message was posted in, for
+            public and private threads alike; `None` outside a thread.
+    """
 
     channel_id: str
     message_id: str
@@ -191,6 +231,17 @@ class _DiscordInboundMessage:
     from_self: bool
     attachments: tuple[_DiscordAttachment, ...] = ()
     history_chat: str | None = None
+    mentioned: bool = False
+    parent_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _DiscordContextMessage:
+    """One earlier thread message offered to the agent as context."""
+
+    sender_id: str
+    text: str
+    from_bot: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,6 +293,8 @@ class _DiscordInboundInteraction:
         is_dm: Whether the command was invoked outside a guild.
         responder: Reply surface bound to this invocation.
         argument: Text of the command's optional argument, when one was given.
+        history_chat: Parent channel whose archive a public thread shares.
+        parent_id: Parent channel of the thread the command was invoked in.
     """
 
     command: str
@@ -252,6 +305,7 @@ class _DiscordInboundInteraction:
     responder: _InteractionResponder
     argument: str | None = None
     history_chat: str | None = None
+    parent_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -332,6 +386,14 @@ class _DiscordGateway(Protocol):
 
     async def trigger_typing(self, channel_id: str) -> None:
         """Send a one-shot typing indicator."""
+
+    async def create_thread(self, channel_id: str, message_id: str, name: str) -> str:
+        """Start a public thread from a message and return the thread id."""
+
+    async def thread_context(
+        self, thread_id: str, before_message_id: str
+    ) -> list[_DiscordContextMessage]:
+        """Read bounded thread messages preceding a message, oldest first."""
 
 
 class _DiscordPyGateway:
@@ -583,24 +645,83 @@ class _DiscordPyGateway:
         async with channel.typing():
             pass
 
+    async def create_thread(self, channel_id: str, message_id: str, name: str) -> str:
+        channel = await self._fetch_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            # A voice channel's text chat, for one, has no threads.
+            msg = "Discord channel does not support threads"
+            raise discord.ClientException(msg)
+        thread = await channel.get_partial_message(int(message_id)).create_thread(name=name)
+        return str(thread.id)
+
+    async def thread_context(
+        self, thread_id: str, before_message_id: str
+    ) -> list[_DiscordContextMessage]:
+        thread = await self._fetch_channel(thread_id)
+        if not isinstance(thread, discord.Thread):
+            return []
+        history = [
+            message
+            async for message in thread.history(
+                limit=_THREAD_CONTEXT_MESSAGES,
+                before=discord.Object(id=int(before_message_id)),
+            )
+        ]
+        history.reverse()
+        if not any(message.id == thread.id for message in history):
+            # A thread started from a channel message keeps that message in the
+            # parent channel, not in its own history.
+            starter = await _thread_starter(thread)
+            if starter is not None:
+                history.insert(0, starter)
+        return [
+            _DiscordContextMessage(
+                sender_id=str(message.author.id),
+                text=message.content,
+                from_bot=message.author.bot,
+            )
+            for message in history
+            if message.type in _CONTEXT_MESSAGE_TYPES and message.content
+        ]
+
     async def _resolve_channel(self, channel_id: str) -> discord.abc.Messageable:
+        # Configured channel ids are DMs, guild text channels, or threads, which
+        # are Messageable; forum/category channels are not valid send targets here.
+        return cast("discord.abc.Messageable", await self._fetch_channel(channel_id))
+
+    async def _fetch_channel(self, channel_id: str) -> object:
         if self._client is None:
             msg = "Discord gateway is not started"
             raise RuntimeError(msg)
         channel = self._client.get_channel(int(channel_id))
         if channel is None:
             channel = await self._client.fetch_channel(int(channel_id))
-        # Configured channel ids are DMs or guild text channels, which are
-        # Messageable; forum/category channels are not valid send targets here.
-        return cast("discord.abc.Messageable", channel)
+        return channel
+
+
+async def _thread_starter(thread: discord.Thread) -> discord.Message | None:
+    """Return the channel message a thread was started from, when there is one."""
+    if thread.starter_message is not None:
+        return thread.starter_message
+    if not isinstance(thread.parent, discord.TextChannel):
+        return None
+    try:
+        return await thread.parent.fetch_message(thread.id)
+    except (discord.NotFound, discord.Forbidden):
+        # A thread not started from a message, a starter since deleted, or a
+        # parent channel the bot cannot read; the thread's own history still counts.
+        return None
 
 
 class DiscordChannel:
     """Channel adapter for Discord via the `discord.py` Gateway client.
 
-    Both DM channels and guild text channels are processed. Guild channels are
-    subject to the same exposure policy as DMs, scoped by channel id through
-    `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS`.
+    A direct message with the bot is one conversation. In a guild the bot only
+    answers when mentioned: a mention in a channel opens a thread on the
+    mentioning message and replies there, and a mention inside an existing thread
+    replies in that thread. Each thread is its own conversation, so follow-ups
+    mention the bot in-thread. Guild messages are subject to the same exposure
+    policy as DMs; an allowlisted channel also admits every thread in it.
     """
 
     def __init__(
@@ -839,7 +960,7 @@ class DiscordChannel:
             message_id=inbound.interaction_id,
             metadata=metadata,
         )
-        if not self._admits(message):
+        if not self._admits(message, parent_id=inbound.parent_id):
             log_debug_event(
                 logger,
                 "discord.inbound.interaction.rejected",
@@ -872,8 +993,10 @@ class DiscordChannel:
                 )
         log_debug_event(logger, "discord.inbound.interaction.dispatched", failed=failed)
 
-    def _admits(self, message: ChannelMessage) -> bool:
-        if _allows_discord_message(self._exposure, self.config.allowed_user_ids, message):
+    def _admits(self, message: ChannelMessage, *, parent_id: str | None = None) -> bool:
+        if _allows_discord_message(
+            self._exposure, self.config.allowed_user_ids, message, parent_id=parent_id
+        ):
             return True
         return self.config.pairing is not None and self.config.pairing.admits(message)
 
@@ -885,6 +1008,10 @@ class DiscordChannel:
             # must never reach exposure checks -- admitting them would redispatch
             # every reply as a new prompt, looping forever.
             return
+        if not inbound.is_dm and not inbound.mentioned:
+            # The Gateway delivers every guild message the bot can read; like a
+            # Slack channel, only one that addresses the bot is a turn.
+            return
         message = ChannelMessage(
             conversation_id=inbound.channel_id,
             text=inbound.text,
@@ -892,7 +1019,7 @@ class DiscordChannel:
             message_id=inbound.message_id,
             metadata=_message_metadata(inbound),
         )
-        if not self._admits(message):
+        if not self._admits(message, parent_id=inbound.parent_id):
             log_debug_event(
                 logger,
                 "discord.inbound.message.rejected",
@@ -902,6 +1029,9 @@ class DiscordChannel:
             if self.config.pairing is not None:
                 await self.config.pairing.offer(message, self.send_message)
             return
+        if not inbound.is_dm:
+            # Only after admission, so a refused mention leaves no thread behind.
+            message = await self._route_guild_message(message, inbound)
         message = await self._prepare_inbound_media(message, inbound.attachments)
         log_debug_event(
             logger,
@@ -910,6 +1040,61 @@ class DiscordChannel:
         )
         await dispatch_message(self._handler, message, provider="Discord")
         log_debug_event(logger, "discord.inbound.message.dispatched")
+
+    async def _route_guild_message(
+        self, message: ChannelMessage, inbound: _DiscordInboundMessage
+    ) -> ChannelMessage:
+        """Move a channel mention into its own thread, or add a thread's context.
+
+        Args:
+            message: Admitted message, addressed to the channel it was posted in.
+            inbound: Gateway view of the same message.
+
+        Returns:
+            The message, addressed to its thread and carrying any thread context.
+        """
+        if inbound.parent_id is None:
+            return await self._open_thread(message, inbound)
+        context = await self._thread_context(inbound)
+        if not context:
+            return message
+        return replace(message, metadata={**message.metadata, "discord_thread_context": context})
+
+    async def _open_thread(
+        self, message: ChannelMessage, inbound: _DiscordInboundMessage
+    ) -> ChannelMessage:
+        try:
+            thread_id = await self._gateway.create_thread(
+                inbound.channel_id, inbound.message_id, _thread_name(inbound.text)
+            )
+        except (discord.DiscordException, OSError, TimeoutError):
+            # Most often a missing Create Public Threads permission. Answering in
+            # the channel beats not answering at all.
+            logger.warning(
+                "Could not open a Discord thread; replying in the channel", exc_info=True
+            )
+            return message
+        log_debug_event(logger, "discord.inbound.thread.opened")
+        # A thread opened here is public, so it shares its parent's archive the
+        # way any other public thread does.
+        return replace(
+            message,
+            conversation_id=thread_id,
+            metadata={**message.metadata, "history_chat": inbound.channel_id},
+        )
+
+    async def _thread_context(self, inbound: _DiscordInboundMessage) -> str:
+        try:
+            messages = await self._gateway.thread_context(inbound.channel_id, inbound.message_id)
+        except (discord.DiscordException, OSError, TimeoutError, ValueError):
+            logger.warning("Could not read Discord thread context", exc_info=True)
+            return _THREAD_CONTEXT_UNAVAILABLE
+        senders = (
+            None
+            if self.config.include_other_thread_participants
+            else self._exposure.operator_ids | self.config.allowed_user_ids
+        )
+        return _format_thread_context(messages, bot_id=self._gateway.bot_id, senders=senders)
 
     async def _process_reaction(self, inbound: _DiscordInboundReaction) -> None:
         reaction = ChannelReaction(
@@ -1011,8 +1196,34 @@ class DiscordChannel:
 def _public_thread_parent(channel: object) -> str | None:
     """Return the parent of a public Discord thread, if available."""
     if isinstance(channel, discord.Thread) and not channel.is_private():
-        return str(channel.parent_id) if channel.parent_id is not None else None
+        return _thread_parent(channel)
     return None
+
+
+def _thread_parent(channel: object) -> str | None:
+    """Return the parent of any Discord thread, public or private, if available."""
+    if isinstance(channel, discord.Thread) and channel.parent_id is not None:
+        return str(channel.parent_id)
+    return None
+
+
+def _bot_role_ids(message: discord.Message, bot_id: str) -> tuple[int, ...]:
+    """Return ids of mentioned roles that Discord manages for this bot.
+
+    Discord's mention autocomplete offers a bot's integration role next to the
+    bot itself, and the two look alike, so mentioning either addresses the bot.
+    """
+    return tuple(
+        role.id
+        for role in message.role_mentions
+        if role.tags is not None and str(role.tags.bot_id) == bot_id
+    )
+
+
+def _strip_bot_mentions(text: str, *, bot_id: str, role_ids: tuple[int, ...]) -> str:
+    for token in (f"<@{bot_id}>", f"<@!{bot_id}>", *(f"<@&{role}>" for role in role_ids)):
+        text = text.replace(token, "")
+    return text.strip()
 
 
 def _convert_message(message: discord.Message, *, bot_id: str | None) -> _DiscordInboundMessage:
@@ -1026,16 +1237,26 @@ def _convert_message(message: discord.Message, *, bot_id: str | None) -> _Discor
         for attachment in message.attachments
     )
     sender_id = str(message.author.id)
-    history_chat = _public_thread_parent(message.channel)
+    text = message.content
+    mentioned = False
+    if bot_id is not None:
+        role_ids = _bot_role_ids(message, bot_id)
+        # `mentions` also holds the author of a replied-to message when the reply
+        # pings them, so replying to the bot addresses it too.
+        mentioned = bool(role_ids) or any(str(user.id) == bot_id for user in message.mentions)
+        if mentioned:
+            text = _strip_bot_mentions(text, bot_id=bot_id, role_ids=role_ids)
     return _DiscordInboundMessage(
         channel_id=str(message.channel.id),
         message_id=str(message.id),
         sender_id=sender_id,
-        text=message.content,
+        text=text,
         is_dm=message.guild is None,
         from_self=bot_id is not None and sender_id == bot_id,
         attachments=attachments,
-        history_chat=history_chat,
+        history_chat=_public_thread_parent(message.channel),
+        mentioned=mentioned,
+        parent_id=_thread_parent(message.channel),
     )
 
 
@@ -1104,6 +1325,7 @@ def _convert_interaction(
         responder=_DiscordPyResponder(interaction),
         argument=argument,
         history_chat=_public_thread_parent(interaction.channel),
+        parent_id=_thread_parent(interaction.channel),
     )
 
 
@@ -1231,14 +1453,73 @@ def _allows_discord_message(
     exposure: ChannelExposure,
     allowed_user_ids: frozenset[str],
     message: ChannelMessage,
+    *,
+    parent_id: str | None = None,
 ) -> bool:
-    if (
-        exposure.mode.value == "allowlist"
-        and message.metadata.get("is_dm") is True
-        and message.sender_id in allowed_user_ids
-    ):
-        return True
+    if exposure.mode == ExposureMode.ALLOWLIST:
+        if message.metadata.get("is_dm") is True and message.sender_id in allowed_user_ids:
+            return True
+        # An allowlisted channel admits every thread in it.
+        if parent_id is not None and parent_id in exposure.conversations:
+            return True
     return exposure.allows(message)
+
+
+def _thread_name(text: str) -> str:
+    """Name a new thread after the first line of the message that opened it."""
+    for line in text.splitlines():
+        name = " ".join(line.split())
+        if name:
+            return name[:_THREAD_NAME_CHARS]
+    return _DEFAULT_THREAD_NAME
+
+
+def _format_thread_context(
+    messages: list[_DiscordContextMessage],
+    *,
+    bot_id: str | None,
+    senders: frozenset[str] | None,
+) -> str:
+    """Render earlier thread messages as escaped, bounded context lines.
+
+    Args:
+        messages: Earlier thread messages, oldest first.
+        bot_id: This bot's user id; its own replies are already in the agent's
+            history, so they are left out.
+        senders: Senders whose messages may be included, or `None` for anyone.
+
+    Returns:
+        One `sender: text` line per included message, trimmed from the oldest
+            end to fit the context budget.
+    """
+    lines = [
+        f"{message.sender_id}: {_context_text(message)}"
+        for message in messages
+        if message.sender_id != bot_id
+        and (senders is None or message.sender_id in senders)
+        and not _contains_oauth_callback(message.text)
+    ]
+    while lines and sum(len(line) + 1 for line in lines) > _THREAD_CONTEXT_CHARS:
+        lines.pop(0)
+    return "\n".join(lines)
+
+
+def _context_text(message: _DiscordContextMessage) -> str:
+    text = escape(message.text[:_THREAD_CONTEXT_MESSAGE_CHARS], quote=False)
+    if not message.from_bot:
+        return text
+    return (
+        f'<input-message sender="discord:{escape(message.sender_id)}" surface="discord" '
+        f'kind="message" sender_type="bot">\n{text}\n</input-message>'
+    )
+
+
+def _contains_oauth_callback(text: str) -> bool:
+    """Exclude a whole message before truncation could hide a pasted credential."""
+    return any(
+        extract_loopback_oauth_callback_url(candidate) is not None
+        for candidate in _OAUTH_CANDIDATE_PATTERN.findall(text)
+    )
 
 
 def _allows_discord_reaction(
